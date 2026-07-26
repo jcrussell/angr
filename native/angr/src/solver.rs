@@ -347,7 +347,18 @@ impl RustSolverContext {
         let ctx = self.i().ctx();
         #[cfg(feature = "vex-engine-z3")]
         {
-            if let Ok(z3_ast) = extract_z3_ast_ptr(py, ast) {
+            // angr-d01qu: mirror add_constraint_ast's is_bool() gate. A
+            // non-Bool AST wrapped as z3::ast::Bool via Ast::wrap would trip
+            // Z3's CHECK_FORMULA sort-mismatch guard inside
+            // Z3_solver_assert_and_track, which -- since our context installs
+            // a no-op error handler -- fails *silently*: no panic, no abort,
+            // just a constraint that never actually gets asserted while this
+            // function still returns Ok(idx) as if tracking succeeded. Only
+            // take the raw fast path for Bool-sorted ASTs; fall through to
+            // the slow path below for anything else.
+            if let Ok(z3_ast) = extract_z3_ast_ptr(py, ast)
+                && z3_ast.is_bool()
+            {
                 let z3_ctx = z3::Context::thread_local();
                 // SAFETY: `z3_ast` is a live Bool-sorted `Z3_ast` (holds its
                 // own ref via Z3AstPtr); `Ast::wrap` takes its own ref.

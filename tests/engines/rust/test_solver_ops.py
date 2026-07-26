@@ -151,6 +151,45 @@ class TestSolverOperations:
         assert 0 in core and 1 in core, f"expected indices 0,1 in core, got {core}"
         assert len(core) >= 2
 
+    def test_add_constraint_tracked_ast_non_bool_input_is_lowered(self):
+        """add_constraint_tracked_ast() with a non-Bool (raw bitvector) AST
+        must lower it to a `!= 0` Bool constraint like add_constraint_ast
+        does, not silently drop it.
+
+        Regression for angr-d01qu: unlike its siblings add_constraint_ast
+        and add_constraints, add_constraint_tracked_ast used to skip the
+        is_bool() gate on the raw-fast-path Z3 AST it extracts from
+        claripy, unsafely wrapping a BV-sorted Z3_ast as z3::ast::Bool and
+        handing it to Z3_solver_assert_and_track. Because our context
+        installs a no-op Z3 error handler (see
+        native/z3-patched/src/context.rs), the resulting sort mismatch was
+        swallowed *silently* inside Z3's CHECK_FORMULA guard: no exception,
+        no abort, and the constraint was never actually asserted -- while
+        add_constraint_tracked_ast still returned a tracked index as if it
+        had succeeded (a soundness hole: the solver could produce a model
+        violating a constraint the caller believed was added).
+
+        Here `x` is passed directly (not wrapped in a comparison), so its
+        semantics as a constraint are the truthiness lowering `x != 0`
+        (mirrors add_constraint_ast's fallback for a non-Bool AST). Pre-fix,
+        this constraint was dropped, so a subsequent `x == 0` constraint was
+        wrongly satisfiable. Post-fix, `x != 0` AND `x == 0` is UNSAT.
+        """
+        import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
+
+        ctx = RustSolverContext()
+        x = claripy.BVS("x", 8)
+
+        idx = ctx.add_constraint_tracked_ast(x)
+        assert idx == 0
+
+        ctx.add_constraint_ast(x == 0)
+        assert ctx.satisfiable() is False, (
+            "x != 0 (tracked) should contradict x == 0, but the solver "
+            "reports SAT -- the tracked constraint was silently dropped"
+        )
+
     def test_unsat_core_empty_when_untracked(self):
         """unsat_core() returns [] when constraints were added via
         add_constraint_ast() (the untracked fast path), even on UNSAT.
