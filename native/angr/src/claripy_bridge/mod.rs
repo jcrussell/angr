@@ -123,6 +123,15 @@ pub enum BridgeError {
     /// Invalid arguments.
     #[error("invalid arguments: {0}")]
     InvalidArgs(String),
+    /// Recursive AST/Expression-tree descent exceeded the depth guard
+    /// (angr-2a3i9). Raised instead of recursing further so a
+    /// pathologically deep tree fails with a catchable error rather than
+    /// overflowing the native Rust stack (SIGSEGV on the guard page, not
+    /// visible to CPython's own recursion-limit counter since neither
+    /// `claripy_to_rustbv` nor `rustbv_to_claripy_memo` is
+    /// `#[pyfunction]`-wrapped).
+    #[error("recursion depth limit exceeded: {0}")]
+    RecursionLimit(String),
 }
 
 impl From<PyErr> for BridgeError {

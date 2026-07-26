@@ -11,7 +11,7 @@
 //! reasoned `#[allow]` (angr-qwyti.11 enforcement layer).
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
-use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
+use pyo3::exceptions::{PyRecursionError, PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyList;
 
@@ -89,6 +89,10 @@ impl From<BridgeError> for PyErr {
             BridgeError::InvalidArgs(_) | BridgeError::UnsupportedOp(_) => {
                 PyValueError::new_err(msg)
             }
+            // angr-2a3i9: surface as Python's own RecursionError so a caller
+            // already prepared to catch that (e.g. from a plain Python
+            // recursive helper) also catches a bridge depth-guard trip.
+            BridgeError::RecursionLimit(_) => PyRecursionError::new_err(msg),
             // PythonError + any future variant fall back to RuntimeError.
             _ => PyRuntimeError::new_err(msg),
         }

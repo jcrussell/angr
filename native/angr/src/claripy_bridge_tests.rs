@@ -385,3 +385,126 @@ fn test_import_floordiv_mod_are_unsigned() {
         assert_eq!(eval_op(&smod), 0xFFFF_FFFE, "SMod must be signed srem");
     });
 }
+
+/// angr-2a3i9: a long, non-shared claripy AST chain (repeated `ZeroExt`, no
+/// common subexpressions) gets zero benefit from `AST_CACHE` — every node
+/// has a distinct claripy hash — so it recurses to full tree depth in
+/// `claripy_to_rustbv`. Before the depth guard this class of input was the
+/// reachable trigger for the raw-SIGSEGV failure mode described in
+/// angr-2a3i9 (mirroring the real angr-h92bx worker-thread crash, but on the
+/// *unguarded* main thread). Build a chain well past
+/// `MAX_IMPORT_RECURSION_DEPTH` and assert a catchable
+/// `BridgeError::RecursionLimit` instead of a crash.
+///
+/// Runs on an explicit 8 MiB thread to mirror the CPython main-thread stack
+/// the depth guard is calibrated against (angr-2a3i9's target budget) — the
+/// default `cargo test` harness thread has a much smaller stack (~2 MiB,
+/// the same undersized default that caused the sibling angr-h92bx
+/// worker-thread crash) and would overflow *before* the ~4096-deep guarded
+/// descent completes, which would fail this test for an unrelated reason.
+#[test]
+fn test_claripy_to_rustbv_long_chain_hits_depth_guard() {
+    pyo3::Python::initialize();
+    std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| {
+            Python::attach(|py| {
+                let claripy = match py.import("claripy") {
+                    Ok(m) => m,
+                    Err(_) => return, // claripy not importable in this env — skip
+                };
+                let ctx = SymContext::new_mock();
+
+                // Chain depth intentionally well past MAX_IMPORT_RECURSION_DEPTH
+                // (4096). `ZeroExt` was chosen over `__add__`/`__xor__`/`Concat`:
+                // claripy const-folds and *flattens* those associative ops into a
+                // single n-ary node regardless of call count (e.g. 50 chained
+                // `__add__`s collapses to `depth == 2` — one `__add__` node over
+                // the BVS leaf and a folded constant, confirmed via `ast.depth`),
+                // which would make this test pass vacuously without ever
+                // exercising deep recursion. `ZeroExt` has no such flattening:
+                // each wrap is a genuinely new node one level deeper than the
+                // last.
+                //
+                // Built via the raw `claripy.ast.bv.BV` constructor rather than
+                // the `claripy.ZeroExt()` convenience function: the latter routes
+                // through `operations.py::_op`, which runs a *recursive*
+                // simplifier (`simplifications.py::zeroext_simplifier`) on every
+                // call — O(depth) work per node, O(depth^2) total, and it hits
+                // *Python's* own default recursion limit (1000) long before 4096.
+                // Both are claripy-internal concerns, orthogonal to the bug this
+                // test guards against (claripy_to_rustbv's pure-Rust descent,
+                // invisible to CPython's recursion-limit counter either way). The
+                // raw constructor skips simplification and produces the exact
+                // same `(op, args, length)`-shaped AST our bridge introspects.
+                let bv_cls = py.import("claripy.ast.bv").unwrap().getattr("BV").unwrap();
+                let mut ast = claripy.call_method1("BVS", ("chain", 8u32)).unwrap();
+                for _ in 0..4300i64 {
+                    let length: u32 = ast.getattr("length").unwrap().extract().unwrap();
+                    let kwargs = pyo3::types::PyDict::new(py);
+                    kwargs.set_item("length", length + 1).unwrap();
+                    ast = bv_cls
+                        .call(("ZeroExt", (1u32, &ast)), Some(&kwargs))
+                        .unwrap();
+                }
+
+                let err = claripy_to_rustbv(py, &ast, &ctx).expect_err(
+                    "a claripy AST chain deeper than MAX_IMPORT_RECURSION_DEPTH must return an \
+                     error, not overflow the native stack",
+                );
+                assert!(
+                    matches!(err, BridgeError::RecursionLimit(_)),
+                    "expected BridgeError::RecursionLimit, got {err:?}"
+                );
+            });
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+/// angr-2a3i9: the export-direction twin of
+/// `test_claripy_to_rustbv_long_chain_hits_depth_guard`. Builds a long,
+/// non-shared `RustBV::Expression` chain directly in Rust (no claripy
+/// import needed to construct it) and asserts `rustbv_to_claripy` returns a
+/// catchable `PyErr` (mapped to Python's `RecursionError`) instead of
+/// overflowing the native stack in `rustbv_to_claripy_memo`. Runs on an
+/// explicit 8 MiB thread for the same reason as the import-direction test
+/// above.
+#[test]
+fn test_rustbv_to_claripy_long_chain_hits_depth_guard() {
+    pyo3::Python::initialize();
+    std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| {
+            Python::attach(|py| {
+                let claripy = match py.import("claripy") {
+                    Ok(m) => m,
+                    Err(_) => return, // claripy not importable in this env — skip
+                };
+                let ctx = SymContext::new_mock();
+
+                // Chain depth intentionally well past MAX_EXPORT_RECURSION_DEPTH
+                // (4096). Every `.add()` call allocates a fresh `Expression` node
+                // whose operands `Arc` keeps the whole preceding chain alive, so
+                // this is a genuine unshared linear DAG, not a cycle collapsed by
+                // pointer-identity memoization.
+                let mut bv = RustBV::symbolic(&ctx, "chain", 32);
+                for i in 0..4300u128 {
+                    bv = bv.add(&RustBV::concrete(i, 32), &ctx);
+                }
+
+                let err = rustbv_to_claripy(py, &bv, claripy.as_any()).expect_err(
+                    "a RustBV chain deeper than MAX_EXPORT_RECURSION_DEPTH must return an \
+                     error, not overflow the native stack",
+                );
+                assert!(
+                    err.is_instance_of::<pyo3::exceptions::PyRecursionError>(py),
+                    "expected PyRecursionError, got {err:?}"
+                );
+            });
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
