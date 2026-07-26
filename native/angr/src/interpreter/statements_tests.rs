@@ -500,3 +500,131 @@ fn cas_store_symbolic_data_symbolic_addr_invalidates_cached_block() {
     );
     assert!(interp.is_code_page_dirtied(0x2010));
 }
+
+// angr-srk4b: `handle_symbolic_store`'s Single arm invalidates cached code at
+// its concretized target, but the Multiple/Strided arms routed straight to
+// `dispatch_multi_store` (an `&self` method that structurally cannot touch
+// `block_cache`) with zero invalidation -- a symbolic store that concretizes
+// to several candidate addresses, one of which lands on a previously-lifted
+// page, never evicted the stale IRSB. Fixed by calling
+// `invalidate_code_on_store` once (the same dispatcher `try_rust_memory_store`
+// and `cas_store_symbolic_data` already use) right after
+// `concretize_cached_write`, before the match on the ConcretizationResult
+// shape -- so Multiple/Strided (and TooLarge/Failed) get the same per-address
+// treatment Single always had.
+//
+// This test drives the Strided shape via the canonical `a[i]` pattern: an
+// index constrained to `{0, 1, 2}` (`idx < 3`) times a stride, added to a
+// base -- exactly the "constrained index" example from the bug report,
+// verified via a genuine Z3-backed concretization (not a hand-seeded cache
+// entry) so the test exercises the real `detect_stride_from_solutions` path.
+#[test]
+fn handle_symbolic_store_strided_invalidates_cached_candidate_only() {
+    let ctx = SymContext::new_mock();
+    let mut interp = new_interp(&ctx);
+    interp.add_concrete_memory(0x5000, vec![0u8; 0x2000]);
+
+    // idx in {0, 1, 2} -> addr in {0x5010, 0x5020, 0x5030} (stride 0x10).
+    let idx = RustBV::symbolic(&ctx, "idx_strided", 64);
+    let bound = idx.ult(&RustBV::concrete(3, 64), &ctx);
+    ctx.assume_true(&bound);
+    let stride = RustBV::concrete(0x10, 64);
+    let base = RustBV::concrete(0x5010, 64);
+    let addr = base.add(&idx.mul(&stride, &ctx), &ctx);
+
+    // Sanity-check the construction actually produces Strided, not some other
+    // shape (e.g. if range/stride detection heuristics change).
+    let pre_check = interp.concretize_cached_write(&addr);
+    match &*pre_check {
+        ConcretizationResult::Strided {
+            base,
+            stride,
+            count,
+        } => {
+            assert_eq!((*base, *stride, *count), (0x5010, 0x10, 3));
+        }
+        other => panic!("expected Strided({{0x5010, 0x10, 3}}), got {other:?}"),
+    }
+
+    // Candidate #2 (0x5020) has a cached block -- must be invalidated.
+    interp.cache_block(0x5020, make_irsb_with_temps(0x5020, &[]));
+    assert!(interp.has_cached_block(0x5020));
+    // An unrelated cached block outside every candidate's store window
+    // ([0x5010,0x5014), [0x5020,0x5024), [0x5030,0x5034)) must survive --
+    // guards against over-eager invalidation of the whole block cache.
+    interp.cache_block(0x5100, make_irsb_with_temps(0x5100, &[]));
+    assert!(interp.has_cached_block(0x5100));
+
+    let data_val = RustBV::symbolic(&ctx, "store_data", 32);
+    with_python(|cb| {
+        // No memory_store_symbolic_value/_full callback registered, so the
+        // store dispatch itself errors out -- but invalidation must already
+        // have happened before that point (mirrors the CAS symbolic-addr
+        // test above).
+        let res = interp.handle_symbolic_store(cb, &addr, &data_val, 4);
+        assert!(res.is_err());
+    });
+
+    assert!(
+        !interp.has_cached_block(0x5020),
+        "cached block at a Strided candidate address must be invalidated"
+    );
+    assert!(
+        interp.has_cached_block(0x5100),
+        "cached block outside every candidate's store window must survive \
+         (no over-eager invalidation)"
+    );
+    assert!(interp.is_code_page_dirtied(0x5020));
+}
+
+// Same gap, Multiple shape: index constrained to the non-arithmetic set
+// {0, 1, 3} (via explicit disjunction) so stride-detection's GCD collapses to
+// 1 and `concretize` genuinely returns `Multiple`, not `Strided`.
+#[test]
+fn handle_symbolic_store_multiple_invalidates_cached_candidate_only() {
+    let ctx = SymContext::new_mock();
+    let mut interp = new_interp(&ctx);
+    interp.add_concrete_memory(0x6000, vec![0u8; 0x2000]);
+
+    let idx = RustBV::symbolic(&ctx, "idx_multiple", 64);
+    let eq0 = idx.eq(&RustBV::concrete(0, 64), &ctx);
+    let eq1 = idx.eq(&RustBV::concrete(1, 64), &ctx);
+    let eq3 = idx.eq(&RustBV::concrete(3, 64), &ctx);
+    let cond = eq0.or(&eq1, &ctx).or(&eq3, &ctx);
+    ctx.assume_true(&cond);
+    let base = RustBV::concrete(0x6000, 64);
+    let addr = base.add(&idx, &ctx);
+
+    let pre_check = interp.concretize_cached_write(&addr);
+    match &*pre_check {
+        ConcretizationResult::Multiple(addrs) => {
+            assert_eq!(addrs, &vec![0x6000, 0x6001, 0x6003]);
+        }
+        other => panic!("expected Multiple([0x6000, 0x6001, 0x6003]), got {other:?}"),
+    }
+
+    // Candidate 0x6001 has a cached block -- must be invalidated.
+    interp.cache_block(0x6001, make_irsb_with_temps(0x6001, &[]));
+    assert!(interp.has_cached_block(0x6001));
+    // Outside every candidate's store window ([0x6000,0x6004),
+    // [0x6001,0x6005), [0x6003,0x6007)) -- must survive.
+    interp.cache_block(0x6100, make_irsb_with_temps(0x6100, &[]));
+    assert!(interp.has_cached_block(0x6100));
+
+    let data_val = RustBV::symbolic(&ctx, "store_data_multi", 32);
+    with_python(|cb| {
+        let res = interp.handle_symbolic_store(cb, &addr, &data_val, 4);
+        assert!(res.is_err());
+    });
+
+    assert!(
+        !interp.has_cached_block(0x6001),
+        "cached block at a Multiple candidate address must be invalidated"
+    );
+    assert!(
+        interp.has_cached_block(0x6100),
+        "cached block outside every candidate's store window must survive \
+         (no over-eager invalidation)"
+    );
+    assert!(interp.is_code_page_dirtied(0x6001));
+}
