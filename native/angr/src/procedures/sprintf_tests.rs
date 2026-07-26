@@ -801,3 +801,55 @@ fn test_sprintf_narrow_unsigned_high_bit_falls_back() {
     // ...but with the width high bit clear it still formats natively.
     assert_eq!(sprintf_one(b"%hx", 0x7FFF).unwrap(), b"7fff");
 }
+
+/// Regression test for angr-mi56k: an explicit field width whose digit run
+/// encodes a huge value must be clamped to `MAX_OUTPUT_LEN` before
+/// `pad_and_push` uses it as its padding-loop bound. The
+/// `output.len() > MAX_OUTPUT_LEN` check in `format_string` only runs AFTER
+/// `pad_and_push` returns, so left unclamped this is an unbounded
+/// allocation/loop (OOM territory), not merely a large-but-finite one — the
+/// wall-clock bound below is what actually catches a regression back to the
+/// unclamped behavior (a correctness-only assertion on output length would
+/// still pass after hanging for a very long time first).
+#[test]
+fn test_sprintf_huge_explicit_width_is_clamped_and_fast() {
+    let mut state = crate::procedures::test_util::amd64_state_with_regions(&[(0x2000, 0x3000)]);
+    state.map_memory_data(0x1000, b"%9999999999d\x00", Permission::RWX);
+
+    let start = std::time::Instant::now();
+    let result = NativeSprintf
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x2000, 64), // dest
+                RustBV::concrete(0x1000, 64), // format
+                RustBV::concrete(7u128, 64),  // %d arg
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+            ],
+        )
+        .unwrap();
+    let elapsed = start.elapsed();
+
+    assert!(
+        elapsed < std::time::Duration::from_secs(2),
+        "sprintf with a huge explicit width must not run an unbounded \
+         padding loop; took {elapsed:?}"
+    );
+
+    let n = result.unwrap().as_u64().expect("length is concrete");
+    assert!(
+        n <= MAX_OUTPUT_LEN as u64,
+        "clamped output length {n} exceeds MAX_OUTPUT_LEN"
+    );
+
+    // Bytes actually written to dest must match the reported (clamped)
+    // length — no truncated/garbage tail from an aborted unbounded loop.
+    for i in 0..n {
+        let byte = state.memory_load(0x2000 + i, 1).unwrap();
+        assert!(byte.as_u64().is_some(), "byte {i} of padded output missing");
+    }
+}

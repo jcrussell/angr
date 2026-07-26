@@ -125,6 +125,49 @@ fn test_scanf_percent_s_with_width() {
     assert_eq!(nul.as_u64(), Some(0));
 }
 
+/// Regression test for angr-mi56k: an explicit field width whose digit run
+/// saturates `parse_width_digits` to (near) `usize::MAX` must be clamped to
+/// `MAX_SCANF_STR_LEN`, not fed straight into `do_scanf`'s
+/// `(0..str_len).map(...).collect::<Vec<String>>()`. Unclamped, `Range<u64>`'s
+/// `TrustedLen` precomputes the collection capacity from `str_len` and hits an
+/// immediate allocator `capacity overflow` panic (SIGABRT under
+/// `panic=abort`) before any allocation is attempted — well before the byte-
+/// budget cap on the format string itself (`MAX_FMT_LEN`) is relevant.
+#[test]
+fn test_scanf_percent_s_huge_width_is_clamped() {
+    let mut state = setup_state();
+    state.map_memory_data(0x1000, b"%9999999999999999999s\x00", Permission::RWX);
+
+    let result = NativeScanf
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x1000, 64),
+                RustBV::concrete(0x2000, 64), // char buf[]
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+            ],
+        )
+        .unwrap();
+
+    assert_eq!(result.unwrap().as_u64(), Some(1));
+
+    // First byte should be symbolic, same as the unwidthed %s case.
+    let first = state.memory_load(0x2000, 1).unwrap();
+    assert!(
+        first.as_u64().is_none(),
+        "scanf %s first byte should be symbolic"
+    );
+
+    // Clamped to MAX_SCANF_STR_LEN, not the near-usize::MAX encoded width —
+    // the NUL terminator lands well inside the mapped 0x1000-byte region.
+    let nul = state.memory_load(0x2000 + MAX_SCANF_STR_LEN, 1).unwrap();
+    assert_eq!(nul.as_u64(), Some(0));
+}
+
 #[test]
 fn test_scanf_percent_c() {
     let mut state = setup_state();

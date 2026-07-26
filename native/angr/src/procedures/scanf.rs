@@ -107,10 +107,16 @@ fn parse_scanf_format(fmt: &[u8]) -> Result<Vec<ScanfSpec>, ProcedureError> {
             false
         };
 
-        // Parse field width
+        // Parse field width. Clamp against MAX_SCANF_STR_LEN here, before the
+        // value is used as a Vec/collect bound: parse_width_digits only
+        // saturates to usize::MAX on overflow, which does not stop a short
+        // digit run like "%9999999999999999999s" from encoding a near-MAX
+        // width. Left unclamped, `(0..field_width).map(...).collect()` in
+        // do_scanf hits an allocator capacity-overflow panic before any
+        // allocation is attempted (angr-mi56k).
         let (width_val, w_adv) = parse_width_digits(fmt, i);
         let has_width = w_adv > 0;
-        let field_width = width_val as u64;
+        let field_width = (width_val as u64).min(MAX_SCANF_STR_LEN);
         i += w_adv;
 
         // Parse length modifier. `h`/`hh` narrow the destination to 16/8 bits
