@@ -174,11 +174,20 @@ pub(crate) fn build_solver_params(timeout_ms: u32) -> z3::Params {
 /// comma-separated list of `key=value` pairs applied to every fresh solver
 /// AFTER the baked defaults, so an experiment can override or extend them
 /// without a rebuild. `value` of `true`/`false` (case-insensitive) sets a
-/// bool param; otherwise the value is parsed as a u32. Unparseable entries
-/// are skipped. Purpose: A/B param surveys (angr-ovqja.2) on the Z3-heavy
-/// bench set via `--counters-json` without recompiling per candidate.
+/// bool param; a value that parses as `u32` sets a uint param; a value
+/// prefixed `sym:` sets a symbol param, e.g. `sat.phase=sym:always_false`
+/// (angr-sijyb.1). Everything else — including a plain non-numeric value
+/// with no `sym:` tag — is skipped, same as before this variant existed.
+/// The tag is required rather than falling back to Symbol for anything
+/// unparseable: a mistyped numeric value (e.g. `timeout=5oo`) must stay a
+/// harmless no-op, not silently become a symbol param that corrupts the
+/// solver the same way `smt.random_seed` did (see the doc comment on
+/// `build_solver_params` above) — an untagged typo has no way to signal
+/// which type was intended, so dropping it is the only safe default.
+/// Purpose: A/B param surveys (angr-ovqja.2) on the Z3-heavy bench set via
+/// `--counters-json` without recompiling per candidate.
 ///
-/// Example: `ANGR_Z3_PARAMS="bv.size_reduce=true,relevancy=0"`.
+/// Example: `ANGR_Z3_PARAMS="bv.size_reduce=true,relevancy=0,sat.phase=sym:always_false"`.
 #[cfg(feature = "vex-engine-z3")]
 fn extra_params_spec() -> &'static Vec<(String, ParamValue)> {
     static SPEC: std::sync::OnceLock<Vec<(String, ParamValue)>> = std::sync::OnceLock::new();
@@ -206,8 +215,15 @@ fn parse_extra_params(s: &str) -> Vec<(String, ParamValue)> {
                 ParamValue::Bool(true)
             } else if v.eq_ignore_ascii_case("false") {
                 ParamValue::Bool(false)
+            } else if let Ok(n) = v.parse::<u32>() {
+                ParamValue::U32(n)
+            } else if let Some(sym) = v.strip_prefix("sym:") {
+                if sym.is_empty() {
+                    return None;
+                }
+                ParamValue::Symbol(sym.to_string())
             } else {
-                ParamValue::U32(v.parse::<u32>().ok()?)
+                return None;
             };
             Some((k.to_string(), val))
         })
@@ -215,10 +231,11 @@ fn parse_extra_params(s: &str) -> Vec<(String, ParamValue)> {
 }
 
 #[cfg(feature = "vex-engine-z3")]
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 enum ParamValue {
     Bool(bool),
     U32(u32),
+    Symbol(String),
 }
 
 #[cfg(feature = "vex-engine-z3")]
@@ -227,6 +244,7 @@ fn apply_extra_params(params: &mut z3::Params) {
         match val {
             ParamValue::Bool(b) => params.set_bool(key.as_str(), *b),
             ParamValue::U32(n) => params.set_u32(key.as_str(), *n),
+            ParamValue::Symbol(s) => params.set_symbol(key.as_str(), s.as_str()),
         }
     }
 }
@@ -341,9 +359,42 @@ mod extra_params_tests {
 
     #[test]
     fn skips_malformed_and_empty_keys() {
-        // no '=', empty key, and a non-numeric non-bool value are all dropped.
-        let got = parse_extra_params("noequals,=v,bad=notanum,ok=false");
+        // no '=', empty key, empty value, and an untagged non-numeric
+        // non-bool value (a likely typo, e.g. `timeout=5oo`) are all
+        // dropped as a harmless no-op — same as before ParamValue::Symbol
+        // existed. Only the explicit `sym:` tag opts into symbol parsing
+        // (see `parses_tagged_symbol_values`); a bare unparseable value
+        // must NOT silently become a symbol param, since that previously
+        // corrupted the solver for mistyped bool/u32 params like `timeout`
+        // or `relevancy` (angr-sijyb.1 peer review).
+        let got = parse_extra_params("noequals,=v,bad=notanum,empty=,ok=false");
         assert_eq!(got, vec![("ok".to_string(), ParamValue::Bool(false))]);
+    }
+
+    #[test]
+    fn parses_tagged_symbol_values() {
+        let got = parse_extra_params("sat.phase=sym:always_false");
+        assert_eq!(
+            got,
+            vec![(
+                "sat.phase".to_string(),
+                ParamValue::Symbol("always_false".to_string())
+            )]
+        );
+    }
+
+    #[test]
+    fn empty_sym_tag_is_dropped() {
+        assert!(parse_extra_params("sat.phase=sym:").is_empty());
+    }
+
+    #[test]
+    fn untagged_typo_on_known_numeric_param_is_a_noop_not_a_symbol() {
+        // Regression test for the exact corruption mode peer review found:
+        // a mistyped numeric override must be dropped, not reinterpreted
+        // as a symbol param.
+        let got = parse_extra_params("timeout=5oo,relevancy=abc,bv_extract_prop=notabool");
+        assert!(got.is_empty());
     }
 
     #[test]

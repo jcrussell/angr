@@ -1367,15 +1367,22 @@ once per process on first solver construction and cached in a
 
 .. code-block:: bash
 
-    ANGR_Z3_PARAMS="bv.size_reduce=true,relevancy=0" \
+    ANGR_Z3_PARAMS="bv.size_reduce=true,relevancy=0,sat.phase=sym:always_false" \
         python tests/benchmarks/run_single.py fauxware --engine rust
 
-``value`` of ``true`` / ``false`` (case-insensitive) sets a bool param;
-any other value is parsed as a ``u32``. Unparseable entries are skipped
-silently rather than aborting the run — a survey harness sweeping many
-candidate specs stays robust to a typo. Because a later ``key`` overrides
-an earlier one, listing ``timeout=...`` here also overrides the
-per-solver timeout Z3 would otherwise receive.
+``value`` of ``true`` / ``false`` (case-insensitive) sets a bool param; a
+value that parses as ``u32`` sets a uint param; a value prefixed ``sym:``
+sets a symbol param (e.g. ``sat.phase=sym:always_false``). Everything else
+— including a plain non-numeric value with no ``sym:`` tag — is skipped
+silently rather than aborting the run. The tag is required, not inferred:
+an untagged unparseable value (e.g. a typo like ``timeout=5oo``) has no way
+to signal whether a bool, uint, or symbol was intended, so treating it as a
+symbol would risk silently corrupting the solver instead of leaving the
+mistyped override as a harmless no-op — a survey harness sweeping many
+candidate specs stays robust to a typo only because unparseable entries are
+dropped, never reinterpreted. Because a later ``key`` overrides an earlier
+one, listing ``timeout=...`` here also overrides the per-solver timeout Z3
+would otherwise receive.
 
 **Default behavior (env unset) is unchanged** — the override list is
 empty and only the baked defaults apply. This knob exists for the

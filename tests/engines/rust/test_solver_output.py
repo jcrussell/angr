@@ -149,6 +149,106 @@ class TestZ3TacticEnvVar:
         )
 
 
+class TestZ3SatPhaseEnvVar:
+    """MANDATORY soundness gate for angr-sijyb.1: ``ANGR_Z3_PARAMS=sat.phase=sym:always_false``
+    is a new symbol-valued override (routed via ``Params::set_symbol`` ->
+    ``Z3_solver_set_params``, the same routing path that corrupted the solver
+    for ``smt.random_seed``/``sat.random_seed`` per angr-iaol.1 — see
+    ``iaol1-seed-pin-empirically-broken`` and
+    ``test_z3_seed_pin_not_attempted`` in test_solver_ops.py). ``sat.phase``
+    is also dotted/module-prefixed, so the same corruption mode must be ruled
+    out before any variance measurement is trusted.
+
+    The ``sym:`` tag is required (rather than falling back to Symbol for any
+    unparseable value) because an earlier version of this parser fell back
+    silently: a mistyped numeric override like ``timeout=5oo`` was
+    reinterpreted as a symbol param and corrupted the solver the exact same
+    way — see ``test_untagged_numeric_typo_is_a_noop_not_corruption`` below,
+    which is the regression test for that finding (angr-sijyb.1 peer review).
+
+    Like ``TestZ3TacticEnvVar`` above, ``ANGR_Z3_PARAMS`` is read once via
+    OnceLock on first solver-params build, so these tests run in subprocesses.
+    """
+
+    @staticmethod
+    def _run_in_subprocess(params_env_value):
+        import subprocess
+        import sys
+        import textwrap
+
+        script = textwrap.dedent(
+            """
+            import sys
+            import claripy
+            from angr.exploration.rust_manager import _setup_shared_z3_context
+            _setup_shared_z3_context()
+            from angr.rustylib.vex_engine import RustSolverContext
+
+            ctx = RustSolverContext()
+            x = claripy.BVS("x", 32)
+            ctx.add_constraint_ast(x >= 100)
+            ctx.add_constraint_ast(x <= 200)
+            v = ctx.eval(x)
+            sys.stdout.write(f"{v}")
+            """
+        )
+        env = dict(os.environ)
+        if params_env_value is None:
+            env.pop("ANGR_Z3_PARAMS", None)
+        else:
+            env["ANGR_Z3_PARAMS"] = params_env_value
+        proc = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=60,
+        )
+        assert proc.returncode == 0, (
+            f"subprocess failed (env={params_env_value!r}):\nstdout: {proc.stdout!r}\nstderr: {proc.stderr[-2000:]!r}"
+        )
+        return int(proc.stdout.strip())
+
+    def test_no_override_baseline_satisfies_constraints(self):
+        """Sanity baseline: no ANGR_Z3_PARAMS override still solves correctly."""
+        v = self._run_in_subprocess(None)
+        assert 100 <= v <= 200
+
+    def test_sat_phase_always_false_preserves_soundness(self):
+        """The actual soundness gate: with sat.phase=sym:always_false wired
+        through Params::set_symbol, eval(x) must still satisfy the asserted
+        constraints. If this fails (eg returns a value outside [100, 200]),
+        sat.phase is corrupting the solver the same way smt.random_seed did
+        — STOP, do not proceed to variance measurement, and record the
+        corruption finding on angr-sijyb.1 instead.
+        """
+        v = self._run_in_subprocess("sat.phase=sym:always_false")
+        assert 100 <= v <= 200, (
+            f"Soundness gate FAILED: eval(x) = {v} violates x in [100, 200] "
+            "under ANGR_Z3_PARAMS=sat.phase=sym:always_false. This mirrors the "
+            "smt.random_seed corruption mode from angr-iaol.1 — sat.phase "
+            "must not be shipped as a default; record on angr-sijyb.1."
+        )
+
+    def test_sat_phase_always_true_preserves_soundness(self):
+        """Same gate for the sibling always_true value, for completeness."""
+        v = self._run_in_subprocess("sat.phase=sym:always_true")
+        assert 100 <= v <= 200, f"Soundness gate FAILED for sat.phase=sym:always_true: eval(x) = {v}"
+
+    def test_untagged_numeric_typo_is_a_noop_not_corruption(self):
+        """Regression test (angr-sijyb.1 peer review): a mistyped value for
+        an existing numeric param must be a harmless no-op, NOT silently
+        reinterpreted as a symbol param. Before the `sym:` tag was required,
+        `timeout=5oo` corrupted the solver via the same route as sat.phase.
+        """
+        v = self._run_in_subprocess("timeout=5oo,relevancy=abc")
+        assert 100 <= v <= 200, (
+            f"eval(x) = {v} violates x in [100, 200] under an untagged, "
+            "unparseable ANGR_Z3_PARAMS value — it must be dropped, not "
+            "applied as a symbol param."
+        )
+
+
 class TestSolverOutputCorrectness:
     """Tests verifying solver eval() returns correct values for known constraint systems.
 
