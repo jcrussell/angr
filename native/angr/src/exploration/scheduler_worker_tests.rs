@@ -21,6 +21,7 @@ fn plain_state() -> RustSimState {
 /// (`serde_ns`, `step_ns`) and `idle` starving siblings. Returns
 /// `(local_len_after, surplus_offloaded)`.
 fn run_offload(n: usize, idle: usize, serde_ns: u64, step_ns: u64) -> (usize, usize) {
+    let policy: Arc<dyn SelectionPolicy> = Arc::new(Lifo);
     let mut local: VecDeque<RustSimState> = (0..n).map(|_| plain_state()).collect();
     let injector: Injector<StateMigrationPayload> = Injector::new();
     let idle_workers = AtomicUsize::new(idle);
@@ -28,7 +29,7 @@ fn run_offload(n: usize, idle: usize, serde_ns: u64, step_ns: u64) -> (usize, us
     counters.serde_ns.store(serde_ns, Ordering::Relaxed);
     counters.step_ns.store(step_ns, Ordering::Relaxed);
 
-    offload_surplus(&mut local, &injector, &idle_workers, &counters);
+    offload_surplus(&mut local, &injector, &idle_workers, &counters, &policy);
 
     (
         local.len(),
@@ -137,6 +138,102 @@ fn test_trigger_b_holds_at_the_high_water_mark() {
     let (len, offloaded) = run_offload(LOCAL_HWM, 0, u64::MAX / 8, 0);
     assert_eq!(len, LOCAL_HWM);
     assert_eq!(offloaded, 0);
+}
+
+// ---------------------------------------------------------------------------
+// offload_surplus -> policy.on_state_removed wiring (angr-ua7fd)
+//
+// offload_surplus detaches states from `local` via `pop_front`, entirely
+// bypassing `policy.select` — the only other removal site in the codebase. A
+// memoizing policy (LoopHeadRoundRobin::key_cache) needs to hear about every
+// such removal or its per-state_id memo leaks for states that get migrated
+// instead of dispatched locally (a stolen-back state re-enters via
+// `dispatch_next`'s steal branch directly, never through `on_fork`/`select`
+// again). This spy policy pins that `offload_surplus` calls the hook for
+// EVERY popped state, on both Trigger A (idle-gated) and Trigger B (HWM cap).
+// ---------------------------------------------------------------------------
+
+/// A policy that forwards `select`/`on_fork` to `Lifo` but records every
+/// `state_id` passed to `on_state_removed`, so tests can assert exactly which
+/// states `offload_surplus` evicted without needing access to any real
+/// policy's private memo table.
+#[derive(Default)]
+struct SpyPolicy {
+    removed: Mutex<Vec<u64>>,
+}
+
+impl SelectionPolicy for SpyPolicy {
+    fn select(&self, active: &mut VecDeque<RustSimState>) -> Option<RustSimState> {
+        Lifo.select(active)
+    }
+
+    fn on_fork(&self, active: &mut VecDeque<RustSimState>, state: RustSimState) {
+        Lifo.on_fork(active, state);
+    }
+
+    fn name(&self) -> &'static str {
+        "spy"
+    }
+
+    fn on_state_removed(&self, state_id: u64) {
+        self.removed.lock().expect("spy poisoned").push(state_id);
+    }
+}
+
+// Trigger A (idle-gated): every state `offload_surplus` sheds to the injector
+// must fire `on_state_removed` exactly once, with the offloaded state's own
+// id — not the survivor's.
+#[test]
+fn test_offload_surplus_notifies_policy_on_trigger_a_offload() {
+    // Keep a concrete `Arc<SpyPolicy>` handle alongside the trait-object `Arc`
+    // `offload_surplus` takes, so the assertions below can read `removed`
+    // through the same underlying allocation.
+    let spy = Arc::new(SpyPolicy::default());
+    let policy: Arc<dyn SelectionPolicy> = spy.clone();
+    let states: Vec<RustSimState> = (0..4).map(|_| plain_state()).collect();
+    let ids: Vec<u64> = states.iter().map(|s| s.state_id()).collect();
+    let mut local: VecDeque<RustSimState> = states.into_iter().collect();
+    let injector: Injector<StateMigrationPayload> = Injector::new();
+    let idle_workers = AtomicUsize::new(2);
+    let counters = SchedulerCounters::default();
+
+    offload_surplus(&mut local, &injector, &idle_workers, &counters, &policy);
+
+    assert_eq!(local.len(), 2, "two states offloaded to two starving siblings");
+    let removed = spy.removed.lock().expect("spy poisoned").clone();
+    assert_eq!(
+        removed,
+        ids[..2],
+        "on_state_removed fires for exactly the two coldest (front) states, in pop order",
+    );
+}
+
+// Trigger B (HWM cap): same contract, but for the memory-cap path, which is
+// independent of the serde budget / idle-sibling gates Trigger A uses.
+#[test]
+fn test_offload_surplus_notifies_policy_on_trigger_b_offload() {
+    let spy = Arc::new(SpyPolicy::default());
+    let policy: Arc<dyn SelectionPolicy> = spy.clone();
+    let n = LOCAL_HWM + 3;
+    let states: Vec<RustSimState> = (0..n).map(|_| plain_state()).collect();
+    let ids: Vec<u64> = states.iter().map(|s| s.state_id()).collect();
+    let mut local: VecDeque<RustSimState> = states.into_iter().collect();
+    let injector: Injector<StateMigrationPayload> = Injector::new();
+    let idle_workers = AtomicUsize::new(0);
+    let counters = SchedulerCounters::default();
+    // Blow the serde budget so Trigger A cannot also fire and muddy the count.
+    counters.serde_ns.store(u64::MAX / 8, Ordering::Relaxed);
+
+    offload_surplus(&mut local, &injector, &idle_workers, &counters, &policy);
+
+    let expected_offloaded = n - LOCAL_HWM / 2;
+    assert_eq!(local.len(), LOCAL_HWM / 2);
+    let removed = spy.removed.lock().expect("spy poisoned").clone();
+    assert_eq!(
+        removed,
+        ids[..expected_offloaded],
+        "Trigger B also notifies the policy for every state it sheds",
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -351,6 +448,38 @@ fn test_drain_local_hands_off_the_residual_frontier() {
     let mut want = ids;
     want.sort_unstable();
     assert_eq!(got, want, "the payloads carry the same states, no dupes");
+}
+
+// drain_local_with has the identical select()-bypass pattern offload_surplus
+// has (angr-ua7fd follow-up): `local.drain(..)` detaches every residual state
+// without going through `policy.select`. This path is more routine than
+// offload_surplus's — it fires on essentially every steady-session
+// pause/finalize (`finalize_steady_session` in run_loop.rs) — and drained
+// states get reseeded through the shared injector the same way, so a
+// memoizing policy's per-state side table (LoopHeadRoundRobin::key_cache)
+// needs the same eviction notification here.
+#[test]
+fn test_drain_local_with_notifies_policy_for_every_drained_state() {
+    let spy = Arc::new(SpyPolicy::default());
+    let policy: Arc<dyn SelectionPolicy> = spy.clone();
+    let t = WorkTransport::with_policy(policy);
+    let states: Vec<RustSimState> = (0..3).map(|_| plain_state()).collect();
+    let ids: Vec<u64> = states.iter().map(|s| s.state_id()).collect();
+    let mut local: VecDeque<RustSimState> = states.into_iter().collect();
+    t.pending.store(3, Ordering::SeqCst);
+
+    let mut sunk: Vec<StateMigrationPayload> = Vec::new();
+    drain_local_with(&t, &mut local, |payload| sunk.push(payload));
+
+    assert!(local.is_empty(), "the frontier left the worker");
+    let mut removed = spy.removed.lock().expect("spy poisoned").clone();
+    removed.sort_unstable();
+    let mut want = ids;
+    want.sort_unstable();
+    assert_eq!(
+        removed, want,
+        "on_state_removed fires for every drained state, no drops or dupes",
+    );
 }
 
 // Draining an already-empty frontier is a no-op on both `pending` and the
