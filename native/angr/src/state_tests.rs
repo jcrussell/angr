@@ -1358,6 +1358,62 @@ fn test_translate_state_cross_context() {
     );
 }
 
+// angr-5khjd: SymContext::translate_into must propagate the source
+// context's timeout_ms/deterministic/use_shared_lineage_solver atomic flags
+// onto the target context, mirroring fork()'s three-line propagation
+// (SymContext::new() defaults all three, so a naive translate silently
+// reverts a deterministic/non-default-timeout/shared-lineage-solver source
+// to defaults). Sets all three to non-default values on the source state
+// before calling translate_state and asserts the translated twin carries
+// the same values.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_translate_state_propagates_lineage_flags() {
+    use z3::{Config, Context};
+
+    let state = RustSimState::new("amd64").unwrap();
+    {
+        let s = state.solver().borrow();
+        s.set_timeout(12345);
+        s.set_deterministic(true);
+        s.set_use_shared_lineage_solver(true);
+    }
+
+    let original = Context::thread_local();
+    let cfg = Config::new();
+    let target = Context::new(&cfg);
+    assert_ne!(
+        original.get_z3_context().as_ptr() as usize,
+        target.get_z3_context().as_ptr() as usize,
+        "test bug: target == source context",
+    );
+
+    Context::set_thread_local(&target);
+    let translated = state.translate_state(&target);
+    let (timeout_ms, deterministic, shared_lineage_solver) = {
+        let s = translated.solver().borrow();
+        (
+            s.timeout_ms(),
+            s.is_deterministic(),
+            s.use_shared_lineage_solver(),
+        )
+    };
+    Context::set_thread_local(&original);
+
+    assert_eq!(
+        timeout_ms, 12345,
+        "translate_state must propagate timeout_ms from the source context",
+    );
+    assert!(
+        deterministic,
+        "translate_state must propagate the deterministic flag from the source context",
+    );
+    assert!(
+        shared_lineage_solver,
+        "translate_state must propagate use_shared_lineage_solver from the source context",
+    );
+}
+
 // angr-1ilq.2: translate_state must Z3_translate every RustBV in
 // native_resume_stack.saved_args, not plain-clone the stack. A symbolic
 // saved_arg cloned into a foreign worker's context is a dangling cross-context
