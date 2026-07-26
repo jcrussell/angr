@@ -76,6 +76,20 @@ pub trait SelectionPolicy: Send + Sync {
 
     /// Stable, human-readable name for logging / stats.
     fn name(&self) -> &'static str;
+
+    /// Notify the policy that `state_id` has left the local/active deque
+    /// through a path other than `select` — namely cross-worker migration
+    /// (`scheduler_worker.rs::offload_surplus` detaches straight from the
+    /// worker's local `VecDeque` via `pop_front`, bypassing `select`
+    /// entirely). Default no-op; only policies that memoize a per-`state_id`
+    /// side table need to override this to evict the entry. Without this hook
+    /// a migrated state's memo entry is never revisited by `select` (a
+    /// stolen-back state re-enters via `dispatch_next`'s steal branch
+    /// directly, not through `on_fork`), so it would otherwise leak for the
+    /// life of the policy (angr-ua7fd). Not a correctness issue on its own —
+    /// `state_id` is never reused — just an unbounded-over-session-lifetime
+    /// memory leak in the memo table.
+    fn on_state_removed(&self, _state_id: u64) {}
 }
 
 /// Breadth-first (FIFO queue): step the oldest state first, append new forks
@@ -391,6 +405,18 @@ impl SelectionPolicy for LoopHeadRoundRobin {
 
     fn name(&self) -> &'static str {
         "loop_head"
+    }
+
+    // Evict the migrated state's memoized key so `key_cache` cannot outlive
+    // the state when it is offloaded to another worker instead of dispatched
+    // through `select` (angr-ua7fd). A stolen-back state gets a cache miss on
+    // its next `select` scan and recomputes its key — correct, just one extra
+    // `bucket_key` call, exactly like a state that was never cached yet.
+    fn on_state_removed(&self, state_id: u64) {
+        self.key_cache
+            .lock()
+            .expect("LoopHeadRoundRobin key cache poisoned")
+            .remove(&state_id);
     }
 }
 
@@ -870,6 +896,57 @@ mod tests {
         assert!(
             policy.key_cache.lock().expect("cache poisoned").is_empty(),
             "every dispatched state's cache entry must be evicted",
+        );
+    }
+
+    #[test]
+    fn test_loop_head_on_state_removed_evicts_key_cache_entry() {
+        // Reproduces the offload+steal path (angr-ua7fd): select() scans past a
+        // state without picking it, memoizing its bucket key in key_cache. In
+        // the parallel scheduler that state can then leave `active`/`local` via
+        // `scheduler_worker.rs::offload_surplus`'s pop_front — a path that never
+        // goes through select() again (a stolen-back state is reattached
+        // directly by dispatch_next's steal branch, bypassing on_fork). Without
+        // the eviction hook the memo entry would never be revisited and would
+        // leak for the life of the policy. `on_state_removed` is the hook
+        // offload_surplus calls to close that gap.
+        let _ctx = Context::thread_local();
+        let policy = LoopHeadRoundRobin::new();
+        let mut active: VecDeque<RustSimState> = VecDeque::new();
+        // Two states: only one will be picked by select(), leaving the other's
+        // key_cache entry behind exactly as a scan-but-not-pick would.
+        let picked = state_at(0x1000);
+        let left_behind = state_at(0x2000);
+        let left_behind_id = left_behind.state_id();
+        active.push_back(picked);
+        active.push_back(left_behind);
+
+        let dispatched = policy.select(&mut active).expect("non-empty active");
+        assert_eq!(dispatched.pc(), 0x1000, "front state wins the tie-break");
+        assert_eq!(active.len(), 1, "the scanned-but-not-picked state remains");
+        assert!(
+            policy
+                .key_cache
+                .lock()
+                .expect("cache poisoned")
+                .contains_key(&left_behind_id),
+            "select() must have memoized the scanned state's key",
+        );
+
+        // Simulate offload_surplus detaching the remaining state directly from
+        // the local deque (pop_front), bypassing select() entirely — the exact
+        // path the bug report describes.
+        let offloaded = active.pop_front().expect("the left-behind state");
+        assert_eq!(offloaded.state_id(), left_behind_id);
+        policy.on_state_removed(offloaded.state_id());
+
+        assert!(
+            !policy
+                .key_cache
+                .lock()
+                .expect("cache poisoned")
+                .contains_key(&left_behind_id),
+            "on_state_removed must evict the offloaded state's memo entry",
         );
     }
 

@@ -110,7 +110,7 @@ pub(super) fn worker_loop(
 
         // Shed surplus to the injector if a sibling is starving or we are over
         // the high-water mark. This is the only continue-path serde site.
-        offload_surplus(local, &t.injector, &t.idle_workers, &t.counters);
+        offload_surplus(local, &t.injector, &t.idle_workers, &t.counters, &t.policy);
 
         t.pending.fetch_sub(1, Ordering::SeqCst);
 
@@ -222,7 +222,7 @@ pub(super) fn worker_session_loop(
         // same deadended-content caveat as wave mode).
         t.counters.record_summaries(&outcome.terminal_summaries);
 
-        offload_surplus(local, &t.injector, &t.idle_workers, &t.counters);
+        offload_surplus(local, &t.injector, &t.idle_workers, &t.counters, &t.policy);
 
         t.pending.fetch_sub(1, Ordering::SeqCst);
 
@@ -239,6 +239,18 @@ pub(super) fn worker_session_loop(
 /// states it removes. The worker-local half of the Bug M1 cancel-drain, shared
 /// by both modes (DRY); the two callers differ only in the transport the payload
 /// leaves on (session mpsc vs. the wave's `results` vec).
+///
+/// Like `offload_surplus`, this detaches states from `local` WITHOUT going
+/// through `policy.select` — `local.drain(..)` bypasses it entirely — and the
+/// coordinator routes the drained states back to `STASH_ACTIVE`, from where a
+/// steady session's `seed_steady_session_from_active` -> `inject_seeds` puts
+/// them back on the shared injector. A stolen-back state is reattached
+/// directly by `dispatch_next`'s steal branch, never re-entering through
+/// `on_fork`/`select` — the identical bypass `offload_surplus` has, just on a
+/// more routine path (fires on essentially every steady-session pause/finalize,
+/// `finalize_steady_session` in `run_loop.rs`). So this drain must call
+/// `policy.on_state_removed` per state too, or a memoizing policy's per-state
+/// side table leaks the same way (angr-ua7fd).
 fn drain_local_with(
     t: &WorkTransport,
     local: &mut VecDeque<RustSimState>,
@@ -249,6 +261,7 @@ fn drain_local_with(
     }
     let n = local.len();
     for state in local.drain(..) {
+        t.policy.on_state_removed(state.state_id());
         t.counters.residual_drains.fetch_add(1, Ordering::SeqCst);
         sink(detach_timed(state, &t.counters));
     }
@@ -383,11 +396,20 @@ pub(super) fn absorb_continues(
 ///
 /// Offload is a relocation of already-counted tasks; it does not touch
 /// `pending`.
+///
+/// Every `pop_front` here detaches a state from the worker's local deque
+/// through a path other than `policy.select` — so `policy.on_state_removed`
+/// is called alongside it. That is the eviction hook a memoizing policy
+/// (`LoopHeadRoundRobin::key_cache`) needs: a state migrated through the
+/// injector is later reattached directly by `dispatch_next`'s steal branch,
+/// never re-entering `active`/`local` through `on_fork`, so `select` never
+/// gets a chance to revisit and evict it itself (angr-ua7fd).
 pub(super) fn offload_surplus(
     local: &mut VecDeque<RustSimState>,
     injector: &Injector<StateMigrationPayload>,
     idle_workers: &AtomicUsize,
     counters: &SchedulerCounters,
+    policy: &Arc<dyn SelectionPolicy>,
 ) {
     // Trigger A: idle-gated load sharing. Offload the COLDEST states (front),
     // keeping our hot tail; at most one state per starving sibling, so the volume
@@ -400,6 +422,7 @@ pub(super) fn offload_surplus(
                 break;
             }
             if let Some(state) = local.pop_front() {
+                policy.on_state_removed(state.state_id());
                 injector.push(detach_timed(state, counters));
                 counters.surplus_offloaded.fetch_add(1, Ordering::SeqCst);
             }
@@ -411,6 +434,7 @@ pub(super) fn offload_surplus(
     if local.len() > LOCAL_HWM {
         while local.len() > LOCAL_HWM / 2 {
             if let Some(state) = local.pop_front() {
+                policy.on_state_removed(state.state_id());
                 injector.push(detach_timed(state, counters));
                 counters.surplus_offloaded.fetch_add(1, Ordering::SeqCst);
             } else {
