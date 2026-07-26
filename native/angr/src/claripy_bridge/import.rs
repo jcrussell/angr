@@ -104,12 +104,84 @@ pub fn try_extract_bvv(ast: &Bound<'_, PyAny>) -> Option<(u128, u32)> {
 /// The body itself doesn't reach for `py` directly (the `Bound` carries its
 /// own token), but `py` flows through the recursive calls and stays in the
 /// signature for caller ergonomics.
-#[allow(clippy::only_used_in_recursion)]
+///
+/// This is a thin public wrapper around [`claripy_to_rustbv_depth`], which
+/// carries the recursion-depth guard (angr-2a3i9). Keeping this outer
+/// signature stable (no depth parameter) means the 10+ external call sites
+/// across interpreter/solver/prefetch never need to know about the guard —
+/// they always start a fresh descent at depth 0.
 pub fn claripy_to_rustbv(
     py: Python<'_>,
     ast: &Bound<'_, PyAny>,
     ctx: &SymContext,
 ) -> Result<RustBV, BridgeError> {
+    claripy_to_rustbv_depth(py, ast, ctx, 0)
+}
+
+/// Maximum recursion depth for [`claripy_to_rustbv_depth`]'s self-recursion
+/// (angr-2a3i9).
+///
+/// This function is called directly from the main Python thread (via
+/// `solver.eval()`, constraint export, etc.), which runs on CPython's
+/// default OS stack — 8 MiB (`RLIMIT_STACK`), not covered by the 16 MiB
+/// worker-thread stack from the sibling fix (angr-h92bx, commit
+/// 4131a8e27) that only applies to `std::thread`-spawned parallel workers.
+/// Every recursion level here is a plain native Rust stack frame with no
+/// depth counter to catch, so an unbounded-depth AST (e.g. a long
+/// non-shared `Concat`/`Add` chain that gets zero benefit from the
+/// per-call memo) overflows the guard page as a raw SIGSEGV instead of a
+/// catchable Python exception.
+///
+/// Per-frame budget, from measured (`std::mem::size_of`, release build)
+/// sizes of the types actually live in each stack frame:
+/// `size_of::<RustBV>() == 64 B`, `size_of::<Result<RustBV, BridgeError>>()
+/// == 64 B`, `size_of::<String>() == 24 B`, `size_of::<Bound<PyAny>>() ==
+/// 8 B`, `size_of::<Vec<Bound<PyAny>>>() == 24 B`. A typical match arm
+/// (e.g. the binary-op arms) holds `op: String` (24 B), `args_list:
+/// Vec<Bound<PyAny>>` (24 B), the `ast`/`args` `Bound<PyAny>` handles
+/// (8 B each), up to three intermediate `RustBV` locals for the widest
+/// arms — `Concat`/`And`/`Or`'s `result` accumulator or `If`'s
+/// `cond`/`then_val`/`else_val` (64 B each, 192 B worst case) — plus the
+/// function's own `Result<RustBV, BridgeError>` return slot (64 B).
+/// Summing the worst case: 24 + 24 + 8 + 8 + 192 + 64 = 320 B of live
+/// locals. Doubling that for return address, saved registers, and
+/// alignment padding that `size_of` does not capture gives a conservative
+/// **640 B/frame** — rounded up to **1024 B/frame** for headroom against
+/// compiler/platform variance (debug builds, non-x86_64 targets, etc.).
+///
+/// Targeting well inside the 8 MiB main-thread stack — not the full 8 MiB,
+/// since the interpreter/solver call chain that reaches this function
+/// carries its own (non-recursive) frames below it, and per the sibling
+/// worker-thread fix's own margin philosophy (angr-h92bx, commit
+/// 4131a8e27: 16 MiB "to clear the main thread by 2x rather than fall
+/// short of it") — a **4096**-deep limit costs at most
+/// `4096 * 1024 B = 4 MiB`, leaving >2x headroom under the 8 MiB budget
+/// even at the padded per-frame estimate. 4096 is also far beyond any real
+/// (non-adversarial) claripy AST depth: the sym-write benchmark's
+/// symbolic-store ITE chains — the deepest known real-world case, a 142k-node
+/// tree without dedup — collapse to ~25 shared subtrees via the per-call memo
+/// (see `rustbv_to_claripy`'s doc comment), so real trees bottom out at a
+/// few dozen levels, not thousands.
+const MAX_IMPORT_RECURSION_DEPTH: u32 = 4096;
+
+/// Depth-guarded recursive implementation of [`claripy_to_rustbv`]. See that
+/// function's doc comment for the public contract; see
+/// [`MAX_IMPORT_RECURSION_DEPTH`] for the depth-guard calibration (angr-2a3i9).
+#[allow(clippy::only_used_in_recursion)]
+fn claripy_to_rustbv_depth(
+    py: Python<'_>,
+    ast: &Bound<'_, PyAny>,
+    ctx: &SymContext,
+    depth: u32,
+) -> Result<RustBV, BridgeError> {
+    if depth > MAX_IMPORT_RECURSION_DEPTH {
+        return Err(BridgeError::RecursionLimit(format!(
+            "claripy_to_rustbv: exceeded max recursion depth {MAX_IMPORT_RECURSION_DEPTH} \
+             while importing a claripy AST -- the tree is either pathologically deep or a \
+             long unshared chain that the per-call memo cannot dedup"
+        )));
+    }
+
     // GIL-work timing (angr-1ilq.7): bracket the whole conversion — the Python
     // attribute reads, the hash, and the recursive descent — as one region. The
     // depth guard makes the self-recursion and any caller-nested callback a
@@ -246,8 +318,8 @@ pub fn claripy_to_rustbv(
             if args_list.len() != 2 {
                 return Err(BridgeError::InvalidArgs("__add__ requires 2 args".into()));
             }
-            let left = claripy_to_rustbv(py, &args_list[0], ctx)?;
-            let right = claripy_to_rustbv(py, &args_list[1], ctx)?;
+            let left = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
+            let right = claripy_to_rustbv_depth(py, &args_list[1], ctx, depth + 1)?;
             Ok(left.add(&right, ctx))
         }
 
@@ -256,8 +328,8 @@ pub fn claripy_to_rustbv(
             if args_list.len() != 2 {
                 return Err(BridgeError::InvalidArgs("__sub__ requires 2 args".into()));
             }
-            let left = claripy_to_rustbv(py, &args_list[0], ctx)?;
-            let right = claripy_to_rustbv(py, &args_list[1], ctx)?;
+            let left = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
+            let right = claripy_to_rustbv_depth(py, &args_list[1], ctx, depth + 1)?;
             Ok(left.sub(&right, ctx))
         }
 
@@ -266,8 +338,8 @@ pub fn claripy_to_rustbv(
             if args_list.len() != 2 {
                 return Err(BridgeError::InvalidArgs("__mul__ requires 2 args".into()));
             }
-            let left = claripy_to_rustbv(py, &args_list[0], ctx)?;
-            let right = claripy_to_rustbv(py, &args_list[1], ctx)?;
+            let left = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
+            let right = claripy_to_rustbv_depth(py, &args_list[1], ctx, depth + 1)?;
             Ok(left.mul(&right, ctx))
         }
 
@@ -276,8 +348,8 @@ pub fn claripy_to_rustbv(
             if args_list.len() != 2 {
                 return Err(BridgeError::InvalidArgs("div requires 2 args".into()));
             }
-            let left = claripy_to_rustbv(py, &args_list[0], ctx)?;
-            let right = claripy_to_rustbv(py, &args_list[1], ctx)?;
+            let left = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
+            let right = claripy_to_rustbv_depth(py, &args_list[1], ctx, depth + 1)?;
             Ok(left.sdiv(&right, ctx))
         }
 
@@ -288,8 +360,8 @@ pub fn claripy_to_rustbv(
             if args_list.len() != 2 {
                 return Err(BridgeError::InvalidArgs("UDiv requires 2 args".into()));
             }
-            let left = claripy_to_rustbv(py, &args_list[0], ctx)?;
-            let right = claripy_to_rustbv(py, &args_list[1], ctx)?;
+            let left = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
+            let right = claripy_to_rustbv_depth(py, &args_list[1], ctx, depth + 1)?;
             Ok(left.udiv(&right, ctx))
         }
 
@@ -298,8 +370,8 @@ pub fn claripy_to_rustbv(
             if args_list.len() != 2 {
                 return Err(BridgeError::InvalidArgs("mod requires 2 args".into()));
             }
-            let left = claripy_to_rustbv(py, &args_list[0], ctx)?;
-            let right = claripy_to_rustbv(py, &args_list[1], ctx)?;
+            let left = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
+            let right = claripy_to_rustbv_depth(py, &args_list[1], ctx, depth + 1)?;
             Ok(left.srem(&right, ctx))
         }
 
@@ -310,8 +382,8 @@ pub fn claripy_to_rustbv(
             if args_list.len() != 2 {
                 return Err(BridgeError::InvalidArgs("URem requires 2 args".into()));
             }
-            let left = claripy_to_rustbv(py, &args_list[0], ctx)?;
-            let right = claripy_to_rustbv(py, &args_list[1], ctx)?;
+            let left = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
+            let right = claripy_to_rustbv_depth(py, &args_list[1], ctx, depth + 1)?;
             Ok(left.urem(&right, ctx))
         }
 
@@ -320,7 +392,7 @@ pub fn claripy_to_rustbv(
             if args_list.is_empty() {
                 return Err(BridgeError::InvalidArgs("__neg__ requires 1 arg".into()));
             }
-            let val = claripy_to_rustbv(py, &args_list[0], ctx)?;
+            let val = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
             Ok(val.neg(ctx))
         }
 
@@ -330,8 +402,8 @@ pub fn claripy_to_rustbv(
             if args_list.len() != 2 {
                 return Err(BridgeError::InvalidArgs("__and__ requires 2 args".into()));
             }
-            let left = claripy_to_rustbv(py, &args_list[0], ctx)?;
-            let right = claripy_to_rustbv(py, &args_list[1], ctx)?;
+            let left = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
+            let right = claripy_to_rustbv_depth(py, &args_list[1], ctx, depth + 1)?;
             Ok(left.and(&right, ctx))
         }
 
@@ -340,8 +412,8 @@ pub fn claripy_to_rustbv(
             if args_list.len() != 2 {
                 return Err(BridgeError::InvalidArgs("__or__ requires 2 args".into()));
             }
-            let left = claripy_to_rustbv(py, &args_list[0], ctx)?;
-            let right = claripy_to_rustbv(py, &args_list[1], ctx)?;
+            let left = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
+            let right = claripy_to_rustbv_depth(py, &args_list[1], ctx, depth + 1)?;
             Ok(left.or(&right, ctx))
         }
 
@@ -350,8 +422,8 @@ pub fn claripy_to_rustbv(
             if args_list.len() != 2 {
                 return Err(BridgeError::InvalidArgs("__xor__ requires 2 args".into()));
             }
-            let left = claripy_to_rustbv(py, &args_list[0], ctx)?;
-            let right = claripy_to_rustbv(py, &args_list[1], ctx)?;
+            let left = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
+            let right = claripy_to_rustbv_depth(py, &args_list[1], ctx, depth + 1)?;
             Ok(left.xor(&right, ctx))
         }
 
@@ -360,7 +432,7 @@ pub fn claripy_to_rustbv(
             if args_list.is_empty() {
                 return Err(BridgeError::InvalidArgs("__invert__ requires 1 arg".into()));
             }
-            let val = claripy_to_rustbv(py, &args_list[0], ctx)?;
+            let val = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
             Ok(val.not(ctx))
         }
 
@@ -372,8 +444,8 @@ pub fn claripy_to_rustbv(
                     "__lshift__ requires 2 args".into(),
                 ));
             }
-            let val = claripy_to_rustbv(py, &args_list[0], ctx)?;
-            let amt = claripy_to_rustbv(py, &args_list[1], ctx)?;
+            let val = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
+            let amt = claripy_to_rustbv_depth(py, &args_list[1], ctx, depth + 1)?;
             Ok(val.shl(&amt, ctx))
         }
 
@@ -382,8 +454,8 @@ pub fn claripy_to_rustbv(
             if args_list.len() != 2 {
                 return Err(BridgeError::InvalidArgs("LShR requires 2 args".into()));
             }
-            let val = claripy_to_rustbv(py, &args_list[0], ctx)?;
-            let amt = claripy_to_rustbv(py, &args_list[1], ctx)?;
+            let val = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
+            let amt = claripy_to_rustbv_depth(py, &args_list[1], ctx, depth + 1)?;
             Ok(val.lshr(&amt, ctx))
         }
 
@@ -394,8 +466,8 @@ pub fn claripy_to_rustbv(
                     "__rshift__ requires 2 args".into(),
                 ));
             }
-            let val = claripy_to_rustbv(py, &args_list[0], ctx)?;
-            let amt = claripy_to_rustbv(py, &args_list[1], ctx)?;
+            let val = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
+            let amt = claripy_to_rustbv_depth(py, &args_list[1], ctx, depth + 1)?;
             Ok(val.ashr(&amt, ctx))
         }
 
@@ -406,8 +478,8 @@ pub fn claripy_to_rustbv(
                     "RotateLeft requires 2 args".into(),
                 ));
             }
-            let val = claripy_to_rustbv(py, &args_list[0], ctx)?;
-            let amt = claripy_to_rustbv(py, &args_list[1], ctx)?;
+            let val = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
+            let amt = claripy_to_rustbv_depth(py, &args_list[1], ctx, depth + 1)?;
             Ok(val.rotl(&amt, ctx))
         }
 
@@ -418,8 +490,8 @@ pub fn claripy_to_rustbv(
                     "RotateRight requires 2 args".into(),
                 ));
             }
-            let val = claripy_to_rustbv(py, &args_list[0], ctx)?;
-            let amt = claripy_to_rustbv(py, &args_list[1], ctx)?;
+            let val = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
+            let amt = claripy_to_rustbv_depth(py, &args_list[1], ctx, depth + 1)?;
             Ok(val.rotr(&amt, ctx))
         }
 
@@ -430,7 +502,7 @@ pub fn claripy_to_rustbv(
                 return Err(BridgeError::InvalidArgs("ZeroExt requires 2 args".into()));
             }
             let extend_bits: u32 = args_list[0].extract()?;
-            let val = claripy_to_rustbv(py, &args_list[1], ctx)?;
+            let val = claripy_to_rustbv_depth(py, &args_list[1], ctx, depth + 1)?;
             let new_width = val.width() + extend_bits;
             Ok(val.zero_extend(new_width, ctx))
         }
@@ -441,7 +513,7 @@ pub fn claripy_to_rustbv(
                 return Err(BridgeError::InvalidArgs("SignExt requires 2 args".into()));
             }
             let extend_bits: u32 = args_list[0].extract()?;
-            let val = claripy_to_rustbv(py, &args_list[1], ctx)?;
+            let val = claripy_to_rustbv_depth(py, &args_list[1], ctx, depth + 1)?;
             let new_width = val.width() + extend_bits;
             Ok(val.sign_extend(new_width, ctx))
         }
@@ -453,7 +525,7 @@ pub fn claripy_to_rustbv(
             }
             let high: u32 = args_list[0].extract()?;
             let low: u32 = args_list[1].extract()?;
-            let val = claripy_to_rustbv(py, &args_list[2], ctx)?;
+            let val = claripy_to_rustbv_depth(py, &args_list[2], ctx, depth + 1)?;
             let val_width = val.width();
 
             // P5 fix: Validate Extract bounds to prevent runtime errors
@@ -478,9 +550,9 @@ pub fn claripy_to_rustbv(
                     "Concat requires at least 1 arg".into(),
                 ));
             }
-            let mut result = claripy_to_rustbv(py, &args_list[0], ctx)?;
+            let mut result = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
             for arg in &args_list[1..] {
-                let next = claripy_to_rustbv(py, arg, ctx)?;
+                let next = claripy_to_rustbv_depth(py, arg, ctx, depth + 1)?;
                 result = result.concat(&next, ctx);
             }
             Ok(result)
@@ -492,8 +564,8 @@ pub fn claripy_to_rustbv(
             if args_list.len() != 2 {
                 return Err(BridgeError::InvalidArgs("__eq__ requires 2 args".into()));
             }
-            let left = claripy_to_rustbv(py, &args_list[0], ctx)?;
-            let right = claripy_to_rustbv(py, &args_list[1], ctx)?;
+            let left = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
+            let right = claripy_to_rustbv_depth(py, &args_list[1], ctx, depth + 1)?;
             Ok(left.eq(&right, ctx))
         }
 
@@ -502,8 +574,8 @@ pub fn claripy_to_rustbv(
             if args_list.len() != 2 {
                 return Err(BridgeError::InvalidArgs("__ne__ requires 2 args".into()));
             }
-            let left = claripy_to_rustbv(py, &args_list[0], ctx)?;
-            let right = claripy_to_rustbv(py, &args_list[1], ctx)?;
+            let left = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
+            let right = claripy_to_rustbv_depth(py, &args_list[1], ctx, depth + 1)?;
             Ok(left.ne(&right, ctx))
         }
 
@@ -512,8 +584,8 @@ pub fn claripy_to_rustbv(
             if args_list.len() != 2 {
                 return Err(BridgeError::InvalidArgs("ULT requires 2 args".into()));
             }
-            let left = claripy_to_rustbv(py, &args_list[0], ctx)?;
-            let right = claripy_to_rustbv(py, &args_list[1], ctx)?;
+            let left = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
+            let right = claripy_to_rustbv_depth(py, &args_list[1], ctx, depth + 1)?;
             Ok(left.ult(&right, ctx))
         }
 
@@ -522,8 +594,8 @@ pub fn claripy_to_rustbv(
             if args_list.len() != 2 {
                 return Err(BridgeError::InvalidArgs("ULE requires 2 args".into()));
             }
-            let left = claripy_to_rustbv(py, &args_list[0], ctx)?;
-            let right = claripy_to_rustbv(py, &args_list[1], ctx)?;
+            let left = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
+            let right = claripy_to_rustbv_depth(py, &args_list[1], ctx, depth + 1)?;
             Ok(left.ule(&right, ctx))
         }
 
@@ -532,8 +604,8 @@ pub fn claripy_to_rustbv(
             if args_list.len() != 2 {
                 return Err(BridgeError::InvalidArgs("UGT requires 2 args".into()));
             }
-            let left = claripy_to_rustbv(py, &args_list[0], ctx)?;
-            let right = claripy_to_rustbv(py, &args_list[1], ctx)?;
+            let left = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
+            let right = claripy_to_rustbv_depth(py, &args_list[1], ctx, depth + 1)?;
             Ok(left.ugt(&right, ctx))
         }
 
@@ -542,8 +614,8 @@ pub fn claripy_to_rustbv(
             if args_list.len() != 2 {
                 return Err(BridgeError::InvalidArgs("UGE requires 2 args".into()));
             }
-            let left = claripy_to_rustbv(py, &args_list[0], ctx)?;
-            let right = claripy_to_rustbv(py, &args_list[1], ctx)?;
+            let left = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
+            let right = claripy_to_rustbv_depth(py, &args_list[1], ctx, depth + 1)?;
             Ok(left.uge(&right, ctx))
         }
 
@@ -552,8 +624,8 @@ pub fn claripy_to_rustbv(
             if args_list.len() != 2 {
                 return Err(BridgeError::InvalidArgs("SLT requires 2 args".into()));
             }
-            let left = claripy_to_rustbv(py, &args_list[0], ctx)?;
-            let right = claripy_to_rustbv(py, &args_list[1], ctx)?;
+            let left = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
+            let right = claripy_to_rustbv_depth(py, &args_list[1], ctx, depth + 1)?;
             Ok(left.slt(&right, ctx))
         }
 
@@ -562,8 +634,8 @@ pub fn claripy_to_rustbv(
             if args_list.len() != 2 {
                 return Err(BridgeError::InvalidArgs("SLE requires 2 args".into()));
             }
-            let left = claripy_to_rustbv(py, &args_list[0], ctx)?;
-            let right = claripy_to_rustbv(py, &args_list[1], ctx)?;
+            let left = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
+            let right = claripy_to_rustbv_depth(py, &args_list[1], ctx, depth + 1)?;
             Ok(left.sle(&right, ctx))
         }
 
@@ -572,8 +644,8 @@ pub fn claripy_to_rustbv(
             if args_list.len() != 2 {
                 return Err(BridgeError::InvalidArgs("SGT requires 2 args".into()));
             }
-            let left = claripy_to_rustbv(py, &args_list[0], ctx)?;
-            let right = claripy_to_rustbv(py, &args_list[1], ctx)?;
+            let left = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
+            let right = claripy_to_rustbv_depth(py, &args_list[1], ctx, depth + 1)?;
             Ok(left.sgt(&right, ctx))
         }
 
@@ -582,8 +654,8 @@ pub fn claripy_to_rustbv(
             if args_list.len() != 2 {
                 return Err(BridgeError::InvalidArgs("SGE requires 2 args".into()));
             }
-            let left = claripy_to_rustbv(py, &args_list[0], ctx)?;
-            let right = claripy_to_rustbv(py, &args_list[1], ctx)?;
+            let left = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
+            let right = claripy_to_rustbv_depth(py, &args_list[1], ctx, depth + 1)?;
             Ok(left.sge(&right, ctx))
         }
 
@@ -635,9 +707,9 @@ pub fn claripy_to_rustbv(
             if args_list.len() != 3 {
                 return Err(BridgeError::InvalidArgs("If requires 3 args".into()));
             }
-            let cond = claripy_to_rustbv(py, &args_list[0], ctx)?;
-            let then_val = claripy_to_rustbv(py, &args_list[1], ctx)?;
-            let else_val = claripy_to_rustbv(py, &args_list[2], ctx)?;
+            let cond = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
+            let then_val = claripy_to_rustbv_depth(py, &args_list[1], ctx, depth + 1)?;
+            let else_val = claripy_to_rustbv_depth(py, &args_list[2], ctx, depth + 1)?;
             Ok(cond.ite(&then_val, &else_val, ctx))
         }
 
@@ -649,9 +721,9 @@ pub fn claripy_to_rustbv(
                 return Ok(RustBV::concrete(1, 1));
             }
             // Boolean And: all 1-bit values must be 1
-            let mut result = claripy_to_rustbv(py, &args_list[0], ctx)?;
+            let mut result = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
             for arg in &args_list[1..] {
-                let next = claripy_to_rustbv(py, arg, ctx)?;
+                let next = claripy_to_rustbv_depth(py, arg, ctx, depth + 1)?;
                 result = result.and(&next, ctx);
             }
             Ok(result)
@@ -664,9 +736,9 @@ pub fn claripy_to_rustbv(
                 return Ok(RustBV::concrete(0, 1));
             }
             // Boolean Or: at least one 1-bit value must be 1
-            let mut result = claripy_to_rustbv(py, &args_list[0], ctx)?;
+            let mut result = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
             for arg in &args_list[1..] {
-                let next = claripy_to_rustbv(py, arg, ctx)?;
+                let next = claripy_to_rustbv_depth(py, arg, ctx, depth + 1)?;
                 result = result.or(&next, ctx);
             }
             Ok(result)
@@ -677,7 +749,7 @@ pub fn claripy_to_rustbv(
             if args_list.is_empty() {
                 return Err(BridgeError::InvalidArgs("Not requires 1 arg".into()));
             }
-            let val = claripy_to_rustbv(py, &args_list[0], ctx)?;
+            let val = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
             // Boolean Not: invert 1-bit value
             Ok(val.not(ctx))
         }
@@ -688,7 +760,7 @@ pub fn claripy_to_rustbv(
             if args_list.is_empty() {
                 return Err(BridgeError::InvalidArgs("Reverse requires 1 arg".into()));
             }
-            let val = claripy_to_rustbv(py, &args_list[0], ctx)?;
+            let val = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
             // Byte-reverse the value
             reverse_bytes(&val, ctx)
         }

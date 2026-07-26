@@ -167,8 +167,35 @@ pub fn rustbv_to_claripy(
     // subtrees expanded into a 142k-node tree without dedup; converting that
     // takes ~2.7s vs ~tens of ms with memoization.
     let mut memo: HashMap<usize, Py<PyAny>> = HashMap::new();
-    rustbv_to_claripy_memo(py, bv, claripy_mod, &mut memo)
+    rustbv_to_claripy_memo(py, bv, claripy_mod, &mut memo, 0)
 }
+
+/// Maximum recursion depth for [`rustbv_to_claripy_memo`]'s self-recursion
+/// (angr-2a3i9). Mirrors [`super::import::MAX_IMPORT_RECURSION_DEPTH`]'s
+/// calibration for the opposite (Rust -> claripy) direction of the same
+/// bridge, reachable from the same unguarded main-thread 8 MiB stack.
+///
+/// Per-frame budget, from measured (`std::mem::size_of`, release build)
+/// sizes: `size_of::<RustBV>() == 64 B` (the memo/DAG cache entries and the
+/// `bv` operand walk), `size_of::<Py<PyAny>>() == 8 B` (same
+/// pointer-sized handle as `Bound<PyAny>`), so the widest live locals in the
+/// `Expression` arm — `raw_args: Vec<Py<PyAny>>` and `args: Vec<Py<PyAny>>`
+/// (24 B each, both live across the recursive `.map()` call that builds
+/// `raw_args`) plus a handful of `Bound`/`Py` handles (~8 B each, ~5 of
+/// them) and the `PyResult<Py<PyAny>>` return slot (~16 B, `PyErr` is a
+/// single pointer-sized allocation) — sum to roughly 24 + 24 + 40 + 16 =
+/// 104 B of live locals per frame; this recurses one level per operand
+/// nesting depth via `operands.iter().map(rustbv_to_claripy_memo)`, so the
+/// per-level footprint is the same order of magnitude as the import side.
+/// Applying the same doubling for return-address/saved-register/alignment
+/// overhead and 1024 B/frame padding as `MAX_IMPORT_RECURSION_DEPTH` (that
+/// budget dominates this smaller measured footprint, so it stays a safe
+/// upper bound), the same **4096**-deep limit costs at most `4096 * 1024 B
+/// = 4 MiB`, leaving >2x headroom under the 8 MiB main-thread stack. Real
+/// exported trees stay far shallower: the sym-write benchmark's 142k-node
+/// bushy DAG described above collapses to ~25 shared subtrees via the
+/// per-call `memo` + the cross-call `EXPRESSION_BY_OPERANDS_PTR` cache.
+const MAX_EXPORT_RECURSION_DEPTH: u32 = 4096;
 
 /// angr-acoq: build a sound claripy encoding for a symbolic clz/ctz/popcount
 /// whose single operand has already been converted to `operand` (a claripy BV
@@ -334,12 +361,24 @@ fn coerce_bool_to_bv1<'py>(
     }
 }
 
+/// Depth-guarded recursive AST-tree walk (angr-2a3i9). `depth` starts at 0
+/// from [`rustbv_to_claripy`] and increments once per `Expression` operand
+/// nesting level; see [`MAX_EXPORT_RECURSION_DEPTH`] for the calibration.
 fn rustbv_to_claripy_memo(
     py: Python<'_>,
     bv: &RustBV,
     claripy_mod: &Bound<'_, PyAny>,
     memo: &mut HashMap<usize, Py<PyAny>>,
+    depth: u32,
 ) -> PyResult<Py<PyAny>> {
+    if depth > MAX_EXPORT_RECURSION_DEPTH {
+        return Err(pyo3::exceptions::PyRecursionError::new_err(format!(
+            "rustbv_to_claripy: exceeded max recursion depth {MAX_EXPORT_RECURSION_DEPTH} \
+             while exporting a RustBV to claripy -- the tree is either pathologically deep or a \
+             long unshared chain that the memo cannot dedup"
+        )));
+    }
+
     use crate::symbolic::BVOp;
 
     // Check cache first for Symbolic variants
@@ -433,7 +472,7 @@ fn rustbv_to_claripy_memo(
             // Recursively convert operands to claripy ASTs
             let raw_args: Vec<Py<PyAny>> = operands
                 .iter()
-                .map(|operand| rustbv_to_claripy_memo(py, operand, claripy_mod, memo))
+                .map(|operand| rustbv_to_claripy_memo(py, operand, claripy_mod, memo, depth + 1))
                 .collect::<Result<_, _>>()?;
 
             // Validate all args to ensure they're claripy ASTs with correct widths
