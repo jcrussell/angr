@@ -348,6 +348,13 @@ impl<'a> VEXInterpreter<'a> {
     /// shapes returned by `concretize_cached_write`. Single → direct callback;
     /// Multiple/Strided → `dispatch_multi_store`; TooLarge → full symbolic
     /// callback or Unsupported; Failed → `fallback_store_symbolic_full`.
+    ///
+    /// Invalidates any stale cached IRSB at the concretized target(s) before
+    /// dispatching the store (self-modifying-code support) via
+    /// `invalidate_code_on_store` — the same dispatcher `try_rust_memory_store`
+    /// and `cas_store_symbolic_data` use, so Multiple/Strided/TooLarge/Failed
+    /// get the same per-address (or defensive block-cache-clear) treatment as
+    /// the Single case, instead of only Single being covered (angr-srk4b).
     pub(super) fn handle_symbolic_store(
         &mut self,
         callbacks: &PythonCallbacks,
@@ -365,13 +372,14 @@ impl<'a> VEXInterpreter<'a> {
         self.flush_stores(callbacks)?;
 
         let concret_result = self.concretize_cached_write(addr_val);
+        // Invalidate before dispatching the store so Python (or the in-Rust
+        // ITE path) never observes a write that landed without evicting the
+        // stale lifted block first — mirrors the Single-arm ordering below.
+        self.invalidate_code_on_store(&concret_result, data_size);
         match &*concret_result {
             ConcretizationResult::Single(addr_concrete) => {
                 let addr_concrete = *addr_concrete;
                 self.buffer_store_for_rust_memory(callbacks, addr_concrete, data_val);
-                if self.is_in_binary(addr_concrete) {
-                    self.invalidate_code_at(addr_concrete, data_size);
-                }
                 if data_val.is_symbolic() && callbacks.has_memory_store_symbolic_value() {
                     callbacks
                         .call_memory_store_symbolic_value(addr_concrete, data_val)
