@@ -139,7 +139,15 @@ fn format_string(
                 "'*' dynamic width defers to Python".to_string(),
             ));
         }
+        // Clamp against MAX_OUTPUT_LEN here, before `width` is used as
+        // pad_and_push's padding-loop bound: parse_width_digits only
+        // saturates to usize::MAX on overflow, which does not stop a short
+        // digit run like "%9999999999d" from encoding a near-MAX width. The
+        // `output.len() > MAX_OUTPUT_LEN` check below only fires AFTER
+        // pad_and_push's loop returns, so it can't bound the loop itself —
+        // unclamped this is an unbounded-allocation / OOM loop (angr-mi56k).
         let (width, advanced) = parse_width_digits(fmt, i);
+        let width = width.min(MAX_OUTPUT_LEN);
         i += advanced;
 
         // Parse precision.
