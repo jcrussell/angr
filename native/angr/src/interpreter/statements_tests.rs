@@ -416,3 +416,87 @@ fn evict_overlapping_symbolic_stores_keeps_disjoint_entries() {
     assert!(!interp.pending_symbolic_stores.contains_key(&0x3000));
     assert!(interp.pending_symbolic_stores.contains_key(&0x3008));
 }
+
+// angr-slbsd: `cas_store_symbolic_data` (the CAS-store path taken when the
+// stored value is symbolic -- reached from `cas_dispatch_store` and
+// unconditionally from `cas_writeback`'s uncertain-comparison branch) must
+// invalidate any stale cached IRSB at the store's (concretized) target
+// address, exactly like the ordinary `IRStmt::Store` path. Self-modifying
+// `lock cmpxchg` on a packer/protector's own code is a real technique this
+// protects against.
+//
+// This test drives the concrete-address branch, which previously had ZERO
+// invalidation and zero Python delegation (raw pending_symbolic_stores /
+// pending_stores insert only).
+#[test]
+fn cas_store_symbolic_data_concrete_addr_invalidates_cached_block() {
+    let ctx = SymContext::new_mock();
+    let mut interp = new_interp(&ctx);
+    interp.add_concrete_memory(0x1000, vec![0u8; 0x1000]);
+    // Cached block covers [0x1010, 0x1014) (default IMark len 4 from
+    // make_irsb_with_temps).
+    interp.cache_block(0x1010, make_irsb_with_temps(0x1010, &[]));
+    assert!(interp.has_cached_block(0x1010));
+
+    let addr_expr = IRExpr::Const(IRConst::U64(0x1010));
+    let data_bv = RustBV::symbolic(&ctx, "cas_data", 32);
+    let call_irsb = make_irsb_with_temps(0x1010, &[]);
+
+    with_python(|cb| {
+        interp
+            .cas_store_symbolic_data(cb, &addr_expr, &data_bv, &call_irsb)
+            .expect("cas_store_symbolic_data (concrete addr)");
+    });
+
+    assert!(
+        !interp.has_cached_block(0x1010),
+        "stale cached block must be invalidated by a CAS store to its address"
+    );
+    assert!(interp.is_code_page_dirtied(0x1010));
+}
+
+// Symbolic-address branch: the CAS-target address itself is unresolved at
+// eval time. `cas_store_symbolic_data` concretizes it via
+// `concretize_cached_write` (the same helper `handle_symbolic_store` uses for
+// the ordinary Store path) and invalidates through `invalidate_code_on_store`
+// before dispatching the store. The address is pinned to a single solution
+// via `pin_fallback_addr` -- the same `assume_true(addr == chosen)` idiom
+// `concretize_write`'s own Max-fallback uses internally -- so the test gets a
+// deterministic `Single` result without depending on the concretizer's
+// range-enumeration heuristics for an otherwise-unconstrained value.
+#[test]
+fn cas_store_symbolic_data_symbolic_addr_invalidates_cached_block() {
+    let ctx = SymContext::new_mock();
+    let mut interp = new_interp(&ctx);
+    interp.add_concrete_memory(0x2000, vec![0u8; 0x1000]);
+    interp.cache_block(0x2010, make_irsb_with_temps(0x2010, &[]));
+    assert!(interp.has_cached_block(0x2010));
+
+    // A symbolic address value, placed in temp 0 so `RdTmp(0)` evaluates to
+    // it unchanged -- IRExpr has no way to embed an arbitrary RustBV literal,
+    // so this is the standard way tests inject a specific RustBV as an
+    // expression's evaluated value. Constrain it to a single solution
+    // (0x2010, inside the cached block) so concretization is deterministic.
+    let addr_bv = RustBV::symbolic(&ctx, "cas_sym_addr", 64);
+    crate::concretize::pin_fallback_addr(&ctx, &addr_bv, 0x2010);
+    interp.temps = vec![Some(addr_bv)];
+
+    let addr_expr = IRExpr::RdTmp(0);
+    let data_bv = RustBV::symbolic(&ctx, "cas_sym_data", 32);
+    let call_irsb = make_irsb_with_temps(0x2010, &[]);
+
+    with_python(|cb| {
+        let res = interp.cas_store_symbolic_data(cb, &addr_expr, &data_bv, &call_irsb);
+        // No memory_store_symbolic_full callback is registered on this bare
+        // PythonCallbacks::new(), so the store dispatch itself errors out --
+        // but invalidation must already have happened before that point.
+        assert!(res.is_err());
+    });
+
+    assert!(
+        !interp.has_cached_block(0x2010),
+        "stale cached block must be invalidated even though the CAS-target \
+         address is symbolic"
+    );
+    assert!(interp.is_code_page_dirtied(0x2010));
+}
