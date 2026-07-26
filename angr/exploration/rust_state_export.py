@@ -8,6 +8,7 @@ mixin class that RustExplorationManager inherits from.
 from __future__ import annotations
 
 import logging
+import threading
 import warnings
 from typing import TYPE_CHECKING
 
@@ -200,6 +201,10 @@ class RustSolverFallback:
         # solver (~3ms), so caching saves significant time when the solve
         # script calls eval() many times (ais3 ~100 byte evals).
         self._cached_rust_ctx = None
+        # angr-pxq0i: owning thread id of ``_cached_rust_ctx``, captured on
+        # the same thread that forks it. Required by ``_release_owned_ctx`` to
+        # decide whether ``ctx.close()``/``ctx.is_closed()`` is safe to call.
+        self._cached_rust_ctx_owner = None
         # Track constraint count at attach time so we can detect when the
         # caller adds constraints post-exploration and replay them into Rust.
         n = len(state.solver.constraints)
@@ -217,7 +222,7 @@ class RustSolverFallback:
             try:
                 from angr.exploration.rust_state_proxy import _release_owned_ctx
 
-                _release_owned_ctx(ctx)
+                _release_owned_ctx(ctx, self.__dict__.get("_cached_rust_ctx_owner"))
             except Exception:
                 # Teardown-time best-effort: a torn-down module just falls back
                 # to pyo3's leak-safe cross-thread drop refusal.
@@ -267,11 +272,12 @@ class RustSolverFallback:
             try:
                 from angr.exploration.rust_state_proxy import _release_owned_ctx
 
-                _release_owned_ctx(ctx)
+                _release_owned_ctx(ctx, self.__dict__.get("_cached_rust_ctx_owner"))
             except Exception:
                 # Best-effort release; pyo3 refuses unsafe cross-thread drops.
                 pass
             self._cached_rust_ctx = None
+            self._cached_rust_ctx_owner = None
         self._state_id = state_id
         self._synced_constraint_count = self._initial_constraint_count
 
@@ -287,6 +293,7 @@ class RustSolverFallback:
                 # 30s timeout still applies.
                 pass
             self._cached_rust_ctx = ctx
+            self._cached_rust_ctx_owner = threading.get_ident()
         # Replay constraints that the caller added after attach
         current = len(self._state.solver.constraints)
         if current != self._synced_constraint_count:

@@ -32,26 +32,51 @@ l = logging.getLogger(__name__)
 # and the coordinator (main) thread drains it via ``drain_solver_graveyard()``,
 # where ``close()`` frees coordinator-owned forks and safely no-ops on any
 # worker-owned ones (which stay leak-safe, as before).
+#
+# angr-pxq0i: PyO3 0.27.2's codegen for ANY receiver method (mutable or
+# immutable) on an ``unsendable`` pyclass calls its cross-thread guard
+# (``ensure_threadsafe`` -> hard ``assert_eq!`` panic) BEFORE the method body
+# ever runs — including before ``close()``'s own internal owner check. Since
+# the workspace builds with ``panic = "abort"``, calling ``close()`` /
+# ``is_closed()`` from any thread other than the context's true owner ABORTS
+# THE WHOLE PROCESS instead of gracefully no-op'ing; there is no safe way to
+# ask a ``RustSolverContext`` "am I your owner?" from off-thread. The owner
+# thread id must instead be tracked in plain Python, captured on the thread
+# that actually forked the context (the same thread PyO3 records as the
+# Rust-side owner), and checked via ``threading.get_ident()`` BEFORE any
+# pymethod call ever touches the object. Graveyard entries are therefore
+# ``(ctx, owner_tid)`` pairs so a later drain can make the same per-item check.
 _SOLVER_GRAVEYARD: list = []
 _SOLVER_GRAVEYARD_LOCK = threading.Lock()
 
 
-def _release_owned_ctx(ctx) -> None:
+def _release_owned_ctx(ctx, owner_tid) -> None:
     """Owner-thread ``close()`` of an owned RustSolverContext, else defer.
 
-    ``close()`` drops the payload iff called on the context's owning thread;
-    when we are elsewhere it is a no-op and ``is_closed()`` stays False, so the
-    context is buried for the coordinator to drain. Best-effort — swallows
-    everything because it runs from ``__del__`` during interpreter/manager
-    teardown. Safe to call from any thread.
+    ``owner_tid`` is the ``threading.get_ident()`` value captured on the
+    thread that forked ``ctx`` (== the Rust-side owner PyO3 records). When the
+    CURRENT thread doesn't match, ``close()``/``is_closed()`` must NEVER be
+    called: PyO3's unsendable-pyclass thread guard panics before either
+    method's body runs, and ``panic = "abort"`` turns that into a process
+    abort (angr-pxq0i) that no ``try/except`` can catch. Off-owner calls
+    instead bury the context (with its owner id) for a later same-thread
+    drain, without touching the Rust object at all.
+
+    Best-effort on the owning thread — swallows everything because it runs
+    from ``__del__`` during interpreter/manager teardown. Safe to call from
+    any thread.
     """
     if ctx is None:
+        return
+    if threading.get_ident() != owner_tid:
+        with _SOLVER_GRAVEYARD_LOCK:
+            _SOLVER_GRAVEYARD.append((ctx, owner_tid))
         return
     try:
         ctx.close()
         if not ctx.is_closed():
             with _SOLVER_GRAVEYARD_LOCK:
-                _SOLVER_GRAVEYARD.append(ctx)
+                _SOLVER_GRAVEYARD.append((ctx, owner_tid))
     except Exception:
         # cat-(a) EXPECTED CONTROL FLOW: teardown-time best-effort; a missing
         # close()/is_closed() (older .so) or a torn-down module just means we
@@ -60,24 +85,39 @@ def _release_owned_ctx(ctx) -> None:
 
 
 def drain_solver_graveyard() -> int:
-    """Close every buried solver context; return how many were drained.
+    """Close every buried solver context this thread owns; return how many.
 
-    Call ONLY from the coordinator (main) thread — the thread that owns the
-    forks created during ``explore()``. ``close()`` frees coordinator-owned
-    contexts here and no-ops on any worker-owned ones (which then fall back to
-    pyo3's leak-safe refusal). See :data:`_SOLVER_GRAVEYARD` / angr-87e56.
+    Safe to call from ANY thread (typically the coordinator/main thread after
+    each step()/explore()). Each buried entry carries the ``owner_tid`` it was
+    forked on; ``close()``/``is_closed()`` are only ever called on entries
+    owned by the CURRENT thread — never off-owner (angr-pxq0i, see
+    :func:`_release_owned_ctx`). Entries owned by a different thread are put
+    back in the graveyard untouched, so a later drain from the actual owner
+    thread can handle them; absent that, they fall back to pyo3's leak-safe
+    cross-thread drop refusal when the reference is finally released — the
+    same fate worker-owned forks had before angr-87e56.
     """
     with _SOLVER_GRAVEYARD_LOCK:
         if not _SOLVER_GRAVEYARD:
             return 0
         pending = _SOLVER_GRAVEYARD[:]
         _SOLVER_GRAVEYARD.clear()
-    for ctx in pending:
+    current = threading.get_ident()
+    requeue = []
+    drained = 0
+    for ctx, owner_tid in pending:
+        if current != owner_tid:
+            requeue.append((ctx, owner_tid))
+            continue
         try:
             ctx.close()
+            drained += 1
         except Exception:
             pass
-    return len(pending)
+    if requeue:
+        with _SOLVER_GRAVEYARD_LOCK:
+            _SOLVER_GRAVEYARD.extend(requeue)
+    return drained
 
 
 _REGISTER_OVERLAP_CACHE: dict[str, dict[str, frozenset[str]]] = {}
@@ -412,6 +452,12 @@ class RustSolverProxy(RustSolverProxyBase):
         self._mgr = rust_mgr
         self._state_id = state_id
         self._solver_ctx = None  # lazy — forked on first access
+        # angr-pxq0i: owning thread id of ``_solver_ctx``, captured on the
+        # same thread that forks it (== the Rust-side owner). Only meaningful
+        # for an OWNED fork (``_shared_ctx_getter`` is None); required by
+        # ``_release_owned_ctx`` to decide whether it's safe to call
+        # ``ctx.close()``/``ctx.is_closed()`` at all.
+        self._solver_ctx_owner = None
         # angr-yodz: when set, returns the parent RustStateProxy's single
         # shared forked context so a constraint added here is visible to the
         # same proxy's memory/posix reads. None for standalone construction.
@@ -428,6 +474,7 @@ class RustSolverProxy(RustSolverProxyBase):
                 self._solver_ctx = self._shared_ctx_getter()
             else:
                 self._solver_ctx = self._mgr.fork_state_solver(self._state_id)
+                self._solver_ctx_owner = threading.get_ident()
 
     def _query_ctx(self):
         self._ensure_solver()
@@ -507,7 +554,7 @@ class RustSolverProxy(RustSolverProxyBase):
         # aliased by the parent proxy — never close those here.
         try:
             if self.__dict__.get("_shared_ctx_getter") is None:
-                _release_owned_ctx(self.__dict__.get("_solver_ctx"))
+                _release_owned_ctx(self.__dict__.get("_solver_ctx"), self.__dict__.get("_solver_ctx_owner"))
         except Exception:
             # cat-(a) EXPECTED CONTROL FLOW: __del__ best-effort during teardown.
             pass
@@ -556,6 +603,10 @@ class RustSolverProxyPlugin(_ProxyStatePluginMixin, RustSolverProxyBase):
         # Lazy Rust solver fork — created on first eval/satisfiable/min/max.
         # Invalidated on add() so the next solve picks up the new constraint.
         object.__setattr__(self, "_rust_ctx_cache", None)
+        # angr-pxq0i: owning thread id of ``_rust_ctx_cache``, captured on the
+        # same thread that forks it. Required by ``_release_owned_ctx`` to
+        # decide whether ``ctx.close()``/``ctx.is_closed()`` is safe to call.
+        object.__setattr__(self, "_rust_ctx_cache_owner", None)
         # SimSolver protocol attributes.
         object.__setattr__(self, "id", "solver")
         object.__setattr__(self, "state", None)
@@ -726,8 +777,9 @@ class RustSolverProxyPlugin(_ProxyStatePluginMixin, RustSolverProxyBase):
         # constraint (the fork was cloned from the pre-add solver state).
         # angr-87e56: release the superseded fork on the owning thread instead
         # of letting it fall to GC (possibly on a worker → unsendable refusal).
-        _release_owned_ctx(self.__dict__.get("_rust_ctx_cache"))
+        _release_owned_ctx(self.__dict__.get("_rust_ctx_cache"), self.__dict__.get("_rust_ctx_cache_owner"))
         object.__setattr__(self, "_rust_ctx_cache", None)
+        object.__setattr__(self, "_rust_ctx_cache_owner", None)
         return ast_list
 
     # ---------------------------------------------------------------
@@ -741,6 +793,7 @@ class RustSolverProxyPlugin(_ProxyStatePluginMixin, RustSolverProxyBase):
                 "_rust_ctx_cache",
                 self._mgr.fork_state_solver(self._state_id),
             )
+            object.__setattr__(self, "_rust_ctx_cache_owner", threading.get_ident())
         return self._rust_ctx_cache
 
     # Context-access hooks for ``RustSolverProxyBase``: the plugin caches its
@@ -757,7 +810,7 @@ class RustSolverProxyPlugin(_ProxyStatePluginMixin, RustSolverProxyBase):
         # on a scheduler worker never triggers pyo3's unsendable cross-thread
         # drop refusal.
         try:
-            _release_owned_ctx(self.__dict__.get("_rust_ctx_cache"))
+            _release_owned_ctx(self.__dict__.get("_rust_ctx_cache"), self.__dict__.get("_rust_ctx_cache_owner"))
         except Exception:
             # cat-(a) EXPECTED CONTROL FLOW: __del__ best-effort during teardown.
             pass
@@ -1248,6 +1301,10 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
         self._state_id = state_id
         self._arch = arch
         self._solver_ctx = None  # lazy — forked on first symbolic-addr load
+        # angr-pxq0i: owning thread id of ``_solver_ctx``, captured on the
+        # same thread that forks it. Required by ``_release_owned_ctx`` to
+        # decide whether ``ctx.close()``/``ctx.is_closed()`` is safe to call.
+        self._solver_ctx_owner = None
         # angr-5rjbq: per-address concretization-witness cache, keyed by the
         # symbolic address's structural ``hash()``. The symbolic-addr STORE
         # fallback (p1s02) concretizes ``ebp+off`` to a witness and records it
@@ -1284,7 +1341,7 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
         # set) are aliased by the parent proxy — never close those here.
         try:
             if self.__dict__.get("_shared_ctx_getter") is None:
-                _release_owned_ctx(self.__dict__.get("_solver_ctx"))
+                _release_owned_ctx(self.__dict__.get("_solver_ctx"), self.__dict__.get("_solver_ctx_owner"))
         except Exception:
             # cat-(a) EXPECTED CONTROL FLOW: __del__ best-effort during teardown.
             pass
@@ -1361,6 +1418,7 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
                 self._solver_ctx = self._shared_ctx_getter()
             else:
                 self._solver_ctx = self._mgr.fork_state_solver(self._state_id)
+                self._solver_ctx_owner = threading.get_ident()
 
     def _pin_addr_witness(self, addr, conc):
         """Pin a symbolic address to its chosen concretization on the STATE solver.
@@ -2195,7 +2253,9 @@ class RustPosixProxy:
             return b""
         finally:
             # Release the owned fork on its owning thread (never the shared one).
-            _release_owned_ctx(owned_ctx)
+            # ``owned_ctx`` was forked above in this same call, on this same
+            # thread, so the owner id is simply the current thread.
+            _release_owned_ctx(owned_ctx, threading.get_ident())
 
 
 class RustCallStackFrameProxy:
@@ -3166,6 +3226,10 @@ class RustStateProxy:
         # access so add_constraints lands somewhere all three sub-proxies
         # read from. View-local — see _get_shared_solver_ctx.
         self._shared_solver_ctx = None
+        # angr-pxq0i: owning thread id of ``_shared_solver_ctx``, captured on
+        # the same thread that forks it. Required by ``_release_owned_ctx`` to
+        # decide whether ``ctx.close()``/``ctx.is_closed()`` is safe to call.
+        self._shared_solver_ctx_owner = None
 
     @property
     def state_id(self):
@@ -3226,6 +3290,7 @@ class RustStateProxy:
         """
         if self._shared_solver_ctx is None:
             self._shared_solver_ctx = self._mgr.fork_state_solver(self._state_id)
+            self._shared_solver_ctx_owner = threading.get_ident()
         return self._shared_solver_ctx
 
     @property
@@ -3442,7 +3507,7 @@ class RustStateProxy:
         # fork_state_solver in _get_shared_solver_ctx) on its owning thread, or
         # defer to the graveyard. Must run regardless of _owns_copy.
         try:
-            _release_owned_ctx(self.__dict__.get("_shared_solver_ctx"))
+            _release_owned_ctx(self.__dict__.get("_shared_solver_ctx"), self.__dict__.get("_shared_solver_ctx_owner"))
         except Exception:
             # cat-(a) EXPECTED CONTROL FLOW: __del__ best-effort during teardown.
             pass
