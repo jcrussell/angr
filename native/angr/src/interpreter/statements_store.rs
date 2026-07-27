@@ -267,6 +267,15 @@ impl<'a> VEXInterpreter<'a> {
             // load inside the store return concrete 0 (angr-ofyh). The symbolic
             // maps (incl. overlap) are consulted before the concrete buffer on
             // load.
+            //
+            // Also evict any stale symbolic shadow this store overlaps
+            // (mirrors the concrete branch below) — otherwise two
+            // overlapping-but-different-address symbolic stores can coexist
+            // in the map and a later overlap load would return whichever one
+            // hash-iteration visits first instead of the most recent
+            // (angr-vvzf5).
+            let size_bytes = (data_val.width() / 8) as usize;
+            self.evict_overlapping_symbolic_stores(addr_concrete, size_bytes);
             self.pending_symbolic_stores.insert(addr_concrete, data_val);
             if self.pending_symbolic_stores.len() >= self.max_pending_stores {
                 self.flush_stores(callbacks)?;
@@ -313,6 +322,13 @@ impl<'a> VEXInterpreter<'a> {
             return;
         }
         if data_val.is_symbolic() {
+            // Evict overlapping symbolic shadows first — same reasoning as
+            // handle_concrete_store's symbolic branch (angr-vvzf5): without
+            // this, two overlapping-but-different-address symbolic stores
+            // can coexist and a later overlap load returns hash-order-
+            // arbitrary data instead of the most recent store.
+            let size_bytes = (data_val.width() / 8) as usize;
+            self.evict_overlapping_symbolic_stores(addr, size_bytes);
             self.pending_symbolic_stores.insert(addr, data_val.clone());
         } else {
             let size_bytes = (data_val.width() / 8) as usize;

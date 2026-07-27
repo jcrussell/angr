@@ -321,3 +321,66 @@ fn symbolic_overlap_load_misses_when_not_fully_covered() {
             .is_none()
     );
 }
+
+// angr-vvzf5: two overlapping-but-different-base-address SYMBOLIC stores
+// (the glibc/compiler-generated overlapping-tail-store idiom -- store a wide
+// chunk, then store a second wide chunk starting a few bytes in) must not
+// coexist in `pending_symbolic_stores`. Before the fix, `handle_concrete_store`
+// (statements_store.rs) called `evict_overlapping_symbolic_stores` only on its
+// concrete-data branch; the symbolic-data branch (the common 64-bit path,
+// since `use_sym_store` is always false on 64-bit) inserted with no eviction,
+// so a later overlap load in `symbolic_overlap_load` could return whichever
+// entry `FxHashMap` iteration visited first -- hash-order-arbitrary, not
+// most-recent.
+//
+// This test drives the real `handle_concrete_store` entry point (not a
+// hand-seeded map) for both stores, so it exercises the eviction call site
+// itself, not just `evict_overlapping_symbolic_stores` in isolation.
+#[test]
+fn handle_concrete_store_symbolic_data_evicts_overlapping_symbolic_shadow() {
+    use crate::callbacks::PythonCallbacks;
+    Python::initialize();
+    let callbacks = PythonCallbacks::new();
+    Python::attach(|_py| {
+        let ctx = SymContext::new_mock();
+        let mut interp = new_interp(&ctx);
+
+        let store_a = RustBV::symbolic(&ctx, "store_a", 64); // [0x6000, 0x6008)
+        let store_b = RustBV::symbolic(&ctx, "store_b", 64); // [0x6004, 0x600c) -- overlaps A
+
+        interp
+            .handle_concrete_store(&callbacks, 0x6000, store_a, 8)
+            .expect("store A");
+        interp
+            .handle_concrete_store(&callbacks, 0x6004, store_b, 8)
+            .expect("store B (overlaps A, more recent)");
+
+        // The stale, fully-shadowed entry for A must be gone -- only B remains.
+        assert_eq!(
+            interp.pending_symbolic_stores.len(),
+            1,
+            "store B must evict the overlapping shadow left by store A"
+        );
+        assert!(!interp.pending_symbolic_stores.contains_key(&0x6000));
+        assert!(interp.pending_symbolic_stores.contains_key(&0x6004));
+
+        // A 2-byte load at 0x6006 overlaps both A's and B's original ranges,
+        // so pre-fix this hit the FxHashMap-iteration-order bug. With only B
+        // left in the map, the overlap fallback in `symbolic_store_load` must
+        // resolve deterministically to bits [16:31] of B (not A, and not a
+        // value that flips depending on hash-iteration order).
+        let loaded = interp
+            .symbolic_store_load(&interp.pending_symbolic_stores, 0x6006, 2)
+            .expect("load overlapping the surviving store B");
+        assert_eq!(loaded.width(), 16);
+        let operand_debug = format!("{:?}", loaded.operands().expect("extract operand")[0]);
+        assert!(
+            operand_debug.contains("store_b"),
+            "load must be extracted from the most recent store B, got {operand_debug}"
+        );
+        assert!(
+            !operand_debug.contains("store_a"),
+            "load must not read the stale, evicted store A, got {operand_debug}"
+        );
+    });
+}
