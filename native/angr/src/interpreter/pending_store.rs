@@ -21,8 +21,9 @@ pub(crate) struct PendingStoreBuffer {
     /// This lets loads skip the linear reverse scan when no pending store
     /// touches the load address. When a store does cover the load address,
     /// the indexed entry is checked first; only if that store is smaller than
-    /// the load do we fall back to a reverse scan to find an earlier covering
-    /// store (matches the prior reverse-scan-first-fully-covering semantics).
+    /// the load do we fall back to a reverse scan to find an earlier
+    /// fully-covering store. That earlier store's bytes are kept up to date
+    /// by `push` (see below), so the fallback never returns stale data.
     byte_index: FxHashMap<u64, usize>,
 }
 
@@ -45,6 +46,30 @@ impl PendingStoreBuffer {
     pub(crate) fn push(&mut self, addr: u64, data: Vec<u8>) {
         let idx = self.stores.len();
         let len = data.len() as u64;
+        let new_end = addr.saturating_add(len);
+
+        // Patch any earlier store whose byte range overlaps this new store's
+        // range so the earlier store's buffer reflects the newest bytes for
+        // the overlapping region. This is what lets try_load's reverse-scan
+        // fallback (used when the byte_index-indexed store is smaller than
+        // the requested load) return an up-to-date value for an earlier,
+        // wider store instead of stale pre-overwrite bytes: the fallback
+        // scans stores by address-range coverage alone, ignoring
+        // byte_index, so every store's own buffer must stay internally
+        // coherent regardless of whether byte_index currently points at it.
+        for (s_addr, s_data) in self.stores.iter_mut() {
+            let s_end = s_addr.saturating_add(s_data.len() as u64);
+            let overlap_start = addr.max(*s_addr);
+            let overlap_end = new_end.min(s_end);
+            if overlap_start < overlap_end {
+                let s_off = (overlap_start - *s_addr) as usize;
+                let new_off = (overlap_start - addr) as usize;
+                let overlap_len = (overlap_end - overlap_start) as usize;
+                s_data[s_off..s_off + overlap_len]
+                    .copy_from_slice(&data[new_off..new_off + overlap_len]);
+            }
+        }
+
         for offset in 0..len {
             self.byte_index.insert(addr + offset, idx);
         }
@@ -74,9 +99,12 @@ impl PendingStoreBuffer {
     /// that fully covers the range. Returns None if no such store exists, in
     /// which case the caller should fall through to other lookup paths.
     ///
-    /// Preserves the prior semantics of "most recent fully-covering store wins":
-    /// if a small store at `addr` was pushed after a larger covering store, we
-    /// fall back to a reverse scan to find the earlier covering store.
+    /// If a smaller store at `addr` was pushed after a larger covering store,
+    /// we fall back to a reverse scan to find the earlier, still
+    /// fully-covering store. That earlier store's buffer is kept patched
+    /// up-to-date on every `push` (see `push`'s doc comment), so this
+    /// correctly returns last-write-wins bytes rather than stale data from
+    /// before the later, narrower store overwrote part of its range.
     pub(crate) fn try_load(&self, addr: u64, size: usize) -> Option<&[u8]> {
         let &idx = self.byte_index.get(&addr)?;
         let (store_addr, store_data) = &self.stores[idx];
