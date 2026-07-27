@@ -467,8 +467,10 @@ impl SymContext {
         // fields.
         new.timeout_ms
             .store(self.timeout_ms.load(Ordering::SeqCst), Ordering::SeqCst);
-        new.deterministic
-            .store(self.deterministic.load(Ordering::Relaxed), Ordering::Relaxed);
+        new.deterministic.store(
+            self.deterministic.load(Ordering::Relaxed),
+            Ordering::Relaxed,
+        );
         new.use_shared_lineage_solver.store(
             self.use_shared_lineage_solver.load(Ordering::Relaxed),
             Ordering::Relaxed,

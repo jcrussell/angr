@@ -199,7 +199,11 @@ fn test_offload_surplus_notifies_policy_on_trigger_a_offload() {
 
     offload_surplus(&mut local, &injector, &idle_workers, &counters, &policy);
 
-    assert_eq!(local.len(), 2, "two states offloaded to two starving siblings");
+    assert_eq!(
+        local.len(),
+        2,
+        "two states offloaded to two starving siblings"
+    );
     let removed = spy.removed.lock().expect("spy poisoned").clone();
     assert_eq!(
         removed,
