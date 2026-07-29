@@ -451,7 +451,7 @@ ralph hook run states/clean/gate  # standalone gate hook test
 
 ## Current Status
 
-- **Tests:** several hundred `def test_` functions in the
+- **Tests:** over a thousand `def test_` functions in the
   `tests/engines/rust/` package (split from the former monolithic
   `test_rust_exploration.py`; see angr-yg2m). Run
   `grep -rc 'def test_' tests/engines/rust/ | awk -F: '{s+=$2} END {print s}'`

@@ -4142,7 +4142,7 @@ Speedup column is ``python_time / rust_time`` from the live baseline
 file. Numbers refresh whenever ``baseline_timings.json`` is
 regenerated; treat the values here as snapshots, not invariants.
 
-mma_howtouse — 0.59x (Py ~4.33s / Rust ~7.39s)
+mma_howtouse — 0.55x (Py ~4.25s / Rust ~7.75s)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 **Workload:** ``Callable`` FFI demo
@@ -4253,8 +4253,8 @@ delivered ~0% on the current tree, and the gap had been left
 documentation-resolved per ``angr-ed7j-doc-resolution``.
 
 **Memory:** the original 1606MB peak was fixed independently in commit
-``342df4a7f`` (2026-05-02), bringing peak to ~285MB. The current 0.59x
-slowdown is purely CPU time.
+``342df4a7f`` (2026-05-02), bringing peak down an order of magnitude.
+The current 0.55x slowdown is purely CPU time.
 
 **Relevant memories:** ``benchmark-mma-howtouse-cprofile-attribution``,
 ``i9f2-mma-howtouse-attribution`` (bead ``angr-ed7j``).
