@@ -706,3 +706,109 @@ fn finalize_parallel_session_flushes_parked_bounces() {
         assert_eq!(active[0].pc(), BOUNCE_ADDR);
     });
 }
+
+// ---------------------------------------------------------------------------
+// seed_steady_session_from_active -> policy.on_state_removed wiring (angr-3xk63)
+//
+// Same drain-without-notify shape as offload_surplus (angr-ua7fd, pinned in
+// scheduler_worker_tests.rs): this drains STASH_ACTIVE straight via
+// `s.drain(..).collect()` to seed a live steady session, bypassing
+// `policy.select` entirely. A memoizing policy (LoopHeadRoundRobin's
+// key_cache) needs `on_state_removed` for every drained state or its memo
+// leaks. The session is built by hand from the low-level scheduler
+// primitives (mirroring scheduler_tests.rs's "PersistentPool + RunSession
+// directly" section) with a trivial terminal-only process closure, so this
+// pins the notify wiring without needing real interpreter stepping.
+// ---------------------------------------------------------------------------
+
+/// A policy that forwards `select`/`on_fork` to `Lifo` but records every
+/// `state_id` passed to `on_state_removed` — same shape as the `SpyPolicy` in
+/// `scheduler_worker_tests.rs`, redefined here since that one is private to a
+/// sibling test module.
+#[derive(Default)]
+struct SpyPolicy {
+    removed: std::sync::Mutex<Vec<u64>>,
+}
+
+impl selection_policy::SelectionPolicy for SpyPolicy {
+    fn select(
+        &self,
+        active: &mut std::collections::VecDeque<RustSimState>,
+    ) -> Option<RustSimState> {
+        selection_policy::Lifo.select(active)
+    }
+
+    fn on_fork(&self, active: &mut std::collections::VecDeque<RustSimState>, state: RustSimState) {
+        selection_policy::Lifo.on_fork(active, state);
+    }
+
+    fn name(&self) -> &'static str {
+        "spy"
+    }
+
+    fn on_state_removed(&self, state_id: u64) {
+        self.removed.lock().expect("spy poisoned").push(state_id);
+    }
+}
+
+/// A process closure that materializes every state immediately — no forking,
+/// no real VEX stepping. Enough to let a `RunSession` quiesce so the test can
+/// stay synchronous.
+fn terminal_only_process()
+-> impl Fn(RustSimState, &CancelToken, &mut LruCache<u64, Arc<IRSB>>) -> TaskOutcome
++ Send
++ Sync
++ 'static {
+    |state, _cancel, _cache| TaskOutcome::terminal(vec![state])
+}
+
+#[test]
+fn seed_steady_session_from_active_notifies_policy_on_state_removed() {
+    Python::initialize();
+    Python::attach(|_py| {
+        const WORKERS: usize = 2;
+        let mut mgr = RustExplorationManager::new("amd64", None).unwrap();
+        let spy = Arc::new(SpyPolicy::default());
+        mgr.policy = spy.clone();
+
+        // Two active states, parked exactly as any active-stash entry would be
+        // (no real memory needed — the process closure never steps them).
+        let s1 = RustSimState::new("amd64").unwrap();
+        let s2 = RustSimState::new("amd64").unwrap();
+        let ids: Vec<u64> = vec![s1.state_id(), s2.state_id()];
+        mgr.sm.push(STASH_ACTIVE, s1);
+        mgr.sm.push(STASH_ACTIVE, s2);
+
+        // Hand-build a live steady session (mirrors `ensure_steady_session`,
+        // but with a trivial process so no real interpreter step is needed).
+        let pool = PersistentPool::new(WORKERS);
+        let (session, up_rx) =
+            RunSession::new_with_policy(Box::new(terminal_only_process()), Arc::clone(&mgr.policy));
+        pool.start_session(&session);
+        mgr.parallel_session = Some(SteadySession {
+            session,
+            up_rx: Mutex::new(up_rx),
+            shared: Arc::new(ParallelShared::seeded(mgr.found_count(), mgr.num_find)),
+            prof: Arc::new(ParallelProfiling::default()),
+            workers: WORKERS,
+            parked: Vec::new(),
+        });
+        mgr.parallel_pool = Some(pool);
+
+        mgr.seed_steady_session_from_active();
+
+        let mut removed = spy.removed.lock().expect("spy poisoned").clone();
+        removed.sort_unstable();
+        let mut expected = ids;
+        expected.sort_unstable();
+        assert_eq!(
+            removed, expected,
+            "on_state_removed must fire for every state the steady-session \
+             seed drained from STASH_ACTIVE, bypassing policy.select"
+        );
+        assert!(
+            mgr.sm.get(STASH_ACTIVE).is_none_or(|s| s.is_empty()),
+            "the drained states left STASH_ACTIVE"
+        );
+    });
+}
