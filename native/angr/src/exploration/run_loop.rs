@@ -840,6 +840,11 @@ impl RustExplorationManager {
             {
                 let mut rm = shared.root_map.lock().expect("root_map poisoned");
                 for state in drained {
+                    // Migration drains STASH_ACTIVE directly, bypassing
+                    // policy.select — notify explicitly so a memoizing policy
+                    // (e.g. LoopHeadRoundRobin's key_cache) doesn't leak an
+                    // entry for a state it will never select again (angr-3xk63).
+                    self.policy.on_state_removed(state.state_id());
                     let root = self.sm.root_or_self(state.state_id());
                     rm.insert(state.state_id(), root);
                     seeds.push(state.detach_for_migration());
@@ -1406,6 +1411,10 @@ impl RustExplorationManager {
         {
             let mut rm = sess.shared.root_map.lock().expect("root_map poisoned");
             for state in drained {
+                // Same drain-without-notify pattern as the wave-mode migration
+                // drain above — this seeds a live parallel session at startup,
+                // bypassing policy.select (angr-3xk63).
+                self.policy.on_state_removed(state.state_id());
                 let root = self.sm.root_or_self(state.state_id());
                 rm.insert(state.state_id(), root);
                 payloads.push(state.detach_for_migration());
