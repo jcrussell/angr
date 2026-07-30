@@ -29,25 +29,6 @@ impl IRConst {
             IRConst::V256(_) => IRType::V256,
         }
     }
-
-    /// Get the value as u128.
-    pub fn as_u128(&self) -> u128 {
-        match self {
-            IRConst::U1(v) => *v as u128,
-            IRConst::U8(v) => *v as u128,
-            IRConst::U16(v) => *v as u128,
-            IRConst::U32(v) => *v as u128,
-            IRConst::U64(v) => *v as u128,
-            IRConst::U128(v) => *v,
-            IRConst::F32(v) => v.to_bits() as u128,
-            IRConst::F64(v) => v.to_bits() as u128,
-            IRConst::V128(v) => *v,
-            IRConst::V256(v) => {
-                // Only return lower 128 bits
-                v[0] as u128 | ((v[1] as u128) << 64)
-            }
-        }
-    }
 }
 
 /// IR types.
