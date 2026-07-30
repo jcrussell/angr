@@ -14,21 +14,12 @@
 //! `read=0x4, write=0x2, execute=0x1` (reversed). We translate the
 //! Linux bits explicitly here rather than going through `from_bits`.
 
-use super::page::{PAGE_MASK, PAGE_SIZE};
+use super::page::{PAGE_MASK, PAGE_SIZE, linux_prot_to_permission};
 use super::{NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg};
-use crate::memory::Permission;
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
 pub struct NativeMprotectSyscall;
-
-fn linux_prot_to_permission(prot: u64) -> Permission {
-    Permission {
-        read: prot & 0x1 != 0,
-        write: prot & 0x2 != 0,
-        execute: prot & 0x4 != 0,
-    }
-}
 
 impl NativeSyscall for NativeMprotectSyscall {
     fn name(&self) -> &'static str {

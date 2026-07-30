@@ -52,9 +52,8 @@
 //! interleave with successful native calls; future cross-engine sync
 //! work (see angr-0z34 / state-cache sync) should address both.
 
-use super::page::{PAGE_MASK, PAGE_SIZE};
+use super::page::{PAGE_MASK, PAGE_SIZE, linux_prot_to_permission};
 use super::{NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg};
-use crate::memory::Permission;
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
@@ -64,16 +63,6 @@ const MAP_PRIVATE: u64 = 0x02;
 /// `addr`; any colliding pages are atomically discarded and remapped.
 const MAP_FIXED: u64 = 0x10;
 const MAP_ANONYMOUS: u64 = 0x20;
-
-/// Translate Linux PROT bits (0x1=R, 0x2=W, 0x4=X) into the internal
-/// `Permission` struct. Mirrors `mprotect::linux_prot_to_permission`.
-fn linux_prot_to_permission(prot: u64) -> Permission {
-    Permission {
-        read: prot & 0x1 != 0,
-        write: prot & 0x2 != 0,
-        execute: prot & 0x4 != 0,
-    }
-}
 
 /// Returns true if any page in `[addr, addr+size)` is already mapped.
 /// `addr` and `size` may be unaligned; the check covers every page
