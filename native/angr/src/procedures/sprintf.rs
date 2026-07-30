@@ -129,6 +129,24 @@ fn format_string(
             zero_pad = false; // '-' overrides '0'
         }
 
+        // Parity defer: Python's format_parser.py only recognizes the bare '0'
+        // (zero-pad) flag. Its _match_spec has no arm for '-', '+', ' ', or '#',
+        // so it fails to match the specifier entirely, emits a literal '%', and
+        // does NOT consume the corresponding variadic arg. Native honoring these
+        // flags would therefore produce different bytes AND a different
+        // arg-consumption count than vanilla angr — a real cross-engine parity
+        // gap (angr-1yge9.2). Defer to Python so both engines agree. Bare
+        // '0'+width ("%05d") is matched by both parsers and stays native. The
+        // downstream flag handling below is retained (unreachable while this
+        // guard stands) so a future format_parser.py fix can drop just this
+        // block. See `format-string-parity-defers`; do NOT "fix" by changing
+        // Python's parser — that alters vanilla angr semantics for all users.
+        if left_align || plus_sign || space_sign || hash_flag {
+            return Err(ProcedureError::Other(
+                "'-'/'+'/' '/'#' conversion flags defer to Python".to_string(),
+            ));
+        }
+
         // Parse width. '*' dynamic width diverges from Python: format_parser.py's
         // _match_spec has no '*' arm, so extract_components swallows the '%*'
         // without consuming a width arg, shifting every later variadic arg by

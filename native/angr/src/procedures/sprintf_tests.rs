@@ -802,6 +802,33 @@ fn test_sprintf_narrow_unsigned_high_bit_falls_back() {
     assert_eq!(sprintf_one(b"%hx", 0x7FFF).unwrap(), b"7fff");
 }
 
+#[test]
+fn test_sprintf_conversion_flags_defer_to_python() {
+    // angr-1yge9.2: Python's format_parser.py::_match_spec only recognizes the
+    // bare '0' flag; it has no arm for '-', '+', ' ', or '#'. For those it fails
+    // to match, emits a literal '%', and does NOT consume the variadic arg.
+    // Native honoring the flag would produce different bytes AND consume an arg,
+    // diverging from vanilla angr — so native must defer. See
+    // `format-string-parity-defers`.
+    assert!(sprintf_one(b"%-5d", 42).is_err(), "'-' flag should defer");
+    assert!(sprintf_one(b"%+d", 42).is_err(), "'+' flag should defer");
+    assert!(sprintf_one(b"% d", 42).is_err(), "' ' flag should defer");
+    assert!(sprintf_one(b"%#x", 42).is_err(), "'#' flag should defer");
+    // A flag combined with width/zero-pad still defers (any non-'0' flag wins).
+    assert!(
+        sprintf_one(b"%-05d", 42).is_err(),
+        "'-0' combo should defer"
+    );
+    assert!(
+        sprintf_one(b"%+05d", 42).is_err(),
+        "'+0' combo should defer"
+    );
+    // The bare '0' (zero-pad) flag is matched by BOTH parsers and stays native.
+    assert_eq!(sprintf_one(b"%05d", 42).unwrap(), b"00042");
+    // Plain width with no flag likewise stays native (space-padded).
+    assert_eq!(sprintf_one(b"%5d", 42).unwrap(), b"   42");
+}
+
 /// Regression test for angr-mi56k: an explicit field width whose digit run
 /// encodes a huge value must be clamped to `MAX_OUTPUT_LEN` before
 /// `pad_and_push` uses it as its padding-loop bound. The
