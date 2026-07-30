@@ -573,16 +573,16 @@ pub fn handle_ccall_with_ctx(
                 let nb = info.nbits;
                 let cf = match info.category {
                     OpCategory::Copy => {
-                        // CF = (dep1 >> SHIFT_C) & 1
-                        let shift =
-                            RustBV::concrete(flag_shift::G_CC_SHIFT_C as u128, args[1].width());
-                        let one = RustBV::concrete(1, args[1].width());
-                        Some(
-                            args[1]
-                                .lshr(&shift, sym_ctx)
-                                .and(&one, sym_ctx)
-                                .extract(0, 0, sym_ctx),
-                        )
+                        // CF = bit G_CC_SHIFT_C of dep1. `extract(shift, shift)`
+                        // is exactly `(dep1 >> shift) & 1` as a 1-bit BV — reuse
+                        // the shared helper (as the Inc/Dec arm below does)
+                        // instead of hand-building the lshr/and/extract chain,
+                        // so the flag-extraction idiom has one source of truth.
+                        Some(sym_extract_flag(
+                            &args[1],
+                            flag_shift::G_CC_SHIFT_C,
+                            sym_ctx,
+                        ))
                     }
                     OpCategory::Sub => {
                         let d1 = extract_to_nbits(&args[1], nb, sym_ctx);
