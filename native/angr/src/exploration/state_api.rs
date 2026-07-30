@@ -449,12 +449,10 @@ impl RustExplorationManager {
     }
 
     pub(crate) fn _fork_state_solver(&self, state_id: u64) -> PyResult<RustSolverContext> {
-        let state = self.find_state(state_id).ok_or_else(|| {
-            PyValueError::new_err(format!("fork_state_solver: state {state_id} not found"))
-        })?;
-        let solver_ref = state.solver();
-        let forked_ctx = solver_ref.borrow().fork();
-        Ok(RustSolverContext::from_sym_context(forked_ctx))
+        self.with_state(state_id, |state| {
+            let forked_ctx = state.solver().borrow().fork();
+            Ok(RustSolverContext::from_sym_context(forked_ctx))
+        })
     }
 
     // -------------------------------------------------------------------------
