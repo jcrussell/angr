@@ -10,6 +10,7 @@
 
 use super::format_common::{LengthModifier, parse_length_modifier, parse_width_digits};
 use super::stdin_common::{mint_stdin_bytes, stdin_seed_unconsumed};
+use super::strings::scan_concrete_bounded;
 use super::{NativeSimProcedure, ProcedureError, extract_concrete_arg, symbol_counter};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
@@ -17,22 +18,17 @@ use crate::symbolic::RustBV;
 const MAX_FMT_LEN: usize = 4096;
 const MAX_SCANF_STR_LEN: u64 = 256;
 
-/// Read a null-terminated concrete string from memory.
-fn read_format_string(state: &RustSimState, addr: u64) -> Result<Vec<u8>, ProcedureError> {
-    let mut buf = Vec::new();
-    for i in 0..MAX_FMT_LEN as u64 {
-        match state.memory_load(addr.wrapping_add(i), 1) {
-            Ok(bv) => {
-                let byte = extract_concrete_arg(&bv, "format string byte")? as u8;
-                if byte == 0 {
-                    break;
-                }
-                buf.push(byte);
-            }
-            Err(_) => break,
-        }
-    }
-    Ok(buf)
+/// Read a null-terminated concrete format string from memory.
+///
+/// Propagates memory-fault errors (Unmapped / Permission / OutOfBounds /
+/// SymbolicAddress) rather than silently truncating, matching the rest of the
+/// string-scanning family via [`scan_concrete_bounded`]. A real fault must
+/// surface as `Err` so the caller falls back to Python instead of committing to
+/// store symbolic values based on a corrupted (truncated) format string
+/// (angr-myzjx.1). Hitting `MAX_FMT_LEN` without a null is not an error — a
+/// plausibly long format string simply stops there.
+fn read_format_string(state: &mut RustSimState, addr: u64) -> Result<Vec<u8>, ProcedureError> {
+    scan_concrete_bounded(state, addr, MAX_FMT_LEN, "format string byte").map(|(buf, _)| buf)
 }
 
 /// Parsed scanf format specifier.

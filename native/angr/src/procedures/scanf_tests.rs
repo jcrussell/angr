@@ -969,3 +969,36 @@ fn test_scanf_int_and_long_store_widths_unchanged() {
     assert_scanf_store_width(b"%zu\x00", 8);
     assert_scanf_store_width(b"%hx\x00", 2);
 }
+
+/// A format string pointing at unmapped memory must propagate the memory-fault
+/// error (triggering the Python fallback) instead of silently truncating to an
+/// empty format and returning "0 conversions" (angr-myzjx.1). Regression for
+/// the swallowed `Err(_) => break` in `read_format_string`.
+#[test]
+fn test_scanf_unmapped_format_propagates_error() {
+    let mut state = setup_state();
+
+    // 0x40000000 is outside the two mapped regions (0x1000, 0x2000).
+    let result = NativeScanf.call(
+        &mut state,
+        &[
+            RustBV::concrete(0x40000000, 64), // format -> unmapped
+            RustBV::concrete(0x2000, 64),
+            RustBV::concrete(0, 64),
+            RustBV::concrete(0, 64),
+            RustBV::concrete(0, 64),
+            RustBV::concrete(0, 64),
+            RustBV::concrete(0, 64),
+        ],
+    );
+    assert!(
+        result.is_err(),
+        "unmapped format string must surface as Err, not a silent 0-conversion Ok"
+    );
+    // The destination arg must be left pristine for the Python fallback.
+    assert_eq!(
+        state.memory_load(0x2000, 4).unwrap().as_u64(),
+        Some(0),
+        "no symbolic value should be stored when the format read faulted"
+    );
+}
