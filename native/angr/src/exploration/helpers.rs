@@ -741,7 +741,18 @@ impl RustExplorationManager {
             match self._merge_states(ids.clone(), STASH_ACTIVE) {
                 Ok(_) => self.drop_states_by_id(wait_stash, &ids),
                 Err(e) => {
-                    log::warn!("MergePoint merge failed, leaving waiters parked: {e}");
+                    // Merge failed: do NOT strand the waiters in `wait_stash`
+                    // (nothing else ever un-parks them — they would leak past
+                    // exploration end). Release them back to active so they
+                    // continue to be scheduled independently, unmerged. This
+                    // mirrors the lone-callstack release above; `_merge_states`
+                    // forks rather than consumes, so the originals are intact.
+                    log::warn!(
+                        "MergePoint merge failed, releasing waiters to active unmerged: {e}"
+                    );
+                    for &sid in &ids {
+                        self.move_state_by_id(wait_stash, STASH_ACTIVE, sid);
+                    }
                 }
             }
         }
