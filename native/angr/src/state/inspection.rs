@@ -155,16 +155,6 @@ impl InspectionManager {
         &self.event_counts
     }
 
-    /// Get events filtered by type.
-    pub fn events_of_type(&self, event: InspectEvent) -> Vec<&InspectRecord> {
-        self.events.iter().filter(|e| e.event == event).collect()
-    }
-
-    /// Clear all recorded events (keeps enabled state and counts).
-    pub fn clear_events(&mut self) {
-        self.events.clear();
-    }
-
     /// Get the enabled bitmask (for serialization).
     pub fn enabled_mask(&self) -> u8 {
         self.enabled
