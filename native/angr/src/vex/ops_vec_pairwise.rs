@@ -71,25 +71,18 @@ impl VEXOps {
         let half = count / 2;
 
         let mut elements: Vec<RustBV> = Vec::with_capacity(count as usize);
-        // First half: pairs from `left`.
-        for i in 0..half {
-            let lo_a = (2 * i as u32) * elem_width;
-            let hi_a = lo_a + elem_width - 1;
-            let lo_b = (2 * i as u32 + 1) * elem_width;
-            let hi_b = lo_b + elem_width - 1;
-            let a = left.extract(hi_a, lo_a, ctx);
-            let b = left.extract(hi_b, lo_b, ctx);
-            elements.push(Self::pw_combine(a, b, op, ctx));
-        }
-        // Second half: pairs from `right`.
-        for i in 0..half {
-            let lo_a = (2 * i as u32) * elem_width;
-            let hi_a = lo_a + elem_width - 1;
-            let lo_b = (2 * i as u32 + 1) * elem_width;
-            let hi_b = lo_b + elem_width - 1;
-            let a = right.extract(hi_a, lo_a, ctx);
-            let b = right.extract(hi_b, lo_b, ctx);
-            elements.push(Self::pw_combine(a, b, op, ctx));
+        // First half from `left`, then second half from `right` (same
+        // interleave order as the FP `vec_float_pairwise_add`).
+        for src in [&left, &right] {
+            for i in 0..half {
+                let lo_a = (2 * i as u32) * elem_width;
+                let hi_a = lo_a + elem_width - 1;
+                let lo_b = (2 * i as u32 + 1) * elem_width;
+                let hi_b = lo_b + elem_width - 1;
+                let a = src.extract(hi_a, lo_a, ctx);
+                let b = src.extract(hi_b, lo_b, ctx);
+                elements.push(Self::pw_combine(a, b, op, ctx));
+            }
         }
         Ok(Self::concat_le_elements(elements, ctx))
     }
