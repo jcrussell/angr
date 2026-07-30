@@ -1004,7 +1004,7 @@ impl RustBV {
         if let Some(v) = self.as_u128() {
             // Fold shared with extract_into and the Z3 emitter — see
             // bv_codec::concrete_extract_u128.
-            let extracted = super::bv_codec::concrete_extract_u128(v, low, result_width);
+            let extracted = super::bv_concrete::concrete_extract_u128(v, low, result_width);
             return Self::concrete(extracted, result_width);
         }
 
@@ -1422,7 +1422,7 @@ pub(super) fn drive_extract<T: ExtractTarget>(
     // Concrete fast path — fold at the Rust level (shared with every Extract
     // site, see bv_codec::concrete_extract_u128).
     if let Some(v) = inner.as_u128() {
-        let extracted = super::bv_codec::concrete_extract_u128(v, low, result_width);
+        let extracted = super::bv_concrete::concrete_extract_u128(v, low, result_width);
         return target.concrete(extracted, result_width);
     }
 
