@@ -501,19 +501,6 @@ impl RustExplorationManager {
             .unwrap_or_default()
     }
 
-    pub(crate) fn _export_found_states_flushed(
-        &mut self,
-    ) -> Vec<crate::state::ExplorationStateSnapshot> {
-        if let Some(states) = self.sm.get_mut(STASH_FOUND) {
-            states
-                .iter_mut()
-                .map(super::super::state::RustSimState::flush_and_export_full)
-                .collect()
-        } else {
-            Vec::new()
-        }
-    }
-
     pub(crate) fn _export_found_states(&self) -> Vec<crate::state::ExplorationStateSnapshot> {
         self._export_stash(STASH_FOUND)
     }
@@ -521,23 +508,6 @@ impl RustExplorationManager {
     // -------------------------------------------------------------------------
     // Eval / satisfiability / register / memory inspection
     // -------------------------------------------------------------------------
-
-    pub(crate) fn _eval_in_state(
-        &self,
-        state_id: u64,
-        addr: u64,
-        size: u32,
-    ) -> PyResult<Option<Vec<u8>>> {
-        self.with_state(state_id, |state| match state.memory_load(addr, size) {
-            Ok(bv) => {
-                if let Some(val) = state.eval(&bv) {
-                    return Ok(Some(super::helpers::u128_to_le_bytes(val, size as usize)));
-                }
-                Ok(None)
-            }
-            Err(_) => Ok(None),
-        })
-    }
 
     pub(crate) fn _state_symbolic_info(&self, state_id: u64, addr: u64) -> PyResult<String> {
         self.with_state(state_id, |state| {
@@ -937,12 +907,6 @@ impl RustExplorationManager {
     // -------------------------------------------------------------------------
     // stdout / stdin / file descriptor inspection
     // -------------------------------------------------------------------------
-
-    pub(crate) fn _has_state_stdout(&self, state_id: u64) -> bool {
-        // find_state already checks pending_callback first.
-        self.find_state(state_id)
-            .is_some_and(super::super::state::RustSimState::has_stdout)
-    }
 
     pub(crate) fn _get_state_stdout(&self, state_id: u64) -> PyResult<Vec<u8>> {
         self._get_state_fd_output(state_id, 1)

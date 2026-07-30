@@ -1549,11 +1549,6 @@ impl RustExplorationManager {
         self._fork_state_solver(state_id)
     }
 
-    /// Get the ID of the state currently being stepped.
-    pub fn get_current_stepping_state_id(&self) -> Option<u64> {
-        self.current_stepping_state_id.map(StateId::raw)
-    }
-
     /// Load from pending callback state's Rust memory.
     /// Used by SimProcedure callbacks to read the correct per-state memory.
     /// Get all mapped page addresses from pending callback state's memory.
@@ -1982,27 +1977,9 @@ impl RustExplorationManager {
         self._export_state_flushed(state_id)
     }
 
-    /// Export all states in a stash as snapshots.
-    pub fn export_stash(&self, stash: &str) -> Vec<crate::state::ExplorationStateSnapshot> {
-        self._export_stash(stash)
-    }
-
-    /// Export all found states as snapshots (flushing pending writes).
-    pub fn export_found_states_flushed(&mut self) -> Vec<crate::state::ExplorationStateSnapshot> {
-        self._export_found_states_flushed()
-    }
-
     /// Export all found states as snapshots.
     pub fn export_found_states(&self) -> Vec<crate::state::ExplorationStateSnapshot> {
         self._export_found_states()
-    }
-
-    /// Evaluate a symbolic value in a state's solver context.
-    ///
-    /// This allows Python to get concrete values for symbolic inputs
-    /// that were found during exploration.
-    pub fn eval_in_state(&self, state_id: u64, addr: u64, size: u32) -> PyResult<Option<Vec<u8>>> {
-        self._eval_in_state(state_id, addr, size)
     }
 
     /// Debug: Get symbolic object info for a state.
@@ -2217,11 +2194,6 @@ impl RustExplorationManager {
         data_ast: &Bound<'py, PyAny>,
     ) -> PyResult<bool> {
         self._state_memory_store_symbolic_multi(py, state_id, addr_ast, data_ast)
-    }
-
-    /// Check if a state has stdout output (dirty flag check, no allocation).
-    pub fn has_state_stdout(&self, state_id: u64) -> bool {
-        self._has_state_stdout(state_id)
     }
 
     /// Get the stdout buffer for a state by ID.
