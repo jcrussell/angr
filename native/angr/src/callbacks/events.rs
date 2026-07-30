@@ -125,7 +125,7 @@ pub enum RunResult {
 
 /// Execution event returned to Python from run_loop.
 #[pyclass]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct LoopExecutionEvent {
     /// Type of event: "max_blocks", "hook", "simprocedure", "syscall", "symbolic_branch",
     /// "block_end", "error", "need_lift", "max_deferred_forks", "symbolic_jump_target", "unconstrained_jump"
@@ -207,28 +207,10 @@ impl LoopExecutionEvent {
         push_level: u32,
     ) -> Self {
         let base = LoopExecutionEvent {
-            event_type: String::new(),
-            pc: None,
-            addr: None,
-            syscall_num: None,
-            true_target: None,
-            false_target: None,
-            jumpkind: None,
-            error: None,
             blocks_executed,
             deferred_forks,
             push_level,
-            simprocedure_name: None,
-            simprocedure_num_args: None,
-            simprocedure_return_addr: None,
-            jump_targets: None,
-            jump_condition_id: None,
-            unconstrained_min: None,
-            unconstrained_max: None,
-            unconstrained_limit: None,
-            unmodeled_call_addr: None,
-            unmodeled_call_return_addr: None,
-            unmodeled_call_symbol: None,
+            ..Default::default()
         };
         match result {
             RunResult::MaxBlocks { pc } => LoopExecutionEvent {
