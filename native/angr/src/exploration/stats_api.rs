@@ -19,6 +19,25 @@
 
 use super::*;
 
+/// Build a `PyDict` from `(key, count)` pairs and return it alongside the
+/// summed total. Shared by `_stats`, `_get_fallback_stats`, and
+/// `_native_procedure_stats` so the per-name fallback breakdown cannot silently
+/// diverge across the three exporters when a new counter is threaded through
+/// (angr-04tw3.9). Callers that do not need the total simply ignore it.
+fn build_count_dict<'py, K, I>(py: Python<'py>, entries: I) -> PyResult<(Bound<'py, PyDict>, u64)>
+where
+    K: IntoPyObject<'py>,
+    I: IntoIterator<Item = (K, u64)>,
+{
+    let dict = PyDict::new(py);
+    let mut total: u64 = 0;
+    for (key, count) in entries {
+        dict.set_item(key, count)?;
+        total += count;
+    }
+    Ok((dict, total))
+}
+
 impl RustExplorationManager {
     pub(crate) fn _stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let dict = PyDict::new(py);
@@ -58,37 +77,34 @@ impl RustExplorationManager {
         )?;
         // angr-ilsr: per-reason fallback breakdown. sum(symbolic +
         // not_implemented + other) == native_proc_fallbacks.
-        let symbolic_by_name = PyDict::new(py);
-        let mut symbolic_total: u64 = 0;
-        for (name, count) in &self.profiling.native_proc_stats.symbolic_fallbacks_by_name {
-            symbolic_by_name.set_item(name, *count)?;
-            symbolic_total += *count;
-        }
+        let native = &self.profiling.native_proc_stats;
+        let (symbolic_by_name, symbolic_total) = build_count_dict(
+            py,
+            native
+                .symbolic_fallbacks_by_name
+                .iter()
+                .map(|(n, c)| (n, *c)),
+        )?;
         dict.set_item("native_proc_symbolic_fallbacks_by_name", symbolic_by_name)?;
         dict.set_item("native_proc_symbolic_fallbacks", symbolic_total)?;
 
-        let not_impl_by_name = PyDict::new(py);
-        let mut not_impl_total: u64 = 0;
-        for (name, count) in &self
-            .profiling
-            .native_proc_stats
-            .not_implemented_fallbacks_by_name
-        {
-            not_impl_by_name.set_item(name, *count)?;
-            not_impl_total += *count;
-        }
+        let (not_impl_by_name, not_impl_total) = build_count_dict(
+            py,
+            native
+                .not_implemented_fallbacks_by_name
+                .iter()
+                .map(|(n, c)| (n, *c)),
+        )?;
         dict.set_item(
             "native_proc_not_implemented_fallbacks_by_name",
             not_impl_by_name,
         )?;
         dict.set_item("native_proc_not_implemented_fallbacks", not_impl_total)?;
 
-        let other_by_name = PyDict::new(py);
-        let mut other_total: u64 = 0;
-        for (name, count) in &self.profiling.native_proc_stats.other_fallbacks_by_name {
-            other_by_name.set_item(name, *count)?;
-            other_total += *count;
-        }
+        let (other_by_name, other_total) = build_count_dict(
+            py,
+            native.other_fallbacks_by_name.iter().map(|(n, c)| (n, *c)),
+        )?;
         dict.set_item("native_proc_other_fallbacks_by_name", other_by_name)?;
         dict.set_item("native_proc_other_fallbacks", other_total)?;
         dict.set_item("avoided_count", self.sm.avoided_count)?;
@@ -107,25 +123,27 @@ impl RustExplorationManager {
             "simprocedure_python_fallback_count",
             self.simprocedure_python_fallback_count,
         )?;
-        let fallback_by_name = PyDict::new(py);
-        for (name, count) in &self.simprocedure_fallback_by_name {
-            fallback_by_name.set_item(name, *count)?;
-        }
+        let (fallback_by_name, _) = build_count_dict(
+            py,
+            self.simprocedure_fallback_by_name
+                .iter()
+                .map(|(n, c)| (n, *c)),
+        )?;
         dict.set_item("simprocedure_fallback_by_name", fallback_by_name)?;
         dict.set_item(
             "syscall_python_fallback_count",
             self.syscall_python_fallback_count,
         )?;
-        let syscall_fallback_by_num = PyDict::new(py);
-        for (num, count) in &self.syscall_python_fallback_by_num {
-            syscall_fallback_by_num.set_item(*num, *count)?;
-        }
+        let (syscall_fallback_by_num, _) = build_count_dict(
+            py,
+            self.syscall_python_fallback_by_num
+                .iter()
+                .map(|(n, c)| (*n, *c)),
+        )?;
         dict.set_item("syscall_python_fallback_by_num", syscall_fallback_by_num)?;
         dict.set_item("syscall_native_count", self.syscall_native_count)?;
-        let syscall_native_by_num = PyDict::new(py);
-        for (num, count) in &self.syscall_native_by_num {
-            syscall_native_by_num.set_item(*num, *count)?;
-        }
+        let (syscall_native_by_num, _) =
+            build_count_dict(py, self.syscall_native_by_num.iter().map(|(n, c)| (*n, *c)))?;
         dict.set_item("syscall_native_by_num", syscall_native_by_num)?;
         // DS-instr (angr-11djq.16): state-reconvergence counters. A collision
         // == two+ active states sharing a (pc, callstack) key at the same step.
@@ -302,25 +320,27 @@ impl RustExplorationManager {
             "simprocedure_python_fallback_count",
             self.simprocedure_python_fallback_count,
         )?;
-        let fallback_by_name = PyDict::new(py);
-        for (name, count) in &self.simprocedure_fallback_by_name {
-            fallback_by_name.set_item(name, *count)?;
-        }
+        let (fallback_by_name, _) = build_count_dict(
+            py,
+            self.simprocedure_fallback_by_name
+                .iter()
+                .map(|(n, c)| (n, *c)),
+        )?;
         dict.set_item("simprocedure_fallback_by_name", fallback_by_name)?;
         dict.set_item(
             "syscall_python_fallback_count",
             self.syscall_python_fallback_count,
         )?;
-        let syscall_fallback_by_num = PyDict::new(py);
-        for (num, count) in &self.syscall_python_fallback_by_num {
-            syscall_fallback_by_num.set_item(*num, *count)?;
-        }
+        let (syscall_fallback_by_num, _) = build_count_dict(
+            py,
+            self.syscall_python_fallback_by_num
+                .iter()
+                .map(|(n, c)| (*n, *c)),
+        )?;
         dict.set_item("syscall_python_fallback_by_num", syscall_fallback_by_num)?;
         dict.set_item("syscall_native_count", self.syscall_native_count)?;
-        let syscall_native_by_num = PyDict::new(py);
-        for (num, count) in &self.syscall_native_by_num {
-            syscall_native_by_num.set_item(*num, *count)?;
-        }
+        let (syscall_native_by_num, _) =
+            build_count_dict(py, self.syscall_native_by_num.iter().map(|(n, c)| (*n, *c)))?;
         dict.set_item("syscall_native_by_num", syscall_native_by_num)?;
         Ok(dict)
     }
@@ -334,39 +354,37 @@ impl RustExplorationManager {
         dict.set_item("native_calls", stats.native_calls)?;
         dict.set_item("python_fallbacks", stats.python_fallbacks)?;
 
-        let call_counts = PyDict::new(py);
-        for (name, count) in &stats.call_counts {
-            call_counts.set_item(name, *count)?;
-        }
+        let (call_counts, _) =
+            build_count_dict(py, stats.call_counts.iter().map(|(n, c)| (n, *c)))?;
         dict.set_item("call_counts", call_counts)?;
 
         // Per-procedure fallback breakdown by reason. Sum across all three
         // maps equals `python_fallbacks`. Distinguishes "input was symbolic,
         // expected fallback" from "native impl missing this case".
-        let symbolic = PyDict::new(py);
-        let mut symbolic_total: u64 = 0;
-        for (name, count) in &stats.symbolic_fallbacks_by_name {
-            symbolic.set_item(name, *count)?;
-            symbolic_total += *count;
-        }
+        let (symbolic, symbolic_total) = build_count_dict(
+            py,
+            stats
+                .symbolic_fallbacks_by_name
+                .iter()
+                .map(|(n, c)| (n, *c)),
+        )?;
         dict.set_item("symbolic_fallbacks_by_name", symbolic)?;
         dict.set_item("symbolic_fallbacks", symbolic_total)?;
 
-        let not_impl = PyDict::new(py);
-        let mut not_impl_total: u64 = 0;
-        for (name, count) in &stats.not_implemented_fallbacks_by_name {
-            not_impl.set_item(name, *count)?;
-            not_impl_total += *count;
-        }
+        let (not_impl, not_impl_total) = build_count_dict(
+            py,
+            stats
+                .not_implemented_fallbacks_by_name
+                .iter()
+                .map(|(n, c)| (n, *c)),
+        )?;
         dict.set_item("not_implemented_fallbacks_by_name", not_impl)?;
         dict.set_item("not_implemented_fallbacks", not_impl_total)?;
 
-        let other = PyDict::new(py);
-        let mut other_total: u64 = 0;
-        for (name, count) in &stats.other_fallbacks_by_name {
-            other.set_item(name, *count)?;
-            other_total += *count;
-        }
+        let (other, other_total) = build_count_dict(
+            py,
+            stats.other_fallbacks_by_name.iter().map(|(n, c)| (n, *c)),
+        )?;
         dict.set_item("other_fallbacks_by_name", other)?;
         dict.set_item("other_fallbacks", other_total)?;
 
