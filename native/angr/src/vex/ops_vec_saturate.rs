@@ -139,7 +139,7 @@ impl VEXOps {
             // In `from_width` bits (two's complement): min = (-half) & mask
             let from_mask = Self::low_bit_mask_u128(from_width);
             let max = half - 1;
-            let min = (!(half - 1) + 1) & from_mask; // -half in from_width bits
+            let min = !(half - 1) & from_mask; // -half in from_width bits (NOT(x)=-x-1)
             (max, min)
         } else {
             // Unsigned dst: [0, 2^to_width - 1]

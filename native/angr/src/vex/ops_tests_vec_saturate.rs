@@ -234,6 +234,56 @@ fn test_vqnarrow_un_symbolic_saturates() {
     );
 }
 
+/// angr-36vvn.2 regression: the destination minimum (-128 narrowing I16→I8S)
+/// must pass through UNCHANGED, not get mis-clamped to -127. The symbolic
+/// `saturate_lane_symbolic` min bound was `-half + 1` (0xFF81) instead of
+/// `-half` (0xFF80), so a source lane exactly at the true minimum tripped the
+/// `lane < min` test and was clamped to 0x81 (-127).
+#[test]
+fn test_vqnarrow_un_symbolic_dest_min_passthrough() {
+    let ctx = SymContext::new_mock();
+    let arg = RustBV::symbolic(&ctx, "qn_min_arg", 128); // 8 lanes I16
+    let res = VEXOps::unop(
+        IROp::VQNarrowUn {
+            from: IRType::I16,
+            count: 8,
+            src_signed: true,
+            dst_signed: true,
+        },
+        arg.clone(),
+        &ctx,
+    )
+    .unwrap();
+    // Source lane 0 = -128 (0xFF80 as sign-extended I16). It is exactly the
+    // destination minimum, so it must narrow to 0x80 (-128), unchanged.
+    let src_lane0 = arg.extract(15, 0, &ctx);
+    ctx.add_constraint(
+        src_lane0
+            .to_z3_ast()
+            .eq(RustBV::concrete(0xFF80, 16).to_z3_ast()),
+    );
+    let out_lane0 = res.extract(7, 0, &ctx);
+    // With the fix out_lane0 == 0x80; require it to be equal (SAT) and the
+    // buggy 0x81 to be impossible (UNSAT) under this source constraint.
+    ctx.push();
+    ctx.add_constraint(
+        out_lane0
+            .to_z3_ast()
+            .eq(RustBV::concrete(0x80, 8).to_z3_ast()),
+    );
+    assert!(ctx.is_sat(), "dest-min -128 must pass through to 0x80");
+    ctx.pop();
+    ctx.add_constraint(
+        out_lane0
+            .to_z3_ast()
+            .eq(RustBV::concrete(0x81, 8).to_z3_ast()),
+    );
+    assert!(
+        !ctx.is_sat(),
+        "dest-min -128 must NOT be mis-clamped to -127 (0x81)"
+    );
+}
+
 // =========================================================================
 // angr-tukg.1 — NEON saturating add/sub (VQAdd / VQSub).
 // =========================================================================
