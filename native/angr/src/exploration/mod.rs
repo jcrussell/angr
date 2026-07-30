@@ -86,7 +86,6 @@ thread_local! {
 // them via `use super::*`.
 pub(crate) type HeapMetadataReturn = (Vec<(u64, u64)>, Vec<u64>);
 pub(crate) type OpenFdInfo = (u32, String, u64, u32, usize, bool);
-pub(crate) type InspectionEventInfo = (u8, String, u64, u32, u64);
 
 /// Get the current stepping state ID (safe to call from callbacks).
 #[pyfunction]

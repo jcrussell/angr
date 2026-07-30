@@ -2347,32 +2347,6 @@ impl RustExplorationManager {
         self._register_state_fd(state_id, fd, name, flags, content, position)
     }
 
-    /// Enable inspection for an event type on a state.
-    ///
-    /// event_type: 0=MemRead, 1=MemWrite, 2=RegRead, 3=RegWrite, 4=Fork, 5=Exit
-    pub fn enable_state_inspection(&mut self, state_id: u64, event_type: u8) -> PyResult<()> {
-        self._enable_state_inspection(state_id, event_type)
-    }
-
-    /// Enable all inspections on a state.
-    pub fn enable_all_inspections(&mut self, state_id: u64) -> PyResult<()> {
-        self._enable_all_inspections(state_id)
-    }
-
-    /// Get inspection event counts for a state.
-    ///
-    /// Returns list of (event_name, count) tuples for events with count > 0.
-    pub fn get_state_inspection_counts(&self, state_id: u64) -> PyResult<Vec<(String, u64)>> {
-        self._get_state_inspection_counts(state_id)
-    }
-
-    /// Get inspection events for a state.
-    ///
-    /// Returns list of (event_type, event_name, addr, size, block_addr) tuples.
-    pub fn get_state_inspection_events(&self, state_id: u64) -> PyResult<Vec<InspectionEventInfo>> {
-        self._get_state_inspection_events(state_id)
-    }
-
     /// Evaluate a stdin symbol by name and width using the state's solver.
     ///
     /// `width` is the symbol's recorded bit-width (8 for byte reads, 32/64 for
