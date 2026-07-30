@@ -108,10 +108,14 @@ crate::declare_proc! {
             )));
         }
         // Empty / fully-consumed content defers to Python so the symbolic-file
-        // model (cle simfs + SimFile) can produce symbolic bytes — mirroring
-        // read.rs. Synthesizing fresh symbolic bytes here would lose the
-        // SimFile's own constraints (e.g. the license bench's `byte != '\n'`),
-        // diverging from Python and risking path explosion.
+        // model (cle simfs + SimFile) can produce symbolic bytes. This
+        // deliberately DIVERGES from read.rs, which for content_len==0 mints
+        // fresh symbolic bytes in-place via read_file_symbolic (angr-gorvf.15)
+        // to avoid the Python round-trip. fread keeps bouncing on purpose:
+        // synthesizing fresh symbolic bytes here would lose the SimFile's own
+        // constraints (e.g. the license bench's `byte != '\n'`), diverging from
+        // Python and risking path explosion. Do not "unify" this with
+        // read.rs's fresh-mint path without re-checking the license bench.
         if content_len == 0 {
             return Err(ProcedureError::Other(format!(
                 "fread from fd={fd} has no concrete content; falling back to Python"
