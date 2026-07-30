@@ -57,6 +57,13 @@ pub(super) fn calc_flags_sub(nbits: u32, arg_l: u64, arg_r: u64) -> Flags {
     let mask = get_mask(nbits);
     let sign_bit = get_sign_bit(nbits);
 
+    // Defensively mask operands to the operand width before any comparison, matching
+    // calc_flags_adc/calc_flags_sbb and the symbolic sym_flags_sub (which extract_to_nbits
+    // both operands). Callers today always pre-mask, but relying on that caller-side
+    // invariant silently produced wrong CF/OF for garbage high bits (angr-36vvn.3).
+    let arg_l = arg_l & mask;
+    let arg_r = arg_r & mask;
+
     let res = arg_l.wrapping_sub(arg_r) & mask;
 
     // CF: set if borrow (unsigned: arg_l < arg_r)
@@ -82,6 +89,11 @@ pub(super) fn calc_flags_sub(nbits: u32, arg_l: u64, arg_r: u64) -> Flags {
 pub(super) fn calc_flags_add(nbits: u32, arg_l: u64, arg_r: u64) -> Flags {
     let mask = get_mask(nbits);
     let sign_bit = get_sign_bit(nbits);
+
+    // Defensively mask operands to the operand width before any comparison, matching
+    // calc_flags_adc/calc_flags_sbb and the symbolic sym_flags_add. See angr-36vvn.3.
+    let arg_l = arg_l & mask;
+    let arg_r = arg_r & mask;
 
     let res = arg_l.wrapping_add(arg_r) & mask;
 
