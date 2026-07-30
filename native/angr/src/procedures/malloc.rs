@@ -6,6 +6,11 @@
 use super::ProcedureError;
 use crate::symbolic::RustBV;
 
+/// Maximum allocation size accepted by the native allocator procedures
+/// (calloc/realloc/memalign/posix_memalign). Beyond this we defer to Python
+/// rather than growing the bump heap. Mirrors memcpy.rs's `MAX_COPY_SIZE`.
+const MAX_ALLOC_SIZE: u64 = 1024 * 1024; // 1MB
+
 crate::declare_proc! {
     /// Native malloc: `void *malloc(size_t size)`.
     name = "malloc",
@@ -40,7 +45,7 @@ crate::declare_proc! {
             .checked_mul(size)
             .ok_or_else(|| ProcedureError::Other("calloc overflow".to_string()))?;
 
-        if total > 1024 * 1024 {
+        if total > MAX_ALLOC_SIZE {
             return Err(ProcedureError::Other(format!(
                 "calloc size {total} exceeds 1MB limit"
             )));
@@ -76,7 +81,7 @@ crate::declare_proc! {
     struct = NativeRealloc,
     args = [ptr: concrete, size: concrete],
     call |state| {
-        if size > 1024 * 1024 {
+        if size > MAX_ALLOC_SIZE {
             return Err(ProcedureError::Other(format!(
                 "realloc size {size} exceeds 1MB limit"
             )));
@@ -126,7 +131,7 @@ crate::declare_proc! {
                 "memalign alignment {alignment} is not a power of two"
             )));
         }
-        if size > 1024 * 1024 {
+        if size > MAX_ALLOC_SIZE {
             return Err(ProcedureError::Other(format!(
                 "memalign size {size} exceeds 1MB limit"
             )));
@@ -158,7 +163,7 @@ crate::declare_proc! {
         if alignment < ptr_bytes || !alignment.is_power_of_two() || alignment % ptr_bytes != 0 {
             return Ok(Some(RustBV::concrete(einval as u128, 32)));
         }
-        if size > 1024 * 1024 {
+        if size > MAX_ALLOC_SIZE {
             return Err(ProcedureError::Other(format!(
                 "posix_memalign size {size} exceeds 1MB limit"
             )));
