@@ -678,6 +678,36 @@ fn readlink_empty_path_returns_minus_one() {
 }
 
 #[test]
+fn readlink_empty_path_guard_beats_empty_key_symlink() {
+    // angr-myzjx.13: the empty-path guard must return -1 even when a
+    // symlink is registered under the empty-string key — matching
+    // readlinkat's guard. Without the guard, readlink("") would resolve
+    // the target and diverge from readlinkat(AT_FDCWD, "", ...).
+    let target = b"/should/not/resolve";
+    let mut state = RustSimState::new("amd64").expect("state");
+    state.map_memory(0x2000, 0x1000, Permission::RWX);
+    state
+        .memory_store(0x2000, RustBV::concrete(0, 8))
+        .expect("store nul");
+    state
+        .file_system()
+        .add_symlink(String::new(), target.to_vec());
+    state.map_memory(0x3000, 0x1000, Permission::RWX);
+
+    let out = NativeReadlinkSyscall
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(0x3000, 64),
+                RustBV::concrete(256, 64),
+            ],
+        )
+        .expect("readlink ok");
+    assert_eq!(expect_continue(out), NEG_ONE);
+}
+
+#[test]
 fn readlink_buf_is_not_modified_on_failure() {
     // The buffer must NOT be written: real Linux only fills it on a
     // positive return, and we always return -1.

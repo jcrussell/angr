@@ -405,7 +405,8 @@ impl NativeSyscall for NativeFaccessatSyscall {
 /// and returns that count (see `write_symlink_target`). `pathname` is
 /// read into a Rust `String` first, so a symbolic path byte routes
 /// through `SyscallError::SymbolicArgument` and falls back to the Python
-/// `syscall_stub` (matches the `NativeAccessSyscall` pattern).
+/// `syscall_stub` (matches the `NativeAccessSyscall` pattern). An empty
+/// `pathname` short-circuits to `-1` (matches `readlinkat`).
 pub struct NativeReadlinkSyscall;
 
 impl NativeSyscall for NativeReadlinkSyscall {
@@ -424,6 +425,9 @@ impl NativeSyscall for NativeReadlinkSyscall {
     ) -> Result<SyscallOutcome, SyscallError> {
         let pathname_addr = extract_concrete_arg(&args[0], "readlink pathname")?;
         let path = read_path(state, pathname_addr, "readlink")?;
+        if path.is_empty() {
+            return Ok(SyscallOutcome::Continue { ret: NEG_ONE });
+        }
         write_symlink_target(state, &path, &args[1], &args[2], "readlink")
     }
 }
@@ -507,11 +511,21 @@ const ST_BLKSIZE: u64 = 0x400;
 /// Shared `struct stat` field writers used by every per-arch layout below.
 /// Each takes the destination `buf` base plus the field `off`, so the arch
 /// writers no longer redefine identical store closures (audit angr-myzjx.17).
-fn store_stat_u64(state: &mut RustSimState, buf: u64, off: u64, val: u64) -> Result<(), SyscallError> {
+fn store_stat_u64(
+    state: &mut RustSimState,
+    buf: u64,
+    off: u64,
+    val: u64,
+) -> Result<(), SyscallError> {
     state.memory_store(buf + off, RustBV::concrete(val as u128, 64))?;
     Ok(())
 }
-fn store_stat_u32(state: &mut RustSimState, buf: u64, off: u64, val: u32) -> Result<(), SyscallError> {
+fn store_stat_u32(
+    state: &mut RustSimState,
+    buf: u64,
+    off: u64,
+    val: u32,
+) -> Result<(), SyscallError> {
     state.memory_store(buf + off, RustBV::concrete(val as u128, 32))?;
     Ok(())
 }
