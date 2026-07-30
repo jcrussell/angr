@@ -59,13 +59,6 @@ class TestFindAll:
         assert find_all == exhaustive
         assert find_all >= 1  # the synthetic has at least one reaching path
 
-    def test_find_all_is_at_least_capped(self, project):
-        """Find-all never returns fewer solutions than a low explicit cap."""
-        target = project.loader.find_symbol("reach_target").rebased_addr
-        capped = _run(project, target, 1)
-        find_all = _run(project, target, None)
-        assert find_all >= capped
-
     def test_find_all_unreachable_terminates(self, project):
         """An unreachable target under num_find=None terminates (active_empty),
         not the unbounded run()-respin hang of invariant-active-empty-not-partial-found."""
