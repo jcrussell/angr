@@ -1660,10 +1660,10 @@ enum FallbackBucket {
 /// * `no_return` — the serial path trusts the Python registration tuple, the
 ///   core path `native_proc.no_return()`;
 /// * the [`NativeProcDisposition::SubCall`] counter bump, which is deliberately
-///   NOT done here: the core path counts the call as soon as `call_ex` returns,
-///   while `step_one` counts it only once `setup_native_subcall` succeeds and
-///   otherwise books a Python fallback. Both are preserved by leaving the bump
-///   to the caller;
+///   NOT done here: both dispatch sites count a sub-call as a native call only
+///   once `setup_native_subcall` succeeds, and book an `other` Python fallback
+///   when setup fails. Leaving the bump to the caller keeps that shared
+///   semantics tied to the setup outcome each caller owns;
 /// * `mirror_segfault` — only the core path terminal-errors natively today;
 ///   `step_one` passes `false` so a strict-page-access fault still bounces to
 ///   Python via the ordinary fallback counters.

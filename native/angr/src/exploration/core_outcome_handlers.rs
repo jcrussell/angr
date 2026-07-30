@@ -565,7 +565,11 @@ pub(super) fn handle_simprocedure_core(
             // is read. Truncating made the scanf family a no-op (angr-8onrp).
             let native_num_args = num_args.max(native_proc.num_args());
             let args = ctx.cc.extract_procedure_args(&state, native_num_args);
-            let disposition = dispatch_native_proc(
+            // The sub-call's native_call / fallback bump is deferred to the
+            // `SubCall` arm below so it agrees with `step_one`: a native call
+            // is booked only once `setup_native_subcall` succeeds; a setup
+            // failure books a Python fallback instead.
+            dispatch_native_proc(
                 native_proc.as_ref(),
                 &mut state,
                 &name,
@@ -583,16 +587,7 @@ pub(super) fn handle_simprocedure_core(
                         .not_implemented_fallbacks_by_name,
                     other_fallbacks_by_name: &mut counters.other_fallbacks_by_name,
                 },
-            );
-            // A sub-call counts as a native call the moment `call_ex` asks for
-            // it — `setup_native_subcall` failing below books no extra fallback
-            // on this path (`step_one` books one instead, hence the caller-side
-            // bump).
-            if matches!(disposition, NativeProcDisposition::SubCall { .. }) {
-                counters.native_calls += 1;
-                *counters.call_counts.entry(name.clone()).or_insert(0) += 1;
-            }
-            disposition
+            )
         } else {
             NativeProcDisposition::Fallback
         }
@@ -633,11 +628,26 @@ pub(super) fn handle_simprocedure_core(
                 resume_tag,
             },
         ) {
-            Ok(()) => Some(false),
+            Ok(()) => {
+                // The native proc ran and its guest sub-call was set up:
+                // book it as a native call (mirrors `step_one`).
+                counters.native_calls += 1;
+                *counters.call_counts.entry(name.clone()).or_insert(0) += 1;
+                Some(false)
+            }
             Err(e) => {
+                // Setup failed (symbolic SP / unmapped slot); we bounce to
+                // Python, so classify this as a native->Python fallback in the
+                // `other` bucket rather than a completed native call — matching
+                // `step_one`'s inline fast path.
                 log::debug!(
                     "native sub-call setup failed ({e:?}); falling back to Python for {name}"
                 );
+                counters.native_python_fallbacks += 1;
+                *counters
+                    .other_fallbacks_by_name
+                    .entry(name.clone())
+                    .or_insert(0) += 1;
                 None
             }
         },
