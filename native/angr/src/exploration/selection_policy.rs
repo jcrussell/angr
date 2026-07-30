@@ -448,6 +448,14 @@ impl SelectionPolicy for LoopHeadRoundRobin {
 /// never returns `None` while the deque is non-empty.
 ///
 /// Opt-in only via `set_state_selection_directed`; never a default.
+/// Distance-to-target for a state's next block against a fixed CFG snapshot.
+/// Unmapped blocks (no known route to the target) get `u64::MAX` so they sort
+/// behind every reachable state. Shared by both CFG-distance policies
+/// ([`DirectedCfgDistance`] and [`FindDirected`]) since the lookup is identical.
+fn distance_in(distances: &HashMap<u64, u64>, state: &RustSimState) -> u64 {
+    distances.get(&state.pc()).copied().unwrap_or(u64::MAX)
+}
+
 pub struct DirectedCfgDistance {
     /// One-time `addr -> distance-to-target` snapshot from the angr CFG.
     /// Immutable after construction — no runtime Python bounces.
@@ -478,7 +486,7 @@ impl DirectedCfgDistance {
     /// route to the target) get `u64::MAX` so they sort behind every reachable
     /// state.
     fn distance(&self, state: &RustSimState) -> u64 {
-        self.distances.get(&state.pc()).copied().unwrap_or(u64::MAX)
+        distance_in(&self.distances, state)
     }
 }
 
@@ -589,7 +597,7 @@ impl FindDirected {
     /// route to the find target) get `u64::MAX` so they sink behind every
     /// reachable state.
     fn distance(&self, state: &RustSimState) -> u64 {
-        self.distances.get(&state.pc()).copied().unwrap_or(u64::MAX)
+        distance_in(&self.distances, state)
     }
 }
 
