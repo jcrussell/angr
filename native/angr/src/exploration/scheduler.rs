@@ -617,6 +617,13 @@ impl WorkTransport {
 pub(crate) struct WaveJob {
     transport: WorkTransport,
     results: Mutex<Vec<StateMigrationPayload>>,
+    /// Test-only accumulation of dead-path summaries. Production reads terminals
+    /// via [`take_results`](Self::take_results) and counts summaries through
+    /// `CoreCounters::record_summaries`; it never reads this vec, so gating it
+    /// (and the `worker_loop` write that fills it) behind `cfg(test)` spares the
+    /// production wave path a per-batch mutex lock. Only the `#[cfg(test)]`
+    /// [`into_results`](Self::into_results) consumes it (angr-1yge9.8 item 7).
+    #[cfg(test)]
     summaries: Mutex<Vec<TerminalSummary>>,
     /// Initial seed count (the `SchedulerStats::seeds` field).
     seeds: usize,
@@ -666,6 +673,7 @@ impl WaveJob {
         Self {
             transport,
             results: Mutex::new(Vec::new()),
+            #[cfg(test)]
             summaries: Mutex::new(Vec::new()),
             seeds,
             process,

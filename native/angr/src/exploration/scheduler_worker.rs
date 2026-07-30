@@ -102,10 +102,17 @@ pub(super) fn worker_loop(
         }
 
         // Summaries pay no serde — record and drop the full states in-context.
+        // Production reads only the counters (`record_summaries`); the vec-copy
+        // into `job.summaries` exists solely for the `#[cfg(test)]`
+        // `WaveJob::into_results` reader, so it is gated out of the production
+        // wave path (no per-batch mutex lock) — angr-1yge9.8 item 7.
         if !outcome.terminal_summaries.is_empty() {
             t.counters.record_summaries(&outcome.terminal_summaries);
-            let mut guard = job.summaries.lock().expect("summaries mutex poisoned");
-            guard.extend(outcome.terminal_summaries);
+            #[cfg(test)]
+            {
+                let mut guard = job.summaries.lock().expect("summaries mutex poisoned");
+                guard.extend(outcome.terminal_summaries);
+            }
         }
 
         // Shed surplus to the injector if a sibling is starving or we are over
