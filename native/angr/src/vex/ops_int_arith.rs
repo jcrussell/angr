@@ -43,13 +43,9 @@ impl VEXOps {
         let width = ty.bits();
         let double_width = width * 2;
 
-        // Extend and multiply
-        let left_ext = left.extend_into(double_width, signed, ctx);
-        let right_ext = right.extend_into(double_width, signed, ctx);
-
-        let product = left_ext.mul_into(right_ext, ctx);
-
-        // Extract high half
+        // Delegate the extend+multiply to widening_mul (identical math), then
+        // extract the high half of the double-width product.
+        let product = Self::widening_mul(left, right, ty, signed, ctx)?;
         Ok(product.extract_into(double_width - 1, width, ctx))
     }
 

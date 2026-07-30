@@ -60,13 +60,6 @@ impl From<u64> for StateId {
     }
 }
 
-impl From<StateId> for u64 {
-    #[inline]
-    fn from(s: StateId) -> Self {
-        s.0
-    }
-}
-
 impl std::fmt::Display for StateId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(&self.0, f)
