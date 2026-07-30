@@ -148,4 +148,60 @@ impl VEXOps {
         }
         Ok(Self::concat_le_elements(elements, ctx))
     }
+
+    /// Signed doubling saturating widening multiply — Iop_QDMull{N}Sx{M}
+    /// ((I64,I64)->V128, NEON VQDMULL). Full-lane, always signed: each
+    /// `elem`-wide lane pair is sign-widened, multiplied, doubled, then clamped
+    /// into the signed `2*elem`-bit output lane. Shares the lane layout and
+    /// concat ordering with `vec_mull` (even=false); the extra work is the
+    /// `*2` and the signed saturation, reusing `saturate_lane_symbolic`.
+    pub(super) fn vec_qdmull(
+        left: RustBV,
+        right: RustBV,
+        elem: IRType,
+        count: u8,
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
+        let in_width = elem.bits();
+        let out_width = in_width * 2;
+        let out_total = out_width * count as u32;
+
+        // Concrete fast path: sign-extend within i128, multiply, double, clamp.
+        // in_width <= 32 (only 16Sx4 / 32Sx2 exist) so `2 * la * ra` cannot
+        // overflow i128, and the signed 2N-bit range fits in i128.
+        if let (Some(l), Some(r)) = (left.as_u128(), right.as_u128()) {
+            let out_mask = Self::low_bit_mask_u128(out_width);
+            let sat_max: i128 = (1i128 << (out_width - 1)) - 1;
+            let sat_min: i128 = -(1i128 << (out_width - 1));
+            let mut result: u128 = 0;
+            for j in 0..count as u32 {
+                let lo = j * in_width;
+                let la = Self::sign_extend_low_to_i128(l >> lo, in_width);
+                let ra = Self::sign_extend_low_to_i128(r >> lo, in_width);
+                let doubled = la.wrapping_mul(ra).wrapping_mul(2);
+                let clamped = doubled.clamp(sat_min, sat_max);
+                result |= ((clamped as u128) & out_mask) << (j * out_width);
+            }
+            return Ok(RustBV::concrete(result, out_total));
+        }
+
+        // Symbolic: widen with two spare bits so the doubled product (magnitude
+        // up to 2^(2N-1), needing 2N+1 bits with sign) cannot overflow before
+        // the clamp, then saturate each lane into the signed out_width.
+        let mul_width = out_width + 2;
+        let mut elements: Vec<RustBV> = Vec::with_capacity(count as usize);
+        for j in 0..count as u32 {
+            let lo = j * in_width;
+            let hi = lo + in_width - 1;
+            let la = left.extract(hi, lo, ctx).extend_into(mul_width, true, ctx);
+            let ra = right.extract(hi, lo, ctx).extend_into(mul_width, true, ctx);
+            let prod = la.mul(&ra, ctx);
+            let doubled = prod.add(&prod, ctx);
+            elements.push(Self::saturate_lane_symbolic(
+                doubled, mul_width, out_width, /*src_signed=*/ true,
+                /*dst_signed=*/ true, ctx,
+            ));
+        }
+        Ok(Self::concat_le_elements(elements, ctx))
+    }
 }

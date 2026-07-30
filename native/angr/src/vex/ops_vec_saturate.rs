@@ -6,8 +6,9 @@
 //! dispatch in `ops`, and the shared sibling methods they call
 //! (`Self::sign_extend_low_to_i128`, `Self::concat_le_elements`, and the
 //! `narrow_lanes` driver in `ops_vec_lane`) stay visible by the
-//! descendant-module rule. The lane-level clamp helpers
-//! (`saturate_lane`, `saturate_lane_symbolic`) are private to this module.
+//! descendant-module rule. The concrete lane clamp helper (`saturate_lane`)
+//! is private to this module; `saturate_lane_symbolic` is `pub(super)` so the
+//! widening-multiply saturating family (`vec_qdmull`) can reuse it.
 //!
 //! Covers the saturating narrow family (Iop_QNarrowUn/QNarrowBin), per-lane
 //! saturating add/sub (Iop_QAdd/QSub), and saturating shift-left
@@ -121,7 +122,9 @@ impl VEXOps {
 
     /// Symbolic clamp of one `from_width`-bit lane into `to_width` bits.
     /// Builds an ITE: `if lane > max -> max; else if lane < min -> min; else lane[low to_width]`.
-    fn saturate_lane_symbolic(
+    /// `pub(super)` so the widening-multiply helpers (`vec_qdmull` in
+    /// `ops_vec_permute_mul`) can reuse the same clamp on their doubled product.
+    pub(super) fn saturate_lane_symbolic(
         lane: RustBV,
         from_width: u32,
         to_width: u32,

@@ -228,6 +228,18 @@ pub enum IROp {
         signed: bool,
         even: bool,
     },
+    /// Signed doubling saturating widening multiply — Iop_QDMull{N}Sx{M}
+    /// ((I64,I64)->V128, NEON VQDMULL). Each `elem`-wide signed input lane is
+    /// widened, multiplied with the matching lane of the other operand, the
+    /// product doubled, then saturated into the signed `2*elem`-bit output
+    /// lane. Saturation only triggers on the `MIN * MIN` corner (both inputs
+    /// `-2^(elem-1)`), whose doubled product `2^(2*elem-1)` overflows the
+    /// signed `2*elem`-bit max and clamps to `2^(2*elem-1) - 1`. Always signed,
+    /// always full-lane (no even-lane variant exists in libVEX).
+    VQDMull {
+        elem: IRType,
+        count: u8,
+    },
     /// Vector and
     VAnd(IRType), // V128 or V256
     /// Vector or
@@ -857,6 +869,7 @@ impl IROp {
             | IROp::VSub { .. }
             | IROp::VMul { .. }
             | IROp::VMull { .. }
+            | IROp::VQDMull { .. }
             | IROp::VShlN { .. }
             | IROp::VShrN { .. }
             | IROp::VSarN { .. }

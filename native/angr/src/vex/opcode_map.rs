@@ -825,6 +825,25 @@ fn parse_vector(op_str: &str) -> Option<IROp> {
         "16Ux8" => (I16, 8, false, true), "16Sx8" => (I16, 8, true, true),
         "32Ux4" => (I32, 4, false, true), "32Sx4" => (I32, 4, true, true),
     });
+    // Signed doubling saturating widening multiply — Iop_QDMull{N}Sx{M}
+    // ((I64,I64)->V128, NEON VQDMULL). Only 16Sx4 / 32Sx2 exist in libVEX;
+    // always signed, always full-lane. A dedicated match (not a macro) since
+    // there are just two opcodes and no U/even axes to enumerate.
+    match op_str {
+        "Iop_QDMull16Sx4" => {
+            return Some(IROp::VQDMull {
+                elem: IRType::I16,
+                count: 4,
+            });
+        }
+        "Iop_QDMull32Sx2" => {
+            return Some(IROp::VQDMull {
+                elem: IRType::I32,
+                count: 2,
+            });
+        }
+        _ => {}
+    }
 
     // NEON lane extract / insert — Iop_{Get,Set}Elem{N}x{M}: (vec, idx[, val]).
     vec_arms!(op_str; "Iop_GetElem" => VGetElem {

@@ -170,6 +170,36 @@ fn test_widening_vector_multiply_routing() {
 }
 
 #[test]
+fn test_qdmull_opcode_mapping() {
+    // Signed doubling saturating widening multiply (angr-1yge9.5). Only these
+    // two names exist in libVEX; both (I64,I64)->V128, always signed/full-lane.
+    assert_eq!(
+        parse_opcode("Iop_QDMull16Sx4"),
+        IROp::VQDMull {
+            elem: IRType::I16,
+            count: 4
+        }
+    );
+    assert_eq!(
+        parse_opcode("Iop_QDMull32Sx2"),
+        IROp::VQDMull {
+            elem: IRType::I32,
+            count: 2
+        }
+    );
+    // The "Iop_QDMull" prefix must not shadow the plain "Iop_Mull" arm.
+    assert_eq!(
+        parse_opcode("Iop_Mull16Sx4"),
+        IROp::VMull {
+            elem: IRType::I16,
+            count: 4,
+            signed: true,
+            even: false
+        }
+    );
+}
+
+#[test]
 fn test_neon_unimplemented_scaffold_is_empty() {
     // The NeonUnimplemented scaffold (parse_neon_unimplemented) routes
     // claimed-but-unimplemented NEON opcodes through

@@ -482,3 +482,119 @@ fn test_vec_mull_even_32sx4_symbolic_matches_reference() {
     );
     ctx.pop();
 }
+
+// =========================================================================
+// VQDMull — signed doubling saturating widening multiply (angr-1yge9.5).
+//   Iop_QDMull{N}Sx{M}  (I64,I64)->V128, NEON VQDMULL. Always signed,
+//   full-lane. result_lane = SignedSat(2 * sext(la) * sext(ra), 2N bits).
+// =========================================================================
+
+/// Iop_QDMull16Sx4 — VQDMULL.S16: 4 signed i16 lanes doubled-multiplied to 4
+/// i32 lanes. Third lane is the saturation corner (-32768 * -32768 = 2^30,
+/// doubled = 2^31, which overflows i32 max 2^31-1 and clamps).
+#[test]
+fn test_vec_qdmull_16sx4_concrete() {
+    let ctx = SymContext::new_mock();
+    let l: [i16; 4] = [-2, 100, -32768, 3];
+    let r: [i16; 4] = [3, -4, -32768, -5];
+    // 2*(-2*3)=-12, 2*(100*-4)=-800, 2*(2^30)=2^31 -> sat i32::MAX, 2*(3*-5)=-30
+    let exp: [i32; 4] = [-12, -800, i32::MAX, -30];
+    let lv = pack_lanes_uint(&l.map(|x| x as u16 as u128), 16);
+    let rv = pack_lanes_uint(&r.map(|x| x as u16 as u128), 16);
+    let result = VEXOps::binop(
+        IROp::VQDMull {
+            elem: IRType::I16,
+            count: 4,
+        },
+        RustBV::concrete(lv, 64),
+        RustBV::concrete(rv, 64),
+        &ctx,
+    )
+    .unwrap();
+    assert_eq!(result.width(), 128);
+    assert_int_lanes_eq(
+        result.as_u128().unwrap(),
+        &exp.map(|x| x as u32 as u128),
+        32,
+    );
+}
+
+/// Iop_QDMull32Sx2 — VQDMULL.S32: 2 signed i32 lanes doubled-multiplied to 2
+/// i64 lanes. Second lane is the saturation corner (i32::MIN squared, doubled
+/// = 2^63, overflowing i64::MAX).
+#[test]
+fn test_vec_qdmull_32sx2_concrete() {
+    let ctx = SymContext::new_mock();
+    let l: [i32; 2] = [7, i32::MIN];
+    let r: [i32; 2] = [8, i32::MIN];
+    // 2*(7*8)=112, 2*(2^62)=2^63 -> sat i64::MAX
+    let exp: [i64; 2] = [112, i64::MAX];
+    let lv = pack_lanes_uint(&l.map(|x| x as u32 as u128), 32);
+    let rv = pack_lanes_uint(&r.map(|x| x as u32 as u128), 32);
+    let result = VEXOps::binop(
+        IROp::VQDMull {
+            elem: IRType::I32,
+            count: 2,
+        },
+        RustBV::concrete(lv, 32 * 2),
+        RustBV::concrete(rv, 32 * 2),
+        &ctx,
+    )
+    .unwrap();
+    assert_eq!(result.width(), 128);
+    assert_int_lanes_eq(
+        result.as_u128().unwrap(),
+        &exp.map(|x| x as u64 as u128),
+        64,
+    );
+}
+
+/// Symbolic parity: Iop_QDMull32Sx2 on fully-symbolic operands must equal an
+/// independently-built reference (widen 32->128, multiply, double, clamp to the
+/// signed 64-bit range via explicit sgt/slt), for every input. Universality
+/// check — no satisfying counter-example. Independent of the impl's internal
+/// `mul_width` so it catches lane-layout, doubling, and saturation-direction
+/// bugs, not just a copy of the same arithmetic.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_vec_qdmull_32sx2_symbolic_matches_reference() {
+    let ctx = SymContext::new_mock();
+    let left = RustBV::symbolic(&ctx, "qdmull_l", 64);
+    let right = RustBV::symbolic(&ctx, "qdmull_r", 64);
+    let got = VEXOps::binop(
+        IROp::VQDMull {
+            elem: IRType::I32,
+            count: 2,
+        },
+        left.clone(),
+        right.clone(),
+        &ctx,
+    )
+    .unwrap();
+    assert_eq!(got.width(), 128);
+
+    let smax = RustBV::concrete(i64::MAX as u128, 128);
+    let smin = RustBV::concrete((i64::MIN as i128) as u128, 128);
+    let mut lanes = Vec::with_capacity(2);
+    for j in 0..2u32 {
+        let lo = j * 32;
+        let hi = lo + 31;
+        let la = left.extract(hi, lo, &ctx).extend_into(128, true, &ctx);
+        let ra = right.extract(hi, lo, &ctx).extend_into(128, true, &ctx);
+        let prod = la.mul(&ra, &ctx);
+        let doubled = prod.add(&prod, &ctx);
+        // clamp to [i64::MIN, i64::MAX] in 128-bit signed space, then truncate.
+        let hi_clamped = doubled.sgt(&smax, &ctx).ite(&smax, &doubled, &ctx);
+        let clamped = hi_clamped.slt(&smin, &ctx).ite(&smin, &hi_clamped, &ctx);
+        lanes.push(clamped.extract(63, 0, &ctx));
+    }
+    let reference = VEXOps::concat_le_elements(lanes, &ctx);
+
+    ctx.push();
+    ctx.add_constraint(got.to_z3_ast().eq(reference.to_z3_ast()).not());
+    assert!(
+        !ctx.is_sat(),
+        "VQDMull 32Sx2 must match the doubled sign-extended saturated product"
+    );
+    ctx.pop();
+}
