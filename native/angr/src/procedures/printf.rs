@@ -38,25 +38,12 @@ crate::declare_proc! {
     args = [fmt_addr: concrete],
     aliases = ["vprintf"],
     call |state| {
-        // Read the format string byte-by-byte from memory
-        let mut buf = Vec::new();
-        for i in 0..MAX_PRINTF_LEN {
-            match state.memory_load(fmt_addr + i as u64, 1) {
-                Ok(bv) => {
-                    if let Some(val) = bv.as_u64() {
-                        let byte = val as u8;
-                        if byte == 0 {
-                            break;
-                        }
-                        buf.push(byte);
-                    } else {
-                        // Symbolic byte — stop reading
-                        break;
-                    }
-                }
-                Err(_) => break,
-            }
-        }
+        // Read the format string byte-by-byte from memory. A symbolic byte,
+        // null terminator, or failed load quietly stops the scan (see the
+        // module docstring's note on printf's intentional symbolic-byte
+        // asymmetry) — exactly `scan_concrete_lossy`'s contract, so reuse it
+        // rather than re-rolling the loop (matches NativeFprintf below).
+        let buf = crate::procedures::strings::scan_concrete_lossy(state, fmt_addr, MAX_PRINTF_LEN);
 
         // Append to stdout buffer. A refusal (fd 1 dup2'd onto a bounded-
         // symbolic-content fd, now demoted) bounces to Python — see
