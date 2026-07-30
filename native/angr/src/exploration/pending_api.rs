@@ -119,21 +119,6 @@ impl RustExplorationManager {
         })
     }
 
-    pub(crate) fn _get_pending_history(&self, state_id: u64) -> PyResult<Vec<u64>> {
-        self.with_pending(state_id, |pending| {
-            Ok(pending.state.history().iter().copied().collect::<Vec<_>>())
-        })
-    }
-
-    pub(crate) fn _get_pending_jumpkind(&self, state_id: u64) -> PyResult<String> {
-        self.with_pending(state_id, |pending| {
-            Ok(pending
-                .jumpkind
-                .clone()
-                .unwrap_or_else(|| "Ijk_Boring".to_string()))
-        })
-    }
-
     pub(crate) fn _get_pending_history_and_jumpkind(
         &self,
         state_id: u64,

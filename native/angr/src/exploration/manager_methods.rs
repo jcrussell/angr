@@ -1050,28 +1050,12 @@ impl RustExplorationManager {
         self._get_pending_register_ast(py, state_id, name)
     }
 
-    /// Get history (BBL addresses) from pending callback state.
-    ///
-    /// This is used by Python to initialize history on callback states,
-    /// preventing IndexError when hooks access `state.history.recent_bbl_addrs[-1]`.
-    /// See `pending_api::_get_pending_history` for the body.
-    pub fn get_pending_history(&self, state_id: u64) -> PyResult<Vec<u64>> {
-        self._get_pending_history(state_id)
-    }
-
-    /// Get jumpkind for pending callback.
-    ///
-    /// Returns the jumpkind that led to this callback (e.g., "Ijk_Call", "Ijk_Boring").
-    /// This is used by Python to properly initialize callstack management.
-    /// See `pending_api::_get_pending_jumpkind` for the body.
-    pub fn get_pending_jumpkind(&self, state_id: u64) -> PyResult<String> {
-        self._get_pending_jumpkind(state_id)
-    }
-
     /// Get history (BBL addresses) and jumpkind from pending callback state
-    /// in a single FFI call. Avoids the GIL + boundary-crossing cost of
-    /// calling `get_pending_history()` and `get_pending_jumpkind()`
-    /// separately from the callback dispatcher hot path.
+    /// in a single FFI call. Fetching both in one crossing avoids the GIL +
+    /// boundary-crossing cost of two separate calls from the callback
+    /// dispatcher hot path. Used by Python to initialize history + callstack
+    /// on callback states, preventing IndexError when hooks access
+    /// `state.history.recent_bbl_addrs[-1]`.
     /// See `pending_api::_get_pending_history_and_jumpkind` for the body.
     pub fn get_pending_history_and_jumpkind(&self, state_id: u64) -> PyResult<(Vec<u64>, String)> {
         self._get_pending_history_and_jumpkind(state_id)
