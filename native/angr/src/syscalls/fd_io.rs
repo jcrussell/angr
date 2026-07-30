@@ -13,6 +13,10 @@
 //!     words per element — `iov_base`, `iov_len`) and dispatch each segment
 //!     through the same native read/write logic as `read`/`write`. `writev`
 //!     is glibc stdio's flush path, so it is hit on essentially every printf.
+//!     `readv` also mirrors `read`'s is_symbolic fast path (angr-myzjx.12): a
+//!     symbolic-stream fd (the stdin model, `FileSystem::open_symbolic`) with
+//!     no concrete content scatters fresh symbolic bytes natively rather than
+//!     bouncing to Python.
 //!
 //! Symbolic `iov` / `iovcnt`, oversize requests, and fds not handled natively
 //! all fall back to Python per the established `SyscallError` pattern. To
@@ -283,19 +287,7 @@ impl NativeSyscall for NativeReadvSyscall {
         if fd == 0 {
             // stdin: fill every segment with fresh symbolic bytes, mirroring
             // `read`'s stdin path. Returns the requested total.
-            let mut total = 0u64;
-            for (base, len) in segments {
-                let read_id = SYS_READV_COUNTER.fetch_add(1, Ordering::Relaxed);
-                let sym_bytes: Vec<RustBV> = {
-                    let ctx = state.solver().borrow();
-                    (0..len)
-                        .map(|i| RustBV::symbolic(&ctx, format!("sys_readv_{read_id}_{i}"), 8))
-                        .collect()
-                };
-                write_bv_bytes(state, base, sym_bytes)?;
-                total += len;
-            }
-            return Ok(SyscallOutcome::Continue { ret: total });
+            return scatter_symbolic(state, &segments, "sys_readv");
         }
 
         // User fd: serve concrete content from the FileSystem, advancing the
@@ -341,6 +333,14 @@ impl NativeSyscall for NativeReadvSyscall {
             return Ok(SyscallOutcome::Continue { ret: total });
         }
         if content_len == 0 {
+            // No concrete bytes left. A symbolic-stream fd (the stdin model)
+            // scatters fresh symbolic bytes natively, mirroring `read`'s
+            // is_symbolic fast path; any other fd defers to Python's
+            // symbolic-file model. (pread64 deliberately lacks this: a
+            // positioned read on a stream has no clear position semantics.)
+            if state.file_system_ref().is_symbolic(fd as u32) {
+                return scatter_symbolic(state, &segments, &format!("sys_readv_fd{fd}"));
+            }
             return Err(SyscallError::Other(format!(
                 "readv from fd={fd} has no concrete content; falling back to Python"
             )));
@@ -360,6 +360,31 @@ impl NativeSyscall for NativeReadvSyscall {
         }
         Ok(SyscallOutcome::Continue { ret: total })
     }
+}
+
+/// Scatter fresh symbolic bytes across the iovec `segments`, mirroring
+/// `read::read_symbolic`. Shared by `readv`'s stdin path (fd 0) and
+/// symbolic-stream fds (`FileSystem::is_symbolic`). Each segment mints `len`
+/// uniquely-named bytes (`<prefix>_<id>_<i>`); returns the requested total in
+/// rax (a symbolic stream never hits EOF).
+fn scatter_symbolic(
+    state: &mut RustSimState,
+    segments: &[(u64, u64)],
+    prefix: &str,
+) -> Result<SyscallOutcome, SyscallError> {
+    let mut total = 0u64;
+    for &(base, len) in segments {
+        let read_id = SYS_READV_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let sym_bytes: Vec<RustBV> = {
+            let ctx = state.solver().borrow();
+            (0..len)
+                .map(|i| RustBV::symbolic(&ctx, format!("{prefix}_{read_id}_{i}"), 8))
+                .collect()
+        };
+        write_bv_bytes(state, base, sym_bytes)?;
+        total += len;
+    }
+    Ok(SyscallOutcome::Continue { ret: total })
 }
 
 /// `pread64(fd, buf, nbyte, offset)` — positioned read; file position

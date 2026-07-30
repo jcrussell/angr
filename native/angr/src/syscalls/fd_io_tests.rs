@@ -262,6 +262,72 @@ fn readv_stdin_writes_symbolic() {
 }
 
 #[test]
+fn readv_symbolic_fd_scatters_symbolic_bytes_natively() {
+    // A symbolic-stream fd (empty content, flagged symbolic via open_symbolic)
+    // scatters fresh symbolic bytes natively instead of falling back to
+    // Python — matches `read`'s is_symbolic fast path (angr-myzjx.12).
+    let mut state = fresh_state();
+    let fd = state
+        .file_system()
+        .open_symbolic("sym.in".to_string(), FdFlags::ReadOnly);
+    assert!(state.file_system_ref().is_symbolic(fd));
+    write_iovec_array(&mut state, 0x2000, &[(0x3000, 4), (0x3010, 2)]);
+    let out = NativeReadvSyscall
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(fd as u128, 64),
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(2, 64),
+            ],
+        )
+        .expect("served natively");
+    match out {
+        SyscallOutcome::Continue { ret } => assert_eq!(ret, 6),
+        _ => panic!("expected Continue"),
+    }
+    for i in 0..4u64 {
+        assert!(
+            state.memory_load(0x3000 + i, 1).unwrap().as_u64().is_none(),
+            "seg0 byte {i} should be symbolic"
+        );
+    }
+    for i in 0..2u64 {
+        assert!(
+            state.memory_load(0x3010 + i, 1).unwrap().as_u64().is_none(),
+            "seg1 byte {i} should be symbolic"
+        );
+    }
+}
+
+#[test]
+fn readv_symbolic_fd_never_hits_eof() {
+    // Unlike a concrete fd, a symbolic stream keeps producing bytes — a
+    // second readv still returns the full requested total (no EOF).
+    let mut state = fresh_state();
+    let fd = state
+        .file_system()
+        .open_symbolic("sym.in".to_string(), FdFlags::ReadOnly);
+    write_iovec_array(&mut state, 0x2000, &[(0x3000, 3)]);
+    for _ in 0..2 {
+        let out = NativeReadvSyscall
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(fd as u128, 64),
+                    RustBV::concrete(0x2000, 64),
+                    RustBV::concrete(1, 64),
+                ],
+            )
+            .expect("served natively");
+        match out {
+            SyscallOutcome::Continue { ret } => assert_eq!(ret, 3),
+            _ => panic!("expected Continue"),
+        }
+    }
+}
+
+#[test]
 fn readv_unknown_fd_falls_back() {
     let mut state = fresh_state();
     write_iovec_array(&mut state, 0x2000, &[(0x3000, 4)]);
