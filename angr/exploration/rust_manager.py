@@ -732,6 +732,17 @@ def _warn_if_parallel_nondeterministic() -> bool:
     Returns True when the warning fired (multi-worker + deterministic).
     Deliberately does NOT touch Z3's parallel mode — see bd memory
     ``avoid-z3-parallel-enable``.
+
+    Enforcement-level asymmetry (intentional, not a bug): the *explicit*
+    ``parallel_workers>1`` kwarg combined with ``deterministic=True`` is a
+    hard ``ValueError`` in ``__init__`` (see the guard near
+    ``self._requested_parallel_workers``), because the caller programmatically
+    asked for two mutually exclusive things and deserves a clear, early
+    failure. This function handles the *other* source — an ambient
+    ``RUST_PARALLEL_WORKERS`` env var, which benches set process-wide — where a
+    hard error would be hostile: the env is not the caller's explicit intent,
+    the found *set* still matches a serial run, and only report order differs.
+    So the ambient case warns and proceeds; the explicit case rejects.
     """
     try:
         workers = int(os.environ.get("RUST_PARALLEL_WORKERS", "1"))
@@ -1308,7 +1319,10 @@ class RustExplorationManager(
         # multiple workers are mutually exclusive. Reject early, before any Rust
         # construction, so the caller gets a clear error rather than a silently
         # non-reproducible run. M2 owns the same guard for its own paths; this
-        # only rejects the constructor combination.
+        # only rejects the constructor combination. The ambient env-var source
+        # (RUST_PARALLEL_WORKERS) is handled with a *warning* instead of an
+        # error by _warn_if_parallel_nondeterministic() — see its docstring for
+        # why the explicit-kwarg and ambient-env enforcement levels differ.
         if deterministic and int(parallel_workers) > 1:
             raise ValueError(
                 "deterministic=True is incompatible with parallel_workers>1: the "
