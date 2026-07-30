@@ -594,7 +594,7 @@ pub(crate) enum StepOutcome {
     Successors(Vec<RustSimState>),
     /// A terminal disposition from a completed step. Driver applies it via
     /// `apply_terminal`, THEN runs post-step bookkeeping.
-    Terminal(TerminalDisposition),
+    Terminal(TerminalStep),
     /// A Python callback is pending. The `PendingCallback` is returned as a value
     /// (NOT yet stored in `self.pending_callback`) so the driver can build the
     /// event from this local — letting the `PythonVEXFallback` counter mutations
@@ -604,7 +604,7 @@ pub(crate) enum StepOutcome {
 
 /// The three terminal step outcomes, each carrying the data the driver needs to
 /// reproduce the original per-stash push (and its side effects) byte-for-byte.
-pub(crate) enum TerminalDisposition {
+pub(crate) enum TerminalStep {
     /// `push_or_drop_terminal(STASH_DEADENDED, state)`.
     Deadended(RustSimState),
     /// `errors.push((pc, message, state_id))` then a direct `push_back` into
@@ -1212,13 +1212,13 @@ impl RustExplorationManager {
                     break;
                 }
                 Err(StepError::Deadended(s)) => {
-                    self.apply_terminal(TerminalDisposition::Deadended(s));
+                    self.apply_terminal(TerminalStep::Deadended(s));
                     self.steps += 1;
                 }
                 Err(StepError::Error(s, message)) => {
                     let pc = s.pc();
                     let state_id = s.state_id();
-                    self.apply_terminal(TerminalDisposition::Errored {
+                    self.apply_terminal(TerminalStep::Errored {
                         state: s,
                         pc,
                         message,
@@ -1227,7 +1227,7 @@ impl RustExplorationManager {
                     self.steps += 1;
                 }
                 Err(StepError::Unconstrained(s, forks)) => {
-                    self.apply_terminal(TerminalDisposition::Unconstrained { state: s, forks });
+                    self.apply_terminal(TerminalStep::Unconstrained { state: s, forks });
                     self.steps += 1;
                 }
             }
@@ -2455,12 +2455,12 @@ impl RustExplorationManager {
                 Ok(StepOutcome::NeedCallback(pending))
             }
             Err(StepError::Deadended(state)) => {
-                Ok(StepOutcome::Terminal(TerminalDisposition::Deadended(state)))
+                Ok(StepOutcome::Terminal(TerminalStep::Deadended(state)))
             }
             Err(StepError::Error(state, message)) => {
                 let pc = state.pc();
                 let state_id = state.state_id();
-                Ok(StepOutcome::Terminal(TerminalDisposition::Errored {
+                Ok(StepOutcome::Terminal(TerminalStep::Errored {
                     state,
                     pc,
                     message,
@@ -2468,7 +2468,7 @@ impl RustExplorationManager {
                 }))
             }
             Err(StepError::Unconstrained(state, forks)) => {
-                Ok(StepOutcome::Terminal(TerminalDisposition::Unconstrained {
+                Ok(StepOutcome::Terminal(TerminalStep::Unconstrained {
                     state,
                     forks,
                 }))
@@ -2479,12 +2479,12 @@ impl RustExplorationManager {
     /// Apply a terminal disposition to the stashes, reproducing each original
     /// per-stash push path (and its side effects) byte-for-byte. Called by the
     /// driver, which then runs post-step bookkeeping.
-    pub(crate) fn apply_terminal(&mut self, disposition: TerminalDisposition) {
+    pub(crate) fn apply_terminal(&mut self, disposition: TerminalStep) {
         match disposition {
-            TerminalDisposition::Deadended(state) => {
+            TerminalStep::Deadended(state) => {
                 self.push_or_drop_terminal(STASH_DEADENDED, state);
             }
-            TerminalDisposition::Errored {
+            TerminalStep::Errored {
                 state,
                 pc,
                 message,
@@ -2497,7 +2497,7 @@ impl RustExplorationManager {
                     .or_default()
                     .push_back(state);
             }
-            TerminalDisposition::Unconstrained { state, forks } => {
+            TerminalStep::Unconstrained { state, forks } => {
                 // State has too many symbolic jump targets - move to unconstrained stash
                 log::debug!("State {} moved to unconstrained stash", state.state_id());
                 self.sm.push_or_drop_terminal(STASH_UNCONSTRAINED, state);
