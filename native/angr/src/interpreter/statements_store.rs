@@ -213,6 +213,40 @@ impl<'a> VEXInterpreter<'a> {
         }
     }
 
+    /// Concrete-address soundness prelude shared by manual store dispatchers
+    /// (e.g. `handle_storeg`): invalidate any cached IRSB the write overlaps
+    /// (self-modifying code) and evict stale overlapping symbolic shadows so a
+    /// later overlap load can't return them. Combines the two steps the plain
+    /// Store path gets for free via `fallback_to_python_store` +
+    /// `handle_concrete_store` (angr-myzjx.26).
+    pub(super) fn invalidate_and_evict_concrete_store(&mut self, addr: u64, data_size: usize) {
+        self.invalidate_code_at_store(addr, data_size);
+        self.evict_overlapping_symbolic_stores(addr, data_size);
+    }
+
+    /// Canonical store dispatch for the *unconditional* arms of
+    /// `handle_storeg` (guard always-true / concrete-true), where a guarded
+    /// store is semantically identical to a plain `IRStmt::Store` of
+    /// `data_val` at `addr_val`. Mirrors the `IRStmt::Store` handler: try
+    /// Rust-native memory first, else the Python fallback. Both paths perform
+    /// code-cache invalidation and symbolic-shadow eviction, which the old
+    /// inline `handle_storeg` dispatch skipped entirely (angr-myzjx.26).
+    pub(super) fn store_value(
+        &mut self,
+        callbacks: &PythonCallbacks,
+        addr_val: &RustBV,
+        data_val: RustBV,
+        data_size: usize,
+    ) -> Result<(), CbExecutionError> {
+        if self.use_rust_memory
+            && self.try_rust_memory_store(callbacks, addr_val, &data_val, data_size, None)?
+        {
+            return Ok(());
+        }
+        record_mem_store(data_size as u64);
+        self.fallback_to_python_store(callbacks, addr_val, data_val, data_size)
+    }
+
     /// Concrete-address store path: chooses between the
     /// `memory_store_symbolic_value` callback (32-bit non-stack only) and
     /// the buffered `pending_stores` fast path. The 32-bit heuristic exists

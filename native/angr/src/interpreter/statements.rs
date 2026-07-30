@@ -461,25 +461,15 @@ impl<'a> VEXInterpreter<'a> {
                 return Ok(StmtResult::Continue);
             }
             if !self.ctx.can_be_false(&guard_val) {
-                // Guard is always true - perform store unconditionally
+                // Guard is always true - perform store unconditionally, which is
+                // semantically a plain Store. Route through the shared
+                // dispatcher so it gets code-cache invalidation and symbolic-
+                // shadow eviction (and handles symbolic addresses, which the old
+                // inline path silently dropped) — angr-myzjx.26.
                 let addr_val = self.eval_expr_with_callbacks(callbacks, addr, &irsb.tyenv)?;
                 let data_val = self.eval_expr_with_callbacks(callbacks, data, &irsb.tyenv)?;
-
-                if let Some(addr_concrete) = addr_val.as_u64() {
-                    // Check if data is symbolic - use symbolic store callback
-                    if data_val.is_symbolic() && callbacks.has_memory_store_symbolic_value() {
-                        self.flush_stores(callbacks)?;
-                        callbacks
-                            .call_memory_store_symbolic_value(addr_concrete, &data_val)
-                            .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
-                    } else {
-                        let data_bytes = bv_to_bytes(&data_val);
-                        self.pending_stores.push(addr_concrete, data_bytes);
-                        if self.pending_stores.len() >= self.max_pending_stores {
-                            self.flush_stores(callbacks)?;
-                        }
-                    }
-                }
+                let data_size = data_val.width().div_ceil(8) as usize;
+                self.store_value(callbacks, &addr_val, data_val, data_size)?;
                 return Ok(StmtResult::Continue);
             }
             // Both paths possible with symbolic guard - use ITE for conditional store
@@ -493,6 +483,10 @@ impl<'a> VEXInterpreter<'a> {
                 let current = self.load_from_callback(callbacks, addr_concrete, data_size)?;
                 // Create ITE: if guard then new_data else current
                 let ite_result = guard_val.ite(&data_val, &current, self.ctx);
+                // The ITE captured `current` above; now that we're about to
+                // overwrite this range, invalidate stale cached code and evict
+                // overlapping symbolic shadows (angr-myzjx.26).
+                self.invalidate_and_evict_concrete_store(addr_concrete, data_size);
                 // ITE result is symbolic if guard or either operand is symbolic
                 if ite_result.is_symbolic() && callbacks.has_memory_store_symbolic_value() {
                     self.flush_stores(callbacks)?;
@@ -507,14 +501,22 @@ impl<'a> VEXInterpreter<'a> {
                     }
                 }
             } else {
-                // Symbolic address with symbolic guard - concretize for write
-                match &*self.concretize_cached_write(&addr_val) {
+                // Symbolic address with symbolic guard - concretize for write.
+                // Invalidate cached code at the concretized target(s) before
+                // dispatching (self-modifying-code support), mirroring
+                // handle_symbolic_store (angr-myzjx.26).
+                let concret_result = self.concretize_cached_write(&addr_val);
+                self.invalidate_code_on_store(&concret_result, data_size);
+                match &*concret_result {
                     ConcretizationResult::Single(addr_concrete) => {
                         let addr_concrete = *addr_concrete;
                         // Load current value and use ITE
                         let current =
                             self.load_from_callback(callbacks, addr_concrete, data_size)?;
                         let ite_result = guard_val.ite(&data_val, &current, self.ctx);
+                        // ITE captured `current`; evict stale overlapping
+                        // symbolic shadows before storing the new value.
+                        self.evict_overlapping_symbolic_stores(addr_concrete, data_size);
                         self.flush_stores(callbacks)?;
                         // ITE result is symbolic - use symbolic store callback
                         if ite_result.is_symbolic() && callbacks.has_memory_store_symbolic_value() {
@@ -557,80 +559,17 @@ impl<'a> VEXInterpreter<'a> {
         if let Some(g) = guard_val.as_u64()
             && g != 0
         {
-            // Guard is true - perform the store
+            // Guard is true - the store is semantically identical to a plain
+            // IRStmt::Store of data_val at addr_val. Route through the shared
+            // dispatcher (angr-myzjx.26): this replaces a near-verbatim clone of
+            // handle_symbolic_store's concretization ladder that (a) never
+            // invalidated the code cache or evicted overlapping symbolic
+            // shadows, and (b) stored concrete data at a symbolic address via
+            // call_memory_store(0, ..) — a hard-coded address 0.
             let addr_val = self.eval_expr_with_callbacks(callbacks, addr, &irsb.tyenv)?;
             let data_val = self.eval_expr_with_callbacks(callbacks, data, &irsb.tyenv)?;
-
-            if let Some(addr_concrete) = addr_val.as_u64() {
-                // Check if data is symbolic - use symbolic store callback
-                if data_val.is_symbolic() && callbacks.has_memory_store_symbolic_value() {
-                    self.flush_stores(callbacks)?;
-                    callbacks
-                        .call_memory_store_symbolic_value(addr_concrete, &data_val)
-                        .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
-                } else {
-                    let data_bytes = bv_to_bytes(&data_val);
-                    self.pending_stores.push(addr_concrete, data_bytes);
-                    if self.pending_stores.len() >= self.max_pending_stores {
-                        self.flush_stores(callbacks)?;
-                    }
-                }
-            } else {
-                // Symbolic address with concrete guard - flush and use callback
-                self.flush_stores(callbacks)?;
-                // Check if data is symbolic - use symbolic store callback
-                if data_val.is_symbolic() && callbacks.has_memory_store_symbolic_value() {
-                    // Concretize address for write (with cache)
-                    let concret_result = self.concretize_cached_write(&addr_val);
-                    match &*concret_result {
-                        ConcretizationResult::Single(addr_concrete) => {
-                            let addr_concrete = *addr_concrete;
-                            callbacks
-                                .call_memory_store_symbolic_value(addr_concrete, &data_val)
-                                .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
-                        }
-                        ConcretizationResult::Multiple(addrs) => {
-                            // Symbolic data + multiple address solutions: prefer the full
-                            // symbolic store callback. Otherwise build an ITE chain in Rust
-                            // (mirrors fallback_to_python_store::Multiple) so all candidate
-                            // addresses are updated, not just the first one.
-                            if callbacks.has_memory_store_symbolic_full() {
-                                callbacks
-                                    .call_memory_store_symbolic_full(&addr_val, &data_val)
-                                    .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
-                            } else if callbacks.has_memory_store_symbolic_value()
-                                && addrs.len() <= 16
-                            {
-                                self.build_ite_store_from_callbacks(
-                                    callbacks, addrs, &addr_val, &data_val,
-                                )?;
-                            } else {
-                                return Err(CbExecutionError::Unsupported(
-                                                "symbolic store with multiple address solutions: \
-                                                 no memory_store_symbolic_full callback and ITE chain unavailable".to_string()
-                                            ));
-                            }
-                        }
-                        _ => {
-                            // TooLarge or Failed - delegate to Python's full symbolic callback
-                            if callbacks.has_memory_store_symbolic_full() {
-                                callbacks
-                                    .call_memory_store_symbolic_full(&addr_val, &data_val)
-                                    .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
-                            } else {
-                                return Err(CbExecutionError::Unsupported(
-                                    "symbolic store with unconcretizable address".to_string(),
-                                ));
-                            }
-                        }
-                    }
-                } else {
-                    let data_bytes = bv_to_bytes(&data_val);
-                    callbacks
-                        .call_memory_store(0, &data_bytes)
-                        .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
-                }
-            }
+            let data_size = data_val.width().div_ceil(8) as usize;
+            self.store_value(callbacks, &addr_val, data_val, data_size)?;
         }
         // Guard is false - skip the store
 
