@@ -197,7 +197,8 @@ pub(crate) struct CoreCounters {
 /// loop). `is_fork` and `root_hint` drive `sm.set_root`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[allow(dead_code)] // non-Continue variants are the routing-tag contract for the
-// future parallel coordinator; the single-threaded path tags continue states.
+// future parallel coordinator (see angr-i40qw); the single-threaded path tags
+// continue states.
 pub(crate) enum TagKind {
     Continue,
     Found,
@@ -210,7 +211,7 @@ pub(crate) enum TagKind {
 
 #[derive(Clone, Copy)]
 pub(crate) struct RoutingTag {
-    #[allow(dead_code)]
+    #[allow(dead_code)] // consumed by the future parallel coordinator (angr-i40qw)
     pub(crate) kind: TagKind,
     pub(crate) root_hint: Option<u64>,
     pub(crate) is_fork: bool,
