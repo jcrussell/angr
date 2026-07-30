@@ -207,12 +207,14 @@ impl FileSystem {
     pub fn read(&mut self, fd: u32, count: usize) -> Vec<u8> {
         // Peek to compute byte count without forcing CoW when nothing is readable.
         let n = match self.fds.get(&fd) {
-            Some(desc) => {
+            // Guard on is_open for parity with read_sym/read_sym_at; a closed
+            // fd serves no bytes even though its content buffer survives.
+            Some(desc) if desc.is_open => {
                 let pos = desc.position as usize;
                 let available = desc.content.len().saturating_sub(pos);
                 count.min(available)
             }
-            None => return Vec::new(),
+            _ => return Vec::new(),
         };
         if n == 0 {
             return Vec::new();
@@ -249,7 +251,9 @@ impl FileSystem {
     /// (empty if `offset` is past EOF or the fd is absent).
     pub fn read_at(&self, fd: u32, offset: u64, count: usize) -> Vec<u8> {
         match self.fds.get(&fd) {
-            Some(desc) => {
+            // Guard on is_open for parity with read_sym_at (POSIX pread on a
+            // closed fd reads nothing).
+            Some(desc) if desc.is_open => {
                 let pos = offset as usize;
                 if pos >= desc.content.len() {
                     return Vec::new();
@@ -257,7 +261,7 @@ impl FileSystem {
                 let n = count.min(desc.content.len() - pos);
                 desc.content[pos..pos + n].to_vec()
             }
-            None => Vec::new(),
+            _ => Vec::new(),
         }
     }
 

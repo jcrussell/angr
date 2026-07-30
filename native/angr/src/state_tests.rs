@@ -275,6 +275,24 @@ fn test_filesystem_write_read() {
 }
 
 #[test]
+fn test_filesystem_read_closed_fd_serves_nothing() {
+    // Parity with read_sym/read_sym_at: a closed fd serves no bytes even
+    // though its content buffer survives (angr-myzjx.23).
+    let mut fs = FileSystem::default();
+    let fd = fs.open_with_content(
+        "data.bin".to_string(),
+        FdFlags::ReadOnly,
+        b"hello world".to_vec(),
+    );
+    assert_eq!(fs.read_at(fd, 0, 5), b"hello");
+    assert!(fs.close(fd));
+
+    // Both the position-advancing and positioned reads must refuse a closed fd.
+    assert!(fs.read(fd, 5).is_empty());
+    assert!(fs.read_at(fd, 0, 5).is_empty());
+}
+
+#[test]
 fn test_filesystem_seek() {
     let mut fs = FileSystem::default();
     let fd = fs.open_with_content("data.bin".to_string(), FdFlags::ReadOnly, vec![0u8; 100]);
