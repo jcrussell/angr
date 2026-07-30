@@ -716,11 +716,6 @@ impl PyRustSimState {
     pub fn inner(&self) -> &RustSimState {
         &self.inner
     }
-
-    /// Get mutable access to the inner state.
-    pub fn inner_mut(&mut self) -> &mut RustSimState {
-        &mut self.inner
-    }
 }
 
 #[cfg(test)]
