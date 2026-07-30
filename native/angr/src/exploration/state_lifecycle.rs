@@ -199,6 +199,16 @@ impl RustExplorationManager {
         let others: Vec<&RustSimState> = states[1..].iter().collect();
         let merged = states[0].merge(&others, &merge_conditions);
         let merged_id = merged.state_id();
+        // `state-id-never-reused`: the merge must mint a fresh monotonic ID
+        // distinct from *every* input state's ID (not just one), matching the
+        // guard on the sibling minting sites _add_state / _fork_state_to_stash.
+        // Tautological today (RustSimState::merge() allocates via
+        // next_state_id()); the assert catches a future refactor that tried to
+        // reuse an input ID for the merged state.
+        debug_assert!(
+            !state_ids.contains(&merged_id),
+            "merge() must mint a fresh state_id, got duplicate {merged_id}",
+        );
 
         // Track state root
         self.sm.set_root(merged_id, merged_id);
