@@ -453,6 +453,12 @@ impl RustExplorationManager {
                 removed_states.push(state);
             }
         }
+        // These states leave STASH_ACTIVE outside `policy.select` — notify so a
+        // memoizing policy (LoopHeadRoundRobin's key_cache) doesn't leak a memo
+        // entry for a state it will never select again (angr-myzjx.25).
+        for state in &removed_states {
+            self.policy.on_state_removed(state.state_id());
+        }
 
         if !self.sm.drop_terminal_states() {
             let not_unique = self
@@ -508,6 +514,12 @@ impl RustExplorationManager {
                         // Move all active states to "timeout" stash
                         if let Some(active) = self.sm.get_mut(STASH_ACTIVE) {
                             let states: Vec<_> = active.drain(..).collect();
+                            // Draining STASH_ACTIVE bypasses `policy.select`;
+                            // notify so a memoizing policy doesn't leak its
+                            // per-state memo entries (angr-myzjx.25).
+                            for s in &states {
+                                self.policy.on_state_removed(s.state_id());
+                            }
                             let timeout_stash = self
                                 .sm
                                 .stashes_mut()
@@ -552,6 +564,12 @@ impl RustExplorationManager {
                         if let Some(state) = active.remove(idx) {
                             removed_states.push(state);
                         }
+                    }
+                    // Removed from STASH_ACTIVE outside `policy.select` — notify
+                    // so a memoizing policy doesn't leak memo entries
+                    // (angr-myzjx.25).
+                    for state in &removed_states {
+                        self.policy.on_state_removed(state.state_id());
                     }
 
                     if do_drop {
@@ -599,6 +617,12 @@ impl RustExplorationManager {
                         if let Some(state) = active.remove(idx) {
                             removed_states.push(state);
                         }
+                    }
+                    // Removed from STASH_ACTIVE outside `policy.select` — notify
+                    // so a memoizing policy doesn't leak memo entries
+                    // (angr-myzjx.25).
+                    for state in &removed_states {
+                        self.policy.on_state_removed(state.state_id());
                     }
 
                     if !self.sm.drop_terminal_states() {

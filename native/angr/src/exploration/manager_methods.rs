@@ -1689,6 +1689,13 @@ impl RustExplorationManager {
         // Drop clears the root too (the state is gone for good); take_state_from
         // handles the stash removal + unindex (angr-ph300.27).
         if self.sm.take_state_from(state_id, stash).is_some() {
+            // Dropping from STASH_ACTIVE outside `policy.select` — notify so a
+            // memoizing policy doesn't leak a memo entry (angr-myzjx.25). Today
+            // the caller only passes "_copies", so this is a no-op guard now,
+            // but it keeps the invariant robust if the API gains callers.
+            if stash == STASH_ACTIVE {
+                self.policy.on_state_removed(state_id);
+            }
             self.sm.remove_root(state_id);
             true
         } else {

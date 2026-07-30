@@ -236,6 +236,14 @@ impl RustExplorationManager {
                 for state in from.iter() {
                     self.sm.index(state.state_id(), to_stash);
                 }
+                // Leaving STASH_ACTIVE outside `policy.select` — notify so a
+                // memoizing policy (LoopHeadRoundRobin's key_cache) doesn't leak
+                // a memo entry (angr-myzjx.25).
+                if from_stash == STASH_ACTIVE {
+                    for state in from.iter() {
+                        self.policy.on_state_removed(state.state_id());
+                    }
+                }
                 let to = self.sm.ensure_stash(to_stash);
                 to.append(&mut from);
                 self.sm.insert(from_stash, VecDeque::new());
@@ -280,6 +288,13 @@ impl RustExplorationManager {
                 }
             }
         }
+        // Leaving STASH_ACTIVE outside `policy.select` — notify so a memoizing
+        // policy doesn't leak a memo entry (angr-myzjx.25).
+        if from_stash == STASH_ACTIVE {
+            for state in &moved {
+                self.policy.on_state_removed(state.state_id());
+            }
+        }
         // Update index and destination stash after releasing from-stash borrow
         for state in &moved {
             self.sm.index(state.state_id(), to_stash);
@@ -302,6 +317,11 @@ impl RustExplorationManager {
         // source stash + unindexes, then we re-index onto the destination
         // (angr-ph300.27).
         if let Some(state) = self.sm.take_state_from(state_id, from_stash) {
+            // Leaving STASH_ACTIVE outside `policy.select` — notify so a
+            // memoizing policy doesn't leak a memo entry (angr-myzjx.25).
+            if from_stash == STASH_ACTIVE {
+                self.policy.on_state_removed(state_id);
+            }
             self.index_state(state_id, to_stash);
             self.sm.ensure_stash(to_stash).push_back(state);
             Ok(true)
@@ -351,6 +371,9 @@ impl RustExplorationManager {
             active.retain(|s| s.state_id() == found_state_id);
         }
         for id in dropped {
+            // Dropped from STASH_ACTIVE outside `policy.select` — notify so a
+            // memoizing policy doesn't leak a memo entry (angr-myzjx.25).
+            self.policy.on_state_removed(id);
             self.sm.unindex(id);
             self.sm.remove_root(id);
         }

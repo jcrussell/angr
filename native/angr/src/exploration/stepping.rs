@@ -329,10 +329,18 @@ impl RustExplorationManager {
             .as_ref()
             .ok_or_else(|| PyRuntimeError::new_err("callbacks not set"))?
             .clone();
+        // If this state is being stepped out of STASH_ACTIVE, it leaves the
+        // active deque outside `policy.select` — notify so a memoizing policy
+        // (LoopHeadRoundRobin's key_cache) doesn't leak a memo entry
+        // (angr-myzjx.25). Capture the stash before the take unindexes it.
+        let was_active = self.sm.stash_of(state_id) == Some(STASH_ACTIVE);
         let state = self
             .sm
             .take_state(state_id)
             .ok_or_else(|| PyValueError::new_err(format!("state {state_id} not found")))?;
+        if was_active {
+            self.policy.on_state_removed(state_id);
+        }
 
         let extra_stops = extra_stop_points.unwrap_or_default();
         let mut terminals: Vec<(String, RustSimState)> = Vec::new();

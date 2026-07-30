@@ -206,3 +206,219 @@ fn reset_for_stage_errors_on_unknown_state() {
         "stashes untouched when the move fails",
     );
 }
+
+// ---------------------------------------------------------------------------
+// on_state_removed wiring for the Python move/reset APIs (angr-myzjx.25)
+//
+// LoopHeadRoundRobin memoizes a per-state bucket key in its key_cache and only
+// evicts on `on_state_removed`. The move/reset APIs relocate states out of
+// STASH_ACTIVE outside `policy.select`, so each must notify or the memo leaks
+// for the life of the policy. These pin the notify calls (and their
+// `from_stash == STASH_ACTIVE` guards) using a spy policy that records every
+// notified id.
+// ---------------------------------------------------------------------------
+
+/// Records every `state_id` passed to `on_state_removed`; forwards the deque
+/// operations to `Lifo` so nothing else changes.
+#[derive(Default)]
+struct SpyPolicy {
+    removed: std::sync::Mutex<Vec<u64>>,
+}
+
+impl selection_policy::SelectionPolicy for SpyPolicy {
+    fn select(
+        &self,
+        active: &mut std::collections::VecDeque<RustSimState>,
+    ) -> Option<RustSimState> {
+        selection_policy::Lifo.select(active)
+    }
+
+    fn on_fork(&self, active: &mut std::collections::VecDeque<RustSimState>, state: RustSimState) {
+        selection_policy::Lifo.on_fork(active, state);
+    }
+
+    fn name(&self) -> &'static str {
+        "spy"
+    }
+
+    fn on_state_removed(&self, state_id: u64) {
+        self.removed.lock().expect("spy poisoned").push(state_id);
+    }
+}
+
+fn spy_mgr() -> (RustExplorationManager, std::sync::Arc<SpyPolicy>) {
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    let spy = std::sync::Arc::new(SpyPolicy::default());
+    mgr.policy = spy.clone();
+    (mgr, spy)
+}
+
+fn sorted_removed(spy: &SpyPolicy) -> Vec<u64> {
+    let mut v = spy.removed.lock().expect("spy poisoned").clone();
+    v.sort_unstable();
+    v
+}
+
+/// `_move_states` (no-filter branch) draining STASH_ACTIVE must notify for
+/// every relocated state.
+#[test]
+fn move_states_all_from_active_notifies_policy() {
+    let (mut mgr, spy) = spy_mgr();
+    let mut ids = Vec::new();
+    for v in [0x1u128, 0x2, 0x3] {
+        let mut s = RustSimState::new("amd64").expect("state");
+        s.set_register("rax", RustBV::concrete(v, 64));
+        ids.push(s.state_id());
+        mgr.sm.push(STASH_ACTIVE, s);
+    }
+    ids.sort_unstable();
+
+    mgr._move_states(STASH_ACTIVE, "found", None)
+        .expect("move active->found");
+
+    assert_eq!(
+        sorted_removed(&spy),
+        ids,
+        "every state drained from STASH_ACTIVE must be notified",
+    );
+}
+
+/// `_move_states` moving out of a *non*-active stash must NOT notify — the
+/// LoopHead key_cache never held entries for those states.
+#[test]
+fn move_states_from_non_active_does_not_notify() {
+    let (mut mgr, spy) = spy_mgr();
+    for v in [0x1u128, 0x2] {
+        let mut s = RustSimState::new("amd64").expect("state");
+        s.set_register("rax", RustBV::concrete(v, 64));
+        mgr.sm.push("found", s);
+    }
+
+    mgr._move_states("found", "active", None)
+        .expect("move found->active");
+
+    assert!(
+        sorted_removed(&spy).is_empty(),
+        "non-active source must not trigger on_state_removed",
+    );
+}
+
+/// `_move_states` filtered branch draining STASH_ACTIVE must notify only the
+/// states that actually pass the filter and move.
+#[test]
+fn move_states_filtered_from_active_notifies_moved_only() {
+    let (mut mgr, spy) = spy_mgr();
+    let mut all = Vec::new();
+    for v in [0x10u128, 0x20, 0x30] {
+        let mut s = RustSimState::new("amd64").expect("state");
+        s.set_register("rax", RustBV::concrete(v, 64));
+        all.push(s.state_id());
+        mgr.sm.push(STASH_ACTIVE, s);
+    }
+    // Move exactly the first two ids.
+    let keep: Vec<u64> = all[..2].to_vec();
+    let mut expected = keep.clone();
+    expected.sort_unstable();
+
+    Python::initialize();
+    Python::attach(|py| {
+        let keep_set = keep.clone();
+        let filter = pyo3::types::PyCFunction::new_closure(
+            py,
+            None,
+            None,
+            move |args, _kwargs| -> pyo3::PyResult<bool> {
+                let id: u64 = args.get_item(0)?.extract()?;
+                Ok(keep_set.contains(&id))
+            },
+        )
+        .expect("closure")
+        .into_any()
+        .unbind();
+
+        mgr._move_states(STASH_ACTIVE, "found", Some(filter))
+            .expect("filtered move");
+    });
+
+    assert_eq!(
+        sorted_removed(&spy),
+        expected,
+        "only the filtered-out (moved) active states are notified",
+    );
+}
+
+/// `_move_state` (single) out of STASH_ACTIVE notifies; out of another stash
+/// does not.
+#[test]
+fn move_state_single_active_guarded() {
+    let (mut mgr, spy) = spy_mgr();
+
+    let mut active = RustSimState::new("amd64").expect("state");
+    active.set_register("rax", RustBV::concrete(0xaa, 64));
+    let active_id = active.state_id();
+    mgr.sm.push(STASH_ACTIVE, active);
+
+    let mut parked = RustSimState::new("amd64").expect("state");
+    parked.set_register("rax", RustBV::concrete(0xbb, 64));
+    let parked_id = parked.state_id();
+    mgr.sm.push("found", parked);
+
+    mgr._move_state(active_id, STASH_ACTIVE, "found")
+        .expect("active move");
+    mgr._move_state(parked_id, "found", "pruned")
+        .expect("non-active move");
+
+    assert_eq!(
+        sorted_removed(&spy),
+        vec![active_id],
+        "only the STASH_ACTIVE departure is notified",
+    );
+}
+
+/// `_reset_for_stage` drops every other active state — each must be notified.
+#[test]
+fn reset_for_stage_notifies_dropped_active() {
+    let (mut mgr, spy) = spy_mgr();
+
+    let mut dropped_ids = Vec::new();
+    for v in [0x1u128, 0x2] {
+        let mut s = RustSimState::new("amd64").expect("state");
+        s.set_register("rax", RustBV::concrete(v, 64));
+        dropped_ids.push(s.state_id());
+        mgr.sm.push(STASH_ACTIVE, s);
+    }
+    dropped_ids.sort_unstable();
+
+    let mut found = RustSimState::new("amd64").expect("state");
+    found.set_register("rax", RustBV::concrete(0x99, 64));
+    let found_id = found.state_id();
+    mgr.sm.push("found", found);
+
+    mgr._reset_for_stage(found_id).expect("reset");
+
+    // The found state is *added* to active (not removed), so it must not be
+    // notified; the two prior active states are dropped and must be.
+    assert_eq!(
+        sorted_removed(&spy),
+        dropped_ids,
+        "the dropped active states are notified, the promoted found state is not",
+    );
+}
+
+/// `drop_state_from_stash` on "_copies" (its only real caller) removes a
+/// non-active state and must not notify.
+#[test]
+fn drop_state_from_copies_does_not_notify() {
+    let (mut mgr, spy) = spy_mgr();
+
+    let mut s = RustSimState::new("amd64").expect("state");
+    s.set_register("rax", RustBV::concrete(0x7, 64));
+    let id = s.state_id();
+    mgr.sm.push("_copies", s);
+
+    assert!(mgr.drop_state_from_stash(id, "_copies"));
+    assert!(
+        sorted_removed(&spy).is_empty(),
+        "dropping a non-active copy must not notify the policy",
+    );
+}
