@@ -657,8 +657,24 @@ impl RustExplorationManager {
     /// `RUST_PARALLEL_WORKERS` env path bypasses that gate (the env value always
     /// wins), so guard here at the engine chokepoint too. The single-threaded
     /// loop applies techniques after every step (angr-ph300.6).
+    ///
+    /// A pending skip-hook entry (`skip_hook_stack`, populated by Python's
+    /// `set_skip_hook_addr` across the zero-length/stale-hook recovery callbacks)
+    /// also forces serial: `skip_hook_stack` is read and consumed in exactly one
+    /// place — `step_one`'s GAP-6 block — which only the single-threaded loop
+    /// reaches. `parallel_process_state` calls `run_interpreter_step_core` with
+    /// `skip_addr = None`, so a state resumed into a wave/steady session after a
+    /// skip was registered would re-register and immediately re-fire the same
+    /// zero-length/stale hook, spinning callback→resume→callback with no
+    /// path-side break. The stack is populated between `run_loop` calls (a
+    /// callback is returned to Python, which sets the skip and calls `run()`
+    /// again), so gating at this entry chokepoint routes the very next `run()`
+    /// to serial, where `step_one` consumes the entry and the loop breaks; once
+    /// the stack drains, subsequent `run()`s go parallel again (angr-04tw3.1).
     pub(crate) fn must_run_serial(&self) -> bool {
-        self.parallel_real_workers <= 1 || !self.native_techniques.is_empty()
+        self.parallel_real_workers <= 1
+            || !self.native_techniques.is_empty()
+            || !self.skip_hook_stack.is_empty()
     }
 
     /// Whether the steady-state loop (angr-nkoct) engages for this `run()`.

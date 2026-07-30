@@ -335,6 +335,33 @@ fn must_run_serial_true_when_native_technique_registered() {
 }
 
 #[test]
+fn must_run_serial_true_when_skip_hook_pending() {
+    Python::initialize();
+    Python::attach(|_py| {
+        let mut mgr = RustExplorationManager::new("amd64", None).unwrap();
+        mgr.set_parallel_workers(4);
+        assert!(
+            !mgr.must_run_serial(),
+            "workers>1 with no skip pending takes a parallel path"
+        );
+        // A pending skip-hook entry has no parallel/steady analogue (only
+        // step_one's GAP-6 block consumes it), so it must force serial until
+        // drained (angr-04tw3.1).
+        mgr._set_skip_hook_addr(0x400123);
+        assert!(
+            mgr.must_run_serial(),
+            "a pending skip-hook entry forces the serial loop even at workers>1"
+        );
+        // Once the stack drains, subsequent run()s go parallel again.
+        mgr._clear_skip_hook_addr();
+        assert!(
+            !mgr.must_run_serial(),
+            "clearing the skip-hook stack re-enables the parallel path"
+        );
+    });
+}
+
+#[test]
 fn must_run_serial_true_when_timeout_registered() {
     Python::initialize();
     Python::attach(|_py| {
