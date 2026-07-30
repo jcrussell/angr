@@ -414,19 +414,18 @@ fn parallel_process_state(
     // `step_state_with_skip`: `self.environment.block_cache = step.updated_block_cache`).
     *block_cache = step.updated_block_cache;
 
-    // State-update preamble (mirror of step_state_with_skip). Worker drops the
-    // rest of the per-call step_stats (no shared accumulation in the MVP).
-    if let Some(mem) = step.recovered_memory {
-        state.replace_memory(mem);
-    }
-    state.set_registers(step.new_registers);
-    state.set_pc(step.new_pc);
-    if let Some(sym_ip) = step.symbolic_ip_at_exit {
-        state.set_ip(sym_ip);
-    }
-    state.set_call_stack(step.new_call_stack);
-    state.set_detailed_history(step.new_detailed_history);
-    state.add_to_history(state.pc());
+    // State-update preamble (shared with step_state_inner via
+    // apply_interpreter_step_result). Worker drops the rest of the per-call
+    // step_stats (no shared accumulation in the MVP).
+    super::stepping::apply_interpreter_step_result(
+        &mut state,
+        step.recovered_memory,
+        step.new_registers,
+        step.new_pc,
+        step.symbolic_ip_at_exit,
+        step.new_call_stack,
+        step.new_detailed_history,
+    );
 
     let inputs = PostStepInputs {
         result: step.result,

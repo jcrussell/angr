@@ -81,6 +81,50 @@ pub(crate) struct InterpreterStepResult {
     pub(crate) symbolic_ip_at_exit: Option<RustBV>,
 }
 
+/// Write the interpreter's post-step results back onto `state`.
+///
+/// This is the byte-identical 7-statement state-restore sequence that both the
+/// single-threaded (`step_state_inner`) and parallel (`parallel_process_state`,
+/// run_loop.rs) step paths apply after `run_interpreter_step_core` returns.
+/// Extracted so a future new `InterpreterStepResult` field or a reordering fix
+/// can't land in one copy and silently miss the other (angr-04tw3.8). Takes the
+/// fields by value rather than the whole `InterpreterStepResult` because both
+/// callers have already partially moved `step_stats` / `updated_block_cache`
+/// out by this point.
+pub(crate) fn apply_interpreter_step_result(
+    state: &mut RustSimState,
+    recovered_memory: Option<SymbolicMemory>,
+    new_registers: RegisterFile,
+    new_pc: u64,
+    symbolic_ip_at_exit: Option<RustBV>,
+    new_call_stack: Vec<CallStackEntry>,
+    new_detailed_history: Vec<HistoryEntry>,
+) {
+    // Restore memory from interpreter back to state FIRST.
+    // This must happen before any PendingCallback creation
+    // because the state's memory was taken by set_rust_memory().
+    if let Some(mem) = recovered_memory {
+        state.replace_memory(mem);
+    }
+    // Restore registers (including symbolic values) from interpreter.
+    state.set_registers(new_registers);
+    state.set_pc(new_pc);
+    // KEEP_IP_SYMBOLIC: overwrite the IP register (just concretized by
+    // set_pc above) with the original symbolic next-pc expression. The
+    // `state.pc` u64 still points to the concretized address so the next
+    // block lift drives from there, but the IP register reads as the
+    // unpinned symbolic expression — matching Python's
+    // `split_state.regs.ip = target` at engines/successors.py:328.
+    if let Some(sym_ip) = symbolic_ip_at_exit {
+        state.set_ip(sym_ip);
+    }
+    // Restore call stack and detailed history from interpreter.
+    state.set_call_stack(new_call_stack);
+    state.set_detailed_history(new_detailed_history);
+    // Add to history.
+    state.add_to_history(state.pc());
+}
+
 // `StepError` carries an inline `RustSimState` (see enum doc above) so
 // `Result<_, StepError>` is intentionally large. Every step function below
 // uses Err for control flow, not failures — boxing would add allocs on the
@@ -157,32 +201,17 @@ impl RustExplorationManager {
             self.profiling.accumulated_stats.merge(&stats);
         }
 
-        // Restore memory from interpreter back to state FIRST.
-        // This must happen before any PendingCallback creation
-        // because the state's memory was taken by set_rust_memory().
-        if let Some(mem) = step.recovered_memory {
-            state.replace_memory(mem);
-        }
-
-        // Update state from interpreter results
-        // Restore registers (including symbolic values) from interpreter
-        state.set_registers(step.new_registers);
-        state.set_pc(step.new_pc);
-        // KEEP_IP_SYMBOLIC: overwrite the IP register (just concretized by
-        // set_pc above) with the original symbolic next-pc expression. The
-        // `state.pc` u64 still points to the concretized address so the next
-        // block lift drives from there, but the IP register reads as the
-        // unpinned symbolic expression — matching Python's
-        // `split_state.regs.ip = target` at engines/successors.py:328.
-        if let Some(sym_ip) = step.symbolic_ip_at_exit {
-            state.set_ip(sym_ip);
-        }
-        // Restore call stack and detailed history from interpreter
-        state.set_call_stack(step.new_call_stack);
-        state.set_detailed_history(step.new_detailed_history);
-
-        // Add to history
-        state.add_to_history(state.pc());
+        // Write the interpreter's step results back onto the state (shared with
+        // the parallel path in run_loop.rs — see apply_interpreter_step_result).
+        apply_interpreter_step_result(
+            &mut state,
+            step.recovered_memory,
+            step.new_registers,
+            step.new_pc,
+            step.symbolic_ip_at_exit,
+            step.new_call_stack,
+            step.new_detailed_history,
+        );
 
         let deferred_forks = step.deferred_forks;
         let last_condition = step.last_condition;
