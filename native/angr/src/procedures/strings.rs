@@ -134,6 +134,40 @@ pub fn find_null_addr(
     Err(ProcedureError::MaxIterations(max))
 }
 
+/// Concrete byte-by-byte scan at `addr`, consulting `decide` for each byte
+/// (the null terminator included) until it yields `Some(result)`.
+///
+/// Factors out the shared boilerplate of the concrete *search* procedures —
+/// strstr's haystack scan and strpbrk/strspn/strcspn — which all walk
+/// `0..max`, load one byte, bail to Python on a symbolic byte via
+/// [`extract_concrete_arg`], and error with [`ProcedureError::MaxIterations`]
+/// if `max` bytes pass without a decision. Only the per-byte predicate
+/// differs.
+///
+/// `decide` receives `(state, byte, i, byte_addr)`. Threading `state` in lets
+/// predicates that must peek ahead (strstr's needle match) do their own
+/// loads; the set-membership predicates (strpbrk/strspn/strcspn) ignore it.
+/// The null terminator is passed to `decide` like any other byte, so each
+/// procedure encodes its own end-of-string result (strstr → NULL, strspn →
+/// the run length, …).
+pub fn scan_concrete_predicate<R>(
+    state: &mut RustSimState,
+    addr: u64,
+    max: usize,
+    addr_label: &str,
+    mut decide: impl FnMut(&mut RustSimState, u8, u64, u64) -> Result<Option<R>, ProcedureError>,
+) -> Result<R, ProcedureError> {
+    for i in 0..max as u64 {
+        let byte_addr = addr.wrapping_add(i);
+        let byte_val = state.memory_load(byte_addr, 1)?;
+        let byte = extract_concrete_arg(&byte_val, &format!("{addr_label}[{i}]"))? as u8;
+        if let Some(r) = decide(state, byte, i, byte_addr)? {
+            return Ok(r);
+        }
+    }
+    Err(ProcedureError::MaxIterations(max))
+}
+
 /// Write a slice of concrete bytes into memory, one 8-bit store per byte.
 ///
 /// This is the write-side counterpart to the read/scan helpers above. The

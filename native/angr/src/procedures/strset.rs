@@ -15,8 +15,8 @@
 //! falls back to Python. The set arg is read once into a fixed 256-bit
 //! lookup table.
 
-use super::strings::{MAX_STRING_SCAN, scan_concrete_until_null};
-use super::{ProcedureError, extract_concrete_arg};
+use super::ProcedureError;
+use super::strings::{MAX_STRING_SCAN, scan_concrete_predicate, scan_concrete_until_null};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
@@ -52,18 +52,22 @@ crate::declare_proc! {
 
         let accept = build_byte_set(state, accept_addr, "accept")?;
 
-        for i in 0..MAX_STRING_SCAN as u64 {
-            let byte_addr = s_addr.wrapping_add(i);
-            let byte_val = state.memory_load(byte_addr, 1)?;
-            let byte = extract_concrete_arg(&byte_val, &format!("s[{i}]"))? as u8;
-            if byte == 0 {
-                return Ok(Some(RustBV::concrete(0u128, bits)));
-            }
-            if accept[byte as usize] {
-                return Ok(Some(RustBV::concrete(byte_addr as u128, bits)));
-            }
-        }
-        Err(ProcedureError::MaxIterations(MAX_STRING_SCAN))
+        let result = scan_concrete_predicate(
+            state,
+            s_addr,
+            MAX_STRING_SCAN,
+            "s",
+            |_state, byte, _i, byte_addr| {
+                Ok(if byte == 0 {
+                    Some(0u128) // end of string: no accepted byte found
+                } else if accept[byte as usize] {
+                    Some(byte_addr as u128)
+                } else {
+                    None
+                })
+            },
+        )?;
+        Ok(Some(RustBV::concrete(result, bits)))
     }
 }
 
@@ -81,14 +85,16 @@ crate::declare_proc! {
 
         let accept = build_byte_set(state, accept_addr, "accept")?;
 
-        for i in 0..MAX_STRING_SCAN as u64 {
-            let byte_val = state.memory_load(s_addr.wrapping_add(i), 1)?;
-            let byte = extract_concrete_arg(&byte_val, &format!("s[{i}]"))? as u8;
-            if byte == 0 || !accept[byte as usize] {
-                return Ok(Some(RustBV::concrete(i as u128, bits)));
-            }
-        }
-        Err(ProcedureError::MaxIterations(MAX_STRING_SCAN))
+        let result = scan_concrete_predicate(
+            state,
+            s_addr,
+            MAX_STRING_SCAN,
+            "s",
+            |_state, byte, i, _byte_addr| {
+                Ok((byte == 0 || !accept[byte as usize]).then_some(i as u128))
+            },
+        )?;
+        Ok(Some(RustBV::concrete(result, bits)))
     }
 }
 
@@ -106,14 +112,16 @@ crate::declare_proc! {
 
         let reject = build_byte_set(state, reject_addr, "reject")?;
 
-        for i in 0..MAX_STRING_SCAN as u64 {
-            let byte_val = state.memory_load(s_addr.wrapping_add(i), 1)?;
-            let byte = extract_concrete_arg(&byte_val, &format!("s[{i}]"))? as u8;
-            if byte == 0 || reject[byte as usize] {
-                return Ok(Some(RustBV::concrete(i as u128, bits)));
-            }
-        }
-        Err(ProcedureError::MaxIterations(MAX_STRING_SCAN))
+        let result = scan_concrete_predicate(
+            state,
+            s_addr,
+            MAX_STRING_SCAN,
+            "s",
+            |_state, byte, i, _byte_addr| {
+                Ok((byte == 0 || reject[byte as usize]).then_some(i as u128))
+            },
+        )?;
+        Ok(Some(RustBV::concrete(result, bits)))
     }
 }
 

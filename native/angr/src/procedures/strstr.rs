@@ -4,8 +4,8 @@
 //!
 //! Symbolic arguments fall back to Python.
 
-use super::strings::{MAX_STRING_SCAN, scan_concrete_until_null};
-use super::{ProcedureError, extract_concrete_arg};
+use super::extract_concrete_arg;
+use super::strings::{MAX_STRING_SCAN, scan_concrete_predicate, scan_concrete_until_null};
 use crate::symbolic::RustBV;
 
 crate::declare_proc! {
@@ -29,39 +29,37 @@ crate::declare_proc! {
             return Ok(Some(RustBV::concrete(haystack_addr as u128, bits)));
         }
 
-        // Scan haystack
-        for i in 0..MAX_STRING_SCAN as u64 {
-            let h_addr = haystack_addr.wrapping_add(i);
-
-            // Check first byte of haystack at this position
-            let first_val = state.memory_load(h_addr, 1)?;
-            let first = extract_concrete_arg(&first_val, &format!("haystack[{i}]"))? as u8;
-
-            // End of haystack
-            if first == 0 {
-                return Ok(Some(RustBV::concrete(0u128, bits)));
-            }
-
-            // Try to match needle at this position
-            if first == needle[0] {
-                let mut matched = true;
-                for (j, needle_byte) in needle.iter().enumerate().skip(1) {
-                    let h_byte_addr = h_addr.wrapping_add(j as u64);
-                    let val = state.memory_load(h_byte_addr, 1)?;
-                    let byte =
-                        extract_concrete_arg(&val, &format!("haystack[{}]", i as usize + j))? as u8;
-                    if byte != *needle_byte {
-                        matched = false;
-                        break;
+        // Scan haystack. The shared helper handles the load/null/bound
+        // boilerplate; the closure only encodes the needle match (which peeks
+        // ahead via `state`) and the end-of-haystack NULL result.
+        let hit = scan_concrete_predicate(
+            state,
+            haystack_addr,
+            MAX_STRING_SCAN,
+            "haystack",
+            |state, first, i, h_addr| {
+                // End of haystack: needle not found.
+                if first == 0 {
+                    return Ok(Some(0u128));
+                }
+                // Try to match needle at this position.
+                if first == needle[0] {
+                    for (j, needle_byte) in needle.iter().enumerate().skip(1) {
+                        let val = state.memory_load(h_addr.wrapping_add(j as u64), 1)?;
+                        let byte =
+                            extract_concrete_arg(&val, &format!("haystack[{}]", i as usize + j))?
+                                as u8;
+                        if byte != *needle_byte {
+                            return Ok(None);
+                        }
                     }
+                    return Ok(Some(h_addr as u128));
                 }
-                if matched {
-                    return Ok(Some(RustBV::concrete(h_addr as u128, bits)));
-                }
-            }
-        }
+                Ok(None)
+            },
+        )?;
 
-        Err(ProcedureError::MaxIterations(MAX_STRING_SCAN))
+        Ok(Some(RustBV::concrete(hit, bits)))
     }
 }
 
