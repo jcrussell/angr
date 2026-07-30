@@ -4,11 +4,9 @@
 //!
 //! Symbolic arguments fall back to Python.
 
-use super::strings::scan_concrete_until_null;
+use super::strings::{MAX_STRING_SCAN, scan_concrete_until_null};
 use super::{ProcedureError, extract_concrete_arg};
 use crate::symbolic::RustBV;
-
-const MAX_SCAN: usize = 4096;
 
 crate::declare_proc! {
     /// strstr: find substring in string.
@@ -24,7 +22,7 @@ crate::declare_proc! {
     call |state| {
         let bits = state.arch().bits();
 
-        let needle = scan_concrete_until_null(state, needle_addr, MAX_SCAN, "needle")?;
+        let needle = scan_concrete_until_null(state, needle_addr, MAX_STRING_SCAN, "needle")?;
 
         // Empty needle: return haystack
         if needle.is_empty() {
@@ -32,7 +30,7 @@ crate::declare_proc! {
         }
 
         // Scan haystack
-        for i in 0..MAX_SCAN as u64 {
+        for i in 0..MAX_STRING_SCAN as u64 {
             let h_addr = haystack_addr.wrapping_add(i);
 
             // Check first byte of haystack at this position
@@ -63,7 +61,7 @@ crate::declare_proc! {
             }
         }
 
-        Err(ProcedureError::MaxIterations(MAX_SCAN))
+        Err(ProcedureError::MaxIterations(MAX_STRING_SCAN))
     }
 }
 

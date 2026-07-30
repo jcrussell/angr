@@ -4,20 +4,19 @@
 //! with width, zero-padding, and left-alignment flags. Falls back to
 //! Python for symbolic format strings or arguments.
 
-use super::format_common::{parse_length_modifier, parse_width_digits};
+use super::format_common::{MAX_FORMAT_LEN, parse_length_modifier, parse_width_digits};
 use super::strings::{scan_concrete_bounded, write_cstr};
 use super::{NativeSimProcedure, ProcedureError, extract_concrete_arg};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
-const MAX_FMT_LEN: usize = 4096;
 const MAX_OUTPUT_LEN: usize = 4096;
 
-/// Read a null-terminated string from memory at `addr` (up to `MAX_FMT_LEN`
+/// Read a null-terminated string from memory at `addr` (up to `MAX_FORMAT_LEN`
 /// bytes; exhausting the cap without a null is not an error). A symbolic byte
 /// or out-of-bounds read propagates as an `Err` and falls back to Python.
 fn read_string(state: &mut RustSimState, addr: u64) -> Result<Vec<u8>, ProcedureError> {
-    let (buf, _null_found) = scan_concrete_bounded(state, addr, MAX_FMT_LEN, "string")?;
+    let (buf, _null_found) = scan_concrete_bounded(state, addr, MAX_FORMAT_LEN, "string")?;
     Ok(buf)
 }
 

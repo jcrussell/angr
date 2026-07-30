@@ -15,9 +15,8 @@
 //! byte instead. See the format-string worked example in
 //! `docs/extending-angr/simprocedures.rst`.
 
+use super::format_common::MAX_FORMAT_LEN;
 use crate::symbolic::RustBV;
-
-const MAX_PRINTF_LEN: usize = 4096;
 
 crate::declare_proc! {
     /// Native printf implementation.
@@ -43,7 +42,7 @@ crate::declare_proc! {
         // module docstring's note on printf's intentional symbolic-byte
         // asymmetry) — exactly `scan_concrete_lossy`'s contract, so reuse it
         // rather than re-rolling the loop (matches NativeFprintf below).
-        let buf = crate::procedures::strings::scan_concrete_lossy(state, fmt_addr, MAX_PRINTF_LEN);
+        let buf = crate::procedures::strings::scan_concrete_lossy(state, fmt_addr, MAX_FORMAT_LEN);
 
         // Append to stdout buffer. A refusal (fd 1 dup2'd onto a bounded-
         // symbolic-content fd, now demoted) bounces to Python — see
@@ -101,7 +100,7 @@ crate::declare_proc! {
         if fd < 0 {
             return Ok(Some(RustBV::concrete((-1i64 as u64) as u128, 32)));
         }
-        let buf = crate::procedures::strings::scan_concrete_lossy(state, fmt_addr, MAX_PRINTF_LEN);
+        let buf = crate::procedures::strings::scan_concrete_lossy(state, fmt_addr, MAX_FORMAT_LEN);
         // A refusal means the fd carried bounded symbolic content (now
         // demoted) — bounce to Python (angr-0xyq2 Phase 2 choke point).
         if !state.write_fd(fd as u32, &buf) {

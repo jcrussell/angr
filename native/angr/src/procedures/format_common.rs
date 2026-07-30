@@ -17,6 +17,12 @@
 //! See `procedures/sprintf.rs::format_string` and
 //! `procedures/scanf.rs::parse_scanf_format` for the callers.
 
+/// Shared upper bound on a concrete format-string scan for the printf/sprintf/
+/// scanf family. One home so a future reduction is applied everywhere at once
+/// rather than silently missing a consumer that kept its own local `4096`
+/// (angr-myzjx.7). The str-family shares [`super::strings::MAX_STRING_SCAN`].
+pub const MAX_FORMAT_LEN: usize = 4096;
+
 /// Parsed length modifier. Both printf-family and scanf-family parsers
 /// share these kinds; consumers map them onto their internal flags.
 ///

@@ -25,6 +25,18 @@ use super::{ProcedureError, extract_concrete_arg};
 use crate::state::RustSimState;
 use crate::symbolic::{RustBV, SymContext};
 
+/// Shared upper bound on a concrete null-terminated string scan for the
+/// str-family procedures (strcpy/strncpy/strcat/strncat, strstr, strset,
+/// memset-of-string, …). Hitting this without a null terminator bails to
+/// Python via [`ProcedureError::MaxIterations`].
+///
+/// One home so a future security-driven reduction is applied everywhere at
+/// once rather than silently missing a copy that kept its own local `4096`
+/// (angr-myzjx.7). `strcmp`/`memcmp` share their own equivalent
+/// (`strcmp::MAX_STRCMP_LEN`); the printf/scanf family share
+/// [`super::format_common::MAX_FORMAT_LEN`].
+pub const MAX_STRING_SCAN: usize = 4096;
+
 /// Concrete byte-by-byte scan up to and including the null terminator.
 ///
 /// Returns the bytes read **up to but not including** the null terminator.

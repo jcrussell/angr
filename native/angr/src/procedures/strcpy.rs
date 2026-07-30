@@ -10,14 +10,12 @@
 
 use super::mem_common::symbolic_size_conditional_store;
 use super::strings::{
-    ScanOutcome, build_strlen_chain, scan_concrete_bounded, scan_concrete_until_null,
-    scan_for_null_symbolic, write_concrete_bytes, write_cstr,
+    MAX_STRING_SCAN, ScanOutcome, build_strlen_chain, scan_concrete_bounded,
+    scan_concrete_until_null, scan_for_null_symbolic, write_concrete_bytes, write_cstr,
 };
 use super::{ProcedureError, extract_concrete_arg};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
-
-const MAX_STRLEN: usize = 4096;
 
 /// Serve `strncpy(dest, src, n)` when the source window holds a symbolic byte,
 /// mirroring angr's Python `strncpy` (`procedures/libc/strncpy.py`):
@@ -79,7 +77,7 @@ crate::declare_proc! {
         let dest = extract_concrete_arg(&dest_bv, "dest")?;
 
         // Read source string up to (but not including) the null terminator.
-        let buf = scan_concrete_until_null(state, src, MAX_STRLEN, "src")?;
+        let buf = scan_concrete_until_null(state, src, MAX_STRING_SCAN, "src")?;
 
         // Write to destination byte-by-byte, then the null terminator.
         write_cstr(state, dest, &buf)?;
@@ -103,7 +101,7 @@ crate::declare_proc! {
     call |state| {
         let dest = extract_concrete_arg(&dest_bv, "dest")?;
 
-        if n > MAX_STRLEN as u64 {
+        if n > MAX_STRING_SCAN as u64 {
             return Err(ProcedureError::MaxIterations(n as usize));
         }
 
@@ -158,7 +156,7 @@ crate::declare_proc! {
         let dest = extract_concrete_arg(&dest_bv, "dest")?;
 
         // Read source string up to (but not including) the null terminator.
-        let buf = scan_concrete_until_null(state, src, MAX_STRLEN, "src")?;
+        let buf = scan_concrete_until_null(state, src, MAX_STRING_SCAN, "src")?;
 
         // Write to destination byte-by-byte, then the null terminator.
         write_cstr(state, dest, &buf)?;
@@ -191,7 +189,7 @@ crate::declare_proc! {
     call |state| {
         let dest = extract_concrete_arg(&dest_bv, "dest")?;
 
-        if n > MAX_STRLEN as u64 {
+        if n > MAX_STRING_SCAN as u64 {
             return Err(ProcedureError::MaxIterations(n as usize));
         }
 
@@ -229,7 +227,7 @@ crate::declare_proc! {
     args = [src: concrete],
     call |state| {
         // Read source string up to (but not including) the null terminator.
-        let buf = scan_concrete_until_null(state, src, MAX_STRLEN, "src")?;
+        let buf = scan_concrete_until_null(state, src, MAX_STRING_SCAN, "src")?;
 
         // Allocate new buffer (strlen + 1 for null terminator).
         let new_addr = state.heap_alloc(buf.len() as u64 + 1);
@@ -259,7 +257,7 @@ crate::declare_proc! {
     struct = NativeStrndup,
     args = [src: concrete, n: concrete],
     call |state| {
-        if n > MAX_STRLEN as u64 {
+        if n > MAX_STRING_SCAN as u64 {
             return Err(ProcedureError::MaxIterations(n as usize));
         }
 
@@ -297,12 +295,12 @@ crate::declare_proc! {
     call |state| {
         let dest = extract_concrete_arg(&dest_bv, "dest")?;
 
-        if n > MAX_STRLEN as u64 {
+        if n > MAX_STRING_SCAN as u64 {
             return Err(ProcedureError::MaxIterations(n as usize));
         }
 
         // Full source length (strlen), excluding the NUL — this is the return.
-        let buf = scan_concrete_until_null(state, src, MAX_STRLEN, "src")?;
+        let buf = scan_concrete_until_null(state, src, MAX_STRING_SCAN, "src")?;
         let src_len = buf.len();
 
         // strncpy(dest, src, n): first min(n, src_len) bytes, NUL-padded to n.

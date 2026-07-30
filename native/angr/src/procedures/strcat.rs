@@ -2,10 +2,10 @@
 //!
 //! Concrete string concatenation. Symbolic arguments fall back to Python.
 
-use super::strings::{find_null_addr, scan_concrete_bounded, scan_concrete_until_null, write_cstr};
+use super::strings::{
+    MAX_STRING_SCAN, find_null_addr, scan_concrete_bounded, scan_concrete_until_null, write_cstr,
+};
 use crate::symbolic::RustBV;
-
-const MAX_STRLEN: usize = 4096;
 
 crate::declare_proc! {
     /// strcat: append src string to dest.
@@ -13,8 +13,8 @@ crate::declare_proc! {
     struct = NativeStrcat,
     args = [dest: concrete, src: concrete],
     call |state| {
-        let dest_end = find_null_addr(state, dest, MAX_STRLEN, "dest")?;
-        let buf = scan_concrete_until_null(state, src, MAX_STRLEN, "src")?;
+        let dest_end = find_null_addr(state, dest, MAX_STRING_SCAN, "dest")?;
+        let buf = scan_concrete_until_null(state, src, MAX_STRING_SCAN, "src")?;
 
         write_cstr(state, dest_end, &buf)?;
 
@@ -29,8 +29,8 @@ crate::declare_proc! {
     struct = NativeStrncat,
     args = [dest: concrete, src: concrete, n: concrete],
     call |state| {
-        let dest_end = find_null_addr(state, dest, MAX_STRLEN, "dest")?;
-        let max_copy = n.min(MAX_STRLEN as u64);
+        let dest_end = find_null_addr(state, dest, MAX_STRING_SCAN, "dest")?;
+        let max_copy = n.min(MAX_STRING_SCAN as u64);
 
         // Copy at most `max_copy` non-null bytes from src.
         let (buf, _null_found) = scan_concrete_bounded(state, src, max_copy as usize, "src")?;
