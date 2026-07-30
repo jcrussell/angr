@@ -416,6 +416,21 @@ fn config_mutators_apply_and_are_guard_safe_without_session() {
         mgr.set_deterministic(true);
         assert!(mgr.is_deterministic(), "set_deterministic flipped the flag");
 
+        // angr-1yge9.3: the two setters that were missing the guard now open
+        // with it too, matching the four above.
+        mgr.set_solver_timeout(1234);
+        assert_eq!(
+            mgr.constraint_solver.solver_timeout_ms, 1234,
+            "set_solver_timeout applied the new timeout"
+        );
+
+        mgr.set_os_name("CGC".to_string());
+        assert_eq!(
+            mgr.get_os_name(),
+            "cgc",
+            "set_os_name lowercased and stored the name"
+        );
+
         // The guard ran on the no-session path for every mutator above and
         // left the session absent (nothing to finalize).
         assert!(

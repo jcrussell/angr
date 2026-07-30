@@ -455,6 +455,10 @@ impl RustExplorationManager {
     /// Set the Z3 solver timeout in milliseconds (default:
     /// [`DEFAULT_SOLVER_TIMEOUT_MS`](crate::symbolic::DEFAULT_SOLVER_TIMEOUT_MS)).
     pub fn set_solver_timeout(&mut self, timeout_ms: u32) {
+        // Workers snapshot the solver config into their StepContext, so a
+        // mid-session change would never reach a live steady session; finalize
+        // it first like the other guarded config mutators (angr-1yge9.3).
+        self.steady_config_guard();
         self.constraint_solver.solver_timeout_ms = timeout_ms;
     }
 
@@ -686,6 +690,11 @@ impl RustExplorationManager {
     /// value is lowercased before storage so callers can pass `"CGC"` or
     /// `"Linux"` interchangeably.
     pub fn set_os_name(&mut self, name: String) {
+        // os_name feeds the syscall-dispatch ABI selection baked into a
+        // worker's snapshotted StepContext, so finalize a live steady session
+        // before changing it like the other guarded config mutators
+        // (angr-1yge9.3).
+        self.steady_config_guard();
         self.environment.os_name = name.to_lowercase();
     }
 
