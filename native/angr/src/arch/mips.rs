@@ -365,22 +365,19 @@ const REGISTER_NAMES_MIPS32: &[&str] = &[
     "ra", "pc", "hi", "lo",
 ];
 
-// MIPS64 canonical: preserves the original (intentionally narrow) reverse
-// lookup behavior — only zero/v0/a0/sp/fp/ra/pc are reverse-mapped, matching
-// the prior register_name match arms. Other GPR mnemonics live in ALIASES.
+// MIPS64 canonical: one entry per offset, so `register_name` (reverse
+// offset->name lookup) resolves every GPR just like CANONICAL_MIPS32 does —
+// the two variants of the family are now consistent in reverse-lookup rigor
+// (angr-1yge9.13). Names follow the N64 ABI: $8-$11 are a4-a7 (not the O32
+// temporaries t0-t3, which live in ALIASES), and $30 canonicalizes to `fp`
+// (with `s8` an alias). This table is kept in exact agreement with
+// REGISTER_NAMES_MIPS64.
 const CANONICAL_MIPS64: &[RegEntry] = &[
     ("zero", offsets64::R0, 8),
-    ("v0", offsets64::R2, 8),
-    ("a0", offsets64::R4, 8),
-    ("sp", offsets64::R29, 8),
-    ("fp", offsets64::R30, 8),
-    ("ra", offsets64::R31, 8),
-    ("pc", offsets64::PC, 8),
-];
-
-const ALIASES_MIPS64: &[RegEntry] = &[
     ("at", offsets64::R1, 8),
+    ("v0", offsets64::R2, 8),
     ("v1", offsets64::R3, 8),
+    ("a0", offsets64::R4, 8),
     ("a1", offsets64::R5, 8),
     ("a2", offsets64::R6, 8),
     ("a3", offsets64::R7, 8),
@@ -388,10 +385,6 @@ const ALIASES_MIPS64: &[RegEntry] = &[
     ("a5", offsets64::R9, 8),
     ("a6", offsets64::R10, 8),
     ("a7", offsets64::R11, 8),
-    ("t0", offsets64::R8, 8),
-    ("t1", offsets64::R9, 8),
-    ("t2", offsets64::R10, 8),
-    ("t3", offsets64::R11, 8),
     ("t4", offsets64::R12, 8),
     ("t5", offsets64::R13, 8),
     ("t6", offsets64::R14, 8),
@@ -409,9 +402,22 @@ const ALIASES_MIPS64: &[RegEntry] = &[
     ("k0", offsets64::R26, 8),
     ("k1", offsets64::R27, 8),
     ("gp", offsets64::R28, 8),
-    ("s8", offsets64::R30, 8),
+    ("sp", offsets64::R29, 8),
+    ("fp", offsets64::R30, 8),
+    ("ra", offsets64::R31, 8),
+    ("pc", offsets64::PC, 8),
     ("hi", offsets64::HI, 8),
     ("lo", offsets64::LO, 8),
+];
+
+const ALIASES_MIPS64: &[RegEntry] = &[
+    // O32 temporary names for the N64 argument registers $8-$11.
+    ("t0", offsets64::R8, 8),
+    ("t1", offsets64::R9, 8),
+    ("t2", offsets64::R10, 8),
+    ("t3", offsets64::R11, 8),
+    // $30 canonicalizes to `fp`; `s8` is its saved-register alias.
+    ("s8", offsets64::R30, 8),
     // Numeric rN aliases
     ("r0", offsets64::R0, 8),
     ("r1", offsets64::R1, 8),
