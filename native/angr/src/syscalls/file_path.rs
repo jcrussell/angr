@@ -179,6 +179,15 @@ const NEG_ONE: u64 = u64::MAX;
 /// `MAX_PATH_LEN`. Returns `SymbolicArgument` on the first symbolic
 /// byte (the syscall then falls back to Python). Errors out with
 /// `Other` if no NUL is seen within the limit.
+///
+/// NOTE: the cap-exceeded behavior here deliberately differs from its
+/// sibling `directory.rs::read_concrete_cstring`, which *truncates* at
+/// its (larger, 4096) `PATH_MAX` cap instead of erroring. The 256-byte
+/// `MAX_PATH_LEN` here is a defensive scan bound for `open`/`openat`
+/// where a runaway unterminated path almost certainly signals a bad
+/// pointer, so erroring (→ Python fallback) is safer than silently
+/// opening a truncated name. Keep this asymmetry in mind when adding a
+/// new path syscall — pick the reader whose cap semantics you want.
 fn read_path(state: &RustSimState, addr: u64, label: &str) -> Result<String, SyscallError> {
     let mut bytes: Vec<u8> = Vec::new();
     for i in 0..MAX_PATH_LEN {
