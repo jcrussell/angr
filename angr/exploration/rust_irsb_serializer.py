@@ -51,9 +51,11 @@ _STMT_FIELDS = {
 def _serialize_const(con):
     """Serialize a pyvex constant (Ico_ prefix)."""
     name = type(con).__name__
-    if name == "V128":
+    if name in ("V128", "U128"):
+        # Both deserialize into a Rust {low, high} struct, not the generic
+        # {value} shape (native/angr/src/vex/pyvex_bridge.rs PyVexConst).
         val = con.value if isinstance(con.value, int) else 0
-        return {"tag": "Ico_V128", "low": val & _MASK64, "high": (val >> 64) & _MASK64}
+        return {"tag": f"Ico_{name}", "low": val & _MASK64, "high": (val >> 64) & _MASK64}
     if name == "V256":
         val = con.value if isinstance(con.value, int) else 0
         return {

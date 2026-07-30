@@ -920,6 +920,46 @@ class TestSerializeDescr:
         assert out["bias"] == 2
 
 
+class TestSerializeConst:
+    """Unit tests for _serialize_const (Ico_ constant serialization)."""
+
+    def _make(self, name, value):
+        con = object.__new__(type(name, (), {}))
+        con.value = value
+        return con
+
+    def test_serialize_u128_low_high(self):
+        """U128 must emit {low, high}, matching Rust PyVexConst::U128."""
+        from angr.exploration.rust_irsb_serializer import _serialize_const
+
+        val = (0xDEADBEEFCAFEBABE << 64) | 0x0123456789ABCDEF
+        out = _serialize_const(self._make("U128", val))
+        assert out == {
+            "tag": "Ico_U128",
+            "low": 0x0123456789ABCDEF,
+            "high": 0xDEADBEEFCAFEBABE,
+        }
+
+    def test_serialize_v128_low_high(self):
+        """V128 keeps its {low, high} shape (regression guard)."""
+        from angr.exploration.rust_irsb_serializer import _serialize_const
+
+        val = (0x1111111111111111 << 64) | 0x2222222222222222
+        out = _serialize_const(self._make("V128", val))
+        assert out == {
+            "tag": "Ico_V128",
+            "low": 0x2222222222222222,
+            "high": 0x1111111111111111,
+        }
+
+    def test_serialize_u64_generic_value(self):
+        """Non-128-bit constants keep the generic {value} shape."""
+        from angr.exploration.rust_irsb_serializer import _serialize_const
+
+        out = _serialize_const(self._make("U64", 0x1234))
+        assert out == {"tag": "Ico_U64", "value": 0x1234}
+
+
 class TestExplorationIntegration:
     """Integration tests with real binaries."""
 
