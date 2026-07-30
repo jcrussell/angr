@@ -688,11 +688,6 @@ impl NativeProcedureRegistry {
         self.disabled.remove(name);
     }
 
-    /// Check if a specific procedure is disabled.
-    pub fn is_disabled(&self, name: &str) -> bool {
-        self.disabled.contains(name)
-    }
-
     /// Set a Python override for a procedure.
     ///
     /// When a Python override is set, [`Self::get`] returns `None` for
@@ -727,29 +722,6 @@ impl NativeProcedureRegistry {
             .map(std::string::String::as_str)
             .collect()
     }
-
-    /// Get statistics about the registry.
-    pub fn stats(&self) -> RegistryStats {
-        RegistryStats {
-            total: self.procedures.len(),
-            enabled: self.enabled,
-            disabled_count: self.disabled.len(),
-            override_count: self.python_overrides.len(),
-        }
-    }
-}
-
-/// Statistics about the procedure registry.
-#[derive(Debug, Clone)]
-pub struct RegistryStats {
-    /// Total number of registered procedures.
-    pub total: usize,
-    /// Whether native procedures are globally enabled.
-    pub enabled: bool,
-    /// Number of individually disabled procedures.
-    pub disabled_count: usize,
-    /// Number of procedures with Python overrides.
-    pub override_count: usize,
 }
 
 #[cfg(test)]
