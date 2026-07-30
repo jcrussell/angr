@@ -6,11 +6,14 @@
 //!
 //! 1. **Concrete-only**: bail to Python on the first symbolic byte. Used by
 //!    procedures that write to memory (strcpy/strdup/strcat) or do
-//!    string-search work that can't be expressed as an ITE chain
-//!    (strstr). Helpers: [`scan_concrete_until_null`], [`find_null_addr`].
+//!    string-search / comparison work that can't be expressed as an ITE
+//!    chain (strstr, strcmp, strchr).
+//!    Helpers: [`scan_concrete_until_null`], [`find_null_addr`],
+//!    [`scan_concrete_then_collect`] (collect-as-you-scan for strcmp/strchr).
 //!
 //! 2. **Symbolic-aware**: build an ITE chain over collected bytes so the
-//!    result can be symbolic. Used by strlen (and could be used by strcmp).
+//!    result can be symbolic. Used by strlen, strcpy, and the file-read
+//!    scan helpers.
 //!    Helpers: [`scan_for_null_symbolic`], [`build_strlen_chain`].
 //!
 //! Centralizing these means null-boundary edge cases live in one place. Tests
