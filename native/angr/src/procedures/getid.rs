@@ -10,58 +10,44 @@
 //! The return BV is sized to `arch().bits()`, matching how angr's
 //! `SimProcedure.ret(<python int>)` builds a `BVV(value, arch.bits)`.
 
-use crate::symbolic::RustBV;
-
 /// Angr's default uid/gid return value (mirrors `DEFAULT_UID_GID` in
 /// `syscalls/identity.rs` and `procedures/posix/getuid.py`).
 const DEFAULT_UID_GID: u128 = 1000;
 
-crate::declare_proc! {
+crate::declare_const_proc! {
     /// ```c
     /// uid_t getuid(void);
     /// ```
     name = "getuid",
     struct = NativeGetuid,
-    args = [],
-    call |state| {
-        Ok(Some(RustBV::concrete(DEFAULT_UID_GID, state.arch().bits())))
-    }
+    value = DEFAULT_UID_GID,
 }
 
-crate::declare_proc! {
+crate::declare_const_proc! {
     /// ```c
     /// uid_t geteuid(void);
     /// ```
     name = "geteuid",
     struct = NativeGeteuid,
-    args = [],
-    call |state| {
-        Ok(Some(RustBV::concrete(DEFAULT_UID_GID, state.arch().bits())))
-    }
+    value = DEFAULT_UID_GID,
 }
 
-crate::declare_proc! {
+crate::declare_const_proc! {
     /// ```c
     /// gid_t getgid(void);
     /// ```
     name = "getgid",
     struct = NativeGetgid,
-    args = [],
-    call |state| {
-        Ok(Some(RustBV::concrete(DEFAULT_UID_GID, state.arch().bits())))
-    }
+    value = DEFAULT_UID_GID,
 }
 
-crate::declare_proc! {
+crate::declare_const_proc! {
     /// ```c
     /// gid_t getegid(void);
     /// ```
     name = "getegid",
     struct = NativeGetegid,
-    args = [],
-    call |state| {
-        Ok(Some(RustBV::concrete(DEFAULT_UID_GID, state.arch().bits())))
-    }
+    value = DEFAULT_UID_GID,
 }
 
 #[cfg(test)]
