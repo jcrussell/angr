@@ -759,7 +759,18 @@ impl RustExplorationManager {
                     } else if let Some(val) = ctx.eval(&bv) {
                         Ok(super::helpers::u128_to_le_bytes(val, size as usize))
                     } else {
-                        Ok(vec![0u8; size as usize])
+                        // Symbolic and not concretizable (eval found no SAT
+                        // witness). Mirror _get_state_memory's refusal to
+                        // fabricate data rather than the old swallow-to-zero:
+                        // returning full-size zeros here let callbacks
+                        // consuming by length mistake them for real bytes
+                        // (the same bug the Err arm below was fixed for,
+                        // angr-ph300.19). Propagate an error so the caller
+                        // skips the slot instead.
+                        Err(PyValueError::new_err(format!(
+                            "pending memory load at 0x{addr:x} is symbolic \
+                             and not concretizable"
+                        )))
                     }
                 }
                 // Previously swallowed the error and returned full-size zeros,
