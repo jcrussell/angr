@@ -314,6 +314,7 @@ impl<'a> VEXInterpreter<'a> {
                     .call_memory_store_symbolic_value(addr_concrete, data_bv)
                     .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
             } else {
+                self.evict_overlapping_symbolic_stores(addr_concrete, data_size);
                 self.pending_symbolic_stores
                     .insert(addr_concrete, data_bv.clone());
                 let data_bytes = bv_to_bytes(data_bv);
