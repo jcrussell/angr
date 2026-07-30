@@ -216,6 +216,7 @@ fn test_multi_payload_records_ite_depth() {
 /// the address variable to either candidate, then probe-fork to pin the
 /// address and verify the load eval'd to the matching alternative's value.
 /// Also asserts that `mem_ite_depth_max` reflects the 2-alt collapse.
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_multi_cell_load_single_byte() {
     use crate::symbolic::get_solver_stats;
@@ -277,6 +278,7 @@ fn test_multi_cell_load_single_byte() {
 ///   byte 2 (0x1002): concrete 0x22
 ///   byte 3 (0x1003): concrete 0x33
 /// Under addr==A the load must read 0x332211AA, under addr==B 0x332211BB.
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_multi_cell_load_mixed_concrete() {
     let ctx = SymContext::new_mock();
@@ -318,6 +320,7 @@ fn test_multi_cell_load_mixed_concrete() {
 
 /// Big-endian variant of the mixed concrete + Multi load. byte 0 is the
 /// MSB so addr==A should yield 0xAA_11_22_33 and addr==B 0xBB_11_22_33.
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_multi_cell_load_big_endian() {
     let ctx = SymContext::new_mock();
@@ -358,6 +361,7 @@ fn test_multi_cell_load_big_endian() {
 /// Multi cells at multiple bytes within the load range, plus a concrete
 /// byte in between, exercises the per-byte loop's ability to handle
 /// several independent ITE chains in one load.
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_multi_cell_load_multiple_multi_bytes() {
     let ctx = SymContext::new_mock();
@@ -441,6 +445,7 @@ fn test_concrete_overwrite_clears_multi_bit() {
 /// Round-trip a multi-byte LE store through `store_concrete_multi` and
 /// the Phase 1.2 load path. With two candidates {A, B}, the load at A
 /// should yield the full stored value, and the load at B likewise.
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_store_concrete_multi_le_round_trip() {
     let ctx = SymContext::new_mock();
@@ -483,6 +488,7 @@ fn test_store_concrete_multi_le_round_trip() {
 
 /// Big-endian variant of the round-trip. byte 0 is the MSB so the
 /// per-byte split must mirror that orientation.
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_store_concrete_multi_be_round_trip() {
     let ctx = SymContext::new_mock();
@@ -507,6 +513,7 @@ fn test_store_concrete_multi_be_round_trip() {
 
 /// Fork independence: installing Multi cells in a child must not bleed
 /// into the parent, even when the child later mutates them again.
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_store_concrete_multi_fork_independence() {
     let ctx = SymContext::new_mock();
@@ -548,6 +555,7 @@ fn test_store_concrete_multi_fork_independence() {
 /// End-to-end: `store_symbolic_unified_multi` with an address constrained
 /// to two solutions concretizes to Multiple, installs Multi cells, and
 /// `load_concrete_lazy` materializes the correct value for each candidate.
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_store_symbolic_unified_multi_multiple_round_trip() {
     let ctx = SymContext::new_mock();
@@ -619,6 +627,7 @@ fn test_store_symbolic_unified_multi_concrete_addr_no_multi() {
 
 /// `store_symbolic_unified` routes Multiple to Multi cells — same end-state as
 /// `store_symbolic_unified_multi`.
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_phase2_gate_on_installs_multi() {
     let ctx = SymContext::new_mock();
@@ -649,6 +658,7 @@ fn test_phase2_gate_on_installs_multi() {
 /// candidate page lives in a declared lazy region — the interpreter
 /// fetches the page from Python rather than letting Rust auto-map a
 /// zero page that diverges from Python's backer data.
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_phase2_safe_install_lazy_region_signals() {
     let ctx = SymContext::new_mock();
@@ -683,6 +693,7 @@ fn test_phase2_safe_install_lazy_region_signals() {
 /// The Phase 2 safe installer must silently skip candidates whose pages
 /// are unmapped and NOT in any lazy region (matches
 /// `prepare_addresses_for_ite`'s skip-unmapped behavior).
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_phase2_safe_install_skips_unmapped_non_lazy() {
     let ctx = SymContext::new_mock();
@@ -713,6 +724,7 @@ fn test_phase2_safe_install_skips_unmapped_non_lazy() {
 /// symbolic_objects entry and mark the page-level symbolic bit so the
 /// state export pipeline picks it up. This is the export-correctness
 /// invariant called out in `rust_lazy_memory_design.rst` Phase 2.
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_phase2_flush_multi_to_symbolic_objects() {
     let ctx = SymContext::new_mock();
@@ -750,6 +762,7 @@ fn test_phase2_flush_multi_to_symbolic_objects() {
 /// the child via the new safe-install path. Pairs with
 /// `test_store_concrete_multi_fork_independence` but exercises the
 /// Phase 2 entry point.
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_phase2_fork_independence_via_safe_install() {
     let ctx = SymContext::new_mock();
@@ -794,6 +807,7 @@ fn test_phase2_fork_independence_via_safe_install() {
 
 /// After a single load of a Multi byte, the payload's collapse cache must
 /// be populated. A second load returns the cached BV unchanged.
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_phase3_collapse_cache_hit_after_load() {
     let ctx = SymContext::new_mock();
@@ -852,6 +866,7 @@ fn test_phase3_collapse_cache_invalidated_on_push() {
 /// byte changes between loads. Otherwise a concrete overwrite of the cell's
 /// page byte (which does not currently clear the Multi marker) would serve
 /// a stale ITE.
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_phase3_collapse_cache_invalidated_on_default_byte_change() {
     let ctx = SymContext::new_mock();
@@ -979,6 +994,7 @@ fn test_phase4_wider_load_cache_skips_size_one() {
 /// alternative whose cond can be made true while the first is false —
 /// letting eval pin the rebuilt result to the new value and fail loudly
 /// if the cache returned the stale BV.
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_phase4_wider_load_cache_invalidated_on_multi_install() {
     let ctx = SymContext::new_mock();
@@ -1123,6 +1139,7 @@ fn test_phase4_wider_load_cache_fork_independence() {
 /// wider symbolic_objects (one per candidate base), each width 32, with
 /// symbolic_spans covering the interior bytes — instead of 8 per-byte
 /// entries. This is the export-cost win called out in `phase41-bottleneck`.
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_phase42_flush_coalesces_le_multi_byte_run() {
     let ctx = SymContext::new_mock();
@@ -1185,6 +1202,7 @@ fn test_phase42_flush_coalesces_le_multi_byte_run() {
 /// Big-endian variant of the LE coalesce test. byte 0 (lowest addr) is
 /// the MSB in BE; the wider value's right-fold must reconstruct the
 /// original word.
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_phase42_flush_coalesces_be_multi_byte_run() {
     let ctx = SymContext::new_mock();

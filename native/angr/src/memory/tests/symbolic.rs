@@ -3,6 +3,7 @@ use super::super::*;
 /// angr-wyxb: when two symbolic stores partially overlap, the address
 /// constraint on each store's address expression and any value
 /// constraints must remain in the solver after the stores complete.
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_symbolic_store_partial_overlap_constraint_propagation() {
     let ctx = SymContext::new_mock();
@@ -81,6 +82,7 @@ fn test_symbolic_store_partial_overlap_constraint_propagation() {
 ///
 /// Regression for the wide-symbolic-object byte-reversal class of bugs
 /// described in project_endianness_bug.
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_big_endian_128bit_wide_symbolic_store() {
     let ctx = SymContext::new_mock();
@@ -167,6 +169,7 @@ fn test_big_endian_128bit_wide_symbolic_store() {
 /// non-zero offsets). Before the fix, the LE branch returned MSB-side
 /// bytes from the wide BV instead of LSB-side bytes, so single-byte
 /// and 4-byte loads at non-zero offsets gave wrong values.
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_little_endian_128bit_wide_symbolic_store() {
     let ctx = SymContext::new_mock();
@@ -271,6 +274,7 @@ fn per_byte_symbolic_setup(endness: Endness) -> (SymContext, SymbolicMemory, [u1
     (ctx, mem, pinned)
 }
 
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_per_byte_symbolic_concat_little_endian() {
     let (ctx, mem, pinned) = per_byte_symbolic_setup(Endness::Little);
@@ -286,6 +290,7 @@ fn test_per_byte_symbolic_concat_little_endian() {
     );
 }
 
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_per_byte_symbolic_concat_big_endian() {
     let (ctx, mem, pinned) = per_byte_symbolic_setup(Endness::Big);
@@ -327,6 +332,7 @@ fn wide_linear_scan_setup(endness: Endness) -> (SymContext, SymbolicMemory, u128
     (ctx, mem, pinned)
 }
 
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_wide_linear_scan_little_endian() {
     let (ctx, mem, pinned) = wide_linear_scan_setup(Endness::Little);
@@ -342,6 +348,7 @@ fn test_wide_linear_scan_little_endian() {
     );
 }
 
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_wide_linear_scan_big_endian() {
     let (ctx, mem, pinned) = wide_linear_scan_setup(Endness::Big);
@@ -421,6 +428,7 @@ fn test_containing_wider_sym_spans_first() {
 /// reconstruction then calls `containing_wider_sym`, which finds the
 /// wider sym via spans path 1 and extracts the load range
 /// endianness-correctly.
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_load_concrete_slow_path_spans_first_little_endian() {
     let ctx = SymContext::new_mock();
@@ -470,6 +478,7 @@ fn test_load_concrete_slow_path_spans_first_little_endian() {
 /// with stride 0x1000 hit the Strided concretization branch in
 /// `load_symbolic_unified`, so this also covers the strided ITE
 /// path's per-leaf cross-page handling.
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_symbolic_load_cross_page_multiple_solutions() {
     let ctx = SymContext::new_mock();
@@ -800,6 +809,7 @@ fn test_permission_enforcement_wide_store_three_pages_middle_readonly() {
 /// A subsequent load(0x1000, 8) must produce concat(sym2[31:0],
 /// sym1[31:0]) for LE memory, not the entire sym1 via the
 /// exact-address fast path.
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_load_concrete_partial_overlap_later_store_wins() {
     let ctx = SymContext::new_mock();
@@ -1007,6 +1017,7 @@ fn test_permission_enforcement_wide_load_three_pages_middle_writeonly() {
 /// difference for `mem_ite_depth_total` must be at least 3 (one
 /// 3-candidate eager store from this test); for `mem_ite_depth_max` the
 /// post-store watermark must be at least 3 (it can only climb).
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_mem_ite_depth_counter_records_eager_multi_store() {
     use crate::concretize::AddressConcretizer;
@@ -1100,6 +1111,7 @@ fn test_memory_volume_counters_fire_on_load_store() {
 /// angr-2j5v: a symbolic-address store routed through `concretize_write`
 /// must bump `concretize_write_count` and `concretize_total_candidates`.
 /// Uses the same setup as the ITE-depth test (3 candidate addresses).
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_concretize_counters_fire_on_symbolic_store() {
     use crate::concretize::AddressConcretizer;
@@ -1184,6 +1196,7 @@ fn test_record_mem_ite_depth_helper() {
 /// load.rs:74 returns `symbolic_objects[addr]` entire because its
 /// width still matches the requested size — the concrete byte we
 /// wrote at addr+3 is silently lost.
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_concrete_overwrite_inner_byte_of_wider_sym_at_base() {
     let ctx = SymContext::new_mock();

@@ -205,6 +205,7 @@ fn eval_next_addr_concrete_returns_literal() {
 /// `Single(addr)` and pins `next == addr` on the solver before returning the
 /// concrete target. The pin is a tautology here (the symbol is already
 /// constrained), but it exercises the `ConcretizationResult::Single` arm.
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn eval_next_addr_single_concretization_returns_target() {
     let ctx = SymContext::new_mock();

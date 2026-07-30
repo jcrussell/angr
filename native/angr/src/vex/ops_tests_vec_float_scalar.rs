@@ -291,6 +291,7 @@ fn test_vec_float_scalar_max_nan_concrete() {
 
 /// SSE RCPSS shape: 128-bit result, lane 0 fresh symbolic (32-bit width),
 /// upper 96 bits passed through unchanged from the arg.
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_vfrecip_est_s_f32_upper_passthrough() {
     let ctx = SymContext::new_mock();
@@ -303,6 +304,7 @@ fn test_vfrecip_est_s_f32_upper_passthrough() {
 }
 
 /// SSE RSQRTSS shape: same as RCPSS — upper 96 bits passthrough, lane 0 fresh.
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_vfrsqrt_est_s_f32_upper_passthrough() {
     let ctx = SymContext::new_mock();
@@ -315,6 +317,7 @@ fn test_vfrsqrt_est_s_f32_upper_passthrough() {
 }
 
 /// NEON Iop_RecipEst32Fx2 (D-reg, 2x f32 = 64-bit result).
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_vfrecip_est_packed_f32x2_shape() {
     let ctx = SymContext::new_mock();
@@ -333,6 +336,7 @@ fn test_vfrecip_est_packed_f32x2_shape() {
 }
 
 /// SSE RCPPS / NEON Q-reg Iop_RecipEst32Fx4 (4x f32 = 128-bit result).
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_vfrecip_est_packed_f32x4_shape() {
     let ctx = SymContext::new_mock();
@@ -402,6 +406,7 @@ fn test_vfrsqrt_est_packed_f64x2_shape() {
 }
 
 /// NEON Iop_RecipStep32Fx2: D-reg binary, 64-bit result.
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_vfrecip_step_packed_f32x2_shape() {
     let ctx = SymContext::new_mock();

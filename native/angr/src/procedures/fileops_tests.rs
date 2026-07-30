@@ -744,6 +744,7 @@ fn test_fdopen_negative_fd_returns_null() {
     assert_eq!(fp.as_u64(), Some(0));
 }
 
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_open_symbolic_pathname_is_concretized() {
     // A symbolic byte in the pathname used to bounce the call to Python

@@ -464,6 +464,7 @@ fn cas_store_symbolic_data_concrete_addr_invalidates_cached_block() {
 // `concretize_write`'s own Max-fallback uses internally -- so the test gets a
 // deterministic `Single` result without depending on the concretizer's
 // range-enumeration heuristics for an otherwise-unconstrained value.
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn cas_store_symbolic_data_symbolic_addr_invalidates_cached_block() {
     let ctx = SymContext::new_mock();
@@ -518,6 +519,7 @@ fn cas_store_symbolic_data_symbolic_addr_invalidates_cached_block() {
 // base -- exactly the "constrained index" example from the bug report,
 // verified via a genuine Z3-backed concretization (not a hand-seeded cache
 // entry) so the test exercises the real `detect_stride_from_solutions` path.
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn handle_symbolic_store_strided_invalidates_cached_candidate_only() {
     let ctx = SymContext::new_mock();
@@ -580,6 +582,7 @@ fn handle_symbolic_store_strided_invalidates_cached_candidate_only() {
 // Same gap, Multiple shape: index constrained to the non-arithmetic set
 // {0, 1, 3} (via explicit disjunction) so stride-detection's GCD collapses to
 // 1 and `concretize` genuinely returns `Multiple`, not `Strided`.
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn handle_symbolic_store_multiple_invalidates_cached_candidate_only() {
     let ctx = SymContext::new_mock();

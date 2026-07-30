@@ -302,6 +302,7 @@ fn test_read_closed_fd_falls_back() {
     assert!(result.is_err());
 }
 
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_read_stdin_short_reads_returns_symbolic_size() {
     // With SHORT_READS, native stdin read returns a symbolic real_size in

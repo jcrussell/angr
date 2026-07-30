@@ -19,6 +19,7 @@ fn test_access_returns_symbolic_int() {
     assert_eq!(result.width(), 32); // sizeof(int)
 }
 
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_access_constrained_to_zero_or_minus_one() {
     // The returned int must be feasibly 0 and feasibly -1, but NOT any other

@@ -128,6 +128,7 @@ fn test_strlen_symbolic_byte_returns_symbolic() {
     assert!(result.as_u64().is_none(), "expected symbolic length");
 }
 
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_strlen_symbolic_byte_zero_solution() {
     // Constraining the symbolic byte to 0 should yield length 1.
@@ -151,6 +152,7 @@ fn test_strlen_symbolic_byte_zero_solution() {
     assert_eq!(ctx.max(&result, false), Some(1));
 }
 
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_strlen_symbolic_byte_nonzero_solution() {
     // Constraining the symbolic byte to 'b' should yield length 3.
@@ -174,6 +176,7 @@ fn test_strlen_symbolic_byte_nonzero_solution() {
     assert_eq!(ctx.max(&result, false), Some(3));
 }
 
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_strnlen_symbolic_byte_capped_at_maxlen() {
     // Buffer of all symbolic bytes; with maxlen=2 result is bounded by 2.

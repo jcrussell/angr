@@ -748,6 +748,7 @@ fn random_zero_count_writes_zero_and_returns() {
 
 /// angr-ptf54: CGC `receive` on fd 0 consumes the harness-seeded stdin bytes
 /// (bound by constraint) instead of minting unconstrained ones.
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn receive_consumes_seeded_stdin() {
     let h = NativeReceiveSyscall;

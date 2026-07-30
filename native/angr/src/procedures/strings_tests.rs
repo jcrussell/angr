@@ -191,6 +191,7 @@ fn test_null_exists_constraint_none_when_all_concrete_nonnull() {
     assert!(null_exists_constraint(&bytes, &ctx).is_none());
 }
 
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_null_exists_constraint_prunes_unterminated_symbolic_window() {
     let state = RustSimState::new("amd64").unwrap();

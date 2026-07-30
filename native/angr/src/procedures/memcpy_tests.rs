@@ -138,6 +138,7 @@ fn test_memmove_overlapping() {
     assert_eq!(val.as_u64(), Some(b'd' as u64));
 }
 
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_memcpy_symbolic_size_pinned() {
     // A symbolic size constrained to exactly 4 must copy exactly the first 4
@@ -183,6 +184,7 @@ fn test_memcpy_symbolic_size_pinned() {
     }
 }
 
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_memcpy_symbolic_size_conditional() {
     // A symbolic size with a small upper bound copies conditionally: each byte
@@ -249,6 +251,7 @@ fn test_memcpy_symbolic_size_unbounded_fallback() {
     assert!(result.is_err(), "unbounded symbolic size should fall back");
 }
 
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_memmove_symbolic_size_overlap() {
     // memmove with a symbolic size constrained to a single concrete value must
@@ -290,6 +293,7 @@ fn test_memmove_symbolic_size_overlap() {
     }
 }
 
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_memcpy_symbolic_dst_pinned() {
     // A symbolic dst constrained to a single concrete address copies exactly
@@ -329,6 +333,7 @@ fn test_memcpy_symbolic_dst_pinned() {
     assert_eq!(after.as_u64(), Some(0));
 }
 
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_memcpy_symbolic_src_pinned() {
     // A symbolic src pinned to a single address copies from there to a concrete
@@ -362,6 +367,7 @@ fn test_memcpy_symbolic_src_pinned() {
     }
 }
 
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_memcpy_symbolic_dst_two_candidates() {
     // A symbolic dst with two feasible addresses copies the concrete src into
@@ -405,6 +411,7 @@ fn test_memcpy_symbolic_dst_two_candidates() {
     }
 }
 
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_memcpy_symbolic_src_dst_cross_product() {
     // Both src and dst symbolic, each pinned to one address: the (dst, src)
@@ -488,6 +495,7 @@ fn test_memcpy_symbolic_addr_symbolic_size_fallback() {
     );
 }
 
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_memmove_symbolic_dst_overlap() {
     // memmove with a symbolic (pinned) dst overlapping a concrete src copies

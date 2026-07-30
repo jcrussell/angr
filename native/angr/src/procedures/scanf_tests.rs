@@ -794,6 +794,7 @@ fn test_scanf_float_specifiers_fall_back() {
 
 /// angr-ptf54: `%s` off stdin consumes the harness-seeded fd-0 bytes (bound by
 /// constraint), while sscanf — which reads no stdin — is untouched.
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_scanf_percent_s_consumes_seeded_stdin() {
     let mut state = setup_state();
@@ -821,6 +822,7 @@ fn test_scanf_percent_s_consumes_seeded_stdin() {
 
 /// angr-ggb66: `%c` reads one byte off the stream, so it consumes one seeded
 /// fd-0 byte per conversion, in order — same byte-for-byte mapping as `%s`.
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_scanf_percent_c_consumes_seeded_stdin() {
     let mut state = setup_state();

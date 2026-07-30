@@ -12,6 +12,7 @@ fn is_ite(bv: &RustBV) -> bool {
 // instead of emitting log-depth ITE nodes that Z3's max-bv-sharing tactic
 // cannot dedup (it matches by AST node identity, not structural equality).
 
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_ite_dedup_zero_page_load() {
     let ctx = SymContext::new_mock();
@@ -48,6 +49,7 @@ fn test_ite_dedup_zero_page_load() {
     );
 }
 
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_ite_dedup_repeated_initializer_collapses() {
     let ctx = SymContext::new_mock();
@@ -81,6 +83,7 @@ fn test_ite_dedup_repeated_initializer_collapses() {
     assert_eq!(loaded.as_u64(), Some(0xDEAD_BEEF));
 }
 
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_ite_dedup_distinct_values_keeps_ite() {
     // Control test: when candidate addresses load distinct values, the
@@ -112,6 +115,7 @@ fn test_ite_dedup_distinct_values_keeps_ite() {
     );
 }
 
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_ite_dedup_strided_zero_collapses() {
     // Strided variant: a stride-aligned region of zeros routes through
@@ -158,6 +162,7 @@ fn test_ite_dedup_strided_zero_collapses() {
 /// A `Multiple` write must hoist the disjunction: the counter bumps and the
 /// solver gains a constraint that restricts the addr's domain to the
 /// candidate set.
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_assert_address_disjunction_multiple_write_hoists() {
     use crate::concretize::AddressConcretizer;
@@ -247,6 +252,7 @@ fn test_assert_address_disjunction_empty_and_single_addr_lists_are_noops() {
 
 /// A `Multiple` *load* must hoist the disjunction too — covers
 /// `load_symbolic_unified` Multiple arm.
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_assert_address_disjunction_multiple_load_hoists() {
     use crate::concretize::AddressConcretizer;

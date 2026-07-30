@@ -86,6 +86,7 @@ fn test_memset_symbolic_value() {
     assert_eq!(after.as_u64(), Some(0));
 }
 
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_memset_symbolic_size_pinned() {
     // A symbolic size constrained to exactly 3 must fill exactly the first 3
@@ -132,6 +133,7 @@ fn test_memset_symbolic_size_pinned() {
     }
 }
 
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_memset_symbolic_size_conditional() {
     // A symbolic size with a small upper bound fills conditionally: each byte
@@ -175,6 +177,7 @@ fn test_memset_symbolic_size_conditional() {
     assert_eq!(b.as_u64(), Some(0xFF));
 }
 
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_memset_symbolic_addr_pinned() {
     // A symbolic destination constrained to a single concrete address fills
@@ -215,6 +218,7 @@ fn test_memset_symbolic_addr_pinned() {
     assert_eq!(after.as_u64(), Some(0));
 }
 
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_memset_symbolic_addr_two_candidates() {
     // A symbolic destination with two feasible addresses fills both regions

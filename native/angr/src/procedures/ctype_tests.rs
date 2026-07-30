@@ -73,6 +73,7 @@ fn test_symbolic_isdigit_returns_constrained_bv() {
     assert!(result.as_u64().is_none(), "expected symbolic, got concrete");
 }
 
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_symbolic_isdigit_solver_evaluation() {
     // Constrain the symbolic byte to '5' and check the result solves to 1.
@@ -90,6 +91,7 @@ fn test_symbolic_isdigit_solver_evaluation() {
     assert_eq!(ctx.max(&result, false), Some(1));
 }
 
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_symbolic_tolower_returns_symbolic() {
     let mut s = make_state();

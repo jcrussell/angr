@@ -114,6 +114,7 @@ fn test_strchr_symbolic_target_returns_symbolic() {
     assert!(result.as_u64().is_none(), "expected symbolic, got concrete");
 }
 
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_strchr_symbolic_target_solver_evaluation() {
     let mut state = RustSimState::new("amd64").unwrap();
@@ -135,6 +136,7 @@ fn test_strchr_symbolic_target_solver_evaluation() {
     assert_eq!(ctx.max(&result, false), Some(0x1001));
 }
 
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_strchr_symbolic_target_null_match() {
     // Constraining target to 0 should yield the address of the null byte.
@@ -156,6 +158,7 @@ fn test_strchr_symbolic_target_null_match() {
     assert_eq!(ctx.max(&result, false), Some(0x1003));
 }
 
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_strchr_symbolic_target_no_match_returns_null() {
     let mut state = RustSimState::new("amd64").unwrap();
@@ -266,6 +269,7 @@ fn test_strrchr_symbolic_target_returns_symbolic() {
     assert!(result.as_u64().is_none(), "expected symbolic, got concrete");
 }
 
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_strrchr_symbolic_target_picks_last() {
     // Constrain symbolic c to 'l' → last 'l' is at 0x1003 in "hello".
@@ -287,6 +291,7 @@ fn test_strrchr_symbolic_target_picks_last() {
     assert_eq!(ctx.max(&result, false), Some(0x1003));
 }
 
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_memchr_symbolic_target_solver_evaluation() {
     let mut state = RustSimState::new("amd64").unwrap();

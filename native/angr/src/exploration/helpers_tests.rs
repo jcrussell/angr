@@ -947,6 +947,7 @@ fn deferred_fork(condition_id: u64, path_taken: bool) -> crate::callbacks::Defer
 /// condition yields one SAT fork parked at `unexplored_target`, and the
 /// `guard_sink` — the state that keeps executing — picks up the *taken*-path
 /// guard so it can no longer satisfy the opposite side.
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn materialize_deferred_forks_sat_fork_and_guard_sink() {
     Python::initialize();
@@ -982,6 +983,7 @@ fn materialize_deferred_forks_sat_fork_and_guard_sink() {
 /// An unexplored side that contradicts the base lands in `unsat`, not `sat` —
 /// and `lazy_solves` short-circuits that check, which is why every caller reads
 /// the split rather than assuming SAT.
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn materialize_deferred_forks_unsat_split_and_lazy_solves() {
     Python::initialize();
@@ -1368,6 +1370,7 @@ fn state_with_two_conds() -> (RustSimState, RustBV, RustBV) {
 /// forks off a fixed, guard-free `fork_base` (the pre-callback snapshot), so
 /// without an explicit replay the second fork came back under-constrained —
 /// free to pick a model that contradicts a decision its own path already made.
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn materialize_deferred_forks_replays_earlier_guards_onto_later_forks() {
     Python::initialize();
@@ -1416,6 +1419,7 @@ fn materialize_deferred_forks_replays_earlier_guards_onto_later_forks() {
 /// interpreter actually takes: the snapshot is a clone of the block solver,
 /// which by design carries NO taken-path guards at all, so the replay is the
 /// only thing putting branch 1's decision onto branch 2's fork.
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn snapshot_built_fork_replays_earlier_guards() {
     Python::initialize();
