@@ -1329,45 +1329,6 @@ impl VEXOps {
     }
 
     // =========================================================================
-    // Ternary Operations
-    // =========================================================================
-
-    /// Execute a ternary operation (for ITE, etc.).
-    #[inline]
-    pub fn ternop(
-        op: IROp,
-        arg1: RustBV,
-        // The only ternary op currently dispatched here (`Extract`) reads just
-        // `arg1`; the trailing operands are consumed by the arity contract but
-        // unused. Prefixed rather than suppressed wholesale so a future
-        // multi-operand ternary op re-enables the warning if it forgets one.
-        _arg2: RustBV,
-        _arg3: RustBV,
-        ctx: &SymContext,
-    ) -> Result<RustBV, OpError> {
-        match op {
-            // Extraction takes (value, start_bit_as_u8, length_as_u8)
-            // Note: This is for cases where extract is done as a ternary op
-            IROp::Extract { from, to, low_bit } => {
-                debug_assert_eq!(arg1.width(), from.bits());
-                let hi = low_bit as u32 + to.bits() - 1;
-                let lo = low_bit as u32;
-                Ok(arg1.extract_into(hi, lo, ctx))
-            }
-            // NEON scaffolding: surface as a typed error rather than silently
-            // falling back. interpreter::expressions special-cases
-            // `UnsupportedNeon` to skip the fresh-symbolic synthesizer.
-            IROp::NeonUnimplemented(name) => Err(OpError::UnsupportedNeon { name }),
-
-            // Unmapped opcode (angr-tkbr.2).
-            IROp::Unmapped(name) => Err(OpError::UnsupportedVexOp {
-                op_name: name.to_string(),
-            }),
-            _ => Err(OpError::NotTernary(op)),
-        }
-    }
-
-    // =========================================================================
     // Quaternary Operations
     // =========================================================================
 
@@ -1584,13 +1545,14 @@ pub enum OpError {
     /// Operation is not a binary operation.
     #[error("operation {0:?} is not binary")]
     NotBinary(IROp),
-    /// Operation is not a ternary operation.
-    #[error("operation {0:?} is not ternary")]
-    NotTernary(IROp),
     /// Operation is not a quaternary operation.
     #[error("operation {0:?} is not quaternary")]
     NotQuaternary(IROp),
     /// Type mismatch.
+    ///
+    /// Reserved/defensive variant on this public `#[non_exhaustive]` enum:
+    /// currently unconstructed (kept-with-ticket per angr-36vvn.5) for the
+    /// forthcoming type-checked op paths that will validate operand widths.
     #[error("type mismatch: expected {expected:?}, got {got:?}")]
     TypeMismatch { expected: IRType, got: IRType },
     /// Invalid float type.

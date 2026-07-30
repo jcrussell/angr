@@ -67,7 +67,6 @@ fn op_error_to_typed(err: OpError, arch: &str) -> RustExecError {
         },
         e @ (OpError::NotUnary(_)
         | OpError::NotBinary(_)
-        | OpError::NotTernary(_)
         | OpError::NotQuaternary(_)
         | OpError::TypeMismatch { .. }
         | OpError::InvalidFloatType(_)
