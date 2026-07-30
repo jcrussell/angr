@@ -323,6 +323,18 @@ impl RustExplorationManager {
         from_stash: &str,
         to_stash: &str,
     ) -> PyResult<bool> {
+        // NB: unlike _move_states, _move_state deliberately does NOT short-
+        // circuit from_stash == to_stash. A same-stash move removes the state
+        // and re-appends it to the back — a reorder-to-back. This is load-
+        // bearing: _StashDict.__setitem__ (rust_state_proxy.py) rebuilds a
+        // stash in caller-specified order by iterating the desired order and
+        // calling move_state(sid, cur, key) with cur == key for each state
+        // already in `key` (angr-wxuo). _move_states' same-stash guard is
+        // about avoiding a bulk double-insert/drop bug (angr-ph300.17), which
+        // does not arise on this single-state remove-then-push_back path; the
+        // two methods intentionally differ on same-stash semantics (audit
+        // angr-04tw3.4: confirmed intentional, not a missing guard).
+        //
         // Move keeps the state's root; take_state_from removes it from the
         // source stash + unindexes, then we re-index onto the destination
         // (angr-ph300.27).

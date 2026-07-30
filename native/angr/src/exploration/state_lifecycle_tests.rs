@@ -375,6 +375,49 @@ fn move_state_single_active_guarded() {
     );
 }
 
+/// `_move_state` onto a state's own stash deliberately reorders-to-back rather
+/// than no-opping (angr-04tw3.4): _StashDict.__setitem__ relies on this to
+/// rebuild a stash in caller-specified order (angr-wxuo). The move of a
+/// non-STASH_ACTIVE state must also not notify the policy.
+#[test]
+fn move_state_same_stash_reorders_to_back() {
+    let (mut mgr, spy) = spy_mgr();
+
+    let mut first = RustSimState::new("amd64").expect("state");
+    first.set_register("rax", RustBV::concrete(0x11, 64));
+    let first_id = first.state_id();
+    mgr.sm.push("found", first);
+
+    let mut second = RustSimState::new("amd64").expect("state");
+    second.set_register("rax", RustBV::concrete(0x22, 64));
+    let second_id = second.state_id();
+    mgr.sm.push("found", second);
+
+    // Same-stash move of the *front* state sends it to the back — this is the
+    // reorder primitive stash-assignment builds on.
+    let moved = mgr
+        ._move_state(first_id, "found", "found")
+        .expect("same-stash move");
+    assert!(moved, "state present in its own stash reports moved=true");
+    assert_eq!(
+        mgr.sm.state_ids("found"),
+        vec![second_id, first_id],
+        "same-stash move reorders the moved state to the back",
+    );
+
+    // A state absent from the named stash reports false.
+    let absent = mgr
+        ._move_state(0xdead_beef, "found", "found")
+        .expect("absent same-stash move");
+    assert!(!absent, "state absent from its stash reports moved=false");
+
+    // Neither move touched STASH_ACTIVE, so the policy is never notified.
+    assert!(
+        sorted_removed(&spy).is_empty(),
+        "same-stash move out of a non-active stash must not notify the policy",
+    );
+}
+
 /// `_reset_for_stage` drops every other active state — each must be notified.
 #[test]
 fn reset_for_stage_notifies_dropped_active() {
