@@ -373,6 +373,16 @@ impl RustExplorationManager {
         })
     }
 
+    // The three `_get_state_*` metadata getters below and `_clear_state_metadata`
+    // deliberately tolerate a missing state_id (empty dict / no-op) instead of
+    // raising like their ~25 `with_state`/`with_state_mut` siblings. This is a
+    // load-bearing contract, not an oversight: the Python `_lookup_via_ancestry`
+    // helper (rust_state_sync.py) walks a state's ancestry by calling these
+    // getters on possibly-evicted ancestor ids and treats a falsy result as
+    // "try the next ancestor". A raise would abort that fallback walk.
+    // `_clear_state_metadata` is likewise a best-effort cleanup invoked on ids
+    // that may already be gone (rust_manager.py). Keep these advisory; do not
+    // route them through with_state*. (audit angr-04tw3.6)
     pub(crate) fn _get_state_symbolic_pages<'py>(
         &self,
         py: Python<'py>,
