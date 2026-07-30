@@ -86,6 +86,16 @@ fn test_parse_jumpkind() {
     );
     assert_eq!(parse_jumpkind("Ijk_Call"), super::super::ir::JumpKind::Call);
     assert_eq!(parse_jumpkind("Ijk_Ret"), super::super::ir::JumpKind::Ret);
+
+    // angr-36vvn.8: these 3 real VEX jumpkinds previously fell through to
+    // Boring; each must now round-trip through ijk_name.
+    for jk in [
+        super::super::ir::JumpKind::FlushDCacheLine,
+        super::super::ir::JumpKind::ExtV128,
+        super::super::ir::JumpKind::Extension,
+    ] {
+        assert_eq!(parse_jumpkind(jk.ijk_name()), jk);
+    }
 }
 
 #[test]

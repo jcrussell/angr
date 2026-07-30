@@ -1190,6 +1190,9 @@ pub fn parse_jumpkind(jk_str: &str) -> super::ir::JumpKind {
         "Ijk_MapFail" => JumpKind::MapFail,
         "Ijk_InvalICache" => JumpKind::InvalICache,
         "Ijk_FlushDCache" => JumpKind::FlushDCache,
+        "Ijk_FlushDCacheLine" => JumpKind::FlushDCacheLine,
+        "Ijk_ExtV128" => JumpKind::ExtV128,
+        "Ijk_Extension" => JumpKind::Extension,
         _ => JumpKind::Boring,
     }
 }
