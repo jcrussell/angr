@@ -746,6 +746,20 @@ pub enum IROp {
 }
 
 impl IROp {
+    /// Map a packed-vector's total bit-width to its `IRType`:
+    /// 64 → I64 (NEON D-reg), 128 → V128 (Q-reg / SSE), 256 → V256 (AVX);
+    /// anything else → None. Arms whose decode never yields a 256-bit total
+    /// (D/Q-reg-only families) can share this — 256 is simply unreachable
+    /// for them, so the extra branch is harmless.
+    fn width_total_to_type(total: u32) -> Option<IRType> {
+        match total {
+            64 => Some(IRType::I64),
+            128 => Some(IRType::V128),
+            256 => Some(IRType::V256),
+            _ => None,
+        }
+    }
+
     /// Get the result type of this operation.
     pub fn result_type(&self) -> Option<IRType> {
         match self {
@@ -819,13 +833,7 @@ impl IROp {
             // Packed FP compare: total = elem.bits() * count.
             // 32Fx2 -> I64, 32Fx4 / 64Fx2 -> V128.
             IROp::FCmpVecPacked { elem, count, .. } => {
-                let total = elem.bits() * (*count as u32);
-                match total {
-                    64 => Some(IRType::I64),
-                    128 => Some(IRType::V128),
-                    256 => Some(IRType::V256),
-                    _ => None,
-                }
+                Self::width_total_to_type(elem.bits() * (*count as u32))
             }
 
             // x87 FCOM-style compare encodes the result as a 32-bit value.
@@ -881,12 +889,7 @@ impl IROp {
             IROp::VShl { elem, count }
             | IROp::VShr { elem, count }
             | IROp::VSar { elem, count } => {
-                let total = elem.bits() * (*count as u32);
-                match total {
-                    64 => Some(IRType::I64),
-                    128 => Some(IRType::V128),
-                    _ => None,
-                }
+                Self::width_total_to_type(elem.bits() * (*count as u32))
             }
             IROp::VInterleaveLO { .. } | IROp::VInterleaveHI { .. } | IROp::VPerm { .. } => {
                 Some(IRType::V128)
@@ -897,35 +900,15 @@ impl IROp {
 
             // SetElem returns the full vector — width = elem * count.
             IROp::VSetElem { elem, count } => {
-                let total = elem.bits() * (*count as u32);
-                match total {
-                    64 => Some(IRType::I64),
-                    128 => Some(IRType::V128),
-                    256 => Some(IRType::V256),
-                    _ => None,
-                }
+                Self::width_total_to_type(elem.bits() * (*count as u32))
             }
 
             // Dup: total width = elem * count.
-            IROp::VDup { elem, count } => {
-                let total = elem.bits() * (*count as u32);
-                match total {
-                    64 => Some(IRType::I64),
-                    128 => Some(IRType::V128),
-                    256 => Some(IRType::V256),
-                    _ => None,
-                }
-            }
+            IROp::VDup { elem, count } => Self::width_total_to_type(elem.bits() * (*count as u32)),
 
             // Widen: each lane doubles in width; total = (from.bits()*2) * count.
             IROp::VWiden { from, count, .. } => {
-                let total = from.bits() * 2 * (*count as u32);
-                match total {
-                    64 => Some(IRType::I64),
-                    128 => Some(IRType::V128),
-                    256 => Some(IRType::V256),
-                    _ => None,
-                }
+                Self::width_total_to_type(from.bits() * 2 * (*count as u32))
             }
 
             // Narrow (unary or binary, saturating or not): each lane halves;
@@ -934,43 +917,22 @@ impl IROp {
             | IROp::VNarrowBin { from, count }
             | IROp::VQNarrowUn { from, count, .. }
             | IROp::VQNarrowBin { from, count, .. } => {
-                let total = (from.bits() / 2) * (*count as u32);
-                match total {
-                    64 => Some(IRType::I64),
-                    128 => Some(IRType::V128),
-                    256 => Some(IRType::V256),
-                    _ => None,
-                }
+                Self::width_total_to_type((from.bits() / 2) * (*count as u32))
             }
 
             // Reverse: width preserved (sub-units permuted within each lane).
             IROp::VReverse { elem, count, .. } => {
-                let total = elem.bits() * (*count as u32);
-                match total {
-                    64 => Some(IRType::I64),
-                    128 => Some(IRType::V128),
-                    _ => None,
-                }
+                Self::width_total_to_type(elem.bits() * (*count as u32))
             }
 
             // Saturating add/sub: width preserved.
             IROp::VQAdd { elem, count, .. } | IROp::VQSub { elem, count, .. } => {
-                let total = elem.bits() * (*count as u32);
-                match total {
-                    64 => Some(IRType::I64),
-                    128 => Some(IRType::V128),
-                    _ => None,
-                }
+                Self::width_total_to_type(elem.bits() * (*count as u32))
             }
 
             // Saturating shift by vector: width preserved.
             IROp::VQShlSat { elem, count, .. } => {
-                let total = elem.bits() * (*count as u32);
-                match total {
-                    64 => Some(IRType::I64),
-                    128 => Some(IRType::V128),
-                    _ => None,
-                }
+                Self::width_total_to_type(elem.bits() * (*count as u32))
             }
 
             // Pairwise add/min/max (non-widening): output width = elem * count.
@@ -980,33 +942,18 @@ impl IROp {
             | IROp::VFPwAdd { elem, count }
             | IROp::VPwMin { elem, count, .. }
             | IROp::VPwMax { elem, count, .. } => {
-                let total = elem.bits() * (*count as u32);
-                match total {
-                    64 => Some(IRType::I64),
-                    128 => Some(IRType::V128),
-                    _ => None,
-                }
+                Self::width_total_to_type(elem.bits() * (*count as u32))
             }
 
             // Pairwise widening add: output total = input total = elem * count
             // (lane width doubles, lane count halves).
             IROp::VPwAddL { elem, count, .. } => {
-                let total = elem.bits() * (*count as u32);
-                match total {
-                    64 => Some(IRType::I64),
-                    128 => Some(IRType::V128),
-                    _ => None,
-                }
+                Self::width_total_to_type(elem.bits() * (*count as u32))
             }
 
             // Rounding halving add (Iop_Avg*): width preserved.
             IROp::VAvg { elem, count, .. } => {
-                let total = elem.bits() * (*count as u32);
-                match total {
-                    64 => Some(IRType::I64),
-                    128 => Some(IRType::V128),
-                    _ => None,
-                }
+                Self::width_total_to_type(elem.bits() * (*count as u32))
             }
 
             // Per-byte popcount (Iop_Cnt8x{8,16}): width preserved.
@@ -1025,12 +972,7 @@ impl IROp {
 
             // Per-lane Clz/Cls: width preserved (lane width = elem bits).
             IROp::VClz { elem, count } | IROp::VCls { elem, count } => {
-                let total = elem.bits() * (*count as u32);
-                match total {
-                    64 => Some(IRType::I64),
-                    128 => Some(IRType::V128),
-                    _ => None,
-                }
+                Self::width_total_to_type(elem.bits() * (*count as u32))
             }
 
             // Polynomial multiply (Iop_PolynomialMul / Mull): non-widening
@@ -1039,13 +981,7 @@ impl IROp {
             // emitted by libVEX) would be V256.
             IROp::VPolynomialMul { count, widen } => {
                 let elem_out = if *widen { 16 } else { 8 };
-                let total = elem_out * (*count as u32);
-                match total {
-                    64 => Some(IRType::I64),
-                    128 => Some(IRType::V128),
-                    256 => Some(IRType::V256),
-                    _ => None,
-                }
+                Self::width_total_to_type(elem_out * (*count as u32))
             }
 
             // Packed integer min/max/abs and packed FP arith all return V128 (or V256
@@ -1076,13 +1012,7 @@ impl IROp {
             | IROp::VFRecipStep { elem, count }
             | IROp::VFRSqrtEst { elem, count }
             | IROp::VFRSqrtStep { elem, count } => {
-                let total = elem.bits() * (*count as u32);
-                match total {
-                    64 => Some(IRType::I64),
-                    128 => Some(IRType::V128),
-                    256 => Some(IRType::V256),
-                    _ => None,
-                }
+                Self::width_total_to_type(elem.bits() * (*count as u32))
             }
 
             IROp::Reinterpret { to, .. } => Some(*to),

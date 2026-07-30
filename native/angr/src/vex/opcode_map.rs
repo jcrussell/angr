@@ -572,132 +572,22 @@ fn parse_vector(op_str: &str) -> Option<IROp> {
     });
 
     // NEON saturating shift-left by vector — `Iop_QShl{N}x{M}` (unsigned) /
-    // `Iop_QSal{N}x{M}` (signed). Signedness is encoded in the prefix, not a
-    // S/U infix, so we can't use `vec_signed_arms!`; route the two prefixes
-    // independently to the same `VQShlSat { signed }` variant. Maps to ARM
-    // UQSHL / SQSHL.
-    if let Some(rest) = op_str.strip_prefix("Iop_QShl") {
-        match rest {
-            "8x8" => {
-                return Some(IROp::VQShlSat {
-                    elem: IRType::I8,
-                    count: 8,
-                    signed: false,
-                });
-            }
-            "16x4" => {
-                return Some(IROp::VQShlSat {
-                    elem: IRType::I16,
-                    count: 4,
-                    signed: false,
-                });
-            }
-            "32x2" => {
-                return Some(IROp::VQShlSat {
-                    elem: IRType::I32,
-                    count: 2,
-                    signed: false,
-                });
-            }
-            "64x1" => {
-                return Some(IROp::VQShlSat {
-                    elem: IRType::I64,
-                    count: 1,
-                    signed: false,
-                });
-            }
-            "8x16" => {
-                return Some(IROp::VQShlSat {
-                    elem: IRType::I8,
-                    count: 16,
-                    signed: false,
-                });
-            }
-            "16x8" => {
-                return Some(IROp::VQShlSat {
-                    elem: IRType::I16,
-                    count: 8,
-                    signed: false,
-                });
-            }
-            "32x4" => {
-                return Some(IROp::VQShlSat {
-                    elem: IRType::I32,
-                    count: 4,
-                    signed: false,
-                });
-            }
-            "64x2" => {
-                return Some(IROp::VQShlSat {
-                    elem: IRType::I64,
-                    count: 2,
-                    signed: false,
-                });
-            }
-            _ => {}
-        }
-    }
-    if let Some(rest) = op_str.strip_prefix("Iop_QSal") {
-        match rest {
-            "8x8" => {
-                return Some(IROp::VQShlSat {
-                    elem: IRType::I8,
-                    count: 8,
-                    signed: true,
-                });
-            }
-            "16x4" => {
-                return Some(IROp::VQShlSat {
-                    elem: IRType::I16,
-                    count: 4,
-                    signed: true,
-                });
-            }
-            "32x2" => {
-                return Some(IROp::VQShlSat {
-                    elem: IRType::I32,
-                    count: 2,
-                    signed: true,
-                });
-            }
-            "64x1" => {
-                return Some(IROp::VQShlSat {
-                    elem: IRType::I64,
-                    count: 1,
-                    signed: true,
-                });
-            }
-            "8x16" => {
-                return Some(IROp::VQShlSat {
-                    elem: IRType::I8,
-                    count: 16,
-                    signed: true,
-                });
-            }
-            "16x8" => {
-                return Some(IROp::VQShlSat {
-                    elem: IRType::I16,
-                    count: 8,
-                    signed: true,
-                });
-            }
-            "32x4" => {
-                return Some(IROp::VQShlSat {
-                    elem: IRType::I32,
-                    count: 4,
-                    signed: true,
-                });
-            }
-            "64x2" => {
-                return Some(IROp::VQShlSat {
-                    elem: IRType::I64,
-                    count: 2,
-                    signed: true,
-                });
-            }
-            _ => {}
-        }
-    }
+    // `Iop_QSal{N}x{M}` (signed). Signedness is encoded in the prefix, not an
+    // S/U infix, so it can't vary within one arm table — but `vec_signed_arms!`
+    // still fits: route each prefix through its own invocation with the sign
+    // baked as a constant into every arm. Maps to ARM UQSHL / SQSHL.
+    vec_signed_arms!(op_str; "Iop_QShl" => VQShlSat {
+        "8x8" => (I8, 8, false), "16x4" => (I16, 4, false),
+        "32x2" => (I32, 2, false), "64x1" => (I64, 1, false),
+        "8x16" => (I8, 16, false), "16x8" => (I16, 8, false),
+        "32x4" => (I32, 4, false), "64x2" => (I64, 2, false),
+    });
+    vec_signed_arms!(op_str; "Iop_QSal" => VQShlSat {
+        "8x8" => (I8, 8, true), "16x4" => (I16, 4, true),
+        "32x2" => (I32, 2, true), "64x1" => (I64, 1, true),
+        "8x16" => (I8, 16, true), "16x8" => (I16, 8, true),
+        "32x4" => (I32, 4, true), "64x2" => (I64, 2, true),
+    });
     // NEON pairwise add — `Iop_PwAdd{N}x{M}` (no signedness, binary). Output
     // has the same lane shape as the inputs; first half from a, second half
     // from b. Iop_PwAdd32Fx2 is the float variant routed via parse_float to
