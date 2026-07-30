@@ -47,6 +47,12 @@ use crate::memory::MemoryError;
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
+/// Shared cap (bytes) on the concrete byte count a native IO syscall handler
+/// will service before falling back to Python. `read`/`write` treat it as the
+/// whole-request limit; `fd_io` (readv/writev) applies it per segment. Kept as
+/// a single source of truth so the three handlers can't desync (angr-myzjx.18).
+pub(crate) const MAX_IO_SIZE: u64 = 4096;
+
 /// Failure during native syscall dispatch.
 ///
 /// Returning `Err` falls back to the Python `_handle_syscall_callback`

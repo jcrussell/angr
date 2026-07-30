@@ -29,13 +29,13 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use super::{NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg};
+use super::{
+    MAX_IO_SIZE as MAX_READ_SIZE, NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg,
+};
 use crate::procedures::strings::write_bv_bytes;
 use crate::state::MAX_SYMFILE_SERVE_SIZE;
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
-
-const MAX_READ_SIZE: u64 = 4096;
 
 /// Counter for unique stdin variable names. Independent of the
 /// `procedures/read.rs` counter so name collisions only happen when the

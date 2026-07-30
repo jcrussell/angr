@@ -14,11 +14,12 @@
 //!
 //! See `procedures/write.rs` for the fd-table sync invariant (angr-8j16).
 
-use super::{NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg};
+use super::{
+    MAX_IO_SIZE as MAX_WRITE_SIZE, NativeSyscall, SyscallError, SyscallOutcome,
+    extract_concrete_arg,
+};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
-
-const MAX_WRITE_SIZE: u64 = 4096;
 
 pub struct NativeWriteSyscall;
 

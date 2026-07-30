@@ -44,16 +44,14 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use super::{NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg};
+use super::{MAX_IO_SIZE, NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg};
 use crate::procedures::strings::write_bv_bytes;
 use crate::state::MAX_SYMFILE_SERVE_SIZE;
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
-/// Per-segment and aggregate caps. Mirror `read`/`write`'s `MAX_*_SIZE`
-/// (4096) per segment; cap the segment count so a bogus `iovcnt` can't spin
-/// the handler. Anything larger falls back to Python.
-const MAX_IO_SIZE: u64 = 4096;
+/// Cap the segment count so a bogus `iovcnt` can't spin the handler. The
+/// per-segment byte cap is the shared `MAX_IO_SIZE` (see `syscalls::mod`).
 const MAX_IOVCNT: u64 = 1024;
 
 /// Counter for unique readv-from-stdin variable names. Independent of the
