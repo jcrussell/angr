@@ -56,6 +56,32 @@ fn test_worker_local_clear_preserves_global_registry() {
     });
 }
 
+// angr-bjk8 / angr-1yge9.9: the worker-teardown clear must EMPTY the thread's
+// `AST_CACHE`, so no `RustBV` (whose z3 ASTs are bound to the worker's
+// soon-to-drop `z3ctx`) survives into the `thread_local!` destructor phase and
+// `dec_ref`s against a freed context (UAF). `worker_thread` in scheduler.rs
+// calls `clear_worker_local_caches()` before returning for exactly this reason;
+// this pins the invariant it relies on — that the clear leaves the cache empty.
+#[test]
+fn test_worker_local_clear_empties_ast_cache() {
+    // Start from a clean slate on this (possibly test-runner-reused) thread.
+    clear_worker_local_caches();
+    tl_cache!(AST_CACHE, put(0x5151_i64, RustBV::concrete(0x1234, 64)));
+    assert_eq!(
+        cache_stats().0,
+        1,
+        "setup: AST_CACHE holds the one entry just put",
+    );
+
+    clear_worker_local_caches();
+
+    assert_eq!(
+        cache_stats().0,
+        0,
+        "worker-teardown clear must empty AST_CACHE so no RustBV outlives z3ctx",
+    );
+}
+
 // The Rust→claripy compound-expression cache (EXPRESSION_BY_OPERANDS_PTR) is
 // thread-local and keyed by the operands Arc pointer. A store then get with the
 // same key must return the pinned AST; the RustBV held alongside pins the

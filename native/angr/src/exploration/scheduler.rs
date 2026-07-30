@@ -1109,6 +1109,17 @@ fn worker_thread(worker_id: usize, job_rx: Receiver<WorkerCtl>, done_tx: Sender<
             Ok(WorkerCtl::Shutdown) | Err(_) => break,
         }
     }
+    // Drop this worker's bridge thread-local AST caches WHILE `z3ctx` is still
+    // the live thread-local Z3 context (angr-bjk8 / angr-1yge9.9). The interpreter
+    // paths workers run (`claripy_to_rustbv` in interpreter/{mod,expressions}.rs)
+    // populate `AST_CACHE` with `RustBV` values whose z3 ASTs are bound to
+    // `z3ctx`. Rust runs `thread_local!` destructors at thread teardown — AFTER
+    // this function returns and `z3ctx` (a local) has already dropped — so
+    // without this call those `RustBV`s would `dec_ref` against a freed context
+    // (UAF). `clear_worker_local_caches` runs here, with `z3ctx` alive, so every
+    // cached AST drops against a valid context; it touches only this thread's
+    // caches, never the cross-thread global registry (angr-1ilq.2).
+    crate::claripy_bridge::clear_worker_local_caches();
     // Shutdown / channel closed / coordinator gone: `z3ctx` drops here.
 }
 
