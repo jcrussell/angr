@@ -290,10 +290,6 @@ impl PyRustSimState {
     ///
     /// The Z3 AST must be a BitVec in the shared Z3 context.
     /// Used to import symbolic register values (e.g., BVS in rax) from Python.
-    /// Set a register to a symbolic value from a raw Z3 AST pointer.
-    ///
-    /// The Z3 AST must be a BitVec in the shared Z3 context.
-    /// Used to import symbolic register values (e.g., BVS in rax) from Python.
     #[cfg(feature = "vex-engine-z3")]
     pub fn set_register_symbolic(
         &mut self,

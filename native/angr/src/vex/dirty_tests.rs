@@ -6,17 +6,31 @@ fn test_cpuid_not_handled_natively() {
     // Python engine; they must NOT be registered for native dispatch
     // (angr-t1ok: dead-code removal).
     let dispatch = DirtyHelperDispatch::new();
-    assert!(!dispatch.can_handle("amd64g_dirtyhelper_CPUID_baseline"));
-    assert!(!dispatch.can_handle("amd64g_dirtyhelper_CPUID_avx2"));
-    assert!(!dispatch.can_handle("x86g_dirtyhelper_CPUID_sse3"));
-    assert!(!dispatch.can_handle("amd64g_dirtyhelper_RDTSCP"));
+    assert!(
+        dispatch
+            .try_call("amd64g_dirtyhelper_CPUID_baseline", &[])
+            .is_none()
+    );
+    assert!(
+        dispatch
+            .try_call("amd64g_dirtyhelper_CPUID_avx2", &[])
+            .is_none()
+    );
+    assert!(
+        dispatch
+            .try_call("x86g_dirtyhelper_CPUID_sse3", &[])
+            .is_none()
+    );
+    assert!(
+        dispatch
+            .try_call("amd64g_dirtyhelper_RDTSCP", &[])
+            .is_none()
+    );
 }
 
 #[test]
 fn test_rdtsc() {
     let dispatch = DirtyHelperDispatch::new();
-
-    assert!(dispatch.can_handle("amd64g_dirtyhelper_RDTSC"));
 
     let result1 = dispatch.try_call("amd64g_dirtyhelper_RDTSC", &[]).unwrap();
     let result2 = dispatch.try_call("amd64g_dirtyhelper_RDTSC", &[]).unwrap();
@@ -29,7 +43,6 @@ fn test_rdtsc() {
 fn test_unknown_helper() {
     let dispatch = DirtyHelperDispatch::new();
 
-    assert!(!dispatch.can_handle("unknown_helper"));
     assert!(dispatch.try_call("unknown_helper", &[]).is_none());
 }
 

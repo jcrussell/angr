@@ -91,11 +91,6 @@ impl DirtyHelperDispatch {
             None
         }
     }
-
-    /// Check if a helper can be handled natively.
-    pub fn can_handle(&self, name: &str) -> bool {
-        self.handlers.contains_key(name)
-    }
 }
 
 // ============================================================================
