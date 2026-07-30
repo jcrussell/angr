@@ -1,8 +1,11 @@
 //! Clean call (CCall) implementations for VEX IR.
 //!
 //! This module implements the x86/AMD64 helper functions that VEX IR uses for
-//! condition code calculations. The main entry point is `handle_ccall` which
-//! dispatches to the appropriate helper based on the callee name.
+//! condition code calculations. The production entry point is
+//! `handle_ccall_with_ctx`, which dispatches to the appropriate helper based on
+//! the callee name; the interpreter calls it directly with `Some(ctx)` so
+//! symbolic condition codes resolve against the live solver context.
+//! `handle_ccall` is a thin ctx-less convenience wrapper (used only by tests).
 
 use crate::symbolic::RustBV;
 use crate::symbolic::SymContext;
@@ -455,7 +458,12 @@ fn calculate_eflags_all(
     Some(pack_eflags(&flags))
 }
 
-/// Handle a CCall expression.
+/// Handle a CCall expression (ctx-less convenience wrapper).
+///
+/// Delegates to [`handle_ccall_with_ctx`] with `ctx = None`. Production code
+/// (the interpreter) calls `handle_ccall_with_ctx` directly with a live
+/// `SymContext`; this wrapper has no production callers and is retained only
+/// for tests that exercise the concrete path (see angr-36vvn.4).
 ///
 /// Returns Some(result) if the call was handled, None if not supported.
 pub fn handle_ccall(name: &str, args: &[RustBV], ret_bits: u32) -> Option<RustBV> {
