@@ -377,4 +377,23 @@ fn dup3_handler_ignores_flags_and_matches_dup2() {
         SyscallOutcome::Continue { ret } => assert_eq!(ret, NEG_EBADF),
         _ => panic!("dup3(0,5000,0) expected Continue"),
     }
+
+    // dup3(0, 0, 0) — oldfd == newfd on an open fd. Real dup3(2) returns
+    // -EINVAL here, but angr's Python `dup3` returns newfd (no-op success,
+    // same as dup2). The Rust engine targets Python-engine parity, so it must
+    // return 0, NOT -EINVAL. Regression guard for bd angr-1yge9.7.
+    let same_fd = NativeDup3Syscall
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+            ],
+        )
+        .unwrap();
+    match same_fd {
+        SyscallOutcome::Continue { ret } => assert_eq!(ret, 0),
+        _ => panic!("dup3(0,0,0) expected Continue"),
+    }
 }

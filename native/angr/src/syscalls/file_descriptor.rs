@@ -99,6 +99,36 @@ const NEG_ENOTTY: u64 = (-25_i64) as u64;
 /// (the default ulimits ceiling). Out-of-range values return EBADF.
 const NEWFD_LIMIT: u64 = 4096;
 
+/// Shared `dup2`/`dup3` body. Mirrors angr's Python `dup2`/`dup3`
+/// (`procedures/posix/dup.py`) check ordering **exactly** for parity:
+///   1. `oldfd` not open        → `-EBADF`
+///   2. `oldfd == newfd`        → return `newfd` (no-op success, *before* the
+///      range check — so `dup2(fd, fd)` on an open high fd succeeds even when
+///      `fd >= NEWFD_LIMIT`, matching Python)
+///   3. `newfd >= NEWFD_LIMIT`  → `-EBADF`
+///   4. alias `newfd` → `oldfd`
+///
+/// NOTE: real `dup3(2)` returns `-EINVAL` when `oldfd == newfd`, but angr's
+/// Python `dup3` does not — it returns `newfd` like `dup2`. The Rust engine
+/// targets Python-engine parity, so we deliberately match Python (no EINVAL)
+/// here; adding EINVAL would diverge from the reference engine. See
+/// bd `angr-1yge9.7`.
+fn dup2_body(state: &mut RustSimState, oldfd: u64, newfd: u64) -> u64 {
+    if !state.file_system().is_open(oldfd as u32) {
+        return NEG_EBADF;
+    }
+    if oldfd == newfd {
+        return newfd;
+    }
+    if newfd >= NEWFD_LIMIT {
+        return NEG_EBADF;
+    }
+    match state.file_system().dup2(oldfd as u32, newfd as u32) {
+        Some(fd) => fd as u64,
+        None => NEG_EBADF,
+    }
+}
+
 // fcntl / ioctl `cmd` constants — uniform across Linux ABIs we support.
 const F_GETFD: u64 = 1;
 const F_SETFD: u64 = 2;
@@ -294,13 +324,7 @@ impl NativeSyscall for NativeDup2Syscall {
     ) -> Result<SyscallOutcome, SyscallError> {
         let oldfd = extract_concrete_arg(&args[0], "oldfd")?;
         let newfd = extract_concrete_arg(&args[1], "newfd")?;
-        if newfd >= NEWFD_LIMIT {
-            return Ok(SyscallOutcome::Continue { ret: NEG_EBADF });
-        }
-        let ret = match state.file_system().dup2(oldfd as u32, newfd as u32) {
-            Some(fd) => fd as u64,
-            None => NEG_EBADF,
-        };
+        let ret = dup2_body(state, oldfd, newfd);
         Ok(SyscallOutcome::Continue { ret })
     }
 }
@@ -328,13 +352,8 @@ impl NativeSyscall for NativeDup3Syscall {
         let newfd = extract_concrete_arg(&args[1], "newfd")?;
         // args[2] = flags — O_CLOEXEC modeling is out of scope; ignore.
         let _flags = extract_concrete_arg(&args[2], "flags")?;
-        if newfd >= NEWFD_LIMIT {
-            return Ok(SyscallOutcome::Continue { ret: NEG_EBADF });
-        }
-        let ret = match state.file_system().dup2(oldfd as u32, newfd as u32) {
-            Some(fd) => fd as u64,
-            None => NEG_EBADF,
-        };
+        // Parity with Python `dup3` (no EINVAL for oldfd==newfd — see dup2_body).
+        let ret = dup2_body(state, oldfd, newfd);
         Ok(SyscallOutcome::Continue { ret })
     }
 }
