@@ -68,8 +68,10 @@ crate::declare_proc! {
             ));
         }
 
+        // Number of characters written. C/glibc and Python both return 0 for
+        // an empty format string (printf("") == 0), so return the raw length.
         let len = buf.len() as u128;
-        Ok(Some(RustBV::concrete(if len == 0 { 1 } else { len }, 32)))
+        Ok(Some(RustBV::concrete(len, 32)))
     }
 }
 

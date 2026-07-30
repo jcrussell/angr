@@ -34,8 +34,8 @@ fn test_printf_empty_format() {
     let result = NativePrintf
         .call(&mut state, &[RustBV::concrete(0x1000, 64)])
         .unwrap();
-    // Returns 1 for empty format
-    assert_eq!(result.unwrap().as_u64(), Some(1));
+    // Returns 0 for empty format (matches C/glibc and Python printf(""))
+    assert_eq!(result.unwrap().as_u64(), Some(0));
     assert_eq!(state.stdout_buffer(), b"");
 }
 
