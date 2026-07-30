@@ -179,27 +179,46 @@ impl FileSystem {
             crate::symbolic::record_symfile_write_demotion();
             return true;
         };
-        if self.file_contents.contains_key(&key) {
-            Arc::make_mut(&mut self.file_contents).remove(&key);
-        }
-        // `fd` itself carries the key, so `matching` is never empty.
-        let matching: Vec<u32> = self
-            .fds
-            .iter()
-            .filter(|(_, d)| d.registry_key.as_deref() == Some(key.as_str()))
-            .map(|(k, _)| *k)
-            .collect();
-        let fds = Arc::make_mut(&mut self.fds);
-        for k in matching {
-            let d = fds.get_mut(&k).expect("matching fd existed above");
-            d.content_sym = None;
-            d.registry_key = None;
-        }
+        // `fd` itself carries the key, so at least one fd always matches.
+        self.clear_key_state(&key);
         // Remember the demoted path so a later Python re-add (merge /
         // legacy-fork push) does not re-register it (angr-qluof).
         Arc::make_mut(&mut self.demoted_paths).insert(key);
         crate::symbolic::record_symfile_write_demotion();
         true
+    }
+
+    /// Drop any registered content for `key` and clear `content_sym` /
+    /// `registry_key` on every fd whose `registry_key` matches it (dup'd /
+    /// re-opened siblings included). Returns `true` when anything was
+    /// cleared. Shared clear-by-key core of
+    /// [`demote_symbolic_content`](Self::demote_symbolic_content) and
+    /// [`demote_path`](Self::demote_path); it deliberately does NOT touch
+    /// `demoted_paths` or the write-demotion counter — those differ between
+    /// the callers (a re-add correction bumps neither the counter nor relies
+    /// on this method's return), so each layers them on itself.
+    fn clear_key_state(&mut self, key: &str) -> bool {
+        let mut changed = false;
+        if self.file_contents.contains_key(key) {
+            Arc::make_mut(&mut self.file_contents).remove(key);
+            changed = true;
+        }
+        let matching: Vec<u32> = self
+            .fds
+            .iter()
+            .filter(|(_, d)| d.registry_key.as_deref() == Some(key))
+            .map(|(k, _)| *k)
+            .collect();
+        if !matching.is_empty() {
+            let fds = Arc::make_mut(&mut self.fds);
+            for k in matching {
+                let d = fds.get_mut(&k).expect("matching fd existed above");
+                d.content_sym = None;
+                d.registry_key = None;
+            }
+            changed = true;
+        }
+        changed
     }
 
     /// Nuke ALL bounded symbolic content: every `file_contents` registry
@@ -271,26 +290,7 @@ impl FileSystem {
     /// registered content or fd state was cleared.
     pub fn demote_path(&mut self, path: &str) -> bool {
         let norm = self.normalize_path(path);
-        let mut changed = false;
-        if self.file_contents.contains_key(&norm) {
-            Arc::make_mut(&mut self.file_contents).remove(&norm);
-            changed = true;
-        }
-        let matching: Vec<u32> = self
-            .fds
-            .iter()
-            .filter(|(_, d)| d.registry_key.as_deref() == Some(norm.as_str()))
-            .map(|(k, _)| *k)
-            .collect();
-        if !matching.is_empty() {
-            let fds = Arc::make_mut(&mut self.fds);
-            for k in matching {
-                let d = fds.get_mut(&k).expect("matching fd existed above");
-                d.content_sym = None;
-                d.registry_key = None;
-            }
-            changed = true;
-        }
+        let changed = self.clear_key_state(&norm);
         Arc::make_mut(&mut self.demoted_paths).insert(norm);
         changed
     }
