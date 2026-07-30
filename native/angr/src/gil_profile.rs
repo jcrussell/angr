@@ -608,6 +608,14 @@ mod tests {
     fn outermost_only_times_once() {
         reset();
         let _w = RunLoopWallGuard::new(true);
+        // Time the whole nested region ourselves. The outermost guard's banked
+        // value must track THIS wall span (single timing), not a per-guard sum
+        // which for 3 nested guards would be ~2x the span. Comparing against
+        // the measured span rather than a fixed ceiling keeps the test robust
+        // under scheduler preemption: preemption inflates the observed span and
+        // the guard's banked value equally, so their ratio stays stable even
+        // when the whole suite runs in parallel and contends for CPU.
+        let outer_start = Instant::now();
         {
             let _outer = GilWorkGuard::enter();
             busy_ns(100_000);
@@ -618,13 +626,17 @@ mod tests {
                 busy_ns(100_000);
             }
         }
+        let outer_span = outer_start.elapsed().as_nanos() as u64;
         let banked = gil_work_ns();
-        // One contiguous region (~200us). It must NOT be ~400us+ (which is what
-        // a naive per-call sum of the 3 nested guards would produce).
+        // Lower bound: the ~200us of busy work must actually be counted.
         assert!(banked >= 150_000, "region undercounted: {banked} ns");
+        // Upper bound: banked reflects one timing of the outermost region, so
+        // it can never meaningfully exceed the wall span that contains it. A
+        // naive per-guard sum would be ~2x the span; 1.5x cleanly separates the
+        // correct (~1.0x) case from the double-counted one.
         assert!(
-            banked < 350_000,
-            "nested guards double-counted: {banked} ns"
+            banked * 2 <= outer_span * 3,
+            "nested guards double-counted: banked {banked} ns vs span {outer_span} ns"
         );
     }
 
