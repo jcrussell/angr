@@ -134,23 +134,14 @@ impl NativeSimProcedure for NativeFwrite {
     }
 }
 
-/// Resolve fwrite's `FILE *stream` argument (arg 3) to its `_fileno`,
-/// preserving the historical per-step error messages. Split out so the
-/// caller can demote-all on ANY resolution failure without repeating the
-/// error mapping.
+/// Resolve fwrite's `FILE *stream` argument (arg 3) to its `_fileno`.
+/// Thin wrapper: extract the concrete `FILE *` then defer to the shared
+/// [`read_fileno_for_stream`] so the fd-offset lookup / load / cast logic
+/// lives in one place. Split out so the caller can demote-all on ANY
+/// resolution failure without repeating the error mapping.
 fn resolve_fwrite_fd(state: &RustSimState, stream: &RustBV) -> Result<i32, ProcedureError> {
     let file_ptr = extract_concrete_arg(stream, "file_ptr")?;
-    let arch_name = state.arch().name();
-    let fd_off = fd_offset_for_arch(arch_name).ok_or_else(|| {
-        ProcedureError::Other(format!(
-            "fwrite: no _IO_FILE fd offset for arch {arch_name}"
-        ))
-    })?;
-    let fd_bv = state.memory_load(file_ptr.wrapping_add(fd_off), 4)?;
-    let fd_raw = fd_bv
-        .as_u64()
-        .ok_or_else(|| ProcedureError::SymbolicArgument("FILE._fileno".to_string()))?;
-    Ok(fd_raw as u32 as i32)
+    read_fileno_for_stream(state, file_ptr)
 }
 
 /// Native fflush implementation.
