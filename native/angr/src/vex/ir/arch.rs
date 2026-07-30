@@ -141,6 +141,12 @@ pub enum Endness {
 }
 
 /// Memory bus event.
+///
+/// Real VEX only emits `Imbe_Fence`/`Imbe_CancelReservation`; both lifter
+/// paths collapse every fence C-tag to `Fence`, and the interpreter discards
+/// the MBE payload entirely. `SFence`/`LFence`/`MFence` are unreached in
+/// practice — retained for VEX-ABI parity and future fence-granularity
+/// honoring, see angr-36vvn.9.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MBusEvent {
     Fence,

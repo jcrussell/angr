@@ -39,6 +39,10 @@ impl IRSB {
     }
 
     /// Get the number of instructions in this block.
+    ///
+    /// No production callers (only sibling `size()` is used, in
+    /// interpreter/code_invalidation.rs + execution.rs); retained for
+    /// VEX-ABI parity and future block-size logic, see angr-36vvn.9.
     pub fn num_instructions(&self) -> usize {
         self.statements
             .iter()

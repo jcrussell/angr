@@ -44,6 +44,11 @@ pub struct IRDirty {
     pub cee: IRCallee,
     pub guard: Option<Box<IRExpr>>,
     pub tmp: Option<u32>,
+    // mFx/mAddr/mSize/nFxState are populated by both lifter marshal paths
+    // (pyvex_bridge/libvex_lifter) but currently write-only: interpreter's
+    // dirty-call handling reads only cee.name/guard/tmp/args. Retained for
+    // VEX-ABI parity and future memory-effect-aware code invalidation —
+    // see angr-36vvn.9.
     pub mFx: DirtyFx,
     pub mAddr: Option<Box<IRExpr>>,
     pub mSize: u32,
