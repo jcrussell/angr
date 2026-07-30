@@ -644,7 +644,16 @@ pub fn handle_ccall_with_ctx(
         if let (Some(cc_op), Some(sym_ctx)) = (args[0].as_u64(), ctx) {
             if cc_op == 0 {
                 // CC_OP_COPY: result = cc_dep1 & flags_mask
-                let flags_mask: u128 = 0xD5; // O|S|Z|A|P|C flags
+                // Mirror the concrete calculate_eflags_all COPY path: mask in
+                // O|S|Z|P|C|A via the same named constants (hand-deriving the
+                // literal twice is how 0xD5 drifted, dropping the O bit — see
+                // angr-36vvn.1).
+                let flags_mask: u128 = (flag_mask::G_CC_MASK_O
+                    | flag_mask::G_CC_MASK_S
+                    | flag_mask::G_CC_MASK_Z
+                    | flag_mask::G_CC_MASK_P
+                    | flag_mask::G_CC_MASK_C
+                    | flag_mask::G_CC_MASK_A) as u128;
                 let mask = RustBV::concrete(flags_mask, args[1].width());
                 let result = args[1].and(&mask, sym_ctx);
                 if result.width() < ret_bits {
