@@ -81,9 +81,9 @@ pub use exit::NativeExitSyscall as NativeTerminateSyscall;
 /// count from filling memory before the dispatcher can react.
 const MAX_CGC_BYTES: u64 = 4096;
 
-/// Unique-name counters; one per syscall family. Each syscall mints
-/// `(family)_{id}_{i}` for byte `i` of read `id`.
-static TRANSMIT_COUNTER: AtomicU64 = AtomicU64::new(0);
+/// Unique-name counters; one per name-minting syscall family. Each mints
+/// `(family)_{id}_{i}` for byte `i` of read `id`. `transmit` has no counter
+/// because it only reads concrete bytes out — it never mints symbolic names.
 static RECEIVE_COUNTER: AtomicU64 = AtomicU64::new(0);
 static RANDOM_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -181,11 +181,6 @@ impl NativeSyscall for NativeTransmitSyscall {
                 "transmit to fd={fd} with symbolic content falls back to Python (demoted)"
             )));
         }
-        // Bump the unique-name counter so Python-side correlation IDs
-        // never collide if a Python transmit also runs (e.g. after a
-        // fallback to allocate/deallocate then back to native).
-        let _ = TRANSMIT_COUNTER.fetch_add(1, Ordering::Relaxed);
-
         if tx_bytes != 0 {
             store_u32_le(state, tx_bytes, count as u32)?;
         }
