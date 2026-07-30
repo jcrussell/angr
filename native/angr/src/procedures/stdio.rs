@@ -11,18 +11,12 @@ use crate::symbolic::RustBV;
 
 const MAX_FWRITE_SIZE: u64 = 4096;
 
-/// `_IO_FILE._fileno` byte offset per arch, mirroring
-/// `cle.backends.externs.simdata.io_file.io_file_data_for_arch`.
+/// `_IO_FILE._fileno` byte offset per arch. Projects the offset out of
+/// [`super::fileops::io_file_for_arch`], the single source of truth for the
+/// `_IO_FILE` layout table (mirroring
+/// `cle.backends.externs.simdata.io_file.io_file_data_for_arch`).
 fn fd_offset_for_arch(name: &str) -> Option<u64> {
-    match name {
-        "AMD64" => Some(112),
-        "X86" => Some(56),
-        "ARM" => Some(14),
-        "ARM64" => Some(20),
-        "MIPS32" => Some(56),
-        "MIPS64" => Some(112),
-        _ => None,
-    }
+    super::fileops::io_file_for_arch(name).map(|(fd_offset, _size)| fd_offset)
 }
 
 /// Native fwrite implementation.
