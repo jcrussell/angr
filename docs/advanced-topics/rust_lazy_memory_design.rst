@@ -482,30 +482,63 @@ Risks
 Open questions
 --------------
 
+.. note::
+
+   **Resolved post-shipping (angr-1yge9.10, 2026-07-30).** The first three
+   questions below were open at design time; the shipped sidecar
+   implementation (Phases 1–4) settled each. Resolutions are inlined per
+   bullet with the anchoring symbol. The ``LAZY_SOLVES`` interaction was a
+   test plan, not a design gap, and is covered by the standing Rust suite.
+
 * **When does ``Multi`` collapse back to ``Single``?** A subsequent
   concrete store with no symbolic guard can replace the cell wholly.
-  Current proposal: collapse on overwrite, on merge equality, and on
-  fork-quiescence (cells touched only in one branch since the most
-  recent fork). Final policy to be decided at Phase 1 review.
+  Original proposal: collapse on overwrite, on merge equality, and on
+  fork-quiescence.
+
+  *Resolved:* the shipped policy is **collapse on overwrite only**. A
+  concrete write drops any overwritten Multi cell from the
+  ``multi_objects`` sidecar and bumps its per-byte version so the
+  wider-load cache invalidates (``SymbolicMemory::store_concrete`` in
+  ``memory/store.rs``, angr-1tes; the page-level ``multi_bitmap`` is
+  cleared inside ``MemoryPage::store_concrete`` / ``clear_multi``). Merge
+  equality and fork-quiescence collapse were **not** implemented — a
+  collapsed cell is simply re-collapsed to an ITE at load time
+  (``MultiPayload::collapse`` is memoized, so the cost is amortized), so
+  the extra collapse-back triggers earned no measurable benefit and were
+  dropped as KISS.
 * **Endianness for cross-cell Multi reads.** A load that spans two
   Multi cells with different alternatives needs the same byte-merge
-  treatment as today's ``try_byte_merge_load``
-  (``memory/load.rs:48``). The straightforward approach is to lift
-  the byte-merge fallback to handle Multi cells per byte. Sketch
-  before committing.
+  treatment as today's ``try_byte_merge_load`` (``memory/load.rs``).
+
+  *Resolved:* the wide-load path assembles the result **per byte**
+  (``SymbolicMemory::assemble_load_with_multi`` in ``memory/load.rs``):
+  each Multi cell collapses independently to a single-byte BV, and the
+  bytes are joined by ``concat_bytes_endian`` (angr-kg58), which reverses
+  for little-endian so ``byte[0]`` is the LSB. Cross-cell alternatives
+  therefore need no special handling — the per-byte assembly is the
+  byte-merge fallback the sketch called for.
 * **Annotation forwarding.** When Python wraps an address in
-  ``MultiwriteAnnotation`` and exports it, the Rust side currently
-  loses the annotation (we strip claripy annotations at the bridge —
-  see ``claripy_bridge/import.rs``). Either preserve the annotation across
-  the bridge or have ``rust_manager.py`` re-attach it on the
-  Rust-side concretization config so the Phase 1 strchr path can
-  detect the upgrade.
+  ``MultiwriteAnnotation`` and exports it, the Rust side loses the
+  annotation (we strip claripy annotations at the bridge — see
+  ``claripy_bridge/import.rs``). Either preserve the annotation across
+  the bridge or have ``rust_manager.py`` re-attach it Rust-side.
+
+  *Resolved:* the **second** option shipped (Phase 1.4, angr-5zw8). The
+  annotation is never forwarded through the bridge; instead
+  ``RustExplorationManager._try_multi_cell_store``
+  (``angr/exploration/rust_manager.py``) reads ``MultiwriteAnnotation``
+  off the still-Python ``addr_ast`` *before* the bridge strips it and
+  routes the store to Rust's ``state_memory_store_symbolic_multi``. On a
+  non-annotated address or a probe failure it falls through to the Python
+  store path so no write is lost.
 * **Interaction with ``LAZY_SOLVES``.** ``LAZY_SOLVES`` defers
   constraint checks; ``Multi`` defers value collapse. They are
   orthogonal but may interact when a deferred constraint check
   later trips a Multi-cell collapse. Test plan: re-run the
   full Rust test suite with ``LAZY_SOLVES`` both on and off
-  during Phase 1.
+  during Phase 1. *(This was a verification plan rather than a design
+  question; the Rust suite exercises both settings and no interaction
+  regression surfaced.)*
 
 
 References
