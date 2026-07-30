@@ -135,7 +135,6 @@ pub trait NativeSyscall: Send + Sync {
 /// all 432 rows on every executed syscall (see angr-k95c).
 pub struct NativeSyscallRegistry {
     handlers: HashMap<&'static str, HashMap<u64, Arc<dyn NativeSyscall>>>,
-    enabled: bool,
 }
 
 /// Register a batch of `(syscall_number, handler)` rows for one arch.
@@ -204,7 +203,6 @@ impl NativeSyscallRegistry {
     pub fn new() -> Self {
         let mut r = NativeSyscallRegistry {
             handlers: HashMap::new(),
-            enabled: true,
         };
 
         // ===== amd64 (asm/unistd_64.h) =====
@@ -1001,45 +999,14 @@ impl NativeSyscallRegistry {
         r
     }
 
-    pub fn empty() -> Self {
-        NativeSyscallRegistry {
-            handlers: HashMap::new(),
-            enabled: true,
-        }
-    }
-
     pub fn register(&mut self, arch: &'static str, num: u64, syscall: Arc<dyn NativeSyscall>) {
         self.handlers.entry(arch).or_default().insert(num, syscall);
     }
 
     pub fn get(&self, arch: &str, num: u64) -> Option<&Arc<dyn NativeSyscall>> {
-        if !self.enabled {
-            return None;
-        }
         // Two O(1) hash lookups: arch (`&'static str` keys borrow as `str`,
         // so a runtime `&str` resolves directly) then syscall number.
         self.handlers.get(arch)?.get(&num)
-    }
-
-    pub fn enable_all(&mut self) {
-        self.enabled = true;
-    }
-
-    pub fn disable_all(&mut self) {
-        self.enabled = false;
-    }
-
-    pub fn is_enabled(&self) -> bool {
-        self.enabled
-    }
-
-    /// Number of registered handlers (for diagnostics / tests).
-    pub fn len(&self) -> usize {
-        self.handlers.values().map(HashMap::len).sum()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.handlers.values().all(HashMap::is_empty)
     }
 }
 

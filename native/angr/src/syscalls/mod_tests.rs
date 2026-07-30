@@ -61,24 +61,6 @@ fn default_registry_has_amd64_exit_handlers() {
 }
 
 #[test]
-fn disable_blocks_lookup() {
-    let mut r = NativeSyscallRegistry::new();
-    assert!(r.is_enabled());
-    r.disable_all();
-    assert!(r.get("AMD64", 60).is_none());
-    r.enable_all();
-    assert!(r.get("AMD64", 60).is_some());
-}
-
-#[test]
-fn empty_registry_has_no_handlers() {
-    let r = NativeSyscallRegistry::empty();
-    assert!(r.is_empty());
-    assert_eq!(r.len(), 0);
-    assert!(r.get("AMD64", 60).is_none());
-}
-
-#[test]
 fn exit_handler_returns_exit_outcome() {
     use crate::state::RustSimState;
     let h = exit::NativeExitSyscall;
