@@ -868,7 +868,10 @@ pub(crate) mod merge_instrument {
     }
 }
 
-#[cfg(test)]
+// Gated on vex-engine-z3 (bd angr-cagbn): every test here drives
+// `SymContext::add_constraint` / Z3AstPtr, which only exist with z3. Keeps the
+// no-z3 nightly `cargo test` combos compiling; default build runs them all.
+#[cfg(all(test, feature = "vex-engine-z3"))]
 #[path = "context_tests/constraints.rs"]
 mod context_tests_constraints;
 #[cfg(test)]

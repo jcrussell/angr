@@ -809,6 +809,11 @@ impl PartialEq for RustBV {
 // `mod tests` (1219 lines) into a sibling file to shrink value.rs below the
 // god-object threshold. Declared as a direct child of `value` so
 // `use super::*` reaches `value`'s private items.
-#[cfg(test)]
+// Gated on vex-engine-z3: these tests call `RustBV::to_z3_ast` /
+// `SymContext::add_constraint` and reference the `z3` crate, none of which
+// exist in a no-z3 build. The no-default-features / vex-engine (no-z3) nightly
+// combos build the lib test harness, so an ungated decl breaks `cargo test`
+// there (bd angr-cagbn). Default (z3-on) build still compiles and runs them.
+#[cfg(all(test, feature = "vex-engine-z3"))]
 #[path = "value_tests.rs"]
 mod value_tests;

@@ -87,17 +87,16 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@150fca883cd4034361b621bd4e6a9d34e5143606 # v1
       - name: Cargo check with features "${{ matrix.features }}"
         run: cargo check --manifest-path native/angr/Cargo.toml --no-default-features --features "${{ matrix.features }}"
-      # Execute (not just compile) the no-default-features combo at PR time via
-      # the feature-aware behavioral smoke — the cheapest build and the combo
-      # that has historically broken (angr-ph300.79). This runs the public
-      # surface end-to-end rather than only compile-checking it. The full
-      # `cargo test --no-default-features` (in-crate unit tests) is NOT run here
-      # yet — those test modules have their own no-default-features build gaps
-      # (angr-cagbn); the nightly `rust_feature_flags` job is the backstop for
-      # full test execution across all four combos.
-      - name: Behavioral smoke test (no-default-features)
+      # Execute (not just compile) the no-default-features combo at PR time —
+      # the cheapest build and the combo that has historically broken
+      # (angr-ph300.79). The full in-crate `cargo test --no-default-features`
+      # is now green (angr-cagbn gated the z3-dependent test modules) and runs
+      # here as the primary gate; it subsumes the feature_flag_smoke integration
+      # test, which cargo test also builds+runs. The nightly `rust_feature_flags`
+      # job remains the backstop for full test execution across all four combos.
+      - name: Full test (no-default-features)
         if: matrix.features == ''
-        run: cargo test --manifest-path native/angr/Cargo.toml --no-default-features --test feature_flag_smoke
+        run: cargo test --manifest-path native/angr/Cargo.toml --no-default-features
 
   python_baseline:
     # Fast subset of the vanilla angr test suite — proves rust-symex
