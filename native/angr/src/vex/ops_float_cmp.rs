@@ -79,8 +79,12 @@ impl VEXOps {
 
     /// Scalar FP compare shared by Iop_FCmp{EQ,LT,LE}. The three only differ in
     /// the concrete predicate and the symbolic `FloatOpKind`; everything else
-    /// (the F32/F64 `from_bits` split, 1-bit concrete result, and
-    /// `build_float_expr` symbolic fallback) is identical.
+    /// (the F32/F64 split, 1-bit concrete result, and `build_float_expr`
+    /// symbolic fallback) is identical. The concrete path delegates to the
+    /// shared `fcmp_truth` truth-table (only Eq/Lt/Le are reachable here — the
+    /// three callers below never construct another `kind`); the symbolic path
+    /// keeps its own Eq/Lt/Le → `FloatOpKind` map so the unreachable kinds
+    /// surface as `InvalidFloatType` rather than silently falling through.
     fn float_cmp_scalar(
         left: RustBV,
         right: RustBV,
@@ -88,29 +92,7 @@ impl VEXOps {
         kind: FCmpKind,
     ) -> Result<RustBV, OpError> {
         if let (Some(l), Some(r)) = (left.as_u128(), right.as_u128()) {
-            let truth = match ty {
-                IRType::F32 => {
-                    let lf = f32::from_bits(l as u32);
-                    let rf = f32::from_bits(r as u32);
-                    match kind {
-                        FCmpKind::Eq => lf == rf,
-                        FCmpKind::Lt => lf < rf,
-                        FCmpKind::Le => lf <= rf,
-                        _ => return Err(OpError::InvalidFloatType(ty)),
-                    }
-                }
-                IRType::F64 => {
-                    let lf = f64::from_bits(l as u64);
-                    let rf = f64::from_bits(r as u64);
-                    match kind {
-                        FCmpKind::Eq => lf == rf,
-                        FCmpKind::Lt => lf < rf,
-                        FCmpKind::Le => lf <= rf,
-                        _ => return Err(OpError::InvalidFloatType(ty)),
-                    }
-                }
-                _ => return Err(OpError::InvalidFloatType(ty)),
-            };
+            let truth = Self::fcmp_truth(ty, kind, l, r)?;
             return Ok(RustBV::concrete(truth as u128, 1));
         }
         let op = match kind {
