@@ -504,6 +504,24 @@ fn write_symlink_target(
 const S_IFREG_0755: u64 = 0o100_755;
 const ST_BLKSIZE: u64 = 0x400;
 
+/// Shared `struct stat` field writers used by every per-arch layout below.
+/// Each takes the destination `buf` base plus the field `off`, so the arch
+/// writers no longer redefine identical store closures (audit angr-myzjx.17).
+fn store_stat_u64(state: &mut RustSimState, buf: u64, off: u64, val: u64) -> Result<(), SyscallError> {
+    state.memory_store(buf + off, RustBV::concrete(val as u128, 64))?;
+    Ok(())
+}
+fn store_stat_u32(state: &mut RustSimState, buf: u64, off: u64, val: u32) -> Result<(), SyscallError> {
+    state.memory_store(buf + off, RustBV::concrete(val as u128, 32))?;
+    Ok(())
+}
+/// 96-bit zero pad (3 × 32-bit words), matching `claripy.BVV(0, 32 * 3)`.
+/// MIPS32 is the only layout that needs it.
+fn store_stat_zero96(state: &mut RustSimState, buf: u64, off: u64) -> Result<(), SyscallError> {
+    state.memory_store(buf + off, RustBV::concrete(0, 96))?;
+    Ok(())
+}
+
 /// AMD64 `struct stat` layout — total 0x90 bytes. Mirrors
 /// `angr/procedures/linux_kernel/fstat.py::_store_amd64`. Writes are
 /// arch-LE per `RustSimState::memory.endness`.
@@ -514,35 +532,26 @@ const ST_BLKSIZE: u64 = 0x400;
 /// `blocks` u64, `atime+nsec` u64×2, `mtime+nsec` u64×2,
 /// `ctime+nsec` u64×2, pad u64×3.
 fn write_amd64_stat(state: &mut RustSimState, buf: u64, size: u64) -> Result<(), SyscallError> {
-    let store_u64 = |state: &mut RustSimState, off: u64, val: u64| -> Result<(), SyscallError> {
-        state.memory_store(buf + off, RustBV::concrete(val as u128, 64))?;
-        Ok(())
-    };
-    let store_u32 = |state: &mut RustSimState, off: u64, val: u32| -> Result<(), SyscallError> {
-        state.memory_store(buf + off, RustBV::concrete(val as u128, 32))?;
-        Ok(())
-    };
-
-    store_u64(state, 0x00, 0)?; // st_dev
-    store_u64(state, 0x08, 0)?; // st_ino
-    store_u64(state, 0x10, 0)?; // st_nlink
-    store_u32(state, 0x18, S_IFREG_0755 as u32)?; // st_mode
-    store_u32(state, 0x1C, 0)?; // st_uid
-    store_u32(state, 0x20, 0)?; // st_gid
-    store_u32(state, 0x24, 0)?; // pad
-    store_u64(state, 0x28, 0)?; // st_rdev
-    store_u64(state, 0x30, size)?; // st_size
-    store_u64(state, 0x38, ST_BLKSIZE)?; // st_blksize
-    store_u64(state, 0x40, 0)?; // st_blocks
-    store_u64(state, 0x48, 0)?; // st_atime
-    store_u64(state, 0x50, 0)?; // st_atimensec
-    store_u64(state, 0x58, 0)?; // st_mtime
-    store_u64(state, 0x60, 0)?; // st_mtimensec
-    store_u64(state, 0x68, 0)?; // st_ctime
-    store_u64(state, 0x70, 0)?; // st_ctimensec
-    store_u64(state, 0x78, 0)?; // pad
-    store_u64(state, 0x80, 0)?; // pad
-    store_u64(state, 0x88, 0)?; // pad
+    store_stat_u64(state, buf, 0x00, 0)?; // st_dev
+    store_stat_u64(state, buf, 0x08, 0)?; // st_ino
+    store_stat_u64(state, buf, 0x10, 0)?; // st_nlink
+    store_stat_u32(state, buf, 0x18, S_IFREG_0755 as u32)?; // st_mode
+    store_stat_u32(state, buf, 0x1C, 0)?; // st_uid
+    store_stat_u32(state, buf, 0x20, 0)?; // st_gid
+    store_stat_u32(state, buf, 0x24, 0)?; // pad
+    store_stat_u64(state, buf, 0x28, 0)?; // st_rdev
+    store_stat_u64(state, buf, 0x30, size)?; // st_size
+    store_stat_u64(state, buf, 0x38, ST_BLKSIZE)?; // st_blksize
+    store_stat_u64(state, buf, 0x40, 0)?; // st_blocks
+    store_stat_u64(state, buf, 0x48, 0)?; // st_atime
+    store_stat_u64(state, buf, 0x50, 0)?; // st_atimensec
+    store_stat_u64(state, buf, 0x58, 0)?; // st_mtime
+    store_stat_u64(state, buf, 0x60, 0)?; // st_mtimensec
+    store_stat_u64(state, buf, 0x68, 0)?; // st_ctime
+    store_stat_u64(state, buf, 0x70, 0)?; // st_ctimensec
+    store_stat_u64(state, buf, 0x78, 0)?; // pad
+    store_stat_u64(state, buf, 0x80, 0)?; // pad
+    store_stat_u64(state, buf, 0x88, 0)?; // pad
     Ok(())
 }
 
@@ -550,34 +559,25 @@ fn write_amd64_stat(state: &mut RustSimState, buf: u64, size: u64) -> Result<(),
 /// `_store_aarch64` (note: `nlink` is u32 here, `blksize` is u32, and
 /// the field order around mode/nlink/uid/gid differs from AMD64).
 fn write_aarch64_stat(state: &mut RustSimState, buf: u64, size: u64) -> Result<(), SyscallError> {
-    let store_u64 = |state: &mut RustSimState, off: u64, val: u64| -> Result<(), SyscallError> {
-        state.memory_store(buf + off, RustBV::concrete(val as u128, 64))?;
-        Ok(())
-    };
-    let store_u32 = |state: &mut RustSimState, off: u64, val: u32| -> Result<(), SyscallError> {
-        state.memory_store(buf + off, RustBV::concrete(val as u128, 32))?;
-        Ok(())
-    };
-
-    store_u64(state, 0x00, 0)?; // st_dev
-    store_u64(state, 0x08, 0)?; // st_ino
-    store_u32(state, 0x10, S_IFREG_0755 as u32)?; // st_mode
-    store_u32(state, 0x14, 0)?; // st_nlink
-    store_u32(state, 0x18, 0)?; // st_uid
-    store_u32(state, 0x1C, 0)?; // st_gid
-    store_u64(state, 0x20, 0)?; // st_rdev
-    store_u64(state, 0x28, 0)?; // pad
-    store_u64(state, 0x30, size)?; // st_size
-    store_u32(state, 0x38, ST_BLKSIZE as u32)?; // st_blksize
-    store_u32(state, 0x3C, 0)?; // pad
-    store_u64(state, 0x40, 0)?; // st_blocks
-    store_u64(state, 0x48, 0)?; // st_atime
-    store_u64(state, 0x50, 0)?; // st_atimensec
-    store_u64(state, 0x58, 0)?; // st_mtime
-    store_u64(state, 0x60, 0)?; // st_mtimensec
-    store_u64(state, 0x68, 0)?; // st_ctime
-    store_u64(state, 0x70, 0)?; // st_ctimensec
-    store_u64(state, 0x78, 0)?; // pad
+    store_stat_u64(state, buf, 0x00, 0)?; // st_dev
+    store_stat_u64(state, buf, 0x08, 0)?; // st_ino
+    store_stat_u32(state, buf, 0x10, S_IFREG_0755 as u32)?; // st_mode
+    store_stat_u32(state, buf, 0x14, 0)?; // st_nlink
+    store_stat_u32(state, buf, 0x18, 0)?; // st_uid
+    store_stat_u32(state, buf, 0x1C, 0)?; // st_gid
+    store_stat_u64(state, buf, 0x20, 0)?; // st_rdev
+    store_stat_u64(state, buf, 0x28, 0)?; // pad
+    store_stat_u64(state, buf, 0x30, size)?; // st_size
+    store_stat_u32(state, buf, 0x38, ST_BLKSIZE as u32)?; // st_blksize
+    store_stat_u32(state, buf, 0x3C, 0)?; // pad
+    store_stat_u64(state, buf, 0x40, 0)?; // st_blocks
+    store_stat_u64(state, buf, 0x48, 0)?; // st_atime
+    store_stat_u64(state, buf, 0x50, 0)?; // st_atimensec
+    store_stat_u64(state, buf, 0x58, 0)?; // st_mtime
+    store_stat_u64(state, buf, 0x60, 0)?; // st_mtimensec
+    store_stat_u64(state, buf, 0x68, 0)?; // st_ctime
+    store_stat_u64(state, buf, 0x70, 0)?; // st_ctimensec
+    store_stat_u64(state, buf, 0x78, 0)?; // pad
     Ok(())
 }
 
@@ -595,33 +595,24 @@ fn write_aarch64_stat(state: &mut RustSimState, buf: u64, size: u64) -> Result<(
 /// AMD64/AArch64 Rust handlers (Python mints a symbolic `st_mode`; the
 /// Rust path uses a concrete constant — see `write_amd64_stat`).
 fn write_i386_stat(state: &mut RustSimState, buf: u64, size: u64) -> Result<(), SyscallError> {
-    let store_u64 = |state: &mut RustSimState, off: u64, val: u64| -> Result<(), SyscallError> {
-        state.memory_store(buf + off, RustBV::concrete(val as u128, 64))?;
-        Ok(())
-    };
-    let store_u32 = |state: &mut RustSimState, off: u64, val: u32| -> Result<(), SyscallError> {
-        state.memory_store(buf + off, RustBV::concrete(val as u128, 32))?;
-        Ok(())
-    };
-
-    store_u64(state, 0x00, 0)?; // st_dev
-    store_u64(state, 0x0C, 0)?; // st_ino (64-bit; low half overlaps st_mode, both zero)
-    store_u32(state, 0x10, S_IFREG_0755 as u32)?; // st_mode
-    store_u64(state, 0x14, 0)?; // st_nlink (64-bit; overlaps st_uid, both zero)
-    store_u32(state, 0x18, 0)?; // st_uid
-    store_u32(state, 0x1C, 0)?; // st_gid
-    store_u64(state, 0x20, 0)?; // st_rdev
-    store_u64(state, 0x2C, size)?; // st_size
-    store_u64(state, 0x34, ST_BLKSIZE)?; // st_blksize (64-bit; upper overlaps st_blocks)
-    store_u64(state, 0x38, 0)?; // st_blocks
-    store_u32(state, 0x3C, 0)?; // padding
-    store_u64(state, 0x40, 0)?; // st_atime
-    store_u64(state, 0x44, 0)?; // st_atimensec
-    store_u64(state, 0x48, 0)?; // st_mtime
-    store_u64(state, 0x4C, 0)?; // st_mtimensec
-    store_u64(state, 0x50, 0)?; // st_ctime
-    store_u64(state, 0x54, 0)?; // st_ctimensec
-    store_u64(state, 0x5C, 0)?; // st_ino (verification copy)
+    store_stat_u64(state, buf, 0x00, 0)?; // st_dev
+    store_stat_u64(state, buf, 0x0C, 0)?; // st_ino (64-bit; low half overlaps st_mode, both zero)
+    store_stat_u32(state, buf, 0x10, S_IFREG_0755 as u32)?; // st_mode
+    store_stat_u64(state, buf, 0x14, 0)?; // st_nlink (64-bit; overlaps st_uid, both zero)
+    store_stat_u32(state, buf, 0x18, 0)?; // st_uid
+    store_stat_u32(state, buf, 0x1C, 0)?; // st_gid
+    store_stat_u64(state, buf, 0x20, 0)?; // st_rdev
+    store_stat_u64(state, buf, 0x2C, size)?; // st_size
+    store_stat_u64(state, buf, 0x34, ST_BLKSIZE)?; // st_blksize (64-bit; upper overlaps st_blocks)
+    store_stat_u64(state, buf, 0x38, 0)?; // st_blocks
+    store_stat_u32(state, buf, 0x3C, 0)?; // padding
+    store_stat_u64(state, buf, 0x40, 0)?; // st_atime
+    store_stat_u64(state, buf, 0x44, 0)?; // st_atimensec
+    store_stat_u64(state, buf, 0x48, 0)?; // st_mtime
+    store_stat_u64(state, buf, 0x4C, 0)?; // st_mtimensec
+    store_stat_u64(state, buf, 0x50, 0)?; // st_ctime
+    store_stat_u64(state, buf, 0x54, 0)?; // st_ctimensec
+    store_stat_u64(state, buf, 0x5C, 0)?; // st_ino (verification copy)
     Ok(())
 }
 
@@ -642,32 +633,23 @@ fn write_i386_stat(state: &mut RustSimState, buf: u64, size: u64) -> Result<(), 
 /// the other Rust handlers (Python mints a symbolic `st_mode`; the Rust
 /// path uses a concrete constant — see `write_amd64_stat`).
 fn write_arm_stat(state: &mut RustSimState, buf: u64, size: u64) -> Result<(), SyscallError> {
-    let store_u64 = |state: &mut RustSimState, off: u64, val: u64| -> Result<(), SyscallError> {
-        state.memory_store(buf + off, RustBV::concrete(val as u128, 64))?;
-        Ok(())
-    };
-    let store_u32 = |state: &mut RustSimState, off: u64, val: u32| -> Result<(), SyscallError> {
-        state.memory_store(buf + off, RustBV::concrete(val as u128, 32))?;
-        Ok(())
-    };
-
-    store_u64(state, 0x00, 0)?; // st_dev
-    store_u64(state, 0x0C, 0)?; // st_ino (64-bit; low half overlaps st_mode, both zero)
-    store_u32(state, 0x10, S_IFREG_0755 as u32)?; // st_mode
-    store_u64(state, 0x14, 0)?; // st_nlink (64-bit; overlaps st_uid, both zero)
-    store_u32(state, 0x18, 0)?; // st_uid
-    store_u32(state, 0x1C, 0)?; // st_gid
-    store_u64(state, 0x20, 0)?; // st_rdev
-    store_u64(state, 0x30, size)?; // st_size
-    store_u64(state, 0x38, ST_BLKSIZE)?; // st_blksize (64-bit; upper overlaps st_blocks)
-    store_u64(state, 0x40, 0)?; // st_blocks
-    store_u64(state, 0x48, 0)?; // st_atime
-    store_u64(state, 0x4C, 0)?; // st_atimensec
-    store_u64(state, 0x50, 0)?; // st_mtime
-    store_u64(state, 0x54, 0)?; // st_mtimensec
-    store_u64(state, 0x58, 0)?; // st_ctime
-    store_u64(state, 0x5C, 0)?; // st_ctimensec
-    store_u64(state, 0x60, 0)?; // st_ino (verification copy)
+    store_stat_u64(state, buf, 0x00, 0)?; // st_dev
+    store_stat_u64(state, buf, 0x0C, 0)?; // st_ino (64-bit; low half overlaps st_mode, both zero)
+    store_stat_u32(state, buf, 0x10, S_IFREG_0755 as u32)?; // st_mode
+    store_stat_u64(state, buf, 0x14, 0)?; // st_nlink (64-bit; overlaps st_uid, both zero)
+    store_stat_u32(state, buf, 0x18, 0)?; // st_uid
+    store_stat_u32(state, buf, 0x1C, 0)?; // st_gid
+    store_stat_u64(state, buf, 0x20, 0)?; // st_rdev
+    store_stat_u64(state, buf, 0x30, size)?; // st_size
+    store_stat_u64(state, buf, 0x38, ST_BLKSIZE)?; // st_blksize (64-bit; upper overlaps st_blocks)
+    store_stat_u64(state, buf, 0x40, 0)?; // st_blocks
+    store_stat_u64(state, buf, 0x48, 0)?; // st_atime
+    store_stat_u64(state, buf, 0x4C, 0)?; // st_atimensec
+    store_stat_u64(state, buf, 0x50, 0)?; // st_mtime
+    store_stat_u64(state, buf, 0x54, 0)?; // st_mtimensec
+    store_stat_u64(state, buf, 0x58, 0)?; // st_ctime
+    store_stat_u64(state, buf, 0x5C, 0)?; // st_ctimensec
+    store_stat_u64(state, buf, 0x60, 0)?; // st_ino (verification copy)
     Ok(())
 }
 
@@ -694,37 +676,23 @@ fn write_arm_stat(state: &mut RustSimState, buf: u64, size: u64) -> Result<(), S
 /// are 32-bit), NOT the packed struct widths — replaying Python's exact
 /// store order reproduces its byte output.
 fn write_mips32_stat(state: &mut RustSimState, buf: u64, size: u64) -> Result<(), SyscallError> {
-    let store_u64 = |state: &mut RustSimState, off: u64, val: u64| -> Result<(), SyscallError> {
-        state.memory_store(buf + off, RustBV::concrete(val as u128, 64))?;
-        Ok(())
-    };
-    let store_u32 = |state: &mut RustSimState, off: u64, val: u32| -> Result<(), SyscallError> {
-        state.memory_store(buf + off, RustBV::concrete(val as u128, 32))?;
-        Ok(())
-    };
-    // 96-bit zero pad (3 × 32-bit words), matching `claripy.BVV(0, 32 * 3)`.
-    let store_zero96 = |state: &mut RustSimState, off: u64| -> Result<(), SyscallError> {
-        state.memory_store(buf + off, RustBV::concrete(0, 96))?;
-        Ok(())
-    };
-
-    store_u64(state, 0x00, 0)?; // st_dev
-    store_zero96(state, 0x04)?; // 96-bit zero pad (overlaps st_dev upper)
-    store_u64(state, 0x10, 0)?; // st_ino
-    store_u32(state, 0x18, 0)?; // st_uid
-    store_u32(state, 0x1C, 0)?; // st_gid
-    store_u64(state, 0x20, 0)?; // st_rdev
-    store_zero96(state, 0x24)?; // 96-bit zero pad (overlaps st_rdev upper)
-    store_u64(state, 0x30, size)?; // st_size
-    store_u64(state, 0x38, 0)?; // st_atime
-    store_u64(state, 0x3C, 0)?; // st_atimensec (overlaps st_atime upper)
-    store_u64(state, 0x40, 0)?; // st_mtime
-    store_u64(state, 0x44, 0)?; // st_mtimensec
-    store_u64(state, 0x48, 0)?; // st_ctime
-    store_u64(state, 0x4C, 0)?; // st_ctimensec
-    store_u64(state, 0x50, ST_BLKSIZE)?; // st_blksize (64-bit; upper overlaps the zero pad below)
-    store_u32(state, 0x54, 0)?; // 32-bit zero pad
-    store_u64(state, 0x58, 0)?; // st_blocks
+    store_stat_u64(state, buf, 0x00, 0)?; // st_dev
+    store_stat_zero96(state, buf, 0x04)?; // 96-bit zero pad (overlaps st_dev upper)
+    store_stat_u64(state, buf, 0x10, 0)?; // st_ino
+    store_stat_u32(state, buf, 0x18, 0)?; // st_uid
+    store_stat_u32(state, buf, 0x1C, 0)?; // st_gid
+    store_stat_u64(state, buf, 0x20, 0)?; // st_rdev
+    store_stat_zero96(state, buf, 0x24)?; // 96-bit zero pad (overlaps st_rdev upper)
+    store_stat_u64(state, buf, 0x30, size)?; // st_size
+    store_stat_u64(state, buf, 0x38, 0)?; // st_atime
+    store_stat_u64(state, buf, 0x3C, 0)?; // st_atimensec (overlaps st_atime upper)
+    store_stat_u64(state, buf, 0x40, 0)?; // st_mtime
+    store_stat_u64(state, buf, 0x44, 0)?; // st_mtimensec
+    store_stat_u64(state, buf, 0x48, 0)?; // st_ctime
+    store_stat_u64(state, buf, 0x4C, 0)?; // st_ctimensec
+    store_stat_u64(state, buf, 0x50, ST_BLKSIZE)?; // st_blksize (64-bit; upper overlaps the zero pad below)
+    store_stat_u32(state, buf, 0x54, 0)?; // 32-bit zero pad
+    store_stat_u64(state, buf, 0x58, 0)?; // st_blocks
     Ok(())
 }
 
