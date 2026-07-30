@@ -812,11 +812,12 @@ class TestNativeFileDescriptorSyscalls:
     ``procedures/stubs/syscall_stub.py``. The native handlers mirror
     that with a fresh symbolic of ``arch().bits()``.
 
-    ``dup`` / ``dup2`` / ``dup3`` are intentionally NOT native — they
-    have ``posix/dup.py`` procs that mutate ``state.posix.fd``, which
-    needs the FD table plumbed into ``RustSimState`` (same blocker as
-    angr-k3ol). The dispatcher falls back to Python for those so the
-    side-effects continue to apply.
+    ``dup`` / ``dup2`` / ``dup3`` now dispatch natively
+    (``NativeDupSyscall`` / ``NativeDup2Syscall`` / ``NativeDup3Syscall``
+    registered for every arch table in ``syscalls/mod.rs`` — nums
+    32/33/292 amd64, 41/63/330 arm64, etc.). They mutate the FD table via
+    ``RustSimState::file_system()`` directly rather than the Python
+    ``state.posix.fd`` (angr-vp19), so no Python fallback is needed.
 
     Rust unit tests in ``native/angr/src/syscalls/file_descriptor.rs``
     pin the per-handler invariants (correct ``name()``/arity, fresh
