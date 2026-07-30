@@ -213,6 +213,6 @@ impl NativeSyscall for NativeClockGettimeSyscall {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "vex-engine-z3"))]
 #[path = "sim_time_tests.rs"]
 mod sim_time_tests;

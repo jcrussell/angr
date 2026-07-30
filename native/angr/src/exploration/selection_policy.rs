@@ -636,7 +636,7 @@ impl SelectionPolicy for FindDirected {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "vex-engine-z3"))]
 mod tests {
     use super::{
         CoverageGuided, DirectedCfgDistance, Fifo, FindDirected, Lifo, LoopHeadRoundRobin,

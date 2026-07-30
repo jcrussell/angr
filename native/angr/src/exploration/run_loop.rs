@@ -61,9 +61,12 @@
 
 use super::*;
 
+#[cfg(feature = "vex-engine-z3")]
 use std::sync::Mutex;
+#[cfg(feature = "vex-engine-z3")]
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+#[cfg(feature = "vex-engine-z3")]
 use lru::LruCache;
 
 use super::core_outcome::{
@@ -71,14 +74,20 @@ use super::core_outcome::{
     PostStepInputs, materialize_bounce_forks, run_post_step_core,
 };
 use super::helpers::{NativeProcCounters, NativeProcDisposition, dispatch_native_proc};
+#[cfg(feature = "vex-engine-z3")]
 use super::scheduler::{
     CancelToken, PersistentPool, ProcessFn, RunSession, TaskOutcome,
     TerminalDisposition as SchedDisposition, TerminalSummary, WaveJob, WorkerUp,
 };
+#[cfg(feature = "vex-engine-z3")]
 use super::step_core::run_interpreter_step_core;
+#[cfg(feature = "vex-engine-z3")]
 use crate::state::StateMigrationPayload;
+#[cfg(feature = "vex-engine-z3")]
 use crate::vex::IRSB;
+#[cfg(feature = "vex-engine-z3")]
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
+#[cfg(feature = "vex-engine-z3")]
 use std::time::Duration;
 
 /// Materialized-terminal disposition the parallel worker stamps into
@@ -94,6 +103,7 @@ use std::time::Duration;
 /// the injector surplus the coordinator drained after the barrier. Neither ever
 /// reached `run_post_step_core`, so neither can be tagged here; the coordinator
 /// routes untagged payloads as bare active successors.
+#[cfg(feature = "vex-engine-z3")]
 #[derive(Clone)]
 pub(crate) enum MatKind {
     Found,
@@ -114,6 +124,7 @@ pub(crate) enum MatKind {
 /// so the coordinator can route streamed terminals and fold counters without
 /// recovering sole ownership (workers keep their clones for the session's
 /// life).
+#[cfg(feature = "vex-engine-z3")]
 pub(crate) struct SteadySession {
     session: Arc<RunSession>,
     /// Wrapped in a `Mutex` only so `SteadySession: Sync` holds — required
@@ -131,11 +142,11 @@ pub(crate) struct SteadySession {
     parked: Vec<usize>,
 }
 
+#[cfg(feature = "vex-engine-z3")]
 impl SteadySession {
     /// Cancel the session and wake every worker so it observes the cancel at
     /// its next task boundary. Does NOT wait for the drain — used by the
     /// manager `Drop`, where the pool's own `join` completes teardown.
-    #[cfg(feature = "vex-engine-z3")]
     pub(crate) fn cancel_and_wake(&self, pool: Option<&PersistentPool>) {
         self.session.cancel();
         if let Some(pool) = pool {
@@ -147,6 +158,7 @@ impl SteadySession {
 }
 
 /// What `steady_pump` hands back to the steady coordinator loop.
+#[cfg(feature = "vex-engine-z3")]
 enum SteadyOutcome {
     /// Bounce terminals to dispatch through `process_parallel_bounce_queue`
     /// (may be empty — a signal to re-check `num_find` at the loop top).
@@ -168,6 +180,7 @@ enum SteadyOutcome {
 /// solver timeout keeps a healthy-but-slow worker (raised
 /// `set_solver_timeout`) from being mistaken for a lost wakeup, while the 60s
 /// floor preserves the historical deadline at the 30s default.
+#[cfg(feature = "vex-engine-z3")]
 fn steady_finalize_deadline(solver_timeout_ms: u32) -> Duration {
     Duration::from_millis(u64::from(solver_timeout_ms).saturating_mul(2))
         .max(Duration::from_secs(60))
@@ -181,6 +194,7 @@ fn steady_finalize_deadline(solver_timeout_ms: u32) -> Duration {
 /// finalize path so the "which workers are stuck" computation is falsifiable
 /// without a running session — a regression that inverts the predicate (naming
 /// the *acked* workers) or off-by-ones the range trips the unit tests below.
+#[cfg(feature = "vex-engine-z3")]
 fn stuck_worker_ids(workers: usize, paused: &[usize]) -> Vec<usize> {
     (0..workers).filter(|w| !paused.contains(w)).collect()
 }
@@ -203,6 +217,7 @@ fn bounce_target_addr(kind: &BounceKind) -> Option<u64> {
 /// Per-wave state shared (by `&`) across all scheduler workers. Every field is
 /// interior-mutable (atomics / `Mutex`) so the `Fn + Sync` worker closure can
 /// touch it without `&mut`.
+#[cfg(feature = "vex-engine-z3")]
 struct ParallelShared {
     /// `state_id -> lineage root`. Seeded with each drained active state's
     /// `root_or_self`; workers insert every successor / materialized terminal so
@@ -242,6 +257,7 @@ struct ParallelShared {
     stepped: AtomicUsize,
 }
 
+#[cfg(feature = "vex-engine-z3")]
 impl ParallelShared {
     /// The single construction site for a wave-scoped OR session-scoped
     /// `ParallelShared`: empty maps/counters, zeroed `stepped`, and the
@@ -279,6 +295,7 @@ impl ParallelShared {
     clippy::expect_used,
     reason = "root_map/kind_map poison guards: the locks poison only on an impossible panic=abort unwind — see the module Panic policy header"
 )]
+#[cfg(feature = "vex-engine-z3")]
 fn take_steady_routing(shared: &ParallelShared, id: u64) -> (u64, Option<MatKind>) {
     let root = shared
         .root_map
@@ -321,6 +338,7 @@ fn take_steady_routing(shared: &ParallelShared, id: u64) -> (u64, Option<MatKind
     clippy::expect_used,
     reason = "poison-guard invariants: the ParallelShared root_map/kind_map/counters locks only poison if a thread unwound while holding them, which panic=abort forecloses — see the module Panic policy header"
 )]
+#[cfg(feature = "vex-engine-z3")]
 fn parallel_process_state(
     mut state: RustSimState,
     cancel: &CancelToken,
@@ -633,15 +651,31 @@ impl RustExplorationManager {
         py: Python<'_>,
         n: Option<u32>,
     ) -> PyResult<ExplorationEvent> {
-        if self.must_run_serial() {
-            return self.run_loop_single_threaded(n);
+        // The parallel/steady coordinator paths only exist with the Z3-backed
+        // engine (the scheduler transports `StateMigrationPayload`). Without
+        // Z3 there is only the single-threaded loop.
+        #[cfg(feature = "vex-engine-z3")]
+        {
+            if !self.must_run_serial() {
+                if self.steady_state_eligible() {
+                    return self.run_loop_parallel_steady(py, n);
+                }
+                return self.run_loop_parallel(py, n);
+            }
         }
-        if self.steady_state_eligible() {
-            return self.run_loop_parallel_steady(py, n);
-        }
-        self.run_loop_parallel(py, n)
+        #[cfg(not(feature = "vex-engine-z3"))]
+        let _ = py;
+        self.run_loop_single_threaded(n)
     }
+}
 
+/// The parallel/steady-state coordinator half of the run loop. Every method
+/// here transports work through the work-stealing `scheduler` (which carries
+/// `StateMigrationPayload`), so the whole block is gated on the Z3-backed
+/// engine — the `vex-engine`-without-`vex-engine-z3` build has only the
+/// single-threaded loop below.
+#[cfg(feature = "vex-engine-z3")]
+impl RustExplorationManager {
     /// Whether `run_loop` must fall back to the single-threaded loop instead of
     /// any parallel path, given the worker count and registered native
     /// techniques.
@@ -1683,7 +1717,9 @@ impl RustExplorationManager {
         // will finalize + cancel, stopping the workers.
         let _ = before;
     }
+}
 
+impl RustExplorationManager {
     /// Finalize the live steady session (angr-nkoct): cancel it, wake every
     /// worker so it observes the cancel and drains its resident frontier
     /// upstream, route those residuals + the injector surplus back to
@@ -2609,7 +2645,7 @@ impl RustExplorationManager {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "vex-engine-z3"))]
 #[path = "run_loop_tests.rs"]
 #[allow(
     clippy::unwrap_used,

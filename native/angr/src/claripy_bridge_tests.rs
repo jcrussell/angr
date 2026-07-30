@@ -406,7 +406,17 @@ fn test_import_floordiv_mod_are_unsigned() {
 fn test_claripy_to_rustbv_long_chain_hits_depth_guard() {
     pyo3::Python::initialize();
     std::thread::Builder::new()
-        .stack_size(8 * 1024 * 1024)
+        // 256 MiB, not 8: the MAX_*_RECURSION_DEPTH=4096 guard was calibrated
+        // against release frame sizes, which fit 4096 frames in 8 MiB (this test
+        // passes in release at 8 MiB). A debug build's frames are several times
+        // larger — the import direction's especially — so `cargo test` (debug),
+        // the form the nightly `rust_feature_flags` matrix runs for every
+        // feature combo, overflowed 8 MiB *before* reaching the guard. The
+        // reservation is virtual: only the ~4096 frames actually descended
+        // commit. Sizing for the debug frame lets the guard fire (returning
+        // RecursionLimit) in both profiles; the test still proves the guard,
+        // not the stack (angr-rk5tw).
+        .stack_size(256 * 1024 * 1024)
         .spawn(|| {
             Python::attach(|py| {
                 let claripy = match py.import("claripy") {
@@ -475,7 +485,17 @@ fn test_claripy_to_rustbv_long_chain_hits_depth_guard() {
 fn test_rustbv_to_claripy_long_chain_hits_depth_guard() {
     pyo3::Python::initialize();
     std::thread::Builder::new()
-        .stack_size(8 * 1024 * 1024)
+        // 256 MiB, not 8: the MAX_*_RECURSION_DEPTH=4096 guard was calibrated
+        // against release frame sizes, which fit 4096 frames in 8 MiB (this test
+        // passes in release at 8 MiB). A debug build's frames are several times
+        // larger — the import direction's especially — so `cargo test` (debug),
+        // the form the nightly `rust_feature_flags` matrix runs for every
+        // feature combo, overflowed 8 MiB *before* reaching the guard. The
+        // reservation is virtual: only the ~4096 frames actually descended
+        // commit. Sizing for the debug frame lets the guard fire (returning
+        // RecursionLimit) in both profiles; the test still proves the guard,
+        // not the stack (angr-rk5tw).
+        .stack_size(256 * 1024 * 1024)
         .spawn(|| {
             Python::attach(|py| {
                 let claripy = match py.import("claripy") {

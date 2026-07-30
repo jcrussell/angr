@@ -1722,7 +1722,7 @@ mod ops_test_helpers;
 #[path = "ops_tests_core.rs"]
 mod tests_core;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "vex-engine-z3"))]
 #[path = "ops_tests_int_arith.rs"]
 mod tests_int_arith;
 
@@ -1746,7 +1746,7 @@ mod tests_vec_lane;
 #[path = "ops_tests_vec_shift.rs"]
 mod tests_vec_shift;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "vex-engine-z3"))]
 #[path = "ops_tests_vec_saturate.rs"]
 mod tests_vec_saturate;
 

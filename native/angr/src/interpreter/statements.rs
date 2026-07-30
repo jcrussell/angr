@@ -168,6 +168,7 @@ impl<'a> VEXInterpreter<'a> {
                         // ype54 poison (angr-ype54). Bracket every assume with a
                         // savepoint + truncate so the log stays clean while the
                         // Z3 solver still sees the constraints for feasibility.
+                        #[cfg(feature = "vex-engine-z3")]
                         let assumed_savepoint = self.ctx.assumed_local_len();
                         if !self.block_solver_pushed {
                             // First time in this block with prior forks: push and assert all
@@ -201,6 +202,7 @@ impl<'a> VEXInterpreter<'a> {
                                 self.block_forks_asserted += 1;
                             }
                         }
+                        #[cfg(feature = "vex-engine-z3")]
                         self.ctx.truncate_assumed_local(assumed_savepoint);
                     }
                     self.ctx.check_branch_feasibility(&guard_val)

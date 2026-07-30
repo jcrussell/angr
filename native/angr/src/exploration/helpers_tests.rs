@@ -1458,6 +1458,7 @@ fn snapshot_built_fork_replays_earlier_guards() {
 /// `Avoided` split on `sm.avoided_count`, alongside the three dispositions
 /// angr-op0dn.13.15 already folded. Without it, a fork successor whose pc hits
 /// an avoid address inside a worker is invisible to `stats()["avoided_count"]`.
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn fold_scheduler_dispatch_stats_folds_avoided_split() {
     Python::initialize();

@@ -11,6 +11,7 @@ impl RustExplorationManager {
     /// The width buckets come from the same sampler as the serial model's
     /// `record_migration_sample`, so `parallel_width_hist` stays a single
     /// comparable series regardless of which loop produced it.
+    #[cfg(feature = "vex-engine-z3")]
     pub(crate) fn fold_scheduler_dispatch_stats(&mut self, stats: &scheduler::SchedulerStats) {
         for (i, count) in stats.width_hist.iter().enumerate() {
             self.parallel_width_hist[i] += *count as u64;

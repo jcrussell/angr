@@ -38,6 +38,6 @@ crate::declare_proc! {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "vex-engine-z3"))]
 #[path = "time_tests.rs"]
 mod tests;
