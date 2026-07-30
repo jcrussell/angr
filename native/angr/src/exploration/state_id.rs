@@ -28,8 +28,8 @@
 //!    so intent is documented. Convert to `u64` at the `StashManager`
 //!    boundary with [`StateId::raw`].
 //! 4. Surfaces that hand IDs to Python or format them keep `u64` (the
-//!    `Display`/`LowerHex` impls below let a `StateId` slot into existing
-//!    `{}` / `{:x}` messages without an explicit `.raw()`).
+//!    `Display` impl below lets a `StateId` slot into existing `{}`
+//!    messages without an explicit `.raw()`).
 //!
 //! This is a Python-boundary module; `unwrap`/`expect` are denied here so a
 //! future panic-on-input landmine cannot be reintroduced without a reviewed,
@@ -63,11 +63,5 @@ impl From<u64> for StateId {
 impl std::fmt::Display for StateId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(&self.0, f)
-    }
-}
-
-impl std::fmt::LowerHex for StateId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::LowerHex::fmt(&self.0, f)
     }
 }
