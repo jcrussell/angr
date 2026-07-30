@@ -44,54 +44,18 @@ impl RustSimState {
     }
 
     /// Create a new state with explicit endianness override.
+    ///
+    /// Delegates to [`with_solver_endian`](Self::with_solver_endian) with a
+    /// fresh solver context so the ~30-field struct literal lives in exactly one
+    /// place — the same DRY rationale that drove `fork.rs`'s `fork_with` helper
+    /// (angr-0mqkc.7). A new field is then impossible to add to one constructor
+    /// but not the other.
     pub fn new_with_endian(arch_name: &str, little_endian: Option<bool>) -> Result<Self, String> {
-        let arch = arch_from_name(arch_name)
-            .ok_or_else(|| format!("unknown architecture: {arch_name}"))?;
-        let vex_arch = arch.vex_arch();
-        let is_le = little_endian.unwrap_or_else(|| arch.is_little_endian());
-        let endness = if is_le { Endness::Little } else { Endness::Big };
-
-        Ok(RustSimState {
-            vex_arch,
-            registers: RegisterFile::new(arch.clone()),
-            memory: Self::new_state_memory(endness),
-            solver: Rc::new(RefCell::new(SymContext::new())),
-            pc: 0,
-            state_id: next_state_id(),
-            parent_id: None,
-            history: VecDeque::new(),
-            detailed_history: VecDeque::new(),
-            max_history: 1000,
-            hooks: Arc::new(HashSet::new()),
-            concretizer: AddressConcretizer::default(),
-            track_history: true,
-            arch,
-            fs: FileSystem::default(),
-            heap_brk: 0xC000_0000,
-            posix_brk: 0x1B0_0000,
-            mmap_base: 0xC100_0000,
-            getopt_optind: 1,
-            getopt_optchar: 0,
-            getopt_extern: GetoptExternAddrs::default(),
-            native_resume_stack: Vec::new(),
-            ctype_loc: CtypeLocPtrs::default(),
-            stdin_symbols: Vec::new(),
-            call_stack: Vec::new(),
-            heap_metadata: HeapMetadata::default(),
-            inspection: InspectionManager::default(),
-            environment: Arc::new(HashMap::new()),
-            symbolic_pages: HashMap::new(),
-            hook_symbolic_memory: HashMap::new(),
-            addr_to_ast: HashMap::new(),
-            last_time: None,
-            no_ip_concretization: false,
-            no_symbolic_jump_resolution: false,
-            keep_ip_symbolic: false,
-            force_eager_forks: false,
-            cgc_allocation_base: 0xB800_0000,
-            cgc_sinkholes: Vec::new(),
-            sim_options: Arc::new(HashSet::new()),
-        })
+        Self::with_solver_endian(
+            arch_name,
+            Rc::new(RefCell::new(SymContext::new())),
+            little_endian,
+        )
     }
 
     /// Create a state with a shared solver context.
