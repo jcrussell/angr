@@ -94,11 +94,6 @@ impl RustSimState {
         self.call_stack.pop()
     }
 
-    /// Get the current function address (top of call stack), if any.
-    pub fn current_function_addr(&self) -> Option<u64> {
-        self.call_stack.last().map(|e| e.callee_addr)
-    }
-
     /// Replace the call stack (used when restoring from interpreter).
     pub fn set_call_stack(&mut self, call_stack: Vec<CallStackEntry>) {
         self.call_stack = call_stack;

@@ -34,11 +34,6 @@ impl RustSimState {
         self.memory = memory;
     }
 
-    /// Get dirty page numbers (page_num = addr >> 12) from the memory.
-    pub fn get_dirty_page_nums(&self) -> Vec<u64> {
-        self.memory.get_dirty_pages()
-    }
-
     /// Map a memory region.
     pub fn map_memory(&mut self, addr: u64, size: u64, permissions: Permission) {
         self.memory.map(addr, size, permissions);
