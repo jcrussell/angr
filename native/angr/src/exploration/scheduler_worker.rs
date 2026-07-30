@@ -428,10 +428,8 @@ pub(super) fn offload_surplus(
             if local.len() <= 1 {
                 break;
             }
-            if let Some(state) = local.pop_front() {
-                policy.on_state_removed(state.state_id());
-                injector.push(detach_timed(state, counters));
-                counters.surplus_offloaded.fetch_add(1, Ordering::SeqCst);
+            if !offload_one(local, injector, policy, counters) {
+                break;
             }
         }
     }
@@ -440,14 +438,36 @@ pub(super) fn offload_surplus(
     // so it must fire even when serde has blown its budget.
     if local.len() > LOCAL_HWM {
         while local.len() > LOCAL_HWM / 2 {
-            if let Some(state) = local.pop_front() {
-                policy.on_state_removed(state.state_id());
-                injector.push(detach_timed(state, counters));
-                counters.surplus_offloaded.fetch_add(1, Ordering::SeqCst);
-            } else {
+            if !offload_one(local, injector, policy, counters) {
                 break;
             }
         }
+    }
+}
+
+/// Detach the coldest (front) state from `local` and push it onto the shared
+/// injector, running the `on_state_removed` eviction hook and bumping the
+/// `surplus_offloaded` counter. Returns `false` when `local` is empty (nothing
+/// to offload).
+///
+/// This is the single body shared by both `offload_surplus` triggers: keeping
+/// the eviction hook + counter bump in one place is what prevents the
+/// per-site-fix-missed-in-a-sibling divergence class (angr-04tw3.7, same shape
+/// as angr-myzjx.25). Any future invariant added to the offload path lands here
+/// once and both triggers inherit it.
+fn offload_one(
+    local: &mut VecDeque<RustSimState>,
+    injector: &Injector<StateMigrationPayload>,
+    policy: &Arc<dyn SelectionPolicy>,
+    counters: &SchedulerCounters,
+) -> bool {
+    if let Some(state) = local.pop_front() {
+        policy.on_state_removed(state.state_id());
+        injector.push(detach_timed(state, counters));
+        counters.surplus_offloaded.fetch_add(1, Ordering::SeqCst);
+        true
+    } else {
+        false
     }
 }
 
