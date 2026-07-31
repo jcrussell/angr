@@ -4,41 +4,6 @@
 use super::*;
 
 #[test]
-fn test_amd64_basics() {
-    let arch = AMD64;
-
-    assert_eq!(arch.bits(), 64);
-    assert_eq!(arch.name(), "AMD64");
-    assert!(arch.is_little_endian());
-}
-
-#[test]
-fn test_register_lookup() {
-    let arch = AMD64;
-
-    assert_eq!(arch.register_offset("rax"), Some(16));
-    assert_eq!(arch.register_size("rax"), Some(8));
-
-    assert_eq!(arch.register_offset("eax"), Some(16));
-    assert_eq!(arch.register_size("eax"), Some(4));
-
-    assert_eq!(arch.register_offset("al"), Some(16));
-    assert_eq!(arch.register_size("al"), Some(1));
-
-    assert_eq!(arch.register_offset("ah"), Some(17)); // High byte
-    assert_eq!(arch.register_size("ah"), Some(1));
-}
-
-#[test]
-fn test_special_registers() {
-    let arch = AMD64;
-
-    assert_eq!(arch.ip_offset(), 184);
-    assert_eq!(arch.sp_offset(), 48);
-    assert_eq!(arch.bp_offset(), Some(56));
-}
-
-#[test]
 fn test_segment_base_offsets_match_archinfo() {
     // angr-a68t: GS_CONST belongs at offset 1032 per archinfo, not the
     // SSEROUND slot at 216. Pin both offsets and confirm the alias map
@@ -65,23 +30,4 @@ fn test_segment_base_offsets_match_archinfo() {
     // State must be wide enough to hold the gs_const slot (offset 1032
     // + 8 bytes). Allocations narrower than this drop ARCH_SET_GS writes.
     assert!(arch.state_size() >= 1040);
-}
-
-#[test]
-fn test_sp_bp_aliases_are_full_width() {
-    // angr-6qzik: 'sp'/'bp' are the architecture-independent full-width
-    // stack/base pointer per archinfo (AMD64 'sp' == (48, 8)), NOT the legacy
-    // 16-bit sub-registers. A 2-byte reading silently truncated a full-width
-    // set_register("sp", ...) to its low half.
-    let arch = AMD64;
-
-    assert_eq!(arch.register_offset("sp"), Some(48));
-    assert_eq!(arch.register_size("sp"), Some(8));
-    assert_eq!(arch.register_offset("bp"), Some(56));
-    assert_eq!(arch.register_size("bp"), Some(8));
-
-    // The other 16-bit sub-registers keep their legacy widths (archinfo does
-    // too: AMD64 'ax' == (16, 2)).
-    assert_eq!(arch.register_size("ax"), Some(2));
-    assert_eq!(arch.register_size("si"), Some(2));
 }

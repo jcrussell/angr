@@ -90,6 +90,236 @@ fn test_every_vex_arch_is_classified() {
     }
 }
 
+/// Expected scalars for the [`ALL_ARCHES`] sweeps below, one row per
+/// architecture, joined to `ALL_ARCHES` by `name`.
+///
+/// Replaces the per-arch `test_*_basics` / `test_special_registers` /
+/// `test_register_lookup` copies that used to live in `amd64_tests.rs`,
+/// `x86_tests.rs`, `arm_tests.rs`, `arm64_tests.rs` and `mips_tests.rs`
+/// (angr-9ke6b.215). Coverage of a minority arch used to depend on someone
+/// remembering to hand-author the same assertion a sixth time, and it showed:
+/// the two MIPS `*_basics` copies had silently dropped the `is_little_endian`
+/// check and MIPS had no `test_special_registers` at all. Adding an assertion
+/// or an architecture now buys the whole matrix.
+struct ArchExpect {
+    name: &'static str,
+    bits: u32,
+    little_endian: bool,
+    ip_offset: u32,
+    sp_offset: u32,
+    bp_offset: Option<u32>,
+    /// `(name, offset, size)` triples pinning alias-table entries from the
+    /// Rust side, so `cargo test` alone catches a regression rather than
+    /// relying on the Python archinfo parity gate
+    /// (`tests/engines/rust/test_arch_offset_parity.py`). Two groups:
+    ///
+    /// * The architecture-independent full-width `sp`/`bp` names, plus the
+    ///   legacy 16-bit x86/amd64 sub-registers that must have kept their
+    ///   narrow widths when `sp`/`bp` were widened (angr-6qzik).
+    /// * The MIPS `$N` spellings, which the parity gate cannot see at all
+    ///   because archinfo has no register under those names.
+    aliases: &'static [(&'static str, u32, u32)],
+    /// The arch's own spelling of the instruction pointer, i.e. the name that
+    /// must resolve to `ip_offset`.
+    ip_name: &'static str,
+}
+
+/// Architectures whose register table lacks the architecture-independent
+/// `"pc"` spelling and offers only [`ArchExpect::ip_name`].
+///
+/// This is a real gap, filed as **angr-9ke6b.217**: archinfo defines `pc` (and
+/// `ip`) on all six arches, so `register_offset("pc")` resolving on four of six
+/// is an inconsistency of the same class as angr-6qzik (which added the
+/// architecture-independent full-width `sp`/`bp` names). It is invisible to
+/// `tests/engines/rust/test_arch_offset_parity.py`, whose harness skips any
+/// archinfo register name Rust does not know — a *missing* name can only be
+/// caught here.
+///
+/// Same self-cleaning contract as that module's `KNOWN_DRIFT`: the sweep
+/// asserts these arches *still* fail to resolve `"pc"`, so fixing the bead
+/// reddens this test and forces the entry's removal rather than letting the
+/// table rot into a permanent allowlist.
+const KNOWN_MISSING_PC_ALIAS: &[&str] = &["X86", "AMD64"];
+
+const ARCH_EXPECTATIONS: &[ArchExpect] = &[
+    ArchExpect {
+        name: "X86",
+        bits: 32,
+        little_endian: true,
+        ip_offset: 68,
+        sp_offset: 24,
+        bp_offset: Some(28),
+        aliases: &[("sp", 24, 4), ("bp", 28, 4), ("ax", 8, 2), ("di", 36, 2)],
+        ip_name: "eip",
+    },
+    ArchExpect {
+        name: "AMD64",
+        bits: 64,
+        little_endian: true,
+        ip_offset: 184,
+        sp_offset: 48,
+        bp_offset: Some(56),
+        aliases: &[("sp", 48, 8), ("bp", 56, 8), ("ax", 16, 2), ("si", 64, 2)],
+        ip_name: "rip",
+    },
+    ArchExpect {
+        name: "ARM",
+        bits: 32,
+        little_endian: true,
+        ip_offset: 68,       // PC (R15T)
+        sp_offset: 60,       // R13
+        bp_offset: Some(52), // R11/FP
+        aliases: &[("sp", 60, 4)],
+        ip_name: "pc",
+    },
+    ArchExpect {
+        name: "ARM64",
+        bits: 64,
+        little_endian: true,
+        ip_offset: 272,       // PC
+        sp_offset: 264,       // XSP
+        bp_offset: Some(248), // X29/FP
+        aliases: &[("sp", 264, 8)],
+        ip_name: "pc",
+    },
+    ArchExpect {
+        name: "MIPS32",
+        bits: 32,
+        // MIPS is bi-endian; the Rust singleton defaults to little-endian and
+        // callers select BE per state. This assertion is new — the hand-written
+        // MIPS `*_basics` tests omitted it.
+        little_endian: true,
+        ip_offset: 136,       // PC
+        sp_offset: 124,       // R29
+        bp_offset: Some(128), // R30 (fp/s8)
+        aliases: &[
+            ("sp", 124, 4),
+            ("$2", 16, 4),
+            ("$29", 124, 4),
+            ("$30", 128, 4),
+        ],
+        ip_name: "pc",
+    },
+    ArchExpect {
+        name: "MIPS64",
+        bits: 64,
+        little_endian: true,
+        ip_offset: 272,       // PC
+        sp_offset: 248,       // R29
+        bp_offset: Some(256), // R30 (fp/s8)
+        aliases: &[
+            ("sp", 248, 8),
+            ("$2", 32, 8),
+            ("$29", 248, 8),
+            ("$30", 256, 8),
+        ],
+        ip_name: "pc",
+    },
+];
+
+fn arch_expect(name: &str) -> &'static ArchExpect {
+    ARCH_EXPECTATIONS
+        .iter()
+        .find(|e| e.name == name)
+        .unwrap_or_else(|| {
+            panic!("{name}: no ARCH_EXPECTATIONS row; add one alongside the ALL_ARCHES row")
+        })
+}
+
+/// The two tables must describe the same set of architectures, so adding a row
+/// to [`ALL_ARCHES`] without an [`ARCH_EXPECTATIONS`] row (or vice versa) fails
+/// loudly instead of silently shrinking the sweeps below.
+#[test]
+fn test_arch_expectations_cover_all_arches() {
+    for desc in ALL_ARCHES {
+        let _ = arch_expect(desc.name);
+    }
+    for expect in ARCH_EXPECTATIONS {
+        assert!(
+            ALL_ARCHES.iter().any(|d| d.name == expect.name),
+            "{}: ARCH_EXPECTATIONS row has no matching ALL_ARCHES row",
+            expect.name,
+        );
+    }
+}
+
+#[test]
+fn test_all_arches_report_expected_bits_name_and_endianness() {
+    for desc in ALL_ARCHES {
+        let arch = (desc.make_arch)();
+        let expect = arch_expect(desc.name);
+        let name = expect.name;
+        assert_eq!(arch.name(), name, "{name}: Arch::name()");
+        assert_eq!(arch.bits(), expect.bits, "{name}: bits");
+        assert_eq!(arch.bytes(), expect.bits / 8, "{name}: bytes");
+        assert_eq!(
+            arch.is_little_endian(),
+            expect.little_endian,
+            "{name}: is_little_endian",
+        );
+    }
+}
+
+#[test]
+fn test_all_arches_report_expected_special_register_offsets() {
+    for desc in ALL_ARCHES {
+        let arch = (desc.make_arch)();
+        let expect = arch_expect(desc.name);
+        let name = expect.name;
+        assert_eq!(arch.ip_offset(), expect.ip_offset, "{name}: ip_offset");
+        assert_eq!(arch.sp_offset(), expect.sp_offset, "{name}: sp_offset");
+        assert_eq!(arch.bp_offset(), expect.bp_offset, "{name}: bp_offset");
+
+        // The special-register offsets must agree with the name lookup, so a
+        // table edit that moves one but not the other cannot pass.
+        assert_eq!(
+            arch.register_offset(expect.ip_name),
+            Some(expect.ip_offset),
+            "{name}: register_offset({:?}) disagrees with ip_offset",
+            expect.ip_name,
+        );
+        if KNOWN_MISSING_PC_ALIAS.contains(&name) {
+            assert_eq!(
+                arch.register_offset("pc"),
+                None,
+                "{name} now resolves \"pc\" — angr-9ke6b.217 is fixed; drop its KNOWN_MISSING_PC_ALIAS entry",
+            );
+        } else {
+            assert_eq!(
+                arch.register_offset("pc"),
+                Some(expect.ip_offset),
+                "{name}: register_offset(\"pc\") disagrees with ip_offset",
+            );
+        }
+        assert_eq!(
+            arch.register_offset("sp"),
+            Some(expect.sp_offset),
+            "{name}: register_offset(\"sp\") disagrees with sp_offset",
+        );
+    }
+}
+
+#[test]
+fn test_all_arches_resolve_their_alias_spellings() {
+    for desc in ALL_ARCHES {
+        let arch = (desc.make_arch)();
+        let expect = arch_expect(desc.name);
+        let name = expect.name;
+        for &(alias, offset, size) in expect.aliases {
+            assert_eq!(
+                arch.register_offset(alias),
+                Some(offset),
+                "{name}: register_offset({alias:?})",
+            );
+            assert_eq!(
+                arch.register_size(alias),
+                Some(size),
+                "{name}: register_size({alias:?})",
+            );
+        }
+    }
+}
+
 #[test]
 #[should_panic(expected = "Rust engine does not support")]
 fn test_arch_from_vex_ppc32_panics() {

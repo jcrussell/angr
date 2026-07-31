@@ -469,10 +469,13 @@ Skeleton → Experimental → Supported promotion path above.
 Wired-up but not fully verified:
 
 * Register offsets for all six arches in ``native/angr/src/arch/*.rs``.
-* Endianness flag (ARM BE blob test added via ``armeb`` arch, see
-  ``test_armeb_explore_blob``; MIPS32 BE+LE end-to-end via ELF + blob;
-  MIPS64 BE+LE end-to-end via ELF; ARM64 BE untested — blocked on
-  archinfo, see ``archinfo-be-arch-alias-support`` memory).
+* Endianness flag: every endianness flavour of every arch is driven
+  end-to-end through both cle loaders by the
+  ``test_explore_solves_for_42`` sweep in
+  ``tests/engines/rust/test_multiarch.py`` (rows ``armel``/``armeb``,
+  ``mips32be``/``mips32le``, ``mips64be``/``mips64le``, ``x86``,
+  ``amd64``, ``aarch64``, each x ``blob``/``elf``). ARM64 BE untested —
+  blocked on archinfo, see ``archinfo-be-arch-alias-support`` memory.
 * ARMEABI / AArch64 / MipsO32 / MipsN64 calling conventions defined in
   ``calling_conventions.rs``.
 
@@ -482,9 +485,11 @@ verifies a found state. To promote Experimental → Supported: add a
 benchmark and ensure it stays green in regression runs. The Cdecl x86
 return-register bug (commit ``5329d8222``) was latent for months
 precisely because no end-to-end x86 test ran — that gap is now closed
-by ``test_x86_explore_blob`` (i386 ``cmp``/``je``/``jmp`` round-trip
-asserting ``eax == 42`` solves ``2*eax + 16 == 100``). Assume the same
-risk for any new arch added without coverage.
+by the ``x86-blob`` / ``x86-elf`` rows of ``test_explore_solves_for_42``
+(i386 ``cmp``/``je``/``jmp`` round-trip asserting ``eax == 42`` solves
+``2*eax + 16 == 100``). Adding an architecture means adding a row to
+``tests/engines/rust/arch_specs.py::ARCH_SPECS``, which buys the whole
+assertion matrix; assume the same risk for any new arch added without it.
 
 x86 (32-bit) single-CC note
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~

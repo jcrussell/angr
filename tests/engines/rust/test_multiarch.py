@@ -1,11 +1,26 @@
-"""Tests for RustExplorationManager.
+"""Multi-architecture coverage for the Rust engine.
 
-This module tests the Rust-native exploration manager for symbolic execution.
+Most of this module is a **table-driven sweep**: the per-architecture facts
+live in :mod:`tests.engines.rust.arch_specs` and each assertion runs against
+every row of :data:`~tests.engines.rust.arch_specs.ARCH_SPECS`. Before that
+table existed, coverage of a minority arch depended on someone remembering to
+hand-author a test for it, so arch-specific bugs slipped through
+disproportionately (BE ``htonl``/``htons``/``pipe`` byte order, 32-bit
+``scanf``/``sprintf`` length modifiers, unmapped NEON unsigned vector compares
+— all angr-9ke6b findings). Adding an assertion or an architecture now buys the
+whole matrix at once; ``test_arch_offset_parity.py`` is the same idiom applied
+to the register tables.
+
+Tests that are *genuinely* arch-specific — x86 segment selectors, the amd64
+``gs_const``/``sseround`` collision, the AArch64 NEON MLA blob, the AArch64
+concrete-flag ccall, the MIPS32 disk-init-cache regression — stay hand-written
+below the sweeps rather than being bent into table columns.
 """
 
 from __future__ import annotations
 
 import os
+import struct
 
 import pytest
 
@@ -22,6 +37,7 @@ from tests.engines.conftest import (  # noqa: F401
     RustSimState,
     _RustExplorationManager,
 )
+from tests.engines.rust.arch_specs import ARCH_SPECS, ArchSpec, EndianVariant, build_elf, spec_for
 
 # All tests in this module require the Rust extension; skip the whole module
 # when it is unavailable (matches tests/engines/test_rust_public_api.py).
@@ -31,29 +47,236 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+def _explore_cases() -> list[tuple[ArchSpec, EndianVariant, str]]:
+    """``(spec, variant, loader)`` rows for the end-to-end explore sweep.
+
+    Every (endianness flavour x loader backend) cell is covered. The two
+    loaders are not redundant: cle's Blob backend takes the architecture name
+    verbatim, so only the ELF rows exercise ``e_machine`` / ``EI_DATA`` /
+    ``e_entry`` decoding.
+    """
+    return [(spec, variant, loader) for spec in ARCH_SPECS for variant in spec.variants for loader in ("blob", "elf")]
+
+
+def _explore_id(case: tuple[ArchSpec, EndianVariant, str]) -> str:
+    _spec, variant, loader = case
+    return f"{variant.label}-{loader}"
+
+
+EXPLORE_CASES = _explore_cases()
+EXPLORE_IDS = [_explore_id(c) for c in EXPLORE_CASES]
+
+#: The link-register architectures, i.e. the rows with a
+#: :class:`~tests.engines.rust.arch_specs.ProcSpec`.
+PROC_SPECS = [spec for spec in ARCH_SPECS if spec.proc is not None]
+
+
+def _probe_values(spec: ArchSpec) -> dict[str, int]:
+    """Distinct per-register test values, width-masked using archinfo.
+
+    Widths come from archinfo rather than from the spec table so a row cannot
+    encode a wrong width; the values are pairwise distinct so a wrong offset
+    surfaces as cross-talk between two probes rather than a clean pass.
+    """
+    import archinfo
+
+    registers = archinfo.arch_from_id(spec.archinfo_id).registers
+    values = {}
+    for i, name in enumerate(spec.probe_regs):
+        size = registers[name][1]
+        values[name] = (0x1122334455667788 + 0x1111111111111111 * i) & ((1 << (size * 8)) - 1)
+    return values
+
+
+def _load_explore_project(spec: ArchSpec, variant: EndianVariant, loader: str, tmp_path):
+    """Load ``spec``'s explore program through ``loader``; return (proj, entry)."""
+    code = spec.code_for(variant)
+    if loader == "blob":
+        blob_path = tmp_path / f"{variant.label}.bin"
+        blob_path.write_bytes(code)
+        proj = angr.Project(
+            str(blob_path),
+            main_opts={"backend": "blob", "arch": variant.cle_arch, "base_addr": spec.base_addr},
+            auto_load_libs=False,
+        )
+        return proj, spec.base_addr
+
+    elf_bytes, entry = build_elf(spec, variant, code)
+    elf_path = tmp_path / f"{variant.label}.elf"
+    elf_path.write_bytes(elf_bytes)
+    proj = angr.Project(str(elf_path), auto_load_libs=False)
+    assert proj.entry == entry, f"e_entry not parsed: proj.entry={proj.entry:#x} vs expected {entry:#x}"
+    return proj, entry
+
+
 class TestMultiArchSupport:
-    """Tests for MIPS, ARM, and big-endian architecture support."""
+    """Tests for MIPS, ARM, x86 and big-endian architecture support."""
 
-    def test_mips32_state_creation(self):
-        """MIPS32 state creation and register operations."""
-        state = RustSimState("mips32")
-        state.set_register("v0", 0xDEAD)
-        state.set_register("a0", 0xBEEF)
-        state.set_register("sp", 0x7FFF0000)
+    # ------------------------------------------------------------------
+    # Table-driven sweeps (angr-9ke6b.215). Each of these runs on every row
+    # of ARCH_SPECS; a new architecture only has to add a row.
+    # ------------------------------------------------------------------
 
-        assert state.get_register("v0") == 0xDEAD
-        assert state.get_register("a0") == 0xBEEF
-        assert state.get_register("sp") == 0x7FFF0000
+    @pytest.mark.parametrize("spec", ARCH_SPECS, ids=lambda s: s.rust_arch)
+    def test_state_creation_round_trips_registers(self, spec):
+        """Fresh state creation plus a register round-trip on every arch.
 
-    def test_mips32_exploration_manager(self):
-        """MIPS32 exploration manager creation and stash ops."""
-        mgr = _RustExplorationManager("mips32")
-        assert mgr.arch == "mips32"
+        Replaces the per-arch ``test_*_state_creation`` copies (which existed
+        only for mips32/arm/arm64/x86). Writing all probes *before* reading any
+        of them back makes a wrong offset visible as cross-talk, which a
+        write/read-one-at-a-time loop would miss.
+        """
+        state = RustSimState(spec.rust_arch)
+        values = _probe_values(spec)
+
+        for name, value in values.items():
+            state.set_register(name, value)
+        for name, value in values.items():
+            assert state.get_register(name) == value, (
+                f"{spec.rust_arch}.{name}: wrote {value:#x}, read back {state.get_register(name):#x}"
+            )
+
+    @pytest.mark.parametrize("spec", ARCH_SPECS, ids=lambda s: s.rust_arch)
+    def test_fork_isolation(self, spec):
+        """Forked states have independent registers on every arch.
+
+        Generalizes the former mips32-only ``test_mips32_fork_isolation``; the
+        Rust ``RegisterFile`` shares its buffer via ``Arc`` and relies on
+        ``Arc::make_mut`` copy-on-write, so a broken CoW path would leak writes
+        across the parent/child boundary on *all* arches at once.
+        """
+        name = spec.probe_regs[0]
+        parent = RustSimState(spec.rust_arch)
+        parent.set_register(name, 100)
+        child = parent.fork()
+        child.set_register(name, 200)
+
+        assert parent.get_register(name) == 100, f"{spec.rust_arch}: child write leaked into parent"
+        assert child.get_register(name) == 200, f"{spec.rust_arch}: child write was lost"
+
+    @pytest.mark.parametrize("spec", ARCH_SPECS, ids=lambda s: s.rust_arch)
+    def test_exploration_manager_creation(self, spec):
+        """Manager construction and stash ops work on every arch.
+
+        Generalizes the former mips32-only / arm-only copies. ``set_find_addrs``
+        / ``set_avoid_addrs`` are included because they were only ever
+        exercised on mips32.
+        """
+        mgr = _RustExplorationManager(spec.rust_arch)
+        assert mgr.arch == spec.rust_arch
 
         mgr.create_state("active")
         assert mgr.active_count() == 1
-        mgr.set_find_addrs([0x400000])
-        mgr.set_avoid_addrs([0x400100])
+        mgr.set_find_addrs([spec.base_addr])
+        mgr.set_avoid_addrs([spec.base_addr + 0x100])
+
+    @pytest.mark.parametrize(("spec", "variant", "loader"), EXPLORE_CASES, ids=EXPLORE_IDS)
+    def test_explore_solves_for_42(self, spec, variant, loader, tmp_path):
+        """End-to-end exploration drives the input register to 42, everywhere.
+
+        Replaces the seven hand-authored ``*_explore_blob`` /
+        ``*_explore_*_real_elf`` copies, which between them covered only
+        x86-blob, armeb-blob, aarch64-blob, aarch64-elf, mips32be-blob,
+        mips32le-elf, mips64le-elf and mips64be-elf. The sweep is a strict
+        superset: it also covers amd64, ARMEL, and the missing loader half of
+        every other row.
+
+        Exercises, per cell: cle's loader (``e_machine`` / ``EI_DATA`` /
+        ``e_entry`` decoding on the ELF rows), instruction fetch in the
+        variant's byte order, VEX interpretation, register sync, conditional
+        branch resolution, and solver evaluation. This is the same risk class
+        as the latent Cdecl x86 EAX/EDX bug (commit 5329d8222): without an
+        end-to-end test per arch, register-offset and byte-order regressions
+        stay silent for months.
+        """
+        import claripy
+
+        proj, entry = _load_explore_project(spec, variant, loader, tmp_path)
+        assert proj.arch.name == spec.proj_arch_name
+        assert proj.arch.bits == spec.bits
+        assert proj.arch.memory_endness == variant.memory_endness, (
+            f"{variant.label}/{loader}: memory_endness is {proj.arch.memory_endness}, expected {variant.memory_endness}"
+        )
+        assert proj.arch.instruction_endness == variant.instruction_endness
+
+        state = proj.factory.blank_state(addr=entry)
+        sym = claripy.BVS(spec.input_reg, spec.input_bits)
+        setattr(state.regs, spec.input_reg, sym)
+
+        mgr = RustExplorationManager(proj, [state])
+        find, avoid = entry + spec.find_off, entry + spec.avoid_off
+        mgr.explore(find=find, avoid=avoid, num_find=1, max_steps=100)
+
+        assert len(mgr.found) >= 1, (
+            f"{variant.label}/{loader}: exploration did not reach {find:#x}; counts={mgr.stash_counts()}"
+        )
+        found = mgr.found[0]
+        assert found.solver.satisfiable(), f"{variant.label}/{loader}: found state's solver became unsat"
+        got = found.solver.eval(sym)
+        assert got == 42, f"{variant.label}/{loader}: expected {spec.input_reg}==42 to reach found, got {got}"
+
+    @pytest.mark.parametrize("spec", PROC_SPECS, ids=lambda s: s.rust_arch)
+    def test_native_procedure_round_trip(self, spec):
+        """Native strlen runs, the result lands in the return register, SP is untouched.
+
+        Replaces the four copies (arm / aarch64 / mips32 / mips64). Each of
+        these architectures passes the return address in a link register
+        (ARM ``lr``, AArch64 ``x30``, MIPS ``$ra``) rather than on the stack,
+        so the dispatcher must *not* pop a stack frame — hence the SP
+        assertion. Locks the calling-convention bug class that motivated
+        angr-gzk8 and angr-orc9: with a silent fall-through to SystemVAMD64,
+        a MIPS64 SimProcedure would read its first argument from offset 72
+        (AMD64 RDI) instead of 48 ($a0) and see garbage.
+        """
+        proc = spec.proc
+        mgr = _RustExplorationManager(spec.rust_arch)
+
+        callbacks = PythonCallbacks()
+        callbacks.set_memory_load(lambda a, s: (bytes(s), False, None))
+        callbacks.set_memory_store(lambda a, d: None)
+        callbacks.set_lift_block(lambda a: "{}")
+        mgr.set_callbacks(callbacks)
+
+        STRLEN_HOOK = 0x500000
+        EXIT_HOOK = 0x600000
+        STRING_ADDR = 0x2000
+
+        mgr.register_simprocedure(STRLEN_HOOK, "strlen", num_args=1, no_return=False)
+        mgr.register_simprocedure(EXIT_HOOK, "exit", num_args=1, no_return=True)
+
+        state = RustSimState(spec.rust_arch)
+        state.map_memory(STRING_ADDR & ~0xFFF, 0x1000, 7)
+        state.map_memory(proc.stack_base, 0x1000, 7)
+        state.memory_store(STRING_ADDR, b"hello\x00")
+
+        state.set_register(proc.arg_reg, STRING_ADDR)
+        state.set_register(proc.ret_addr_reg, EXIT_HOOK)
+        state.set_register("sp", proc.stack_base)
+        state.pc = STRLEN_HOOK
+
+        mgr.add_state("active", state)
+        mgr.run(10)
+
+        deadended_ids = mgr.get_state_ids("deadended")
+        assert len(deadended_ids) == 1, (
+            f"{spec.rust_arch}: expected exactly one deadended state after the exit hook fired; "
+            f"stashes={mgr.stash_counts()}"
+        )
+        sid = deadended_ids[0]
+        ret = mgr.get_state_register(sid, proc.ret_reg)
+        assert ret == 5, (
+            f"{spec.rust_arch}: strlen('hello') should return 5 in {proc.ret_reg}, got {ret!r}. "
+            f"native_calls={mgr.native_procedure_stats()}"
+        )
+        sp = mgr.get_state_register(sid, "sp")
+        assert sp == proc.stack_base, (
+            f"{spec.rust_arch}: SP changed from {proc.stack_base:#x} to {sp:#x}; the dispatcher should NOT pop a "
+            f"return address from the stack because the return address arrives in {proc.ret_addr_reg}."
+        )
+
+    # ------------------------------------------------------------------
+    # Hand-written, genuinely arch-specific tests.
+    # ------------------------------------------------------------------
 
     def test_mips_alias_constructors_do_not_panic(self):
         """Every MIPS32 arch alias that ``arch_from_name`` accepts must also
@@ -107,15 +330,6 @@ class TestMultiArchSupport:
         le.map_memory(0x1000, 0x1000, 7)
         le.memory_store(0x1000, b"\x44\x33\x22\x11")
         assert le.memory_load(0x1000, 1)[0] == 0x44
-
-    def test_mips32_fork_isolation(self):
-        """MIPS32 forked states have independent registers."""
-        state1 = RustSimState("mips32")
-        state1.set_register("t0", 100)
-        state2 = state1.fork()
-        state2.set_register("t0", 200)
-        assert state1.get_register("t0") == 100
-        assert state2.get_register("t0") == 200
 
     def test_mips32_full_register_family_dispatch(self):
         """MIPS32 FPU, HI/LO, and previously-untested GPRs round-trip via
@@ -459,44 +673,6 @@ class TestMultiArchSupport:
         assert state.get_register("cc_dep2") == 0x3333333333333333
         assert state.get_register("cc_ndep") == 0x4444444444444444
 
-    def test_arm_state_creation(self):
-        """ARM32 state creation and register operations."""
-        state = RustSimState("arm")
-        state.set_register("r0", 0x1234)
-        state.set_register("r1", 0x5678)
-        state.set_register("sp", 0x7FFF0000)
-        state.set_register("lr", 0x8000)
-
-        assert state.get_register("r0") == 0x1234
-        assert state.get_register("r1") == 0x5678
-        assert state.get_register("sp") == 0x7FFF0000
-        assert state.get_register("lr") == 0x8000
-
-    def test_arm_exploration_manager(self):
-        """ARM exploration manager creation."""
-        mgr = _RustExplorationManager("arm")
-        assert mgr.arch == "arm"
-        mgr.create_state("active")
-        assert mgr.active_count() == 1
-
-    def test_arm64_state_creation(self):
-        """ARM64/AArch64 state creation and register operations."""
-        state = RustSimState("aarch64")
-        state.set_register("x0", 0xDEADBEEF)
-        state.set_register("x1", 0xCAFEBABE)
-        state.set_register("sp", 0x7FFFFFFFE000)
-        assert state.get_register("x0") == 0xDEADBEEF
-        assert state.get_register("x1") == 0xCAFEBABE
-        assert state.get_register("sp") == 0x7FFFFFFFE000
-
-    def test_x86_state_creation(self):
-        """x86 (32-bit) state creation and register operations."""
-        state = RustSimState("x86")
-        state.set_register("eax", 0xDEADBEEF)
-        state.set_register("esp", 0x7FFF0000)
-        assert state.get_register("eax") == 0xDEADBEEF
-        assert state.get_register("esp") == 0x7FFF0000
-
     def test_x86_segment_selectors_dispatch(self):
         """x86 (32-bit) segment selectors round-trip via the standard
         register dispatch.
@@ -636,78 +812,13 @@ class TestMultiArchSupport:
         with pytest.raises(ValueError, match="unknown architecture"):
             RustSimState("pdp11")
 
-    def test_x86_explore_blob(self, tmp_path):
-        """End-to-end x86 (32-bit) exploration on a hand-assembled blob.
-
-        x86 register/CC plumbing in ``arch/x86.rs`` is exercised by unit
-        tests (state creation, segment selectors, segment bases) but no
-        end-to-end Rust-engine test ran on a real x86 instruction stream
-        — exactly the gap that let the Cdecl return-register bug
-        (5329d8222) hide for months on amd64. This test ships a small
-        i386 program as raw bytes, loads it via cle's Blob backend, and
-        drives ``eax`` through ``RustExplorationManager.explore`` to
-        confirm VEX interpretation, register sync, conditional branch
-        resolution, and solver evaluation all work on x86.
-
-        The program computes ``2*eax + 16`` and branches to ``found`` if
-        the result equals 100; ``eax == 42`` is the canonical solution.
-        Promotes x86 (32-bit) from Skeleton (no e2e coverage) to
-        Experimental — tested in the arch support matrix.
-        """
-        import claripy
-
-        # i386 little-endian:
-        #   0x00: 01 C0       add eax, eax           ; eax = 2*eax
-        #   0x02: 83 C0 10    add eax, 0x10          ; eax = 2*eax + 16
-        #   0x05: 83 F8 64    cmp eax, 0x64          ; cmp eax, 100
-        #   0x08: 74 06       je  +6  -> 0x10        ; found
-        #   0x0a: EB 0C       jmp +12 -> 0x18        ; avoid
-        #   0x0c: 90 90 90 90 (pad to 0x10)
-        #   0x10: 90 90 90 90 90 90 90 90  (found region)
-        #   0x18: 90          (avoid)
-        code = bytes.fromhex(
-            "01C0"  # add eax, eax
-            "83C010"  # add eax, 0x10
-            "83F864"  # cmp eax, 0x64
-            "7406"  # je  +6  -> 0x10
-            "EB0C"  # jmp +12 -> 0x18
-            "90909090"  # pad 0x0c..0x0f
-            "9090909090909090"  # found region 0x10..0x17
-            "90"  # avoid 0x18
-        )
-        assert len(code) == 0x19
-        blob_path = tmp_path / "x86_branch.bin"
-        blob_path.write_bytes(code)
-
-        proj = angr.Project(
-            str(blob_path),
-            main_opts={"backend": "blob", "arch": "x86", "base_addr": 0x400000},
-            auto_load_libs=False,
-        )
-        assert proj.arch.name == "X86"
-        assert proj.arch.bits == 32
-
-        state = proj.factory.blank_state(addr=0x400000)
-        eax = claripy.BVS("eax", 32)
-        state.regs.eax = eax
-
-        mgr = RustExplorationManager(proj, [state])
-        mgr.explore(find=0x400010, avoid=0x400018, num_find=1, max_steps=100)
-
-        assert len(mgr.found) >= 1, f"x86 exploration did not reach 0x400010; counts={mgr.stash_counts()}"
-        found = mgr.found[0]
-        assert found.solver.satisfiable(), "found state's solver became unsat"
-        # 2*eax + 16 == 100  ⇒  eax == 42.
-        assert found.solver.eval(eax) == 42, f"Expected eax==42 to reach found, got {found.solver.eval(eax)}"
-
     def test_arm32_explore_real_binary(self):
         """End-to-end ARM32 (ARMEL) exploration on a real binary.
 
-        Until this landed, ARM had only state-creation unit tests. The Cdecl
-        x86 return-register bug (5329d8222) was latent for months precisely
-        because no end-to-end x86 test ran — same risk class for ARM, so
-        this exercises VEX interpretation, register sync, calling-convention
-        plumbing, and find/avoid stashing in one shot.
+        The synthetic ARM rows of ``test_explore_solves_for_42`` are
+        hand-assembled straight-line code; this one runs a compiler-produced
+        binary with a real prologue, library calls and a symbolic buffer in
+        memory, so it catches things a nine-instruction blob cannot.
 
         Uses the angr-examples Android license_validation binary
         (load address 0x401760, find=0x401840, avoid=0x401854).
@@ -735,135 +846,6 @@ class TestMultiArchSupport:
         found = mgr.found[0]
         assert found.solver.satisfiable(), "found state's solver became unsat"
 
-    def test_armeb_explore_blob(self, tmp_path):
-        """End-to-end ARM Big-Endian (ARMEB) exploration on a hand-assembled blob.
-
-        ARMEL (little-endian) has both a real-binary integration test
-        (``test_arm32_explore_real_binary``) and the ``arm_le_branch``
-        benchmark, but ARMEB had only state-creation coverage —
-        Skeleton in the arch matrix. archinfo's ``armeb`` maps to
-        ``ARMEL`` with ``memory_endness=Iend_BE`` and
-        ``instruction_endness=Iend_BE`` (BE32 model), so this test
-        ships the same code words as ``arm_le_branch`` packed
-        big-endian and routes them through the Rust engine.
-
-        Confirms instruction fetch, register sync, comparison, branch
-        resolution, and solver evaluation all work on a BE memory
-        layout. Promotes ARMEB from Skeleton to Experimental in the
-        support matrix; same risk class as the latent Cdecl x86 bug
-        (5329d8222) — without an end-to-end BE test, byte-order
-        regressions in instruction-fetch or register handling hide
-        silently.
-        """
-        import struct
-
-        import claripy
-
-        # ARM (AL condition = 0xE), packed big-endian for ARMEB BE32:
-        #   0x00: ADD  r0, r0, r0      0xE0800000  ; r0 = 2*r0
-        #   0x04: ADD  r0, r0, #16     0xE2800010  ; r0 = 2*r0 + 16
-        #   0x08: MOV  r1, #100        0xE3A01064
-        #   0x0c: CMP  r0, r1          0xE1500001
-        #   0x10: BEQ  +0  -> 0x18     0x0A000000
-        #   0x14: B    +4  -> 0x20     0xEA000001
-        #   0x18: NOP  (found)         0xE1A00000
-        #   0x1c: NOP                  0xE1A00000
-        #   0x20: NOP  (avoid)         0xE1A00000
-        code = struct.pack(
-            ">IIIIIIIII",
-            0xE0800000,
-            0xE2800010,
-            0xE3A01064,
-            0xE1500001,
-            0x0A000000,
-            0xEA000001,
-            0xE1A00000,
-            0xE1A00000,
-            0xE1A00000,
-        )
-        blob_path = tmp_path / "armeb_branch.bin"
-        blob_path.write_bytes(code)
-
-        proj = angr.Project(
-            str(blob_path),
-            main_opts={"backend": "blob", "arch": "armeb", "base_addr": 0x10000},
-            auto_load_libs=False,
-        )
-        assert proj.arch.name == "ARMEL"
-        assert proj.arch.memory_endness == "Iend_BE"
-        assert proj.arch.instruction_endness == "Iend_BE"
-
-        state = proj.factory.blank_state(addr=0x10000)
-        r0 = claripy.BVS("r0", 32)
-        state.regs.r0 = r0
-
-        mgr = RustExplorationManager(proj, [state])
-        mgr.explore(find=0x10018, avoid=0x10020, num_find=1, max_steps=100)
-
-        assert len(mgr.found) >= 1, f"ARMEB exploration did not reach 0x10018; counts={mgr.stash_counts()}"
-        found = mgr.found[0]
-        assert found.solver.satisfiable(), "found state's solver became unsat"
-        # 2*r0 + 16 == 100 ⇒ r0 == 42.
-        assert found.solver.eval(r0) == 42, f"Expected r0==42 to reach found, got {found.solver.eval(r0)}"
-
-    def test_aarch64_explore_blob(self, tmp_path):
-        """End-to-end AArch64 exploration on a hand-assembled blob.
-
-        No AArch64 binaries ship with angr-examples and no cross-compiler
-        is available locally, so this test ships seven AArch64 instructions
-        as raw bytes and loads them via cle's Blob backend. The program
-        compares ``w0`` against 42 and branches to either ``found`` or
-        ``avoid``. Symbolic execution must drive ``w0`` to 42 to reach
-        the find address.
-
-        Promotes AArch64 from Skeleton to Experimental in the support
-        matrix; same risk class as the latent Cdecl x86 bug
-        (5329d8222) — without an end-to-end test, register-offset or
-        calling-convention bugs hide for months.
-        """
-        import struct
-
-        import claripy
-
-        # AArch64 little-endian:
-        #   0x00: MOV w1, #42         52800541
-        #   0x04: CMP w0, w1          6b01001f  (SUBS wzr, w0, w1)
-        #   0x08: B.EQ +8 -> 0x10     54000040
-        #   0x0c: B  +12 -> 0x18      14000003
-        #   0x10: NOP  (found)        d503201f
-        #   0x14: NOP                 d503201f
-        #   0x18: NOP  (avoid)        d503201f
-        code = struct.pack(
-            "<IIIIIII",
-            0x52800541,
-            0x6B01001F,
-            0x54000040,
-            0x14000003,
-            0xD503201F,
-            0xD503201F,
-            0xD503201F,
-        )
-        blob_path = tmp_path / "aarch64_branch.bin"
-        blob_path.write_bytes(code)
-
-        proj = angr.Project(
-            str(blob_path),
-            main_opts={"backend": "blob", "arch": "aarch64", "base_addr": 0x400000},
-        )
-        assert proj.arch.name == "AARCH64"
-
-        state = proj.factory.blank_state(addr=0x400000)
-        x0 = claripy.BVS("x0", 64)
-        state.regs.x0 = x0
-
-        mgr = RustExplorationManager(proj, [state])
-        mgr.explore(find=0x400010, avoid=0x400018, num_find=1, max_steps=50)
-
-        assert len(mgr.found) >= 1, f"AArch64 exploration did not reach 0x400010; counts={mgr.stash_counts()}"
-        found = mgr.found[0]
-        assert found.solver.satisfiable(), "found state's solver became unsat"
-        assert found.solver.eval(x0) == 42, f"Expected x0==42 to reach found, got {found.solver.eval(x0)}"
-
     def test_aarch64_concrete_branch_no_spurious_fork(self, tmp_path):
         """arm64g_calculate_condition must not fork on concrete flags (angr-37d4).
 
@@ -875,35 +857,30 @@ class TestMultiArchSupport:
 
         Here ``w0`` is *concrete* (42), so CMP w0,#42 sets Z=1 concretely
         and B.EQ is concretely taken. With the ccall computed properly the
-        false branch (0x400018) is infeasible and never created, so the
-        ``avoid`` stash stays empty.
+        false branch is infeasible and never created, so the ``avoid``
+        stash stays empty. Reuses the arm64 row's explore program.
         """
-        import struct
-
-        # Same blob as test_aarch64_explore_blob.
-        code = struct.pack(
-            "<IIIIIII",
-            0x52800541,
-            0x6B01001F,
-            0x54000040,
-            0x14000003,
-            0xD503201F,
-            0xD503201F,
-            0xD503201F,
-        )
+        spec = spec_for("arm64")
+        variant = spec.variants[0]
         blob_path = tmp_path / "aarch64_concrete_branch.bin"
-        blob_path.write_bytes(code)
+        blob_path.write_bytes(spec.code_for(variant))
 
         proj = angr.Project(
             str(blob_path),
-            main_opts={"backend": "blob", "arch": "aarch64", "base_addr": 0x400000},
+            main_opts={"backend": "blob", "arch": variant.cle_arch, "base_addr": spec.base_addr},
+            auto_load_libs=False,
         )
 
-        state = proj.factory.blank_state(addr=0x400000)
+        state = proj.factory.blank_state(addr=spec.base_addr)
         state.regs.x0 = 42  # concrete -> B.EQ concretely taken
 
         mgr = RustExplorationManager(proj, [state])
-        mgr.explore(find=0x400010, avoid=0x400018, num_find=1, max_steps=50)
+        mgr.explore(
+            find=spec.base_addr + spec.find_off,
+            avoid=spec.base_addr + spec.avoid_off,
+            num_find=1,
+            max_steps=50,
+        )
 
         assert len(mgr.found) >= 1, f"concrete x0==42 did not reach found; counts={mgr.stash_counts()}"
         # The key assertion: the concretely-infeasible avoid branch must not
@@ -927,8 +904,6 @@ class TestMultiArchSupport:
         ``r + r * r ≡ 20 (mod 256)``; r=4 (4 + 16 = 20) is the canonical
         solution.
         """
-        import struct
-
         import claripy
 
         # AArch64 little-endian — verified individually via pyvex:
@@ -984,47 +959,36 @@ class TestMultiArchSupport:
         )
 
     def test_aarch64_explore_real_elf(self, tmp_path):
-        """End-to-end AArch64 exploration on a hand-assembled ELF binary.
+        """End-to-end AArch64 exploration across a BL / RET boundary.
 
-        The existing aarch64 blob test covers only a single compare + branch
-        through the cle Blob backend. This test goes further:
+        The ELF rows of ``test_explore_solves_for_42`` already cover cle's
+        ELF backend (e_machine / e_entry / PT_LOAD) on every arch. What is
+        unique here is the *call*: the program calls a subroutine
+        ``double_it`` that returns ``2 * w0``, so BL must set X30 and RET
+        must branch to it. That calling-convention plumbing has no
+        equivalent in the straight-line sweep programs.
 
-          * loads through cle's ELF backend (parses e_machine / e_entry /
-            PT_LOAD), exercising the full ELF loader path on AArch64
-          * exercises BL / RET (calling-convention plumbing — X30 set on
-            BL, branch target read back from X30 on RET) in addition to
-            the conditional branch
-          * runs from the ELF's e_entry (proj.entry) rather than a
-            hand-picked address, confirming e_entry decoding
-
-        No AArch64 binaries ship with angr-examples and no cross-compiler
-        is available locally, so the ELF is constructed inline. The
-        program calls a subroutine ``double_it`` that returns ``2 * w0``,
-        then checks the result equals 84 — symbolic execution must drive
-        ``w0`` to 42 to reach the find address.
-
-        Promotes AArch64 from blob-only to real-ELF coverage in the
-        support matrix; pairs with angr-gxhf.1.
+        No AArch64 binaries ship with angr-examples and no cross-compiler is
+        available locally, so the ELF is constructed inline via
+        ``arch_specs.build_elf``. Pairs with angr-gxhf.1.
         """
-        import struct
-
         import claripy
 
         # AArch64 little-endian instructions (verified against ARMv8 ARM):
-        #   double_it (at 0x400078):
-        #     0x400078: add w0, w0, w0       0B000000  ; w0 = 2*w0
-        #     0x40007c: ret                  D65F03C0  ; return via x30
-        #   entry (at 0x400080):
-        #     0x400080: bl double_it (-8)    97FFFFFE
-        #     0x400084: movz w1, #84         52800A81
-        #     0x400088: cmp w0, w1           6B01001F  ; subs wzr, w0, w1
-        #     0x40008c: b.eq found (+8)      54000040
-        #     0x400090: b avoid (+12)        14000003
-        #   found (at 0x400094):
-        #     0x400094: nop                  D503201F
-        #     0x400098: nop                  D503201F
-        #   avoid (at 0x40009C):
-        #     0x40009c: nop                  D503201F
+        #   double_it:
+        #     +0x00: add w0, w0, w0       0B000000  ; w0 = 2*w0
+        #     +0x04: ret                  D65F03C0  ; return via x30
+        #   entry (== double_it + 8):
+        #     +0x08: bl double_it (-8)    97FFFFFE
+        #     +0x0c: movz w1, #84         52800A81
+        #     +0x10: cmp w0, w1           6B01001F  ; subs wzr, w0, w1
+        #     +0x14: b.eq found (+8)      54000040
+        #     +0x18: b avoid (+12)        14000003
+        #   found (== entry + 0x14):
+        #     +0x1c: nop                  D503201F
+        #     +0x20: nop                  D503201F
+        #   avoid (== entry + 0x1c):
+        #     +0x24: nop                  D503201F
         code = struct.pack(
             "<IIIIIIIIII",
             0x0B000000,  # add w0, w0, w0
@@ -1039,268 +1003,31 @@ class TestMultiArchSupport:
             0xD503201F,  # nop (avoid)
         )
 
-        # Minimal ELF64 (AArch64) header. PT_LOAD covers file [0, 160] →
-        # vaddr [0x400000, 0x4000A0). Entry = 0x400080. No section headers.
-        BASE = 0x400000
-        EHDR_SIZE = 64
-        PHDR_SIZE = 56
-        TOTAL = EHDR_SIZE + PHDR_SIZE + len(code)
-        ENTRY = BASE + EHDR_SIZE + PHDR_SIZE + 8  # skip subroutine
-
-        # ELF64 header (little-endian)
-        ehdr = (
-            b"\x7fELF"
-            + bytes(
-                [
-                    2,  # EI_CLASS = ELF64
-                    1,  # EI_DATA = LSB
-                    1,  # EI_VERSION
-                    0,  # EI_OSABI = System V
-                    0,  # EI_ABIVERSION
-                ]
-            )
-            + b"\x00" * 7
-        )  # EI_PAD
-        ehdr += struct.pack(
-            "<HHIQQQIHHHHHH",
-            2,  # e_type = ET_EXEC
-            0xB7,  # e_machine = EM_AARCH64
-            1,  # e_version
-            ENTRY,  # e_entry
-            EHDR_SIZE,  # e_phoff
-            0,  # e_shoff
-            0,  # e_flags
-            EHDR_SIZE,  # e_ehsize
-            PHDR_SIZE,  # e_phentsize
-            1,  # e_phnum
-            0,  # e_shentsize
-            0,  # e_shnum
-            0,  # e_shstrndx
-        )
-        assert len(ehdr) == EHDR_SIZE
-
-        # PT_LOAD program header
-        phdr = struct.pack(
-            "<IIQQQQQQ",
-            1,  # p_type = PT_LOAD
-            5,  # p_flags = PF_R | PF_X
-            0,  # p_offset
-            BASE,  # p_vaddr
-            BASE,  # p_paddr
-            TOTAL,  # p_filesz
-            TOTAL,  # p_memsz
-            0x1000,  # p_align
-        )
-        assert len(phdr) == PHDR_SIZE
-
-        elf_bytes = ehdr + phdr + code
+        spec = spec_for("arm64")
+        variant = spec.variants[0]
+        # e_entry skips the two-instruction subroutine at the top of `code`.
+        elf_bytes, entry = build_elf(spec, variant, code, entry_skip=8)
         elf_path = tmp_path / "aarch64_call.elf"
         elf_path.write_bytes(elf_bytes)
 
         proj = angr.Project(str(elf_path), auto_load_libs=False)
         assert proj.arch.name == "AARCH64"
-        assert proj.entry == ENTRY, f"e_entry not parsed: proj.entry={proj.entry:#x} vs expected {ENTRY:#x}"
+        assert proj.entry == entry, f"e_entry not parsed: proj.entry={proj.entry:#x} vs expected {entry:#x}"
 
         state = proj.factory.blank_state(addr=proj.entry)
         x0 = claripy.BVS("x0", 64)
         state.regs.x0 = x0
 
         mgr = RustExplorationManager(proj, [state])
-        mgr.explore(find=0x400094, avoid=0x40009C, num_find=1, max_steps=50)
+        mgr.explore(find=entry + 0x14, avoid=entry + 0x1C, num_find=1, max_steps=50)
 
-        assert len(mgr.found) >= 1, f"AArch64 ELF exploration did not reach 0x400094; counts={mgr.stash_counts()}"
+        assert len(mgr.found) >= 1, (
+            f"AArch64 ELF exploration did not reach {entry + 0x14:#x}; counts={mgr.stash_counts()}"
+        )
         found = mgr.found[0]
         assert found.solver.satisfiable(), "found state's solver became unsat"
         # The doubled input must equal 84, so the input must be 42.
         assert found.solver.eval(x0) == 42, f"Expected x0==42 (so 2*x0==84) to reach found, got {found.solver.eval(x0)}"
-
-    def test_mips32_explore_blob(self, tmp_path):
-        """End-to-end MIPS32 (big-endian) exploration on a hand-assembled blob.
-
-        MIPS32 has no calling convention defined in the Rust engine
-        (default_cc_for_arch falls through to SystemVAMD64 — see the
-        ``invariant-mips-no-calling-convention`` memory), but the VEX
-        interpreter, register sync, and branch handling can still be
-        exercised without a SimProcedure call. This test loads seven
-        MIPS instructions as a blob and asserts that the engine drives
-        ``a0`` to 42 to reach the find address.
-
-        Promotes MIPS32 from Skeleton to Experimental in the support
-        matrix.
-        """
-        import struct
-
-        import claripy
-
-        # MIPS32 big-endian, with delay slots:
-        #   0x00: ADDIU t0, zero, 42     2408002A
-        #   0x04: BEQ a0, t0, +3         10880003   -> on equal, target 0x14
-        #   0x08: NOP (delay slot)       00000000
-        #   0x0c: B +2 (BEQ zero,zero)   10000002   -> target 0x18 (avoid)
-        #   0x10: NOP (delay slot)       00000000
-        #   0x14: NOP (found)            00000000
-        #   0x18: NOP (avoid)            00000000
-        code = struct.pack(
-            ">IIIIIII",
-            0x2408002A,
-            0x10880003,
-            0x00000000,
-            0x10000002,
-            0x00000000,
-            0x00000000,
-            0x00000000,
-        )
-        blob_path = tmp_path / "mips32_branch.bin"
-        blob_path.write_bytes(code)
-
-        proj = angr.Project(
-            str(blob_path),
-            main_opts={"backend": "blob", "arch": "mips", "base_addr": 0x400000},
-        )
-        assert proj.arch.name == "MIPS32"
-        assert proj.arch.memory_endness == "Iend_BE"
-
-        state = proj.factory.blank_state(addr=0x400000)
-        a0 = claripy.BVS("a0", 32)
-        state.regs.a0 = a0
-
-        mgr = RustExplorationManager(proj, [state])
-        mgr.explore(find=0x400014, avoid=0x400018, num_find=1, max_steps=50)
-
-        assert len(mgr.found) >= 1, f"MIPS32 exploration did not reach 0x400014; counts={mgr.stash_counts()}"
-        found = mgr.found[0]
-        assert found.solver.satisfiable(), "found state's solver became unsat"
-        assert found.solver.eval(a0) == 42, f"Expected a0==42 to reach found, got {found.solver.eval(a0)}"
-
-    def test_mips32_explore_le_real_elf(self, tmp_path):
-        """End-to-end MIPS32 little-endian exploration on a hand-assembled ELF.
-
-        ``test_mips32_explore_blob`` covers MIPS32 BE via the cle Blob
-        backend. This test fills two distinct gaps:
-
-          * MIPS32 LE end-to-end — at port time only the BE path was
-            smoke-tested past block 0; LE has never been driven through
-            the interpreter on a multi-block control flow.
-          * cle's ELF loader on MIPS32 — Blob bypasses e_machine / EI_DATA
-            parsing; an actual ELF32 LE header forces cle's ELF backend
-            to recognise EM_MIPS + EI_DATA=LSB and report MIPS32/Iend_LE.
-
-        No MIPS LE binaries ship with angr-examples and no cross-compiler
-        is available locally, so the ELF is constructed inline (same
-        pattern as ``test_aarch64_explore_real_elf``).
-
-        Pairs with angr-gxhf.2.
-        """
-        import struct
-
-        import claripy
-
-        # MIPS32 instruction encodings are endian-agnostic at decode time;
-        # the storage byte order changes with EI_DATA. Same opcodes as the
-        # BE blob test, packed little-endian.
-        #   0x00: ADDIU t0, zero, 42     2408002A
-        #   0x04: BEQ a0, t0, +3         10880003   -> on equal, target 0x14
-        #   0x08: NOP (delay slot)       00000000
-        #   0x0c: B +2 (BEQ zero,zero)   10000002   -> target 0x18 (avoid)
-        #   0x10: NOP (delay slot)       00000000
-        #   0x14: NOP (found)            00000000
-        #   0x18: NOP (avoid)            00000000
-        code = struct.pack(
-            "<IIIIIII",
-            0x2408002A,
-            0x10880003,
-            0x00000000,
-            0x10000002,
-            0x00000000,
-            0x00000000,
-            0x00000000,
-        )
-
-        # Minimal ELF32 (MIPS LE) header. PT_LOAD covers file [0, 84+len(code)]
-        # → vaddr [0x400000, ...). Entry = first instruction.
-        BASE = 0x400000
-        EHDR_SIZE = 52  # ELF32 header
-        PHDR_SIZE = 32  # ELF32 program header
-        TOTAL = EHDR_SIZE + PHDR_SIZE + len(code)
-        ENTRY = BASE + EHDR_SIZE + PHDR_SIZE
-
-        # ELF32 header (little-endian)
-        ehdr = (
-            b"\x7fELF"
-            + bytes(
-                [
-                    1,  # EI_CLASS = ELF32
-                    1,  # EI_DATA = LSB (little-endian)
-                    1,  # EI_VERSION
-                    0,  # EI_OSABI = System V
-                    0,  # EI_ABIVERSION
-                ]
-            )
-            + b"\x00" * 7
-        )  # EI_PAD
-        ehdr += struct.pack(
-            "<HHIIIIIHHHHHH",
-            2,  # e_type = ET_EXEC
-            0x08,  # e_machine = EM_MIPS
-            1,  # e_version
-            ENTRY,  # e_entry
-            EHDR_SIZE,  # e_phoff
-            0,  # e_shoff
-            0x50001000,  # e_flags = EF_MIPS_ARCH_32 | EF_MIPS_ABI_O32
-            EHDR_SIZE,  # e_ehsize
-            PHDR_SIZE,  # e_phentsize
-            1,  # e_phnum
-            0,  # e_shentsize
-            0,  # e_shnum
-            0,  # e_shstrndx
-        )
-        assert len(ehdr) == EHDR_SIZE
-
-        # ELF32 PT_LOAD program header (field order differs from ELF64!)
-        phdr = struct.pack(
-            "<IIIIIIII",
-            1,  # p_type = PT_LOAD
-            0,  # p_offset
-            BASE,  # p_vaddr
-            BASE,  # p_paddr
-            TOTAL,  # p_filesz
-            TOTAL,  # p_memsz
-            5,  # p_flags = PF_R | PF_X
-            0x1000,  # p_align
-        )
-        assert len(phdr) == PHDR_SIZE
-
-        elf_bytes = ehdr + phdr + code
-        elf_path = tmp_path / "mips32le_branch.elf"
-        elf_path.write_bytes(elf_bytes)
-
-        proj = angr.Project(str(elf_path), auto_load_libs=False)
-        assert proj.arch.name == "MIPS32"
-        assert proj.arch.memory_endness == "Iend_LE", (
-            f"cle ELF loader did not pick up EI_DATA=LSB for MIPS32: got {proj.arch.memory_endness}"
-        )
-        assert proj.entry == ENTRY, f"e_entry not parsed: proj.entry={proj.entry:#x} vs expected {ENTRY:#x}"
-
-        state = proj.factory.blank_state(addr=proj.entry)
-        a0 = claripy.BVS("a0", 32)
-        state.regs.a0 = a0
-
-        mgr = RustExplorationManager(proj, [state])
-        # Branch targets are at +0x14 / +0x18 from the first instruction,
-        # which sits at ENTRY (just past the ELF header / phdr).
-        mgr.explore(
-            find=ENTRY + 0x14,
-            avoid=ENTRY + 0x18,
-            num_find=1,
-            max_steps=50,
-        )
-
-        assert len(mgr.found) >= 1, (
-            f"MIPS32 LE ELF exploration did not reach {ENTRY + 0x14:#x}; counts={mgr.stash_counts()}"
-        )
-        found = mgr.found[0]
-        assert found.solver.satisfiable(), "found state's solver became unsat"
-        assert found.solver.eval(a0) == 42, f"Expected a0==42 to reach found, got {found.solver.eval(a0)}"
 
     def test_mips32_symbolic_register_survives_disk_init_cache(self, tmp_path):
         """User-set symbolic registers must survive the disk init cache (angr-g9hy).
@@ -1318,8 +1045,6 @@ class TestMultiArchSupport:
         by a comparator ``BEQ $t0, N*5``. Before the fix, FOUND was empty for
         N>=30 (deterministic).
         """
-        import struct
-
         import claripy
 
         def addiu(rt, rs, imm):
@@ -1353,42 +1078,12 @@ class TestMultiArchSupport:
         code.append(0)  # AVOID
 
         code_bytes = struct.pack("<" + "I" * len(code), *code)
-        BASE = 0x400000
-        EHDR_SIZE = 52
-        PHDR_SIZE = 32
-        TOTAL = EHDR_SIZE + PHDR_SIZE + len(code_bytes)
-        ENTRY = BASE + EHDR_SIZE + PHDR_SIZE
-
-        ehdr = b"\x7fELF" + bytes([1, 1, 1, 0, 0]) + b"\x00" * 7
-        ehdr += struct.pack(
-            "<HHIIIIIHHHHHH",
-            2,
-            0x08,
-            1,
-            ENTRY,
-            EHDR_SIZE,
-            0,
-            0x50001000,
-            EHDR_SIZE,
-            PHDR_SIZE,
-            1,
-            0,
-            0,
-            0,
-        )
-        phdr = struct.pack(
-            "<IIIIIIII",
-            1,
-            0,
-            BASE,
-            BASE,
-            TOTAL,
-            TOTAL,
-            5,
-            0x1000,
-        )
+        spec = spec_for("mips32")
+        # The little-endian MIPS32 row; the cache bug is endness-independent.
+        variant = next(v for v in spec.variants if v.little)
+        elf_bytes, entry = build_elf(spec, variant, code_bytes)
         elf_path = tmp_path / "mips32_accum.elf"
-        elf_path.write_bytes(ehdr + phdr + code_bytes)
+        elf_path.write_bytes(elf_bytes)
 
         proj = angr.Project(str(elf_path), auto_load_libs=False)
         assert proj.arch.name == "MIPS32"
@@ -1398,509 +1093,8 @@ class TestMultiArchSupport:
         state.regs.a0 = a0
 
         mgr = RustExplorationManager(proj, [state])
-        find_addr = ENTRY + 4 * found_idx
-        avoid_addr = ENTRY + 4 * avoid_idx
-        mgr.explore(find=find_addr, avoid=avoid_addr, num_find=1, max_steps=500)
+        mgr.explore(find=entry + 4 * found_idx, avoid=entry + 4 * avoid_idx, num_find=1, max_steps=500)
 
         assert mgr.found, f"Symbolic accumulator collapsed before reaching find — stashes={mgr.stash_counts()}"
         result = mgr.found[0].solver.eval(a0)
         assert result == 5, f"Expected a0==5 (so t0 == N*5 satisfies BEQ), got {result}"
-
-    def test_mips64_explore_le_real_elf(self, tmp_path):
-        """End-to-end MIPS64 little-endian exploration on a hand-assembled ELF.
-
-        Closes the last gap in the gxhf epic (promote ARM64 / MIPS32 / MIPS64
-        from Skeleton to Experimental). Before this test, MIPS64 was wired
-        up (N64 calling convention defined as of angr-gzk8 commit 8bd93978c,
-        register table present) but never exercised end-to-end on a binary
-        through the Rust interpreter — the same risk class as the latent
-        Cdecl x86 EAX/EDX bug (commit 5329d8222).
-
-        MIPS64 instruction encodings for these base opcodes match MIPS32
-        (registers are still 5 bits; ADDIU sign-extends to 64-bit on
-        MIPS64), so the same program shape as the MIPS32 LE test works.
-        The difference is the ELF: ELF64 header (64 B) + PT_LOAD program
-        header (56 B) + EM_MIPS + EI_CLASS=ELF64 + EF_MIPS_ARCH_64.
-
-        No MIPS64 binaries ship with angr-examples and no cross-compiler
-        is available locally, so the ELF is constructed inline (same
-        pattern as ``test_aarch64_explore_real_elf``).
-
-        Pairs with angr-gxhf.3.
-        """
-        import struct
-
-        import claripy
-
-        # MIPS64 instruction encodings — same as MIPS32 for these opcodes
-        # since registers are still 5 bits. ADDIU sign-extends the 16-bit
-        # immediate to 64 bits on MIPS64. Stored little-endian.
-        #   0x00: ADDIU t0, zero, 42     2408002A  ; $t0 = sign-extend(42)
-        #   0x04: BEQ a0, t0, +3         10880003  ; on equal -> +0x14 (found)
-        #   0x08: NOP (delay slot)       00000000
-        #   0x0c: B +2 (BEQ zero,zero)   10000002  ; -> +0x18 (avoid)
-        #   0x10: NOP (delay slot)       00000000
-        #   0x14: NOP (found)            00000000
-        #   0x18: NOP (avoid)            00000000
-        code = struct.pack(
-            "<IIIIIII",
-            0x2408002A,
-            0x10880003,
-            0x00000000,
-            0x10000002,
-            0x00000000,
-            0x00000000,
-            0x00000000,
-        )
-
-        # Minimal ELF64 (MIPS64 LE) header. PT_LOAD covers file
-        # [0, 120+len(code)] → vaddr [0x400000, ...). Entry = first instr.
-        BASE = 0x400000
-        EHDR_SIZE = 64  # ELF64 header
-        PHDR_SIZE = 56  # ELF64 program header
-        TOTAL = EHDR_SIZE + PHDR_SIZE + len(code)
-        ENTRY = BASE + EHDR_SIZE + PHDR_SIZE
-
-        # ELF64 header (little-endian)
-        ehdr = (
-            b"\x7fELF"
-            + bytes(
-                [
-                    2,  # EI_CLASS = ELF64
-                    1,  # EI_DATA = LSB (little-endian)
-                    1,  # EI_VERSION
-                    0,  # EI_OSABI = System V
-                    0,  # EI_ABIVERSION
-                ]
-            )
-            + b"\x00" * 7
-        )  # EI_PAD
-        ehdr += struct.pack(
-            "<HHIQQQIHHHHHH",
-            2,  # e_type = ET_EXEC
-            0x08,  # e_machine = EM_MIPS
-            1,  # e_version
-            ENTRY,  # e_entry
-            EHDR_SIZE,  # e_phoff
-            0,  # e_shoff
-            0x60000000,  # e_flags = EF_MIPS_ARCH_64 (N64 implied by EI_CLASS=ELF64)
-            EHDR_SIZE,  # e_ehsize
-            PHDR_SIZE,  # e_phentsize
-            1,  # e_phnum
-            0,  # e_shentsize
-            0,  # e_shnum
-            0,  # e_shstrndx
-        )
-        assert len(ehdr) == EHDR_SIZE
-
-        # ELF64 PT_LOAD program header (field order: p_type, p_flags first)
-        phdr = struct.pack(
-            "<IIQQQQQQ",
-            1,  # p_type = PT_LOAD
-            5,  # p_flags = PF_R | PF_X
-            0,  # p_offset
-            BASE,  # p_vaddr
-            BASE,  # p_paddr
-            TOTAL,  # p_filesz
-            TOTAL,  # p_memsz
-            0x1000,  # p_align
-        )
-        assert len(phdr) == PHDR_SIZE
-
-        elf_bytes = ehdr + phdr + code
-        elf_path = tmp_path / "mips64le_branch.elf"
-        elf_path.write_bytes(elf_bytes)
-
-        proj = angr.Project(str(elf_path), auto_load_libs=False)
-        assert proj.arch.name == "MIPS64"
-        assert proj.arch.bits == 64
-        assert proj.arch.memory_endness == "Iend_LE", (
-            f"cle ELF loader did not pick up EI_DATA=LSB for MIPS64: got {proj.arch.memory_endness}"
-        )
-        assert proj.entry == ENTRY, f"e_entry not parsed: proj.entry={proj.entry:#x} vs expected {ENTRY:#x}"
-
-        state = proj.factory.blank_state(addr=proj.entry)
-        a0 = claripy.BVS("a0", 64)
-        state.regs.a0 = a0
-
-        mgr = RustExplorationManager(proj, [state])
-        # Branch targets are at +0x14 / +0x18 from the first instruction,
-        # which sits at ENTRY (just past the ELF header / phdr).
-        mgr.explore(
-            find=ENTRY + 0x14,
-            avoid=ENTRY + 0x18,
-            num_find=1,
-            max_steps=50,
-        )
-
-        assert len(mgr.found) >= 1, (
-            f"MIPS64 LE ELF exploration did not reach {ENTRY + 0x14:#x}; counts={mgr.stash_counts()}"
-        )
-        found = mgr.found[0]
-        assert found.solver.satisfiable(), "found state's solver became unsat"
-        assert found.solver.eval(a0) == 42, f"Expected a0==42 to reach found, got {found.solver.eval(a0)}"
-
-    def test_mips64_explore_be_real_elf(self, tmp_path):
-        """End-to-end MIPS64 big-endian exploration on a hand-assembled ELF.
-
-        Closes the last gap in the ``ig3o`` Arch BE validation campaign
-        (sibling of ``test_armeb_explore_blob``, angr-ig3o.1). MIPS64
-        BE was wired up (register table, N64 calling convention) and
-        the LE path was end-to-end tested via
-        ``test_mips64_explore_le_real_elf``, but BE memory + instruction
-        layout had never been driven through the Rust interpreter on a
-        multi-block control flow — the same risk class as the latent
-        Cdecl x86 EAX/EDX bug (commit 5329d8222).
-
-        MIPS64 base-integer instruction encodings match MIPS32 for the
-        opcodes used here; the storage byte order changes with EI_DATA.
-        The ELF wrapper is ELF64 with ``EI_CLASS=ELF64`` and
-        ``EI_DATA=MSB``, exercising the N64 calling convention path on
-        BE memory.
-
-        No MIPS64 binaries ship with angr-examples and no cross-compiler
-        is available locally, so the ELF is constructed inline (same
-        pattern as ``test_mips64_explore_le_real_elf``).
-
-        Pairs with the ``mips64_be_branch`` synthetic benchmark.
-        """
-        import struct
-
-        import claripy
-
-        # MIPS64 instruction encodings — same as MIPS32 for these opcodes
-        # since registers are still 5 bits. ADDIU sign-extends the 16-bit
-        # immediate to 64 bits on MIPS64. Stored big-endian.
-        #   0x00: ADDIU t0, zero, 42     2408002A  ; $t0 = sign-extend(42)
-        #   0x04: BEQ a0, t0, +3         10880003  ; on equal -> +0x14 (found)
-        #   0x08: NOP (delay slot)       00000000
-        #   0x0c: B +2 (BEQ zero,zero)   10000002  ; -> +0x18 (avoid)
-        #   0x10: NOP (delay slot)       00000000
-        #   0x14: NOP (found)            00000000
-        #   0x18: NOP (avoid)            00000000
-        code = struct.pack(
-            ">IIIIIII",
-            0x2408002A,
-            0x10880003,
-            0x00000000,
-            0x10000002,
-            0x00000000,
-            0x00000000,
-            0x00000000,
-        )
-
-        # Minimal ELF64 (MIPS64 BE) header. PT_LOAD covers file
-        # [0, 120+len(code)] → vaddr [0x400000, ...). Entry = first instr.
-        BASE = 0x400000
-        EHDR_SIZE = 64  # ELF64 header
-        PHDR_SIZE = 56  # ELF64 program header
-        TOTAL = EHDR_SIZE + PHDR_SIZE + len(code)
-        ENTRY = BASE + EHDR_SIZE + PHDR_SIZE
-
-        # ELF64 header (big-endian)
-        ehdr = (
-            b"\x7fELF"
-            + bytes(
-                [
-                    2,  # EI_CLASS = ELF64
-                    2,  # EI_DATA = MSB (big-endian)
-                    1,  # EI_VERSION
-                    0,  # EI_OSABI = System V
-                    0,  # EI_ABIVERSION
-                ]
-            )
-            + b"\x00" * 7
-        )  # EI_PAD
-        ehdr += struct.pack(
-            ">HHIQQQIHHHHHH",
-            2,  # e_type = ET_EXEC
-            0x08,  # e_machine = EM_MIPS
-            1,  # e_version
-            ENTRY,  # e_entry
-            EHDR_SIZE,  # e_phoff
-            0,  # e_shoff
-            0x60000000,  # e_flags = EF_MIPS_ARCH_64 (N64 implied by EI_CLASS=ELF64)
-            EHDR_SIZE,  # e_ehsize
-            PHDR_SIZE,  # e_phentsize
-            1,  # e_phnum
-            0,  # e_shentsize
-            0,  # e_shnum
-            0,  # e_shstrndx
-        )
-        assert len(ehdr) == EHDR_SIZE
-
-        # ELF64 PT_LOAD program header (field order: p_type, p_flags first)
-        phdr = struct.pack(
-            ">IIQQQQQQ",
-            1,  # p_type = PT_LOAD
-            5,  # p_flags = PF_R | PF_X
-            0,  # p_offset
-            BASE,  # p_vaddr
-            BASE,  # p_paddr
-            TOTAL,  # p_filesz
-            TOTAL,  # p_memsz
-            0x1000,  # p_align
-        )
-        assert len(phdr) == PHDR_SIZE
-
-        elf_bytes = ehdr + phdr + code
-        elf_path = tmp_path / "mips64be_branch.elf"
-        elf_path.write_bytes(elf_bytes)
-
-        proj = angr.Project(str(elf_path), auto_load_libs=False)
-        assert proj.arch.name == "MIPS64"
-        assert proj.arch.bits == 64
-        assert proj.arch.memory_endness == "Iend_BE", (
-            f"cle ELF loader did not pick up EI_DATA=MSB for MIPS64: got {proj.arch.memory_endness}"
-        )
-        assert proj.arch.instruction_endness == "Iend_BE"
-        assert proj.entry == ENTRY, f"e_entry not parsed: proj.entry={proj.entry:#x} vs expected {ENTRY:#x}"
-
-        state = proj.factory.blank_state(addr=proj.entry)
-        a0 = claripy.BVS("a0", 64)
-        state.regs.a0 = a0
-
-        mgr = RustExplorationManager(proj, [state])
-        # Branch targets are at +0x14 / +0x18 from the first instruction,
-        # which sits at ENTRY (just past the ELF header / phdr).
-        mgr.explore(
-            find=ENTRY + 0x14,
-            avoid=ENTRY + 0x18,
-            num_find=1,
-            max_steps=50,
-        )
-
-        assert len(mgr.found) >= 1, (
-            f"MIPS64 BE ELF exploration did not reach {ENTRY + 0x14:#x}; counts={mgr.stash_counts()}"
-        )
-        found = mgr.found[0]
-        assert found.solver.satisfiable(), "found state's solver became unsat"
-        assert found.solver.eval(a0) == 42, f"Expected a0==42 to reach found, got {found.solver.eval(a0)}"
-
-    # ------------------------------------------------------------------
-    # SimProcedure round-trip tests (angr-orc9). One per non-amd64 arch:
-    # exercise the calling-convention path through the dispatcher
-    # (arg extraction → native procedure → return-value placement →
-    # return-address handoff). Same regression-class as the latent
-    # Cdecl x86 EAX/EDX bug (commit 5329d8222) — without these tests,
-    # a register-offset or return-addr error stays silent until end-to-end
-    # binary work happens to depend on it.
-    # ------------------------------------------------------------------
-
-    def test_arm_native_procedure_round_trip(self):
-        """ARMEABI: native strlen runs, return lands in r0, PC = LR.
-
-        ARM uses BL which stores the return address in LR (R14, offset 64),
-        not on the stack. The dispatcher must read LR after a native
-        procedure returns, not pop a stack frame.
-        """
-        mgr = _RustExplorationManager("arm")
-
-        callbacks = PythonCallbacks()
-        callbacks.set_memory_load(lambda a, s: (bytes(s), False, None))
-        callbacks.set_memory_store(lambda a, d: None)
-        callbacks.set_lift_block(lambda a: "{}")
-        mgr.set_callbacks(callbacks)
-
-        STRLEN_HOOK = 0x500000
-        EXIT_HOOK = 0x600000
-        STRING_ADDR = 0x2000
-        STACK_BASE = 0x7FFF0000
-
-        mgr.register_simprocedure(STRLEN_HOOK, "strlen", num_args=1, no_return=False)
-        mgr.register_simprocedure(EXIT_HOOK, "exit", num_args=1, no_return=True)
-
-        state = RustSimState("arm")
-        state.map_memory(STRING_ADDR & ~0xFFF, 0x1000, 7)
-        state.map_memory(STACK_BASE, 0x1000, 7)
-        state.memory_store(STRING_ADDR, b"hello\x00")
-
-        # ARMEABI: r0 = arg0; LR = return addr.
-        state.set_register("r0", STRING_ADDR)
-        state.set_register("lr", EXIT_HOOK)
-        state.set_register("sp", STACK_BASE)
-        state.pc = STRLEN_HOOK
-
-        mgr.add_state("active", state)
-        mgr.run(10)
-
-        deadended_ids = mgr.get_state_ids("deadended")
-        assert len(deadended_ids) == 1, (
-            f"expected exactly one deadended state after exit hook fired; stashes={mgr.stash_counts()}"
-        )
-        sid = deadended_ids[0]
-        r0 = mgr.get_state_register(sid, "r0")
-        assert r0 == 5, (
-            f"strlen('hello') should return 5 in r0, got {r0!r}. native_calls={mgr.native_procedure_stats()}"
-        )
-        # SP must be untouched: ARM doesn't push the return address.
-        sp = mgr.get_state_register(sid, "sp")
-        assert sp == STACK_BASE, (
-            f"ARM SP changed from {STACK_BASE:#x} to {sp:#x}; "
-            f"the dispatcher should NOT pop a return address from the stack "
-            f"because BL stores it in LR."
-        )
-
-    def test_aarch64_native_procedure_round_trip(self):
-        """AArch64: native strlen runs, return lands in x0, PC = X30 (LR).
-
-        AArch64 uses BL which stores the return address in X30 (offset 256),
-        not on the stack. Mirrors the ARM round-trip test.
-        """
-        mgr = _RustExplorationManager("aarch64")
-
-        callbacks = PythonCallbacks()
-        callbacks.set_memory_load(lambda a, s: (bytes(s), False, None))
-        callbacks.set_memory_store(lambda a, d: None)
-        callbacks.set_lift_block(lambda a: "{}")
-        mgr.set_callbacks(callbacks)
-
-        STRLEN_HOOK = 0x500000
-        EXIT_HOOK = 0x600000
-        STRING_ADDR = 0x2000
-        STACK_BASE = 0x7FFFFFFFE000
-
-        mgr.register_simprocedure(STRLEN_HOOK, "strlen", num_args=1, no_return=False)
-        mgr.register_simprocedure(EXIT_HOOK, "exit", num_args=1, no_return=True)
-
-        state = RustSimState("aarch64")
-        state.map_memory(STRING_ADDR & ~0xFFF, 0x1000, 7)
-        state.map_memory(STACK_BASE, 0x1000, 7)
-        state.memory_store(STRING_ADDR, b"hello\x00")
-
-        # AArch64: x0 = arg0; X30 (LR) = return addr.
-        state.set_register("x0", STRING_ADDR)
-        state.set_register("x30", EXIT_HOOK)
-        state.set_register("sp", STACK_BASE)
-        state.pc = STRLEN_HOOK
-
-        mgr.add_state("active", state)
-        mgr.run(10)
-
-        deadended_ids = mgr.get_state_ids("deadended")
-        assert len(deadended_ids) == 1, (
-            f"expected exactly one deadended state after exit hook fired; stashes={mgr.stash_counts()}"
-        )
-        sid = deadended_ids[0]
-        x0 = mgr.get_state_register(sid, "x0")
-        assert x0 == 5, (
-            f"strlen('hello') should return 5 in x0, got {x0!r}. native_calls={mgr.native_procedure_stats()}"
-        )
-        sp = mgr.get_state_register(sid, "sp")
-        assert sp == STACK_BASE, (
-            f"AArch64 SP changed from {STACK_BASE:#x} to {sp:#x}; "
-            f"the dispatcher should NOT pop a return address from the stack."
-        )
-
-    def test_mips32_native_procedure_round_trip(self):
-        """MIPS32 (O32): native strlen runs, return lands in $v0, PC = $ra.
-
-        MIPS uses JAL which stores the return address in $ra (R31, offset 132),
-        not on the stack. Args are passed in $a0-$a3 (R4-R7). Return value
-        in $v0 (R2, offset 16). Locks the calling-convention bug class — if
-        MIPS falls back to SystemVAMD64, the dispatcher would read RDI=72
-        = MIPS R12 instead of $a0=24, and the native procedure would see
-        garbage args.
-        """
-        mgr = _RustExplorationManager("mips32")
-
-        callbacks = PythonCallbacks()
-        callbacks.set_memory_load(lambda a, s: (bytes(s), False, None))
-        callbacks.set_memory_store(lambda a, d: None)
-        callbacks.set_lift_block(lambda a: "{}")
-        mgr.set_callbacks(callbacks)
-
-        STRLEN_HOOK = 0x500000
-        EXIT_HOOK = 0x600000
-        STRING_ADDR = 0x2000
-        STACK_BASE = 0x7FFF0000
-
-        mgr.register_simprocedure(STRLEN_HOOK, "strlen", num_args=1, no_return=False)
-        mgr.register_simprocedure(EXIT_HOOK, "exit", num_args=1, no_return=True)
-
-        state = RustSimState("mips32")
-        state.map_memory(STRING_ADDR & ~0xFFF, 0x1000, 7)
-        state.map_memory(STACK_BASE, 0x1000, 7)
-        state.memory_store(STRING_ADDR, b"hello\x00")
-
-        # MIPS O32: $a0 = arg0; $ra = return addr.
-        state.set_register("a0", STRING_ADDR)
-        state.set_register("ra", EXIT_HOOK)
-        state.set_register("sp", STACK_BASE)
-        state.pc = STRLEN_HOOK
-
-        mgr.add_state("active", state)
-        mgr.run(10)
-
-        deadended_ids = mgr.get_state_ids("deadended")
-        assert len(deadended_ids) == 1, (
-            f"expected exactly one deadended state after exit hook fired; stashes={mgr.stash_counts()}"
-        )
-        sid = deadended_ids[0]
-        v0 = mgr.get_state_register(sid, "v0")
-        assert v0 == 5, (
-            f"strlen('hello') should return 5 in $v0, got {v0!r}. native_calls={mgr.native_procedure_stats()}"
-        )
-        sp = mgr.get_state_register(sid, "sp")
-        assert sp == STACK_BASE, (
-            f"MIPS SP changed from {STACK_BASE:#x} to {sp:#x}; "
-            f"the dispatcher should NOT pop a return address from the stack."
-        )
-
-    def test_mips64_native_procedure_round_trip(self):
-        """MIPS64 (N64): native strlen runs, return lands in $v0, PC = $ra.
-
-        Guards against the silent SystemV_AMD64 fallback that motivated
-        angr-gzk8: before MipsN64 was added to default_cc_for_arch, a
-        MIPS64 SimProcedure would extract its first arg from offset 72
-        (AMD64 RDI) instead of offset 48 (MIPS64 $a0), and the dispatcher
-        would have popped a return address off the stack instead of
-        leaving $ra/$sp alone.
-
-        Args: $a0-$a7 (R4-R11, VEX offsets 48..104). Return value: $v0
-        (R2, offset 32). Return addr: $ra (R31, offset 264).
-        """
-        mgr = _RustExplorationManager("mips64")
-
-        callbacks = PythonCallbacks()
-        callbacks.set_memory_load(lambda a, s: (bytes(s), False, None))
-        callbacks.set_memory_store(lambda a, d: None)
-        callbacks.set_lift_block(lambda a: "{}")
-        mgr.set_callbacks(callbacks)
-
-        STRLEN_HOOK = 0x500000
-        EXIT_HOOK = 0x600000
-        STRING_ADDR = 0x2000
-        STACK_BASE = 0x7FFF0000
-
-        mgr.register_simprocedure(STRLEN_HOOK, "strlen", num_args=1, no_return=False)
-        mgr.register_simprocedure(EXIT_HOOK, "exit", num_args=1, no_return=True)
-
-        state = RustSimState("mips64")
-        state.map_memory(STRING_ADDR & ~0xFFF, 0x1000, 7)
-        state.map_memory(STACK_BASE, 0x1000, 7)
-        state.memory_store(STRING_ADDR, b"hello\x00")
-
-        # MIPS N64: $a0 = arg0; $ra = return addr.
-        state.set_register("a0", STRING_ADDR)
-        state.set_register("ra", EXIT_HOOK)
-        state.set_register("sp", STACK_BASE)
-        state.pc = STRLEN_HOOK
-
-        mgr.add_state("active", state)
-        mgr.run(10)
-
-        deadended_ids = mgr.get_state_ids("deadended")
-        assert len(deadended_ids) == 1, (
-            f"expected exactly one deadended state after exit hook fired; stashes={mgr.stash_counts()}"
-        )
-        sid = deadended_ids[0]
-        v0 = mgr.get_state_register(sid, "v0")
-        assert v0 == 5, (
-            f"strlen('hello') should return 5 in $v0, got {v0!r}. native_calls={mgr.native_procedure_stats()}"
-        )
-        sp = mgr.get_state_register(sid, "sp")
-        assert sp == STACK_BASE, (
-            f"MIPS64 SP changed from {STACK_BASE:#x} to {sp:#x}; "
-            f"the dispatcher should NOT pop a return address from the stack."
-        )

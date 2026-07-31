@@ -41,20 +41,15 @@ import pytest
 
 from tests.engines.conftest import RUST_EXPLORATION_AVAILABLE, RustSimState
 
+# Rust arch name -> archinfo arch id. Shared with test_multiarch.py's
+# table-driven sweeps so a new architecture is registered in exactly one place
+# (angr-9ke6b.215).
+from tests.engines.rust.arch_specs import ARCHES
+
 pytestmark = pytest.mark.skipif(
     not RUST_EXPLORATION_AVAILABLE,
     reason="Rust exploration not available",
 )
-
-# Rust arch name -> archinfo arch id.
-ARCHES = {
-    "amd64": "AMD64",
-    "x86": "X86",
-    "arm": "ARMEL",
-    "arm64": "AArch64",
-    "mips32": "MIPS32",
-    "mips64": "MIPS64",
-}
 
 # (rust_arch, register) -> (rust_offset, rust_size, bead, why).
 #

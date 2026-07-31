@@ -4,44 +4,6 @@
 use super::*;
 
 #[test]
-fn test_arm64_basics() {
-    let arch = ARM64;
-
-    assert_eq!(arch.bits(), 64);
-    assert_eq!(arch.name(), "ARM64");
-    assert!(arch.is_little_endian());
-}
-
-#[test]
-fn test_register_lookup() {
-    let arch = ARM64;
-
-    assert_eq!(arch.register_offset("x0"), Some(16));
-    assert_eq!(arch.register_size("x0"), Some(8));
-
-    assert_eq!(arch.register_offset("w0"), Some(16));
-    assert_eq!(arch.register_size("w0"), Some(4));
-
-    assert_eq!(arch.register_offset("sp"), Some(264));
-    assert_eq!(arch.register_offset("xsp"), Some(264));
-
-    assert_eq!(arch.register_offset("lr"), Some(256));
-    assert_eq!(arch.register_offset("x30"), Some(256));
-
-    assert_eq!(arch.register_offset("fp"), Some(248));
-    assert_eq!(arch.register_offset("x29"), Some(248));
-}
-
-#[test]
-fn test_special_registers() {
-    let arch = ARM64;
-
-    assert_eq!(arch.ip_offset(), 272); // PC
-    assert_eq!(arch.sp_offset(), 264); // SP
-    assert_eq!(arch.bp_offset(), Some(248)); // FP (X29)
-}
-
-#[test]
 fn test_neon_q_registers() {
     // Smoke test for the NEON Q/V register scaffolding (angr-bkcs.1):
     // Q0..Q31 (and the V0..V31 aliases) must resolve to the 128-bit

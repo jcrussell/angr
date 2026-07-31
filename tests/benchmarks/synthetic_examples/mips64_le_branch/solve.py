@@ -8,7 +8,7 @@ lifts and executes a handful of basic blocks plus one symbolic fork.
 
 No MIPS64 binary ships with angr-examples and no cross-compiler is
 available locally, so the ELF is built byte-by-byte (same pattern as
-``test_mips64_explore_le_real_elf``, angr-gxhf.3). This is the MIPS64
+``arch_specs.build_elf``, angr-gxhf.3). This is the MIPS64
 regression-gated workload that promotes the arch from Experimental to
 Supported.
 
