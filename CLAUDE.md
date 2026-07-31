@@ -34,6 +34,17 @@ rules (full rationale in bd memory `refactor-memory-sweep-rule`):
   numbers. Audits find line refs drift 10–600 lines across refactors while
   symbol anchors stay resolvable.
 
+The same convention applies to in-source Rust comments (`///`, `//!`, `//`):
+cite the function/struct/const name a comment is cross-referencing, not a raw
+`file.rs:NNN` or "line ~NNN". The angr-9ke6b full-review audit found a whole
+class of these gone stale (`.12`, `.21`, `.35`, `.54`, `.122`, `.181`, and
+more). `tools/check_line_citations.py` gates new occurrences in CI
+(`rust_check`) against a checked-in baseline (`tools/line_citations_baseline.txt`)
+of the ones that already exist — it does not require fixing those
+retroactively, only stops the class from growing. Regenerate the baseline
+with `--update-baseline` after intentionally adding one (rare — e.g. citing
+an external, non-repo line number that can't drift).
+
 ### Where context lives
 
 When you need background that isn't in CLAUDE.md, look here first, then

@@ -1,0 +1,65 @@
+# Line-number-citation baseline -- see tools/check_line_citations.py
+# One key per known citation: <relpath-under-native/angr/src>\t<stripped-comment>.
+# Regenerate with: tools/check_line_citations.py --update-baseline
+# Shrinking this file (by citing a symbol name instead of a line number) is the goal.
+arch/mod.rs	/// arch/mod.rs:638). `data` is right-padded / truncated to the rebuilt
+arch/mod_tests.rs	/// at arch/mod.rs:638), so a corrupted snapshot still loads into a
+automaton/subset_construction.rs	// into state_mapping (at lines 29 and 62), so this lookup always succeeds.
+callbacks/mod.rs	/// FORKED state's id (matching Python `engines/successors.py:203`
+callbacks/mod.rs	/// Matches Python's callstack.py:430/432 semantics.
+callbacks/mod.rs	/// pushed). Matches Python's callstack.py:386/419 semantics.
+claripy_bridge/mod.rs	//!   downstream VEX ops. The check at the use site (line ~478) evicts
+concretize.rs	/// `address_concretization_mixin.py:327-329`.
+concretize.rs	/// branch at line 272 (`return self._default_value(...)`).
+exploration/run_loop.rs	//! rust_manager.py:98):** the run loop must terminate on EITHER (a)
+exploration/stepping.rs	// `split_state.regs.ip = target` at engines/successors.py:328.
+exploration/stepping.rs	/// matching Python `engines/successors.py:203` where the BP fires
+interpreter/execution.rs	// mirror Python callstack.py:386/419 (BEFORE
+interpreter/execution.rs	// mirror Python callstack.py:430/432.
+interpreter/execution.rs	/// Mirrors Python `callstack.py:386` / `:419`.
+interpreter/execution.rs	/// `callstack.py:430` which reads `rself.top.func_addr` prior to
+interpreter/exits.rs	// NO_IP_CONCRETIZATION (engines/successors.py:292-296) and
+interpreter/exits.rs	// NO_SYMBOLIC_JUMP_RESOLUTION (engines/successors.py:234-239) both
+interpreter/exits.rs	// _eval_target_brutal behaviour (engines/successors.py:308-323):
+interpreter/exits.rs	// engines/successors.py:327-328, which skips
+interpreter/expressions.rs	/// `solver.py:432-439`'s BP_AFTER signature.
+interpreter/expressions.rs	/// `when="before"`). Mirrors `address_concretization_mixin.py:156-180`'s
+interpreter/mod.rs	// BVS minting. Mirrors Python's `solver.py:432-439` BP_AFTER
+interpreter/mod.rs	/// (run_loop.rs ~line 477), or routed through a no-condition
+interpreter/mod.rs	/// (stepping.rs ~line 493); (3) per-deferred-fork creation in the
+interpreter/mod.rs	/// NO_IP_CONCRETIZATION option (engines/successors.py:292-296).
+interpreter/mod.rs	/// NO_SYMBOLIC_JUMP_RESOLUTION option (engines/successors.py:234-239).
+interpreter/mod.rs	/// `split_state.regs.ip = target` at engines/successors.py:328). Also
+interpreter/mod.rs	/// `split_state.regs.ip = target` write at engines/successors.py:328.
+interpreter/mod.rs	/// fallback in `process_deferred_forks_into` (stepping.rs ~line 1200)
+interpreter/mod.rs	/// or the main stepping fallback (stepping.rs ~line 531). Because of
+interpreter/mod.rs	/// ~line 513). NOT incremented by the no-condition conservative-fork
+interpreter/statements_store.rs	// Mirrors `address_concretization_mixin.py:327-329`.
+memory/mod.rs	/// (angr/engines/vex/heavy/heavy.py:115-124). Default false.
+memory/store.rs	// early `return` at `address_concretization_mixin.py:327-329`.
+memory/store.rs	/// address_concretization_mixin.py:292-294, 342-344) does the same for
+memory/tests/multi.rs	/// `load_concrete_lazy_inner` at line 548) checks `multi_objects.contains_key`
+memory/tests/symbolic.rs	/// (memory/mod.rs:298) and the flush pipeline.
+memory/tests/symbolic.rs	/// The linear scan at lines 672-680 is reached when no per-byte
+memory/tests/symbolic.rs	/// check at line ~95) and removes a single spans entry so
+memory/tests/symbolic.rs	/// load.rs:74 returns `symbolic_objects[addr]` entire because its
+memory/tests/symbolic.rs	/// overwritten offset hits the span fast path at load.rs:95 and
+memory/tests/symbolic.rs	/// store.rs:154 removes the wider sym entirely (and the spans),
+memory/tests/symbolic.rs	/// the per-byte concat fallback (~lines 642-680 of memory.rs).
+procedures/mod.rs	//!    and `stepping.rs` ~line 586 (`if !is_in_binary {`).
+procedures/mod.rs	//!    implementation regardless of name. See `run_loop.rs` ~line 226
+procedures/sprintf.rs	/// targets. Python masks each concretized arg to `size*8` bits (line 96) before
+procedures/sprintf_tests.rs	// format_parser.py masks each concretized int arg to `size*8` bits (line 96)
+stash.rs	//! **Invariant I6 (cross-mixin, mirror of rust_manager.py:74):** the
+state/mod.rs	//! `angr/exploration/rust_manager.py:10-100`. Most of those concerns are
+state/mod.rs	/// before enumeration is attempted. See engines/successors.py:234-239.
+state/mod.rs	/// the next block lift. See engines/successors.py:297-307,326-331.
+state/mod.rs	/// unconstrained stash without warning. See engines/successors.py:292-296.
+state/options.rs	/// (matches engines/successors.py:292-296). Default off.
+state/options.rs	/// added (matches engines/successors.py:297-307,326-331). Default off.
+state/options.rs	/// engines/successors.py:234-239). Default off.
+syscalls/identity.rs	//! (`angr/state_plugins/posix.py:159`).
+syscalls/identity.rs	/// Angr's default `state.posix.pid` (see `state_plugins/posix.py:159`).
+syscalls/identity.rs	/// Angr's default `state.posix.ppid` (see `state_plugins/posix.py:160`).
+syscalls/rlimit.rs	/// RLIMIT_STACK (see `procedures/linux_kernel/getrlimit.py:13`).
+vex/ops_vec_permute_mul.rs	/// `angr/engines/vex/claripy/irop.py:599`, generalised to the full
