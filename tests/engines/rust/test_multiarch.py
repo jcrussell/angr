@@ -61,7 +61,9 @@ class TestMultiArchSupport:
         rather than panicking in ``default_cc_for_arch``.
 
         Regression for angr-n0irt.6: ``arch_from_name`` accepted ``"mipsle"``
-        but ``MipsO32::ARCH_ALIASES`` listed ``"mipsbe"`` instead, so
+        but the MIPS O32 calling convention's alias list (then a per-CC
+        ``ARCH_ALIASES`` const, now the MIPS32 row of ``ALL_ARCHES`` in
+        ``arch/mod.rs``) listed ``"mipsbe"`` instead, so
         ``_RustExplorationManager("mipsle")`` passed the arch lookup then
         panicked (PyO3 catch_unwind -> PanicException) on the very next line —
         a *recognized* alias failing more violently than an unrecognized one.

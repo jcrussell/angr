@@ -12,7 +12,7 @@ pub struct AMD64;
 
 // AMD64 VEX guest state offsets (from VEX/pub/libvex_guest_amd64.h)
 // These match the VexGuestAMD64State structure layout.
-mod offsets {
+pub(crate) mod offsets {
     pub const RAX: u32 = 16;
     pub const RCX: u32 = 24;
     pub const RDX: u32 = 32;
@@ -248,22 +248,6 @@ impl Arch for AMD64 {
     }
 
     impl_arch_registers!(CANONICAL, ALIASES, REGISTER_NAMES);
-
-    fn argument_registers(&self) -> &[u32] {
-        // System V AMD64 ABI: rdi, rsi, rdx, rcx, r8, r9
-        &[
-            offsets::RDI,
-            offsets::RSI,
-            offsets::RDX,
-            offsets::RCX,
-            offsets::R8,
-            offsets::R9,
-        ]
-    }
-
-    fn return_register(&self) -> u32 {
-        offsets::RAX
-    }
 
     fn syscall_num_offset(&self) -> Option<u32> {
         Some(offsets::RAX)

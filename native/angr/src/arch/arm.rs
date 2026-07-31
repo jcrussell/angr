@@ -12,7 +12,7 @@ pub struct ARM;
 
 // ARM VEX guest state offsets (from VEX/pub/libvex_guest_arm.h)
 // These match the VexGuestARMState structure layout.
-mod offsets {
+pub(crate) mod offsets {
     // General purpose registers (R0-R15)
     pub const R0: u32 = 8;
     pub const R1: u32 = 12;
@@ -250,15 +250,6 @@ impl Arch for ARM {
     }
 
     impl_arch_registers!(CANONICAL, ALIASES, REGISTER_NAMES);
-
-    fn argument_registers(&self) -> &[u32] {
-        // AAPCS: r0-r3
-        &[offsets::R0, offsets::R1, offsets::R2, offsets::R3]
-    }
-
-    fn return_register(&self) -> u32 {
-        offsets::R0
-    }
 
     fn syscall_num_offset(&self) -> Option<u32> {
         // EABI Linux syscall convention puts the syscall number in R7

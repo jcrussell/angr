@@ -10,19 +10,24 @@
 // new files/callers must handle the None/Err case explicitly instead.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-mod amd64;
-mod arm;
-mod arm64;
+// `pub(crate)` rather than private: the per-arch `offsets` modules are the
+// single documented source of truth for VEX guest-state register offsets
+// (provenance comments cite `VEX/pub/libvex_guest_*.h`), and
+// `calling_conventions` references those consts by name instead of restating
+// the numbers as bare literals.
+pub(crate) mod amd64;
+pub(crate) mod arm;
+pub(crate) mod arm64;
 pub mod calling_conventions;
-mod mips;
-mod x86;
+pub(crate) mod mips;
+pub(crate) mod x86;
 
 pub use amd64::AMD64;
 pub use arm::ARM;
 pub use arm64::ARM64;
 pub use calling_conventions::{
-    AArch64CC, ARMEABI, CallingConvention, Cdecl, ExtractionError, SystemVAMD64, cc_for_arch,
-    default_cc_for_arch,
+    AArch64CC, ARMEABI, CallingConvention, Cdecl, ExtractionError, MipsN64, MipsO32, SystemVAMD64,
+    cc_for_arch, default_cc_for_arch,
 };
 pub use mips::{MIPS32, MIPS64};
 pub use x86::X86;
@@ -75,12 +80,6 @@ pub trait Arch: Send + Sync {
 
     /// Get all register names.
     fn register_names(&self) -> &[&'static str];
-
-    /// Get the calling convention argument registers.
-    fn argument_registers(&self) -> &[u32];
-
-    /// Get the return value register offset.
-    fn return_register(&self) -> u32;
 
     /// Get the offset of the register holding the syscall number.
     ///
@@ -749,34 +748,102 @@ fn unsupported_arch_msg(arch: VexArch) -> String {
     )
 }
 
+/// One row of [`ALL_ARCHES`]: everything the engine knows about a supported
+/// architecture, keyed by the names a caller may spell it with.
+pub(crate) struct ArchDesc {
+    /// Canonical name; equals `Arch::name()` of the arch `make_arch` builds.
+    pub name: &'static str,
+    /// Accepted spellings other than `name`. Matched case-insensitively,
+    /// same as `name` itself.
+    pub aliases: &'static [&'static str],
+    pub vex: VexArch,
+    /// Constructor for the arch singleton. A `&'static dyn Arch` field would
+    /// read more directly, but `arch_from_name` / `arch_from_vex` hand out
+    /// owned `Box<dyn Arch>` and `dyn Arch` is not `Clone` on its own.
+    pub make_arch: fn() -> Box<dyn Arch>,
+    pub make_cc: fn() -> Box<dyn CallingConvention>,
+}
+
+/// The single registry of supported architectures.
+///
+/// Before this table the alias lists were restated in four places
+/// (`arch_from_name`'s match arms, a per-CC `ARCH_ALIASES` const,
+/// `cc_for_arch`'s if/else chain, and a hand-written list in
+/// `calling_conventions_tests`), which let them drift: `mips64be` was
+/// registered on the MIPS N64 calling convention but never accepted by
+/// `arch_from_name`. It is **not** listed here — MIPS64 big-endian states are
+/// built as `mips64` plus `Iend_BE`, so a separate arch name would be a second
+/// spelling for a distinction we do not model. Widening `arch_from_name` to
+/// accept it would be a behavior change, not a refactor.
+///
+/// Every `name`/`aliases` entry must resolve through both `make_arch` and
+/// `make_cc`; `calling_conventions_tests::test_arch_from_name_names_all_have_a_cc`
+/// enforces that, and `test_arch_aliases_disjoint` enforces that no spelling
+/// belongs to two rows.
+pub(crate) const ALL_ARCHES: &[ArchDesc] = &[
+    ArchDesc {
+        name: "X86",
+        aliases: &["x86", "i386", "i486", "i586", "i686"],
+        vex: VexArch::X86,
+        make_arch: || Box::new(X86),
+        make_cc: || Box::new(Cdecl),
+    },
+    ArchDesc {
+        name: "AMD64",
+        aliases: &["amd64", "x86_64", "x64"],
+        vex: VexArch::AMD64,
+        make_arch: || Box::new(AMD64),
+        make_cc: || Box::new(SystemVAMD64),
+    },
+    ArchDesc {
+        name: "ARM",
+        aliases: &["arm", "armel", "armhf", "armv7", "armv7l"],
+        vex: VexArch::ARM,
+        make_arch: || Box::new(ARM),
+        make_cc: || Box::new(ARMEABI),
+    },
+    ArchDesc {
+        name: "ARM64",
+        aliases: &["arm64", "aarch64", "armv8"],
+        vex: VexArch::ARM64,
+        make_arch: || Box::new(ARM64),
+        make_cc: || Box::new(AArch64CC),
+    },
+    ArchDesc {
+        name: "MIPS32",
+        aliases: &["mips", "mips32", "mipsel", "mipsle"],
+        vex: VexArch::MIPS32,
+        make_arch: || Box::new(MIPS32),
+        make_cc: || Box::new(MipsO32),
+    },
+    ArchDesc {
+        name: "MIPS64",
+        aliases: &["mips64", "mips64el", "mips64le"],
+        vex: VexArch::MIPS64,
+        make_arch: || Box::new(MIPS64),
+        make_cc: || Box::new(MipsN64),
+    },
+];
+
+/// Look up the [`ArchDesc`] whose canonical name or alias list contains
+/// `name`. Matching is case-insensitive.
+pub(crate) fn arch_desc_from_name(name: &str) -> Option<&'static ArchDesc> {
+    ALL_ARCHES.iter().find(|d| {
+        d.name.eq_ignore_ascii_case(name) || d.aliases.iter().any(|a| a.eq_ignore_ascii_case(name))
+    })
+}
+
 /// Create an architecture by name.
 pub fn arch_from_name(name: &str) -> Option<Box<dyn Arch>> {
-    match name.to_lowercase().as_str() {
-        // x86/AMD64
-        "x86" | "i386" | "i486" | "i586" | "i686" => Some(Box::new(X86)),
-        "amd64" | "x86_64" | "x64" => Some(Box::new(AMD64)),
-        // ARM
-        "arm" | "armel" | "armhf" | "armv7" | "armv7l" => Some(Box::new(ARM)),
-        "arm64" | "aarch64" | "armv8" => Some(Box::new(ARM64)),
-        // MIPS
-        "mips" | "mips32" | "mipsel" | "mipsle" => Some(Box::new(MIPS32)),
-        "mips64" | "mips64el" | "mips64le" => Some(Box::new(MIPS64)),
-        _ => None,
-    }
+    arch_desc_from_name(name).map(|d| (d.make_arch)())
 }
 
 /// Create an architecture from VexArch.
 pub fn arch_from_vex(arch: VexArch) -> Box<dyn Arch> {
-    match arch {
-        VexArch::X86 => Box::new(X86),
-        VexArch::AMD64 => Box::new(AMD64),
-        VexArch::ARM => Box::new(ARM),
-        VexArch::ARM64 => Box::new(ARM64),
-        VexArch::MIPS32 => Box::new(MIPS32),
-        VexArch::MIPS64 => Box::new(MIPS64),
-        other @ (VexArch::PPC32 | VexArch::PPC64 | VexArch::S390X) => {
-            panic!("{}", unsupported_arch_msg(other))
-        }
+    match ALL_ARCHES.iter().find(|d| d.vex == arch) {
+        Some(d) => (d.make_arch)(),
+        // PPC32/PPC64/S390X are the only VexArch values with no row.
+        None => panic!("{}", unsupported_arch_msg(arch)),
     }
 }
 

@@ -12,7 +12,7 @@ pub struct ARM64;
 
 // ARM64 VEX guest state offsets (from VEX/pub/libvex_guest_arm64.h)
 // These match the VexGuestARM64State structure layout.
-mod offsets {
+pub(crate) mod offsets {
     // General purpose registers (X0-X30)
     pub const X0: u32 = 16;
     pub const X1: u32 = 24;
@@ -341,24 +341,6 @@ impl Arch for ARM64 {
     }
 
     impl_arch_registers!(CANONICAL, ALIASES, REGISTER_NAMES);
-
-    fn argument_registers(&self) -> &[u32] {
-        // AAPCS64: x0-x7
-        &[
-            offsets::X0,
-            offsets::X1,
-            offsets::X2,
-            offsets::X3,
-            offsets::X4,
-            offsets::X5,
-            offsets::X6,
-            offsets::X7,
-        ]
-    }
-
-    fn return_register(&self) -> u32 {
-        offsets::X0
-    }
 
     fn syscall_num_offset(&self) -> Option<u32> {
         // Linux AArch64 syscall convention puts the syscall number in X8

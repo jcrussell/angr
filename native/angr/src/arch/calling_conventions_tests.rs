@@ -3,7 +3,7 @@
 //! Extracted from `calling_conventions.rs` (see bd `rust-mod-tests-sibling-extraction`).
 
 use super::*;
-use crate::arch::AMD64;
+use crate::arch::{ALL_ARCHES, AMD64};
 
 #[test]
 fn test_systemv_amd64_args() {
@@ -142,43 +142,41 @@ fn test_mips_n64_arg_registers() {
 
 #[test]
 fn test_default_cc_for_arch_registry() {
-    // Each arch alias must resolve to the documented CC. If you add a new
-    // alias, extend the relevant ARCH_ALIASES constant and add a row here.
-    let cases: &[(&str, &str)] = &[
-        ("amd64", "SystemV_AMD64"),
-        ("x86_64", "SystemV_AMD64"),
-        ("x64", "SystemV_AMD64"),
-        ("AMD64", "SystemV_AMD64"), // case-insensitive
-        ("x86", "cdecl"),
-        ("i386", "cdecl"),
-        ("i486", "cdecl"),
-        ("i586", "cdecl"),
-        ("i686", "cdecl"),
-        ("arm", "ARM_EABI"),
-        ("armel", "ARM_EABI"),
-        ("armhf", "ARM_EABI"),
-        ("armv7", "ARM_EABI"),
-        ("armv7l", "ARM_EABI"),
-        ("arm64", "AArch64"),
-        ("aarch64", "AArch64"),
-        ("armv8", "AArch64"),
-        ("mips", "MIPS_O32"),
-        ("mips32", "MIPS_O32"),
-        ("mipsel", "MIPS_O32"),
-        ("mipsle", "MIPS_O32"),
-        ("mips64", "MIPS_N64"),
-        ("mips64el", "MIPS_N64"),
-        ("mips64le", "MIPS_N64"),
-        ("mips64be", "MIPS_N64"),
-        ("MIPS64", "MIPS_N64"), // case-insensitive
-    ];
-    for (arch, expected) in cases {
-        assert_eq!(
-            default_cc_for_arch(arch).name(),
-            *expected,
-            "default_cc_for_arch({arch:?}) should resolve to {expected}",
-        );
+    // Every spelling ALL_ARCHES accepts — canonical name and aliases — must
+    // resolve to that row's CC, and matching must stay case-insensitive.
+    for desc in ALL_ARCHES {
+        let arch = desc.name;
+        let expected = (desc.make_cc)().name();
+        for spelling in std::iter::once(desc.name).chain(desc.aliases.iter().copied()) {
+            assert_eq!(
+                default_cc_for_arch(spelling).name(),
+                expected,
+                "{arch}: default_cc_for_arch({spelling:?}) should resolve to {expected}",
+            );
+            assert_eq!(
+                default_cc_for_arch(&spelling.to_uppercase()).name(),
+                expected,
+                "{arch}: default_cc_for_arch must be case-insensitive for {spelling:?}",
+            );
+        }
     }
+}
+
+/// `mips64be` used to sit in `MipsN64::ARCH_ALIASES` while `arch_from_name`
+/// rejected it — a name the CC registry knew and the arch registry did not.
+/// The `ALL_ARCHES` merge resolved that in favor of rejecting it everywhere
+/// (MIPS64 BE states are built as `mips64` + `Iend_BE`). Pin the decision so a
+/// future edit has to be deliberate.
+#[test]
+fn test_mips64be_is_not_a_registered_arch_name() {
+    assert!(
+        crate::arch::arch_from_name("mips64be").is_none(),
+        "mips64be must not be an accepted arch name; use mips64 with Iend_BE",
+    );
+    assert!(
+        cc_for_arch("mips64be").is_none(),
+        "cc_for_arch must agree with arch_from_name on mips64be",
+    );
 }
 
 #[test]
@@ -192,22 +190,24 @@ fn test_default_cc_for_arch_unknown_panics() {
 
 #[test]
 fn test_arch_aliases_disjoint() {
-    // No alias may belong to more than one CC, otherwise default_cc_for_arch
-    // becomes order-dependent.
-    let groups: &[(&str, &[&str])] = &[
-        ("SystemV_AMD64", SystemVAMD64::ARCH_ALIASES),
-        ("cdecl", Cdecl::ARCH_ALIASES),
-        ("ARM_EABI", ARMEABI::ARCH_ALIASES),
-        ("AArch64", AArch64CC::ARCH_ALIASES),
-        ("MIPS_O32", MipsO32::ARCH_ALIASES),
-        ("MIPS_N64", MipsN64::ARCH_ALIASES),
-    ];
-    for (i, (name_a, aliases_a)) in groups.iter().enumerate() {
-        for (name_b, aliases_b) in &groups[i + 1..] {
-            for a in *aliases_a {
+    // No spelling may belong to more than one ALL_ARCHES row, otherwise
+    // `arch_desc_from_name` (and through it `default_cc_for_arch`) becomes
+    // order-dependent.
+    let spellings = |d: &'static crate::arch::ArchDesc| -> Vec<&'static str> {
+        std::iter::once(d.name)
+            .chain(d.aliases.iter().copied())
+            .collect()
+    };
+    for (i, desc_a) in ALL_ARCHES.iter().enumerate() {
+        let a_names = spellings(desc_a);
+        for desc_b in &ALL_ARCHES[i + 1..] {
+            let b_names = spellings(desc_b);
+            for a in &a_names {
                 assert!(
-                    !aliases_b.contains(a),
-                    "alias {a:?} appears in both {name_a} and {name_b}",
+                    !b_names.iter().any(|b| b.eq_ignore_ascii_case(a)),
+                    "{}: spelling {a:?} also appears in {}",
+                    desc_a.name,
+                    desc_b.name,
                 );
             }
         }
@@ -222,23 +222,171 @@ fn test_arch_from_name_names_all_have_a_cc() {
     // in `default_cc_for_arch` *after* `arch_from_name` already accepted the
     // name — a recognized alias failing more violently than an unrecognized
     // one. `test_arch_aliases_disjoint` guards overlap; this guards coverage.
-    let accepted = [
-        // x86 / AMD64
-        "x86", "i386", "i486", "i586", "i686", "amd64", "x86_64", "x64", // ARM
-        "arm", "armel", "armhf", "armv7", "armv7l", "arm64", "aarch64", "armv8",
-        // MIPS
-        "mips", "mips32", "mipsel", "mipsle", "mips64", "mips64el", "mips64le",
+    //
+    // Both sides now read the same ALL_ARCHES table, so this is a structural
+    // check that neither lookup grew a filter of its own.
+    for desc in ALL_ARCHES {
+        let arch = desc.name;
+        for name in std::iter::once(desc.name).chain(desc.aliases.iter().copied()) {
+            let built = crate::arch::arch_from_name(name);
+            assert!(
+                built.is_some(),
+                "{arch}: arch_from_name({name:?}) should be recognized",
+            );
+            assert_eq!(
+                built.map(|a| a.name()),
+                Some(desc.name),
+                "{arch}: arch_from_name({name:?}) resolved to the wrong arch",
+            );
+            assert!(
+                cc_for_arch(name).is_some(),
+                "{arch}: arch_from_name accepts {name:?} but cc_for_arch has no CC for it \
+                 (would panic in default_cc_for_arch)",
+            );
+        }
+    }
+}
+
+/// Cross-check the CC register tables against the `Arch` register-name tables:
+/// every offset a CC hands out must name the register the ABI documents. The
+/// hardcoded-literal tests above are an independent oracle for the *numbers*;
+/// this one ties those numbers to `Arch::register_name`, so a CC table and a
+/// register table can no longer drift apart silently.
+#[test]
+fn test_cc_arg_registers_resolve_to_expected_register_names() {
+    // (arch canonical name, C-ABI args, syscall args, return register)
+    let expected: &[(&str, &[&str], &[&str], &str)] = &[
+        (
+            "X86",
+            &[],
+            &["ebx", "ecx", "edx", "esi", "edi", "ebp"],
+            "eax",
+        ),
+        (
+            "AMD64",
+            &["rdi", "rsi", "rdx", "rcx", "r8", "r9"],
+            &["rdi", "rsi", "rdx", "r10", "r8", "r9"],
+            "rax",
+        ),
+        (
+            "ARM",
+            &["r0", "r1", "r2", "r3"],
+            &["r0", "r1", "r2", "r3", "r4", "r5"],
+            "r0",
+        ),
+        (
+            "ARM64",
+            &["x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7"],
+            &["x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7"],
+            "x0",
+        ),
+        (
+            "MIPS32",
+            &["a0", "a1", "a2", "a3"],
+            &["a0", "a1", "a2", "a3"],
+            "v0",
+        ),
+        (
+            "MIPS64",
+            &["a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7"],
+            &["a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7"],
+            "v0",
+        ),
     ];
-    for name in accepted {
-        assert!(
-            crate::arch::arch_from_name(name).is_some(),
-            "arch_from_name({name:?}) should be recognized",
+
+    let names = |arch: &dyn crate::arch::Arch, offsets: &[u32]| -> Vec<&'static str> {
+        offsets
+            .iter()
+            .map(|&off| {
+                arch.register_name(off).unwrap_or_else(|| {
+                    panic!(
+                        "{}: CC offset {off} has no canonical register name",
+                        arch.name()
+                    )
+                })
+            })
+            .collect()
+    };
+
+    assert_eq!(
+        expected.len(),
+        ALL_ARCHES.len(),
+        "expected-name table must cover every ALL_ARCHES row",
+    );
+    for desc in ALL_ARCHES {
+        let arch = desc.name;
+        let (_, want_args, want_syscall_args, want_ret) = expected
+            .iter()
+            .find(|(n, _, _, _)| *n == desc.name)
+            .unwrap_or_else(|| panic!("{arch}: no expected-name row"));
+        let cc = (desc.make_cc)();
+        let a = (desc.make_arch)();
+
+        assert_eq!(
+            a.name(),
+            desc.name,
+            "{arch}: ALL_ARCHES name must equal Arch::name()",
         );
-        assert!(
-            cc_for_arch(name).is_some(),
-            "arch_from_name accepts {name:?} but cc_for_arch has no CC for it \
-             (would panic in default_cc_for_arch)",
+        assert_eq!(
+            names(a.as_ref(), cc.arg_registers()),
+            *want_args,
+            "{arch}: C-ABI argument registers",
         );
+        assert_eq!(
+            names(a.as_ref(), cc.syscall_arg_registers()),
+            *want_syscall_args,
+            "{arch}: syscall argument registers",
+        );
+        assert_eq!(
+            a.register_name(cc.return_register()),
+            Some(*want_ret),
+            "{arch}: return register",
+        );
+    }
+}
+
+/// Characterization (not aspiration) of `CallingConvention::link_register`.
+///
+/// The eventual invariant is `pops_return_addr() == false` implies
+/// `link_register().is_some()` — a link-register ABI that does not name its LR
+/// makes `setup_native_subcall` bail with `SubcallSetupError::UnsupportedAbi`
+/// and silently defers every native sub-call to Python. Today **no** CC
+/// overrides it, and that is load-bearing: the serial sub-call arm in
+/// `RustExplorationManager::step_one` fills `NativeSubcall::caller_return_addr`
+/// from `RustExplorationManager::get_return_addr`, which reads `[sp]`
+/// unconditionally, so on ARM/ARM64/MIPS the `UnsupportedAbi` bail is the only
+/// thing stopping a garbage return address from reaching
+/// `state.set_pc(frame.caller_return_addr)`. See the `link_register` doc
+/// comment for the full write-up.
+///
+/// So this test pins the status quo in both directions. When the serial path is
+/// fixed and the overrides land, flip the `is_none()` arm to `is_some()` — the
+/// name-resolution assertion below is the half that survives unchanged.
+#[test]
+fn test_link_register_is_unwired_pending_serial_subcall_fix() {
+    for desc in ALL_ARCHES {
+        let arch = desc.name;
+        let cc = (desc.make_cc)();
+        if cc.pops_return_addr() {
+            assert!(
+                cc.link_register().is_none(),
+                "{arch}: stack-return ABI must not claim a link register",
+            );
+        } else {
+            assert!(
+                cc.link_register().is_none(),
+                "{arch}: link_register() is now wired up — the serial sub-call \
+                 path in run_loop.rs must be fixed to resolve caller_return_addr \
+                 through the calling convention before this is safe",
+            );
+        }
+        // Whatever an ABI does claim must be a real register on that arch.
+        if let Some(off) = cc.link_register() {
+            assert!(
+                (desc.make_arch)().register_name(off).is_some(),
+                "{arch}: link_register offset {off} has no canonical register name",
+            );
+        }
     }
 }
 

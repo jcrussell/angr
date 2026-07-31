@@ -19,6 +19,77 @@ fn test_arch_from_vex_supported() {
     }
 }
 
+/// Internal consistency of the [`ALL_ARCHES`] registry: each row's `name` and
+/// `vex` must agree with the arch `make_arch` actually builds, and the `vex`
+/// column must be unique so `arch_from_vex`'s linear scan is unambiguous.
+/// Everything else (`arch_from_name`, `cc_for_arch`) reads this table, so a
+/// mismatched row would mis-route silently.
+#[test]
+fn test_all_arches_rows_are_self_consistent() {
+    for (i, desc) in ALL_ARCHES.iter().enumerate() {
+        let arch = desc.name;
+        let built = (desc.make_arch)();
+        assert_eq!(built.name(), desc.name, "{arch}: name vs Arch::name()");
+        assert_eq!(
+            built.vex_arch(),
+            desc.vex,
+            "{arch}: vex column vs Arch::vex_arch()"
+        );
+        assert_eq!(
+            arch_from_vex(desc.vex).name(),
+            desc.name,
+            "{arch}: arch_from_vex round-trip"
+        );
+        for other in &ALL_ARCHES[i + 1..] {
+            assert_ne!(
+                desc.vex, other.vex,
+                "{arch}: duplicate VexArch shared with {}",
+                other.name
+            );
+        }
+    }
+}
+
+/// Compile-time trip-wire for the `arch_from_vex` rewrite: it used to be an
+/// exhaustive `match` on `VexArch`, so a new variant was a build error. Now it
+/// is a linear scan of [`ALL_ARCHES`] with a runtime panic on a miss. This
+/// exhaustive match restores the build error — adding a `VexArch` variant
+/// forces a deliberate supported/unsupported decision here — and the loop then
+/// checks `arch_from_vex` actually agrees with that decision.
+#[test]
+fn test_every_vex_arch_is_classified() {
+    fn supported(vex: VexArch) -> bool {
+        match vex {
+            VexArch::X86
+            | VexArch::AMD64
+            | VexArch::ARM
+            | VexArch::ARM64
+            | VexArch::MIPS32
+            | VexArch::MIPS64 => true,
+            VexArch::PPC32 | VexArch::PPC64 | VexArch::S390X => false,
+        }
+    }
+
+    for vex in [
+        VexArch::X86,
+        VexArch::AMD64,
+        VexArch::ARM,
+        VexArch::ARM64,
+        VexArch::MIPS32,
+        VexArch::MIPS64,
+        VexArch::PPC32,
+        VexArch::PPC64,
+        VexArch::S390X,
+    ] {
+        let in_table = ALL_ARCHES.iter().any(|d| d.vex == vex);
+        assert_eq!(
+            in_table,
+            supported(vex),
+            "{vex:?}: ALL_ARCHES membership disagrees with the supported-arch list",
+        );
+    }
+}
+
 #[test]
 #[should_panic(expected = "Rust engine does not support")]
 fn test_arch_from_vex_ppc32_panics() {

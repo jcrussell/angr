@@ -15,7 +15,7 @@ pub struct MIPS32;
 pub struct MIPS64;
 
 // MIPS32 VEX guest state offsets (from VEX/pub/libvex_guest_mips32.h)
-mod offsets32 {
+pub(crate) mod offsets32 {
     pub const R0: u32 = 8; // zero
     pub const R1: u32 = 12; // at
     pub const R2: u32 = 16; // v0
@@ -97,7 +97,7 @@ mod offsets32 {
 }
 
 // MIPS64 VEX guest state offsets (from VEX/pub/libvex_guest_mips64.h)
-mod offsets64 {
+pub(crate) mod offsets64 {
     pub const R0: u32 = 16; // zero
     pub const R1: u32 = 24; // at
     pub const R2: u32 = 32; // v0
@@ -594,15 +594,6 @@ impl Arch for MIPS32 {
 
     impl_arch_registers!(CANONICAL_MIPS32, ALIASES_MIPS32, REGISTER_NAMES_MIPS32);
 
-    fn argument_registers(&self) -> &[u32] {
-        // O32 ABI: a0-a3
-        &[offsets32::R4, offsets32::R5, offsets32::R6, offsets32::R7]
-    }
-
-    fn return_register(&self) -> u32 {
-        offsets32::R2 // v0
-    }
-
     fn syscall_num_offset(&self) -> Option<u32> {
         // O32 Linux puts the syscall number in v0 ($2)
         Some(offsets32::R2)
@@ -643,24 +634,6 @@ impl Arch for MIPS64 {
     }
 
     impl_arch_registers!(CANONICAL_MIPS64, ALIASES_MIPS64, REGISTER_NAMES_MIPS64);
-
-    fn argument_registers(&self) -> &[u32] {
-        // N64 ABI: a0-a7
-        &[
-            offsets64::R4,
-            offsets64::R5,
-            offsets64::R6,
-            offsets64::R7,
-            offsets64::R8,
-            offsets64::R9,
-            offsets64::R10,
-            offsets64::R11,
-        ]
-    }
-
-    fn return_register(&self) -> u32 {
-        offsets64::R2
-    }
 
     fn syscall_num_offset(&self) -> Option<u32> {
         // N64 Linux puts the syscall number in v0 ($2)

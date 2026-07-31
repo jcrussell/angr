@@ -9,6 +9,17 @@ use crate::memory::SymbolicMemory;
 use crate::symbolic::{RustBV, SymContext};
 use crate::vex::Endness;
 
+// Every ABI register table below is expressed as named VEX guest-state
+// constants rather than bare integers. The per-arch `offsets` modules carry
+// the provenance comments (`VEX/pub/libvex_guest_*.h` / archinfo) and are the
+// single source of truth; restating the numbers here once caused the x86
+// `Cdecl::return_register` bug (RAX's offset used for EAX).
+use super::amd64::offsets as amd64_off;
+use super::arm::offsets as arm_off;
+use super::arm64::offsets as arm64_off;
+use super::mips::{offsets32 as mips32_off, offsets64 as mips64_off};
+use super::x86::offsets as x86_off;
+
 /// Errors produced by [`CallingConvention::extract_args`] when the stack
 /// portion of the argument list cannot be read.
 ///
@@ -140,13 +151,27 @@ pub trait CallingConvention: Send + Sync {
     /// Register offset of the link/return-address register on ABIs where
     /// `call` writes the return address to a register rather than the stack
     /// (`pops_return_addr() == false`): ARM/ARM64 LR (R14/X30), MIPS `$ra`
-    /// (R31). Returns `None` on stack-return ABIs (x86/AMD64) and on any ABI
-    /// that has not yet wired this up.
+    /// (R31). Returns `None` on stack-return ABIs (x86/AMD64) and — for now —
+    /// on every link-register ABI too, so link-register sub-calls fall back to
+    /// the Python SimProcedure path.
     ///
     /// Used by the native sub-call dispatcher (S2, bead angr-5gf0s) to make a
-    /// guest routine return to the resume sentinel on link-register ABIs. Until
-    /// an arch overrides it, link-register sub-calls fall back to the Python
-    /// SimProcedure path.
+    /// guest routine return to the resume sentinel on link-register ABIs.
+    ///
+    /// **Do not wire the ARM/ARM64/MIPS overrides up without first fixing the
+    /// serial sub-call path.** `RustExplorationManager::get_return_addr`
+    /// (`exploration/helpers.rs`) reads `[sp]` unconditionally, and the serial
+    /// `NativeProcDisposition::SubCall` arm in `RustExplorationManager::step_one`
+    /// (`exploration/run_loop.rs`) uses it to fill `NativeSubcall::caller_return_addr`.
+    /// On a link-register ABI that value is whatever happened to be on the
+    /// stack, and `handle_native_resume` later does `state.set_pc(frame
+    /// .caller_return_addr)` with it. Today the `None` here makes
+    /// `setup_native_subcall` bail with `SubcallSetupError::UnsupportedAbi`
+    /// before the bad value can be used; overriding it removes that guard. The
+    /// parallel/core path is unaffected — the interpreter hands it a
+    /// CC-resolved `return_addr`. Tracked as bead angr-9ke6b.216 child .3;
+    /// `calling_conventions_tests::test_link_register_is_unwired_pending_serial_subcall_fix`
+    /// characterizes the current state.
     fn link_register(&self) -> Option<u32> {
         None
     }
@@ -237,29 +262,47 @@ pub trait CallingConvention: Send + Sync {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SystemVAMD64;
 
-impl SystemVAMD64 {
-    pub const ARCH_ALIASES: &'static [&'static str] = &["amd64", "x86_64", "x64"];
-}
-
 impl CallingConvention for SystemVAMD64 {
     fn name(&self) -> &'static str {
         "SystemV_AMD64"
     }
 
     fn arg_registers(&self) -> &[u32] {
-        // RDI, RSI, RDX, RCX, R8, R9
-        &[72, 64, 32, 24, 80, 88]
+        &[
+            amd64_off::RDI,
+            amd64_off::RSI,
+            amd64_off::RDX,
+            amd64_off::RCX,
+            amd64_off::R8,
+            amd64_off::R9,
+        ]
     }
 
     fn syscall_arg_registers(&self) -> &[u32] {
-        // Linux amd64 syscall ABI: RDI, RSI, RDX, R10, R8, R9.
-        // Differs from the C ABI at the 4th argument: R10 (96) vs RCX (24).
-        &[72, 64, 32, 96, 80, 88]
+        // Linux amd64 syscall ABI differs from the C ABI at the 4th
+        // argument: R10 in place of RCX (the `syscall` instruction
+        // clobbers RCX with the return address).
+        &[
+            amd64_off::RDI,
+            amd64_off::RSI,
+            amd64_off::RDX,
+            amd64_off::R10,
+            amd64_off::R8,
+            amd64_off::R9,
+        ]
     }
 
     fn fp_arg_registers(&self) -> &[u32] {
-        // XMM0-XMM7
-        &[224, 256, 288, 320, 352, 384, 416, 448]
+        &[
+            amd64_off::XMM0,
+            amd64_off::XMM1,
+            amd64_off::XMM2,
+            amd64_off::XMM3,
+            amd64_off::XMM4,
+            amd64_off::XMM5,
+            amd64_off::XMM6,
+            amd64_off::XMM7,
+        ]
     }
 
     fn pointer_size(&self) -> u32 {
@@ -276,11 +319,12 @@ impl CallingConvention for SystemVAMD64 {
     }
 
     fn return_register(&self) -> u32 {
-        16 // RAX
+        amd64_off::RAX
     }
 
     fn fp_return_register(&self) -> Option<u32> {
-        Some(224) // XMM0 (low 64 bits carry the scalar double)
+        // XMM0's low 64 bits carry the scalar double.
+        Some(amd64_off::XMM0)
     }
 }
 
@@ -291,10 +335,6 @@ impl CallingConvention for SystemVAMD64 {
 /// Caller cleans up stack.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Cdecl;
-
-impl Cdecl {
-    pub const ARCH_ALIASES: &'static [&'static str] = &["x86", "i386", "i486", "i586", "i686"];
-}
 
 impl CallingConvention for Cdecl {
     fn name(&self) -> &'static str {
@@ -310,8 +350,14 @@ impl CallingConvention for Cdecl {
         // Linux i386 syscall ABI (int 0x80): EBX, ECX, EDX, ESI, EDI, EBP.
         // The C ABI is empty (cdecl is stack-only) but syscalls bypass
         // libc, so we must define the kernel ABI explicitly here.
-        // x86 VEX offsets: EBX=20, ECX=12, EDX=16, ESI=32, EDI=36, EBP=28.
-        &[20, 12, 16, 32, 36, 28]
+        &[
+            x86_off::EBX,
+            x86_off::ECX,
+            x86_off::EDX,
+            x86_off::ESI,
+            x86_off::EDI,
+            x86_off::EBP,
+        ]
     }
 
     fn fp_arg_registers(&self) -> &[u32] {
@@ -333,8 +379,9 @@ impl CallingConvention for Cdecl {
     }
 
     fn return_register(&self) -> u32 {
-        // EAX in x86 VEX register file (offset differs from amd64's RAX=16)
-        8
+        // EAX in the x86 VEX register file — a different offset from amd64's
+        // RAX, which is exactly the confusion that bare literals invited here.
+        x86_off::EAX
     }
 }
 
@@ -346,18 +393,14 @@ impl CallingConvention for Cdecl {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ARMEABI;
 
-impl ARMEABI {
-    pub const ARCH_ALIASES: &'static [&'static str] = &["arm", "armel", "armhf", "armv7", "armv7l"];
-}
-
 impl CallingConvention for ARMEABI {
     fn name(&self) -> &'static str {
         "ARM_EABI"
     }
 
     fn arg_registers(&self) -> &[u32] {
-        // R0-R3 (ARM VEX offsets: R0=8, R1=12, R2=16, R3=20)
-        &[8, 12, 16, 20]
+        // R0-R3
+        &[arm_off::R0, arm_off::R1, arm_off::R2, arm_off::R3]
     }
 
     fn syscall_arg_registers(&self) -> &[u32] {
@@ -365,13 +408,30 @@ impl CallingConvention for ARMEABI {
         // syscall number). The C ABI only uses R0-R3, so syscalls with
         // 4+ args (e.g. mmap2 with 6, rt_sigaction with 4) need the
         // wider window or extracted args would be zero-padded.
-        // ARM VEX offsets: R0=8, R1=12, R2=16, R3=20, R4=24, R5=28.
-        &[8, 12, 16, 20, 24, 28]
+        &[
+            arm_off::R0,
+            arm_off::R1,
+            arm_off::R2,
+            arm_off::R3,
+            arm_off::R4,
+            arm_off::R5,
+        ]
     }
 
     fn fp_arg_registers(&self) -> &[u32] {
-        // D0-D7 for hard-float
-        &[]
+        // D0-D7 for hard-float (AAPCS-VFP). Soft-float ARM EABI passes
+        // doubles in the integer register pairs instead, so consumers must
+        // know which variant the binary was built for.
+        &[
+            arm_off::D0,
+            arm_off::D1,
+            arm_off::D2,
+            arm_off::D3,
+            arm_off::D4,
+            arm_off::D5,
+            arm_off::D6,
+            arm_off::D7,
+        ]
     }
 
     fn pointer_size(&self) -> u32 {
@@ -389,7 +449,7 @@ impl CallingConvention for ARMEABI {
     }
 
     fn return_register(&self) -> u32 {
-        8 // R0
+        arm_off::R0
     }
 
     /// On ARM, BL stores the return address in LR (R14), not on the stack.
@@ -399,8 +459,7 @@ impl CallingConvention for ARMEABI {
         _memory: Option<&SymbolicMemory>,
         ctx: &SymContext,
     ) -> Option<u64> {
-        // LR offset = 64 (R14 in ARM VEX guest state)
-        let lr = regs.get(64, 4, ctx);
+        let lr = regs.get(arm_off::R14, 4, ctx);
         lr.as_u64()
     }
 
@@ -418,23 +477,38 @@ impl CallingConvention for ARMEABI {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct AArch64CC;
 
-impl AArch64CC {
-    pub const ARCH_ALIASES: &'static [&'static str] = &["arm64", "aarch64", "armv8"];
-}
-
 impl CallingConvention for AArch64CC {
     fn name(&self) -> &'static str {
         "AArch64"
     }
 
     fn arg_registers(&self) -> &[u32] {
-        // X0-X7 (ARM64 VEX offsets)
-        &[16, 24, 32, 40, 48, 56, 64, 72]
+        // X0-X7
+        &[
+            arm64_off::X0,
+            arm64_off::X1,
+            arm64_off::X2,
+            arm64_off::X3,
+            arm64_off::X4,
+            arm64_off::X5,
+            arm64_off::X6,
+            arm64_off::X7,
+        ]
     }
 
     fn fp_arg_registers(&self) -> &[u32] {
-        // V0-V7
-        &[]
+        // V0-V7, i.e. the low half of the Q0-Q7 SIMD bank. Same slots
+        // `fp_return_register` already uses for the scalar double return.
+        &[
+            arm64_off::Q0,
+            arm64_off::Q1,
+            arm64_off::Q2,
+            arm64_off::Q3,
+            arm64_off::Q4,
+            arm64_off::Q5,
+            arm64_off::Q6,
+            arm64_off::Q7,
+        ]
     }
 
     fn pointer_size(&self) -> u32 {
@@ -450,11 +524,12 @@ impl CallingConvention for AArch64CC {
     }
 
     fn return_register(&self) -> u32 {
-        16 // X0
+        arm64_off::X0
     }
 
     fn fp_return_register(&self) -> Option<u32> {
-        Some(320) // Q0/V0 (low 64 bits carry the scalar double)
+        // Q0/V0's low 64 bits carry the scalar double.
+        Some(arm64_off::Q0)
     }
 
     /// On AArch64, BL stores the return address in X30 (LR), not on the stack.
@@ -464,8 +539,7 @@ impl CallingConvention for AArch64CC {
         _memory: Option<&SymbolicMemory>,
         ctx: &SymContext,
     ) -> Option<u64> {
-        // X30 (LR) offset = 256 in ARM64 VEX guest state
-        let lr = regs.get(256, 8, ctx);
+        let lr = regs.get(arm64_off::X30, 8, ctx);
         lr.as_u64()
     }
 
@@ -484,21 +558,29 @@ impl CallingConvention for AArch64CC {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct MipsO32;
 
-impl MipsO32 {
-    pub const ARCH_ALIASES: &'static [&'static str] = &["mips", "mips32", "mipsel", "mipsle"];
-}
-
 impl CallingConvention for MipsO32 {
     fn name(&self) -> &'static str {
         "MIPS_O32"
     }
 
     fn arg_registers(&self) -> &[u32] {
-        // $a0-$a3 (MIPS32 VEX offsets: R4=24, R5=28, R6=32, R7=36)
-        &[24, 28, 32, 36]
+        // $a0-$a3
+        &[
+            mips32_off::R4,
+            mips32_off::R5,
+            mips32_off::R6,
+            mips32_off::R7,
+        ]
     }
 
     fn fp_arg_registers(&self) -> &[u32] {
+        // Deliberately empty: O32 hard-float passes doubles in $f12/$f14,
+        // but which of $f12/$f14 vs $a0-$a3 a given argument lands in depends
+        // on the float/int position rules and on whether the binary is
+        // soft-float (`-msoft-float` puts everything in the integer window).
+        // We do not model that dispatch, and `mips32_off::F12`/`F14` have no
+        // canonical `register_name` entry, so reporting them here would imply
+        // a mapping we cannot honor.
         &[]
     }
 
@@ -527,13 +609,13 @@ impl CallingConvention for MipsO32 {
     }
 
     fn return_register(&self) -> u32 {
-        16 // $v0 (R2)
+        mips32_off::R2 // $v0
     }
 
     fn syscall_error_register(&self) -> Option<(u32, i64)> {
-        // $a3 (R7) = offset 36 in MIPS32 VEX guest state. errno_start matches
+        // $a3 (R7). errno_start matches
         // SimCCO32LinuxSyscall.SYSCALL_ERRNO_START (-1133).
-        Some((36, -1133))
+        Some((mips32_off::R7, -1133))
     }
 
     fn get_return_addr(
@@ -542,8 +624,8 @@ impl CallingConvention for MipsO32 {
         _memory: Option<&SymbolicMemory>,
         ctx: &SymContext,
     ) -> Option<u64> {
-        // $ra (R31) offset = 132 in MIPS32 VEX guest state
-        let ra = regs.get(132, 4, ctx);
+        // $ra (R31)
+        let ra = regs.get(mips32_off::R31, 4, ctx);
         ra.as_u64()
     }
 
@@ -564,23 +646,30 @@ impl CallingConvention for MipsO32 {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct MipsN64;
 
-impl MipsN64 {
-    pub const ARCH_ALIASES: &'static [&'static str] =
-        &["mips64", "mips64el", "mips64le", "mips64be"];
-}
-
 impl CallingConvention for MipsN64 {
     fn name(&self) -> &'static str {
         "MIPS_N64"
     }
 
     fn arg_registers(&self) -> &[u32] {
-        // $a0-$a7 (MIPS64 VEX offsets: R4=48, R5=56, R6=64, R7=72,
-        // R8=80, R9=88, R10=96, R11=104). See arch/mips.rs offsets64.
-        &[48, 56, 64, 72, 80, 88, 96, 104]
+        // $a0-$a7 = R4-R11 (N64 repurposes $t0-$t3 as $a4-$a7).
+        &[
+            mips64_off::R4,
+            mips64_off::R5,
+            mips64_off::R6,
+            mips64_off::R7,
+            mips64_off::R8,
+            mips64_off::R9,
+            mips64_off::R10,
+            mips64_off::R11,
+        ]
     }
 
     fn fp_arg_registers(&self) -> &[u32] {
+        // Deliberately empty, same reasoning as `MipsO32::fp_arg_registers`:
+        // N64 passes floats in $f12-$f19, but the int/float slot assignment
+        // and the soft-float variant are not modelled, and those offsets have
+        // no canonical `register_name` entry in `CANONICAL_MIPS64`.
         &[]
     }
 
@@ -602,13 +691,13 @@ impl CallingConvention for MipsN64 {
     }
 
     fn return_register(&self) -> u32 {
-        32 // $v0 (R2) in MIPS64 VEX guest state
+        mips64_off::R2 // $v0
     }
 
     fn syscall_error_register(&self) -> Option<(u32, i64)> {
-        // $a3 (R7) = offset 72 in MIPS64 VEX guest state. errno_start matches
+        // $a3 (R7). errno_start matches
         // SimCCN64LinuxSyscall.SYSCALL_ERRNO_START (-1133).
-        Some((72, -1133))
+        Some((mips64_off::R7, -1133))
     }
 
     fn get_return_addr(
@@ -617,8 +706,8 @@ impl CallingConvention for MipsN64 {
         _memory: Option<&SymbolicMemory>,
         ctx: &SymContext,
     ) -> Option<u64> {
-        // $ra (R31) offset = 264 in MIPS64 VEX guest state
-        let ra = regs.get(264, 8, ctx);
+        // $ra (R31)
+        let ra = regs.get(mips64_off::R31, 8, ctx);
         ra.as_u64()
     }
 
@@ -629,18 +718,17 @@ impl CallingConvention for MipsN64 {
 
 /// Get the default calling convention for an architecture.
 ///
-/// Driven by each CC's inherent `ARCH_ALIASES` constant — adding a new
-/// alias only requires updating the relevant impl block. Unknown arch
-/// names cause a panic so that mis-routed argument extraction (silently
-/// reading AMD64 RDI/RSI for a foreign arch) fails loudly instead of
-/// producing wrong-but-plausible values. See the latent x86 Cdecl
-/// return-register bug (commit 5329d8222) for the failure mode this
-/// guards against.
+/// Driven by [`crate::arch::ALL_ARCHES`] — adding a new alias only requires
+/// adding it to that table's row. Unknown arch names cause a panic so that
+/// mis-routed argument extraction (silently reading AMD64 RDI/RSI for a
+/// foreign arch) fails loudly instead of producing wrong-but-plausible
+/// values. See the latent x86 Cdecl return-register bug (commit 5329d8222)
+/// for the failure mode this guards against.
 pub fn default_cc_for_arch(arch_name: &str) -> Box<dyn CallingConvention> {
     cc_for_arch(arch_name).unwrap_or_else(|| {
         panic!(
             "default_cc_for_arch: no calling convention registered for arch {arch_name:?}. \
-             Register it in ARCH_ALIASES on the relevant CC, or add a new CallingConvention impl. \
+             Register it in ALL_ARCHES (arch/mod.rs), or add a new CallingConvention impl. \
              Silent fallback to SystemV_AMD64 would mis-route argument extraction."
         )
     })
@@ -654,24 +742,7 @@ pub fn default_cc_for_arch(arch_name: &str) -> Box<dyn CallingConvention> {
 /// extraction path — where a wrong CC silently yields wrong-but-plausible
 /// arguments — keeps the panicking wrapper.
 pub fn cc_for_arch(arch_name: &str) -> Option<Box<dyn CallingConvention>> {
-    let lower = arch_name.to_lowercase();
-    let lower_str = lower.as_str();
-
-    if SystemVAMD64::ARCH_ALIASES.contains(&lower_str) {
-        Some(Box::new(SystemVAMD64))
-    } else if Cdecl::ARCH_ALIASES.contains(&lower_str) {
-        Some(Box::new(Cdecl))
-    } else if ARMEABI::ARCH_ALIASES.contains(&lower_str) {
-        Some(Box::new(ARMEABI))
-    } else if AArch64CC::ARCH_ALIASES.contains(&lower_str) {
-        Some(Box::new(AArch64CC))
-    } else if MipsO32::ARCH_ALIASES.contains(&lower_str) {
-        Some(Box::new(MipsO32))
-    } else if MipsN64::ARCH_ALIASES.contains(&lower_str) {
-        Some(Box::new(MipsN64))
-    } else {
-        None
-    }
+    crate::arch::arch_desc_from_name(arch_name).map(|d| (d.make_cc)())
 }
 
 #[cfg(test)]

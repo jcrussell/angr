@@ -12,7 +12,7 @@ pub struct X86;
 
 // x86 VEX guest state offsets (from archinfo.ArchX86)
 // These match pyvex's register layout for compatibility.
-mod offsets {
+pub(crate) mod offsets {
     // General purpose registers
     pub const EAX: u32 = 8;
     pub const ECX: u32 = 12;
@@ -206,15 +206,6 @@ impl Arch for X86 {
     }
 
     impl_arch_registers!(CANONICAL, ALIASES, REGISTER_NAMES);
-
-    fn argument_registers(&self) -> &[u32] {
-        // cdecl: arguments on stack, but we list potential register args
-        &[]
-    }
-
-    fn return_register(&self) -> u32 {
-        offsets::EAX
-    }
 
     fn syscall_num_offset(&self) -> Option<u32> {
         Some(offsets::EAX)
