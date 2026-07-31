@@ -45,6 +45,25 @@ retroactively, only stops the class from growing. Regenerate the baseline
 with `--update-baseline` after intentionally adding one (rare — e.g. citing
 an external, non-repo line number that can't drift).
 
+### Silent-fallback tagging (Rust)
+
+Sites in `native/angr/src/` that discard an error/absent value and continue
+with a degraded result (the `.100`/`.172`/`.144`/`.194`-class "silently wrong
+instead of loud error" bugs from the angr-9ke6b audit) must carry a
+`// SILENT(cat-a|b|c): <rationale>` comment above them — `cat-a` = expected
+control flow, `cat-b` = fallback with loss, `cat-c` = wrong-answer risk (must
+also `log::warn!`). `tools/audit_silent_fallback.py` gates the currently-narrow
+`return Ok(None)` / `.ok();` shapes in CI (`rust_check`) against
+`tools/silent_fallback_baseline.txt`, same baseline-audit pattern as the
+line-citation check above. The noisier `.unwrap_or*`/`let _ =`/wildcard
+`_ =>` match-arm shapes are deliberately NOT auto-detected (too many
+legitimate uses, e.g. matching a handful of variants out of a huge
+externally-defined enum like `IROp`) — for those, apply the same judgment in
+code review instead: a "shouldn't happen" case at a trust boundary
+(interpreter dispatch, syscall arg decoding) should fail loud
+(`unreachable!()`, `Err(...)`, or a logged warning), not silently return a
+default value.
+
 ### Where context lives
 
 When you need background that isn't in CLAUDE.md, look here first, then

@@ -43,6 +43,8 @@ jobs:
           components: clippy, rustfmt
       - run: cargo clippy --all-targets --all-features -- -D warnings
       - run: cargo fmt --all -- --check
+      - name: Silent-fallback tagging audit
+        run: python3 tools/audit_silent_fallback.py
       - name: Stale line-number-citation check
         run: python3 tools/check_line_citations.py
 
