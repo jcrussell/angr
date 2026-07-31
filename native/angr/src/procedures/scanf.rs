@@ -7,6 +7,10 @@
 //! Supported specifiers: %d, %i, %u, %x, %o, %s, %c, %[...] scanset,
 //! %ld, %lld, %lu, %lx, %%
 //! Falls back to Python for symbolic format strings or pointer arguments.
+// Grandfathered clippy::unwrap_used/expect_used debt -- angr-9ke6b.212 tracks
+// burning this down file by file. Do not add new unwrap()/expect() calls here;
+// new files/callers must handle the None/Err case explicitly instead.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use super::format_common::{
     LengthModifier, MAX_FORMAT_LEN, parse_length_modifier, parse_width_digits,

@@ -56,6 +56,10 @@
 //! This contract is single-worker only. Parallel steal order is
 //! design-nondeterministic; there the contract is set-equality of results, not
 //! sequence equality (see `docs/advanced-topics/rust_parallel_design.rst`).
+// Grandfathered clippy::unwrap_used/expect_used debt -- angr-9ke6b.212 tracks
+// burning this down file by file. Do not add new unwrap()/expect() calls here;
+// new files/callers must handle the None/Err case explicitly instead.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Mutex;

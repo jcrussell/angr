@@ -2,6 +2,15 @@
 name = "angr"
 version = "0.1.0"
 edition = "2024"
+description.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lints]
+workspace = true
 
 [lib]
 name = "rustylib"

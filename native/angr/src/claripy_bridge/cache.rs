@@ -5,6 +5,10 @@
 //! public store/get/lookup/clear helpers that wrap them. The cross-cache
 //! invariants C3-C5 are documented in the parent module rustdoc (see `super`).
 //! Both `super::import` and `super::export` depend on these helpers.
+// Grandfathered clippy::unwrap_used/expect_used debt -- angr-9ke6b.212 tracks
+// burning this down file by file. Do not add new unwrap()/expect() calls here;
+// new files/callers must handle the None/Err case explicitly instead.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::cell::RefCell;
 use std::num::NonZeroUsize;

@@ -19,6 +19,10 @@
 //! Lives as a second `impl SymContext` block in a child module of `symbolic`;
 //! `pub(super)` (== `pub(in crate::symbolic)`) keeps the promoted caches
 //! module-private — no public API leak.
+// Grandfathered clippy::unwrap_used/expect_used debt -- angr-9ke6b.212 tracks
+// burning this down file by file. Do not add new unwrap()/expect() calls here;
+// new files/callers must handle the None/Err case explicitly instead.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use super::RustBV;
 use super::SymContext;

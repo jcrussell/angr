@@ -19,7 +19,10 @@
 //!   types *before* releasing the lift lock, so nothing outlives the arena.
 //! - libVEX global state (`vex_control`, the arena) is not re-entrant. A single
 //!   process-wide `LIFT_LOCK` mutex serializes every lift.
-
+// Grandfathered clippy::unwrap_used/expect_used debt -- angr-9ke6b.212 tracks
+// burning this down file by file. Do not add new unwrap()/expect() calls here;
+// new files/callers must handle the None/Err case explicitly instead.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 // Every marshalling helper below is an `unsafe fn` whose entire body walks the
 // libVEX arena. Wrapping each individual deref in its own `unsafe {}` block adds
 // only rightward drift here — the whole module is a single unsafe domain gated

@@ -88,6 +88,10 @@
 //! panic-strategy assumption changed, which is exactly the signal a future
 //! reader wants. A forced-poison test is deliberately **not** added — it cannot
 //! observe a Python exception under this profile, only an abort.
+// Grandfathered clippy::unwrap_used/expect_used debt -- angr-9ke6b.212 tracks
+// burning this down file by file. Do not add new unwrap()/expect() calls here;
+// new files/callers must handle the None/Err case explicitly instead.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use crate::exploration::selection_policy::SelectionPolicy;
 // `Lifo` is the pre-seam default policy, now only used by the `#[cfg(test)]`

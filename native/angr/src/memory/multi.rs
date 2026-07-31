@@ -14,6 +14,10 @@
 //! This module defines the data structures only. Load-time collapse lives in
 //! `memory/load.rs` (Phase 1.2, bead angr-n082); store helpers that emit
 //! Multi cells live in `memory/store.rs` (Phase 1.3, bead angr-aija).
+// Grandfathered clippy::unwrap_used/expect_used debt -- angr-9ke6b.212 tracks
+// burning this down file by file. Do not add new unwrap()/expect() calls here;
+// new files/callers must handle the None/Err case explicitly instead.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::cell::RefCell;
 

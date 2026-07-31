@@ -20,6 +20,10 @@
 //! there so the guest program reads them like real getopt would. A `None`
 //! address (symbol absent) just skips that store — exactly as Python's
 //! `_store_int` / `_store_ptr` skip when `_global_addr` returns `None`.
+// Grandfathered clippy::unwrap_used/expect_used debt -- angr-9ke6b.212 tracks
+// burning this down file by file. Do not add new unwrap()/expect() calls here;
+// new files/callers must handle the None/Err case explicitly instead.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use super::ProcedureError;
 use super::strings::scan_concrete_until_null;

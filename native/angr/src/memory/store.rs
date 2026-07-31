@@ -3,6 +3,10 @@
 //! Extracted from `memory/mod.rs` (angr-0lre). Holds the store_*/store_strided/
 //! install_multi_for_candidates family in a single file. Multiple `impl SymbolicMemory`
 //! blocks across files are fine — Rust permits inherent impls to be split.
+// Grandfathered clippy::unwrap_used/expect_used debt -- angr-9ke6b.212 tracks
+// burning this down file by file. Do not add new unwrap()/expect() calls here;
+// new files/callers must handle the None/Err case explicitly instead.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use crate::concretize::{AddressConcretizer, ConcretizationResult};
 use crate::symbolic::{

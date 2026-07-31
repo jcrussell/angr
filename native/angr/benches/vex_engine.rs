@@ -2,6 +2,11 @@
 //!
 //! Run with: cargo bench --manifest-path native/angr/Cargo.toml
 
+// Bench setup code panicking on unwrap/expect is the desired behavior (a
+// broken fixture should fail loudly, same rationale as #[cfg(test)] code in
+// lib.rs) -- not part of the angr-9ke6b.212 production-code debt tracker.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use rustylib::concretize::AddressConcretizer;
 use rustylib::memory::{Permission, SymbolicMemory};

@@ -23,6 +23,10 @@
 //!   returns the error sentinel, matching Python `fgets`/`fgetc` (which return
 //!   -1 when the backing SimFileDescriptor is missing). A symbolic FILE* or
 //!   symbolic `_fileno` also falls back to Python.
+// Grandfathered clippy::unwrap_used/expect_used debt -- angr-9ke6b.212 tracks
+// burning this down file by file. Do not add new unwrap()/expect() calls here;
+// new files/callers must handle the None/Err case explicitly instead.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use super::stdin_common::mint_stdin_bytes;
 use super::{ProcedureError, symbol_counter};

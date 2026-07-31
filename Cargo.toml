@@ -3,6 +3,7 @@ resolver = "3"
 members = ["native/angr"]
 
 [workspace.package]
+description = "angr's native Rust symbolic-execution engine (VEX interpreter, Z3 bridge, PyO3 exploration manager)"
 license = "BSD-2-Clause"
 readme = "README.md"
 keywords = [
@@ -25,6 +26,13 @@ repository = "https://github.com/angr/angr.git"
 [workspace.lints.clippy]
 all = "warn"
 cargo = "warn"
+# Panics on caller-supplied/untrusted input are a recurring audit-bug class
+# (angr-9ke6b .126/.191/.63/.75). New code and files without a grandfather
+# #![allow(...)] must handle the None/Err case explicitly instead of
+# unwrap()/expect(). See angr-9ke6b follow-up bead for burning down the
+# existing grandfathered sites.
+unwrap_used = "warn"
+expect_used = "warn"
 
 [profile.release]
 lto = "fat"

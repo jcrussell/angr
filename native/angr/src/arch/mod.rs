@@ -5,6 +5,10 @@
 //! - Register file implementations for each architecture
 //! - Register name mappings
 //! - Calling convention implementations for argument extraction
+// Grandfathered clippy::unwrap_used/expect_used debt -- angr-9ke6b.212 tracks
+// burning this down file by file. Do not add new unwrap()/expect() calls here;
+// new files/callers must handle the None/Err case explicitly instead.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 mod amd64;
 mod arm;

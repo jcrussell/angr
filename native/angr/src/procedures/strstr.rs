@@ -50,6 +50,9 @@ crate::declare_proc! {
                             extract_concrete_arg(&val, &format!("haystack[{}]", i as usize + j))?
                                 as u8;
                         if byte != *needle_byte {
+                            // SILENT(cat-a): mismatch at this haystack position -- expected
+                            // control flow, scan_concrete_predicate advances to the next
+                            // position and retries, not a degraded final answer.
                             return Ok(None);
                         }
                     }

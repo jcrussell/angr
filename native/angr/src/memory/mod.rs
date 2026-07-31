@@ -4,6 +4,10 @@
 //! - O(1) forking via copy-on-write (using Grudge's RustPage)
 //! - Mixed concrete/symbolic value storage
 //! - Efficient symbolic address handling
+// Grandfathered clippy::unwrap_used/expect_used debt -- angr-9ke6b.212 tracks
+// burning this down file by file. Do not add new unwrap()/expect() calls here;
+// new files/callers must handle the None/Err case explicitly instead.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::cell::RefCell;
 

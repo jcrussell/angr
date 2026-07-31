@@ -1,3 +1,11 @@
+// clippy::unwrap_used/expect_used (workspace lint, angr-9ke6b guardrail) is
+// scoped to production code. `cfg(test)` applies to the WHOLE crate when
+// compiled as the test harness, not just individual `#[test]` fns, so this
+// allow covers every `#[cfg(test)] mod tests` block and *_tests.rs file
+// crate-wide. Production code still gets the lint's full force: `--all-targets`
+// also compiles the plain (non-test) lib target, where `cfg(test)` is false.
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+
 // Dev-only public surface for the cargo-fuzz targets under `fuzz/`
 // (angr-qwyti.9). Re-exports the pure hostile-input parsers so a fuzz binary
 // can reach them without depending on `pub(super)` internals. Gated behind

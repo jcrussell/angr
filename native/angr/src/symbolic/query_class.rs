@@ -30,6 +30,10 @@
 //! default and enabled per-process with `ANGR_RUST_QUERY_CLASS=1`; when off,
 //! every check lands in [`QueryClass::Unclassified`] and the query entry
 //! points do no IR walking at all.
+// Grandfathered clippy::unwrap_used/expect_used debt -- angr-9ke6b.212 tracks
+// burning this down file by file. Do not add new unwrap()/expect() calls here;
+// new files/callers must handle the None/Err case explicitly instead.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use super::{BVOp, RustBV};
 use std::cell::Cell;

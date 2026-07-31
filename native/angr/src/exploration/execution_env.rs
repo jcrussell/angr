@@ -21,6 +21,10 @@
 //! the inner fields through a thin delegation. Do NOT add helper methods
 //! as a separate cleanup; the parent angr-4j5u was deferred multiple
 //! times for cosmetic gains.
+// Grandfathered clippy::unwrap_used/expect_used debt -- angr-9ke6b.212 tracks
+// burning this down file by file. Do not add new unwrap()/expect() calls here;
+// new files/callers must handle the None/Err case explicitly instead.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::num::NonZeroUsize;
 use std::sync::Arc;

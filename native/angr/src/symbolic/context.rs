@@ -62,6 +62,10 @@
 //!   NOT default `use_shared_lineage_solver` on for `strategy='dfs'`. Both
 //!   the canonical WIN (ais3_crackme) and LOSE (defcon2016quals_baby-re)
 //!   canaries run BFS — strategy is not the discriminator.
+// Grandfathered clippy::unwrap_used/expect_used debt -- angr-9ke6b.212 tracks
+// burning this down file by file. Do not add new unwrap()/expect() calls here;
+// new files/callers must handle the None/Err case explicitly instead.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};

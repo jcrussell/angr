@@ -16,6 +16,11 @@
 //! - `"vex-engine"`  → + smoke_vex_lifter_imports
 //! - `"vex-engine,vex-engine-z3"` → + smoke_z3_solve_constraint
 
+// Integration-test harness code panicking on unwrap/expect is the desired
+// behavior, same rationale as #[cfg(test)] code in lib.rs -- not part of the
+// angr-9ke6b.212 production-code debt tracker.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use rustylib::symbolic::{RustBV, SymContext};
 
 /// Concrete arithmetic via SymContext is the universal core. Available in

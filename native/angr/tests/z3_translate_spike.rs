@@ -12,6 +12,10 @@
 //!      constraints over them). Reports total wall, node count, ns/node.
 
 #![cfg(feature = "vex-engine-z3")]
+// Integration-test harness code panicking on unwrap/expect is the desired
+// behavior, same rationale as #[cfg(test)] code in lib.rs -- not part of the
+// angr-9ke6b.212 production-code debt tracker.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::time::Instant;
 use z3::ast::BV;

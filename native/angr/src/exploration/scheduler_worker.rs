@@ -10,6 +10,10 @@
 //! on those structs are needed. Only the two loop entry points and the shared
 //! `dispatch_next` are re-exported into the parent (`pub(super)`); see the parent
 //! module for the transport invariant and panic-policy rationale.
+// Grandfathered clippy::unwrap_used/expect_used debt -- angr-9ke6b.212 tracks
+// burning this down file by file. Do not add new unwrap()/expect() calls here;
+// new files/callers must handle the None/Err case explicitly instead.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use super::*;
 use std::time::Instant;

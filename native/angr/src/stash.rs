@@ -20,6 +20,10 @@
 //! `TestStateCacheSizeBound.test_cleanup_state_cache_evicts_oldest_first`,
 //! `..._drops_dead_states`, `..._skips_pinned`
 //! (tests/engines/rust/test_plugins.py).
+// Grandfathered clippy::unwrap_used/expect_used debt -- angr-9ke6b.212 tracks
+// burning this down file by file. Do not add new unwrap()/expect() calls here;
+// new files/callers must handle the None/Err case explicitly instead.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use rustc_hash::FxHashMap;
 use std::collections::{HashMap, VecDeque};

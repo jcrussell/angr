@@ -7,6 +7,10 @@
 //! Symbolic arguments are handled by emitting a constraint-shaped result that
 //! mirrors the concrete predicate on bits\[7:0\] of the argument; the operand
 //! pattern matches the underlying `as u8` truncation in the concrete path.
+// Grandfathered clippy::unwrap_used/expect_used debt -- angr-9ke6b.212 tracks
+// burning this down file by file. Do not add new unwrap()/expect() calls here;
+// new files/callers must handle the None/Err case explicitly instead.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use super::ProcedureError;
 use crate::state::RustSimState;

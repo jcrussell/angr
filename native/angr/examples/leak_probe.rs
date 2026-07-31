@@ -16,6 +16,11 @@
 //! Run standalone with:
 //!   ANGR_LEAK_ITERS=200 cargo run --release --example leak_probe
 
+// Example/probe-harness code panicking on unwrap/expect is the desired
+// behavior, same rationale as #[cfg(test)] code in lib.rs -- not part of the
+// angr-9ke6b.212 production-code debt tracker.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use rustylib::memory::{Permission, SymbolicMemory};
 use rustylib::state::RustSimState;
 use rustylib::symbolic::{RustBV, SymContext};

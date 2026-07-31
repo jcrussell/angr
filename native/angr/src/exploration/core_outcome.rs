@@ -41,6 +41,10 @@
 //! BEFORE the post-step phase and copied onto every fork's tag; the coordinator
 //! calls `sm.set_root(child_id, root_hint)`. This equals the inline value the
 //! legacy `materialize_deferred_forks` computed.
+// Grandfathered clippy::unwrap_used/expect_used debt -- angr-9ke6b.212 tracks
+// burning this down file by file. Do not add new unwrap()/expect() calls here;
+// new files/callers must handle the None/Err case explicitly instead.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::collections::HashMap;
 use std::sync::Mutex;

@@ -3,6 +3,10 @@
 //! This module implements VEX operations using a parameterized approach.
 //! Instead of ~200 separate implementations (e.g., add8, add16, add32, add64),
 //! we have a single implementation per operation type that handles all widths.
+// Grandfathered clippy::unwrap_used/expect_used debt -- angr-9ke6b.212 tracks
+// burning this down file by file. Do not add new unwrap()/expect() calls here;
+// new files/callers must handle the None/Err case explicitly instead.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::sync::Arc;
 

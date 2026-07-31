@@ -10,6 +10,10 @@
 //! [`timed_check`], [`sample_simplify_skip`]. The env-spec helpers
 //! (`tactic_spec`, `qfbv_smart_threshold`, `simplify_sample_stride`) and the
 //! [`TacticSpec`] enum stay private to this module.
+// Grandfathered clippy::unwrap_used/expect_used debt -- angr-9ke6b.212 tracks
+// burning this down file by file. Do not add new unwrap()/expect() calls here;
+// new files/callers must handle the None/Err case explicitly instead.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::sync::atomic::Ordering;
 
