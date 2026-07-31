@@ -3,10 +3,25 @@
 //! This module implements VEX operations using a parameterized approach.
 //! Instead of ~200 separate implementations (e.g., add8, add16, add32, add64),
 //! we have a single implementation per operation type that handles all widths.
-// Grandfathered clippy::unwrap_used/expect_used debt -- angr-9ke6b.212 tracks
-// burning this down file by file. Do not add new unwrap()/expect() calls here;
-// new files/callers must handle the None/Err case explicitly instead.
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+//!
+//! **Panic policy (angr-9ke6b.212):** operand *values* are guest data and are
+//! never unwrapped — an operand this module cannot handle returns [`OpError`],
+//! and angr-j60q0.2 already hardened the arity/type `debug_assert!`s on the
+//! packed-vector paths into typed errors for exactly that reason. The two
+//! remaining `expect` shapes are operand-*count* invariants fixed by the
+//! dispatch table, not by guest data:
+//!
+//!   * [`float_minmax_symbolic`] — reached only through
+//!     `VEXOps::vec_float_lane_op`, whose nine call sites each pass a
+//!     fixed-size array literal matching the op's `arity()` (`&[left, right]`
+//!     for `FMin`/`FMax`).
+//!   * `VEXOps::concat_le_elements` — every caller fills its `elements` vec in
+//!     a `for i in 0..count` loop over a vector lane count that the opcode
+//!     table fixes at >= 1.
+//!
+//! **Enforcement (angr-qwyti.11):** this module carries
+//! `#![deny(clippy::unwrap_used, clippy::expect_used)]`.
+#![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use std::sync::Arc;
 
@@ -126,6 +141,10 @@ impl_float_lane_unop!(FAbs, abs, FloatOpKind::Abs);
 /// gives `ITE(l < r, l, r)` (min); `true` gives `ITE(r < l, l, r)` (max).
 /// The symbolic path always uses `CmpLt`, swapping operand order rather than
 /// minting a separate `CmpGt` kind.
+#[allow(
+    clippy::expect_used,
+    reason = "arity-2 dispatch invariant: the only route here is `FloatLaneOp::symbolic` from `vec_float_lane_op`, which builds `lane_args` one-for-one from its `args`, and every `FMin`/`FMax` call site passes the array literal `&[left, right]` — see the module Panic policy header"
+)]
 fn float_minmax_symbolic(
     args: Vec<RustBV>,
     prec: FloatPrec,
@@ -1461,6 +1480,10 @@ impl VEXOps {
     /// `elements[0]` is the low-order element and `elements[len-1]` is the
     /// high-order element. Used by all vector ops with a symbolic fallback.
     #[inline]
+    #[allow(
+        clippy::expect_used,
+        reason = "every caller fills `elements` in a `for i in 0..count` loop whose `count` is the opcode table's vector lane count (>= 1 for every packed op), so the vec is never empty — see the module Panic policy header"
+    )]
     fn concat_le_elements(mut elements: Vec<RustBV>, ctx: &SymContext) -> RustBV {
         let mut result = elements
             .pop()
@@ -1720,80 +1743,180 @@ mod vec_int_lane;
 // so `use super::*` reaches ops's private items.
 #[cfg(test)]
 #[path = "ops_test_helpers.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+)]
 mod ops_test_helpers;
 
 #[cfg(test)]
 #[path = "ops_tests_core.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+)]
 mod tests_core;
 
 #[cfg(all(test, feature = "vex-engine-z3"))]
 #[path = "ops_tests_int_arith.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+)]
 mod tests_int_arith;
 
 #[cfg(test)]
 #[path = "ops_tests_float_arith.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+)]
 mod tests_float_arith;
 
 #[cfg(test)]
 #[path = "ops_tests_float_cmp.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+)]
 mod tests_float_cmp;
 
 #[cfg(test)]
 #[path = "ops_tests_conversions.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+)]
 mod tests_conversions;
 
 #[cfg(test)]
 #[path = "ops_tests_vec_lane.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+)]
 mod tests_vec_lane;
 
 #[cfg(test)]
 #[path = "ops_tests_vec_shift.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+)]
 mod tests_vec_shift;
 
 #[cfg(all(test, feature = "vex-engine-z3"))]
 #[path = "ops_tests_vec_saturate.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+)]
 mod tests_vec_saturate;
 
 #[cfg(test)]
 #[path = "ops_tests_vec_count.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+)]
 mod tests_vec_count;
 
 #[cfg(test)]
 #[path = "ops_tests_vec_int_arith.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+)]
 mod tests_vec_int_arith;
 
 #[cfg(test)]
 #[path = "ops_tests_vec_pairwise.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+)]
 mod tests_vec_pairwise;
 
 #[cfg(test)]
 #[path = "ops_tests_vec_permute_mul.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+)]
 mod tests_vec_permute_mul;
 
 #[cfg(test)]
 #[path = "ops_tests_vec_float_lane.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+)]
 mod tests_vec_float_lane;
 
 #[cfg(test)]
 #[path = "ops_tests_vec_float_scalar.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+)]
 mod tests_vec_float_scalar;
 
 #[cfg(test)]
 #[path = "ops_tests_vec_set_lo.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+)]
 mod tests_vec_set_lo;
 
 #[cfg(test)]
 #[path = "ops_tests_vec_int_lane.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+)]
 mod tests_vec_int_lane;
 
 #[cfg(test)]
 #[path = "ops_tests_vec_compare.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+)]
 mod tests_vec_compare;
 
 #[cfg(test)]
 #[path = "ops_tests_vec_dispatch.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+)]
 mod tests_vec_dispatch;
 
 #[cfg(test)]
 #[path = "ops_property_tests.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+)]
 mod property_tests;

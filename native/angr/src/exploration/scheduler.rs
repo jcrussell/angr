@@ -88,10 +88,24 @@
 //! panic-strategy assumption changed, which is exactly the signal a future
 //! reader wants. A forced-poison test is deliberately **not** added — it cannot
 //! observe a Python exception under this profile, only an abort.
-// Grandfathered clippy::unwrap_used/expect_used debt -- angr-9ke6b.212 tracks
-// burning this down file by file. Do not add new unwrap()/expect() calls here;
-// new files/callers must handle the None/Err case explicitly instead.
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+//!
+//! The one site the argument above does *not* cover is
+//! `Builder::spawn(..).expect("failed to spawn persistent worker thread")` in
+//! [`PersistentPool::new`], which is genuinely fallible (thread spawn can fail
+//! with `EAGAIN` under thread/memory exhaustion). It stays a panic
+//! deliberately: `new` returns `Self` and is called from the run loop's
+//! pool-construction path, so propagating would ripple a `Result` through the
+//! parallel driver, and the obvious local degradation — carry on with fewer
+//! workers — silently returns an empty wave if *zero* threads came up, trading
+//! a loud abort for lost states. Falling back to serial exploration instead is
+//! a real feature, not a lint cleanup; tracked on angr-9ke6b.212.
+//!
+//! **Enforcement (angr-qwyti.11):** this module carries
+//! `#![deny(clippy::unwrap_used, clippy::expect_used)]`; each function holding
+//! one of the guards above carries a narrow
+//! `#[allow(clippy::expect_used, reason = ...)]` pointing back at this Panic
+//! policy, so a new panic cannot slip in unreviewed.
+#![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use crate::exploration::selection_policy::SelectionPolicy;
 // `Lifo` is the pre-seam default policy, now only used by the `#[cfg(test)]`
@@ -99,13 +113,12 @@ use crate::exploration::selection_policy::SelectionPolicy;
 // via `*_with_policy`).
 #[cfg(test)]
 use crate::exploration::selection_policy::Lifo;
-use crate::interpreter::BLOCK_CACHE_CAPACITY;
+use crate::interpreter::BLOCK_CACHE_CAPACITY_NZ;
 use crate::state::{RustSimState, StateMigrationPayload};
 use crate::vex::IRSB;
 use crossbeam_deque::{Injector, Steal};
 use lru::LruCache;
 use std::collections::VecDeque;
-use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
@@ -697,6 +710,10 @@ impl WaveJob {
     /// the persistent pool recovers results incrementally, not by consuming the
     /// whole `WaveJob`.
     #[cfg(test)]
+    #[allow(
+        clippy::expect_used,
+        reason = "test-only reader; the `results`/`summaries` poison guards are unreachable for the same reason as everywhere else in this module — see the Panic policy header. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out here"
+    )]
     pub(crate) fn into_results(
         self,
     ) -> (
@@ -717,6 +734,10 @@ impl WaveJob {
     /// Take the materialized terminal payloads out of the recovered wave,
     /// leaving the rest of the job (dropped by the caller). Used by the
     /// coordinator, which reads `summaries` separately (or ignores them).
+    #[allow(
+        clippy::expect_used,
+        reason = "`results` poison guard: poison requires a thread to unwind out of a live guard, which `panic = \"abort\"` forecloses — see the module Panic policy header"
+    )]
     pub(crate) fn take_results(&self) -> Vec<StateMigrationPayload> {
         std::mem::take(&mut *self.results.lock().expect("results mutex poisoned"))
     }
@@ -957,6 +978,10 @@ const WORKER_STACK_SIZE: usize = 16 * 1024 * 1024;
 impl PersistentPool {
     /// Spawn `num_workers` (clamped to >= 1) persistent worker threads. Each
     /// creates its Z3 context once and then blocks waiting for the first wave.
+    #[allow(
+        clippy::expect_used,
+        reason = "`Builder::spawn` is the one genuinely-fallible panic in this module (EAGAIN under thread exhaustion). `new` returns `Self`, so propagating means a `Result` through the whole parallel driver, and degrading to fewer workers loses states outright when none come up — see the module Panic policy header for the full argument"
+    )]
     pub(crate) fn new(num_workers: usize) -> Self {
         let num_workers = num_workers.max(1);
         let (done_tx, done_rx) = mpsc::channel::<WaveDone>();
@@ -997,6 +1022,10 @@ impl PersistentPool {
     /// are received the strong count is exactly 1. The `Option` is unwrapped
     /// with an explicit panic (not a silent `.expect`) because a `None` here is
     /// a hard invariant violation, not an expected error.
+    #[allow(
+        clippy::expect_used,
+        reason = "`done_rx` poison guard plus the two live-pool transport guards: a worker leaves `worker_thread` only on clean teardown or by aborting the process, so neither channel can disconnect mid-wave — see the module Panic policy header"
+    )]
     pub(crate) fn run_wave(&self, job: WaveJob) -> (WaveJob, SchedulerStats) {
         let job = Arc::new(job);
         for tx in &self.job_txs {
@@ -1025,6 +1054,10 @@ impl PersistentPool {
     /// (session start). Also usable as a broadcast wake; prefer
     /// [`wake_worker`](Self::wake_worker) for targeted pings so parked workers
     /// don't accumulate stale `Arc<RunSession>` clones on their channels.
+    #[allow(
+        clippy::expect_used,
+        reason = "live-pool transport guard: every worker is alive for the whole session (it can only leave `worker_thread` on clean teardown or by aborting), so the job channel cannot disconnect here — see the module Panic policy header"
+    )]
     pub(crate) fn start_session(&self, session: &Arc<RunSession>) {
         for tx in &self.job_txs {
             tx.send(WorkerCtl::Run(Arc::clone(session)))
@@ -1076,9 +1109,7 @@ fn worker_thread(worker_id: usize, job_rx: Receiver<WorkerCtl>, done_tx: Sender<
     // values are AST-free and never leave this thread, so this needs no Send/Sync
     // bound and is context-safe: a warm cache returns identical (pure) lifts, so
     // the found set and content fingerprints are unchanged.
-    let mut block_cache: LruCache<u64, Arc<IRSB>> = LruCache::new(
-        NonZeroUsize::new(BLOCK_CACHE_CAPACITY).expect("BLOCK_CACHE_CAPACITY is non-zero"),
-    );
+    let mut block_cache: LruCache<u64, Arc<IRSB>> = LruCache::new(BLOCK_CACHE_CAPACITY_NZ);
     // Persistent worker-local live frontier (angr-nkoct increment 1). Owned for
     // the worker's WHOLE life alongside the Z3 context and warm block cache, NOT
     // recreated per wave. The `!Send` `RustSimState`s it holds stay stack-local to
@@ -1208,4 +1239,9 @@ use worker::{worker_loop, worker_session_loop};
 
 #[cfg(test)]
 #[path = "scheduler_tests.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable"
+)]
 mod tests;

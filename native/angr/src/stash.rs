@@ -20,10 +20,16 @@
 //! `TestStateCacheSizeBound.test_cleanup_state_cache_evicts_oldest_first`,
 //! `..._drops_dead_states`, `..._skips_pinned`
 //! (tests/engines/rust/test_plugins.py).
-// Grandfathered clippy::unwrap_used/expect_used debt -- angr-9ke6b.212 tracks
-// burning this down file by file. Do not add new unwrap()/expect() calls here;
-// new files/callers must handle the None/Err case explicitly instead.
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+//!
+//! **Panic policy (angr-9ke6b.212):** [`StashManager::load_snapshot`] takes
+//! untrusted bytes and is fully `Result`-typed ([`crate::state::SnapshotError`])
+//! — including the 8-byte origin-token header, which routes a short slice
+//! through `SnapshotError::Decode` rather than a slice-conversion panic. The
+//! one surviving `expect` is on the *encode* side; see its `#[allow]`.
+//!
+//! **Enforcement (angr-qwyti.11):** this module carries
+//! `#![deny(clippy::unwrap_used, clippy::expect_used)]`.
+#![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use rustc_hash::FxHashMap;
 use std::collections::{HashMap, VecDeque};
@@ -504,6 +510,10 @@ impl StashManager {
     /// captured here are the stash map, the lineage `state_roots`, the
     /// terminal counters, and the `drop_terminal_states` flag. The
     /// `state_index` is rebuilt from the dumped stashes on load.
+    #[allow(
+        clippy::expect_used,
+        reason = "`serde_json::to_vec` over `StashManagerSnapshot`, whose derived `Serialize` has no fallible arm (no non-string map keys, no custom impl) — the only `Err` shape is an io error, which cannot arise writing to a `Vec`. Left as a panic rather than propagated because `dump_snapshot` is the pyclass-facing API returning `Vec<u8>`; giving it a `Result` would ripple through the PyO3 surface and its callers, which is out of scope for angr-9ke6b.212"
+    )]
     pub fn dump_snapshot(&self) -> Vec<u8> {
         let snap = self.to_snapshot();
         let body = serde_json::to_vec(&snap).expect("stash snapshot encode");
@@ -532,7 +542,15 @@ impl StashManager {
                 "truncated stash snapshot header".to_string(),
             ));
         }
-        let origin = u64::from_le_bytes(bytes[1..9].try_into().expect("8 header bytes"));
+        // `bytes.len() >= 9` was just checked, so the slice is exactly 8 bytes;
+        // route the impossible case through the same Decode error anyway rather
+        // than panicking on caller-supplied bytes.
+        let Ok(origin_bytes) = <[u8; 8]>::try_from(&bytes[1..9]) else {
+            return Err(crate::state::SnapshotError::Decode(
+                "truncated stash snapshot header".to_string(),
+            ));
+        };
+        let origin = u64::from_le_bytes(origin_bytes);
 
         // angr-euw28: a foreign process minted these ids from an allocator that
         // also started at 0, so they collide with ids we already handed out (the
@@ -664,4 +682,9 @@ pub struct StashManagerSnapshot {
 
 #[cfg(test)]
 #[path = "stash_tests.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+)]
 mod tests;

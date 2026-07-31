@@ -4,10 +4,15 @@
 //!
 //! The bounded-symbolic-content half of the model lives in
 //! [`super::symbolic`]; read-only accessors live in [`super::query`].
-// Grandfathered clippy::unwrap_used/expect_used debt -- angr-9ke6b.212 tracks
-// burning this down file by file. Do not add new unwrap()/expect() calls here;
-// new files/callers must handle the None/Err case explicitly instead.
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+//!
+//! **Panic policy / enforcement (angr-qwyti.11, angr-9ke6b.212):** every `fd`
+//! and path here is an untrusted guest syscall argument, so this module carries
+//! `#![deny(clippy::unwrap_used, clippy::expect_used)]` and an absent fd is a
+//! documented empty/`false`/`-1` return on every entry point. There are no
+//! `unwrap`/`expect` sites left: `read`'s post-`Arc::make_mut` re-lookup folds
+//! into that same unknown-fd contract with a `let ... else` (matching
+//! [`super::symbolic`]'s `read_sym`).
+#![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use super::*;
 
@@ -223,9 +228,12 @@ impl FileSystem {
         if n == 0 {
             return Vec::new();
         }
-        let desc = Arc::make_mut(&mut self.fds)
-            .get_mut(&fd)
-            .expect("fd existed above");
+        // Unreachable (the peek above matched `Some(desc)`), but `fd` is a
+        // guest syscall argument, so fold the miss into the documented
+        // "unknown fd reads nothing" contract rather than panicking.
+        let Some(desc) = Arc::make_mut(&mut self.fds).get_mut(&fd) else {
+            return Vec::new();
+        };
         let pos = desc.position as usize;
         let data = desc.content[pos..pos + n].to_vec();
         desc.position += n as u64;

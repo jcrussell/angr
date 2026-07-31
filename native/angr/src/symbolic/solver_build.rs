@@ -10,10 +10,12 @@
 //! [`timed_check`], [`sample_simplify_skip`]. The env-spec helpers
 //! (`tactic_spec`, `qfbv_smart_threshold`, `simplify_sample_stride`) and the
 //! [`TacticSpec`] enum stay private to this module.
-// Grandfathered clippy::unwrap_used/expect_used debt -- angr-9ke6b.212 tracks
-// burning this down file by file. Do not add new unwrap()/expect() calls here;
-// new files/callers must handle the None/Err case explicitly instead.
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+//!
+//! **Panic policy / enforcement (angr-qwyti.11, angr-9ke6b.212):** this module
+//! carries `#![deny(clippy::unwrap_used, clippy::expect_used)]`. The one
+//! surviving `expect` in [`build_solver`] reads the first entry of a tactic
+//! pipeline that [`tactic_spec`] guarantees non-empty — see its `#[allow]`.
+#![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use std::sync::atomic::Ordering;
 
@@ -322,6 +324,10 @@ fn qfbv_smart_threshold() -> f64 {
 /// and bv_rewriter params applied. Three sites in this file rely on this:
 /// initial creation, lazy fork materialization, and `set_timeout`.
 #[cfg(feature = "vex-engine-z3")]
+#[allow(
+    clippy::expect_used,
+    reason = "`TacticSpec::Pipeline` is only ever constructed by `tactic_spec`, which filters empty names out of `ANGR_Z3_TACTIC` and falls back to `TacticSpec::Default` when the resulting vec is empty — so the variant's payload is non-empty even for hostile env-var input"
+)]
 pub(crate) fn build_solver(timeout_ms: u32) -> z3::Solver {
     let solver = match tactic_spec() {
         TacticSpec::Default => z3::Solver::new(),
@@ -345,6 +351,11 @@ pub(crate) fn build_solver(timeout_ms: u32) -> z3::Solver {
 }
 
 #[cfg(all(test, feature = "vex-engine-z3"))]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+)]
 mod extra_params_tests {
     use super::{ParamValue, parse_extra_params};
 

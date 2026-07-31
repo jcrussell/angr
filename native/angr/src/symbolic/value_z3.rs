@@ -10,10 +10,30 @@
 //! in `value.rs`). Z3 types are pulled in via function-local `use` inside each
 //! method; stats counters are reached through the qualified `super::stats::`
 //! path, so the only crate-level import needed is the value enums.
-// Grandfathered clippy::unwrap_used/expect_used debt -- angr-9ke6b.212 tracks
-// burning this down file by file. Do not add new unwrap()/expect() calls here;
-// new files/callers must handle the None/Err case explicitly instead.
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+//!
+//! **Panic policy (angr-9ke6b.212):** nothing here may panic on the *shape* of
+//! the `RustBV` it is handed — that tree is built from guest data. The two
+//! surviving `Option` panics are both closed-world dispatch invariants proved
+//! by a `match` arm a few lines above the use
+//! ([`RustBV::build_z3_ast_cached`]), not input checks.
+//!
+//! The remaining panics are Z3 FFI NULL returns from the *sort* constructors
+//! (`Z3_mk_bool_sort` / `Z3_mk_bv_sort` / `Z3_get_sort`) and from
+//! [`fresh_unconstrained_raw`] itself. Every `Z3_mk_fpa_*` **term** builder in
+//! this file already degrades a NULL to a fresh unconstrained value of the
+//! correct sort via `.unwrap_or_else(|| fresh_unconstrained_raw(..))` — that is
+//! the house idiom, and it is used everywhere a correct-sort fallback is
+//! expressible. The sort constructors sit *inside* those fallbacks and have no
+//! such escape: a NULL from them means Z3 could not allocate, so there is no
+//! way to produce a width-correct value at all, and (per the
+//! [`fresh_unconstrained_raw`] rustdoc) `panic = "abort"` makes the panic a
+//! clean process abort rather than a catchable unwind. Aborting loudly on OOM
+//! beats fabricating a wrong-width AST.
+//!
+//! **Enforcement (angr-qwyti.11):** this module carries
+//! `#![deny(clippy::unwrap_used, clippy::expect_used)]` so a new panic here has
+//! to come with a reviewed, reasoned `#[allow]`.
+#![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use super::value::{BVOp, FloatOpKind, FloatPrec, RustBV};
 
@@ -300,6 +320,10 @@ impl RustBV {
     /// Build Z3 AST with caching to avoid exponential blowup on DAG expressions.
     /// See `to_z3_ast_cached()` for rationale.
     #[cfg(feature = "vex-engine-z3")]
+    #[allow(
+        clippy::expect_used,
+        reason = "two closed-world dispatch invariants, neither input-dependent: (1) the comparison arm calls `cmp_bool_for_cached` under a `BVOp::Eq | Ne | Ult | ... | Sge` pattern, which is exactly the op set that helper returns `Some` for (its own leading match returns `None` for everything else); (2) `collect_concat_leaves_cached` pushes at least one leaf on every call and is called twice before the `pop`, so `leaves` holds >= 2 entries — see the module Panic policy header"
+    )]
     fn build_z3_ast_cached(
         op: &BVOp,
         operands: &[RustBV],
@@ -553,6 +577,10 @@ impl RustBV {
     ///    thread-local context; nothing escapes the calling thread, so
     ///    Z3's per-context single-thread requirement is upheld.
     #[cfg(feature = "vex-engine-z3")]
+    #[allow(
+        clippy::expect_used,
+        reason = "`Z3_mk_bool_sort` NULL, inside the `unwrap_or_else` that already degrades a NULL *term* to `fresh_unconstrained_raw`. It is the sort needed to fabricate that fallback for a compare, so there is nothing left to degrade to — a NULL means Z3 could not allocate. See the module Panic policy header"
+    )]
     fn build_fp_z3_ast_cached(
         kind: FloatOpKind,
         prec: FloatPrec,
@@ -810,22 +838,30 @@ impl RustBV {
             // body, so `rm_raw`, `raw_a` and the `get_z3_ast()` calls on
             // `b_fp` all yield valid Z3_ast pointers. Each `Z3_mk_fpa_*`
             // returns a fresh AST (or NULL → fresh unconstrained AST via `unwrap_or_else`).
+            // Matching on `(kind, b_fp.as_ref())` rather than `kind` alone
+            // keeps the second FP operand out of an `unwrap`: `b_fp` is
+            // `Some` exactly when `is_unary` is false, i.e. for every kind
+            // but `SqrtRm`, so the binary arms bind it by pattern and the
+            // impossible (binary-kind, `None`) pairing falls into the same
+            // closed-world `unreachable!` arm as a non-Rm kind.
             let raw = unsafe {
-                match kind {
-                    FloatOpKind::AddRm => {
-                        Z3_mk_fpa_add(raw_ctx, rm_raw, raw_a, b_fp.as_ref().unwrap().get_z3_ast())
+                match (kind, b_fp.as_ref()) {
+                    (FloatOpKind::AddRm, Some(b)) => {
+                        Z3_mk_fpa_add(raw_ctx, rm_raw, raw_a, b.get_z3_ast())
                     }
-                    FloatOpKind::SubRm => {
-                        Z3_mk_fpa_sub(raw_ctx, rm_raw, raw_a, b_fp.as_ref().unwrap().get_z3_ast())
+                    (FloatOpKind::SubRm, Some(b)) => {
+                        Z3_mk_fpa_sub(raw_ctx, rm_raw, raw_a, b.get_z3_ast())
                     }
-                    FloatOpKind::MulRm => {
-                        Z3_mk_fpa_mul(raw_ctx, rm_raw, raw_a, b_fp.as_ref().unwrap().get_z3_ast())
+                    (FloatOpKind::MulRm, Some(b)) => {
+                        Z3_mk_fpa_mul(raw_ctx, rm_raw, raw_a, b.get_z3_ast())
                     }
-                    FloatOpKind::DivRm => {
-                        Z3_mk_fpa_div(raw_ctx, rm_raw, raw_a, b_fp.as_ref().unwrap().get_z3_ast())
+                    (FloatOpKind::DivRm, Some(b)) => {
+                        Z3_mk_fpa_div(raw_ctx, rm_raw, raw_a, b.get_z3_ast())
                     }
-                    FloatOpKind::SqrtRm => Z3_mk_fpa_sqrt(raw_ctx, rm_raw, raw_a),
-                    _ => unreachable!("non-Rm FP arith kind in build_fp_arith_rm_cached"),
+                    (FloatOpKind::SqrtRm, _) => Z3_mk_fpa_sqrt(raw_ctx, rm_raw, raw_a),
+                    _ => unreachable!(
+                        "non-Rm FP arith kind, or binary Rm kind without its second operand, in build_fp_arith_rm_cached"
+                    ),
                 }
                 .unwrap_or_else(|| fresh_unconstrained_raw(raw_ctx, raw_sort))
             };
@@ -895,6 +931,10 @@ impl RustBV {
     /// operand\[1\] = FP value). The result is a BV of width `dst_bits`,
     /// signed or unsigned 2's complement per `signed`.
     #[cfg(feature = "vex-engine-z3")]
+    #[allow(
+        clippy::expect_used,
+        reason = "`Z3_mk_bv_sort` NULL inside `bv_fallback`, the branch that already degrades a NULL `Z3_mk_fpa_to_[su]bv` result to a fresh unconstrained BV. `dst_bits` is a decoded VEX operand width, not a Z3 term, so the only NULL cause is allocation failure — and without the sort there is no width-correct value to fall back to. See the module Panic policy header"
+    )]
     fn build_fp_f_to_i_cached(
         prec: FloatPrec,
         dst_bits: u8,
@@ -1107,6 +1147,10 @@ fn bv_to_z3_float(
 }
 
 #[cfg(feature = "vex-engine-z3")]
+#[allow(
+    clippy::expect_used,
+    reason = "`Z3_get_sort` / `Z3_mk_bv_sort` NULL inside the `unwrap_or_else` that already degrades a NULL `Z3_mk_fpa_to_ieee_bv` to a fresh unconstrained BV. `fp` is a live Float wrapper, so `Z3_get_sort` can only return NULL on allocation failure, and both sorts are what the width-correct fallback is built from. See the module Panic policy header"
+)]
 fn float_to_ieee_bv(
     z3_ctx: &z3::Context,
     raw_ctx: z3_sys::Z3_context,
@@ -1154,6 +1198,10 @@ fn float_to_ieee_bv(
 /// handed to a `*::wrap` constructor by the caller, exactly like the
 /// non-fallback path.
 #[cfg(feature = "vex-engine-z3")]
+#[allow(
+    clippy::expect_used,
+    reason = "this IS the degradation target every other NULL path in this module falls back to, so it has nothing of its own to fall back to; `Z3_mk_fresh_const` returns NULL only on allocation failure — see the `# Panics`-adjacent rationale in this function's own rustdoc above"
+)]
 unsafe fn fresh_unconstrained_raw(
     raw_ctx: z3_sys::Z3_context,
     raw_sort: z3_sys::Z3_sort,

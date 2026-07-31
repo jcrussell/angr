@@ -21,18 +21,19 @@
 //! the inner fields through a thin delegation. Do NOT add helper methods
 //! as a separate cleanup; the parent angr-4j5u was deferred multiple
 //! times for cosmetic gains.
-// Grandfathered clippy::unwrap_used/expect_used debt -- angr-9ke6b.212 tracks
-// burning this down file by file. Do not add new unwrap()/expect() calls here;
-// new files/callers must handle the None/Err case explicitly instead.
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+//!
+//! **Panic policy / enforcement (angr-qwyti.11, angr-9ke6b.212):** this module
+//! carries `#![deny(clippy::unwrap_used, clippy::expect_used)]`. There are no
+//! `unwrap`/`expect` sites left: the block-cache capacity is validated at
+//! compile time by [`crate::interpreter::BLOCK_CACHE_CAPACITY_NZ`].
+#![deny(clippy::unwrap_used, clippy::expect_used)]
 
-use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use lru::LruCache;
 
 use crate::arch::CallingConvention;
-use crate::interpreter::BLOCK_CACHE_CAPACITY;
+use crate::interpreter::BLOCK_CACHE_CAPACITY_NZ;
 use crate::vex::{IRSB, VexArch};
 
 pub(crate) struct ExecutionEnvironment {
@@ -106,9 +107,7 @@ impl ExecutionEnvironment {
             os_name: "linux".to_string(),
             vex_arch,
             binary_regions: Vec::new(),
-            block_cache: LruCache::new(
-                NonZeroUsize::new(BLOCK_CACHE_CAPACITY).expect("BLOCK_CACHE_CAPACITY is non-zero"),
-            ),
+            block_cache: LruCache::new(BLOCK_CACHE_CAPACITY_NZ),
             calling_convention,
             little_endian,
             max_history: 1000,
@@ -119,6 +118,11 @@ impl ExecutionEnvironment {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+)]
 mod tests {
     use super::*;
 

@@ -778,4 +778,9 @@ pub(crate) fn cc_for_arch(arch_name: &str) -> Option<Box<dyn CallingConvention>>
 
 #[cfg(test)]
 #[path = "calling_conventions_tests.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+)]
 mod calling_conventions_tests;

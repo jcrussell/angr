@@ -1,8 +1,10 @@
 //! Subset construction algorithm for converting ε-NFA to DFA.
-// Grandfathered clippy::unwrap_used/expect_used debt -- angr-9ke6b.212 tracks
-// burning this down file by file. Do not add new unwrap()/expect() calls here;
-// new files/callers must handle the None/Err case explicitly instead.
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+//!
+//! **Panic policy / enforcement (angr-qwyti.11, angr-9ke6b.212):** this module
+//! carries `#![deny(clippy::unwrap_used, clippy::expect_used)]`. The one
+//! surviving `expect` in [`subset_construction`] is a worklist invariant, not
+//! an input check — see its `#[allow]` reason.
+#![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use crate::automaton::dfa::DFA;
 use crate::automaton::epsilon_nfa::EpsilonNFA;
@@ -11,6 +13,10 @@ use indexmap::IndexMap;
 use std::collections::HashMap;
 
 /// Convert an epsilon-NFA to a DFA using the powerset construction algorithm.
+#[allow(
+    clippy::expect_used,
+    reason = "worklist invariant: `worklist.push(set)` happens only where the same `set` was just inserted into `state_mapping` (the initial-set seed and the new-DFA-state branch), so a popped entry always has a mapping. Nothing here reads guest data"
+)]
 pub(super) fn subset_construction(nfa: &EpsilonNFA) -> DFA {
     // Each DFA state corresponds to a set of NFA states
     // We map sets of NFA states to DFA state IDs
@@ -43,8 +49,9 @@ pub(super) fn subset_construction(nfa: &EpsilonNFA) -> DFA {
 
     while let Some(current_nfa_set) = worklist.pop() {
         let current_vec = current_nfa_set.to_vec();
-        // Invariant: every NFA set pushed onto the worklist was first inserted
-        // into state_mapping (at lines 29 and 62), so this lookup always succeeds.
+        // Invariant: every NFA set pushed onto `worklist` was first inserted
+        // into `state_mapping` (the initial-set seed above and the
+        // new-DFA-state branch below), so this lookup always succeeds.
         let current_dfa_state = *state_mapping
             .get(&current_vec)
             .expect("worklist entry missing from state_mapping");
@@ -95,4 +102,9 @@ pub(super) fn subset_construction(nfa: &EpsilonNFA) -> DFA {
 
 #[cfg(test)]
 #[path = "subset_construction_tests.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+)]
 mod tests;

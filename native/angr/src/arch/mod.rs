@@ -5,10 +5,14 @@
 //! - Register file implementations for each architecture
 //! - Register name mappings
 //! - Calling convention implementations for argument extraction
-// Grandfathered clippy::unwrap_used/expect_used debt -- angr-9ke6b.212 tracks
-// burning this down file by file. Do not add new unwrap()/expect() calls here;
-// new files/callers must handle the None/Err case explicitly instead.
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+//!
+//! **Panic policy / enforcement (angr-qwyti.11, angr-9ke6b.212):** register
+//! offsets and sizes reaching this module come from VEX/guest state, so it
+//! carries `#![deny(clippy::unwrap_used, clippy::expect_used)]`. There are no
+//! `unwrap`/`expect` sites left: the sub-register composition in
+//! `RegisterFile::read` folds its `parts` vec with `if let Some(mut result) =
+//! parts.pop()`, which also subsumes the old non-empty pre-check.
+#![deny(clippy::unwrap_used, clippy::expect_used)]
 
 // `pub(crate)` rather than private: the per-arch `offsets` modules are the
 // single documented source of truth for VEX guest-state register offsets
@@ -348,10 +352,7 @@ impl RegisterFile {
                 }
                 // Compose parts: in little-endian, lower offset = LSB
                 // Concat builds MSB first, so we reverse
-                if !parts.is_empty() {
-                    let mut result = parts.pop().expect(
-                        "parts vec is non-empty because at least one sub-register was found",
-                    );
+                if let Some(mut result) = parts.pop() {
                     while let Some(part) = parts.pop() {
                         result = result.concat(&part, ctx);
                     }
@@ -853,4 +854,9 @@ pub(crate) fn arch_from_vex(arch: VexArch) -> Box<dyn Arch> {
 
 #[cfg(test)]
 #[path = "mod_tests.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+)]
 mod tests;

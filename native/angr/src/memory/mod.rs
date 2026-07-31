@@ -4,10 +4,20 @@
 //! - O(1) forking via copy-on-write (using Grudge's RustPage)
 //! - Mixed concrete/symbolic value storage
 //! - Efficient symbolic address handling
-// Grandfathered clippy::unwrap_used/expect_used debt -- angr-9ke6b.212 tracks
-// burning this down file by file. Do not add new unwrap()/expect() calls here;
-// new files/callers must handle the None/Err case explicitly instead.
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+//!
+//! **Panic policy (angr-9ke6b.212):** every address that reaches this module is
+//! guest-derived, so nothing here may panic on address shape — unresolvable
+//! addresses surface as [`MemoryError`] variants the caller routes to the
+//! Python memory model. The one surviving `expect` pair is in
+//! [`SymbolicMemory::merge`] and is guarded by the page bitmap read one line
+//! earlier, not by anything the guest controls.
+//!
+//! **Enforcement (angr-qwyti.11):** this module carries
+//! `#![deny(clippy::unwrap_used, clippy::expect_used)]`, which also reaches the
+//! `address`/`concretize_glue`/`ite_builder`/`multi`/`page`/`store`/`load`/
+//! `symbolic_objects` child modules, so a new panic on an untrusted address
+//! anywhere under `memory/` needs a reviewed, reasoned `#[allow]`.
+#![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use std::cell::RefCell;
 
@@ -27,6 +37,11 @@ mod page;
 mod store;
 mod symbolic_objects;
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` in the parent overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+)]
 mod tests;
 pub use address::Address;
 pub use multi::{MultiAlternative, MultiPayload};
@@ -123,6 +138,23 @@ impl ConcretizationResult {
             }),
             _ => None,
         }
+    }
+
+    /// Total form of [`Self::to_symbolic_address_error`] for the concretization
+    /// dispatch sites, whose catch-all arm has already peeled off every success
+    /// variant.
+    ///
+    /// Those arms used to end in `.to_symbolic_address_error().expect(..)`,
+    /// which turned a hypothetical new success variant into a panic. This maps
+    /// it onto the same recoverable `SymbolicAddress` error the caller already
+    /// routes to the Python memory model — the same defense-in-depth trade
+    /// [`MemoryError::UnexpectedSymbolic`] documents — while naming the
+    /// unexpected variant so the message is still diagnosable.
+    pub(crate) fn as_symbolic_address_error(&self) -> MemoryError {
+        self.to_symbolic_address_error()
+            .unwrap_or_else(|| MemoryError::SymbolicAddress {
+                description: format!("unexpected concretization result: {self:?}"),
+            })
     }
 }
 
@@ -996,6 +1028,10 @@ impl SymbolicMemory {
     /// value is `ITE(merge_cond_other, other_byte, self_byte)`.
     ///
     /// Returns true if any memory was actually merged (values differed).
+    #[allow(
+        clippy::expect_used,
+        reason = "`s_multi`/`o_multi` are `page.has_multi() && page.is_multi(i)` bitmap reads taken from the same byte index a few lines above, and that bit is set only alongside the `multi_objects` entry for the byte's address — so both lookups are proved by the guard that gates this branch, and neither depends on guest input"
+    )]
     pub fn merge(
         &mut self,
         other: &SymbolicMemory,

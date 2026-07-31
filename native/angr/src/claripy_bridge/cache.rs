@@ -5,10 +5,14 @@
 //! public store/get/lookup/clear helpers that wrap them. The cross-cache
 //! invariants C3-C5 are documented in the parent module rustdoc (see `super`).
 //! Both `super::import` and `super::export` depend on these helpers.
-// Grandfathered clippy::unwrap_used/expect_used debt -- angr-9ke6b.212 tracks
-// burning this down file by file. Do not add new unwrap()/expect() calls here;
-// new files/callers must handle the None/Err case explicitly instead.
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+//!
+//! **Panic policy / enforcement (angr-qwyti.11, angr-9ke6b.212):** this is a
+//! Python-boundary module, so `unwrap`/`expect` are denied here — a claripy AST
+//! handed in from Python must never be able to reach a panic. The two
+//! cache-capacity conversions that used to `expect` are now `const`s
+//! ([`AST_CACHE_SIZE_NZ`], [`EXPRESSION_CACHE_SIZE_NZ`]), so their non-zero
+//! proof happens at compile time instead.
+#![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use std::cell::RefCell;
 use std::num::NonZeroUsize;
@@ -20,6 +24,21 @@ use crate::symbolic::{RustBV, global_registry};
 
 /// Maximum number of AST nodes to cache.
 const AST_CACHE_SIZE: usize = 10000;
+
+/// [`AST_CACHE_SIZE`] pre-validated for `LruCache::new`. Doing the conversion
+/// in a `const` moves the non-zero proof to compile time — a zero capacity
+/// fails the build rather than panicking at first use.
+const AST_CACHE_SIZE_NZ: NonZeroUsize = match NonZeroUsize::new(AST_CACHE_SIZE) {
+    Some(n) => n,
+    None => panic!("AST_CACHE_SIZE must be non-zero"),
+};
+
+/// Capacity of `EXPRESSION_BY_OPERANDS_PTR`, pre-validated like
+/// [`AST_CACHE_SIZE_NZ`].
+const EXPRESSION_CACHE_SIZE_NZ: NonZeroUsize = match NonZeroUsize::new(10000) {
+    Some(n) => n,
+    None => panic!("expression-by-ptr cache capacity must be non-zero"),
+};
 
 // Thread-local LRU mapping `claripy_ast.__hash__() → RustBV`.
 //
@@ -50,7 +69,7 @@ const AST_CACHE_SIZE: usize = 10000;
 // mapping (rust_id → original AST) lives in the `SymbolicIdentityRegistry`.
 thread_local! {
     pub(super) static AST_CACHE: RefCell<LruCache<i64, RustBV>> =
-        RefCell::new(LruCache::new(NonZeroUsize::new(AST_CACHE_SIZE).expect("AST_CACHE_SIZE is a non-zero constant")));
+        RefCell::new(LruCache::new(AST_CACHE_SIZE_NZ));
 }
 
 /// Short-hand for `CACHE.with(|c| c.borrow_mut().…)` against the thread-local
@@ -97,7 +116,7 @@ macro_rules! tl_cache {
 // cache for compound Expression nodes (see C4).
 thread_local! {
     static EXPRESSION_BY_OPERANDS_PTR: RefCell<LruCache<usize, (RustBV, Py<PyAny>)>> =
-        RefCell::new(LruCache::new(NonZeroUsize::new(10000).expect("expression-by-ptr cache capacity is a non-zero constant")));
+        RefCell::new(LruCache::new(EXPRESSION_CACHE_SIZE_NZ));
 }
 
 /// Store a claripy AST with full symbol information.
@@ -253,4 +272,9 @@ pub(crate) fn cache_stats() -> (usize, usize) {
 
 #[cfg(test)]
 #[path = "cache_tests.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+)]
 mod cache_tests;

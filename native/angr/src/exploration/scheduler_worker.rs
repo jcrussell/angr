@@ -10,10 +10,16 @@
 //! on those structs are needed. Only the two loop entry points and the shared
 //! `dispatch_next` are re-exported into the parent (`pub(super)`); see the parent
 //! module for the transport invariant and panic-policy rationale.
-// Grandfathered clippy::unwrap_used/expect_used debt -- angr-9ke6b.212 tracks
-// burning this down file by file. Do not add new unwrap()/expect() calls here;
-// new files/callers must handle the None/Err case explicitly instead.
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+//!
+//! **Panic policy / enforcement (angr-qwyti.11, angr-9ke6b.212):** the two
+//! `.expect` sites here are both `job.results.lock()` poison guards, covered
+//! verbatim by the "Mutex poisoning cannot happen" bullet of the parent
+//! [`scheduler`](super) Panic policy — `panic = "abort"` means no thread can
+//! unwind out of a live guard to flag the lock. The parent's
+//! `#![deny(clippy::unwrap_used, clippy::expect_used)]` already reaches this
+//! file (it is a `#[path]` child module); the deny is restated below so the
+//! guarantee is visible to anyone reading this file on its own.
+#![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use super::*;
 use std::time::Instant;
@@ -34,6 +40,10 @@ use std::time::Instant;
 // the block comment); clippy resolves `significant_drop_tightening` at the
 // item, so the allow lives here.
 #[allow(clippy::significant_drop_tightening)]
+#[allow(
+    clippy::expect_used,
+    reason = "`job.results` poison guard: poison requires a thread to unwind out of a live `MutexGuard`, which `panic = \"abort\"` forecloses — see the parent scheduler module Panic policy"
+)]
 pub(super) fn worker_loop(
     worker_id: usize,
     job: &WaveJob,
@@ -282,6 +292,10 @@ fn drain_local_with(
 /// Wave-mode residual drain: push the un-dispatched local frontier into the
 /// wave's shared `results` vec, where the post-barrier coordinator picks it up
 /// alongside the materialized terminals.
+#[allow(
+    clippy::expect_used,
+    reason = "`job.results` poison guard: poison requires a thread to unwind out of a live `MutexGuard`, which `panic = \"abort\"` forecloses — see the parent scheduler module Panic policy"
+)]
 fn drain_local_into_results(job: &WaveJob, local: &mut VecDeque<RustSimState>) {
     if local.is_empty() {
         return;
@@ -577,4 +591,9 @@ pub(super) fn steal_from_injector(
 
 #[cfg(test)]
 #[path = "scheduler_worker_tests.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable"
+)]
 mod tests;

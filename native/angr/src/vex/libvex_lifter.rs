@@ -19,10 +19,18 @@
 //!   types *before* releasing the lift lock, so nothing outlives the arena.
 //! - libVEX global state (`vex_control`, the arena) is not re-entrant. A single
 //!   process-wide `LIFT_LOCK` mutex serializes every lift.
-// Grandfathered clippy::unwrap_used/expect_used debt -- angr-9ke6b.212 tracks
-// burning this down file by file. Do not add new unwrap()/expect() calls here;
-// new files/callers must handle the None/Err case explicitly instead.
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+//!
+//! **Panic policy (angr-9ke6b.212):** the guest bytes handed to
+//! [`NativeLibVEXLifter::lift`] are untrusted and every marshalling failure
+//! returns a [`LiftError`], which the caller turns into a Python-lift fallback.
+//! The one `expect` is the `LIFT_LOCK` poison guard: poison requires a thread
+//! to unwind out of a live `MutexGuard`, and the crate ships with
+//! `panic = "abort"` (workspace `Cargo.toml`, angr-1cue), so no unwind is
+//! possible.
+//!
+//! **Enforcement (angr-qwyti.11):** this module carries
+//! `#![deny(clippy::unwrap_used, clippy::expect_used)]`.
+#![deny(clippy::unwrap_used, clippy::expect_used)]
 // Every marshalling helper below is an `unsafe fn` whose entire body walks the
 // libVEX arena. Wrapping each individual deref in its own `unsafe {}` block adds
 // only rightward drift here — the whole module is a single unsafe domain gated
@@ -113,6 +121,10 @@ fn ffi_vex_arch(arch: VexArch) -> Option<ffi::VexArch> {
 }
 
 impl VEXLifter for NativeLibVEXLifter {
+    #[allow(
+        clippy::expect_used,
+        reason = "`LIFT_LOCK` poison guard: poison requires an unwind out of a live `MutexGuard`, which `panic = \"abort\"` forecloses — see the module Panic policy header"
+    )]
     fn lift(&self, bytes: &[u8], addr: u64, arch: VexArch) -> Result<IRSB, LiftError> {
         let Some(guest_arch) = ffi_vex_arch(arch) else {
             return Err(LiftError::InvalidArch(format!(
@@ -670,9 +682,19 @@ unsafe fn marshal_irsb(irsb: *const ffi::IRSB, addr: u64, arch: VexArch) -> IRSB
 
 #[cfg(test)]
 #[path = "libvex_lifter_tests.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+)]
 mod tests;
 
 // Corpus IRSB parity gate (native vs pyvex-serialized) — the real Stage-1 gate.
 #[cfg(test)]
 #[path = "libvex_corpus_tests.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+)]
 mod corpus_tests;

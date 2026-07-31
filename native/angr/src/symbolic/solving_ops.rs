@@ -16,13 +16,16 @@
 //! directly and are not part of the read path. See bd memory
 //! `a2br2-context-split-impl-block-plan` for the slice plan.
 //!
+//! **Panic policy / enforcement (angr-qwyti.11, angr-9ke6b.212):** this module
+//! carries `#![deny(clippy::unwrap_used, clippy::expect_used)]`. Every query
+//! here runs over guest-derived constraints, and an undecided Z3 result is
+//! propagated as `None` (invariant `invariant-z3-unknown-not-unsat`), never
+//! collapsed or unwrapped.
+//!
 //! Lives as a second `impl SymContext` block in a child module of `symbolic`;
 //! `pub(super)` (== `pub(in crate::symbolic)`) keeps the promoted caches
 //! module-private — no public API leak.
-// Grandfathered clippy::unwrap_used/expect_used debt -- angr-9ke6b.212 tracks
-// burning this down file by file. Do not add new unwrap()/expect() calls here;
-// new files/callers must handle the None/Err case explicitly instead.
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use super::RustBV;
 use super::SymContext;
@@ -995,11 +998,13 @@ impl SymContext {
 
                 if has_negative {
                     // Minimum is negative, search in [sign_bit, max_val] range.
-                    let hi_seed = if witness_is_negative {
+                    // Binding the witness in the arm that requires it keeps
+                    // `witness_is_negative` (itself `witness.map(..)`-derived)
+                    // from being re-proved with an unwrap.
+                    let hi_seed = match witness {
                         // Witness is in [sign_bit, max_val] and feasible.
-                        witness.unwrap().min(max_val)
-                    } else {
-                        max_val
+                        Some(w) if witness_is_negative => w.min(max_val),
+                        _ => max_val,
                     };
                     (sign_bit, hi_seed)
                 } else {
@@ -1126,10 +1131,11 @@ impl SymContext {
                 if has_non_negative {
                     // Maximum is non-negative, search in [0, max_positive] range.
                     // Witness, when non-negative, gives a tight lower bound.
-                    let lo_seed = if witness_is_non_negative {
-                        witness.unwrap().min(max_positive)
-                    } else {
-                        0
+                    // Same shape as `bsearch_min`'s `hi_seed`: bind the
+                    // witness in the arm that needs it rather than unwrapping.
+                    let lo_seed = match witness {
+                        Some(w) if witness_is_non_negative => w.min(max_positive),
+                        _ => 0,
                     };
                     (lo_seed, max_positive)
                 } else {

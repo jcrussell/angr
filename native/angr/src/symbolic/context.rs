@@ -62,10 +62,13 @@
 //!   NOT default `use_shared_lineage_solver` on for `strategy='dfs'`. Both
 //!   the canonical WIN (ais3_crackme) and LOSE (defcon2016quals_baby-re)
 //!   canaries run BFS — strategy is not the discriminator.
-// Grandfathered clippy::unwrap_used/expect_used debt -- angr-9ke6b.212 tracks
-// burning this down file by file. Do not add new unwrap()/expect() calls here;
-// new files/callers must handle the None/Err case explicitly instead.
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+//!
+//! **Panic policy / enforcement (angr-qwyti.11, angr-9ke6b.212):** this module
+//! carries `#![deny(clippy::unwrap_used, clippy::expect_used)]`. It owns the Z3
+//! solver behind guest-derived constraints; the one surviving `expect` in
+//! [`SymContext::solver`] reads back a lazily-materialized solver the same
+//! function just stored under the same held guard.
+#![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -618,6 +621,10 @@ impl SymContext {
     /// On first access, a fresh solver is created and cached assertions are
     /// replayed.
     #[cfg(feature = "vex-engine-z3")]
+    #[allow(
+        clippy::expect_used,
+        reason = "`guard` is `Some` here by construction: the block directly above stores `*guard = Some(new_solver)` on the `None` path and the guard is held across both, so no other thread can clear it in between. `MutexGuard::map` must yield a `&mut Solver`, so there is no `Option` return to widen into"
+    )]
     pub(super) fn solver(&self) -> parking_lot::MappedMutexGuard<'_, z3::Solver> {
         let mut guard = self.solver.lock();
         if guard.is_none() {
@@ -877,19 +884,49 @@ pub(crate) mod merge_instrument {
 // no-z3 nightly `cargo test` combos compiling; default build runs them all.
 #[cfg(all(test, feature = "vex-engine-z3"))]
 #[path = "context_tests/constraints.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+)]
 mod context_tests_constraints;
 #[cfg(test)]
 #[path = "context_tests/lineage.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+)]
 mod context_tests_lineage;
 #[cfg(test)]
 #[path = "context_tests/merge_prefix.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+)]
 mod context_tests_merge_prefix;
 #[cfg(test)]
 #[path = "context_tests/merge_shape_spike.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+)]
 mod context_tests_merge_shape_spike;
 #[cfg(test)]
 #[path = "context_tests/smtlib2_snapshot.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+)]
 mod context_tests_smtlib2_snapshot;
 #[cfg(test)]
 #[path = "context_tests/solver.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+)]
 mod context_tests_solver;

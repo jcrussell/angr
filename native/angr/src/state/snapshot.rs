@@ -1,8 +1,16 @@
 //! Snapshot serialization (serde wire format) for `RustSimState`.
-// Grandfathered clippy::unwrap_used/expect_used debt -- angr-9ke6b.212 tracks
-// burning this down file by file. Do not add new unwrap()/expect() calls here;
-// new files/callers must handle the None/Err case explicitly instead.
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+//!
+//! **Panic policy (angr-9ke6b.212):** the *decode* direction takes untrusted
+//! bytes and is fully `Result`-typed ([`SnapshotError`]) — nothing there
+//! panics. The two surviving `expect`s are (a) the encode direction, where
+//! `serde_json::to_vec` over a derived `Serialize` writing into a `Vec` has no
+//! reachable `Err`, and (b) [`RustSimState::bench_decode_snapshot`], a
+//! `#[doc(hidden)]` benchmark hook fed only by bytes this module just produced.
+//! Both are documented at their `#[allow]`s; neither is on the untrusted path.
+//!
+//! **Enforcement (angr-qwyti.11):** this module carries
+//! `#![deny(clippy::unwrap_used, clippy::expect_used)]`.
+#![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use super::*;
 
@@ -256,6 +264,10 @@ impl RustSimState {
     /// `Arc<...>` boxed enums whose postcard schema would lock the format
     /// to today's `crate::symbolic::value::BVOp` layout; JSON tolerates
     /// minor variant churn without a breaking change.
+    #[allow(
+        clippy::expect_used,
+        reason = "`serde_json::to_vec` over `RustSimStateSnapshot`, whose derived `Serialize` has no fallible arm and writes into a `Vec` (so no io error). Left as a panic rather than propagated because `to_serialized` returns `Vec<u8>` across the PyO3 surface and the migration payload path; widening it to `Result` would ripple into every caller — out of scope for angr-9ke6b.212"
+    )]
     pub fn to_serialized(&self) -> Vec<u8> {
         crate::migrate_phase_timers::time_roundtrip_half(|| {
             // angr-t3l5o Phase 0b: arm the migration-serialize guard so the
@@ -331,6 +343,10 @@ impl RustSimState {
     /// rebuild), isolating the serde-decode cost. Uses the same
     /// `disable_recursion_limit` as [`Self::from_serialized`].
     #[doc(hidden)]
+    #[allow(
+        clippy::expect_used,
+        reason = "`#[doc(hidden)]` benchmark hook: the only callers are the in-repo benches, which feed it bytes `to_serialized` just produced. Untrusted bytes go through `from_serialized`, which is `Result`-typed"
+    )]
     pub fn bench_decode_snapshot(bytes: &[u8]) -> RustSimStateSnapshot {
         let mut de = serde_json::Deserializer::from_slice(bytes);
         de.disable_recursion_limit();

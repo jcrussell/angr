@@ -76,10 +76,13 @@
 //!
 //! Two SimProcedures are **never** chained or merged: at most one of
 //! native-or-Python runs per dispatch, and the choice is taken once.
-// Grandfathered clippy::unwrap_used/expect_used debt -- angr-9ke6b.212 tracks
-// burning this down file by file. Do not add new unwrap()/expect() calls here;
-// new files/callers must handle the None/Err case explicitly instead.
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+//!
+//! **Panic policy / enforcement (angr-qwyti.11, angr-9ke6b.212):** every
+//! procedure argument here is guest data, so this module carries
+//! `#![deny(clippy::unwrap_used, clippy::expect_used)]`; a value a procedure
+//! cannot handle returns `ProcedureError` and falls back to Python. The one
+//! surviving `expect` in [`symbol_counter`] is a mutex poison guard.
+#![deny(clippy::unwrap_used, clippy::expect_used)]
 
 #[macro_use]
 mod macros;
@@ -133,6 +136,11 @@ pub(crate) mod time;
 pub(crate) mod write;
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+)]
 mod test_util;
 
 use std::collections::HashMap;
@@ -153,6 +161,10 @@ static SYMBOL_COUNTERS: OnceLock<Mutex<HashMap<&'static str, u64>>> = OnceLock::
 /// per-procedure `static AtomicU64 *_COUNTER` pattern so all fresh-symbol
 /// counters are coordinated in one place and easy to audit. Symbol-name
 /// uniqueness still depends on the prefix the caller chooses.
+#[allow(
+    clippy::expect_used,
+    reason = "`SYMBOL_COUNTERS` poison guard: poison requires a thread to unwind out of a live `MutexGuard`, and the crate ships with `panic = \"abort\"` (workspace `Cargo.toml`, angr-1cue), so no unwind is possible"
+)]
 pub(crate) fn symbol_counter(prefix: &'static str) -> u64 {
     let counters = SYMBOL_COUNTERS.get_or_init(|| Mutex::new(HashMap::new()));
     let mut guard = counters.lock().expect("symbol counter mutex poisoned");
@@ -739,4 +751,9 @@ impl NativeProcedureRegistry {
 
 #[cfg(test)]
 #[path = "mod_tests.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+)]
 mod tests;

@@ -5,10 +5,13 @@
 //! fns the dispatcher calls are `pub(super)`, the rest are module-private.
 //! `use super::*` inherits the parent's imports plus the private `ForkPayload`
 //! / `ForkSink` / `SimProcCall` helper structs (visible to this descendant).
-// Grandfathered clippy::unwrap_used/expect_used debt -- angr-9ke6b.212 tracks
-// burning this down file by file. Do not add new unwrap()/expect() calls here;
-// new files/callers must handle the None/Err case explicitly instead.
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+//!
+//! **Panic policy / enforcement (angr-qwyti.11, angr-9ke6b.212):** these arms
+//! classify guest-derived step results, so the parent [`core_outcome`](super)
+//! module's `#![deny(clippy::unwrap_used, clippy::expect_used)]` reaches this
+//! file and there are no `unwrap`/`expect` sites left in it; the deny is
+//! restated below so the guarantee is visible when reading this file alone.
+#![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use super::*;
 
@@ -855,23 +858,27 @@ pub(super) fn handle_syscall_core(
         } else {
             ctx.cc.extract_syscall_args(&state, n_args)
         };
-        let Ok(args) = args else {
-            log::debug!(
-                "Skipping native syscall (arg extraction failed): {:?}",
-                args.unwrap_err()
-            );
-            counters.syscall_python_fallback_count += 1;
-            *counters
-                .syscall_python_fallback_by_num
-                .entry(num.map(|n| n as i64).unwrap_or(-1))
-                .or_insert(0) += 1;
-            return bounce(
-                BounceKind::SyscallPython { num },
-                state,
-                payload,
-                std::mem::take(counters),
-                root_hint,
-            );
+        let args = match args {
+            Ok(args) => args,
+            Err(err) => {
+                // SILENT(cat-a): expected control flow — a syscall whose args
+                // the native CC cannot extract is bounced to the Python
+                // syscall implementation, which is authoritative. Logged at
+                // debug and counted in `syscall_python_fallback_by_num`.
+                log::debug!("Skipping native syscall (arg extraction failed): {err:?}");
+                counters.syscall_python_fallback_count += 1;
+                *counters
+                    .syscall_python_fallback_by_num
+                    .entry(num.map(|n| n as i64).unwrap_or(-1))
+                    .or_insert(0) += 1;
+                return bounce(
+                    BounceKind::SyscallPython { num },
+                    state,
+                    payload,
+                    std::mem::take(counters),
+                    root_hint,
+                );
+            }
         };
         let outcome = handler.call(&mut state, &args);
         if outcome.is_ok() {

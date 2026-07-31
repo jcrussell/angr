@@ -3,6 +3,14 @@
 //! These procedures handle stdin input by creating symbolic bytes.
 //! fgets stores symbolic bytes to a buffer, fgetc/getchar return a single symbolic byte.
 //!
+//! **Panic policy / enforcement (angr-qwyti.11, angr-9ke6b.212):** this module
+//! carries `#![deny(clippy::unwrap_used, clippy::expect_used)]` — the FILE\*
+//! and buffer arguments are guest-supplied and every failure to resolve them
+//! already returns a `ProcedureError` that falls back to Python. The two
+//! statement-level `#[allow]`s below are the `mint_stdin_bytes` one-name
+//! contract, not input checks.
+#![deny(clippy::unwrap_used, clippy::expect_used)]
+//!
 //! # Behavior
 //!
 //! - For stdin (resolved `_fileno == 0`): creates symbolic BVS variables
@@ -23,10 +31,6 @@
 //!   returns the error sentinel, matching Python `fgets`/`fgetc` (which return
 //!   -1 when the backing SimFileDescriptor is missing). A symbolic FILE* or
 //!   symbolic `_fileno` also falls back to Python.
-// Grandfathered clippy::unwrap_used/expect_used debt -- angr-9ke6b.212 tracks
-// burning this down file by file. Do not add new unwrap()/expect() calls here;
-// new files/callers must handle the None/Err case explicitly instead.
-#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use super::stdin_common::mint_stdin_bytes;
 use super::{ProcedureError, symbol_counter};
@@ -294,6 +298,7 @@ crate::declare_proc! {
         let short_reads = state.has_option("SHORT_READS");
         // Mints the leaf, binds it to a harness-seeded fd-0 byte if there is one,
         // and records it for posix.dumps(0) export when there is not.
+        #[allow(clippy::expect_used, reason = "`mint_stdin_bytes` returns exactly one `RustBV` per requested name (its own doc contract, and it builds the vec by mapping over `names`), and the call passes a single-element slice via `slice::from_ref`, so the vec always holds one element")]
         let sym_byte = mint_stdin_bytes(state, std::slice::from_ref(&name))
             .pop()
             .expect("mint_stdin_bytes returns one BV per name");
@@ -337,6 +342,7 @@ crate::declare_proc! {
         let short_reads = state.has_option("SHORT_READS");
         // Mints the leaf, binds it to a harness-seeded fd-0 byte if there is one,
         // and records it for posix.dumps(0) export when there is not.
+        #[allow(clippy::expect_used, reason = "`mint_stdin_bytes` returns exactly one `RustBV` per requested name (its own doc contract, and it builds the vec by mapping over `names`), and the call passes a single-element slice via `slice::from_ref`, so the vec always holds one element")]
         let sym_byte = mint_stdin_bytes(state, std::slice::from_ref(&name))
             .pop()
             .expect("mint_stdin_bytes returns one BV per name");
@@ -408,4 +414,9 @@ crate::declare_proc! {
 
 #[cfg(test)]
 #[path = "fgets_tests.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+)]
 mod tests;

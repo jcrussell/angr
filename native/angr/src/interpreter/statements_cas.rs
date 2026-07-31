@@ -1,7 +1,13 @@
-// Grandfathered clippy::unwrap_used/expect_used debt -- angr-9ke6b.212 tracks
-// burning this down file by file. Do not add new unwrap()/expect() calls here;
-// new files/callers must handle the None/Err case explicitly instead.
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+//! Compare-and-swap (`IRStmt::CAS`) execution, single and double-width.
+//!
+//! **Panic policy / enforcement (angr-qwyti.11, angr-9ke6b.212):** the CAS
+//! operands come straight from guest-lifted IR, so this module carries
+//! `#![deny(clippy::unwrap_used, clippy::expect_used)]` and malformed IR
+//! returns `CbExecutionError::InvalidIR`. There are no `unwrap`/`expect` sites
+//! left: the all-Some/all-None DCAS validation in `execute_cas_stmt` now binds
+//! `old_hi`/`data_hi` in the arm that proves them present, so the DCAS branch
+//! needs no second unwrap.
+#![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use super::helpers::bv_to_bytes;
 use super::*;
@@ -69,9 +75,14 @@ impl<'a> VEXInterpreter<'a> {
             endness,
         } = cas;
 
-        let is_dcas = match (old_hi, expd_hi, data_hi) {
-            (Some(_), Some(_), Some(_)) => true,
-            (None, None, None) => false,
+        // Bind the two Hi operands the DCAS branch actually needs right here,
+        // in the arm that proves they are present. The IR is guest-derived, so
+        // the all-Some/all-None validation below is a real input check — the
+        // point of carrying the values out of it is that the DCAS branch then
+        // needs no second `unwrap` to re-derive what this match established.
+        let dcas_operands = match (old_hi, expd_hi, data_hi) {
+            (Some(old_hi), Some(_), Some(data_hi)) => Some((old_hi, data_hi)),
+            (None, None, None) => None,
             _ => {
                 return Err(CbExecutionError::InvalidIR(
                     "CAS: oldHi/expdHi/dataHi must be all-Some (DCAS) or all-None (single)"
@@ -85,7 +96,7 @@ impl<'a> VEXInterpreter<'a> {
             .get_type(&irsb.tyenv)
             .ok_or_else(|| CbExecutionError::InvalidIR("CAS expdLo has no type".to_string()))?;
 
-        if is_dcas && endness == Endness::Big {
+        if dcas_operands.is_some() && endness == Endness::Big {
             // No real arch (x86-64 cmpxchg16b, ARM64 LDXP) is BE; if BE DCAS
             // ever shows up, defer to Python's full-CAS implementation rather
             // than guessing the address-of-Hi vs address-of-Lo convention.
@@ -105,20 +116,21 @@ impl<'a> VEXInterpreter<'a> {
         let data_lo_val = self.eval_expr_with_callbacks(callbacks, data_lo, &irsb.tyenv)?;
 
         // For DCAS, also load the high half at addr + sizeof(half).
-        let dcas = if is_dcas {
-            let addr_hi_expr = Self::cas_compute_addr_hi(addr, half_ty, irsb)?;
-            let (current_hi, expd_hi_val, data_hi_val) =
-                self.cas_load_dcas_high(callbacks, &addr_hi_expr, cas, half_ty, irsb)?;
-            Some(DcasState {
-                addr_hi_expr,
-                data_hi_expr: data_hi.unwrap(),
-                current_hi,
-                expd_hi_val,
-                data_hi_val,
-                old_hi_idx: old_hi.unwrap(),
-            })
-        } else {
-            None
+        let dcas = match dcas_operands {
+            Some((old_hi_idx, data_hi_expr)) => {
+                let addr_hi_expr = Self::cas_compute_addr_hi(addr, half_ty, irsb)?;
+                let (current_hi, expd_hi_val, data_hi_val) =
+                    self.cas_load_dcas_high(callbacks, &addr_hi_expr, cas, half_ty, irsb)?;
+                Some(DcasState {
+                    addr_hi_expr,
+                    data_hi_expr,
+                    current_hi,
+                    expd_hi_val,
+                    data_hi_val,
+                    old_hi_idx,
+                })
+            }
+            None => None,
         };
 
         // Combined cmp = (current_lo == expd_lo) & (current_hi == expd_hi)?

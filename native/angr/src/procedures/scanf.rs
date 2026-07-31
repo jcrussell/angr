@@ -7,10 +7,14 @@
 //! Supported specifiers: %d, %i, %u, %x, %o, %s, %c, %[...] scanset,
 //! %ld, %lld, %lu, %lx, %%
 //! Falls back to Python for symbolic format strings or pointer arguments.
-// Grandfathered clippy::unwrap_used/expect_used debt -- angr-9ke6b.212 tracks
-// burning this down file by file. Do not add new unwrap()/expect() calls here;
-// new files/callers must handle the None/Err case explicitly instead.
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+//!
+//! **Panic policy / enforcement (angr-qwyti.11, angr-9ke6b.212):** the format
+//! string and every pointer argument are guest data, so this module carries
+//! `#![deny(clippy::unwrap_used, clippy::expect_used)]`; unparseable input
+//! returns a `ProcedureError` that falls back to Python instead. The one
+//! statement-level `#[allow]` below is the `mint_stdin_bytes` one-name
+//! contract, not an input check.
+#![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use super::format_common::{
     LengthModifier, MAX_FORMAT_LEN, parse_length_modifier, parse_width_digits,
@@ -314,6 +318,10 @@ fn do_scanf(
             // %c reads exactly one byte off the stream — a byte-for-byte
             // mapping, so it consumes the harness seed like %s does (angr-ggb66).
             let name = format!("{source}_scanf_{scan_id}_{spec_idx}");
+            #[allow(
+                clippy::expect_used,
+                reason = "`mint_stdin_bytes` returns exactly one `RustBV` per requested name (its own doc contract, and it builds the vec by mapping over `names`), and the call passes a single-element slice via `slice::from_ref`, so the vec always holds one element"
+            )]
             let sym_byte = mint_stdin_bytes(state, std::slice::from_ref(&name))
                 .into_iter()
                 .next()
@@ -519,4 +527,9 @@ impl NativeSimProcedure for NativeIsoc99Fscanf {
 
 #[cfg(test)]
 #[path = "scanf_tests.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+)]
 mod scanf_tests;

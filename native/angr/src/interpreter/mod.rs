@@ -3,13 +3,16 @@
 //! This interpreter uses Python callbacks for memory operations instead of
 //! local SymbolicMemory. It can run multiple blocks in a loop, returning
 //! to Python only when an event requires Python handling.
-// Grandfathered clippy::unwrap_used/expect_used debt -- angr-9ke6b.212 tracks
-// burning this down file by file. Do not add new unwrap()/expect() calls here;
-// new files/callers must handle the None/Err case explicitly instead.
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+//!
+//! **Panic policy / enforcement (angr-qwyti.11, angr-9ke6b.212):** every value
+//! this interpreter touches is guest-derived, so it carries
+//! `#![deny(clippy::unwrap_used, clippy::expect_used)]` and IR it cannot handle
+//! returns a `CbExecutionError` instead. There are no `unwrap`/`expect` sites
+//! left in this file: the block-cache capacity is validated at compile time by
+//! [`BLOCK_CACHE_CAPACITY_NZ`].
+#![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use std::collections::{HashMap, HashSet};
-use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -44,6 +47,19 @@ use crate::vex::{Endness, deserialize_irsb};
 /// dump showing eviction churn (`mgr.stats()` does not expose hit/miss today;
 /// see angr-l4bs).
 pub(crate) const BLOCK_CACHE_CAPACITY: usize = 4096;
+
+/// [`BLOCK_CACHE_CAPACITY`] pre-validated as the `NonZeroUsize` every
+/// `LruCache::new` call site needs.
+///
+/// Doing the conversion once in a `const` moves the non-zero proof to compile
+/// time: a zero capacity fails the build here instead of surfacing as a runtime
+/// `.expect` in each of the three constructors that build a block cache
+/// (`ExecutionEnv::new`, `VexInterpreter::new`, and `scheduler::worker_thread`).
+pub(crate) const BLOCK_CACHE_CAPACITY_NZ: std::num::NonZeroUsize =
+    match std::num::NonZeroUsize::new(BLOCK_CACHE_CAPACITY) {
+        Some(n) => n,
+        None => panic!("BLOCK_CACHE_CAPACITY must be non-zero"),
+    };
 
 /// Start a profiling timer iff `self.profiling_enabled`. Yields `Option<Instant>`.
 ///
@@ -767,9 +783,7 @@ impl<'a> VEXInterpreter<'a> {
             // In the exploration hot path this default is discarded when
             // run_interpreter_step_core swaps the shared cache in, but the two
             // *placeholder* caches there ARE zero-preallocation `unbounded()`.
-            block_cache: LruCache::new(
-                NonZeroUsize::new(BLOCK_CACHE_CAPACITY).expect("BLOCK_CACHE_CAPACITY is non-zero"),
-            ),
+            block_cache: LruCache::new(BLOCK_CACHE_CAPACITY_NZ),
             use_memory_callbacks: true,
             deferred_forks: Vec::new(),
             deferred_fork_this_step: false,
@@ -1288,4 +1302,9 @@ impl<'a> VEXInterpreter<'a> {
 
 #[cfg(test)]
 #[path = "smc_tests.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+)]
 mod smc_tests;

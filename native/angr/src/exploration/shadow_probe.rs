@@ -17,10 +17,12 @@
 //! The scratch thread is detached: it exits cleanly when the manager-side
 //! `Sender` drops at teardown (its `recv` loop ends on channel close), so no
 //! `JoinHandle` and no `Drop` impl on the manager are required.
-// Grandfathered clippy::unwrap_used/expect_used debt -- angr-9ke6b.212 tracks
-// burning this down file by file. Do not add new unwrap()/expect() calls here;
-// new files/callers must handle the None/Err case explicitly instead.
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+//!
+//! **Panic policy / enforcement (angr-qwyti.11, angr-9ke6b.212):** this module
+//! carries `#![deny(clippy::unwrap_used, clippy::expect_used)]`. The one
+//! surviving `expect` reads the channel the same function lazily created three
+//! statements earlier — see its `#[allow]` reason.
+#![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use super::*;
 use crate::state::RustSimState;
@@ -32,6 +34,10 @@ impl RustExplorationManager {
     /// on the main thread + deserialize/reattach in a foreign Z3 context on the
     /// scratch thread) and accumulate the shadow-probe counters. No-op when the
     /// probe is off. The rebuilt state is discarded — behaviour is unchanged.
+    #[allow(
+        clippy::expect_used,
+        reason = "`shadow_probe_chan` is assigned `Some(spawn_shadow_probe_thread())` by the `is_none()` guard at the top of this same function and nothing between there and here clears it; the intervening `state.to_serialized()` borrows `state`, not `self`"
+    )]
     pub(crate) fn shadow_probe_migrate(&mut self, state: &RustSimState) {
         if !self.shadow_probe {
             return;

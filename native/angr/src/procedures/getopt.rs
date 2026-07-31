@@ -20,10 +20,15 @@
 //! there so the guest program reads them like real getopt would. A `None`
 //! address (symbol absent) just skips that store — exactly as Python's
 //! `_store_int` / `_store_ptr` skip when `_global_addr` returns `None`.
-// Grandfathered clippy::unwrap_used/expect_used debt -- angr-9ke6b.212 tracks
-// burning this down file by file. Do not add new unwrap()/expect() calls here;
-// new files/callers must handle the None/Err case explicitly instead.
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+//!
+//! **Panic policy / enforcement (angr-qwyti.11, angr-9ke6b.212):** `argv`, the
+//! optstring and the saved cursor are all guest-controlled, so this module
+//! carries `#![deny(clippy::unwrap_used, clippy::expect_used)]` and every
+//! unresolvable value returns a `ProcedureError` that falls back to the Python
+//! proc. There are no `unwrap`/`expect` sites left: the optstring lookup binds
+//! its hit in the match arm that proves it (see the `spec` match), and the
+//! cursor read already used a checked `arg.get(..)` (angr-qwyti.19).
+#![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use super::ProcedureError;
 use super::strings::scan_concrete_until_null;
@@ -211,19 +216,26 @@ crate::declare_proc! {
                 "getopt cursor past end of argv element (shrunk argv)".to_string(),
             ));
         };
-        let spec = opts.get(&c).copied();
-        if spec.is_none() || c == COLON {
-            store_int(state, optopt_addr, c as u32)?;
-            store_ptr(state, optarg_addr, 0)?;
-            optchar += 1;
-            if optchar as usize >= arg.len() {
-                optind += 1;
-                optchar = 0;
+        // `c` is a guest byte, so the optstring lookup genuinely can miss —
+        // binding the hit in the match arm keeps the unknown-option path and
+        // the recognized-option path in one place, with no second lookup and no
+        // `unwrap` on what the miss branch just ruled out.
+        let spec = match opts.get(&c).copied() {
+            Some(spec) if c != COLON => spec,
+            // Unknown option (or a bare `:`, which is never an option itself):
+            // report it through `optopt` and return '?'.
+            _ => {
+                store_int(state, optopt_addr, c as u32)?;
+                store_ptr(state, optarg_addr, 0)?;
+                optchar += 1;
+                if optchar as usize >= arg.len() {
+                    optind += 1;
+                    optchar = 0;
+                }
+                save_cursor(state, optind_addr, optind, optchar)?;
+                return ret(b'?' as u32);
             }
-            save_cursor(state, optind_addr, optind, optchar)?;
-            return ret(b'?' as u32);
-        }
-        let spec = spec.unwrap();
+        };
 
         if spec == NO_ARGUMENT {
             store_ptr(state, optarg_addr, 0)?;
@@ -267,4 +279,9 @@ crate::declare_proc! {
 
 #[cfg(test)]
 #[path = "getopt_tests.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+)]
 mod getopt_tests;

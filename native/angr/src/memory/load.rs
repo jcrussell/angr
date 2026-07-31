@@ -3,10 +3,17 @@
 //! Extracted from `memory/mod.rs` (angr-0lre). Holds the load_*/apply_pending_writes_*
 //! family in a single file. Multiple `impl SymbolicMemory` blocks across files are
 //! fine — Rust permits inherent impls to be split.
-// Grandfathered clippy::unwrap_used/expect_used debt -- angr-9ke6b.212 tracks
-// burning this down file by file. Do not add new unwrap()/expect() calls here;
-// new files/callers must handle the None/Err case explicitly instead.
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+//!
+//! **Panic policy (angr-9ke6b.212):** loads run on guest-supplied addresses, so
+//! nothing here may panic on address shape. The concretization dispatch reports
+//! an unresolvable address as `MemoryError::SymbolicAddress` (via
+//! [`ConcretizationResult::as_symbolic_address_error`]), which the caller turns
+//! into a Python-memory-model fallback.
+//!
+//! **Enforcement (angr-qwyti.11):** this module carries
+//! `#![deny(clippy::unwrap_used, clippy::expect_used)]`, so a new panic on an
+//! untrusted address needs a reviewed, reasoned `#[allow]`.
+#![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use crate::concretize::{AddressConcretizer, ConcretizationResult};
 use crate::symbolic::{
@@ -356,9 +363,7 @@ impl SymbolicMemory {
                 self.build_balanced_ite_load(&addr, &addrs, size, ctx)?
             }
             other => {
-                return Err(other
-                    .to_symbolic_address_error()
-                    .expect("non-success concretization result"));
+                return Err(other.as_symbolic_address_error());
             }
         };
 
@@ -483,9 +488,7 @@ impl SymbolicMemory {
             // Return error so caller can fall back to Python's memory model,
             // which handles large symbolic address ranges natively.
             other => {
-                return Err(other
-                    .to_symbolic_address_error()
-                    .expect("non-success concretization result"));
+                return Err(other.as_symbolic_address_error());
             }
         };
 

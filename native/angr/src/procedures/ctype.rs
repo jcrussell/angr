@@ -7,10 +7,17 @@
 //! Symbolic arguments are handled by emitting a constraint-shaped result that
 //! mirrors the concrete predicate on bits\[7:0\] of the argument; the operand
 //! pattern matches the underlying `as u8` truncation in the concrete path.
-// Grandfathered clippy::unwrap_used/expect_used debt -- angr-9ke6b.212 tracks
-// burning this down file by file. Do not add new unwrap()/expect() calls here;
-// new files/callers must handle the None/Err case explicitly instead.
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+//!
+//! **Panic policy (angr-9ke6b.212):** the guest-supplied argument reaches these
+//! procedures as a `RustBV` and is never unwrapped — a symbolic argument takes
+//! the predicate path, a concrete one the fast path. The two `expect`s fold a
+//! predicate accumulator whose emptiness depends only on the `ranges` /
+//! `members` table the *caller* passes, and every caller passes a
+//! `const`-shaped slice literal.
+//!
+//! **Enforcement (angr-qwyti.11):** this module carries
+//! `#![deny(clippy::unwrap_used, clippy::expect_used)]`.
+#![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use super::ProcedureError;
 use crate::state::RustSimState;
@@ -62,6 +69,10 @@ fn case_shift(
 }
 
 /// Build a symbolic ctype predicate from a list of inclusive ranges.
+#[allow(
+    clippy::expect_used,
+    reason = "`pred` is `Some` after the loop iff `ranges` is non-empty, and `ranges` is a slice literal fixed at each call site (isdigit/isalpha/... tables), never guest data"
+)]
 fn ranges_predicate(
     state: &RustSimState,
     arg: &RustBV,
@@ -90,6 +101,10 @@ fn ranges_predicate(
 }
 
 /// Build a symbolic ctype predicate from an explicit set of bytes.
+#[allow(
+    clippy::expect_used,
+    reason = "`pred` is `Some` after the loop iff `members` is non-empty, and `members` is a slice literal fixed at each call site (isspace/isblank/... tables), never guest data"
+)]
 fn set_predicate(
     state: &RustSimState,
     arg: &RustBV,
@@ -330,4 +345,9 @@ crate::declare_proc! {
 
 #[cfg(test)]
 #[path = "ctype_tests.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+)]
 mod tests;

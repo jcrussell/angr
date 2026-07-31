@@ -9,6 +9,13 @@
 //! funnel every `solver.check()` goes through. One check = one bucket bump,
 //! so the buckets sum to `z3_check_count` exactly.
 //!
+//! **Panic policy / enforcement (angr-qwyti.11, angr-9ke6b.212):** this module
+//! classifies guest-derived query ASTs, so it carries
+//! `#![deny(clippy::unwrap_used, clippy::expect_used)]`; an unrecognized shape
+//! falls into `QueryClass::Hard`, never a panic. The two surviving `expect`s
+//! read the single element of a set whose length was checked on the line above.
+#![deny(clippy::unwrap_used, clippy::expect_used)]
+//!
 //! Two protocol rules from the bead, both load-bearing for the >=30% gate:
 //!
 //! - **No double-counting.** The classifiers run *after* the fast paths that
@@ -30,10 +37,6 @@
 //! default and enabled per-process with `ANGR_RUST_QUERY_CLASS=1`; when off,
 //! every check lands in [`QueryClass::Unclassified`] and the query entry
 //! points do no IR walking at all.
-// Grandfathered clippy::unwrap_used/expect_used debt -- angr-9ke6b.212 tracks
-// burning this down file by file. Do not add new unwrap()/expect() calls here;
-// new files/callers must handle the None/Err case explicitly instead.
-#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use super::{BVOp, RustBV};
 use std::cell::Cell;
@@ -433,6 +436,10 @@ pub(crate) fn classify_sat(constraints: &[(RustBV, bool)]) -> QueryClass {
 
 /// Classify a boolean query (`is_sat` with `cond` asserted, branch
 /// feasibility, `solution`).
+#[allow(
+    clippy::expect_used,
+    reason = "`shape.vars` was just checked to hold exactly one element (`vars.len() == 1` / `single_var()`), so the first `iter().next()` is always `Some`. `shape` is derived from the query AST, but the length check is what makes this total"
+)]
 pub(crate) fn classify_bool(cond: &RustBV, constraints: &[(RustBV, bool)]) -> QueryClass {
     let shape = shape_of(cond);
     if shape.within_budget && shape.vars.is_empty() {
@@ -495,6 +502,10 @@ pub(crate) fn classify_eval_many(targets: &[RustBV], constraints: &[(RustBV, boo
 
 /// Classify an extrema query (`min`, `max`, `range`). These are the ones a
 /// single-variable interval tier would answer directly.
+#[allow(
+    clippy::expect_used,
+    reason = "`shape.vars` was just checked to hold exactly one element (`vars.len() == 1` / `single_var()`), so the first `iter().next()` is always `Some`. `shape` is derived from the query AST, but the length check is what makes this total"
+)]
 pub(crate) fn classify_extrema(target: &RustBV, constraints: &[(RustBV, bool)]) -> QueryClass {
     let shape = shape_of(target);
     if !shape.within_budget {
@@ -513,6 +524,11 @@ pub(crate) fn classify_extrema(target: &RustBV, constraints: &[(RustBV, bool)]) 
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+)]
 mod tests {
     use super::*;
     use crate::symbolic::SymContext;

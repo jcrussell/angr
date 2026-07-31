@@ -56,10 +56,38 @@
 //! This contract is single-worker only. Parallel steal order is
 //! design-nondeterministic; there the contract is set-equality of results, not
 //! sequence equality (see `docs/advanced-topics/rust_parallel_design.rst`).
-// Grandfathered clippy::unwrap_used/expect_used debt -- angr-9ke6b.212 tracks
-// burning this down file by file. Do not add new unwrap()/expect() calls here;
-// new files/callers must handle the None/Err case explicitly instead.
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+//!
+//! # Panic policy (angr-9ke6b.212)
+//!
+//! Nothing in this module is reachable with untrusted input — a policy sees
+//! only the run loop's own `VecDeque<RustSimState>` — and every surviving
+//! `.expect` is one of exactly two invariant shapes:
+//!
+//!   * **Mutex poison guards** on the per-policy `Mutex` fields (`rng`, `seen`,
+//!     `key_cache`, `dispatched`). The crate ships with `[profile.release]
+//!     panic = "abort"` (workspace `Cargo.toml`, angr-1cue), so no thread can
+//!     unwind out of a live `MutexGuard` to flag the lock; poison is
+//!     unreachable in this build. Same argument as the
+//!     [`scheduler`](super::scheduler) Panic policy, which spells it out in
+//!     full.
+//!   * **Index-after-`is_empty()` guards** — `active.remove(pick)` and the
+//!     `min_by_key(..)` picks. Every `select` returns early on an empty deque,
+//!     and each `pick` is an index *into* that deque produced by a `position` /
+//!     `min_by_key` over `0..active.len()`, so both the range and the removal
+//!     are in bounds.
+//!
+//! The index guards are deliberately **not** softened to `?`. `select` returns
+//! `Option<RustSimState>`, and `None` from a non-empty deque is the run loop's
+//! signal that the active stash is exhausted — it would end exploration early
+//! and silently drop states. A loud panic on a broken index invariant is the
+//! correct trade here (CLAUDE.md: never trade a loud panic for a silent wrong
+//! answer).
+//!
+//! **Enforcement (angr-qwyti.11):** this module carries
+//! `#![deny(clippy::unwrap_used, clippy::expect_used)]`; each function holding
+//! one of the guards above carries a narrow
+//! `#[allow(clippy::expect_used, reason = ...)]` pointing back here.
+#![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Mutex;
@@ -167,6 +195,10 @@ impl RandomState {
 
     /// One SplitMix64 draw. Fast, seekable, and dependency-free — no `rand`
     /// crate pulled in for a prototype policy.
+    #[allow(
+        clippy::expect_used,
+        reason = "`RandomState::rng` poison guard: poison requires a thread to unwind out of a live `MutexGuard`, which `panic = \"abort\"` forecloses — see the module Panic policy header"
+    )]
     fn next_u64(&self) -> u64 {
         let mut state = self.rng.lock().expect("RandomState rng poisoned");
         *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
@@ -239,6 +271,10 @@ impl CoverageGuided {
 impl SelectionPolicy for CoverageGuided {
     // `seen` is held across the whole front-scan (contains) and the post-remove
     // insert — the guard cannot be tightened without dropping correctness.
+    #[allow(
+        clippy::expect_used,
+        reason = "`CoverageGuided::seen` poison guard plus the index-after-`is_empty()` guards: the poison state is unreachable under `panic = \"abort\"`, and every `pick` is an index into the same non-empty deque the early return above already checked — see the module Panic policy header"
+    )]
     #[allow(clippy::significant_drop_tightening)]
     fn select(&self, active: &mut VecDeque<RustSimState>) -> Option<RustSimState> {
         if active.is_empty() {
@@ -353,6 +389,10 @@ impl SelectionPolicy for LoopHeadRoundRobin {
     // Both guards span the full deque scan (cache read/insert per state,
     // dispatched read for the least-served pick) plus the post-remove eviction
     // and count bump — no tighter scope is correct here.
+    #[allow(
+        clippy::expect_used,
+        reason = "`LoopHeadRoundRobin::{key_cache, dispatched}` poison guard plus the index-after-`is_empty()` guards: the poison state is unreachable under `panic = \"abort\"`, and every `pick` is an index into the same non-empty deque the early return above already checked — see the module Panic policy header"
+    )]
     #[allow(clippy::significant_drop_tightening)]
     fn select(&self, active: &mut VecDeque<RustSimState>) -> Option<RustSimState> {
         if active.is_empty() {
@@ -416,6 +456,10 @@ impl SelectionPolicy for LoopHeadRoundRobin {
     // through `select` (angr-ua7fd). A stolen-back state gets a cache miss on
     // its next `select` scan and recomputes its key — correct, just one extra
     // `bucket_key` call, exactly like a state that was never cached yet.
+    #[allow(
+        clippy::expect_used,
+        reason = "`LoopHeadRoundRobin::key_cache` poison guard: poison requires a thread to unwind out of a live `MutexGuard`, which `panic = \"abort\"` forecloses — see the module Panic policy header"
+    )]
     fn on_state_removed(&self, state_id: u64) {
         self.key_cache
             .lock()
@@ -498,6 +542,10 @@ impl SelectionPolicy for DirectedCfgDistance {
     // `dispatched` is held across the beam's min-by-key scan (reads the count
     // per beam member) and the post-remove count bump — no tighter scope works.
     #[allow(clippy::significant_drop_tightening)]
+    #[allow(
+        clippy::expect_used,
+        reason = "`DirectedCfgDistance::dispatched` poison guard plus the index-after-`is_empty()` guards: the poison state is unreachable under `panic = \"abort\"`, `beam` is a non-empty prefix of `ranked` (`beam_width.min(len)` with `len > 0`), and `pick` indexes the same deque the `len == 0` early return above already checked — see the module Panic policy header"
+    )]
     fn select(&self, active: &mut VecDeque<RustSimState>) -> Option<RustSimState> {
         let len = active.len();
         if len == 0 {
@@ -608,6 +656,10 @@ impl FindDirected {
 impl SelectionPolicy for FindDirected {
     // `seen` is held across the novelty scan (contains) and the post-remove
     // insert — both halves need the lock, so it cannot be tightened.
+    #[allow(
+        clippy::expect_used,
+        reason = "`FindDirected::seen` poison guard plus the index-after-`is_empty()` guards: the poison state is unreachable under `panic = \"abort\"`, and every `pick` is an index into the same non-empty deque the early return above already checked — see the module Panic policy header"
+    )]
     #[allow(clippy::significant_drop_tightening)]
     fn select(&self, active: &mut VecDeque<RustSimState>) -> Option<RustSimState> {
         if active.is_empty() {
@@ -641,6 +693,11 @@ impl SelectionPolicy for FindDirected {
 }
 
 #[cfg(all(test, feature = "vex-engine-z3"))]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` above overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+)]
 mod tests {
     use super::{
         CoverageGuided, DirectedCfgDistance, Fifo, FindDirected, Lifo, LoopHeadRoundRobin,

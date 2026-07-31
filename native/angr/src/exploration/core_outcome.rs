@@ -8,6 +8,17 @@
 //! single-threaded coordinator (or, later, a parallel worker's coordinator)
 //! must apply itself.
 //!
+//! **Panic policy (angr-9ke6b.212):** the three `expect`s in
+//! [`ParallelProfiling`] are `step_stats` mutex poison guards. The crate ships
+//! with `[profile.release] panic = "abort"` (workspace `Cargo.toml`,
+//! angr-1cue), so no thread can unwind out of a live `MutexGuard` to flag the
+//! lock — the same argument the [`scheduler`](super::scheduler) Panic policy
+//! spells out in full.
+//!
+//! **Enforcement (angr-qwyti.11):** this module carries
+//! `#![deny(clippy::unwrap_used, clippy::expect_used)]`.
+#![deny(clippy::unwrap_used, clippy::expect_used)]
+//!
 //! This is the load-bearing foundation for a parallel wave loop: each worker
 //! must be able to drive the post-step phase from an owned / `Arc`-shared
 //! config bundle rather than reaching back into the manager. The single-threaded
@@ -41,10 +52,6 @@
 //! BEFORE the post-step phase and copied onto every fork's tag; the coordinator
 //! calls `sm.set_root(child_id, root_hint)`. This equals the inline value the
 //! legacy `materialize_deferred_forks` computed.
-// Grandfathered clippy::unwrap_used/expect_used debt -- angr-9ke6b.212 tracks
-// burning this down file by file. Do not add new unwrap()/expect() calls here;
-// new files/callers must handle the None/Err case explicitly instead.
-#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -117,6 +124,10 @@ impl ParallelProfiling {
     /// `accumulated_stats.merge(&step.step_stats)`. Unconditional (not gated on
     /// `profiling_enabled`): timing fields are already zero when profiling is
     /// off, and the always-on cache hit/miss counters must still accumulate.
+    #[allow(
+        clippy::expect_used,
+        reason = "`ParallelProfiling::step_stats` poison guard: poison requires a thread to unwind out of a live `MutexGuard`, which `panic = \"abort\"` forecloses — see the module Panic policy header"
+    )]
     pub(crate) fn accumulate_step(&self, step_stats: &ExecutionStats) {
         self.step_stats
             .lock()
@@ -127,6 +138,10 @@ impl ParallelProfiling {
     /// Fold the accumulated atomics into an `ExecutionStats`. Adds zero for any
     /// field that never fired (e.g. profiling disabled), so calling this
     /// unconditionally is byte-identical to the gated legacy increments.
+    #[allow(
+        clippy::expect_used,
+        reason = "`ParallelProfiling::step_stats` poison guard: poison requires a thread to unwind out of a live `MutexGuard`, which `panic = \"abort\"` forecloses — see the module Panic policy header"
+    )]
     pub(crate) fn fold_into(&self, stats: &mut ExecutionStats) {
         stats.solver_fork_time_ns += self.solver_fork_time_ns.load(Ordering::Relaxed);
         stats.solver_fork_count += self.solver_fork_count.load(Ordering::Relaxed);
@@ -150,6 +165,10 @@ impl ParallelProfiling {
     /// steady-state coordinator folds deltas at every event return while
     /// workers keep adding (angr-nkoct). A wave calling this once is
     /// byte-identical to `fold_into` (the wave's accumulator dies right after).
+    #[allow(
+        clippy::expect_used,
+        reason = "`ParallelProfiling::step_stats` poison guard: poison requires a thread to unwind out of a live `MutexGuard`, which `panic = \"abort\"` forecloses — see the module Panic policy header"
+    )]
     pub(crate) fn drain_into(&self, stats: &mut ExecutionStats) {
         stats.solver_fork_time_ns += self.solver_fork_time_ns.swap(0, Ordering::Relaxed);
         stats.solver_fork_count += self.solver_fork_count.swap(0, Ordering::Relaxed);
@@ -605,4 +624,9 @@ pub(crate) fn run_post_step_core(
 
 #[cfg(test)]
 #[path = "core_outcome_tests.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+)]
 mod tests;

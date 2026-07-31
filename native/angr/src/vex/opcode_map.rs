@@ -2,10 +2,16 @@
 //!
 //! pyvex uses string opcodes like "Iop_Add32" while Rust uses parameterized
 //! operations like `IROp::Add(IRType::I32)`. This module provides the translation.
-// Grandfathered clippy::unwrap_used/expect_used debt -- angr-9ke6b.212 tracks
-// burning this down file by file. Do not add new unwrap()/expect() calls here;
-// new files/callers must handle the None/Err case explicitly instead.
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+//!
+//! **Panic policy (angr-9ke6b.212):** opcode strings arrive from pyvex, so an
+//! unrecognized name must never panic — it interns into
+//! `IROp::Unmapped(&'static str)` and surfaces as a typed error downstream. The
+//! one `expect` is the intern-set mutex poison guard, unreachable under the
+//! crate's `panic = "abort"` profile (workspace `Cargo.toml`, angr-1cue).
+//!
+//! **Enforcement (angr-qwyti.11):** this module carries
+//! `#![deny(clippy::unwrap_used, clippy::expect_used)]`.
+#![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use super::ir::{FCmpKind, IROp, IRType};
 use std::collections::HashSet;
@@ -19,6 +25,10 @@ use std::sync::{Mutex, OnceLock};
 /// Used only on the unmapped-opcode error path (angr-tkbr.2). The set of
 /// unmapped names is small and bounded in practice (a few dozen per arch
 /// at most), so the persistent leak is acceptable.
+#[allow(
+    clippy::expect_used,
+    reason = "`INTERN` poison guard: poison requires an unwind out of a live `MutexGuard`, which `panic = \"abort\"` forecloses — see the module Panic policy header"
+)]
 fn intern_unmapped_op(op_str: &str) -> &'static str {
     static INTERN: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
     let intern = INTERN.get_or_init(|| Mutex::new(HashSet::new()));
@@ -1093,4 +1103,9 @@ pub fn parse_jumpkind(jk_str: &str) -> super::ir::JumpKind {
 
 #[cfg(test)]
 #[path = "opcode_map_tests.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+)]
 mod opcode_map_tests;

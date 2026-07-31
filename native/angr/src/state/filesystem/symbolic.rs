@@ -6,10 +6,25 @@
 //! The unbounded symbolic *stream* model (`FileDescriptor::symbolic`, the
 //! stdin model) is deliberately NOT here — it is an fd flag consumed by the
 //! read syscalls, see [`FileDescriptor::symbolic`] for the distinction.
-// Grandfathered clippy::unwrap_used/expect_used debt -- angr-9ke6b.212 tracks
-// burning this down file by file. Do not add new unwrap()/expect() calls here;
-// new files/callers must handle the None/Err case explicitly instead.
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+//!
+//! **Panic policy (angr-9ke6b.212):** every `fd: u32` reaching this module is
+//! an *untrusted* value — it comes from a guest syscall argument or a
+//! Python-side seeding call — so nothing here may panic on a bad fd. Absent
+//! fds are a documented `None` / `false` return on every entry point. The
+//! two surviving `expect`s are both the second half of a
+//! collect-keys-then-`Arc::make_mut`-and-re-look-up pair
+//! ([`FileSystem::register_file_content`] and
+//! [`FileSystem::clear_key_state`]): the key set is collected from
+//! `self.fds` immediately above and `Arc::make_mut` only deep-clones the map,
+//! it never re-keys it, so the second lookup cannot miss. They read as
+//! fallible-on-input only because the forced re-borrow hides the preceding
+//! check.
+//!
+//! **Enforcement (angr-qwyti.11):** this module carries
+//! `#![deny(clippy::unwrap_used, clippy::expect_used)]` so a future
+//! panic-on-untrusted-fd landmine cannot be reintroduced without a reviewed,
+//! reasoned `#[allow]`.
+#![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use super::*;
 
@@ -30,6 +45,10 @@ impl FileSystem {
     /// such an fd still demotes the registry entry rather than leaving a
     /// fresh `open` to serve stale content.
     // !Send Arcs go through `crate::arc_shared` (see its doc comment).
+    #[allow(
+        clippy::expect_used,
+        reason = "`stamp` is collected from `self.fds` two statements above and `Arc::make_mut` only deep-clones the map (never re-keys it), so the re-lookup under the mutable borrow cannot miss — see the module Panic policy header"
+    )]
     pub fn register_file_content(&mut self, path: &str, bytes: Vec<RustBV>) {
         let norm = self.normalize_path(path);
         Arc::make_mut(&mut self.known_paths).insert(norm.clone());
@@ -61,13 +80,16 @@ impl FileSystem {
     /// Position is left as-is (0 on a seed state). No-op on an unknown fd.
     // !Send Arcs go through `crate::arc_shared` (see its doc comment).
     pub fn set_fd_content_sym(&mut self, fd: u32, bytes: Vec<RustBV>) {
+        // The `contains_key` peek keeps the unknown-fd no-op from forcing a
+        // CoW deep clone of the fd table; the `if let` is the same single
+        // lookup the write needs anyway, so the pair costs what one
+        // `get_mut().expect(..)` did without the panic edge.
         if !self.fds.contains_key(&fd) {
             return;
         }
-        Arc::make_mut(&mut self.fds)
-            .get_mut(&fd)
-            .expect("fd existed above")
-            .content_sym = Some(crate::arc_shared(bytes));
+        if let Some(desc) = Arc::make_mut(&mut self.fds).get_mut(&fd) {
+            desc.content_sym = Some(crate::arc_shared(bytes));
+        }
     }
 
     /// Look up registered symbolic content for a (possibly relative)
@@ -115,10 +137,13 @@ impl FileSystem {
         if n == 0 {
             return Some(Vec::new());
         }
-        let desc = Arc::make_mut(&mut self.fds)
-            .get_mut(&fd)
-            .expect("fd existed above");
-        let content = desc.content_sym.as_ref().expect("content_sym peeked above");
+        // Both `?`s are unreachable — the peek block above already proved the
+        // fd is present with `content_sym` attached, and `Arc::make_mut` only
+        // deep-clones the map — but folding them into the existing
+        // fd-absent/no-content `None` contract keeps an untrusted fd from
+        // reaching a panic even if that reasoning ever stops holding.
+        let desc = Arc::make_mut(&mut self.fds).get_mut(&fd)?;
+        let content = desc.content_sym.as_ref()?;
         let bytes = content[start..start + n].to_vec();
         desc.position += n as u64;
         Some(bytes)
@@ -176,10 +201,13 @@ impl FileSystem {
             if desc.content_sym.is_none() {
                 return false;
             }
-            Arc::make_mut(&mut self.fds)
-                .get_mut(&fd)
-                .expect("fd existed above")
-                .content_sym = None;
+            // Unreachable (the `self.fds.get(&fd)` at the top of this fn
+            // succeeded), but a missing fd here means nothing was demoted,
+            // so report that rather than panicking on an untrusted fd.
+            let Some(desc) = Arc::make_mut(&mut self.fds).get_mut(&fd) else {
+                return false;
+            };
+            desc.content_sym = None;
             crate::symbolic::record_symfile_write_demotion();
             return true;
         };
@@ -201,6 +229,10 @@ impl FileSystem {
     /// `demoted_paths` or the write-demotion counter — those differ between
     /// the callers (a re-add correction bumps neither the counter nor relies
     /// on this method's return), so each layers them on itself.
+    #[allow(
+        clippy::expect_used,
+        reason = "`matching` is collected from `self.fds` immediately above and `Arc::make_mut` only deep-clones the map (never re-keys it), so the re-lookup under the mutable borrow cannot miss — same shape as `register_file_content`, see the module Panic policy header"
+    )]
     fn clear_key_state(&mut self, key: &str) -> bool {
         let mut changed = false;
         if self.file_contents.contains_key(key) {

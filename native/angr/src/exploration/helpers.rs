@@ -1,7 +1,13 @@
-// Grandfathered clippy::unwrap_used/expect_used debt -- angr-9ke6b.212 tracks
-// burning this down file by file. Do not add new unwrap()/expect() calls here;
-// new files/callers must handle the None/Err case explicitly instead.
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+//! Bookkeeping helpers hung off `RustExplorationManager` (extension-impl
+//! pattern, mirroring `stepping.rs` / `run_loop.rs`): scheduler-accounting
+//! folds, stash pushes, and the veritesting waiter-merge grouping.
+//!
+//! **Panic policy / enforcement (angr-qwyti.11, angr-9ke6b.212):** this module
+//! carries `#![deny(clippy::unwrap_used, clippy::expect_used)]`. The one
+//! surviving `expect` in [`RustExplorationManager::merge_waiters_by_callstack`]
+//! is a same-function map invariant, not an input check — see its `#[allow]`
+//! reason.
+#![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use super::*;
 
@@ -736,6 +742,10 @@ impl RustExplorationManager {
     /// chain (first-appearance order for determinism) and merge each group of
     /// ≥2 into the active stash via `_merge_states`, dropping the consumed
     /// sources. Lone-callstack waiters are released back to active unmerged.
+    #[allow(
+        clippy::expect_used,
+        reason = "`order` is built in the loop directly above by pushing exactly the keys that are also inserted into `by_key`, and each key is pushed only on first sight, so the drain removes each key exactly once and never misses"
+    )]
     fn merge_waiters_by_callstack(&mut self, wait_stash: &str) {
         // Build callstack-keyed groups in first-seen order (HashMap iteration
         // is unordered; ManualMergepoint parity requires deterministic merges).
@@ -1729,4 +1739,9 @@ pub(crate) fn dispatch_native_proc(
 
 #[cfg(test)]
 #[path = "helpers_tests.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+)]
 mod tests;

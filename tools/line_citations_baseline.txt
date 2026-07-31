@@ -4,7 +4,6 @@
 # Shrinking this file (by citing a symbol name instead of a line number) is the goal.
 arch/mod.rs	/// arch/mod.rs:638). `data` is right-padded / truncated to the rebuilt
 arch/mod_tests.rs	/// at arch/mod.rs:638), so a corrupted snapshot still loads into a
-automaton/subset_construction.rs	// into state_mapping (at lines 29 and 62), so this lookup always succeeds.
 callbacks/mod.rs	/// FORKED state's id (matching Python `engines/successors.py:203`
 callbacks/mod.rs	/// Matches Python's callstack.py:430/432 semantics.
 callbacks/mod.rs	/// pushed). Matches Python's callstack.py:386/419 semantics.

@@ -11,13 +11,23 @@
 //! `(cond, value)` pairs. The collapse to an ITE happens at load time, scoped
 //! to only the bytes the load actually touches.
 //!
+//! **Panic policy (angr-9ke6b.212):** the two `expect` shapes here are both
+//! caller-side invariants of the *coalescing* walk, not properties of guest
+//! data: `collapse_run`'s page re-lookup is proved by the `coalesce` guard that
+//! built the run, and `build_wider_value`'s first-byte `next()` is proved by
+//! the non-empty run length. `build_wider_value`'s `debug_assert!` documents
+//! that contract but compiles out in release, so the `expect` is the release
+//! guard and is deliberately kept loud — a zero-length run would otherwise
+//! silently synthesize a wrong-width value.
+//!
+//! **Enforcement (angr-qwyti.11):** the parent [`memory`](super) module's
+//! `#![deny(clippy::unwrap_used, clippy::expect_used)]` reaches this file; it is
+//! restated below so the guarantee is visible when reading this file alone.
+//!
 //! This module defines the data structures only. Load-time collapse lives in
 //! `memory/load.rs` (Phase 1.2, bead angr-n082); store helpers that emit
 //! Multi cells live in `memory/store.rs` (Phase 1.3, bead angr-aija).
-// Grandfathered clippy::unwrap_used/expect_used debt -- angr-9ke6b.212 tracks
-// burning this down file by file. Do not add new unwrap()/expect() calls here;
-// new files/callers must handle the None/Err case explicitly instead.
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use std::cell::RefCell;
 
@@ -333,6 +343,10 @@ impl SymbolicMemory {
     /// ITE — every load path (`assemble_load_with_multi`,
     /// `try_byte_merge_load`, `load_concrete`) already handles wider
     /// objects via `extract_byte_lane` / `symbolic_spans`.
+    #[allow(
+        clippy::expect_used,
+        reason = "the `coalesce` guard immediately above proves every page in `entries[i..j]` is present (`(i..j).all(|k| self.pages.contains_key(..))`), and this loop re-looks-up exactly those same entries — an index-after-check, not a guest-controlled lookup"
+    )]
     pub fn flush_multi_cells(&mut self, ctx: &crate::symbolic::SymContext) {
         if self.multi_objects.is_empty() {
             return;
@@ -500,6 +514,10 @@ fn payload_cond_fingerprint(payload: &MultiPayload) -> Vec<u64> {
 ///     the high bits first.
 ///
 /// Caller guarantees `bytes` is non-empty and each element is width 8.
+#[allow(
+    clippy::expect_used,
+    reason = "first-element `next()` on a non-empty slice: both call sites are inside `flush_multi_cells`'s coalesce branch, which only runs for `run_len >= 2`. The `debug_assert!` below states the contract but compiles out in release, so this expect is the release-mode guard and is kept loud on purpose — see the module Panic policy header"
+)]
 fn build_wider_value(bytes: &[RustBV], endness: Endness, ctx: &SymContext) -> RustBV {
     debug_assert!(
         !bytes.is_empty(),

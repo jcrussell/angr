@@ -11,10 +11,15 @@
 //! The final result is `accum_n` (and is negated if a concrete '-' prefix
 //! was consumed). The whitespace, sign, and base-prefix bytes must be
 //! concrete; if any of them is symbolic we fall back to Python.
-// Grandfathered clippy::unwrap_used/expect_used debt -- angr-9ke6b.212 tracks
-// burning this down file by file. Do not add new unwrap()/expect() calls here;
-// new files/callers must handle the None/Err case explicitly instead.
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+//!
+//! **Panic policy / enforcement (angr-qwyti.11, angr-9ke6b.212):** the string
+//! bytes are guest data, so this module carries
+//! `#![deny(clippy::unwrap_used, clippy::expect_used)]` and anything it cannot
+//! parse concretely takes the symbolic path or falls back to Python. There are
+//! no `unwrap`/`expect` sites left: the all-concrete digit probe now collects
+//! into `Option<Vec<u8>>` in one short-circuiting pass instead of an
+//! `all(..)` check followed by a re-`unwrap`ping second pass.
+#![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use super::ProcedureError;
 use crate::state::RustSimState;
@@ -298,13 +303,15 @@ fn run_strtol(
         }
     };
 
-    // All-concrete digit region: take the original fast path.
-    let digits_concrete = bytes[prefix_end..].iter().all(|b| b.as_u64().is_some());
-    if digits_concrete {
-        let cb: Vec<u8> = bytes[prefix_end..]
-            .iter()
-            .map(|b| b.as_u64().unwrap() as u8)
-            .collect();
+    // All-concrete digit region: take the original fast path. Collecting into
+    // `Option<Vec<_>>` short-circuits on the first symbolic byte, so this is the
+    // same single pass the old `all(..)` probe did — without a second pass that
+    // re-`unwrap`s what the probe just proved.
+    let concrete_digits: Option<Vec<u8>> = bytes[prefix_end..]
+        .iter()
+        .map(|b| b.as_u64().map(|v| v as u8))
+        .collect();
+    if let Some(cb) = concrete_digits {
         let (mag, consumed) = parse_concrete_digits(&cb, base);
         // Python clamps the magnitude at the signed max before negating. On
         // 32-bit archs this clamp is reachable for <=max_strtol_len-digit
@@ -456,4 +463,9 @@ crate::declare_proc! {
 
 #[cfg(test)]
 #[path = "strtol_tests.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+)]
 mod strtol_tests;
