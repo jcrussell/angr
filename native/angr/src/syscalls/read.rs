@@ -43,7 +43,7 @@ use crate::symbolic::RustBV;
 /// by exploration order, like the procedure-level counter).
 static SYS_READ_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-pub struct NativeReadSyscall;
+pub(crate) struct NativeReadSyscall;
 
 impl NativeSyscall for NativeReadSyscall {
     fn name(&self) -> &'static str {

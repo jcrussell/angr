@@ -293,7 +293,7 @@ pub(crate) static Z3_CHECK_SITE_TIME_NS: [AtomicU64; NUM_CHECK_SITES] = [
 /// Distinguishes which call site invoked solver.check() for profiling.
 #[cfg(feature = "vex-engine-z3")]
 #[derive(Clone, Copy)]
-pub enum CheckSite {
+pub(super) enum CheckSite {
     Satisfiable = 0,
     BranchTrue = 1,
     BranchFalse = 2,
@@ -770,28 +770,28 @@ pub fn record_mem_ite_depth(depth: u32) {
 /// Increment Z3 AST build counter (called from value.rs).
 #[cfg(feature = "vex-engine-z3")]
 #[inline]
-pub fn record_z3_ast_build() {
+pub(super) fn record_z3_ast_build() {
     Z3_AST_BUILD_COUNT.fetch_add(1, Ordering::Relaxed);
 }
 
 /// Increment per-call to_z3_ast_cached cache-hit counter (angr-zdho).
 #[cfg(feature = "vex-engine-z3")]
 #[inline]
-pub fn record_z3_ast_cache_hit() {
+pub(super) fn record_z3_ast_cache_hit() {
     Z3_AST_CACHE_HIT_COUNT.fetch_add(1, Ordering::Relaxed);
 }
 
 /// Increment per-call to_z3_ast_cached cache-miss counter (angr-zdho).
 #[cfg(feature = "vex-engine-z3")]
 #[inline]
-pub fn record_z3_ast_cache_miss() {
+pub(super) fn record_z3_ast_cache_miss() {
     Z3_AST_CACHE_MISS_COUNT.fetch_add(1, Ordering::Relaxed);
 }
 
 /// Increment the persistent per-`Expression` memo-hit counter (angr-ovqja.3).
 #[cfg(feature = "vex-engine-z3")]
 #[inline]
-pub fn record_z3_ast_memo_hit() {
+pub(super) fn record_z3_ast_memo_hit() {
     Z3_AST_MEMO_HIT_COUNT.fetch_add(1, Ordering::Relaxed);
 }
 
@@ -1006,7 +1006,7 @@ pub fn record_export_unconstrained_fp() {
 /// angr-1joc: record a `canonicalize_commutative` invocation. `swapped` is
 /// true when the canonical order required swapping the operand pair.
 #[inline]
-pub fn record_commutative_canonicalize(swapped: bool) {
+pub(super) fn record_commutative_canonicalize(swapped: bool) {
     RUSTBV_COMMUTATIVE_CANONICALIZE_COUNT.fetch_add(1, Ordering::Relaxed);
     if swapped {
         RUSTBV_COMMUTATIVE_SWAP_COUNT.fetch_add(1, Ordering::Relaxed);

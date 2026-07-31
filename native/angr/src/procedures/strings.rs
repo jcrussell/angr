@@ -35,7 +35,7 @@ use crate::symbolic::{RustBV, SymContext};
 /// (angr-myzjx.7). `strcmp`/`memcmp` share their own equivalent
 /// (`strcmp::MAX_STRCMP_LEN`); the printf/scanf family share
 /// [`super::format_common::MAX_FORMAT_LEN`].
-pub const MAX_STRING_SCAN: usize = 4096;
+pub(crate) const MAX_STRING_SCAN: usize = 4096;
 
 /// Concrete byte-by-byte scan up to and including the null terminator.
 ///
@@ -45,7 +45,7 @@ pub const MAX_STRING_SCAN: usize = 4096;
 /// - `MaxIterations(max)` if `max` bytes are scanned without finding a null.
 ///
 /// `addr_label` is used to format symbolic-byte error messages.
-pub fn scan_concrete_until_null(
+pub(crate) fn scan_concrete_until_null(
     state: &mut RustSimState,
     addr: u64,
     max: usize,
@@ -71,7 +71,7 @@ pub fn scan_concrete_until_null(
 /// Used by procedures like `strncpy` / `strncat` where `max` is a
 /// caller-supplied bound and exhausting it is the natural stop, not an
 /// error.
-pub fn scan_concrete_bounded(
+pub(crate) fn scan_concrete_bounded(
     state: &mut RustSimState,
     addr: u64,
     max: usize,
@@ -98,7 +98,7 @@ pub fn scan_concrete_bounded(
 /// available and have no need to distinguish the stop reasons (so, unlike
 /// [`scan_concrete_bounded`], a symbolic byte or out-of-bounds read is a quiet
 /// stop, not a `SymbolicArgument` / load error).
-pub fn scan_concrete_lossy(state: &mut RustSimState, addr: u64, max: usize) -> Vec<u8> {
+pub(crate) fn scan_concrete_lossy(state: &mut RustSimState, addr: u64, max: usize) -> Vec<u8> {
     let mut buf = Vec::new();
     for i in 0..max as u64 {
         match state.memory_load(addr.wrapping_add(i), 1) {
@@ -116,7 +116,7 @@ pub fn scan_concrete_lossy(state: &mut RustSimState, addr: u64, max: usize) -> V
 ///
 /// Used by strcat/strncat which need the null position, not the bytes.
 /// Errors identical to [`scan_concrete_until_null`].
-pub fn find_null_addr(
+pub(crate) fn find_null_addr(
     state: &mut RustSimState,
     addr: u64,
     max: usize,
@@ -150,7 +150,7 @@ pub fn find_null_addr(
 /// The null terminator is passed to `decide` like any other byte, so each
 /// procedure encodes its own end-of-string result (strstr → NULL, strspn →
 /// the run length, …).
-pub fn scan_concrete_predicate<R>(
+pub(crate) fn scan_concrete_predicate<R>(
     state: &mut RustSimState,
     addr: u64,
     max: usize,
@@ -175,7 +175,7 @@ pub fn scan_concrete_predicate<R>(
 /// single most-duplicated idiom across the writing procedures (strcpy,
 /// strcat, getenv, sprintf, strncpy, snprintf, fread, read). Centralizing it
 /// keeps the store boundary in one place.
-pub fn write_concrete_bytes(
+pub(crate) fn write_concrete_bytes(
     state: &mut RustSimState,
     addr: u64,
     bytes: &[u8],
@@ -197,7 +197,7 @@ pub fn write_concrete_bytes(
 /// [`MemoryError`](crate::memory::MemoryError) so both procedure
 /// (`ProcedureError`) and syscall (`SyscallError`) callers can `?` it
 /// through their `#[from]` conversions.
-pub fn write_bv_bytes(
+pub(crate) fn write_bv_bytes(
     state: &mut RustSimState,
     addr: u64,
     bytes: Vec<RustBV>,
@@ -214,7 +214,11 @@ pub fn write_bv_bytes(
 /// strncat, getenv, sprintf, snprintf) that always null-terminate. For
 /// truncated/bounded writers that place the terminator at a caller-chosen
 /// offset, call [`write_concrete_bytes`] and store the NUL separately.
-pub fn write_cstr(state: &mut RustSimState, addr: u64, bytes: &[u8]) -> Result<(), ProcedureError> {
+pub(crate) fn write_cstr(
+    state: &mut RustSimState,
+    addr: u64,
+    bytes: &[u8],
+) -> Result<(), ProcedureError> {
     write_concrete_bytes(state, addr, bytes)?;
     state.memory_store(
         addr.wrapping_add(bytes.len() as u64),
@@ -224,7 +228,7 @@ pub fn write_cstr(state: &mut RustSimState, addr: u64, bytes: &[u8]) -> Result<(
 }
 
 /// One decision of the concrete fast path inside [`scan_concrete_then_collect`].
-pub enum ConcreteStep<R> {
+pub(crate) enum ConcreteStep<R> {
     /// Byte was concrete and contributes nothing to the result; advance.
     Continue,
     /// Byte was concrete and terminates the scan with result `R`.
@@ -234,7 +238,7 @@ pub enum ConcreteStep<R> {
 }
 
 /// Outcome of [`scan_concrete_then_collect`].
-pub enum ScanResult<R, B> {
+pub(crate) enum ScanResult<R, B> {
     /// The concrete fast path returned early with `R`.
     Stopped(R),
     /// The loop ran to `max` entirely in concrete mode without stopping.
@@ -260,7 +264,7 @@ pub enum ScanResult<R, B> {
 ///
 /// Concrete positions are free, exactly as in Python: only symbolic ones draw
 /// down the budget.
-pub const MAX_SYMBOLIC_SCAN_BYTES: usize = 60;
+pub(crate) const MAX_SYMBOLIC_SCAN_BYTES: usize = 60;
 
 /// Generic skeleton shared by the symbolic-aware string scans
 /// (strlen/strchr/strrchr/strcmp/memchr/memcmp). It walks positions `0..max`,
@@ -273,7 +277,7 @@ pub const MAX_SYMBOLIC_SCAN_BYTES: usize = 60;
 ///
 /// Centralizing the loop keeps the null-boundary edge cases — the most
 /// soundness-sensitive part of these procedures — in one tested place.
-pub fn scan_concrete_then_collect<B, R>(
+pub(crate) fn scan_concrete_then_collect<B, R>(
     state: &mut RustSimState,
     max: u64,
     mut load: impl FnMut(&mut RustSimState, u64) -> Result<B, ProcedureError>,
@@ -318,7 +322,7 @@ pub fn scan_concrete_then_collect<B, R>(
 }
 
 /// Result of [`scan_for_null_symbolic`].
-pub enum ScanOutcome {
+pub(crate) enum ScanOutcome {
     /// All scanned bytes were concrete; null terminator found at this length
     /// (or `max` was reached without finding null — caller decides whether
     /// that's an error or natural saturation).
@@ -334,7 +338,7 @@ pub enum ScanOutcome {
 ///
 /// In all-concrete mode, returns [`ScanOutcome::AllConcrete`] with the
 /// length found (or `max` if no null was hit).
-pub fn scan_for_null_symbolic(
+pub(crate) fn scan_for_null_symbolic(
     state: &mut RustSimState,
     addr: u64,
     max: u64,
@@ -364,7 +368,7 @@ pub fn scan_for_null_symbolic(
 ///
 /// `default_len` is the value used past the scanned region (typically the
 /// upper bound: `MAX_STRLEN` for strlen, `maxlen` for strnlen).
-pub fn build_strlen_chain(
+pub(crate) fn build_strlen_chain(
     bytes: &[(u64, RustBV)],
     arch_bits: u32,
     default_len: u64,
@@ -401,7 +405,7 @@ pub fn build_strlen_chain(
 /// caller-supplied one: `strncmp(a, b, 4)` may legitimately compare four
 /// non-null bytes, so bounded variants (strnlen/strncmp with `n < MAX`) must
 /// not apply this.
-pub fn null_exists_constraint(bytes: &[(u64, RustBV)], ctx: &SymContext) -> Option<RustBV> {
+pub(crate) fn null_exists_constraint(bytes: &[(u64, RustBV)], ctx: &SymContext) -> Option<RustBV> {
     let zero_byte = RustBV::concrete(0u128, 8);
     let mut disjunction: Option<RustBV> = None;
     for (_, byte) in bytes {

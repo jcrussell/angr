@@ -198,7 +198,7 @@ fn fcntl_dispatch(
 }
 
 /// `fcntl(fd, cmd, arg) → int` — see module doc for handled `cmd`s.
-pub struct NativeFcntlSyscall;
+pub(crate) struct NativeFcntlSyscall;
 
 impl NativeSyscall for NativeFcntlSyscall {
     fn name(&self) -> &'static str {
@@ -220,7 +220,7 @@ impl NativeSyscall for NativeFcntlSyscall {
 
 /// `fcntl64(fd, cmd, arg) → long` — LFS-flavored variant on 32-bit
 /// arches; shares the same dispatch as `fcntl` for the trivial cmds.
-pub struct NativeFcntl64Syscall;
+pub(crate) struct NativeFcntl64Syscall;
 
 impl NativeSyscall for NativeFcntl64Syscall {
     fn name(&self) -> &'static str {
@@ -243,7 +243,7 @@ impl NativeSyscall for NativeFcntl64Syscall {
 /// `ioctl(fd, cmd, arg) → int` — see module doc. Currently handles
 /// `TIOCGWINSZ` → `-ENOTTY` (no terminal model); everything else
 /// falls back to a fresh symbolic return.
-pub struct NativeIoctlSyscall;
+pub(crate) struct NativeIoctlSyscall;
 
 impl NativeSyscall for NativeIoctlSyscall {
     fn name(&self) -> &'static str {
@@ -278,7 +278,7 @@ stub_syscall!(NativePipe2Syscall, "pipe2", "syscall_stub_pipe2", 2);
 
 /// `dup(oldfd) → newfd` — allocate a fresh fd that aliases `oldfd`.
 /// Returns `-EBADF` if `oldfd` is not open.
-pub struct NativeDupSyscall;
+pub(crate) struct NativeDupSyscall;
 
 impl NativeSyscall for NativeDupSyscall {
     fn name(&self) -> &'static str {
@@ -306,7 +306,7 @@ impl NativeSyscall for NativeDupSyscall {
 /// `dup2(oldfd, newfd) → newfd` — make `newfd` an alias of `oldfd`,
 /// closing the previous `newfd` if it was open. Returns `-EBADF` if
 /// `oldfd` is closed or `newfd` is out of range.
-pub struct NativeDup2Syscall;
+pub(crate) struct NativeDup2Syscall;
 
 impl NativeSyscall for NativeDup2Syscall {
     fn name(&self) -> &'static str {
@@ -332,7 +332,7 @@ impl NativeSyscall for NativeDup2Syscall {
 /// `dup3(oldfd, newfd, flags) → newfd` — like `dup2`, with a `flags`
 /// argument (only `O_CLOEXEC = 0x80000` defined). We do not model
 /// close-on-exec, so the flag is accepted and ignored.
-pub struct NativeDup3Syscall;
+pub(crate) struct NativeDup3Syscall;
 
 impl NativeSyscall for NativeDup3Syscall {
     fn name(&self) -> &'static str {

@@ -54,18 +54,12 @@ pub struct SegmentList {
 }
 
 impl SegmentList {
-    pub fn len(&self) -> usize {
-        self.map.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
+    /// Test-only: the `#[pymethods]` surface below exposes `occupied_size` /
+    /// `__len__` to Python; nothing in Rust asks whether the map is empty
+    /// outside `segmentlist_tests` (angr-9ke6b.214).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn is_empty(&self) -> bool {
         self.map.is_empty()
-    }
-
-    pub fn get_segment(&self, address: u64) -> Option<(u64, u64, Option<String>)> {
-        self.map
-            .get_key_value(&address)
-            .map(|(range, sort)| (range.start, range.end - range.start, sort.clone()))
     }
 }
 
@@ -267,7 +261,7 @@ impl SegmentListIter {
 }
 
 #[pymodule]
-pub fn segmentlist(m: &Bound<'_, PyModule>) -> PyResult<()> {
+pub(crate) fn segmentlist(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Segment>()?;
     m.add_class::<SegmentList>()?;
     m.add_class::<SegmentListIter>()?;

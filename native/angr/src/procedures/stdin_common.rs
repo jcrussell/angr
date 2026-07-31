@@ -33,7 +33,7 @@ use crate::symbolic::RustBV;
 ///
 /// Advances fd 0's position by the number of seeded bytes actually available,
 /// mirroring Python, where the same `SimFileStream` read consumes them.
-pub fn mint_stdin_bytes(state: &mut RustSimState, names: &[String]) -> Vec<RustBV> {
+pub(crate) fn mint_stdin_bytes(state: &mut RustSimState, names: &[String]) -> Vec<RustBV> {
     let seeded: Vec<RustBV> = state
         .file_system()
         .read_sym(0, names.len())
@@ -70,7 +70,7 @@ pub fn mint_stdin_bytes(state: &mut RustSimState, names: &[String]) -> Vec<RustB
 /// rather than mint an unconstrained value and leave the seed unconsumed: the
 /// only such reader is `scanf`'s numeric conversion, which models a decimal/hex
 /// parse of a digit run instead of copying bytes (angr-ggb66).
-pub fn stdin_seed_unconsumed(state: &RustSimState) -> bool {
+pub(crate) fn stdin_seed_unconsumed(state: &RustSimState) -> bool {
     let fs = state.file_system_ref();
     let Some(content) = fs.fd_content_sym(0) else {
         return false;

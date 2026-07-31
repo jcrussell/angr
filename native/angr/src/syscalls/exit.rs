@@ -13,7 +13,7 @@ use super::{NativeSyscall, SyscallError, SyscallOutcome};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
-pub struct NativeExitSyscall;
+pub(crate) struct NativeExitSyscall;
 
 impl NativeSyscall for NativeExitSyscall {
     fn name(&self) -> &'static str {

@@ -11,7 +11,7 @@ use indexmap::IndexMap;
 use std::collections::HashMap;
 
 /// Convert an epsilon-NFA to a DFA using the powerset construction algorithm.
-pub fn subset_construction(nfa: &EpsilonNFA) -> DFA {
+pub(super) fn subset_construction(nfa: &EpsilonNFA) -> DFA {
     // Each DFA state corresponds to a set of NFA states
     // We map sets of NFA states to DFA state IDs
     let mut state_mapping: IndexMap<Vec<StateId>, StateId> = IndexMap::new();

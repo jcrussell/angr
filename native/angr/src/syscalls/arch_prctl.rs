@@ -22,7 +22,7 @@ const ARCH_GET_FS: u64 = 0x1003;
 const ARCH_GET_GS: u64 = 0x1004;
 const EINVAL: u64 = 22;
 
-pub struct NativeArchPrctlSyscall;
+pub(crate) struct NativeArchPrctlSyscall;
 
 impl NativeSyscall for NativeArchPrctlSyscall {
     fn name(&self) -> &'static str {

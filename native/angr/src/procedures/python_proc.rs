@@ -24,7 +24,7 @@ use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
 /// Wraps a Python callable so it can act as a native SimProcedure.
-pub struct PythonNativeProcedure {
+pub(crate) struct PythonNativeProcedure {
     name: String,
     num_args: usize,
     no_return: bool,
@@ -32,7 +32,7 @@ pub struct PythonNativeProcedure {
 }
 
 impl PythonNativeProcedure {
-    pub fn new(name: String, num_args: usize, no_return: bool, callable: Py<PyAny>) -> Self {
+    pub(crate) fn new(name: String, num_args: usize, no_return: bool, callable: Py<PyAny>) -> Self {
         Self {
             name,
             num_args,

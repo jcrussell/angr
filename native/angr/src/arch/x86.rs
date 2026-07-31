@@ -8,76 +8,76 @@ use crate::vex::VexArch;
 
 /// x86 (32-bit) architecture.
 #[derive(Debug, Clone, Copy)]
-pub struct X86;
+pub(crate) struct X86;
 
 // x86 VEX guest state offsets (from archinfo.ArchX86)
 // These match pyvex's register layout for compatibility.
 pub(crate) mod offsets {
     // General purpose registers
-    pub const EAX: u32 = 8;
-    pub const ECX: u32 = 12;
-    pub const EDX: u32 = 16;
-    pub const EBX: u32 = 20;
-    pub const ESP: u32 = 24;
-    pub const EBP: u32 = 28;
-    pub const ESI: u32 = 32;
-    pub const EDI: u32 = 36;
+    pub(crate) const EAX: u32 = 8;
+    pub(crate) const ECX: u32 = 12;
+    pub(crate) const EDX: u32 = 16;
+    pub(crate) const EBX: u32 = 20;
+    pub(crate) const ESP: u32 = 24;
+    pub(crate) const EBP: u32 = 28;
+    pub(crate) const ESI: u32 = 32;
+    pub(crate) const EDI: u32 = 36;
 
     // Flags thunks
-    pub const CC_OP: u32 = 40;
-    pub const CC_DEP1: u32 = 44;
-    pub const CC_DEP2: u32 = 48;
-    pub const CC_NDEP: u32 = 52;
+    pub(crate) const CC_OP: u32 = 40;
+    pub(crate) const CC_DEP1: u32 = 44;
+    pub(crate) const CC_DEP2: u32 = 48;
+    pub(crate) const CC_NDEP: u32 = 52;
 
     // Other flags
-    pub const DFLAG: u32 = 56;
-    pub const IDFLAG: u32 = 60;
-    pub const ACFLAG: u32 = 64;
-    pub const EIP: u32 = 68;
+    pub(crate) const DFLAG: u32 = 56;
+    pub(crate) const IDFLAG: u32 = 60;
+    pub(crate) const ACFLAG: u32 = 64;
+    pub(crate) const EIP: u32 = 68;
 
     // FPU registers (before SSE in archinfo layout)
-    pub const FPREG: u32 = 72;
-    pub const FPTAG: u32 = 136;
-    pub const FPROUND: u32 = 144;
-    pub const FC3210: u32 = 148;
-    pub const FTOP: u32 = 152;
+    pub(crate) const FPREG: u32 = 72;
+    pub(crate) const FPTAG: u32 = 136;
+    pub(crate) const FPROUND: u32 = 144;
+    pub(crate) const FC3210: u32 = 148;
+    pub(crate) const FTOP: u32 = 152;
 
     // SSE
-    pub const SSEROUND: u32 = 156;
-    pub const XMM0: u32 = 160;
-    pub const XMM1: u32 = 176;
-    pub const XMM2: u32 = 192;
-    pub const XMM3: u32 = 208;
-    pub const XMM4: u32 = 224;
-    pub const XMM5: u32 = 240;
-    pub const XMM6: u32 = 256;
-    pub const XMM7: u32 = 272;
+    pub(crate) const SSEROUND: u32 = 156;
+    pub(crate) const XMM0: u32 = 160;
+    pub(crate) const XMM1: u32 = 176;
+    pub(crate) const XMM2: u32 = 192;
+    pub(crate) const XMM3: u32 = 208;
+    pub(crate) const XMM4: u32 = 224;
+    pub(crate) const XMM5: u32 = 240;
+    pub(crate) const XMM6: u32 = 256;
+    pub(crate) const XMM7: u32 = 272;
 
     // Segment selectors (after XMM registers)
-    pub const CS: u32 = 288;
-    pub const DS: u32 = 290;
-    pub const ES: u32 = 292;
-    pub const FS: u32 = 294;
-    pub const GS: u32 = 296;
-    pub const SS: u32 = 298;
+    pub(crate) const CS: u32 = 288;
+    pub(crate) const DS: u32 = 290;
+    pub(crate) const ES: u32 = 292;
+    pub(crate) const FS: u32 = 294;
+    pub(crate) const GS: u32 = 296;
+    pub(crate) const SS: u32 = 298;
 
     // Segment base addresses
-    pub const LDT: u32 = 304;
-    pub const GDT: u32 = 312;
+    pub(crate) const LDT: u32 = 304;
+    pub(crate) const GDT: u32 = 312;
     // VEX bookkeeping tail (VexGuestX86State, libvex_guest_x86.h). x86 has no
     // guest_FS_CONST/GS_CONST — that pair is amd64-only — so 320/324 are
     // guest_EMNOTE/guest_CMSTART, not scratch space (angr-rfxc7).
-    pub const EMNOTE: u32 = 320;
-    pub const CMSTART: u32 = 324;
-    pub const CMLEN: u32 = 328;
-    pub const NRADDR: u32 = 332;
-    pub const SC_CLASS: u32 = 336;
-    pub const IP_AT_SYSCALL: u32 = 340;
+    pub(crate) const EMNOTE: u32 = 320;
+    pub(crate) const CMSTART: u32 = 324;
+    pub(crate) const CMLEN: u32 = 328;
+    pub(crate) const NRADDR: u32 = 332;
+    pub(crate) const SC_CLASS: u32 = 336;
+    pub(crate) const IP_AT_SYSCALL: u32 = 340;
 
     // Total guest state size (must cover all registers). 344 is the end of
     // guest_IP_AT_SYSCALL; everything past it is the struct's explicit
     // padding1..3, not guest state, so archinfo and VEX agree here.
-    pub const GUEST_STATE_SIZE: usize = 344;
+    pub(crate) const GUEST_STATE_SIZE: usize = 344;
 }
 
 // Canonical registers: drive `register_name(offset)` reverse lookups.

@@ -10,7 +10,7 @@ pub const EPSILON: SymbolId = u32::MAX;
 
 /// Check if a symbol is an epsilon transition.
 #[inline]
-pub fn is_epsilon(symbol: SymbolId) -> bool {
+pub(super) fn is_epsilon(symbol: SymbolId) -> bool {
     symbol == EPSILON
 }
 

@@ -46,7 +46,7 @@ const AST_CACHE_SIZE: usize = 10000;
 //
 // Coherence with the global registry: a `Symbolic`/`Constrained` hit
 // in this cache implies the underlying `symbol_id` was previously
-// registered via `store_claripy_ast{,_with_info}`, so the inverse
+// registered via `store_claripy_ast_with_info`, so the inverse
 // mapping (rust_id → original AST) lives in the `SymbolicIdentityRegistry`.
 thread_local! {
     pub(super) static AST_CACHE: RefCell<LruCache<i64, RustBV>> =
@@ -100,29 +100,6 @@ thread_local! {
         RefCell::new(LruCache::new(NonZeroUsize::new(10000).expect("expression-by-ptr cache capacity is a non-zero constant")));
 }
 
-/// Store a claripy AST for later retrieval.
-/// Called when converting claripy→RustBV for symbolic values.
-///
-/// Registers the AST in the process-global `SymbolicIdentityRegistry`
-/// (the sole store for rust_id → original AST; see cross-cache invariant
-/// C1 in the parent module rustdoc).
-///
-/// `symbol_id` MUST be a real allocated leaf-symbol id, not
-/// `RustBV::EXPRESSION_ID` — compound expressions use the
-/// expression caches, not the registry.
-pub fn store_claripy_ast(symbol_id: u64, ast: Py<PyAny>) {
-    debug_assert_ne!(
-        symbol_id,
-        RustBV::EXPRESSION_ID,
-        "symbol identity registry must not be keyed by the EXPRESSION_ID sentinel; \
-         use store_expression_ast_by_operands for compound nodes",
-    );
-
-    // Store in the global registry (for cross-thread access).
-    // Note: We use a dummy hash (0) since we only have the symbol_id here.
-    global_registry().register_by_id(symbol_id, ast);
-}
-
 /// Store a claripy AST with full symbol information.
 ///
 /// This is the preferred method when symbol name and width are available,
@@ -130,7 +107,7 @@ pub fn store_claripy_ast(symbol_id: u64, ast: Py<PyAny>) {
 ///
 /// `symbol_id` MUST be a real allocated leaf-symbol id, not
 /// `RustBV::EXPRESSION_ID`.
-pub fn store_claripy_ast_with_info(
+pub(crate) fn store_claripy_ast_with_info(
     py_hash: i64,
     symbol_id: u64,
     name: &str,
@@ -153,7 +130,7 @@ pub fn store_claripy_ast_with_info(
 ///
 /// Reads from the process-global `SymbolicIdentityRegistry` (cross-thread,
 /// survives across callbacks).
-pub fn get_claripy_ast(symbol_id: u64) -> Option<Py<PyAny>> {
+pub(crate) fn get_claripy_ast(symbol_id: u64) -> Option<Py<PyAny>> {
     global_registry().get_original_ast(symbol_id)
 }
 
@@ -164,14 +141,14 @@ pub fn get_claripy_ast(symbol_id: u64) -> Option<Py<PyAny>> {
 /// cache hit hands back an AST whose width disagrees with the requested
 /// symbol width (an id-level aliasing bug — see angr-owr37), the caller drops
 /// the stale entry and re-mints.
-pub fn evict_claripy_ast(symbol_id: u64) {
+pub(crate) fn evict_claripy_ast(symbol_id: u64) {
     global_registry().remove(symbol_id);
 }
 
 /// Look up a symbol by its Python hash.
 ///
 /// This is used during import to check if we've already imported this symbol.
-pub fn lookup_symbol_by_hash(py_hash: i64) -> Option<u64> {
+pub(crate) fn lookup_symbol_by_hash(py_hash: i64) -> Option<u64> {
     global_registry().lookup_by_hash(py_hash)
 }
 
@@ -179,21 +156,14 @@ pub fn lookup_symbol_by_hash(py_hash: i64) -> Option<u64> {
 ///
 /// A symbol's Z3 constant is named after its Rust name, so an importer that
 /// resolves a symbol by id must rebuild it with this name (angr-izov2).
-pub fn lookup_symbol_name_by_id(rust_id: u64) -> Option<String> {
+pub(crate) fn lookup_symbol_name_by_id(rust_id: u64) -> Option<String> {
     global_registry().lookup_name_by_id(rust_id)
-}
-
-/// Look up symbol info by name (deprecated - use lookup_symbol_by_name_and_width).
-///
-/// This is used when we receive a symbol by name and need to find its Rust ID.
-pub fn lookup_symbol_by_name(name: &str) -> Option<crate::symbolic::SymbolInfo> {
-    global_registry().lookup_by_name(name)
 }
 
 /// Look up symbol info by name and width.
 ///
 /// This is the preferred method after D2 fix which uses width-qualified names.
-pub fn lookup_symbol_by_name_and_width(
+pub(crate) fn lookup_symbol_by_name_and_width(
     name: &str,
     width: u32,
 ) -> Option<crate::symbolic::SymbolInfo> {
@@ -203,13 +173,16 @@ pub fn lookup_symbol_by_name_and_width(
 /// Store the original claripy AST keyed by an imported Expression's
 /// operands Arc pointer. The BV clone is held alongside to pin the
 /// operands Arc alive (preventing pointer reuse on free).
-pub fn store_expression_ast_by_operands(operands_ptr: usize, bv: RustBV, ast: Py<PyAny>) {
+pub(crate) fn store_expression_ast_by_operands(operands_ptr: usize, bv: RustBV, ast: Py<PyAny>) {
     tl_cache!(EXPRESSION_BY_OPERANDS_PTR, put(operands_ptr, (bv, ast)));
 }
 
 /// Retrieve a previously stored claripy AST by an Expression's operands
 /// Arc pointer. Returns None on miss.
-pub fn get_expression_ast_by_operands(py: Python<'_>, operands_ptr: usize) -> Option<Py<PyAny>> {
+pub(crate) fn get_expression_ast_by_operands(
+    py: Python<'_>,
+    operands_ptr: usize,
+) -> Option<Py<PyAny>> {
     tl_cache!(
         EXPRESSION_BY_OPERANDS_PTR,
         get(&operands_ptr).map(|(_, ast)| ast.clone_ref(py))
@@ -224,7 +197,7 @@ pub fn get_expression_ast_by_operands(py: Python<'_>, operands_ptr: usize) -> Op
 /// because it only touches this thread's caches (see
 /// [`clear_worker_local_caches`] for the threading-intent alias). Use
 /// [`reset_for_new_exploration`] to also wipe the cross-thread global registry.
-pub fn clear_ast_cache() {
+pub(crate) fn clear_ast_cache() {
     tl_cache!(AST_CACHE, clear());
     tl_cache!(EXPRESSION_BY_OPERANDS_PTR, clear());
 }
@@ -239,7 +212,8 @@ pub fn clear_ast_cache() {
 /// [`reset_for_new_exploration`] (which wipes global symbol identity that
 /// sibling workers depend on). See cross-cache invariant C3 in the parent
 /// module rustdoc.
-pub fn clear_worker_local_caches() {
+#[cfg_attr(not(feature = "vex-engine-z3"), allow(dead_code))]
+pub(crate) fn clear_worker_local_caches() {
     clear_ast_cache();
 }
 
@@ -255,14 +229,21 @@ pub fn clear_worker_local_caches() {
 ///
 /// Clears the thread-local caches first, then the global registry, so the
 /// ordering still honors cross-cache invariant C3 (no partial clear is correct).
-pub fn reset_for_new_exploration() {
+///
+/// **No production caller** (angr-9ke6b.214): the exploration-start path clears
+/// only the thread-local caches via `clear_ast_cache`, so the global registry
+/// survives across managers in one process. Only `cache_tests` drives the full
+/// reset. Whether the production path *should* call it is a behaviour question,
+/// not a visibility one, so this is flagged rather than deleted.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn reset_for_new_exploration() {
     clear_ast_cache();
     crate::symbolic::clear_global_registry();
 }
 
 /// Get the current cache hit/miss statistics.
 #[cfg(test)]
-pub fn cache_stats() -> (usize, usize) {
+pub(crate) fn cache_stats() -> (usize, usize) {
     // Returns (len, cap) for debugging
     AST_CACHE.with(|cache| {
         let c = cache.borrow();

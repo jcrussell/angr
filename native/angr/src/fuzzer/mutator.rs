@@ -18,14 +18,14 @@ use crate::fuzzer::S;
 /// On each call to `mutate`, replaces the input with the next value in the sequence,
 /// wrapping around when the end is reached. Useful for writing tests with predictable
 /// mutation outputs.
-pub struct DeterministicMutator {
+pub(crate) struct DeterministicMutator {
     values: Vec<Vec<u8>>,
     index: usize,
     name: Cow<'static, str>,
 }
 
 impl DeterministicMutator {
-    pub fn new(values: Vec<Vec<u8>>) -> Self {
+    pub(crate) fn new(values: Vec<Vec<u8>>) -> Self {
         Self {
             values,
             index: 0,
@@ -57,7 +57,7 @@ impl Mutator<BytesInput, S> for DeterministicMutator {
 }
 
 /// A dynamic mutator enum that can hold either a Havoc mutator or a Deterministic mutator.
-pub enum DynMutator {
+pub(crate) enum DynMutator {
     Havoc(HavocScheduledMutator<HavocMutationsType>),
     Deterministic(DeterministicMutator),
 }
@@ -104,7 +104,7 @@ impl PyHavocMutator {
 }
 
 impl PyHavocMutator {
-    pub fn build(&self) -> HavocScheduledMutator<HavocMutationsType> {
+    pub(crate) fn build(&self) -> HavocScheduledMutator<HavocMutationsType> {
         match self.max_stack_pow {
             Some(pow) => HavocScheduledMutator::with_max_stack_pow(havoc_mutations(), pow),
             None => HavocScheduledMutator::new(havoc_mutations()),
@@ -137,14 +137,14 @@ impl PyDeterministicMutator {
 }
 
 impl PyDeterministicMutator {
-    pub fn build(&self) -> DeterministicMutator {
+    pub(crate) fn build(&self) -> DeterministicMutator {
         DeterministicMutator::new(self.values.clone())
     }
 }
 
 /// Build a DynMutator from an optional Python mutator object.
 /// If None, uses the default Havoc mutator.
-pub fn build_mutator(py_mutator: Option<&Bound<PyAny>>) -> PyResult<DynMutator> {
+pub(crate) fn build_mutator(py_mutator: Option<&Bound<PyAny>>) -> PyResult<DynMutator> {
     match py_mutator {
         None => Ok(DynMutator::Havoc(HavocScheduledMutator::new(
             havoc_mutations(),

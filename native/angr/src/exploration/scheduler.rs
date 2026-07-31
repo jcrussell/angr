@@ -135,21 +135,21 @@ const LOCAL_HWM: usize = 64;
 /// here would add a cross-thread raw-pointer lifetime hazard for no benefit at
 /// the current granularity.
 #[derive(Clone, Default)]
-pub struct CancelToken {
+pub(crate) struct CancelToken {
     flag: Arc<AtomicBool>,
 }
 
 impl CancelToken {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 
     /// Request that all workers stop at their next task boundary.
-    pub fn cancel(&self) {
+    pub(crate) fn cancel(&self) {
         self.flag.store(true, Ordering::SeqCst);
     }
 
-    pub fn is_cancelled(&self) -> bool {
+    pub(crate) fn is_cancelled(&self) -> bool {
         self.flag.load(Ordering::SeqCst)
     }
 }
@@ -160,7 +160,7 @@ impl CancelToken {
 /// (fully serialized) so the caller can recover the satisfying state. These are
 /// the dispositions whose full symbolic state the parallel path discards.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TerminalDisposition {
+pub(crate) enum TerminalDisposition {
     Deadended,
     Errored,
     Avoided,
@@ -171,7 +171,7 @@ pub enum TerminalDisposition {
 /// worker boundary as a full state. Built in the worker's own context from
 /// cheap scalar fields, so it pays no serde / Z3-AST-rebuild tax.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TerminalSummary {
+pub(crate) struct TerminalSummary {
     pub state_id: u64,
     pub pc: u64,
     pub disposition: TerminalDisposition,
@@ -180,7 +180,7 @@ pub struct TerminalSummary {
 impl TerminalSummary {
     /// Summarize a terminal state without serializing it. The `state` is read
     /// (cheap scalar fields only) and then dropped in its home context.
-    pub fn of(state: &RustSimState, disposition: TerminalDisposition) -> Self {
+    pub(crate) fn of(state: &RustSimState, disposition: TerminalDisposition) -> Self {
         Self {
             state_id: state.state_id(),
             pc: state.pc(),
@@ -196,7 +196,7 @@ impl TerminalSummary {
 /// *materialized* — fully serialized to cross the `thread::scope` join, for
 /// terminals the caller must recover (found/matched). `terminal_summaries` are
 /// lightweight records for dead paths that pay no serde.
-pub struct TaskOutcome {
+pub(crate) struct TaskOutcome {
     /// Successors to keep exploring; pushed live onto the worker's local queue.
     pub continue_states: Vec<RustSimState>,
     /// Terminal states the caller must recover in full — serialized across the
@@ -216,7 +216,7 @@ impl TaskOutcome {
     /// scheduler unit tests build outcomes with this; production task closures
     /// assemble `TaskOutcome` fields directly.
     #[cfg(test)]
-    pub fn continuing(continue_states: Vec<RustSimState>) -> Self {
+    pub(crate) fn continuing(continue_states: Vec<RustSimState>) -> Self {
         Self {
             continue_states,
             terminal_states: Vec::new(),
@@ -229,7 +229,7 @@ impl TaskOutcome {
     /// work.
     /// Test-only constructor (see [`TaskOutcome::continuing`]).
     #[cfg(test)]
-    pub fn terminal(terminal_states: Vec<RustSimState>) -> Self {
+    pub(crate) fn terminal(terminal_states: Vec<RustSimState>) -> Self {
         Self {
             continue_states: Vec::new(),
             terminal_states,
@@ -240,7 +240,7 @@ impl TaskOutcome {
 
     /// All successors are dead paths recorded as summaries; no further work, no
     /// serde.
-    pub fn summarized(terminal_summaries: Vec<TerminalSummary>) -> Self {
+    pub(crate) fn summarized(terminal_summaries: Vec<TerminalSummary>) -> Self {
         Self {
             continue_states: Vec::new(),
             terminal_states: Vec::new(),
@@ -390,7 +390,7 @@ impl SchedulerCounters {
 ///
 /// [`honest_steal_fraction`]: SchedulerStats::honest_steal_fraction
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct SchedulerStats {
+pub(crate) struct SchedulerStats {
     /// Initial payloads handed to [`ParallelScheduler::run_instrumented`].
     pub seeds: usize,
     /// Nanoseconds all workers spent in Z3 migration serde (detach + reattach),
@@ -452,7 +452,7 @@ impl SchedulerStats {
     /// processed state is dispatched exactly once, from the local queue or the
     /// injector. Matches the `parallel_tasks` denominator of the run loop's
     /// `f_model` (helpers.rs), so the two steal fractions are comparable.
-    pub fn dispatches(&self) -> usize {
+    pub(crate) fn dispatches(&self) -> usize {
         self.local_dispatches + self.injector_dispatches
     }
 
@@ -464,7 +464,7 @@ impl SchedulerStats {
     /// Test-only: the overhead-gate assertions in the unit suite check this
     /// ratio; the run loop reads the raw counters directly.
     #[cfg(test)]
-    pub fn honest_steal_fraction(&self) -> f64 {
+    pub(crate) fn honest_steal_fraction(&self) -> f64 {
         let d = self.dispatches();
         if d == 0 {
             return 0.0;
@@ -1136,14 +1136,14 @@ fn worker_thread(worker_id: usize, job_rx: Receiver<WorkerCtl>, done_tx: Sender<
 /// Test-only: this whole surface exists solely for the `#[cfg(test)]` scheduler
 /// unit suite below; no production path constructs it.
 #[cfg(test)]
-pub struct ParallelScheduler {
+pub(super) struct ParallelScheduler {
     num_workers: usize,
 }
 
 #[cfg(test)]
 impl ParallelScheduler {
     /// Build a scheduler with `num_workers` worker threads (clamped to >= 1).
-    pub fn new(num_workers: usize) -> Self {
+    pub(super) fn new(num_workers: usize) -> Self {
         Self {
             num_workers: num_workers.max(1),
         }
@@ -1158,7 +1158,7 @@ impl ParallelScheduler {
     /// let it borrow the caller's stack): the persistent pool hands each worker
     /// an `Arc<WaveJob>` that outlives this frame, so the closure must own its
     /// captures.
-    pub fn run<F>(
+    pub(super) fn run<F>(
         &self,
         initial: Vec<StateMigrationPayload>,
         process: F,
@@ -1180,7 +1180,7 @@ impl ParallelScheduler {
     /// into that context (or, on the local fast path, one created there). It
     /// must be `Send + Sync + 'static` (it is stored in the `Arc<WaveJob>` every
     /// worker shares).
-    pub fn run_instrumented<F>(
+    pub(super) fn run_instrumented<F>(
         &self,
         initial: Vec<StateMigrationPayload>,
         process: F,

@@ -32,7 +32,7 @@ use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
 /// Native `ReturnUnconstrained`: return a fresh unconstrained symbol.
-pub struct NativeReturnUnconstrained {
+pub(crate) struct NativeReturnUnconstrained {
     /// Dispatch name (the hooked symbol, e.g. `get_flag`). Leaked once at
     /// construction so the trait's `name(&self) -> &'static str` is free;
     /// one leak per distinct stub symbol per process.
@@ -42,7 +42,7 @@ pub struct NativeReturnUnconstrained {
 }
 
 impl NativeReturnUnconstrained {
-    pub fn new(name: &str, ret_bits: u32) -> Self {
+    pub(crate) fn new(name: &str, ret_bits: u32) -> Self {
         Self {
             name: Box::leak(name.to_owned().into_boxed_str()),
             ret_bits,

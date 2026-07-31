@@ -45,7 +45,7 @@ const NEG_ONE: u64 = u64::MAX;
 
 const CLOCK_REALTIME: u64 = 0;
 
-pub struct NativeGettimeofdaySyscall;
+pub(crate) struct NativeGettimeofdaySyscall;
 
 impl NativeSyscall for NativeGettimeofdaySyscall {
     fn name(&self) -> &'static str {
@@ -113,7 +113,7 @@ impl NativeSyscall for NativeGettimeofdaySyscall {
 /// The caller performs the optional `*pointer` store (its error type differs
 /// between the two callers — `SyscallError` vs `ProcedureError`) and wraps the
 /// returned BV in the appropriate outcome.
-pub fn fresh_monotonic_time(state: &mut RustSimState) -> RustBV {
+pub(crate) fn fresh_monotonic_time(state: &mut RustSimState) -> RustBV {
     let bits = state.arch().bits();
     let (sys_time, monotonic_constraint) = {
         let ctx = state.solver().borrow();
@@ -129,7 +129,7 @@ pub fn fresh_monotonic_time(state: &mut RustSimState) -> RustBV {
     sys_time
 }
 
-pub struct NativeTimeSyscall;
+pub(crate) struct NativeTimeSyscall;
 
 impl NativeSyscall for NativeTimeSyscall {
     fn name(&self) -> &'static str {
@@ -163,7 +163,7 @@ impl NativeSyscall for NativeTimeSyscall {
     }
 }
 
-pub struct NativeClockGettimeSyscall;
+pub(crate) struct NativeClockGettimeSyscall;
 
 impl NativeSyscall for NativeClockGettimeSyscall {
     fn name(&self) -> &'static str {

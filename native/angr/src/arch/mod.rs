@@ -18,19 +18,19 @@
 pub(crate) mod amd64;
 pub(crate) mod arm;
 pub(crate) mod arm64;
-pub mod calling_conventions;
+pub(crate) mod calling_conventions;
 pub(crate) mod mips;
 pub(crate) mod x86;
 
-pub use amd64::AMD64;
-pub use arm::ARM;
-pub use arm64::ARM64;
-pub use calling_conventions::{
+pub(crate) use amd64::AMD64;
+pub(crate) use arm::ARM;
+pub(crate) use arm64::ARM64;
+pub(crate) use calling_conventions::{
     AArch64CC, ARMEABI, CallingConvention, Cdecl, ExtractionError, MipsN64, MipsO32, SystemVAMD64,
     cc_for_arch, default_cc_for_arch,
 };
-pub use mips::{MIPS32, MIPS64};
-pub use x86::X86;
+pub(crate) use mips::{MIPS32, MIPS64};
+pub(crate) use x86::X86;
 
 use crate::symbolic::RustBV;
 use crate::vex::VexArch;
@@ -239,7 +239,7 @@ impl From<RegisterFileData> for RegisterFile {
 
 impl RegisterFile {
     /// Create a new register file for the given architecture.
-    pub fn new(arch: Box<dyn Arch>) -> Self {
+    pub(crate) fn new(arch: Box<dyn Arch>) -> Self {
         let size = arch.state_size();
         RegisterFile {
             data: Arc::new(vec![0; size]),
@@ -249,12 +249,12 @@ impl RegisterFile {
     }
 
     /// Get the architecture.
-    pub fn arch(&self) -> &dyn Arch {
+    pub(crate) fn arch(&self) -> &dyn Arch {
         self.arch.as_ref()
     }
 
     /// Read a register value by offset and size.
-    pub fn get(&self, offset: u32, size: u32, ctx: &crate::symbolic::SymContext) -> RustBV {
+    pub(crate) fn get(&self, offset: u32, size: u32, ctx: &crate::symbolic::SymContext) -> RustBV {
         // Check for symbolic value at this exact offset
         if let Some(sym) = self.symbolic.get(&offset) {
             if sym.width() == size * 8 {
@@ -382,12 +382,16 @@ impl RegisterFile {
     /// syscall-num and stack-pointer reads in the interpreter. Note this is
     /// distinct from `get_sp_value`, which reads raw concrete bytes and ignores
     /// the symbolic overlay.
-    pub fn get_offset_u64(&self, offset: u32, ctx: &crate::symbolic::SymContext) -> Option<u64> {
+    pub(crate) fn get_offset_u64(
+        &self,
+        offset: u32,
+        ctx: &crate::symbolic::SymContext,
+    ) -> Option<u64> {
         self.get(offset, self.arch.bytes(), ctx).as_u64()
     }
 
     /// Write a register value by offset.
-    pub fn put(&mut self, offset: u32, value: RustBV) {
+    pub(crate) fn put(&mut self, offset: u32, value: RustBV) {
         let size = value.width() / 8;
         let write_bits = value.width();
 
@@ -502,14 +506,14 @@ impl RegisterFile {
     }
 
     /// Read a register by name.
-    pub fn get_reg(&self, name: &str, ctx: &crate::symbolic::SymContext) -> Option<RustBV> {
+    pub(crate) fn get_reg(&self, name: &str, ctx: &crate::symbolic::SymContext) -> Option<RustBV> {
         let offset = self.arch.register_offset(name)?;
         let size = self.arch.register_size(name)?;
         Some(self.get(offset, size, ctx))
     }
 
     /// Write a register by name.
-    pub fn put_reg(&mut self, name: &str, value: RustBV) -> bool {
+    pub(crate) fn put_reg(&mut self, name: &str, value: RustBV) -> bool {
         if let (Some(offset), Some(size)) = (
             self.arch.register_offset(name),
             self.arch.register_size(name),
@@ -522,27 +526,27 @@ impl RegisterFile {
     }
 
     /// Get the instruction pointer.
-    pub fn get_ip(&self, ctx: &crate::symbolic::SymContext) -> RustBV {
+    pub(crate) fn get_ip(&self, ctx: &crate::symbolic::SymContext) -> RustBV {
         let offset = self.arch.ip_offset();
         let size = self.arch.bytes();
         self.get(offset, size, ctx)
     }
 
     /// Set the instruction pointer.
-    pub fn set_ip(&mut self, value: RustBV) {
+    pub(crate) fn set_ip(&mut self, value: RustBV) {
         let offset = self.arch.ip_offset();
         self.put(offset, value);
     }
 
     /// Get the stack pointer.
-    pub fn get_sp(&self, ctx: &crate::symbolic::SymContext) -> RustBV {
+    pub(crate) fn get_sp(&self, ctx: &crate::symbolic::SymContext) -> RustBV {
         let offset = self.arch.sp_offset();
         let size = self.arch.bytes();
         self.get(offset, size, ctx)
     }
 
     /// Get the stack pointer as a concrete u64 value (for fast checks).
-    pub fn get_sp_value(&self) -> Option<u64> {
+    pub(crate) fn get_sp_value(&self) -> Option<u64> {
         let offset = self.arch.sp_offset() as usize;
         let size = self.arch.bytes() as usize;
         if offset + size > self.data.len() {
@@ -556,7 +560,7 @@ impl RegisterFile {
     }
 
     /// Set the stack pointer.
-    pub fn set_sp(&mut self, value: RustBV) {
+    pub(crate) fn set_sp(&mut self, value: RustBV) {
         let offset = self.arch.sp_offset();
         self.put(offset, value);
     }
@@ -564,7 +568,7 @@ impl RegisterFile {
     /// Copy concrete register values from a byte slice.
     ///
     /// This is used to initialize the register file from external state.
-    pub fn copy_from_bytes(&mut self, bytes: &[u8]) {
+    pub(crate) fn copy_from_bytes(&mut self, bytes: &[u8]) {
         let len = std::cmp::min(bytes.len(), self.data.len());
         Arc::make_mut(&mut self.data)[..len].copy_from_slice(&bytes[..len]);
         // Clear symbolic overlays since we're replacing with concrete values
@@ -575,13 +579,13 @@ impl RegisterFile {
     ///
     /// This is used to extract the register state after execution.
     /// Note: symbolic values are converted to their concrete value (0 if unknown).
-    pub fn copy_to_bytes(&self, bytes: &mut [u8]) {
+    pub(crate) fn copy_to_bytes(&self, bytes: &mut [u8]) {
         let len = std::cmp::min(bytes.len(), self.data.len());
         bytes[..len].copy_from_slice(&self.data[..len]);
     }
 
     /// Fork the register file for path splitting.
-    pub fn fork(&self) -> RegisterFile {
+    pub(crate) fn fork(&self) -> RegisterFile {
         RegisterFile {
             // O(1) Arc refcount bump; the buffer is copied lazily on the
             // first write to either parent or child via `Arc::make_mut`.
@@ -596,7 +600,7 @@ impl RegisterFile {
     /// The concrete `data` buffer and architecture are context-independent and
     /// shared/cloned verbatim.
     #[cfg(feature = "vex-engine-z3")]
-    pub fn translate_into(&self, target_ctx: &z3::Context) -> RegisterFile {
+    pub(crate) fn translate_into(&self, target_ctx: &z3::Context) -> RegisterFile {
         RegisterFile {
             data: Arc::clone(&self.data),
             symbolic: self
@@ -616,7 +620,7 @@ impl RegisterFile {
     /// `merge_cond_other` is the 1-bit condition for `other`'s path being active.
     ///
     /// Returns true if any register was actually merged (values differed).
-    pub fn merge(
+    pub(crate) fn merge(
         &mut self,
         other: &RegisterFile,
         merge_cond_other: &crate::symbolic::RustBV,
@@ -834,12 +838,12 @@ pub(crate) fn arch_desc_from_name(name: &str) -> Option<&'static ArchDesc> {
 }
 
 /// Create an architecture by name.
-pub fn arch_from_name(name: &str) -> Option<Box<dyn Arch>> {
+pub(crate) fn arch_from_name(name: &str) -> Option<Box<dyn Arch>> {
     arch_desc_from_name(name).map(|d| (d.make_arch)())
 }
 
 /// Create an architecture from VexArch.
-pub fn arch_from_vex(arch: VexArch) -> Box<dyn Arch> {
+pub(crate) fn arch_from_vex(arch: VexArch) -> Box<dyn Arch> {
     match ALL_ARCHES.iter().find(|d| d.vex == arch) {
         Some(d) => (d.make_arch)(),
         // PPC32/PPC64/S390X are the only VexArch values with no row.

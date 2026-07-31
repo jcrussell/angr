@@ -57,7 +57,7 @@ crate::declare_proc! {
 /// symbolic guard byte, or a symbolic stack pointer (the sub-call needs a
 /// concrete SP to place the resume sentinel) — see the guard-before-mutate note
 /// in `call_ex`.
-pub struct NativePthreadOnce;
+pub(crate) struct NativePthreadOnce;
 
 impl NativeSimProcedure for NativePthreadOnce {
     fn name(&self) -> &'static str {

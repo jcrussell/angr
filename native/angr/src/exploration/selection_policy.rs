@@ -99,7 +99,7 @@ pub trait SelectionPolicy: Send + Sync {
 /// Breadth-first (FIFO queue): step the oldest state first, append new forks
 /// at the tail. The default policy — historical `use_lifo == false`.
 #[derive(Debug, Default, Clone, Copy)]
-pub struct Fifo;
+pub(crate) struct Fifo;
 
 impl SelectionPolicy for Fifo {
     #[inline]
@@ -120,7 +120,7 @@ impl SelectionPolicy for Fifo {
 /// Depth-first (LIFO stack): step the most-recent state first, append new
 /// forks at the tail. Historical `use_lifo == true`.
 #[derive(Debug, Default, Clone, Copy)]
-pub struct Lifo;
+pub(crate) struct Lifo;
 
 impl SelectionPolicy for Lifo {
     #[inline]
@@ -149,7 +149,7 @@ impl SelectionPolicy for Lifo {
 /// self-contained within the two-hook seam (no run-loop plumbing).
 ///
 /// Opt-in only via `set_state_selection_random`; never a default.
-pub struct RandomState {
+pub(crate) struct RandomState {
     /// SplitMix64 state behind a `Mutex` for interior mutability under the
     /// `&self` `select` hook. `Mutex` (not `Cell`) keeps the `Send + Sync`
     /// supertrait bound so a parallel scheduler can share the policy `Arc`.
@@ -159,7 +159,7 @@ pub struct RandomState {
 impl RandomState {
     /// Construct with an explicit seed. Any `u64` (including 0) is a valid,
     /// deterministic seed — SplitMix64 does not degenerate at zero.
-    pub fn new(seed: u64) -> Self {
+    pub(crate) fn new(seed: u64) -> Self {
         Self {
             rng: Mutex::new(seed),
         }
@@ -222,7 +222,7 @@ impl SelectionPolicy for RandomState {
 ///
 /// Opt-in only via `set_state_selection_coverage`; never a default.
 #[derive(Default)]
-pub struct CoverageGuided {
+pub(crate) struct CoverageGuided {
     /// Block addresses already dispatched. Behind a `Mutex` for interior
     /// mutability under the `&self` `select` hook while preserving the
     /// `Send + Sync` supertrait so a parallel scheduler can share the `Arc`.
@@ -231,7 +231,7 @@ pub struct CoverageGuided {
 
 impl CoverageGuided {
     /// Construct with an empty seen-set.
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 }
@@ -292,7 +292,7 @@ impl SelectionPolicy for CoverageGuided {
 ///
 /// Opt-in only via `set_state_selection_loop_head`; never a default.
 #[derive(Default)]
-pub struct LoopHeadRoundRobin {
+pub(crate) struct LoopHeadRoundRobin {
     /// Per-bucket dispatch counts. Behind a `Mutex` for interior mutability
     /// under the `&self` `select` hook while preserving `Send + Sync` so a
     /// parallel scheduler can share the `Arc`.
@@ -317,7 +317,7 @@ pub struct LoopHeadRoundRobin {
 
 impl LoopHeadRoundRobin {
     /// Construct with empty per-bucket dispatch counts.
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 
@@ -460,7 +460,7 @@ fn distance_in(distances: &HashMap<u64, u64>, state: &RustSimState) -> u64 {
     distances.get(&state.pc()).copied().unwrap_or(u64::MAX)
 }
 
-pub struct DirectedCfgDistance {
+pub(crate) struct DirectedCfgDistance {
     /// One-time `addr -> distance-to-target` snapshot from the angr CFG.
     /// Immutable after construction — no runtime Python bounces.
     distances: HashMap<u64, u64>,
@@ -478,7 +478,7 @@ impl DirectedCfgDistance {
     /// Construct from a distance snapshot and beam width. `beam_width` is
     /// clamped to at least 1 (0 would make the beam empty); callers should pass
     /// `>= 2` to avoid the greedy trap.
-    pub fn new(distances: HashMap<u64, u64>, beam_width: usize) -> Self {
+    pub(crate) fn new(distances: HashMap<u64, u64>, beam_width: usize) -> Self {
         Self {
             distances,
             beam_width: beam_width.max(1),
@@ -578,7 +578,7 @@ impl SelectionPolicy for DirectedCfgDistance {
 /// greedy toward the single find, with novelty — not fairness — as the anti-trap
 /// mechanism. Opt-in only via `set_state_selection_find_directed`; never a
 /// default.
-pub struct FindDirected {
+pub(crate) struct FindDirected {
     /// One-time `addr -> distance-to-find` snapshot from the angr CFG.
     /// Immutable after construction — no runtime Python bounces.
     distances: HashMap<u64, u64>,
@@ -590,7 +590,7 @@ pub struct FindDirected {
 
 impl FindDirected {
     /// Construct from a distance-to-find snapshot with an empty seen-set.
-    pub fn new(distances: HashMap<u64, u64>) -> Self {
+    pub(crate) fn new(distances: HashMap<u64, u64>) -> Self {
         Self {
             distances,
             seen: Mutex::new(HashSet::new()),

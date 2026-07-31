@@ -18,7 +18,7 @@ use crate::symbolic::RustBV;
 /// `-EINVAL` as a 64-bit two's-complement value (rax bit pattern).
 const NEG_EINVAL: u64 = (-22_i64) as u64;
 
-pub struct NativeRtSigactionSyscall;
+pub(crate) struct NativeRtSigactionSyscall;
 
 impl NativeSyscall for NativeRtSigactionSyscall {
     fn name(&self) -> &'static str {

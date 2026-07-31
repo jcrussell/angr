@@ -5,6 +5,21 @@
 // crate-wide. Production code still gets the lint's full force: `--all-targets`
 // also compiles the plain (non-test) lib target, where `cfg(test)` is false.
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+// Keep the crate's `pub` surface honest (angr-9ke6b.214).
+//
+// `[lib] crate-type = ["cdylib", "rlib"]` means rustc treats every `pub` item
+// reachable from the crate root as externally consumable, so `dead_code` stays
+// silent for all of them — it measured 0 hits across the whole tree while 468
+// `unreachable_pub` sites existed. Dropping `rlib` is not an option (`benches/`,
+// `examples/`, `tests/` and the `fuzz/` cargo-fuzz project all link it), so the
+// lever is the other direction: only the modules an external target actually
+// imports stay `pub mod` (`automaton`, `concretize`, `fuzz_api`, `memory`,
+// `stash`, `state`, `symbolic`, `vex` — re-derive with
+// `grep -rhoE "rustylib::[a-z_]+" tests benches examples fuzz`), everything else
+// is `pub(crate) mod`. Narrowing the items inside those modules is what lets
+// `dead_code` see them at all; this warn keeps a new over-broad `pub` from
+// silently re-opening the hole.
+#![warn(unreachable_pub)]
 
 // Dev-only public surface for the cargo-fuzz targets under `fuzz/`
 // (angr-qwyti.9). Re-exports the pure hostile-input parsers so a fuzz binary
@@ -23,47 +38,47 @@ pub mod fuzz_api {
 
 // Conditional compilation for fuzzer module (requires optional deps)
 #[cfg(feature = "fuzzer")]
-pub mod fuzzer;
+pub(crate) mod fuzzer;
 #[cfg(feature = "fuzzer")]
-pub mod icicle;
+pub(crate) mod icicle;
 
 #[cfg(feature = "automaton")]
 pub mod automaton;
-pub mod segmentlist;
+pub(crate) mod segmentlist;
 
 // VEX Engine modules (requires vex-engine feature, enabled by default)
 #[cfg(feature = "vex-engine")]
-pub mod arch;
+pub(crate) mod arch;
 #[cfg(feature = "vex-engine")]
-pub mod callbacks;
+pub(crate) mod callbacks;
 #[cfg(feature = "vex-engine")]
-pub mod claripy_bridge;
+pub(crate) mod claripy_bridge;
 #[cfg(feature = "vex-engine")]
 pub mod concretize;
 #[cfg(feature = "vex-engine")]
-pub mod engine;
+pub(crate) mod engine;
 #[cfg(feature = "vex-engine")]
-pub mod errors;
+pub(crate) mod errors;
 #[cfg(feature = "vex-engine")]
-pub mod exploration;
+pub(crate) mod exploration;
 #[cfg(feature = "vex-engine")]
-pub mod gil_profile;
+pub(crate) mod gil_profile;
 #[cfg(feature = "vex-engine")]
-pub mod interpreter;
+pub(crate) mod interpreter;
 #[cfg(feature = "vex-engine")]
 pub mod memory;
-pub mod migrate_phase_timers;
+pub(crate) mod migrate_phase_timers;
 #[cfg(feature = "vex-engine")]
-pub mod procedures;
+pub(crate) mod procedures;
 #[cfg(feature = "vex-engine")]
-pub mod solver;
+pub(crate) mod solver;
 #[cfg(feature = "vex-engine")]
 pub mod stash;
 #[cfg(feature = "vex-engine")]
 pub mod state;
 pub mod symbolic;
 #[cfg(feature = "vex-engine")]
-pub mod syscalls;
+pub(crate) mod syscalls;
 #[cfg(feature = "vex-engine")]
 pub mod vex;
 

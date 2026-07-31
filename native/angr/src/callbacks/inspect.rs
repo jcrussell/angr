@@ -12,17 +12,11 @@ impl PythonCallbacks {
     /// since the underlying bitmask is `AtomicU32` (widened in angr-lge2 to
     /// fit `expr` at bit 16).
     #[inline(always)]
-    pub fn inspect_event_enabled(&self, event_bit: u8) -> bool {
+    pub(crate) fn inspect_event_enabled(&self, event_bit: u8) -> bool {
         self.inspect_enabled
             .load(std::sync::atomic::Ordering::Relaxed)
             & (1u32 << event_bit)
             != 0
-    }
-
-    /// Debug-only: read the raw bitmask. Used by eprintln traces.
-    pub fn get_inspect_enabled_for_debug(&self) -> u32 {
-        self.inspect_enabled
-            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Invoke the Python inspect mem_read callback.
@@ -36,7 +30,7 @@ impl PythonCallbacks {
     /// injection — angr-uy32); `None` when unchanged, no breakpoint fired,
     /// or no callback is registered. The caller converts a returned AST
     /// back to a `RustBV` and substitutes it for the loaded value.
-    pub fn call_inspect_mem_read(
+    pub(crate) fn call_inspect_mem_read(
         &self,
         state_id: i64,
         when: &str,
@@ -71,7 +65,7 @@ impl PythonCallbacks {
     /// user's `mem_write_expr` override to substitute for the stored value
     /// (angr-inh0) — and `when='after'` (post-store), where the return is
     /// informational only. See `dispatch_mem_write_inspect`.
-    pub fn call_inspect_mem_write(
+    pub(crate) fn call_inspect_mem_write(
         &self,
         state_id: i64,
         when: &str,
@@ -102,7 +96,7 @@ impl PythonCallbacks {
     }
 
     /// Invoke the Python inspect reg_read callback.
-    pub fn call_inspect_reg_read(
+    pub(crate) fn call_inspect_reg_read(
         &self,
         state_id: i64,
         when: &str,
@@ -128,7 +122,7 @@ impl PythonCallbacks {
     }
 
     /// Invoke the Python inspect reg_write callback.
-    pub fn call_inspect_reg_write(
+    pub(crate) fn call_inspect_reg_write(
         &self,
         state_id: i64,
         when: &str,
@@ -154,7 +148,12 @@ impl PythonCallbacks {
     }
 
     /// Invoke the Python inspect instruction callback.
-    pub fn call_inspect_instruction(&self, state_id: i64, when: &str, addr: u64) -> PyResult<()> {
+    pub(crate) fn call_inspect_instruction(
+        &self,
+        state_id: i64,
+        when: &str,
+        addr: u64,
+    ) -> PyResult<()> {
         Python::attach(|py| {
             let _gil = crate::gil_profile::GilWorkGuard::enter_site(
                 crate::gil_profile::CallbackSite::Inspect,
@@ -169,7 +168,7 @@ impl PythonCallbacks {
     }
 
     /// Invoke the Python inspect irsb (block) callback.
-    pub fn call_inspect_irsb(&self, state_id: i64, when: &str, addr: u64) -> PyResult<()> {
+    pub(crate) fn call_inspect_irsb(&self, state_id: i64, when: &str, addr: u64) -> PyResult<()> {
         Python::attach(|py| {
             let _gil = crate::gil_profile::GilWorkGuard::enter_site(
                 crate::gil_profile::CallbackSite::Inspect,
@@ -184,7 +183,7 @@ impl PythonCallbacks {
     }
 
     /// Invoke the Python inspect exit (conditional branch) callback.
-    pub fn call_inspect_exit(
+    pub(crate) fn call_inspect_exit(
         &self,
         state_id: i64,
         when: &str,
@@ -210,7 +209,7 @@ impl PythonCallbacks {
     }
 
     /// Invoke the Python inspect call (function-entry) callback.
-    pub fn call_inspect_call(
+    pub(crate) fn call_inspect_call(
         &self,
         state_id: i64,
         when: &str,
@@ -230,7 +229,7 @@ impl PythonCallbacks {
     }
 
     /// Invoke the Python inspect return (function-exit) callback.
-    pub fn call_inspect_return(
+    pub(crate) fn call_inspect_return(
         &self,
         state_id: i64,
         when: &str,
@@ -250,7 +249,7 @@ impl PythonCallbacks {
     }
 
     /// Invoke the Python inspect tmp_read (VEX `RdTmp`) callback.
-    pub fn call_inspect_tmp_read(
+    pub(crate) fn call_inspect_tmp_read(
         &self,
         state_id: i64,
         when: &str,
@@ -275,7 +274,7 @@ impl PythonCallbacks {
     }
 
     /// Invoke the Python inspect tmp_write (VEX `WrTmp`) callback.
-    pub fn call_inspect_tmp_write(
+    pub(crate) fn call_inspect_tmp_write(
         &self,
         state_id: i64,
         when: &str,
@@ -300,7 +299,12 @@ impl PythonCallbacks {
     }
 
     /// Invoke the Python inspect statement (per VEX IR statement) callback.
-    pub fn call_inspect_statement(&self, state_id: i64, when: &str, stmt_idx: u32) -> PyResult<()> {
+    pub(crate) fn call_inspect_statement(
+        &self,
+        state_id: i64,
+        when: &str,
+        stmt_idx: u32,
+    ) -> PyResult<()> {
         Python::attach(|py| {
             let _gil = crate::gil_profile::GilWorkGuard::enter_site(
                 crate::gil_profile::CallbackSite::Inspect,
@@ -318,7 +322,7 @@ impl PythonCallbacks {
     /// Fires `when='after'` with the computed expression value reconstructed
     /// as a claripy AST. `expr` itself is passed as `None` (Rust IRExpr
     /// doesn't round-trip cleanly into a `pyvex.IRExpr`).
-    pub fn call_inspect_expr(
+    pub(crate) fn call_inspect_expr(
         &self,
         state_id: i64,
         when: &str,
@@ -345,7 +349,7 @@ impl PythonCallbacks {
     /// `addr_ast` is the symbolic address AST (claripy reconstruction);
     /// `result` is the list of concrete addresses produced by the concretizer
     /// (None on `when='before'`).
-    pub fn call_inspect_address_concretization(
+    pub(crate) fn call_inspect_address_concretization(
         &self,
         state_id: i64,
         when: &str,
@@ -375,7 +379,7 @@ impl PythonCallbacks {
     /// Fires `when='after'` when the Rust engine mints a fresh BVS for
     /// an unconstrained memory load. `expr_ast` is the claripy reconstruction
     /// of the freshly-minted BVS.
-    pub fn call_inspect_symbolic_variable(
+    pub(crate) fn call_inspect_symbolic_variable(
         &self,
         state_id: i64,
         when: &str,
@@ -401,7 +405,7 @@ impl PythonCallbacks {
     /// Fires `when='after'` for each forked state created by the
     /// deferred-fork processing in `exploration/stepping.rs`.
     /// No attrs — the BP just sees the forked state's id.
-    pub fn call_inspect_fork(&self, state_id: i64, when: &str) -> PyResult<()> {
+    pub(crate) fn call_inspect_fork(&self, state_id: i64, when: &str) -> PyResult<()> {
         Python::attach(|py| {
             let _gil = crate::gil_profile::GilWorkGuard::enter_site(
                 crate::gil_profile::CallbackSite::Inspect,
@@ -428,7 +432,7 @@ impl PythonCallbacks {
     /// Caller gates on `inspect_event_enabled(19)`. A claripy import or
     /// export failure drops the event (returns `Ok(())`): a BP that cannot
     /// be materialized must not halt exploration.
-    pub fn call_inspect_constraints(
+    pub(crate) fn call_inspect_constraints(
         &self,
         state_id: i64,
         when: &str,
@@ -470,8 +474,11 @@ impl PythonCallbacks {
     /// `state_id` is `-1` there too — a lift is state-independent, so the
     /// Python endpoint attributes it to a representative active state.
     ///
-    /// Caller gates on `inspect_event_enabled(20)`.
-    pub fn call_inspect_vex_lift(
+    /// Caller gates on `inspect_event_enabled(20)`. That caller lives in the
+    /// native libVEX lift path, so this is unreachable in a build without
+    /// `libvex-ffi` (default-OFF in Cargo.toml, default-ON via setup.py).
+    #[cfg_attr(not(feature = "libvex-ffi"), allow(dead_code))]
+    pub(crate) fn call_inspect_vex_lift(
         &self,
         state_id: i64,
         when: &str,

@@ -176,7 +176,7 @@ fn do_mmap(
     Ok(SyscallOutcome::Continue { ret: candidate })
 }
 
-pub struct NativeMmapSyscall;
+pub(crate) struct NativeMmapSyscall;
 
 impl NativeSyscall for NativeMmapSyscall {
     fn name(&self) -> &'static str {
@@ -229,7 +229,7 @@ impl NativeSyscall for NativeMmapSyscall {
 /// memory's natural endianness, so this handler is correct for both
 /// LE and BE arches as long as `state.memory()` is configured to match
 /// the binary.
-pub struct NativeOldMmapSyscall;
+pub(crate) struct NativeOldMmapSyscall;
 
 impl NativeSyscall for NativeOldMmapSyscall {
     fn name(&self) -> &'static str {
@@ -275,7 +275,7 @@ impl NativeSyscall for NativeOldMmapSyscall {
 /// Registered for MIPS32 O32 (4210) as well as i386/ARM (192). O32 passes
 /// args 5-6 on the stack at [sp+16]; `extract_syscall_args` traverses that
 /// window for concrete SP (angr-tvod), so mmap2 dispatches natively there.
-pub struct NativeMmap2Syscall;
+pub(crate) struct NativeMmap2Syscall;
 
 impl NativeSyscall for NativeMmap2Syscall {
     fn name(&self) -> &'static str {

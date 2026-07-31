@@ -212,7 +212,7 @@ fn read_path(state: &RustSimState, addr: u64, label: &str) -> Result<String, Sys
 /// `state.fs` map (which is not mirrored into Rust state), so we never
 /// return `-1` for "file doesn't exist". Empty path → `-1` (same as
 /// the Python proc).
-pub struct NativeOpenSyscall;
+pub(crate) struct NativeOpenSyscall;
 
 impl NativeSyscall for NativeOpenSyscall {
     fn name(&self) -> &'static str {
@@ -250,7 +250,7 @@ impl NativeSyscall for NativeOpenSyscall {
 /// `procedures/linux_kernel/openat.py`, which returns `-1` for any
 /// other dirfd). The relative-path-from-dirfd case is not modeled in
 /// Python either.
-pub struct NativeOpenatSyscall;
+pub(crate) struct NativeOpenatSyscall;
 
 impl NativeSyscall for NativeOpenatSyscall {
     fn name(&self) -> &'static str {
@@ -290,7 +290,7 @@ impl NativeSyscall for NativeOpenatSyscall {
 /// `close(fd) → 0 | -1` — mark `fd` closed in Rust's `FileSystem`.
 /// Returns `-1` if the fd was never opened by Rust (mirrors
 /// `state.posix.close` returning falsy).
-pub struct NativeCloseSyscall;
+pub(crate) struct NativeCloseSyscall;
 
 impl NativeSyscall for NativeCloseSyscall {
     fn name(&self) -> &'static str {
@@ -322,7 +322,7 @@ impl NativeSyscall for NativeCloseSyscall {
 /// `procedures/linux_kernel/access.py::run`. The `mode` arg
 /// (`F_OK` / `R_OK` / ...) is ignored — the Python proc also ignores it.
 /// Empty path → `-1` (defensive: Python would also miss in `state.fs`).
-pub struct NativeAccessSyscall;
+pub(crate) struct NativeAccessSyscall;
 
 impl NativeSyscall for NativeAccessSyscall {
     fn name(&self) -> &'static str {
@@ -361,7 +361,7 @@ impl NativeSyscall for NativeAccessSyscall {
 /// return `-1` (we do not model directory fds — matches `openat`'s
 /// policy). The `mode` arg is ignored — Python's stub also ignores it.
 /// Empty path → `-1`.
-pub struct NativeFaccessatSyscall;
+pub(crate) struct NativeFaccessatSyscall;
 
 impl NativeSyscall for NativeFaccessatSyscall {
     fn name(&self) -> &'static str {
@@ -407,7 +407,7 @@ impl NativeSyscall for NativeFaccessatSyscall {
 /// through `SyscallError::SymbolicArgument` and falls back to the Python
 /// `syscall_stub` (matches the `NativeAccessSyscall` pattern). An empty
 /// `pathname` short-circuits to `-1` (matches `readlinkat`).
-pub struct NativeReadlinkSyscall;
+pub(crate) struct NativeReadlinkSyscall;
 
 impl NativeSyscall for NativeReadlinkSyscall {
     fn name(&self) -> &'static str {
@@ -440,7 +440,7 @@ impl NativeSyscall for NativeReadlinkSyscall {
 /// `AT_FDCWD` path the symlink-table lookup runs via
 /// `write_symlink_target` (empty table → `-1`). Falls back to Python on
 /// symbolic dirfd.
-pub struct NativeReadlinkatSyscall;
+pub(crate) struct NativeReadlinkatSyscall;
 
 impl NativeSyscall for NativeReadlinkatSyscall {
     fn name(&self) -> &'static str {
@@ -737,7 +737,7 @@ fn write_stat_for_arch(
 /// `-1` when the fd is unknown to the Rust state (matches
 /// `state.posix.fstat_with_result`'s `result = -1` branch). Falls
 /// back to Python on symbolic fd / buf or unsupported arch.
-pub struct NativeFstatSyscall;
+pub(crate) struct NativeFstatSyscall;
 
 impl NativeSyscall for NativeFstatSyscall {
     fn name(&self) -> &'static str {
@@ -792,7 +792,7 @@ impl NativeSyscall for NativeFstatSyscall {
 /// asm-generic ABI dropped legacy `stat` — only `newfstatat` remains).
 /// Unsupported arch returns `Other` BEFORE touching the path, mirroring
 /// the `fstat` policy.
-pub struct NativeStatSyscall;
+pub(crate) struct NativeStatSyscall;
 
 impl NativeSyscall for NativeStatSyscall {
     fn name(&self) -> &'static str {
@@ -849,7 +849,7 @@ impl NativeSyscall for NativeStatSyscall {
 /// ARM64's asm-generic ABI dropped legacy `lstat` entirely. Unsupported
 /// arch returns `Other` BEFORE touching the path, mirroring the `stat`
 /// policy.
-pub struct NativeLstatSyscall;
+pub(crate) struct NativeLstatSyscall;
 
 impl NativeSyscall for NativeLstatSyscall {
     fn name(&self) -> &'static str {
@@ -905,7 +905,7 @@ impl NativeSyscall for NativeLstatSyscall {
 /// stat64` via `fstatat64`, mirroring `fstat64.py`). MIPS32 also uses the
 /// LFS `struct stat64` via `fstatat64` (4293). Unsupported arch returns
 /// `Other` BEFORE touching state.
-pub struct NativeNewfstatatSyscall;
+pub(crate) struct NativeNewfstatatSyscall;
 
 impl NativeSyscall for NativeNewfstatatSyscall {
     fn name(&self) -> &'static str {

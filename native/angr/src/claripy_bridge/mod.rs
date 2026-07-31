@@ -93,16 +93,15 @@
 //! `invariant-state-metadata-dataclass` for the full rationale.
 
 use pyo3::prelude::*;
-use pyo3::types::PyTuple;
 
 #[macro_use]
 mod cache;
 mod export;
 mod import;
 
-pub use cache::*;
-pub use export::*;
-pub use import::*;
+pub(crate) use cache::*;
+pub(crate) use export::*;
+pub(crate) use import::*;
 
 /// Error type for claripy bridge operations.
 ///
@@ -191,64 +190,8 @@ fn extract_int_value(obj: Bound<'_, PyAny>) -> Result<u128, BridgeError> {
 }
 
 /// Check if a Python object is a claripy AST.
-pub fn is_claripy_ast(obj: &Bound<'_, PyAny>) -> bool {
+pub(crate) fn is_claripy_ast(obj: &Bound<'_, PyAny>) -> bool {
     obj.hasattr("op").unwrap_or(false) && obj.hasattr("args").unwrap_or(false)
-}
-
-/// Phase 4 Fix: Get a stable identifier for a claripy AST.
-///
-/// This computes a hash that is more stable than Python's `__hash__` by:
-/// 1. Using the internal `_hash` attribute if available (most stable)
-/// 2. Computing a deterministic hash from op + args structure
-///
-/// This prevents duplicate symbols when Python's hash changes due to
-/// garbage collection or object reallocation.
-pub fn get_stable_ast_id(ast: &Bound<'_, PyAny>) -> Result<i64, BridgeError> {
-    // Try internal _hash first (most stable across claripy versions)
-    if let Ok(internal_hash) = ast.getattr("_hash")
-        && let Ok(hash_val) = internal_hash.extract::<i64>()
-    {
-        return Ok(hash_val);
-    }
-
-    // Try __hash__ attribute directly (for cached hash)
-    if let Ok(hash_method) = ast.getattr("__hash__")
-        && let Ok(hash_val) = hash_method.call0()
-        && let Ok(h) = hash_val.extract::<i64>()
-    {
-        return Ok(h);
-    }
-
-    // Fall back to PyAny.hash() which calls Python's hash()
-    ast.hash()
-        .map(|h| h as i64)
-        .map_err(|e| BridgeError::PythonError(format!("hash failed: {e}")))
-}
-
-/// Get the width (in bits) of a claripy AST.
-pub fn get_ast_width(ast: &Bound<'_, PyAny>) -> Option<u32> {
-    ast.getattr("length").ok()?.extract().ok()
-}
-
-/// Check if a claripy AST is concrete (BVV).
-pub fn is_concrete_ast(ast: &Bound<'_, PyAny>) -> bool {
-    if let Ok(op) = ast.getattr("op")
-        && let Ok(op_str) = op.extract::<String>()
-    {
-        return op_str == "BVV";
-    }
-    false
-}
-
-/// Extract the concrete value from a BVV AST.
-pub fn extract_concrete_value(ast: &Bound<'_, PyAny>) -> Option<u128> {
-    if !is_concrete_ast(ast) {
-        return None;
-    }
-
-    let args = ast.getattr("args").ok()?;
-    let args_tuple = args.cast::<PyTuple>().ok()?;
-    extract_int_value(args_tuple.get_item(0).ok()?).ok()
 }
 
 #[cfg(test)]

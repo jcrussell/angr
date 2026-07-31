@@ -38,17 +38,17 @@
 
 /// A monotonic state identifier within the exploration subsystem.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
-pub struct StateId(pub u64);
+pub(crate) struct StateId(pub u64);
 
 impl StateId {
     #[inline]
-    pub const fn new(id: u64) -> Self {
+    pub(crate) const fn new(id: u64) -> Self {
         StateId(id)
     }
 
     /// Get the underlying raw state ID (the `StashManager` boundary value).
     #[inline]
-    pub const fn raw(self) -> u64 {
+    pub(crate) const fn raw(self) -> u64 {
         self.0
     }
 }

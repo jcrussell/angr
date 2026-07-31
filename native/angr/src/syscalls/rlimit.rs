@@ -41,7 +41,7 @@ const RLIMIT_STACK: u64 = 3;
 /// RLIMIT_STACK (see `procedures/linux_kernel/getrlimit.py:13`).
 const RLIMIT_STACK_CUR: u128 = 8 * 1024 * 1024;
 
-pub struct NativeGetrlimitSyscall;
+pub(crate) struct NativeGetrlimitSyscall;
 
 impl NativeSyscall for NativeGetrlimitSyscall {
     fn name(&self) -> &'static str {

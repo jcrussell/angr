@@ -524,18 +524,6 @@ pub(crate) fn run_post_step_core(
             )
         }
 
-        RunResult::NeedLift { addr } => {
-            state.set_pc(addr);
-            CoreOutcome {
-                ret: CoreReturn::Errored(state, format!("need lift at 0x{addr:x}")),
-                pruned: Vec::new(),
-                fork_ids: Vec::new(),
-                terminal_pushes: Vec::new(),
-                counters,
-                root_hint,
-            }
-        }
-
         RunResult::SymbolicJumpTarget {
             targets,
             condition_id,

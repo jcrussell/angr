@@ -21,7 +21,7 @@ use super::{
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
-pub struct NativeWriteSyscall;
+pub(crate) struct NativeWriteSyscall;
 
 impl NativeSyscall for NativeWriteSyscall {
     fn name(&self) -> &'static str {

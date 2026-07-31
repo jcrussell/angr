@@ -74,7 +74,6 @@
 use pyo3::class::{PyTraverseError, PyVisit};
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
-use std::sync::Arc;
 
 use crate::symbolic::RustBV;
 
@@ -89,8 +88,8 @@ mod dispatch;
 mod events;
 mod inspect;
 
-pub use config::{BranchPolicy, DeferredFork, ExecutionConfig};
-pub use events::{LoopExecutionEvent, MemoryLoadResult, RunErrorKind, RunResult};
+pub(crate) use config::{BranchPolicy, DeferredFork, ExecutionConfig};
+pub(crate) use events::{LoopExecutionEvent, RunErrorKind, RunResult};
 
 /// Python callback holder for the Rust VEX engine.
 ///
@@ -1005,7 +1004,7 @@ impl PythonCallbacks {
     /// Visit every `Py<PyAny>` field. Used by __traverse__ on this type and
     /// by RustExplorationManager.__traverse__ which holds a cloned copy of
     /// PythonCallbacks (and so participates in the same cycle).
-    pub fn traverse_fields(&self, visit: &PyVisit<'_>) -> Result<(), PyTraverseError> {
+    pub(crate) fn traverse_fields(&self, visit: &PyVisit<'_>) -> Result<(), PyTraverseError> {
         for obj in [
             &self.memory_load,
             &self.memory_store,
@@ -1052,7 +1051,7 @@ impl PythonCallbacks {
 
     /// Drop every `Py<PyAny>` field. Used by __clear__ on this type and on
     /// RustExplorationManager (which has a cloned copy in its `callbacks` field).
-    pub fn clear_fields(&mut self) {
+    pub(crate) fn clear_fields(&mut self) {
         self.memory_load = None;
         self.memory_store = None;
         self.memory_store_batch = None;
@@ -1095,34 +1094,6 @@ impl PythonCallbacks {
 impl Default for PythonCallbacks {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-/// Thread-safe wrapper for Python callbacks.
-///
-/// This allows the callbacks to be shared across interpreter instances
-/// during a single execution loop.
-pub struct CallbacksRef {
-    inner: Arc<PythonCallbacks>,
-}
-
-impl CallbacksRef {
-    pub fn new(callbacks: PythonCallbacks) -> Self {
-        CallbacksRef {
-            inner: Arc::new(callbacks),
-        }
-    }
-
-    pub fn get(&self) -> &PythonCallbacks {
-        &self.inner
-    }
-}
-
-impl Clone for CallbacksRef {
-    fn clone(&self) -> Self {
-        CallbacksRef {
-            inner: Arc::clone(&self.inner),
-        }
     }
 }
 

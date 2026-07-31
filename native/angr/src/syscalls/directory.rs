@@ -134,7 +134,7 @@ stub_syscall!(
 ///
 /// `SyscallError::SymbolicArgument` falls back to Python so the proc
 /// can apply its `solver.eval_one` concretization path.
-pub struct NativeChdirSyscall;
+pub(crate) struct NativeChdirSyscall;
 
 impl NativeSyscall for NativeChdirSyscall {
     fn name(&self) -> &'static str {
@@ -161,7 +161,7 @@ impl NativeSyscall for NativeChdirSyscall {
 /// terminator to `buf`. Returns the byte count (cwd len + 1), or
 /// `-ERANGE` if `size` is too small to hold it. Matches
 /// `procedures/linux_kernel/cwd.py::getcwd`.
-pub struct NativeGetcwdSyscall;
+pub(crate) struct NativeGetcwdSyscall;
 
 impl NativeSyscall for NativeGetcwdSyscall {
     fn name(&self) -> &'static str {

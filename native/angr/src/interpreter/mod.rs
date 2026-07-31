@@ -88,8 +88,8 @@ mod statements_store;
 use helpers::bytes_to_bv;
 use pending_store::PendingStoreBuffer;
 
-pub use concrete_memory::ConcreteMemoryRegion;
-pub use simprocedures::SimProcedureInfo;
+pub(crate) use concrete_memory::ConcreteMemoryRegion;
+pub(crate) use simprocedures::SimProcedureInfo;
 
 /// Full state snapshot at a symbolic branch point.
 /// Used by deferred forks to create correct alternate-path states
@@ -115,7 +115,7 @@ macro_rules! define_execution_stats {
         /// Tracks timing and counts for various operations during VEX execution.
         /// Times are in nanoseconds for precision.
         #[derive(Debug, Clone, Default)]
-        pub struct ExecutionStats {
+        pub(crate) struct ExecutionStats {
             $(
                 $(#[$attr])*
                 pub $field: u64,
@@ -124,7 +124,7 @@ macro_rules! define_execution_stats {
 
         impl ExecutionStats {
             /// Convert stats to a HashMap for Python exposure.
-            pub fn to_hashmap(&self) -> HashMap<String, u64> {
+            pub(crate) fn to_hashmap(&self) -> HashMap<String, u64> {
                 let mut map = HashMap::new();
                 $(
                     map.insert(stringify!($field).to_string(), self.$field);
@@ -133,12 +133,12 @@ macro_rules! define_execution_stats {
             }
 
             /// Reset all statistics to zero.
-            pub fn reset(&mut self) {
+            pub(crate) fn reset(&mut self) {
                 *self = Self::default();
             }
 
             /// Merge another stats instance into this one.
-            pub fn merge(&mut self, other: &ExecutionStats) {
+            pub(crate) fn merge(&mut self, other: &ExecutionStats) {
                 $(
                     define_execution_stats!(@merge_field self.$field, other.$field, $mode);
                 )*
@@ -302,7 +302,7 @@ define_execution_stats! {
 /// Reason string used by the CAS handler when it sees a double-CAS (cmpxchg16b).
 /// Shared with `exploration::mod` so the manager can identify DCAS in
 /// `PythonVEXFallback` events and bump a dedicated visibility counter.
-pub const DCAS_UNSUPPORTED_REASON: &str = "double compare-and-swap";
+pub(crate) const DCAS_UNSUPPORTED_REASON: &str = "double compare-and-swap";
 
 /// Reason marker used by the VECRET/GSPTR fallback site
 /// (`expressions.rs::eval_expr_with_callbacks`). The manager scans for this
@@ -311,7 +311,7 @@ pub const DCAS_UNSUPPORTED_REASON: &str = "double compare-and-swap";
 /// actually exercises these vector-call/global-state pointer holders.
 /// See bd `angr-2iow` — prevalence drives whether to implement natively or
 /// document as a corpus-absent limitation.
-pub const VECRET_GSPTR_REASON: &str = "VECRET/GSPTR";
+pub(crate) const VECRET_GSPTR_REASON: &str = "VECRET/GSPTR";
 
 /// Reason marker for the three dispatch-fabricate binop families
 /// (`Iop_Perm8x*` => `VPerm`, `Iop_Pclmul*`, `Iop_Crc32C`). These parse to a
@@ -320,7 +320,7 @@ pub const VECRET_GSPTR_REASON: &str = "VECRET/GSPTR";
 /// (`eval_binop`'s BYPASS arm), `eval_binop` routes them to Python's VEX engine
 /// — deterministic ops Python models exactly. See bd `angr-s6miz` /
 /// `vex-dispatch-bypass-inventory`.
-pub const DISPATCH_FABRICATE_REASON: &str = "dispatch-fabricate bypass";
+pub(crate) const DISPATCH_FABRICATE_REASON: &str = "dispatch-fabricate bypass";
 
 /// How an error variant should be handled by the top-level interpreter loop.
 ///
@@ -328,7 +328,7 @@ pub const DISPATCH_FABRICATE_REASON: &str = "dispatch-fabricate bypass";
 /// [`CbExecutionError::strategy`]. Adding a new variant requires an explicit
 /// strategy decision — there is no default.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FallbackStrategy {
+pub(crate) enum FallbackStrategy {
     /// Hand the failing block to Python's VEX engine and resume from there.
     /// Used for VEX features the Rust interpreter doesn't model
     /// (e.g. unsupported CCalls, VECRET/GSPTR, oversized symbolic addresses).
@@ -359,7 +359,7 @@ pub enum FallbackStrategy {
 /// error becomes `RunResult::NeedPythonVEX` (recoverable) or
 /// `RunResult::Error` (terminal).
 #[derive(Debug, Clone, thiserror::Error)]
-pub enum CbExecutionError {
+pub(crate) enum CbExecutionError {
     /// Memory error from callback. Strategy: [`FallbackStrategy::Panic`].
     /// These come from underlying memory-model failures (unmapped, perms,
     /// solver timeout) that the interpreter can't paper over.
@@ -402,7 +402,7 @@ pub enum CbExecutionError {
 impl CbExecutionError {
     /// Map this error to its declared [`FallbackStrategy`]. The match is
     /// exhaustive so adding a variant forces an explicit strategy choice.
-    pub fn strategy(&self) -> FallbackStrategy {
+    pub(crate) fn strategy(&self) -> FallbackStrategy {
         match self {
             CbExecutionError::Unsupported(_) | CbExecutionError::NeedPythonFallback(_) => {
                 FallbackStrategy::PythonCallback
@@ -425,7 +425,7 @@ impl CbExecutionError {
     /// Every other `Panic`-strategy variant — including `InvalidIR`, which a
     /// genuinely malformed IRSB now maps to — is a real error that moves the
     /// state to the errored stash.
-    pub fn run_error_kind(&self) -> RunErrorKind {
+    pub(crate) fn run_error_kind(&self) -> RunErrorKind {
         match self {
             CbExecutionError::LiftError(_) => RunErrorKind::Deadend,
             _ => RunErrorKind::Fatal,
@@ -461,8 +461,14 @@ enum StmtResult {
 
 /// Result of executing a single block.
 #[derive(Debug)]
-pub enum BlockResult {
+pub(crate) enum BlockResult {
     /// Continue to the next block at given address.
+    ///
+    /// Never constructed (angr-9ke6b.214): `execute_block` ends a block with
+    /// `BlockEnd`/`Hook`/`Syscall`/... and the caller advances the PC itself,
+    /// so the "plain continue" case has no producer. Kept as the exhaustive
+    /// shape of the enum's contract; `run_until_event` still matches it.
+    #[allow(dead_code)]
     Continue { next_addr: u64 },
     /// Syscall encountered. `num` is `None` when the syscall-number register
     /// is symbolic (angr-gffd); callers must route those cases to Python so
@@ -479,6 +485,10 @@ pub enum BlockResult {
     /// Hook address hit.
     Hook { addr: u64 },
     /// Block execution error.
+    ///
+    /// Never constructed (angr-9ke6b.214): block-level failures propagate as
+    /// `Err(ExecutionError)` from `execute_block` rather than as this variant.
+    #[allow(dead_code)]
     Error { message: String },
     /// Normal block end with jumpkind.
     BlockEnd { next_addr: u64, jumpkind: JumpKind },
@@ -490,6 +500,11 @@ pub enum BlockResult {
         /// ID for the stored symbolic expression (for constraint addition).
         condition_id: u64,
         /// The symbolic expression for the jump target.
+        ///
+        /// Write-only (angr-9ke6b.214): every consumer matches
+        /// `SymbolicJumpTarget` for `targets` + `condition_id` and re-reads the
+        /// expression from the pending-condition store instead.
+        #[allow(dead_code)]
         target_expr: RustBV,
         /// Jump kind (Ijk_Ret, Ijk_Call, etc.).
         jumpkind: JumpKind,
@@ -526,7 +541,7 @@ pub enum BlockResult {
 /// When `use_rust_memory` is true, the interpreter uses `rust_memory` for
 /// memory operations, falling back to Python callbacks only for unmapped pages.
 /// This provides significant performance improvement for memory-intensive code.
-pub struct VEXInterpreter<'a> {
+pub(crate) struct VEXInterpreter<'a> {
     /// Register file (local cache, synced via callbacks).
     pub registers: RegisterFile,
     /// Temporary variables for current block.
@@ -559,6 +574,11 @@ pub struct VEXInterpreter<'a> {
     /// Block cache (shared across runs) using Arc for O(1) cloning.
     block_cache: LruCache<u64, Arc<IRSB>>,
     /// Whether to use callbacks for memory (vs local registers).
+    ///
+    /// Write-only (angr-9ke6b.214): set from `ExecutionConfig` at construction
+    /// but never read — memory routing is decided by whether `rust_memory` is
+    /// attached.
+    #[allow(dead_code)]
     use_memory_callbacks: bool,
     /// Deferred forks collected during execution.
     /// Each fork represents a branch where we took one path and deferred the other.
@@ -576,6 +596,10 @@ pub struct VEXInterpreter<'a> {
     /// Execution configuration.
     config: ExecutionConfig,
     /// Counter for alternating branch policy.
+    ///
+    /// Write-only (angr-9ke6b.214): `BranchPolicy::Alternate` is never
+    /// selected by the live config path, so nothing reads the counter back.
+    #[allow(dead_code)]
     branch_counter: u64,
     /// Next condition ID for tracking branch conditions.
     next_condition_id: u64,
@@ -711,12 +735,12 @@ pub struct VEXInterpreter<'a> {
 
 impl<'a> VEXInterpreter<'a> {
     /// Create a new callback-aware interpreter.
-    pub fn new(arch: VexArch, ctx: &'a SymContext) -> Self {
+    pub(crate) fn new(arch: VexArch, ctx: &'a SymContext) -> Self {
         Self::with_config(arch, ctx, ExecutionConfig::default())
     }
 
     /// Create a new callback-aware interpreter with custom config.
-    pub fn with_config(arch: VexArch, ctx: &'a SymContext, config: ExecutionConfig) -> Self {
+    pub(crate) fn with_config(arch: VexArch, ctx: &'a SymContext, config: ExecutionConfig) -> Self {
         let arch_box = arch_from_vex(arch);
         let arch_name = arch_box.name();
         let cc = default_cc_for_arch(arch_name);
@@ -790,34 +814,21 @@ impl<'a> VEXInterpreter<'a> {
         }
     }
 
-    /// Set the symbol table for handle-based claripy bypass.
-    ///
-    /// When set, Python callbacks can return RustBVHandle instead of claripy ASTs,
-    /// providing significant performance improvement by bypassing AST conversion.
-    pub fn set_symbol_table(&mut self, table: &'a RustSymbolTable) {
-        self.symbol_table = Some(table);
-    }
-
     /// Enable or disable profiling.
-    pub fn set_profiling(&mut self, enabled: bool) {
+    pub(crate) fn set_profiling(&mut self, enabled: bool) {
         self.profiling_enabled = enabled;
         if enabled {
             self.stats.reset();
         }
     }
 
-    /// Get execution statistics.
-    pub fn stats(&self) -> &ExecutionStats {
-        &self.stats
-    }
-
     /// Get mutable execution statistics.
-    pub fn stats_mut(&mut self) -> &mut ExecutionStats {
+    pub(crate) fn stats_mut(&mut self) -> &mut ExecutionStats {
         &mut self.stats
     }
 
     /// Take the execution statistics, replacing with default.
-    pub fn take_stats(&mut self) -> ExecutionStats {
+    pub(crate) fn take_stats(&mut self) -> ExecutionStats {
         std::mem::take(&mut self.stats)
     }
 
@@ -1010,13 +1021,10 @@ impl<'a> VEXInterpreter<'a> {
         }
     }
 
-    /// Get the execution configuration.
-    pub fn config(&self) -> &ExecutionConfig {
-        &self.config
-    }
-
     /// Set the execution configuration.
-    pub fn set_config(&mut self, config: ExecutionConfig) {
+    /// Production builds the interpreter with its final `ExecutionConfig`; only `exits_tests` swaps one in afterwards (angr-9ke6b.214).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn set_config(&mut self, config: ExecutionConfig) {
         self.config = config;
     }
 
@@ -1025,38 +1033,6 @@ impl<'a> VEXInterpreter<'a> {
         let id = self.next_condition_id;
         self.next_condition_id += 1;
         id
-    }
-
-    /// Get the current solver push level.
-    pub fn push_level(&self) -> u32 {
-        self.push_level
-    }
-
-    /// Get the solver context.
-    pub fn context(&self) -> &SymContext {
-        self.ctx
-    }
-
-    /// Get list of dirty register offsets (registers modified since last clear).
-    /// Returns offsets in 4-byte granularity.
-    pub fn get_dirty_register_offsets(&self) -> Vec<u32> {
-        let mut offsets = Vec::new();
-        for bit in 0..128u32 {
-            if (self.dirty_registers & (1u128 << bit)) != 0 {
-                offsets.push(bit * 4);
-            }
-        }
-        offsets
-    }
-
-    /// Get the raw dirty register bitset.
-    pub fn dirty_registers(&self) -> u128 {
-        self.dirty_registers
-    }
-
-    /// Clear dirty register tracking (called after sync).
-    pub fn clear_dirty_registers(&mut self) {
-        self.dirty_registers = 0;
     }
 
     /// Mark the 4-byte register slot containing `offset` as dirty.
@@ -1127,7 +1103,7 @@ impl<'a> VEXInterpreter<'a> {
 
     /// Flush all pending stores into rust_memory.
     /// Called before extracting rust_memory back to the state.
-    pub fn flush_stores_to_rust_memory(&mut self) {
+    pub(crate) fn flush_stores_to_rust_memory(&mut self) {
         if let Some(ref mut rust_mem) = self.rust_memory {
             // Flush concrete pending stores
             for (addr, data) in self.pending_stores.drain() {
@@ -1144,21 +1120,8 @@ impl<'a> VEXInterpreter<'a> {
         }
     }
 
-    /// Take all stores from this step (both pending and previously flushed).
-    pub fn take_all_stores(&mut self) -> Vec<(u64, Vec<u8>)> {
-        self.pending_symbolic_stores.clear();
-        self.all_flushed_symbolic_stores.clear();
-        // Merge pending into flushed
-        for (addr, data) in self.pending_stores.drain() {
-            self.all_flushed_stores.insert(addr, data);
-        }
-        std::mem::take(&mut self.all_flushed_stores)
-            .into_iter()
-            .collect()
-    }
-
     /// Set the program counter.
-    pub fn set_pc(&mut self, addr: u64) {
+    pub(crate) fn set_pc(&mut self, addr: u64) {
         self.pc = addr;
         let pc_bv = RustBV::concrete(addr as u128, self.registers.arch().bits());
         self.registers.set_ip(pc_bv);
@@ -1166,55 +1129,50 @@ impl<'a> VEXInterpreter<'a> {
 
     /// Get the program counter.
     #[inline]
-    pub fn get_pc(&self) -> u64 {
+    pub(crate) fn get_pc(&self) -> u64 {
         self.pc
     }
 
     /// Add a hook address.
-    pub fn add_hook(&mut self, addr: u64) {
+    pub(crate) fn add_hook(&mut self, addr: u64) {
         Arc::make_mut(&mut self.hook_addrs).insert(addr);
     }
 
     /// Remove a hook address.
-    pub fn remove_hook(&mut self, addr: u64) {
+    /// Production never un-hooks mid-run (hook sets are rebuilt per step); only `helpers_tests` removes one (angr-9ke6b.214).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn remove_hook(&mut self, addr: u64) {
         Arc::make_mut(&mut self.hook_addrs).remove(&addr);
     }
 
-    /// Add multiple hooks at once.
-    pub fn add_hooks(&mut self, addrs: &[u64]) {
-        let hooks = Arc::make_mut(&mut self.hook_addrs);
-        for &addr in addrs {
-            hooks.insert(addr);
-        }
-    }
-
-    /// Clear all hooks.
-    pub fn clear_hooks(&mut self) {
-        Arc::make_mut(&mut self.hook_addrs).clear();
-    }
-
     /// Check if an address is hooked.
-    pub fn is_hooked(&self, addr: u64) -> bool {
+    pub(crate) fn is_hooked(&self, addr: u64) -> bool {
         self.hook_addrs.contains(&addr)
     }
 
     /// Check if we have a cached block at the given address.
-    pub fn has_cached_block(&self, addr: u64) -> bool {
+    /// Block-cache introspection used only by `smc_tests` / `execution_tests` / `statements_tests` to assert invalidation (angr-9ke6b.214).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn has_cached_block(&self, addr: u64) -> bool {
         self.block_cache.contains(&addr)
     }
 
     /// Add a block to the cache.
-    pub fn cache_block(&mut self, addr: u64, irsb: IRSB) {
+    /// Direct cache priming used only by the block-cache tests; production populates the cache through `lift_block` (angr-9ke6b.214).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn cache_block(&mut self, addr: u64, irsb: IRSB) {
         self.block_cache.put(addr, Arc::new(irsb));
     }
 
     /// Get a block from the cache.
-    pub fn get_cached_block(&mut self, addr: u64) -> Option<&IRSB> {
+    /// Same as `cache_block` — test-side cache introspection (angr-9ke6b.214).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn get_cached_block(&mut self, addr: u64) -> Option<&IRSB> {
         self.block_cache.get(&addr).map(std::convert::AsRef::as_ref)
     }
 
     /// Swap in a shared block cache, returning the interpreter's current cache.
-    pub fn swap_block_cache(
+    pub(crate) fn swap_block_cache(
         &mut self,
         cache: LruCache<u64, Arc<IRSB>>,
     ) -> LruCache<u64, Arc<IRSB>> {
@@ -1225,12 +1183,14 @@ impl<'a> VEXInterpreter<'a> {
     /// exit (set only when `keep_ip_symbolic` is enabled and the exit's `next`
     /// was symbolic). The internal slot is cleared. Mirrors Python's
     /// `split_state.regs.ip = target` write at engines/successors.py:328.
-    pub fn take_symbolic_ip_at_exit(&mut self) -> Option<RustBV> {
+    pub(crate) fn take_symbolic_ip_at_exit(&mut self) -> Option<RustBV> {
         self.symbolic_ip_at_exit.take()
     }
 
     /// Fork the interpreter state.
-    pub fn fork(&self) -> VEXInterpreter<'a> {
+    /// Interpreter forking is unused: states fork via `RustSimState::fork` and a fresh interpreter is built per step. Only the interpreter tests exercise it (angr-9ke6b.214).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn fork(&self) -> VEXInterpreter<'a> {
         // Clone the calling convention based on its type
         let arch_box = arch_from_vex(self.arch);
         let cc = default_cc_for_arch(arch_box.name());
@@ -1298,16 +1258,6 @@ impl<'a> VEXInterpreter<'a> {
         }
     }
 
-    /// Enable Rust-native memory mode.
-    ///
-    /// When enabled, memory operations will try to use the Rust SymbolicMemory
-    /// first, falling back to Python callbacks only for unmapped regions.
-    /// This can significantly improve performance for memory-intensive code.
-    pub fn enable_rust_memory(&mut self, endness: Endness) {
-        self.rust_memory = Some(SymbolicMemory::new(endness));
-        self.use_rust_memory = true;
-    }
-
     /// Enable or disable native (in-process) libVEX cold-block lifting.
     ///
     /// When enabled, [`Self::get_or_lift_block`] attempts an FFI lift via
@@ -1316,55 +1266,23 @@ impl<'a> VEXInterpreter<'a> {
     /// a libVEX error). Requires the `libvex-ffi` build feature; a no-op stub
     /// exists for the default build so Python wiring compiles unconditionally.
     #[cfg(feature = "libvex-ffi")]
-    pub fn set_native_lift_enabled(&mut self, enabled: bool) {
+    pub(crate) fn set_native_lift_enabled(&mut self, enabled: bool) {
         self.native_lift_enabled = enabled;
     }
 
     /// No-op stub when the `libvex-ffi` feature is not compiled in.
     #[cfg(not(feature = "libvex-ffi"))]
-    pub fn set_native_lift_enabled(&mut self, _enabled: bool) {}
-
-    /// Disable Rust-native memory mode.
-    pub fn disable_rust_memory(&mut self) {
-        self.use_rust_memory = false;
-    }
-
-    /// Get mutable reference to Rust memory (for initialization).
-    pub fn rust_memory_mut(&mut self) -> Option<&mut SymbolicMemory> {
-        self.rust_memory.as_mut()
-    }
-
-    /// Get reference to Rust memory.
-    pub fn rust_memory(&self) -> Option<&SymbolicMemory> {
-        self.rust_memory.as_ref()
-    }
+    pub(crate) fn set_native_lift_enabled(&mut self, _enabled: bool) {}
 
     /// Set the Rust memory instance.
-    pub fn set_rust_memory(&mut self, memory: SymbolicMemory) {
+    pub(crate) fn set_rust_memory(&mut self, memory: SymbolicMemory) {
         self.rust_memory = Some(memory);
         self.use_rust_memory = true;
     }
 
     /// Take the Rust memory instance (for transferring to engine).
-    pub fn take_rust_memory(&mut self) -> Option<SymbolicMemory> {
+    pub(crate) fn take_rust_memory(&mut self) -> Option<SymbolicMemory> {
         self.rust_memory.take()
-    }
-
-    pub fn add_lazy_region(&mut self, start_addr: u64, size: u64) {
-        if let Some(ref mut rust_mem) = self.rust_memory {
-            rust_mem.add_lazy_region(start_addr, size);
-        }
-    }
-
-    /// Get statistics about Rust memory usage.
-    pub fn rust_memory_stats(&self) -> Option<(usize, usize, usize)> {
-        self.rust_memory.as_ref().map(|m| {
-            (
-                m.page_count(),
-                m.lazy_region_count(),
-                m.get_dirty_pages().len(),
-            )
-        })
     }
 }
 

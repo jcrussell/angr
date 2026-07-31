@@ -5,15 +5,13 @@
 
 use pyo3::prelude::*;
 
-use crate::symbolic::RustBV;
-
 use super::DeferredFork;
 
 /// How a [`RunResult::Error`] should be routed by the exploration stepping
 /// loop. Carried as a typed signal so routing does not depend on matching
 /// substrings of the human-readable error message (angr-zzju9).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RunErrorKind {
+pub(crate) enum RunErrorKind {
     /// Graceful deadend: the block could not be lifted (the Python lift
     /// callback returned the empty-IRSB sentinel, e.g. on
     /// `SimEngineError: No bytes in memory`). Routed to the deadended stash,
@@ -25,22 +23,9 @@ pub enum RunErrorKind {
     Fatal,
 }
 
-/// Result of a memory load callback.
-#[derive(Debug, Clone)]
-pub struct MemoryLoadResult {
-    /// The concrete bytes loaded.
-    pub data: Vec<u8>,
-    /// Whether the value is symbolic (has an associated AST).
-    pub is_symbolic: bool,
-    /// The symbolic AST (if symbolic). This is a Python object reference.
-    pub symbolic_ast: Option<Py<PyAny>>,
-    /// The RustBV representation for the engine.
-    pub value: RustBV,
-}
-
 /// Result of running the execution loop.
 #[derive(Debug, Clone)]
-pub enum RunResult {
+pub(crate) enum RunResult {
     /// Reached max blocks limit - continue later.
     MaxBlocks { pc: u64 },
     /// Hit a hook address - need Python to handle.
@@ -72,6 +57,12 @@ pub enum RunResult {
         false_target: u64,
     },
     /// Normal block end.
+    ///
+    /// Never constructed in production: the interpreter's own
+    /// `BlockResult::BlockEnd` is consumed inside `run_until_event`, which
+    /// loops to the next block instead of surfacing a `RunResult`. Only
+    /// `callbacks_tests` / `events_tests` build it (angr-9ke6b.214).
+    #[cfg_attr(not(test), allow(dead_code))]
     BlockEnd { next_addr: u64, jumpkind: String },
     /// Error during execution. `kind` tells the stepping loop whether to
     /// deadend the state (unliftable block) or move it to the errored stash
@@ -83,8 +74,6 @@ pub enum RunResult {
     },
     /// Rust VEX interpreter hit an unsupported operation - need Python VEX engine fallback.
     NeedPythonVEX { addr: u64, reason: String },
-    /// Need to lift a block at the given address.
-    NeedLift { addr: u64 },
     /// Reached max deferred forks limit - return to Python with accumulated forks.
     MaxDeferredForks { pc: u64 },
     /// Symbolic jump target - multiple concrete targets after concretization.
@@ -95,19 +84,30 @@ pub enum RunResult {
         targets: Vec<u64>,
         /// ID for the stored symbolic expression (for constraint addition).
         condition_id: u64,
-        /// Jump kind (Ijk_Ret, Ijk_Call, etc.).
+        /// Jump kind (Ijk_Ret, Ijk_Call, etc.). Read only by
+        /// `LoopExecutionEvent::from_run_result_with_forks` (test-only, see
+        /// there); `core_outcome` destructures it as `jumpkind: _`.
+        #[cfg_attr(not(test), allow(dead_code))]
         jumpkind: String,
     },
     /// Unconstrained jump - too many targets, exceeds limit.
     /// The state should be moved to the "unconstrained" stash.
+    ///
+    /// Every field is read only by the test-only
+    /// `LoopExecutionEvent::from_run_result_with_forks`; `core_outcome`
+    /// matches this variant as `UnconstrainedJump { .. }` (angr-9ke6b.214).
     UnconstrainedJump {
         /// Minimum possible target address.
+        #[cfg_attr(not(test), allow(dead_code))]
         min_target: u64,
         /// Maximum possible target address.
+        #[cfg_attr(not(test), allow(dead_code))]
         max_target: u64,
         /// The configured limit that was exceeded.
+        #[cfg_attr(not(test), allow(dead_code))]
         limit: usize,
         /// Jump kind (Ijk_Ret, Ijk_Call, etc.).
+        #[cfg_attr(not(test), allow(dead_code))]
         jumpkind: String,
     },
     /// Unmodeled function call - need Python to resolve.
@@ -126,7 +126,7 @@ pub enum RunResult {
 /// Execution event returned to Python from run_loop.
 #[pyclass]
 #[derive(Debug, Clone, Default)]
-pub struct LoopExecutionEvent {
+pub(crate) struct LoopExecutionEvent {
     /// Type of event: "max_blocks", "hook", "simprocedure", "syscall", "symbolic_branch",
     /// "block_end", "error", "need_lift", "max_deferred_forks", "symbolic_jump_target", "unconstrained_jump"
     #[pyo3(get)]
@@ -200,7 +200,16 @@ pub struct LoopExecutionEvent {
 
 impl LoopExecutionEvent {
     /// Create an event from a run result with deferred forks and push level.
-    pub fn from_run_result_with_forks(
+    ///
+    /// **No production caller** (angr-9ke6b.214). The live Rust->Python event
+    /// path is `exploration::event::ExplorationEvent`, built in
+    /// `run_loop::callback_event`; this `LoopExecutionEvent` conversion is the
+    /// superseded predecessor, still driven only by `events_tests` /
+    /// `callbacks_tests`. Retiring it (and its tests, and the `#[pyclass]`
+    /// registration in `engine::vex_engine`) is a deliberate removal, not a
+    /// visibility fix, so it is flagged here rather than deleted.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn from_run_result_with_forks(
         result: RunResult,
         blocks_executed: u32,
         deferred_forks: Vec<DeferredFork>,
@@ -281,12 +290,6 @@ impl LoopExecutionEvent {
                 error: Some(message),
                 ..base
             },
-            RunResult::NeedLift { addr } => LoopExecutionEvent {
-                event_type: "need_lift".to_string(),
-                pc: Some(addr),
-                addr: Some(addr),
-                ..base
-            },
             RunResult::MaxDeferredForks { pc } => LoopExecutionEvent {
                 event_type: "max_deferred_forks".to_string(),
                 pc: Some(pc),
@@ -342,7 +345,10 @@ impl LoopExecutionEvent {
     }
 
     /// Create an event from a run result (backward compatibility, no deferred forks).
-    pub fn from_run_result(result: RunResult, blocks_executed: u32) -> Self {
+    ///
+    /// Test-only, same as `from_run_result_with_forks`.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn from_run_result(result: RunResult, blocks_executed: u32) -> Self {
         Self::from_run_result_with_forks(result, blocks_executed, Vec::new(), 0)
     }
 }

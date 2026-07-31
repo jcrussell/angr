@@ -9,7 +9,7 @@ impl PythonCallbacks {
     /// Call the memory load callback.
     ///
     /// Returns (data_bytes, is_symbolic, symbolic_ast).
-    pub fn call_memory_load(
+    pub(crate) fn call_memory_load(
         &self,
         addr: u64,
         size: u32,
@@ -46,7 +46,7 @@ impl PythonCallbacks {
     }
 
     /// Call the memory store callback.
-    pub fn call_memory_store(&self, addr: u64, data: &[u8]) -> PyResult<()> {
+    pub(crate) fn call_memory_store(&self, addr: u64, data: &[u8]) -> PyResult<()> {
         Python::attach(|py| {
             let _gil = crate::gil_profile::GilWorkGuard::enter_site(
                 crate::gil_profile::CallbackSite::MemoryStore,
@@ -65,7 +65,7 @@ impl PythonCallbacks {
     ///
     /// This sends multiple stores in a single callback for efficiency.
     /// Falls back to individual stores if batch callback is not set.
-    pub fn call_memory_store_batch(&self, stores: &[(u64, Vec<u8>)]) -> PyResult<()> {
+    pub(crate) fn call_memory_store_batch(&self, stores: &[(u64, Vec<u8>)]) -> PyResult<()> {
         Python::attach(|py| {
             let _gil = crate::gil_profile::GilWorkGuard::enter_site(
                 crate::gil_profile::CallbackSite::MemoryStoreBatch,
@@ -100,7 +100,7 @@ impl PythonCallbacks {
     ///
     /// Returns a vector of (data_bytes, is_symbolic, symbolic_ast) tuples,
     /// one for each load request.
-    pub fn call_memory_load_batch(
+    pub(crate) fn call_memory_load_batch(
         &self,
         loads: &[(u64, u32)], // (address, size) pairs
     ) -> PyResult<Vec<BatchLoadEntry>> {
@@ -161,7 +161,7 @@ impl PythonCallbacks {
     ///
     /// This is called when the address is symbolic and concretizes to multiple values.
     /// The callback should perform conditional stores to each possible address.
-    pub fn call_memory_store_symbolic(
+    pub(crate) fn call_memory_store_symbolic(
         &self,
         addrs: &[u64],
         data: &RustBV,
@@ -207,7 +207,16 @@ impl PythonCallbacks {
     /// invariant (module-level invariant 1). When [`Self::on_hook`] is
     /// `None`, hard-error rather than no-op — see the module-level docs
     /// for why silent fallbacks mask wiring bugs.
-    pub fn call_on_hook(&self, addr: u64) -> PyResult<u64> {
+    /// **No Rust caller** (angr-9ke6b.214): the Python side still registers
+    /// `get_register` / `put_register` (`rust_manager.py::_setup_callbacks`),
+    /// and `set_on_hook` / `set_on_syscall` remain on the `#[pymethods]`
+    /// surface, but the engine reads and writes registers through
+    /// `RustSimState` and routes hooks/syscalls through
+    /// `ExplorationEvent` bounces instead of these direct callbacks. Retiring
+    /// the path means dropping the pyclass setters and the Python
+    /// registration too, so it is flagged rather than deleted here.
+    #[allow(dead_code)]
+    pub(crate) fn call_on_hook(&self, addr: u64) -> PyResult<u64> {
         Python::attach(|py| {
             let _gil = crate::gil_profile::GilWorkGuard::enter_site(
                 crate::gil_profile::CallbackSite::OnHook,
@@ -222,7 +231,16 @@ impl PythonCallbacks {
     }
 
     /// Call the syscall handling callback.
-    pub fn call_on_syscall(&self, num: u64) -> PyResult<()> {
+    /// **No Rust caller** (angr-9ke6b.214): the Python side still registers
+    /// `get_register` / `put_register` (`rust_manager.py::_setup_callbacks`),
+    /// and `set_on_hook` / `set_on_syscall` remain on the `#[pymethods]`
+    /// surface, but the engine reads and writes registers through
+    /// `RustSimState` and routes hooks/syscalls through
+    /// `ExplorationEvent` bounces instead of these direct callbacks. Retiring
+    /// the path means dropping the pyclass setters and the Python
+    /// registration too, so it is flagged rather than deleted here.
+    #[allow(dead_code)]
+    pub(crate) fn call_on_syscall(&self, num: u64) -> PyResult<()> {
         Python::attach(|py| {
             let _gil = crate::gil_profile::GilWorkGuard::enter_site(
                 crate::gil_profile::CallbackSite::OnSyscall,
@@ -242,7 +260,7 @@ impl PythonCallbacks {
     /// If `opt_level` is `Some`, passes it as the second positional arg.
     /// If `dirty_bytes` is `Some`, passes it as the third positional arg
     /// (Python callback uses these as `byte_string=` for SMC fresh-bytes lift).
-    pub fn call_lift_block(
+    pub(crate) fn call_lift_block(
         &self,
         addr: u64,
         opt_level: Option<i32>,
@@ -275,7 +293,16 @@ impl PythonCallbacks {
     /// Call the register get callback.
     ///
     /// Returns (data_bytes, is_symbolic, symbolic_ast).
-    pub fn call_get_register(
+    /// **No Rust caller** (angr-9ke6b.214): the Python side still registers
+    /// `get_register` / `put_register` (`rust_manager.py::_setup_callbacks`),
+    /// and `set_on_hook` / `set_on_syscall` remain on the `#[pymethods]`
+    /// surface, but the engine reads and writes registers through
+    /// `RustSimState` and routes hooks/syscalls through
+    /// `ExplorationEvent` bounces instead of these direct callbacks. Retiring
+    /// the path means dropping the pyclass setters and the Python
+    /// registration too, so it is flagged rather than deleted here.
+    #[allow(dead_code)]
+    pub(crate) fn call_get_register(
         &self,
         offset: u32,
         size: u32,
@@ -310,7 +337,16 @@ impl PythonCallbacks {
     }
 
     /// Call the register put callback.
-    pub fn call_put_register(&self, offset: u32, data: &[u8]) -> PyResult<()> {
+    /// **No Rust caller** (angr-9ke6b.214): the Python side still registers
+    /// `get_register` / `put_register` (`rust_manager.py::_setup_callbacks`),
+    /// and `set_on_hook` / `set_on_syscall` remain on the `#[pymethods]`
+    /// surface, but the engine reads and writes registers through
+    /// `RustSimState` and routes hooks/syscalls through
+    /// `ExplorationEvent` bounces instead of these direct callbacks. Retiring
+    /// the path means dropping the pyclass setters and the Python
+    /// registration too, so it is flagged rather than deleted here.
+    #[allow(dead_code)]
+    pub(crate) fn call_put_register(&self, offset: u32, data: &[u8]) -> PyResult<()> {
         Python::attach(|py| {
             let _gil = crate::gil_profile::GilWorkGuard::enter_site(
                 crate::gil_profile::CallbackSite::PutRegister,
@@ -329,7 +365,7 @@ impl PythonCallbacks {
     ///
     /// This handles dirty calls like CPUID, RDTSC, x87 operations, etc.
     /// Returns (data_bytes, is_symbolic, symbolic_ast).
-    pub fn call_dirty_call(
+    pub(crate) fn call_dirty_call(
         &self,
         name: &str,
         args: &[u64],
@@ -370,12 +406,12 @@ impl PythonCallbacks {
     }
 
     /// Check if dirty call callback is available.
-    pub fn has_dirty_call(&self) -> bool {
+    pub(crate) fn has_dirty_call(&self) -> bool {
         self.dirty_call.is_some()
     }
 
     /// Check if fetch_page callback is available.
-    pub fn has_fetch_page(&self) -> bool {
+    pub(crate) fn has_fetch_page(&self) -> bool {
         self.fetch_page.is_some()
     }
 
@@ -384,7 +420,7 @@ impl PythonCallbacks {
     /// False means "Python would decline this page" — the caller must skip the
     /// crossing entirely rather than pay a GIL attach to be told no. True when
     /// no snapshot was installed (unknown → ask Python, the legacy behaviour).
-    pub fn python_can_serve_page(&self, page_addr: u64) -> bool {
+    pub(crate) fn python_can_serve_page(&self, page_addr: u64) -> bool {
         match self.python_servable_pages.read() {
             Ok(guard) => match &*guard {
                 Some(pages) => pages.contains(&page_addr),
@@ -400,7 +436,7 @@ impl PythonCallbacks {
     /// *data* there at all, not whether the whole page can be fetched as
     /// concrete bytes. Fails open (assume Python has it) when no snapshot is
     /// installed, so an unknown page keeps crossing exactly as before.
-    pub fn python_has_page(&self, page_addr: u64) -> bool {
+    pub(crate) fn python_has_page(&self, page_addr: u64) -> bool {
         match self.python_page_universe.read() {
             Ok(guard) => match &*guard {
                 Some(pages) => pages.contains(&page_addr),
@@ -416,7 +452,7 @@ impl PythonCallbacks {
     /// - page_data: 4096 bytes of page content
     /// - permissions: permission bits (R=4, W=2, X=1)
     /// - is_mapped: whether the page exists in Python memory
-    pub fn call_fetch_page(&self, page_addr: u64) -> PyResult<(Vec<u8>, u8, bool)> {
+    pub(crate) fn call_fetch_page(&self, page_addr: u64) -> PyResult<(Vec<u8>, u8, bool)> {
         Python::attach(|py| {
             let _gil = crate::gil_profile::GilWorkGuard::enter_site(
                 crate::gil_profile::CallbackSite::FetchPage,
@@ -439,7 +475,10 @@ impl PythonCallbacks {
     /// Call the batched page fetch callback to load multiple 4KB pages.
     ///
     /// Returns a list of (page_data, permissions, is_mapped) for each page.
-    pub fn call_batch_fetch_pages(&self, page_addrs: &[u64]) -> PyResult<Vec<(Vec<u8>, u8, bool)>> {
+    pub(crate) fn call_batch_fetch_pages(
+        &self,
+        page_addrs: &[u64],
+    ) -> PyResult<Vec<(Vec<u8>, u8, bool)>> {
         Python::attach(|py| {
             let _gil = crate::gil_profile::GilWorkGuard::enter_site(
                 crate::gil_profile::CallbackSite::BatchFetchPages,
@@ -490,7 +529,11 @@ impl PythonCallbacks {
     ///
     /// # Returns
     /// Ok(()) on success, or falls back to byte-based store if callback unavailable.
-    pub fn call_memory_store_symbolic_value(&self, addr: u64, value: &RustBV) -> PyResult<()> {
+    pub(crate) fn call_memory_store_symbolic_value(
+        &self,
+        addr: u64,
+        value: &RustBV,
+    ) -> PyResult<()> {
         Python::attach(|py| {
             let _gil = crate::gil_profile::GilWorkGuard::enter_site(
                 crate::gil_profile::CallbackSite::MemoryStoreSymbolicValue,
@@ -516,20 +559,20 @@ impl PythonCallbacks {
     }
 
     /// Check if symbolic value store callback is available.
-    pub fn has_memory_store_symbolic_value(&self) -> bool {
+    pub(crate) fn has_memory_store_symbolic_value(&self) -> bool {
         self.memory_store_symbolic_value.is_some()
     }
 
     /// True when the callback-memory-proxy gate is on, i.e. the memory-store
     /// callbacks are no-ops and Rust must keep the store itself (angr-5rjbq).
-    pub fn memory_is_rust_proxy(&self) -> bool {
+    pub(crate) fn memory_is_rust_proxy(&self) -> bool {
         self.memory_is_rust_proxy
             .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Call the full symbolic store callback (symbolic address + symbolic value).
     /// Used when the address cannot be concretized to a single value or small set.
-    pub fn call_memory_store_symbolic_full(
+    pub(crate) fn call_memory_store_symbolic_full(
         &self,
         addr_val: &RustBV,
         data_val: &RustBV,
@@ -561,7 +604,7 @@ impl PythonCallbacks {
     }
 
     /// Check if full symbolic store callback is available.
-    pub fn has_memory_store_symbolic_full(&self) -> bool {
+    pub(crate) fn has_memory_store_symbolic_full(&self) -> bool {
         self.memory_store_symbolic_full.is_some()
     }
 
@@ -578,7 +621,7 @@ impl PythonCallbacks {
     ///
     /// # Returns
     /// The loaded claripy AST from Python's memory model.
-    pub fn call_memory_load_symbolic_full(
+    pub(crate) fn call_memory_load_symbolic_full(
         &self,
         addr_val: &RustBV,
         size: u32,
@@ -601,7 +644,7 @@ impl PythonCallbacks {
     }
 
     /// Check if full symbolic load callback is available.
-    pub fn has_memory_load_symbolic_full(&self) -> bool {
+    pub(crate) fn has_memory_load_symbolic_full(&self) -> bool {
         self.memory_load_symbolic_full.is_some()
     }
 
@@ -619,7 +662,7 @@ impl PythonCallbacks {
     /// * `Ok(Some((name, num_args, no_return)))` - Function resolved, register and retry
     /// * `Ok(None)` - Function cannot be resolved, deadend the state
     /// * `Err(...)` - Callback error
-    pub fn call_resolve_function(
+    pub(crate) fn call_resolve_function(
         &self,
         addr: u64,
         symbol_name: Option<&str>,
@@ -656,7 +699,7 @@ impl PythonCallbacks {
     }
 
     /// Check if resolve_function callback is available.
-    pub fn has_resolve_function(&self) -> bool {
+    pub(crate) fn has_resolve_function(&self) -> bool {
         self.resolve_function.is_some()
     }
 }

@@ -59,7 +59,7 @@ const MAX_IOVCNT: u64 = 1024;
 static SYS_READV_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// `lseek(fd, offset, whence)` — adjust the file position.
-pub struct NativeLseekSyscall;
+pub(crate) struct NativeLseekSyscall;
 
 impl NativeSyscall for NativeLseekSyscall {
     fn name(&self) -> &'static str {
@@ -129,7 +129,7 @@ fn read_iovec(
 }
 
 /// `writev(fd, iov, iovcnt)` — concatenate iovec segments to the fd buffer.
-pub struct NativeWritevSyscall;
+pub(crate) struct NativeWritevSyscall;
 
 impl NativeSyscall for NativeWritevSyscall {
     fn name(&self) -> &'static str {
@@ -231,7 +231,7 @@ impl NativeSyscall for NativeWritevSyscall {
 }
 
 /// `readv(fd, iov, iovcnt)` — scatter-read into iovec segments.
-pub struct NativeReadvSyscall;
+pub(crate) struct NativeReadvSyscall;
 
 impl NativeSyscall for NativeReadvSyscall {
     fn name(&self) -> &'static str {
@@ -387,7 +387,7 @@ fn scatter_symbolic(
 
 /// `pread64(fd, buf, nbyte, offset)` — positioned read; file position
 /// unaffected. Mirrors `posix/pread64.py`.
-pub struct NativePread64Syscall;
+pub(crate) struct NativePread64Syscall;
 
 impl NativeSyscall for NativePread64Syscall {
     fn name(&self) -> &'static str {
@@ -474,7 +474,7 @@ impl NativeSyscall for NativePread64Syscall {
 /// unaffected. Mirrors `posix/pwrite64.py`. Uses the offset-honoring
 /// `FileSystem::write_at` (overwrite at offset) rather than append-only
 /// `write`.
-pub struct NativePwrite64Syscall;
+pub(crate) struct NativePwrite64Syscall;
 
 impl NativeSyscall for NativePwrite64Syscall {
     fn name(&self) -> &'static str {

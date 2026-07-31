@@ -38,7 +38,7 @@ use crate::symbolic::RustBV;
 /// `futex(uaddr, futex_op, val, timeout, uaddr2, val3)` — mirrors
 /// `procedures/linux_kernel/futex.py`. Concretely evaluates `futex_op`;
 /// `op & 1` (any FUTEX_WAKE variant) → return 0, else → fresh symbolic.
-pub struct NativeFutexSyscall;
+pub(crate) struct NativeFutexSyscall;
 
 impl NativeSyscall for NativeFutexSyscall {
     fn name(&self) -> &'static str {

@@ -17,7 +17,7 @@ use rustc_hash::FxHashMap;
 /// include a wildcard arm.
 #[non_exhaustive]
 #[derive(Debug, Clone)]
-pub enum CallbackReason {
+pub(crate) enum CallbackReason {
     /// SimProcedure hook hit.
     SimProcedure {
         addr: u64,
@@ -34,8 +34,23 @@ pub enum CallbackReason {
     /// Avoid predicate needs Python evaluation.
     AvoidPredicate { addr: u64 },
     /// Error during execution.
+    ///
+    /// Constructed only by the in-crate test suite today (`resume_tests`,
+    /// `helpers_tests`, `pending_api_tests`); production code reaches the
+    /// Python error path through `ExplorationEvent::error` directly rather
+    /// than by parking a `PendingCallback`. The read side is live —
+    /// `callback_event` and `resume_after_error` both match it — so the
+    /// variant is retained as the contract, not deleted (angr-9ke6b.214).
+    #[cfg_attr(not(test), allow(dead_code))]
     Error { message: String },
     /// Symbolic branch - both paths feasible, need Python to fork states.
+    ///
+    /// Same situation as `Error`: only the test suite constructs it, because
+    /// production branch splitting goes through the deferred-fork path
+    /// (`ForkBundle` / `apply_deferred_fork_constraints`) instead of a
+    /// symbolic-branch bounce. `callback_event`, `pending_condition_id` and
+    /// `resume_after_symbolic_branch` still match it (angr-9ke6b.214).
+    #[cfg_attr(not(test), allow(dead_code))]
     SymbolicBranch {
         condition_id: u64,
         true_target: u64,

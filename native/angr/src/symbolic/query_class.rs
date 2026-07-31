@@ -54,7 +54,7 @@ const CONSTRAINT_BUDGET: usize = 64;
 /// The structural bucket a Z3-bound query falls into.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(usize)]
-pub enum QueryClass {
+pub(super) enum QueryClass {
     /// Classification disabled, or a check issued outside any classified
     /// query (e.g. an internal re-check). Not addressable.
     Unclassified = 0,
@@ -86,7 +86,7 @@ pub enum QueryClass {
 }
 
 /// Number of variants in [`QueryClass`].
-pub const NUM_QUERY_CLASSES: usize = 7;
+pub(super) const NUM_QUERY_CLASSES: usize = 7;
 
 /// Per-class count of `solver.check()` calls. Sums to `z3_check_count`.
 pub(crate) static Z3_CHECK_CLASS_COUNT: [AtomicU64; NUM_QUERY_CLASSES] = [
@@ -116,7 +116,7 @@ thread_local! {
 }
 
 /// Whether `ANGR_RUST_QUERY_CLASS` asked for classification. Read once.
-pub fn enabled() -> bool {
+pub(super) fn enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| {
         std::env::var("ANGR_RUST_QUERY_CLASS")

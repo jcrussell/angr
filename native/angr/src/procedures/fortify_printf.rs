@@ -44,7 +44,7 @@ const MAX_VARARGS: usize = 6;
 /// Forwards to native `printf`, dropping the leading `flag` (matches Python
 /// angr's `__printf_chk`). Native `printf` only reads the (concrete) format
 /// string and ignores the variadic args, so we request just `flag` + `fmt`.
-pub struct NativePrintfChk;
+pub(crate) struct NativePrintfChk;
 
 impl NativeSimProcedure for NativePrintfChk {
     fn name(&self) -> &'static str {
@@ -69,7 +69,7 @@ impl NativeSimProcedure for NativePrintfChk {
 ///
 /// Forwards to native `sprintf`, dropping the injected `flag` and `slen`
 /// (matches Python angr's `__sprintf_chk`).
-pub struct NativeSprintfChk;
+pub(crate) struct NativeSprintfChk;
 
 impl NativeSimProcedure for NativeSprintfChk {
     fn name(&self) -> &'static str {
@@ -99,7 +99,7 @@ impl NativeSimProcedure for NativeSprintfChk {
 ///
 /// Forwards to native `snprintf`, dropping the injected `flag` and `slen`
 /// (matches Python angr's `__snprintf_chk`).
-pub struct NativeSnprintfChk;
+pub(crate) struct NativeSnprintfChk;
 
 impl NativeSimProcedure for NativeSnprintfChk {
     fn name(&self) -> &'static str {
@@ -131,7 +131,7 @@ impl NativeSimProcedure for NativeSnprintfChk {
 /// angr's `__fprintf_chk`). Native `fprintf` resolves the stream's fd and
 /// writes the (concrete) raw format string, ignoring the variadic args, so we
 /// request just `fp` + `flag` + `fmt`.
-pub struct NativeFprintfChk;
+pub(crate) struct NativeFprintfChk;
 
 impl NativeSimProcedure for NativeFprintfChk {
     fn name(&self) -> &'static str {
@@ -163,7 +163,7 @@ impl NativeSimProcedure for NativeFprintfChk {
 /// degenerate stub (size==0 → 0, else writes a single NUL and returns 1), so
 /// only `s` and `maxlen` are consumed — the `format`/`va_list` words are
 /// passed through but unused.
-pub struct NativeVsnprintfChk;
+pub(crate) struct NativeVsnprintfChk;
 
 impl NativeSimProcedure for NativeVsnprintfChk {
     fn name(&self) -> &'static str {

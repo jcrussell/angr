@@ -17,18 +17,18 @@ use super::*;
 // matches.
 
 /// AArch64 CC_OP values (from VEX's libvex_guest_arm64.h / angr ccall.py).
-pub mod arm64_cc_op {
-    pub const ARM64G_CC_OP_COPY: u64 = 0;
-    pub const ARM64G_CC_OP_ADD32: u64 = 1;
-    pub const ARM64G_CC_OP_ADD64: u64 = 2;
-    pub const ARM64G_CC_OP_SUB32: u64 = 3;
-    pub const ARM64G_CC_OP_SUB64: u64 = 4;
-    pub const ARM64G_CC_OP_ADC32: u64 = 5;
-    pub const ARM64G_CC_OP_ADC64: u64 = 6;
-    pub const ARM64G_CC_OP_SBC32: u64 = 7;
-    pub const ARM64G_CC_OP_SBC64: u64 = 8;
-    pub const ARM64G_CC_OP_LOGIC32: u64 = 9;
-    pub const ARM64G_CC_OP_LOGIC64: u64 = 10;
+pub(super) mod arm64_cc_op {
+    pub(crate) const ARM64G_CC_OP_COPY: u64 = 0;
+    pub(crate) const ARM64G_CC_OP_ADD32: u64 = 1;
+    pub(crate) const ARM64G_CC_OP_ADD64: u64 = 2;
+    pub(crate) const ARM64G_CC_OP_SUB32: u64 = 3;
+    pub(crate) const ARM64G_CC_OP_SUB64: u64 = 4;
+    pub(crate) const ARM64G_CC_OP_ADC32: u64 = 5;
+    pub(crate) const ARM64G_CC_OP_ADC64: u64 = 6;
+    pub(crate) const ARM64G_CC_OP_SBC32: u64 = 7;
+    pub(crate) const ARM64G_CC_OP_SBC64: u64 = 8;
+    pub(crate) const ARM64G_CC_OP_LOGIC32: u64 = 9;
+    pub(crate) const ARM64G_CC_OP_LOGIC64: u64 = 10;
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -155,7 +155,7 @@ pub(super) fn arm64g_calc_flag_v(cc_op: u64, d1: u64, d2: u64, d3: u64) -> Optio
 
 /// Concrete arm64 condition evaluation.
 /// `cond_n_op` encodes cond in bits \[7:4\], cc_op in bits \[3:0\].
-pub fn arm64g_calculate_condition(cond_n_op: u64, d1: u64, d2: u64, d3: u64) -> Option<u64> {
+pub(super) fn arm64g_calculate_condition(cond_n_op: u64, d1: u64, d2: u64, d3: u64) -> Option<u64> {
     let cond = (cond_n_op >> 4) & 0xF;
     let cc_op = cond_n_op & 0xF;
     let inv = cond & 1;
@@ -190,7 +190,7 @@ pub fn arm64g_calculate_condition(cond_n_op: u64, d1: u64, d2: u64, d3: u64) -> 
 }
 
 /// Pack arm64 NZCV into bits \[31:28\].
-pub fn arm64g_calculate_flags_nzcv(cc_op: u64, d1: u64, d2: u64, d3: u64) -> Option<u64> {
+pub(super) fn arm64g_calculate_flags_nzcv(cc_op: u64, d1: u64, d2: u64, d3: u64) -> Option<u64> {
     let n = arm64g_calc_flag_n(cc_op, d1, d2, d3)?;
     let z = arm64g_calc_flag_z(cc_op, d1, d2, d3)?;
     let c = arm64g_calc_flag_c(cc_op, d1, d2, d3)?;

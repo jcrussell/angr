@@ -1,8 +1,9 @@
 //! claripy AST -> RustBV import (the op-dispatch conversion path).
 //!
-//! Entry points `python_to_rustbv` / `claripy_to_rustbv` walk a claripy
-//! expression tree and build the equivalent `RustBV`, with a `RustBVHandle`
-//! fast path and thread-local caching via the `super::cache` helpers.
+//! Entry point `claripy_to_rustbv` walks a claripy expression tree and builds
+//! the equivalent `RustBV`, with a `RustBVHandle` fast path
+//! (`try_handle_to_rustbv`) and thread-local caching via the `super::cache`
+//! helpers.
 
 use std::sync::Arc;
 
@@ -15,15 +16,7 @@ use super::cache::{
     AST_CACHE, lookup_symbol_by_hash, lookup_symbol_by_name_and_width, lookup_symbol_name_by_id,
     store_claripy_ast_with_info, store_expression_ast_by_operands,
 };
-use super::{BridgeError, extract_int_value, is_claripy_ast};
-
-/// Check if a Python object is a RustBVHandle.
-///
-/// This is a fast check that allows bypassing claripy conversion entirely
-/// when the Python side returns a handle instead of a claripy AST.
-pub fn is_rust_handle(obj: &Bound<'_, PyAny>) -> bool {
-    obj.is_instance_of::<RustBVHandle>()
-}
+use super::{BridgeError, extract_int_value};
 
 /// Try to extract a RustBV from a RustBVHandle via the symbol table.
 ///
@@ -32,7 +25,7 @@ pub fn is_rust_handle(obj: &Bound<'_, PyAny>) -> bool {
 /// completely bypassing claripy AST conversion.
 ///
 /// Returns None if the object is not a handle or the handle ID is not found.
-pub fn try_handle_to_rustbv(
+pub(crate) fn try_handle_to_rustbv(
     obj: &Bound<'_, PyAny>,
     symbol_table: &RustSymbolTable,
 ) -> Option<RustBV> {
@@ -43,44 +36,11 @@ pub fn try_handle_to_rustbv(
     }
 }
 
-/// Convert a Python object to RustBV, trying handle first, then claripy.
-///
-/// This is the primary entry point for Python -> Rust conversion on the hot path.
-/// It first checks if the object is a RustBVHandle (fast path), and only falls
-/// back to claripy conversion if necessary.
-///
-/// Returns the RustBV, or an error if conversion fails.
-pub fn python_to_rustbv(
-    py: Python<'_>,
-    obj: &Bound<'_, PyAny>,
-    symbol_table: &RustSymbolTable,
-    ctx: &SymContext,
-) -> Result<RustBV, BridgeError> {
-    // Fast path: check for RustBVHandle first
-    if let Some(bv) = try_handle_to_rustbv(obj, symbol_table) {
-        return Ok(bv);
-    }
-
-    // Slow path: claripy AST conversion
-    if is_claripy_ast(obj) {
-        claripy_to_rustbv(py, obj, ctx)
-    } else {
-        let type_name = obj
-            .get_type()
-            .name()
-            .map(|s| s.to_string())
-            .unwrap_or_else(|_| "unknown".to_string());
-        Err(BridgeError::TypeMismatch(format!(
-            "expected RustBVHandle or claripy AST, got {type_name}"
-        )))
-    }
-}
-
 /// Try to extract a concrete BVV value directly from a claripy AST.
 /// Returns Some((value, width)) if the AST is a BVV, None otherwise.
 /// This is much cheaper than full claripy_to_rustbv conversion.
 #[inline]
-pub fn try_extract_bvv(ast: &Bound<'_, PyAny>) -> Option<(u128, u32)> {
+pub(crate) fn try_extract_bvv(ast: &Bound<'_, PyAny>) -> Option<(u128, u32)> {
     let op: String = ast.getattr("op").ok()?.extract().ok()?;
     if op != "BVV" {
         return None;
@@ -110,7 +70,7 @@ pub fn try_extract_bvv(ast: &Bound<'_, PyAny>) -> Option<(u128, u32)> {
 /// signature stable (no depth parameter) means the 10+ external call sites
 /// across interpreter/solver/prefetch never need to know about the guard —
 /// they always start a fresh descent at depth 0.
-pub fn claripy_to_rustbv(
+pub(crate) fn claripy_to_rustbv(
     py: Python<'_>,
     ast: &Bound<'_, PyAny>,
     ctx: &SymContext,

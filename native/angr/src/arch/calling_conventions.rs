@@ -29,10 +29,15 @@ use super::x86::offsets as x86_off;
 /// indistinguishable from intentional symbolic input. Returning an
 /// explicit error variant forces callers to decide policy.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum ExtractionError {
+pub(crate) enum ExtractionError {
     /// The caller asked for stack-resident arguments but did not supply a
     /// memory view. The trait method has no way to materialise stack
     /// arguments without it.
+    ///
+    /// Only [`CallingConvention::extract_args`] produces it, and that method
+    /// has no production caller today (see its own note), so outside `cfg(test)`
+    /// the variant is unconstructed (angr-9ke6b.214).
+    #[cfg_attr(not(test), allow(dead_code))]
     #[error("extract_args: stack argument requested without a memory view")]
     MemoryUnavailable,
     /// The stack pointer is symbolic. We cannot compute the stack-slot
@@ -58,8 +63,13 @@ pub enum ExtractionError {
 }
 
 /// Calling convention trait for extracting function arguments.
-pub trait CallingConvention: Send + Sync {
+pub(crate) trait CallingConvention: Send + Sync {
     /// Get the name of this calling convention.
+    ///
+    /// Diagnostic-only: exercised by `calling_conventions_tests` (which asserts
+    /// the per-ABI spellings and the `default_cc_for_arch` mapping), but no
+    /// production code logs it (angr-9ke6b.214).
+    #[cfg_attr(not(test), allow(dead_code))]
     fn name(&self) -> &'static str;
 
     /// Get the register offsets used for integer/pointer arguments.
@@ -89,6 +99,12 @@ pub trait CallingConvention: Send + Sync {
     }
 
     /// Get the register offsets used for floating-point arguments.
+    ///
+    /// No caller yet — argument extraction is integer-only. Retained (rather
+    /// than deleted) because each impl encodes non-obvious ABI provenance
+    /// (AAPCS-VFP `D0-D7`, AArch64 `V0-V7`, MIPS' deliberately-empty table)
+    /// that FP-argument support will need verbatim (angr-9ke6b.214).
+    #[allow(dead_code)]
     fn fp_arg_registers(&self) -> &[u32];
 
     /// Get the size of a pointer in bytes.
@@ -98,6 +114,11 @@ pub trait CallingConvention: Send + Sync {
     fn stack_arg_offset(&self) -> u64;
 
     /// Get the endianness for memory access.
+    ///
+    /// No caller: `extract_args` reads through `SymbolicMemory`, which carries
+    /// its own endness, and every other consumer goes through
+    /// `vex::ir::arch::ArchInfo::endness` (angr-9ke6b.214).
+    #[allow(dead_code)]
     fn endness(&self) -> Endness;
 
     /// Get the return value register offset.
@@ -187,6 +208,13 @@ pub trait CallingConvention: Send + Sync {
     /// `memory`; any failure (no memory view, symbolic SP, unmapped slot)
     /// produces a structured [`ExtractionError`] so the caller can decide
     /// whether to abort, retry, or fabricate placeholders explicitly.
+    ///
+    /// Production argument extraction now runs through
+    /// `exploration::core_outcome_cc` / `exploration::helpers`, which
+    /// reimplement this over `RustSimState` rather than a bare `RegisterFile`.
+    /// Only `calling_conventions_tests` still drives this copy
+    /// (angr-9ke6b.214).
+    #[cfg_attr(not(test), allow(dead_code))]
     fn extract_args(
         &self,
         regs: &RegisterFile,
@@ -260,7 +288,7 @@ pub trait CallingConvention: Send + Sync {
 /// Return value: RAX (with RDX for 128-bit)
 /// Stack alignment: 16 bytes at function entry
 #[derive(Debug, Clone, Copy, Default)]
-pub struct SystemVAMD64;
+pub(crate) struct SystemVAMD64;
 
 impl CallingConvention for SystemVAMD64 {
     fn name(&self) -> &'static str {
@@ -334,7 +362,7 @@ impl CallingConvention for SystemVAMD64 {
 /// Return value: EAX (with EDX for 64-bit)
 /// Caller cleans up stack.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct Cdecl;
+pub(crate) struct Cdecl;
 
 impl CallingConvention for Cdecl {
     fn name(&self) -> &'static str {
@@ -390,8 +418,11 @@ impl CallingConvention for Cdecl {
 /// Integer/pointer arguments: R0-R3
 /// Return value: R0 (with R1 for 64-bit)
 /// Return address: LR (R14) — ARM uses BL which stores return addr in LR, not stack.
+/// Name mirrors the ABI's own spelling ("ARM EABI"); see the note on
+/// `arch::arm::ARM` for why clippy only started seeing it in angr-9ke6b.214.
+#[allow(clippy::upper_case_acronyms)]
 #[derive(Debug, Clone, Copy, Default)]
-pub struct ARMEABI;
+pub(crate) struct ARMEABI;
 
 impl CallingConvention for ARMEABI {
     fn name(&self) -> &'static str {
@@ -475,7 +506,7 @@ impl CallingConvention for ARMEABI {
 /// Return value: X0 (with X1 for 128-bit)
 /// Return address: LR (X30) — ARM64 uses BL which stores return addr in X30.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct AArch64CC;
+pub(crate) struct AArch64CC;
 
 impl CallingConvention for AArch64CC {
     fn name(&self) -> &'static str {
@@ -556,7 +587,7 @@ impl CallingConvention for AArch64CC {
 /// the stack. Note that O32 reserves 16 bytes of stack space for the four
 /// register-passed args; additional args land at [sp + 16].
 #[derive(Debug, Clone, Copy, Default)]
-pub struct MipsO32;
+pub(crate) struct MipsO32;
 
 impl CallingConvention for MipsO32 {
     fn name(&self) -> &'static str {
@@ -644,7 +675,7 @@ impl CallingConvention for MipsO32 {
 /// Unlike O32, N64 does NOT reserve a stack save area for the
 /// register-passed arguments; stack-passed args (9+) start at [sp + 0].
 #[derive(Debug, Clone, Copy, Default)]
-pub struct MipsN64;
+pub(crate) struct MipsN64;
 
 impl CallingConvention for MipsN64 {
     fn name(&self) -> &'static str {
@@ -724,7 +755,7 @@ impl CallingConvention for MipsN64 {
 /// foreign arch) fails loudly instead of producing wrong-but-plausible
 /// values. See the latent x86 Cdecl return-register bug (commit 5329d8222)
 /// for the failure mode this guards against.
-pub fn default_cc_for_arch(arch_name: &str) -> Box<dyn CallingConvention> {
+pub(crate) fn default_cc_for_arch(arch_name: &str) -> Box<dyn CallingConvention> {
     cc_for_arch(arch_name).unwrap_or_else(|| {
         panic!(
             "default_cc_for_arch: no calling convention registered for arch {arch_name:?}. \
@@ -741,7 +772,7 @@ pub fn default_cc_for_arch(arch_name: &str) -> Box<dyn CallingConvention> {
 /// to Python on an unmodelled ABI) use this; the interpreter's argument
 /// extraction path — where a wrong CC silently yields wrong-but-plausible
 /// arguments — keeps the panicking wrapper.
-pub fn cc_for_arch(arch_name: &str) -> Option<Box<dyn CallingConvention>> {
+pub(crate) fn cc_for_arch(arch_name: &str) -> Option<Box<dyn CallingConvention>> {
     crate::arch::arch_desc_from_name(arch_name).map(|d| (d.make_cc)())
 }
 

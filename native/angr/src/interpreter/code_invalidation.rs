@@ -5,12 +5,17 @@ impl<'a> VEXInterpreter<'a> {
     /// Whether the page containing `addr` has been overwritten via a store.
     /// Native-lift callers must avoid this page since they read from the
     /// immutable `concrete_memory` buffer that does not see the new bytes.
-    pub fn is_code_page_dirtied(&self, addr: u64) -> bool {
+    ///
+    /// Production lift paths call the range form `is_code_range_dirtied`
+    /// instead; only `smc_tests` / `statements_tests` use this single-page
+    /// variant (angr-9ke6b.214).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn is_code_page_dirtied(&self, addr: u64) -> bool {
         self.dirtied_code_pages.contains(&(addr >> 12))
     }
 
     /// Whether any page intersecting `[addr, addr + len)` has been written.
-    pub fn is_code_range_dirtied(&self, addr: u64, len: u64) -> bool {
+    pub(crate) fn is_code_range_dirtied(&self, addr: u64, len: u64) -> bool {
         if self.dirtied_code_pages.is_empty() || len == 0 {
             return false;
         }
@@ -27,7 +32,7 @@ impl<'a> VEXInterpreter<'a> {
     /// Mark code pages overlapping `[addr, addr + size)` as dirtied and
     /// invalidate cached IRSBs whose byte ranges cover any of those bytes.
     /// Caller must verify the address is in a binary region first.
-    pub fn invalidate_code_at(&mut self, addr: u64, size: usize) {
+    pub(crate) fn invalidate_code_at(&mut self, addr: u64, size: usize) {
         if size == 0 {
             return;
         }

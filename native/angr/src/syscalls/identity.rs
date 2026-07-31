@@ -47,7 +47,7 @@ const DEFAULT_UID_GID: u64 = 1000;
 /// registry can key on a unique type per name.
 macro_rules! constant_syscall {
     ($ty:ident, $label:expr, $ret:expr) => {
-        pub struct $ty;
+        pub(crate) struct $ty;
 
         impl NativeSyscall for $ty {
             fn name(&self) -> &'static str {

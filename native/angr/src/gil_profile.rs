@@ -79,7 +79,7 @@ thread_local! {
 /// GIL — all of it in the claripy AST bridge and the fork-metadata attach, which
 /// are Python touches that no `callback_*` counter tracks.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum GilClass {
+pub(crate) enum GilClass {
     /// A `PythonCallbacks` dispatch (lift_block, posix, simprocedure, ...). The
     /// per-class detail lives in the `callback_*_total_ns` counters.
     Callback,
@@ -115,7 +115,7 @@ impl GilClass {
     const COUNT: usize = 5;
 
     /// Stable counter suffix, used to name the `gil_work_ns_*` stats keys.
-    pub fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             GilClass::Callback => "callback",
             GilClass::ClaripyExport => "claripy_export",
@@ -125,7 +125,7 @@ impl GilClass {
         }
     }
 
-    pub fn all() -> [GilClass; GilClass::COUNT] {
+    pub(crate) fn all() -> [GilClass; GilClass::COUNT] {
         [
             GilClass::Callback,
             GilClass::ClaripyExport,
@@ -152,7 +152,7 @@ impl GilClass {
 /// 0ms. Those counters are process-wide and also tick outside the profiled run
 /// loop; these are thread-local, run-loop-gated, and complete by construction.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum CallbackSite {
+pub(crate) enum CallbackSite {
     MemoryLoad,
     MemoryStore,
     MemoryStoreBatch,
@@ -182,7 +182,7 @@ impl CallbackSite {
     const COUNT: usize = 20;
 
     /// Stable counter suffix, used to name the `gil_work_ns_callback_*` keys.
-    pub fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             CallbackSite::MemoryLoad => "memory_load",
             CallbackSite::MemoryStore => "memory_store",
@@ -207,7 +207,7 @@ impl CallbackSite {
         }
     }
 
-    pub fn all() -> [CallbackSite; CallbackSite::COUNT] {
+    pub(crate) fn all() -> [CallbackSite; CallbackSite::COUNT] {
         [
             CallbackSite::MemoryLoad,
             CallbackSite::MemoryStore,
@@ -235,19 +235,26 @@ impl CallbackSite {
 
 /// Cumulative GIL-work nanoseconds attributed to `class` on this thread.
 #[inline]
-pub fn gil_class_ns(class: GilClass) -> u64 {
+pub(crate) fn gil_class_ns(class: GilClass) -> u64 {
     CLASS_ACCUM_NS.with(|c| c.get()[class as usize])
 }
 
 /// Cumulative `Callback`-class nanoseconds attributed to `site` on this thread.
 #[inline]
-pub fn callback_site_ns(site: CallbackSite) -> u64 {
+pub(crate) fn callback_site_ns(site: CallbackSite) -> u64 {
     SITE_ACCUM_NS.with(|s| s.get()[site as usize])
 }
 
 /// Reset both accumulators and the depth/region state. Call when (re)enabling
 /// profiling so a fresh manager on a reused thread does not inherit stale time.
-pub fn reset() {
+///
+/// **Nothing calls this today** (angr-9ke6b.214). Kept because the contract it
+/// documents is real: a second `RustExplorationManager` built on a worker
+/// thread that already profiled inherits the first manager's accumulated
+/// nanoseconds. Wiring it into profiling-enable is a behaviour change and
+/// belongs on its own bead, so the gap is recorded here rather than deleted.
+#[allow(dead_code)]
+pub(crate) fn reset() {
     ACTIVE.with(|a| a.set(false));
     DEPTH.with(|d| d.set(0));
     REGION_START.with(|s| s.set(None));
@@ -267,7 +274,7 @@ pub fn reset() {
 /// the loop without resuming, [`park_cancel`] discards the clock — driver-loop
 /// overhead between `run()` calls is not exploration-time Python work.
 #[inline]
-pub fn park_start(enabled: bool) {
+pub(crate) fn park_start(enabled: bool) {
     if enabled {
         PARK_START.with(|p| p.set(Some(Instant::now())));
     }
@@ -276,7 +283,7 @@ pub fn park_start(enabled: bool) {
 /// Bank an in-flight park excursion as [`GilClass::Bounce`] work. Called on
 /// re-entry from the Python callback handler. A no-op when no park is armed.
 #[inline]
-pub fn park_end() {
+pub(crate) fn park_end() {
     if let Some(start) = PARK_START.with(std::cell::Cell::take) {
         let elapsed = start.elapsed().as_nanos() as u64;
         GIL_ACCUM_NS.with(|a| a.set(a.get() + elapsed));
@@ -293,26 +300,26 @@ pub fn park_end() {
 
 /// Discard an in-flight park excursion without banking it.
 #[inline]
-pub fn park_cancel() {
+pub(crate) fn park_cancel() {
     PARK_START.with(|p| p.set(None));
 }
 
 /// Cumulative GIL-work nanoseconds on this thread (the Amdahl numerator).
 #[inline]
-pub fn gil_work_ns() -> u64 {
+pub(crate) fn gil_work_ns() -> u64 {
     GIL_ACCUM_NS.with(std::cell::Cell::get)
 }
 
 /// Cumulative run-loop wall-clock nanoseconds on this thread (the denominator).
 #[inline]
-pub fn run_wall_ns() -> u64 {
+pub(crate) fn run_wall_ns() -> u64 {
     WALL_ACCUM_NS.with(std::cell::Cell::get)
 }
 
 /// RAII guard bracketing a Python-touching region. Only the outermost live
 /// guard on the thread times; nested guards just balance the depth counter so
 /// overlapping/recursive sites are never double-counted. A no-op when disabled.
-pub struct GilWorkGuard {
+pub(crate) struct GilWorkGuard {
     /// True only when this guard participates in depth counting (profiling was
     /// enabled at `enter()`). Disabled guards skip all `Drop` work.
     active: bool,
@@ -322,14 +329,18 @@ impl GilWorkGuard {
     /// Enter an unattributed [`GilClass::Callback`] region. Prefer
     /// [`GilWorkGuard::enter_site`]: time banked here lands in
     /// [`CallbackSite::Other`], which is the sub-partition's residual bucket.
+    ///
+    /// Every production call site names a `CallbackSite`, so only this
+    /// module's own tests use the unattributed form (angr-9ke6b.214).
+    #[cfg_attr(not(test), allow(dead_code))]
     #[inline]
-    pub fn enter() -> Self {
+    pub(crate) fn enter() -> Self {
         Self::enter_site(CallbackSite::Other)
     }
 
     /// Enter a [`GilClass::Callback`] region attributed to `site`.
     #[inline]
-    pub fn enter_site(site: CallbackSite) -> Self {
+    pub(crate) fn enter_site(site: CallbackSite) -> Self {
         Self::enter_inner(GilClass::Callback, site)
     }
 
@@ -337,7 +348,7 @@ impl GilWorkGuard {
     /// the thread times, so the class recorded is the *reason the GIL was first
     /// taken*, not whichever nested site happens to be innermost.
     #[inline]
-    pub fn enter_as(class: GilClass) -> Self {
+    pub(crate) fn enter_as(class: GilClass) -> Self {
         Self::enter_inner(class, CallbackSite::Other)
     }
 
@@ -403,14 +414,14 @@ impl Drop for GilWorkGuard {
 ///
 /// Run loops are not re-entrant on a worker thread, so a plain bool flag is
 /// sufficient; the guard restores the prior `ACTIVE` value on drop defensively.
-pub struct RunLoopWallGuard {
+pub(crate) struct RunLoopWallGuard {
     start: Option<Instant>,
     prev_active: bool,
 }
 
 impl RunLoopWallGuard {
     #[inline]
-    pub fn new(enabled: bool) -> Self {
+    pub(crate) fn new(enabled: bool) -> Self {
         let prev_active = ACTIVE.with(std::cell::Cell::get);
         if enabled {
             ACTIVE.with(|a| a.set(true));

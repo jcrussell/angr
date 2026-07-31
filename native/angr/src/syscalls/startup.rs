@@ -51,7 +51,7 @@ fn store_field(
 }
 
 /// `uname(buf)` — fill a fixed `struct utsname`.
-pub struct NativeUnameSyscall;
+pub(crate) struct NativeUnameSyscall;
 
 impl NativeSyscall for NativeUnameSyscall {
     fn name(&self) -> &'static str {
@@ -88,7 +88,7 @@ impl NativeSyscall for NativeUnameSyscall {
 }
 
 /// `set_tid_address(tidptr)` — single-threaded, returns tid 1.
-pub struct NativeSetTidAddressSyscall;
+pub(crate) struct NativeSetTidAddressSyscall;
 
 impl NativeSyscall for NativeSetTidAddressSyscall {
     fn name(&self) -> &'static str {
@@ -109,7 +109,7 @@ impl NativeSyscall for NativeSetTidAddressSyscall {
 }
 
 /// `set_robust_list(head, len)` — no-op success.
-pub struct NativeSetRobustListSyscall;
+pub(crate) struct NativeSetRobustListSyscall;
 
 impl NativeSyscall for NativeSetRobustListSyscall {
     fn name(&self) -> &'static str {
@@ -130,7 +130,7 @@ impl NativeSyscall for NativeSetRobustListSyscall {
 }
 
 /// `getrandom(buf, buflen, flags)` — fill `buf` with symbolic randomness.
-pub struct NativeGetrandomSyscall;
+pub(crate) struct NativeGetrandomSyscall;
 
 impl NativeSyscall for NativeGetrandomSyscall {
     fn name(&self) -> &'static str {

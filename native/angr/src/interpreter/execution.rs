@@ -40,7 +40,7 @@ impl<'a> VEXInterpreter<'a> {
     /// manager sets it for bare step-loops with no find target (CADET solve.py
     /// phase 3); it stays `false` for `explore()` so chaining keeps its
     /// throughput.
-    pub fn run_until_event(
+    pub(crate) fn run_until_event(
         &mut self,
         callbacks: &PythonCallbacks,
         max_blocks: u32,
@@ -609,7 +609,7 @@ impl<'a> VEXInterpreter<'a> {
     /// `run_until_event` loop. The standard exploration path still goes
     /// through [`Self::run_until_event`] which calls
     /// `execute_block_with_callbacks` internally.
-    pub fn execute_block(
+    pub(crate) fn execute_block(
         &mut self,
         callbacks: &PythonCallbacks,
         irsb: &IRSB,

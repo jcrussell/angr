@@ -34,7 +34,7 @@ fn apply_wall_clock_timeout(
     }
 }
 
-pub struct PyExecutorInner<S> {
+pub(crate) struct PyExecutorInner<S> {
     base_state: Py<PyAny>,
     apply_fn: Py<PyAny>,
     observers: OT,
@@ -44,7 +44,7 @@ pub struct PyExecutorInner<S> {
 }
 
 impl<S> PyExecutorInner<S> {
-    pub fn new(
+    pub(crate) fn new(
         base_state: Bound<PyAny>,
         apply_fn: Bound<PyAny>,
         observers: OT,

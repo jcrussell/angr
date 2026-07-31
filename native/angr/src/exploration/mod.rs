@@ -89,15 +89,15 @@ pub(crate) type OpenFdInfo = (u32, String, u64, u32, usize, bool);
 
 /// Get the current stepping state ID (safe to call from callbacks).
 #[pyfunction]
-pub fn get_stepping_state_id() -> Option<u64> {
+pub(crate) fn get_stepping_state_id() -> Option<u64> {
     STEPPING_STATE_ID.with(std::cell::Cell::get)
 }
 
-pub use self::callback_types::CallbackReason;
+pub(crate) use self::callback_types::CallbackReason;
 pub(crate) use self::callback_types::PendingCallback;
 pub(crate) use self::callback_types::apply_deferred_fork_constraints;
 pub(crate) use self::callback_types::{ForkBundle, SimProcCall};
-pub use self::event::ExplorationEvent;
+pub(crate) use self::event::ExplorationEvent;
 pub(crate) use self::native_technique::NativeTechnique;
 
 /// Rust-native exploration manager.
@@ -468,7 +468,7 @@ impl Drop for RustExplorationManager {
 }
 
 /// Register the exploration module with Python.
-pub fn register_exploration(m: &Bound<'_, PyModule>) -> PyResult<()> {
+pub(crate) fn register_exploration(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<RustExplorationManager>()?;
     m.add_class::<ExplorationEvent>()?;
     m.add_function(pyo3::wrap_pyfunction!(get_stepping_state_id, m)?)?;

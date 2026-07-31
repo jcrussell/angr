@@ -8,110 +8,110 @@ use crate::vex::VexArch;
 
 /// ARM64 (AArch64) architecture.
 #[derive(Debug, Clone, Copy)]
-pub struct ARM64;
+pub(crate) struct ARM64;
 
 // ARM64 VEX guest state offsets (from VEX/pub/libvex_guest_arm64.h)
 // These match the VexGuestARM64State structure layout.
 pub(crate) mod offsets {
     // General purpose registers (X0-X30)
-    pub const X0: u32 = 16;
-    pub const X1: u32 = 24;
-    pub const X2: u32 = 32;
-    pub const X3: u32 = 40;
-    pub const X4: u32 = 48;
-    pub const X5: u32 = 56;
-    pub const X6: u32 = 64;
-    pub const X7: u32 = 72;
-    pub const X8: u32 = 80;
-    pub const X9: u32 = 88;
-    pub const X10: u32 = 96;
-    pub const X11: u32 = 104;
-    pub const X12: u32 = 112;
-    pub const X13: u32 = 120;
-    pub const X14: u32 = 128;
-    pub const X15: u32 = 136;
-    pub const X16: u32 = 144;
-    pub const X17: u32 = 152;
-    pub const X18: u32 = 160;
-    pub const X19: u32 = 168;
-    pub const X20: u32 = 176;
-    pub const X21: u32 = 184;
-    pub const X22: u32 = 192;
-    pub const X23: u32 = 200;
-    pub const X24: u32 = 208;
-    pub const X25: u32 = 216;
-    pub const X26: u32 = 224;
-    pub const X27: u32 = 232;
-    pub const X28: u32 = 240;
-    pub const X29: u32 = 248; // FP (frame pointer)
-    pub const X30: u32 = 256; // LR (link register)
+    pub(crate) const X0: u32 = 16;
+    pub(crate) const X1: u32 = 24;
+    pub(crate) const X2: u32 = 32;
+    pub(crate) const X3: u32 = 40;
+    pub(crate) const X4: u32 = 48;
+    pub(crate) const X5: u32 = 56;
+    pub(crate) const X6: u32 = 64;
+    pub(crate) const X7: u32 = 72;
+    pub(crate) const X8: u32 = 80;
+    pub(crate) const X9: u32 = 88;
+    pub(crate) const X10: u32 = 96;
+    pub(crate) const X11: u32 = 104;
+    pub(crate) const X12: u32 = 112;
+    pub(crate) const X13: u32 = 120;
+    pub(crate) const X14: u32 = 128;
+    pub(crate) const X15: u32 = 136;
+    pub(crate) const X16: u32 = 144;
+    pub(crate) const X17: u32 = 152;
+    pub(crate) const X18: u32 = 160;
+    pub(crate) const X19: u32 = 168;
+    pub(crate) const X20: u32 = 176;
+    pub(crate) const X21: u32 = 184;
+    pub(crate) const X22: u32 = 192;
+    pub(crate) const X23: u32 = 200;
+    pub(crate) const X24: u32 = 208;
+    pub(crate) const X25: u32 = 216;
+    pub(crate) const X26: u32 = 224;
+    pub(crate) const X27: u32 = 232;
+    pub(crate) const X28: u32 = 240;
+    pub(crate) const X29: u32 = 248; // FP (frame pointer)
+    pub(crate) const X30: u32 = 256; // LR (link register)
 
     // Stack pointer (XSP)
-    pub const XSP: u32 = 264;
+    pub(crate) const XSP: u32 = 264;
 
     // Program counter
-    pub const PC: u32 = 272;
+    pub(crate) const PC: u32 = 272;
 
     // Condition code thunks
-    pub const CC_OP: u32 = 280;
-    pub const CC_DEP1: u32 = 288;
-    pub const CC_DEP2: u32 = 296;
-    pub const CC_NDEP: u32 = 304;
+    pub(crate) const CC_OP: u32 = 280;
+    pub(crate) const CC_DEP1: u32 = 288;
+    pub(crate) const CC_DEP2: u32 = 296;
+    pub(crate) const CC_NDEP: u32 = 304;
 
     // Thread pointer
-    pub const TPIDR_EL0: u32 = 312;
+    pub(crate) const TPIDR_EL0: u32 = 312;
 
     // NEON/SIMD registers (V0-V31, 128-bit each)
-    pub const Q0: u32 = 320;
-    pub const Q1: u32 = 336;
-    pub const Q2: u32 = 352;
-    pub const Q3: u32 = 368;
-    pub const Q4: u32 = 384;
-    pub const Q5: u32 = 400;
-    pub const Q6: u32 = 416;
-    pub const Q7: u32 = 432;
-    pub const Q8: u32 = 448;
-    pub const Q9: u32 = 464;
-    pub const Q10: u32 = 480;
-    pub const Q11: u32 = 496;
-    pub const Q12: u32 = 512;
-    pub const Q13: u32 = 528;
-    pub const Q14: u32 = 544;
-    pub const Q15: u32 = 560;
-    pub const Q16: u32 = 576;
-    pub const Q17: u32 = 592;
-    pub const Q18: u32 = 608;
-    pub const Q19: u32 = 624;
-    pub const Q20: u32 = 640;
-    pub const Q21: u32 = 656;
-    pub const Q22: u32 = 672;
-    pub const Q23: u32 = 688;
-    pub const Q24: u32 = 704;
-    pub const Q25: u32 = 720;
-    pub const Q26: u32 = 736;
-    pub const Q27: u32 = 752;
-    pub const Q28: u32 = 768;
-    pub const Q29: u32 = 784;
-    pub const Q30: u32 = 800;
-    pub const Q31: u32 = 816;
+    pub(crate) const Q0: u32 = 320;
+    pub(crate) const Q1: u32 = 336;
+    pub(crate) const Q2: u32 = 352;
+    pub(crate) const Q3: u32 = 368;
+    pub(crate) const Q4: u32 = 384;
+    pub(crate) const Q5: u32 = 400;
+    pub(crate) const Q6: u32 = 416;
+    pub(crate) const Q7: u32 = 432;
+    pub(crate) const Q8: u32 = 448;
+    pub(crate) const Q9: u32 = 464;
+    pub(crate) const Q10: u32 = 480;
+    pub(crate) const Q11: u32 = 496;
+    pub(crate) const Q12: u32 = 512;
+    pub(crate) const Q13: u32 = 528;
+    pub(crate) const Q14: u32 = 544;
+    pub(crate) const Q15: u32 = 560;
+    pub(crate) const Q16: u32 = 576;
+    pub(crate) const Q17: u32 = 592;
+    pub(crate) const Q18: u32 = 608;
+    pub(crate) const Q19: u32 = 624;
+    pub(crate) const Q20: u32 = 640;
+    pub(crate) const Q21: u32 = 656;
+    pub(crate) const Q22: u32 = 672;
+    pub(crate) const Q23: u32 = 688;
+    pub(crate) const Q24: u32 = 704;
+    pub(crate) const Q25: u32 = 720;
+    pub(crate) const Q26: u32 = 736;
+    pub(crate) const Q27: u32 = 752;
+    pub(crate) const Q28: u32 = 768;
+    pub(crate) const Q29: u32 = 784;
+    pub(crate) const Q30: u32 = 800;
+    pub(crate) const Q31: u32 = 816;
 
     // Tail of VexGuestARM64State, in declaration order. `guest_QCFLAG` is a
     // U128 (the sticky FPSR.QC saturation flag), so the next field starts at
     // 848 — not 836. See /usr/include/valgrind/libvex_guest_arm64.h and
     // archinfo ArchAArch64.registers, which agree on every offset below.
-    pub const QCFLAG: u32 = 832;
-    pub const EMNOTE: u32 = 848;
-    pub const CMSTART: u32 = 856;
-    pub const CMLEN: u32 = 864;
-    pub const NRADDR: u32 = 872;
-    pub const IP_AT_SYSCALL: u32 = 880;
-    pub const FPCR: u32 = 888;
+    pub(crate) const QCFLAG: u32 = 832;
+    pub(crate) const EMNOTE: u32 = 848;
+    pub(crate) const CMSTART: u32 = 856;
+    pub(crate) const CMLEN: u32 = 864;
+    pub(crate) const NRADDR: u32 = 872;
+    pub(crate) const IP_AT_SYSCALL: u32 = 880;
+    pub(crate) const FPCR: u32 = 888;
 
     // Total guest state size. After guest_FPCR come 4 bytes of padding and
     // the LL/SC fallback block (guest_LLSC_{SIZE,ADDR,DATA_LO64,DATA_HI64},
     // 896..928). We do not name those, but the buffer must cover them or
     // IR-level PUTs to them are silently dropped by RegisterFile::put.
-    pub const GUEST_STATE_SIZE: usize = 928;
+    pub(crate) const GUEST_STATE_SIZE: usize = 928;
 }
 
 // Canonical registers: drive `register_name(offset)` reverse lookups.

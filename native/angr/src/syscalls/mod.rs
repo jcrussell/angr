@@ -17,28 +17,28 @@
 //!   handlers see `r10` at index 3, not `rcx`. This matters for any
 //!   handler with ≥4 args (e.g. rt_sigaction).
 
-pub mod arch_prctl;
-pub mod brk;
-pub mod cgc;
-pub mod concurrency;
-pub mod directory;
-pub mod exit;
-pub mod fd_io;
-pub mod file_descriptor;
-pub mod file_path;
-pub mod identity;
-pub mod memory_extras;
-pub mod mmap;
-pub mod mprotect;
-pub mod munmap;
+pub(crate) mod arch_prctl;
+pub(crate) mod brk;
+pub(crate) mod cgc;
+pub(crate) mod concurrency;
+pub(crate) mod directory;
+pub(crate) mod exit;
+pub(crate) mod fd_io;
+pub(crate) mod file_descriptor;
+pub(crate) mod file_path;
+pub(crate) mod identity;
+pub(crate) mod memory_extras;
+pub(crate) mod mmap;
+pub(crate) mod mprotect;
+pub(crate) mod munmap;
 pub(crate) mod page;
-pub mod read;
-pub mod rlimit;
-pub mod sigaction;
-pub mod signals;
-pub mod sim_time;
-pub mod startup;
-pub mod write;
+pub(crate) mod read;
+pub(crate) mod rlimit;
+pub(crate) mod sigaction;
+pub(crate) mod signals;
+pub(crate) mod sim_time;
+pub(crate) mod startup;
+pub(crate) mod write;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -62,7 +62,7 @@ pub(crate) const MAX_IO_SIZE: u64 = 4096;
 /// variants; intra-crate matches must include a wildcard arm.
 #[non_exhaustive]
 #[derive(Debug, Clone, thiserror::Error)]
-pub enum SyscallError {
+pub(crate) enum SyscallError {
     #[error("symbolic argument: {0}")]
     SymbolicArgument(String),
     /// Memory operation failed. Carries the structured `MemoryError`
@@ -77,7 +77,7 @@ pub enum SyscallError {
 /// Extract a concrete u64 value from a syscall argument, or return
 /// `SymbolicArgument(name)`. Mirrors `procedures::extract_concrete_arg`
 /// to centralize the symbolic-fallthrough error context across handlers.
-pub fn extract_concrete_arg(arg: &RustBV, name: &str) -> Result<u64, SyscallError> {
+pub(crate) fn extract_concrete_arg(arg: &RustBV, name: &str) -> Result<u64, SyscallError> {
     arg.as_u64()
         .ok_or_else(|| SyscallError::SymbolicArgument(name.to_string()))
 }
@@ -92,7 +92,7 @@ pub fn extract_concrete_arg(arg: &RustBV, name: &str) -> Result<u64, SyscallErro
 /// unlike claripy's unique-suffixed `BVS`. Appending
 /// `procedures::symbol_counter(prefix)` gives each mint a distinct name and
 /// therefore a distinct Z3 term — mirroring the fgets/scanf/rand procedures.
-pub fn fresh_symbolic(
+pub(crate) fn fresh_symbolic(
     ctx: &crate::symbolic::SymContext,
     prefix: &'static str,
     width: u32,
@@ -103,7 +103,7 @@ pub fn fresh_symbolic(
 
 /// What the dispatcher should do after a syscall handler runs.
 #[derive(Debug)]
-pub enum SyscallOutcome {
+pub(crate) enum SyscallOutcome {
     /// State should continue at PC. `ret` is written to the return
     /// register (rax on amd64).
     Continue { ret: u64 },
@@ -115,7 +115,16 @@ pub enum SyscallOutcome {
     Exit,
 }
 
-pub trait NativeSyscall: Send + Sync {
+pub(crate) trait NativeSyscall: Send + Sync {
+    /// Human-readable handler label (e.g. `"read"`, `"getuid"`).
+    ///
+    /// **No caller.** The dispatcher (`NativeSyscallRegistry::get`) keys on
+    /// `(arch, num)` and never logs the label, so every one of the ~50 impls —
+    /// including the `stub_syscall!` / `constant_syscall!` `$label` argument —
+    /// is write-only. Retained rather than deleted: the labels are the only
+    /// in-tree mapping from handler type to syscall name, and a diagnostic log
+    /// line is the obvious consumer (angr-9ke6b.214).
+    #[allow(dead_code)]
     fn name(&self) -> &'static str;
     fn num_args(&self) -> usize;
     fn call(
@@ -133,7 +142,7 @@ pub trait NativeSyscall: Send + Sync {
 /// `(&'static str, u64)` key cannot be looked up from a runtime `&str`
 /// without interning, which previously forced a linear `iter().find()` over
 /// all 432 rows on every executed syscall (see angr-k95c).
-pub struct NativeSyscallRegistry {
+pub(crate) struct NativeSyscallRegistry {
     handlers: HashMap<&'static str, HashMap<u64, Arc<dyn NativeSyscall>>>,
 }
 
@@ -165,7 +174,7 @@ macro_rules! register_syscalls {
 /// super::stub_syscall;` instead of redeclaring the same boilerplate.
 macro_rules! stub_syscall {
     ($ty:ident, $label:expr, $sym_name:expr, $nargs:expr) => {
-        pub struct $ty;
+        pub(crate) struct $ty;
 
         impl $crate::syscalls::NativeSyscall for $ty {
             fn name(&self) -> &'static str {
@@ -200,7 +209,7 @@ impl Default for NativeSyscallRegistry {
 }
 
 impl NativeSyscallRegistry {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let mut r = NativeSyscallRegistry {
             handlers: HashMap::new(),
         };
@@ -999,11 +1008,16 @@ impl NativeSyscallRegistry {
         r
     }
 
-    pub fn register(&mut self, arch: &'static str, num: u64, syscall: Arc<dyn NativeSyscall>) {
+    pub(crate) fn register(
+        &mut self,
+        arch: &'static str,
+        num: u64,
+        syscall: Arc<dyn NativeSyscall>,
+    ) {
         self.handlers.entry(arch).or_default().insert(num, syscall);
     }
 
-    pub fn get(&self, arch: &str, num: u64) -> Option<&Arc<dyn NativeSyscall>> {
+    pub(crate) fn get(&self, arch: &str, num: u64) -> Option<&Arc<dyn NativeSyscall>> {
         // Two O(1) hash lookups: arch (`&'static str` keys borrow as `str`,
         // so a runtime `&str` resolves directly) then syscall number.
         self.handlers.get(arch)?.get(&num)

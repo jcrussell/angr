@@ -24,7 +24,7 @@ use crate::memory::Permission;
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
-pub struct NativeBrkSyscall;
+pub(crate) struct NativeBrkSyscall;
 
 impl NativeSyscall for NativeBrkSyscall {
     fn name(&self) -> &'static str {

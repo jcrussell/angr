@@ -51,7 +51,7 @@ stub_syscall!(NativeAlarmSyscall, "alarm", "syscall_stub_alarm", 1);
 /// `tgkill(tgid, tid, sig)` — mirrors Python's
 /// `procedures/linux_kernel/tgkill.py`, which returns
 /// `claripy.BVV(0, self.arch.sizeof["int"])` regardless of args.
-pub struct NativeTgkillSyscall;
+pub(crate) struct NativeTgkillSyscall;
 
 impl NativeSyscall for NativeTgkillSyscall {
     fn name(&self) -> &'static str {

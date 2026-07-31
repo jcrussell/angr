@@ -348,7 +348,7 @@ fn do_scanf(
 /// ```c
 /// int scanf(const char *format, ...);
 /// ```
-pub struct NativeScanf;
+pub(crate) struct NativeScanf;
 
 impl NativeSimProcedure for NativeScanf {
     fn name(&self) -> &'static str {
@@ -372,7 +372,7 @@ impl NativeSimProcedure for NativeScanf {
 /// Native __isoc99_scanf implementation (alias for scanf).
 ///
 /// Many binaries compiled with newer glibc use __isoc99_scanf instead of scanf.
-pub struct NativeIsoc99Scanf;
+pub(crate) struct NativeIsoc99Scanf;
 
 impl NativeSimProcedure for NativeIsoc99Scanf {
     fn name(&self) -> &'static str {
@@ -408,7 +408,7 @@ impl NativeSimProcedure for NativeIsoc99Scanf {
 /// after parsing `"42"`) and copy garbage for `%s`. Rather than reimplement
 /// scanf's full matching engine natively, we defer the whole call to Python,
 /// which parses the source faithfully. See angr-8onrp.
-pub struct NativeSscanf;
+pub(crate) struct NativeSscanf;
 
 impl NativeSimProcedure for NativeSscanf {
     fn name(&self) -> &'static str {
@@ -470,7 +470,7 @@ fn do_fscanf(
 /// ```c
 /// int fscanf(FILE *stream, const char *format, ...);
 /// ```
-pub struct NativeFscanf;
+pub(crate) struct NativeFscanf;
 
 impl NativeSimProcedure for NativeFscanf {
     fn name(&self) -> &'static str {
@@ -495,7 +495,7 @@ impl NativeSimProcedure for NativeFscanf {
 /// Native __isoc99_fscanf implementation (alias for fscanf).
 ///
 /// Many binaries compiled with newer glibc use __isoc99_fscanf instead of fscanf.
-pub struct NativeIsoc99Fscanf;
+pub(crate) struct NativeIsoc99Fscanf;
 
 impl NativeSimProcedure for NativeIsoc99Fscanf {
     fn name(&self) -> &'static str {

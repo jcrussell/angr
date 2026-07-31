@@ -2,13 +2,8 @@
 use super::*;
 
 impl<'a> VEXInterpreter<'a> {
-    /// Get the address concretizer.
-    pub fn concretizer(&self) -> &AddressConcretizer {
-        &self.concretizer
-    }
-
     /// Set custom concretizer settings.
-    pub fn set_concretizer(&mut self, concretizer: AddressConcretizer) {
+    pub(crate) fn set_concretizer(&mut self, concretizer: AddressConcretizer) {
         self.concretizer = concretizer;
     }
 

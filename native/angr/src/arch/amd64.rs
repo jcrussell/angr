@@ -8,80 +8,80 @@ use crate::vex::VexArch;
 
 /// AMD64 architecture.
 #[derive(Debug, Clone, Copy)]
-pub struct AMD64;
+pub(crate) struct AMD64;
 
 // AMD64 VEX guest state offsets (from VEX/pub/libvex_guest_amd64.h)
 // These match the VexGuestAMD64State structure layout.
 pub(crate) mod offsets {
-    pub const RAX: u32 = 16;
-    pub const RCX: u32 = 24;
-    pub const RDX: u32 = 32;
-    pub const RBX: u32 = 40;
-    pub const RSP: u32 = 48;
-    pub const RBP: u32 = 56;
-    pub const RSI: u32 = 64;
-    pub const RDI: u32 = 72;
-    pub const R8: u32 = 80;
-    pub const R9: u32 = 88;
-    pub const R10: u32 = 96;
-    pub const R11: u32 = 104;
-    pub const R12: u32 = 112;
-    pub const R13: u32 = 120;
-    pub const R14: u32 = 128;
-    pub const R15: u32 = 136;
+    pub(crate) const RAX: u32 = 16;
+    pub(crate) const RCX: u32 = 24;
+    pub(crate) const RDX: u32 = 32;
+    pub(crate) const RBX: u32 = 40;
+    pub(crate) const RSP: u32 = 48;
+    pub(crate) const RBP: u32 = 56;
+    pub(crate) const RSI: u32 = 64;
+    pub(crate) const RDI: u32 = 72;
+    pub(crate) const R8: u32 = 80;
+    pub(crate) const R9: u32 = 88;
+    pub(crate) const R10: u32 = 96;
+    pub(crate) const R11: u32 = 104;
+    pub(crate) const R12: u32 = 112;
+    pub(crate) const R13: u32 = 120;
+    pub(crate) const R14: u32 = 128;
+    pub(crate) const R15: u32 = 136;
 
     // Flags
-    pub const CC_OP: u32 = 144;
-    pub const CC_DEP1: u32 = 152;
-    pub const CC_DEP2: u32 = 160;
-    pub const CC_NDEP: u32 = 168;
+    pub(crate) const CC_OP: u32 = 144;
+    pub(crate) const CC_DEP1: u32 = 152;
+    pub(crate) const CC_DEP2: u32 = 160;
+    pub(crate) const CC_NDEP: u32 = 168;
 
     // Other
-    pub const DFLAG: u32 = 176;
-    pub const RIP: u32 = 184;
-    pub const ACFLAG: u32 = 192;
-    pub const IDFLAG: u32 = 200;
+    pub(crate) const DFLAG: u32 = 176;
+    pub(crate) const RIP: u32 = 184;
+    pub(crate) const ACFLAG: u32 = 192;
+    pub(crate) const IDFLAG: u32 = 200;
 
     // Segment registers. FS_CONST is the FS base address (archinfo offset 208);
     // GS_CONST is the GS base, which archinfo places at offset 1032 — well past
     // the XMM/FPU bank. The 216 slot belongs to SSEROUND, not GS_CONST. See
     // bd memory `amd64-gs-const-offset-bug` for the previous wrong layout.
-    pub const FS_CONST: u32 = 208;
+    pub(crate) const FS_CONST: u32 = 208;
 
     // SSE control (per archinfo: 4B uint32_t padded to 8B in archinfo's table)
-    pub const SSEROUND: u32 = 216;
+    pub(crate) const SSEROUND: u32 = 216;
 
     // XMM registers (128-bit each, 16 bytes) - offsets per archinfo
-    pub const XMM0: u32 = 224;
-    pub const XMM1: u32 = 256;
-    pub const XMM2: u32 = 288;
-    pub const XMM3: u32 = 320;
-    pub const XMM4: u32 = 352;
-    pub const XMM5: u32 = 384;
-    pub const XMM6: u32 = 416;
-    pub const XMM7: u32 = 448;
-    pub const XMM8: u32 = 480;
-    pub const XMM9: u32 = 512;
-    pub const XMM10: u32 = 544;
-    pub const XMM11: u32 = 576;
-    pub const XMM12: u32 = 608;
-    pub const XMM13: u32 = 640;
-    pub const XMM14: u32 = 672;
-    pub const XMM15: u32 = 704;
+    pub(crate) const XMM0: u32 = 224;
+    pub(crate) const XMM1: u32 = 256;
+    pub(crate) const XMM2: u32 = 288;
+    pub(crate) const XMM3: u32 = 320;
+    pub(crate) const XMM4: u32 = 352;
+    pub(crate) const XMM5: u32 = 384;
+    pub(crate) const XMM6: u32 = 416;
+    pub(crate) const XMM7: u32 = 448;
+    pub(crate) const XMM8: u32 = 480;
+    pub(crate) const XMM9: u32 = 512;
+    pub(crate) const XMM10: u32 = 544;
+    pub(crate) const XMM11: u32 = 576;
+    pub(crate) const XMM12: u32 = 608;
+    pub(crate) const XMM13: u32 = 640;
+    pub(crate) const XMM14: u32 = 672;
+    pub(crate) const XMM15: u32 = 704;
 
     // FPU state (per archinfo)
-    pub const FTOP: u32 = 896;
-    pub const FPREG: u32 = 904; // 8 x 80-bit FP registers
-    pub const FPTAG: u32 = 968;
-    pub const FPROUND: u32 = 976;
-    pub const FC3210: u32 = 984;
+    pub(crate) const FTOP: u32 = 896;
+    pub(crate) const FPREG: u32 = 904; // 8 x 80-bit FP registers
+    pub(crate) const FPTAG: u32 = 968;
+    pub(crate) const FPROUND: u32 = 976;
+    pub(crate) const FC3210: u32 = 984;
 
     // Late VEX state (per archinfo): emnote, cmstart/cmlen/nraddr precede the
     // real GS_CONST slot at offset 1032.
-    pub const GS_CONST: u32 = 1032;
+    pub(crate) const GS_CONST: u32 = 1032;
 
     // Total guest state size: archinfo's last register (ss_seg) ends at 1060.
-    pub const GUEST_STATE_SIZE: usize = 1060;
+    pub(crate) const GUEST_STATE_SIZE: usize = 1060;
 }
 
 // Canonical registers: each entry is `(name, offset, size_bytes)`. These

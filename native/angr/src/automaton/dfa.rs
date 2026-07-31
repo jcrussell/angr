@@ -5,7 +5,7 @@ use crate::automaton::symbol::SymbolId;
 use std::collections::{HashMap, HashSet, VecDeque};
 
 /// A labeled edge in the graph representation: (source, destination, label).
-pub type GraphEdge = (StateId, StateId, Vec<u8>);
+pub(super) type GraphEdge = (StateId, StateId, Vec<u8>);
 
 /// A Deterministic Finite Automaton.
 #[derive(Debug, Clone)]

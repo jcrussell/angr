@@ -220,7 +220,7 @@ impl PyOnDiskCorpus {
 
 // Dynamic Corpus that can encapsulate InMemoryCorpus and OnDiskCorpus at runtime
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum DynCorpus<I> {
+pub(crate) enum DynCorpus<I> {
     InMem(InMemoryCorpus<I>),
     OnDisk(OnDiskCorpus<I>),
 }
@@ -385,7 +385,7 @@ impl TryFrom<&PyOnDiskCorpus> for DynCorpus<BytesInput> {
 
 // Converts Rust enum back into python object
 impl DynCorpus<BytesInput> {
-    pub fn to_py<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+    pub(crate) fn to_py<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
         match self {
             DynCorpus::InMem(inner) => {
                 let py_inmem = PyInMemoryCorpus::try_from(inner)

@@ -74,7 +74,7 @@ const CGC_FLAG_PAGE_END: u64 = CGC_FLAG_PAGE_START + 0x1000;
 
 /// Re-export so `syscalls::cgc::NativeTerminateSyscall` reads naturally
 /// alongside the other CGC handlers.
-pub use exit::NativeExitSyscall as NativeTerminateSyscall;
+pub(crate) use exit::NativeExitSyscall as NativeTerminateSyscall;
 
 /// Cap on transmit / receive / random byte counts. Same value as the
 /// per-syscall MAX in `read.rs` / `write.rs`; keeps a runaway concrete
@@ -106,7 +106,7 @@ fn store_u32_le(state: &mut RustSimState, addr: u64, value: u32) -> Result<(), S
 // =====================================================================
 // 2: transmit(fd, buf, count, tx_bytes) -> int
 // =====================================================================
-pub struct NativeTransmitSyscall;
+pub(crate) struct NativeTransmitSyscall;
 
 impl NativeSyscall for NativeTransmitSyscall {
     fn name(&self) -> &'static str {
@@ -191,7 +191,7 @@ impl NativeSyscall for NativeTransmitSyscall {
 // =====================================================================
 // 3: receive(fd, buf, count, rx_bytes) -> int
 // =====================================================================
-pub struct NativeReceiveSyscall;
+pub(crate) struct NativeReceiveSyscall;
 
 impl NativeSyscall for NativeReceiveSyscall {
     fn name(&self) -> &'static str {
@@ -278,7 +278,7 @@ impl NativeSyscall for NativeReceiveSyscall {
 // Python proc, which accumulates its count across both fd loops
 // unconditionally and guards only the mask *stores* on a non-null
 // pointer. States without the option defer to Python.
-pub struct NativeFdwaitSyscall;
+pub(crate) struct NativeFdwaitSyscall;
 
 impl NativeSyscall for NativeFdwaitSyscall {
     fn name(&self) -> &'static str {
@@ -364,7 +364,7 @@ impl NativeSyscall for NativeFdwaitSyscall {
 // =====================================================================
 // 7: random(buf, count, rnd_bytes) -> int
 // =====================================================================
-pub struct NativeRandomSyscall;
+pub(crate) struct NativeRandomSyscall;
 
 impl NativeSyscall for NativeRandomSyscall {
     fn name(&self) -> &'static str {
@@ -441,7 +441,7 @@ impl NativeSyscall for NativeRandomSyscall {
 // region (Rust has no access to `project.loader.max_addr` here) or the
 // CGC flag page — the Python procedure has the proper overlap-handling
 // path for both cases.
-pub struct NativeAllocateSyscall;
+pub(crate) struct NativeAllocateSyscall;
 
 impl NativeSyscall for NativeAllocateSyscall {
     fn name(&self) -> &'static str {
@@ -532,7 +532,7 @@ impl NativeSyscall for NativeAllocateSyscall {
 // what we can, and record the unmapped run as a sinkhole. Returns 0 on
 // success, EINVAL on validation failure. Matches the Python procedure's
 // quirk that a wholly-unmapped `addr` still returns 0 with no work.
-pub struct NativeDeallocateSyscall;
+pub(crate) struct NativeDeallocateSyscall;
 
 impl NativeSyscall for NativeDeallocateSyscall {
     fn name(&self) -> &'static str {

@@ -22,7 +22,7 @@ use super::{NativeSimProcedure, ProcedureError};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
-pub struct NativeLibcStartMain;
+pub(crate) struct NativeLibcStartMain;
 
 impl NativeSimProcedure for NativeLibcStartMain {
     fn name(&self) -> &'static str {

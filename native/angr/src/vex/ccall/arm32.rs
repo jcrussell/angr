@@ -7,15 +7,15 @@ use super::*;
 // ============================================================
 
 /// ARM CC_OP values (from VEX's libvex_guest_arm.h)
-pub mod arm_cc_op {
-    pub const ARMG_CC_OP_COPY: u64 = 0; // DEP1 = NZCV in 31:28
-    pub const ARMG_CC_OP_ADD: u64 = 1; // DEP1 = argL, DEP2 = argR
-    pub const ARMG_CC_OP_SUB: u64 = 2; // DEP1 = argL, DEP2 = argR
-    pub const ARMG_CC_OP_ADC: u64 = 3; // DEP1 = argL, DEP2 = argR, NDEP = oldC
-    pub const ARMG_CC_OP_SBB: u64 = 4; // DEP1 = argL, DEP2 = argR, NDEP = oldC
-    pub const ARMG_CC_OP_LOGIC: u64 = 5; // DEP1 = result, DEP2 = shifter_carry_out, NDEP = oldV
-    pub const ARMG_CC_OP_MUL: u64 = 6; // DEP1 = result, NDEP = oldC:oldV
-    pub const ARMG_CC_OP_MULL: u64 = 7; // DEP1 = resLO32, DEP2 = resHI32, NDEP = oldC:oldV
+pub(super) mod arm_cc_op {
+    pub(crate) const ARMG_CC_OP_COPY: u64 = 0; // DEP1 = NZCV in 31:28
+    pub(crate) const ARMG_CC_OP_ADD: u64 = 1; // DEP1 = argL, DEP2 = argR
+    pub(crate) const ARMG_CC_OP_SUB: u64 = 2; // DEP1 = argL, DEP2 = argR
+    pub(crate) const ARMG_CC_OP_ADC: u64 = 3; // DEP1 = argL, DEP2 = argR, NDEP = oldC
+    pub(crate) const ARMG_CC_OP_SBB: u64 = 4; // DEP1 = argL, DEP2 = argR, NDEP = oldC
+    pub(crate) const ARMG_CC_OP_LOGIC: u64 = 5; // DEP1 = result, DEP2 = shifter_carry_out, NDEP = oldV
+    pub(crate) const ARMG_CC_OP_MUL: u64 = 6; // DEP1 = result, NDEP = oldC:oldV
+    pub(crate) const ARMG_CC_OP_MULL: u64 = 7; // DEP1 = resLO32, DEP2 = resHI32, NDEP = oldC:oldV
 }
 
 /// ARM condition codes
@@ -25,31 +25,31 @@ pub mod arm_cc_op {
 // by the ccall test suite. Kept complete for the arch-BE campaign (angr-ig3o)
 // and as a readable ABI reference; allow(dead_code) applies to non-test builds.
 #[cfg_attr(not(test), allow(dead_code))]
-pub mod arm_cond {
-    pub const ARM_COND_EQ: u64 = 0; // Z=1
-    pub const ARM_COND_NE: u64 = 1; // Z=0
-    pub const ARM_COND_HS: u64 = 2; // C=1
-    pub const ARM_COND_LO: u64 = 3; // C=0
-    pub const ARM_COND_MI: u64 = 4; // N=1
-    pub const ARM_COND_PL: u64 = 5; // N=0
-    pub const ARM_COND_VS: u64 = 6; // V=1
-    pub const ARM_COND_VC: u64 = 7; // V=0
-    pub const ARM_COND_HI: u64 = 8; // C=1 && Z=0
-    pub const ARM_COND_LS: u64 = 9; // C=0 || Z=1
-    pub const ARM_COND_GE: u64 = 10; // N=V
-    pub const ARM_COND_LT: u64 = 11; // N!=V
-    pub const ARM_COND_GT: u64 = 12; // Z=0 && N=V
-    pub const ARM_COND_LE: u64 = 13; // Z=1 || N!=V
-    pub const ARM_COND_AL: u64 = 14; // always
-    pub const ARM_COND_NV: u64 = 15; // never
+pub(super) mod arm_cond {
+    pub(crate) const ARM_COND_EQ: u64 = 0; // Z=1
+    pub(crate) const ARM_COND_NE: u64 = 1; // Z=0
+    pub(crate) const ARM_COND_HS: u64 = 2; // C=1
+    pub(crate) const ARM_COND_LO: u64 = 3; // C=0
+    pub(crate) const ARM_COND_MI: u64 = 4; // N=1
+    pub(crate) const ARM_COND_PL: u64 = 5; // N=0
+    pub(crate) const ARM_COND_VS: u64 = 6; // V=1
+    pub(crate) const ARM_COND_VC: u64 = 7; // V=0
+    pub(crate) const ARM_COND_HI: u64 = 8; // C=1 && Z=0
+    pub(crate) const ARM_COND_LS: u64 = 9; // C=0 || Z=1
+    pub(crate) const ARM_COND_GE: u64 = 10; // N=V
+    pub(crate) const ARM_COND_LT: u64 = 11; // N!=V
+    pub(crate) const ARM_COND_GT: u64 = 12; // Z=0 && N=V
+    pub(crate) const ARM_COND_LE: u64 = 13; // Z=1 || N!=V
+    pub(crate) const ARM_COND_AL: u64 = 14; // always
+    pub(crate) const ARM_COND_NV: u64 = 15; // never
 }
 
 /// ARM NZCV flag bit positions
 pub(super) mod arm_flag_shift {
-    pub const SHIFT_N: u32 = 31;
-    pub const SHIFT_Z: u32 = 30;
-    pub const SHIFT_C: u32 = 29;
-    pub const SHIFT_V: u32 = 28;
+    pub(crate) const SHIFT_N: u32 = 31;
+    pub(crate) const SHIFT_Z: u32 = 30;
+    pub(crate) const SHIFT_C: u32 = 29;
+    pub(crate) const SHIFT_V: u32 = 28;
 }
 
 // ============================================================
@@ -396,7 +396,12 @@ pub(super) fn armg_calc_flag_v(cc_op: u64, dep1: u64, dep2: u64, ndep: u64) -> O
 ///
 /// `cond_n_op` encodes: cond in bits \[7:4\], cc_op in bits \[3:0\].
 /// Returns 1 if condition is true, 0 if false, None if unsupported.
-pub fn armg_calculate_condition(cond_n_op: u64, dep1: u64, dep2: u64, ndep: u64) -> Option<u64> {
+pub(super) fn armg_calculate_condition(
+    cond_n_op: u64,
+    dep1: u64,
+    dep2: u64,
+    ndep: u64,
+) -> Option<u64> {
     let cond = (cond_n_op >> 4) & 0xF;
     let cc_op = cond_n_op & 0xF;
     let inv = cond & 1;
@@ -447,7 +452,12 @@ pub fn armg_calculate_condition(cond_n_op: u64, dep1: u64, dep2: u64, ndep: u64)
 }
 
 /// Compute all ARM NZCV flags and pack into bits \[31:28\].
-pub fn armg_calculate_flags_nzcv(cc_op: u64, dep1: u64, dep2: u64, ndep: u64) -> Option<u64> {
+pub(super) fn armg_calculate_flags_nzcv(
+    cc_op: u64,
+    dep1: u64,
+    dep2: u64,
+    ndep: u64,
+) -> Option<u64> {
     let n = armg_calc_flag_n(cc_op, dep1, dep2, ndep)?;
     let z = armg_calc_flag_z(cc_op, dep1, dep2, ndep)?;
     let c = armg_calc_flag_c(cc_op, dep1, dep2, ndep)?;

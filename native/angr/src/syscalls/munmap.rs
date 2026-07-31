@@ -14,7 +14,7 @@ use super::{NativeSyscall, SyscallError, SyscallOutcome};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
-pub struct NativeMunmapSyscall;
+pub(crate) struct NativeMunmapSyscall;
 
 impl NativeSyscall for NativeMunmapSyscall {
     fn name(&self) -> &'static str {

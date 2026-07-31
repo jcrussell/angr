@@ -3,12 +3,20 @@ use super::*;
 
 /// Information about a registered SimProcedure.
 #[derive(Clone, Debug)]
-pub struct SimProcedureInfo {
+pub(crate) struct SimProcedureInfo {
     /// Name of the SimProcedure (e.g., "strlen", "malloc").
     pub name: String,
     /// Number of arguments to extract.
     pub num_args: usize,
     /// Whether this is a no-return procedure (e.g., "exit", "abort").
+    ///
+    /// **Write-only** (angr-9ke6b.214): Python threads it in through
+    /// `RustExplorationManager::register_simprocedure` ->
+    /// `StepContext::simprocedures` -> here, but nothing reads it back.
+    /// Terminal detection runs off `NativeSimProcedure::no_return()` instead.
+    /// Dropping it would change the Python-facing 4-tuple signature, so the
+    /// dead pipeline is flagged rather than removed.
+    #[allow(dead_code)]
     pub no_return: bool,
 }
 
@@ -17,7 +25,7 @@ impl<'a> VEXInterpreter<'a> {
     ///
     /// This allows the interpreter to pre-extract arguments when the hook is hit,
     /// reducing Python callback overhead.
-    pub fn register_simprocedure(
+    pub(crate) fn register_simprocedure(
         &mut self,
         addr: u64,
         name: String,
@@ -35,62 +43,12 @@ impl<'a> VEXInterpreter<'a> {
         );
     }
 
-    /// Register multiple SimProcedures at once.
-    ///
-    /// Each tuple is (address, name, num_args, no_return).
-    pub fn register_simprocedures(&mut self, procs: &[(u64, String, usize, bool)]) {
-        let hooks = Arc::make_mut(&mut self.hook_addrs);
-        for (addr, _, _, _) in procs {
-            hooks.insert(*addr);
-        }
-        let registry = Arc::make_mut(&mut self.simprocedure_registry);
-        for (addr, name, num_args, no_return) in procs {
-            registry.insert(
-                *addr,
-                SimProcedureInfo {
-                    name: name.clone(),
-                    num_args: *num_args,
-                    no_return: *no_return,
-                },
-            );
-        }
-    }
-
-    /// Get SimProcedure info for an address, if registered.
-    pub fn get_simprocedure_info(&self, addr: u64) -> Option<&SimProcedureInfo> {
-        self.simprocedure_registry.get(&addr)
-    }
-
-    /// Clear all SimProcedure registrations.
-    pub fn clear_simprocedures(&mut self) {
-        Arc::make_mut(&mut self.simprocedure_registry).clear();
-    }
-
-    /// Extract arguments for a SimProcedure call.
-    ///
-    /// Uses the calling convention to extract arguments from registers and
-    /// stack. Returns the structured `ExtractionError` from the trait so
-    /// callers see *why* extraction failed (stack unmapped vs symbolic SP
-    /// vs missing memory view) instead of receiving silently-fabricated
-    /// placeholders.
-    pub fn extract_simprocedure_args(
-        &self,
-        num_args: usize,
-    ) -> Result<Vec<RustBV>, crate::arch::calling_conventions::ExtractionError> {
-        self.calling_convention.extract_args(
-            &self.registers,
-            self.rust_memory.as_ref(),
-            self.ctx,
-            num_args,
-        )
-    }
-
     /// Get the return address for a function call.
     ///
     /// Checks pending_stores and all_flushed_stores first, since the call
     /// instruction pushes the return address via VEX stores before the
     /// interpreter detects the SimProcedure hook.
-    pub fn get_return_addr(&self) -> Option<u64> {
+    pub(crate) fn get_return_addr(&self) -> Option<u64> {
         let ptr_size = self.calling_convention.pointer_size();
         let sp = self
             .registers

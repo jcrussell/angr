@@ -418,7 +418,7 @@ fn pad_and_push(
 /// ```c
 /// int sprintf(char *str, const char *format, ...);
 /// ```
-pub struct NativeSprintf;
+pub(crate) struct NativeSprintf;
 
 impl NativeSimProcedure for NativeSprintf {
     fn name(&self) -> &'static str {
@@ -460,7 +460,7 @@ impl NativeSimProcedure for NativeSprintf {
 /// `*strp`, and returns the formatted length (excluding the NUL). Reuses the
 /// shared [`format_string`] core (DRY with sprintf/snprintf) and falls back to
 /// Python on symbolic format strings/args via the same `ProcedureError` paths.
-pub struct NativeAsprintf;
+pub(crate) struct NativeAsprintf;
 
 impl NativeSimProcedure for NativeAsprintf {
     fn name(&self) -> &'static str {
@@ -500,7 +500,7 @@ impl NativeSimProcedure for NativeAsprintf {
 /// ```c
 /// int snprintf(char *str, size_t size, const char *format, ...);
 /// ```
-pub struct NativeSnprintf;
+pub(crate) struct NativeSnprintf;
 
 impl NativeSimProcedure for NativeSnprintf {
     fn name(&self) -> &'static str {
@@ -551,7 +551,7 @@ impl NativeSimProcedure for NativeSnprintf {
 /// here would diverge from the Python engine and explore different symbolic
 /// states — violating the faithful-reimplementation invariant. See bd memory
 /// `avoid-vsnprintf-real-formatting`.
-pub struct NativeVsnprintf;
+pub(crate) struct NativeVsnprintf;
 
 impl NativeSimProcedure for NativeVsnprintf {
     fn name(&self) -> &'static str {
@@ -595,7 +595,7 @@ impl NativeSimProcedure for NativeVsnprintf {
 /// string into `str` (NUL-terminated) and returns its length — matching Python
 /// `vsprintf` (strcpy + strlen). Falls back to Python on a symbolic dest/format
 /// *address* or a symbolic format *byte* via `read_string`/`extract_concrete_arg`.
-pub struct NativeVsprintf;
+pub(crate) struct NativeVsprintf;
 
 impl NativeSimProcedure for NativeVsprintf {
     fn name(&self) -> &'static str {

@@ -19,7 +19,7 @@ use super::{NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
-pub struct NativeMprotectSyscall;
+pub(crate) struct NativeMprotectSyscall;
 
 impl NativeSyscall for NativeMprotectSyscall {
     fn name(&self) -> &'static str {

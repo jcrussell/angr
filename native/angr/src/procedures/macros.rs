@@ -48,7 +48,7 @@ macro_rules! declare_proc {
         call |$state:ident| $body:block
     ) => {
         $(#[$attr])*
-        pub struct $struct;
+        pub(crate) struct $struct;
 
         impl $crate::procedures::NativeSimProcedure for $struct {
             #[inline]

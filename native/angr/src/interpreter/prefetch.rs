@@ -6,7 +6,11 @@ impl<'a> VEXInterpreter<'a> {
     /// When a page needs to be fetched from Python, this many additional pages
     /// will be fetched in each direction (before and after) to improve locality.
     /// Set to 0 to disable page prefetching.
-    pub fn set_page_prefetch_count(&mut self, count: u32) {
+    ///
+    /// Production sets `page_prefetch_count` once at construction from
+    /// `ExecutionConfig`; only `prefetch_tests` re-tunes it (angr-9ke6b.214).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn set_page_prefetch_count(&mut self, count: u32) {
         self.page_prefetch_count = count;
     }
 
@@ -16,7 +20,7 @@ impl<'a> VEXInterpreter<'a> {
     /// The page is fetched via Python callback and added to rust_memory.
     ///
     /// Returns true if the page was successfully fetched and mapped.
-    pub fn fetch_page(
+    pub(crate) fn fetch_page(
         &mut self,
         callbacks: &PythonCallbacks,
         page_addr: u64,
@@ -62,7 +66,7 @@ impl<'a> VEXInterpreter<'a> {
     ///
     /// This is more efficient than fetching pages one at a time.
     /// Returns the number of pages successfully fetched.
-    pub fn fetch_pages_batch(
+    pub(crate) fn fetch_pages_batch(
         &mut self,
         callbacks: &PythonCallbacks,
         page_addrs: &[u64],
@@ -119,7 +123,7 @@ impl<'a> VEXInterpreter<'a> {
     ///     prefetch_count: Number of pages to prefetch in each direction (0 = disabled)
     ///
     /// Returns true if the main page was successfully fetched.
-    pub fn fetch_page_with_prefetch(
+    pub(crate) fn fetch_page_with_prefetch(
         &mut self,
         callbacks: &PythonCallbacks,
         page_addr: u64,

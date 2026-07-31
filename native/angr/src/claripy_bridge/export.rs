@@ -120,7 +120,7 @@ fn ensure_claripy_ast(
 ///
 /// Shared by `_export_state_constraints` and the native `constraints` inspect
 /// dispatch so both render an assumed guard identically.
-pub fn assumed_guard_to_claripy(
+pub(crate) fn assumed_guard_to_claripy(
     py: Python<'_>,
     bv: &RustBV,
     claripy_mod: &Bound<'_, PyAny>,
@@ -150,7 +150,7 @@ pub fn assumed_guard_to_claripy(
 /// This is used when returning symbolic results to Python.
 /// For Expression variants, this recursively reconstructs the claripy AST
 /// from the operation tree, preserving the original expression structure.
-pub fn rustbv_to_claripy(
+pub(crate) fn rustbv_to_claripy(
     py: Python<'_>,
     bv: &RustBV,
     claripy_mod: &Bound<'_, PyAny>,

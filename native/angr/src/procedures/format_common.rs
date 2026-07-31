@@ -21,7 +21,7 @@
 /// scanf family. One home so a future reduction is applied everywhere at once
 /// rather than silently missing a consumer that kept its own local `4096`
 /// (angr-myzjx.7). The str-family shares [`super::strings::MAX_STRING_SCAN`].
-pub const MAX_FORMAT_LEN: usize = 4096;
+pub(crate) const MAX_FORMAT_LEN: usize = 4096;
 
 /// Parsed length modifier. Both printf-family and scanf-family parsers
 /// share these kinds; consumers map them onto their internal flags.
@@ -30,6 +30,10 @@ pub const MAX_FORMAT_LEN: usize = 4096;
 /// `scanf` historically didn't recognise them in this codebase, but
 /// glibc accepts them, so honouring them in both consumers is the
 /// correct (and forward-compatible) behaviour.
+// Crate-`pub` for the same `fuzz_api` re-export reason as `parse_width_digits`:
+// it is the return type of `parse_length_modifier`, so narrowing it makes that
+// signature reference a private type (E0446 in the `fuzz/` cargo-fuzz crate).
+#[cfg_attr(not(feature = "fuzzing"), allow(unreachable_pub))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LengthModifier {
     None,
@@ -46,7 +50,7 @@ impl LengthModifier {
     /// True if this modifier promotes integer operands to 64-bit width.
     /// On 64-bit targets, `long`, `long long`, `size_t`, `intmax_t`, and
     /// `ptrdiff_t` are all 64-bit.
-    pub fn is_64bit(self) -> bool {
+    pub(crate) fn is_64bit(self) -> bool {
         matches!(
             self,
             LengthModifier::Long
@@ -62,6 +66,12 @@ impl LengthModifier {
 /// Returns `(width, bytes_consumed)`. If no digits are present, returns
 /// `(0, 0)` so callers can distinguish "no width" from "width zero" by
 /// looking at the consumed count.
+// Stays crate-`pub` (not `pub(crate)`) because `lib.rs::fuzz_api` re-exports it
+// for the cargo-fuzz targets under `fuzz/`. That re-export only exists under the
+// `fuzzing` feature, so a stock build sees an unreachable `pub` — suppressed
+// here rather than widened, since narrowing it breaks `--features fuzzing`
+// with E0364 (angr-9ke6b.214).
+#[cfg_attr(not(feature = "fuzzing"), allow(unreachable_pub))]
 pub fn parse_width_digits(fmt: &[u8], start: usize) -> (usize, usize) {
     let mut width: usize = 0;
     let mut i = start;
@@ -76,6 +86,8 @@ pub fn parse_width_digits(fmt: &[u8], start: usize) -> (usize, usize) {
 
 /// Parse a printf/scanf length modifier at `fmt[start..]`. Returns the
 /// modifier kind and the number of bytes consumed (0 if no modifier).
+// Crate-`pub` for the same `fuzz_api` re-export reason as `parse_width_digits`.
+#[cfg_attr(not(feature = "fuzzing"), allow(unreachable_pub))]
 pub fn parse_length_modifier(fmt: &[u8], start: usize) -> (LengthModifier, usize) {
     if start >= fmt.len() {
         return (LengthModifier::None, 0);

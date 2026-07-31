@@ -1478,28 +1478,12 @@ impl RustSolverContext {
     /// This is used when forking solver contexts during callback handling,
     /// allowing Python callbacks to inherit the full constraint context
     /// from Rust exploration.
-    pub fn from_sym_context(sym_ctx: SymContext) -> Self {
+    pub(crate) fn from_sym_context(sym_ctx: SymContext) -> Self {
         RustSolverContext {
             owner: std::thread::current().id(),
             inner: Some(Box::new(SolverInner {
                 sym_ctx: SolverCtxStorage::Owned(sym_ctx),
                 symbol_table: RustSymbolTable::new(),
-            })),
-        }
-    }
-
-    /// Create a RustSolverContext from an existing SymContext with a forked symbol table.
-    ///
-    /// This preserves both constraints and symbolic variable mappings.
-    pub fn from_sym_context_with_symbols(
-        sym_ctx: SymContext,
-        symbol_table: RustSymbolTable,
-    ) -> Self {
-        RustSolverContext {
-            owner: std::thread::current().id(),
-            inner: Some(Box::new(SolverInner {
-                sym_ctx: SolverCtxStorage::Owned(sym_ctx),
-                symbol_table,
             })),
         }
     }
@@ -1511,7 +1495,7 @@ impl RustSolverContext {
     /// to the pending state, eliminating the need for post-callback constraint sync.
     ///
     /// Safety: Only use when Rust exploration is suspended (during Python callbacks).
-    pub fn from_shared_sym_context(shared: Rc<RefCell<SymContext>>) -> Self {
+    pub(crate) fn from_shared_sym_context(shared: Rc<RefCell<SymContext>>) -> Self {
         RustSolverContext {
             owner: std::thread::current().id(),
             inner: Some(Box::new(SolverInner {
@@ -1521,30 +1505,12 @@ impl RustSolverContext {
         }
     }
 
-    /// Get a reference to the inner SymContext.
-    ///
-    /// This is used by the Rust VEX engine to share the solver context,
-    /// ensuring branch constraints are properly tracked during execution.
-    /// Only works for owned contexts; returns None for shared contexts.
-    pub fn sym_context(&self) -> Option<&SymContext> {
-        match &self.i().sym_ctx {
-            SolverCtxStorage::Owned(ctx) => Some(ctx),
-            SolverCtxStorage::Shared(_) => None,
-        }
-    }
-
     /// Get a reference to the symbol table.
     ///
     /// This is used by the interpreter to look up handles returned from Python.
-    pub fn symbol_table(&self) -> &RustSymbolTable {
+    pub(crate) fn symbol_table(&self) -> &RustSymbolTable {
         &self.i().symbol_table
     }
-}
-
-/// Register the solver module with Python.
-pub fn solver(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_class::<RustSolverContext>()?;
-    Ok(())
 }
 
 #[cfg(test)]

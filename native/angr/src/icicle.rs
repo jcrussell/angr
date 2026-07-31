@@ -135,7 +135,7 @@ pub enum ExceptionCode {
 }
 
 impl ExceptionCode {
-    pub fn from_code(code: u32) -> Self {
+    pub(crate) fn from_code(code: u32) -> Self {
         icicle_vm::cpu::ExceptionCode::from_u32(code).into()
     }
 }
@@ -199,7 +199,7 @@ struct Hitmap {
 }
 
 impl Hitmap {
-    pub fn new(size: usize) -> Self {
+    pub(crate) fn new(size: usize) -> Self {
         let hitmap = Pin::from(vec![0u8; size].into_boxed_slice());
         Hitmap {
             inner: hitmap,
@@ -207,19 +207,19 @@ impl Hitmap {
         }
     }
 
-    pub fn as_mut_ptr(&mut self) -> *mut u8 {
+    pub(crate) fn as_mut_ptr(&mut self) -> *mut u8 {
         self.inner.as_mut_ptr()
     }
 
-    pub fn as_slice(&self) -> &[u8] {
+    pub(crate) fn as_slice(&self) -> &[u8] {
         &self.inner
     }
 
-    pub fn as_slice_mut(&mut self) -> &mut [u8] {
+    pub(crate) fn as_slice_mut(&mut self) -> &mut [u8] {
         &mut self.inner
     }
 
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.inner.len()
     }
 }
@@ -237,7 +237,7 @@ struct Icicle {
 #[pymethods]
 impl Icicle {
     #[new]
-    pub fn new(
+    pub(crate) fn new(
         architecture: String,
         processors_path: String,
         enable_tracing: bool,
@@ -303,18 +303,18 @@ impl Icicle {
 
     // Basic state accessors
 
-    pub fn reg_read(&mut self, name: String) -> PyResult<u64> {
+    pub(crate) fn reg_read(&mut self, name: String) -> PyResult<u64> {
         Ok(self.vm.cpu.read_reg(get_reg_varnode(&self.vm, &name)?))
     }
 
-    pub fn reg_write(&mut self, reg: String, value: u64) -> PyResult<()> {
+    pub(crate) fn reg_write(&mut self, reg: String, value: u64) -> PyResult<()> {
         self.vm
             .cpu
             .write_reg(get_reg_varnode(&self.vm, &reg)?, value);
         Ok(())
     }
 
-    pub fn mem_map(&mut self, addr: u64, size: u64, perm: u8) -> PyResult<()> {
+    pub(crate) fn mem_map(&mut self, addr: u64, size: u64, perm: u8) -> PyResult<()> {
         if !self.vm.cpu.mem.map_memory_len(
             addr,
             size,
@@ -330,7 +330,7 @@ impl Icicle {
         Ok(())
     }
 
-    pub fn mem_unmap(&mut self, addr: u64, size: u64) -> PyResult<()> {
+    pub(crate) fn mem_unmap(&mut self, addr: u64, size: u64) -> PyResult<()> {
         self.invalidate_code_range(addr, size);
         if !self.vm.cpu.mem.unmap_memory_len(addr, size) {
             return Err(PyRuntimeError::new_err(format!(
@@ -340,7 +340,7 @@ impl Icicle {
         Ok(())
     }
 
-    pub fn mem_protect(&mut self, addr: u64, size: u64, perms: u8) -> PyResult<()> {
+    pub(crate) fn mem_protect(&mut self, addr: u64, size: u64, perms: u8) -> PyResult<()> {
         self.invalidate_code_range(addr, size);
         self.vm
             .cpu
@@ -354,7 +354,7 @@ impl Icicle {
         Ok(())
     }
 
-    pub fn mem_read(&mut self, addr: u64, size: u64) -> PyResult<Vec<u8>> {
+    pub(crate) fn mem_read(&mut self, addr: u64, size: u64) -> PyResult<Vec<u8>> {
         let mut buf = vec![0; size as usize];
         self.vm
             .cpu
@@ -364,7 +364,7 @@ impl Icicle {
         Ok(buf)
     }
 
-    pub fn mem_write(&mut self, addr: u64, data: Vec<u8>) -> PyResult<()> {
+    pub(crate) fn mem_write(&mut self, addr: u64, data: Vec<u8>) -> PyResult<()> {
         self.invalidate_code_range(addr, data.len() as u64);
         // The cache invalidation above makes this write safe; suppress the
         // mmu's SMC guard for just this call so it doesn't reject sync
@@ -420,23 +420,23 @@ impl Icicle {
     // Specialized state accessors
 
     #[getter]
-    pub fn get_pc(&self) -> u64 {
+    pub(crate) fn get_pc(&self) -> u64 {
         self.vm.cpu.read_pc()
     }
 
     #[setter]
-    pub fn set_pc(&mut self, pc: u64) -> PyResult<()> {
+    pub(crate) fn set_pc(&mut self, pc: u64) -> PyResult<()> {
         self.vm.cpu.write_pc(pc);
         Ok(())
     }
 
     #[getter]
-    pub fn get_isa_mode(&self) -> u8 {
+    pub(crate) fn get_isa_mode(&self) -> u8 {
         self.vm.cpu.isa_mode()
     }
 
     #[setter]
-    pub fn set_isa_mode(&mut self, mode: u8) {
+    pub(crate) fn set_isa_mode(&mut self, mode: u8) {
         // https://github.com/icicle-emu/icicle-emu/issues/70#issuecomment-2857265222
         self.vm.cpu.set_isa_mode(mode);
         let _ = self.set_pc(self.get_pc());
@@ -444,11 +444,11 @@ impl Icicle {
 
     // Execution
 
-    pub fn add_breakpoint(&mut self, addr: u64) -> bool {
+    pub(crate) fn add_breakpoint(&mut self, addr: u64) -> bool {
         self.vm.add_breakpoint(addr)
     }
 
-    pub fn remove_breakpoint(&mut self, addr: u64) -> PyResult<()> {
+    pub(crate) fn remove_breakpoint(&mut self, addr: u64) -> PyResult<()> {
         if !self.vm.remove_breakpoint(addr) {
             return Err(PyRuntimeError::new_err(format!(
                 "Failed to remove breakpoint at {addr:#x}"
@@ -458,21 +458,21 @@ impl Icicle {
     }
 
     #[setter]
-    pub fn set_icount_limit(&mut self, limit: u64) {
+    pub(crate) fn set_icount_limit(&mut self, limit: u64) {
         self.vm.icount_limit = limit;
     }
 
     #[getter]
-    pub fn get_icount_limit(&self) -> u64 {
+    pub(crate) fn get_icount_limit(&self) -> u64 {
         self.vm.icount_limit
     }
 
     #[getter]
-    pub fn get_cpu_icount(&self) -> u64 {
+    pub(crate) fn get_cpu_icount(&self) -> u64 {
         self.vm.cpu.icount
     }
 
-    pub fn run(&mut self, py: Python) -> VmExit {
+    pub(crate) fn run(&mut self, py: Python) -> VmExit {
         // By calling `py.detach`, we allow Python to release the GIL and
         // allow other threads to run while the VM is executing. This allows
         // using multiple engines in parallel within a single Python process.
@@ -481,19 +481,19 @@ impl Icicle {
     }
 
     #[getter]
-    pub fn get_exception_code(&self) -> ExceptionCode {
+    pub(crate) fn get_exception_code(&self) -> ExceptionCode {
         ExceptionCode::from_code(self.vm.cpu.exception.code)
     }
 
     #[getter]
-    pub fn get_exception_value(&self) -> u64 {
+    pub(crate) fn get_exception_value(&self) -> u64 {
         self.vm.cpu.exception.value
     }
 
     // Tracing
 
     #[getter]
-    pub fn get_recent_blocks(&mut self) -> Vec<(u64, u64)> {
+    pub(crate) fn get_recent_blocks(&mut self) -> Vec<(u64, u64)> {
         if let Some(path_tracer) = self.path_tracer {
             path_tracer.get_last_blocks(&mut self.vm)
         } else {
@@ -502,14 +502,14 @@ impl Icicle {
     }
 
     #[getter]
-    pub fn get_edge_hitmap(&mut self) -> Option<&[u8]> {
+    pub(crate) fn get_edge_hitmap(&mut self) -> Option<&[u8]> {
         self.edge_count_hitmap
             .as_ref()
             .map(|hitmap| hitmap.as_slice())
     }
 
     #[setter]
-    pub fn set_edge_hitmap(&mut self, new_hitmap: &[u8]) -> PyResult<()> {
+    pub(crate) fn set_edge_hitmap(&mut self, new_hitmap: &[u8]) -> PyResult<()> {
         if let Some(hitmap) = &mut self.edge_count_hitmap {
             if hitmap.len() != new_hitmap.len() {
                 return Err(PyRuntimeError::new_err("Hitmap size mismatch"));
@@ -523,11 +523,11 @@ impl Icicle {
 
     // Snapshot/restore
 
-    pub fn save_snapshot(&mut self) {
+    pub(crate) fn save_snapshot(&mut self) {
         self.snapshot = Some(self.vm.snapshot());
     }
 
-    pub fn restore_snapshot(&mut self) -> PyResult<()> {
+    pub(crate) fn restore_snapshot(&mut self) -> PyResult<()> {
         let snapshot = self
             .snapshot
             .as_ref()
@@ -545,11 +545,11 @@ impl Icicle {
         Ok(())
     }
 
-    pub fn has_snapshot(&self) -> bool {
+    pub(crate) fn has_snapshot(&self) -> bool {
         self.snapshot.is_some()
     }
 
-    pub fn clear_path_tracer(&mut self) {
+    pub(crate) fn clear_path_tracer(&mut self) {
         if let Some(path_tracer) = self.path_tracer {
             path_tracer.clear(&mut self.vm);
         }
@@ -560,7 +560,7 @@ impl Icicle {
     /// Get the set of page-aligned virtual addresses that have been modified
     /// since the last call to reset_page_modification_tracking.
     #[getter]
-    pub fn get_modified_pages(&self) -> Vec<u64> {
+    pub(crate) fn get_modified_pages(&self) -> Vec<u64> {
         self.vm.cpu.mem.modified.iter().copied().collect()
     }
 
@@ -568,7 +568,7 @@ impl Icicle {
     /// this call are recorded.  For each given page address, the per-page
     /// `modified` flag on the underlying physical page is cleared.  Then the
     /// global modified-address set and TLB write cache are flushed.
-    pub fn reset_page_modification_tracking(&mut self, page_addresses: Vec<u64>) {
+    pub(crate) fn reset_page_modification_tracking(&mut self, page_addresses: Vec<u64>) {
         for addr in page_addresses {
             if let Some(index) = self.vm.cpu.mem.get_physical_index(addr) {
                 self.vm.cpu.mem.get_physical_mut(index).modified = false;
@@ -643,7 +643,7 @@ fn disasm_addr_retained(vaddr: u64, addr: u64, end: u64) -> bool {
 mod tests;
 
 #[pymodule]
-pub fn icicle(m: &Bound<'_, PyModule>) -> PyResult<()> {
+pub(crate) fn icicle(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<VmExit>()?;
     m.add_class::<ExceptionCode>()?;
     m.add_class::<Icicle>()?;

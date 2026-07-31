@@ -80,7 +80,7 @@ impl ClientStats {
 }
 
 #[derive(Default)]
-pub struct CallbackMonitor {
+pub(crate) struct CallbackMonitor {
     callback: Option<Py<PyAny>>,
 }
 

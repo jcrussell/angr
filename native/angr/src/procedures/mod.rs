@@ -84,53 +84,53 @@
 #[macro_use]
 mod macros;
 
-pub mod access;
-pub mod byteorder;
-pub mod ctype;
-pub mod exit;
-pub mod fgets;
-pub mod fileops;
-pub mod format_common;
-pub mod fortify_mem;
-pub mod fortify_printf;
-pub mod fortify_str;
-pub mod fread;
-pub mod getenv;
-pub mod getid;
-pub mod getopt;
-pub mod libc_start_main;
-pub mod malloc;
-pub mod mem_common;
-pub mod memcmp;
-pub mod memcpy;
-pub mod memset;
-pub mod perror;
-pub mod printf;
-pub mod pthread;
-pub mod puts;
-pub mod python_proc;
-pub mod rand;
-pub mod read;
-pub mod scanf;
-pub mod sleep;
-pub mod sprintf;
-pub mod stdin_common;
-pub mod stdio;
-pub mod strcat;
-pub mod strchr;
-pub mod strcmp;
-pub mod strcpy;
-pub mod strings;
-pub mod strlen;
-pub mod strset;
-pub mod strstr;
-pub mod strtod;
-pub mod strtol;
-pub mod stub;
-pub mod syslog;
-pub mod system;
-pub mod time;
-pub mod write;
+pub(crate) mod access;
+pub(crate) mod byteorder;
+pub(crate) mod ctype;
+pub(crate) mod exit;
+pub(crate) mod fgets;
+pub(crate) mod fileops;
+pub(crate) mod format_common;
+pub(crate) mod fortify_mem;
+pub(crate) mod fortify_printf;
+pub(crate) mod fortify_str;
+pub(crate) mod fread;
+pub(crate) mod getenv;
+pub(crate) mod getid;
+pub(crate) mod getopt;
+pub(crate) mod libc_start_main;
+pub(crate) mod malloc;
+pub(crate) mod mem_common;
+pub(crate) mod memcmp;
+pub(crate) mod memcpy;
+pub(crate) mod memset;
+pub(crate) mod perror;
+pub(crate) mod printf;
+pub(crate) mod pthread;
+pub(crate) mod puts;
+pub(crate) mod python_proc;
+pub(crate) mod rand;
+pub(crate) mod read;
+pub(crate) mod scanf;
+pub(crate) mod sleep;
+pub(crate) mod sprintf;
+pub(crate) mod stdin_common;
+pub(crate) mod stdio;
+pub(crate) mod strcat;
+pub(crate) mod strchr;
+pub(crate) mod strcmp;
+pub(crate) mod strcpy;
+pub(crate) mod strings;
+pub(crate) mod strlen;
+pub(crate) mod strset;
+pub(crate) mod strstr;
+pub(crate) mod strtod;
+pub(crate) mod strtol;
+pub(crate) mod stub;
+pub(crate) mod syslog;
+pub(crate) mod system;
+pub(crate) mod time;
+pub(crate) mod write;
 
 #[cfg(test)]
 mod test_util;
@@ -153,7 +153,7 @@ static SYMBOL_COUNTERS: OnceLock<Mutex<HashMap<&'static str, u64>>> = OnceLock::
 /// per-procedure `static AtomicU64 *_COUNTER` pattern so all fresh-symbol
 /// counters are coordinated in one place and easy to audit. Symbol-name
 /// uniqueness still depends on the prefix the caller chooses.
-pub fn symbol_counter(prefix: &'static str) -> u64 {
+pub(crate) fn symbol_counter(prefix: &'static str) -> u64 {
     let counters = SYMBOL_COUNTERS.get_or_init(|| Mutex::new(HashMap::new()));
     let mut guard = counters.lock().expect("symbol counter mutex poisoned");
     let entry = guard.entry(prefix).or_insert(0);
@@ -170,7 +170,7 @@ pub fn symbol_counter(prefix: &'static str) -> u64 {
 /// variants; intra-crate matches must include a wildcard arm.
 #[non_exhaustive]
 #[derive(Debug, Clone, thiserror::Error)]
-pub enum ProcedureError {
+pub(crate) enum ProcedureError {
     /// Argument is symbolic, need Python for constraint handling.
     #[error("symbolic argument: {0}")]
     SymbolicArgument(String),
@@ -191,7 +191,7 @@ pub enum ProcedureError {
 }
 
 /// Extract a concrete u64 value from a procedure argument, or return SymbolicArgument error.
-pub fn extract_concrete_arg(arg: &RustBV, name: &str) -> Result<u64, ProcedureError> {
+pub(crate) fn extract_concrete_arg(arg: &RustBV, name: &str) -> Result<u64, ProcedureError> {
     arg.as_u64()
         .ok_or_else(|| ProcedureError::SymbolicArgument(name.to_string()))
 }
@@ -206,7 +206,7 @@ pub fn extract_concrete_arg(arg: &RustBV, name: &str) -> Result<u64, ProcedureEr
 /// [`NativeSimProcedure::resume`]. No guest user defines a function with this
 /// name, and the sentinel address is never lifted (the run loop's `is_hooked`
 /// check fires first), so the name/address pair is collision-safe.
-pub const NATIVE_RESUME_SENTINEL_NAME: &str = "__native_resume__";
+pub(crate) const NATIVE_RESUME_SENTINEL_NAME: &str = "__native_resume__";
 
 /// Address used as the return target of a native sub-call's guest routine.
 ///
@@ -215,7 +215,7 @@ pub const NATIVE_RESUME_SENTINEL_NAME: &str = "__native_resume__";
 /// aligned. It is never executed — it is only ever recognised as a hook — so it
 /// does not need to be mapped; the high reserved slot just avoids colliding
 /// with real binary/hook addresses.
-pub fn native_resume_sentinel(ptr_bytes: u32) -> u64 {
+pub(crate) fn native_resume_sentinel(ptr_bytes: u32) -> u64 {
     let bits = ptr_bytes * 8;
     let mask = if bits >= 64 {
         u64::MAX
@@ -238,7 +238,7 @@ pub fn native_resume_sentinel(ptr_bytes: u32) -> u64 {
 /// and on its return re-enters the proc via [`NativeSimProcedure::resume`].
 /// Design: `tools/decisions/native_subcall_dispatcher_design.md` (bead
 /// `angr-5gf0s`, Option B).
-pub enum ProcOutcome {
+pub(crate) enum ProcOutcome {
     /// Procedure completed; store this return value (or `None` for void).
     /// Flows through the dispatcher's existing return path (set return
     /// register, PC = caller return address, pop stack).
@@ -262,7 +262,7 @@ pub enum ProcOutcome {
 /// Implementors provide Rust-native execution of common library functions.
 /// When execution fails (e.g., due to symbolic arguments), the procedure
 /// returns an error and the exploration manager falls back to Python.
-pub trait NativeSimProcedure: Send + Sync {
+pub(crate) trait NativeSimProcedure: Send + Sync {
     /// Get the procedure name (e.g., "strlen", "memcpy").
     fn name(&self) -> &'static str;
 
@@ -339,7 +339,7 @@ pub trait NativeSimProcedure: Send + Sync {
 /// `Clone` (cheap: all values are `Arc`) so the manager can hold it behind an
 /// `Arc` and mutate via `Arc::make_mut` at setup time (angr-vh834 Work Item 2).
 #[derive(Clone)]
-pub struct NativeProcedureRegistry {
+pub(crate) struct NativeProcedureRegistry {
     /// Name -> implementation mapping.
     procedures: HashMap<String, Arc<dyn NativeSimProcedure>>,
     /// Whether native procedures are globally enabled.
@@ -358,7 +358,7 @@ impl Default for NativeProcedureRegistry {
 
 impl NativeProcedureRegistry {
     /// Create a new registry with default procedures.
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let mut registry = NativeProcedureRegistry {
             procedures: HashMap::new(),
             enabled: true,
@@ -604,7 +604,12 @@ impl NativeProcedureRegistry {
     }
 
     /// Create an empty registry (no default procedures).
-    pub fn empty() -> Self {
+    ///
+    /// Test-only today: `stub_tests` / `python_proc_tests` build one to
+    /// exercise dispatch in isolation. Production always goes through
+    /// `with_defaults` (angr-9ke6b.214).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn empty() -> Self {
         NativeProcedureRegistry {
             procedures: HashMap::new(),
             enabled: true,
@@ -620,7 +625,7 @@ impl NativeProcedureRegistry {
     /// A binary that calls the `_unlocked` symbol can surface that name to the
     /// dispatcher (see `rust_manager._cb_resolve_function`'s SIM_PROCEDURES
     /// fallback), so without the alias it would round-trip to Python.
-    pub fn register(&mut self, proc: Arc<dyn NativeSimProcedure>) {
+    pub(crate) fn register(&mut self, proc: Arc<dyn NativeSimProcedure>) {
         for alias in proc.aliases() {
             self.procedures.insert((*alias).to_string(), proc.clone());
         }
@@ -643,7 +648,7 @@ impl NativeProcedureRegistry {
     /// `is_in_binary` gate, which is checked by the dispatcher *before*
     /// calling this method, so user-placed hooks inside the binary
     /// never reach the registry at all).
-    pub fn get(&self, name: &str) -> Option<&Arc<dyn NativeSimProcedure>> {
+    pub(crate) fn get(&self, name: &str) -> Option<&Arc<dyn NativeSimProcedure>> {
         // Check if globally disabled
         if !self.enabled {
             return None;
@@ -663,32 +668,32 @@ impl NativeProcedureRegistry {
     }
 
     /// Check if a procedure has a native implementation.
-    pub fn has_native(&self, name: &str) -> bool {
+    pub(crate) fn has_native(&self, name: &str) -> bool {
         self.procedures.contains_key(name)
     }
 
     /// Disable all native procedures (always use Python).
-    pub fn disable_all(&mut self) {
+    pub(crate) fn disable_all(&mut self) {
         self.enabled = false;
     }
 
     /// Enable all native procedures.
-    pub fn enable_all(&mut self) {
+    pub(crate) fn enable_all(&mut self) {
         self.enabled = true;
     }
 
     /// Check if native procedures are enabled.
-    pub fn is_enabled(&self) -> bool {
+    pub(crate) fn is_enabled(&self) -> bool {
         self.enabled
     }
 
     /// Disable a specific procedure (fall back to Python).
-    pub fn disable(&mut self, name: &str) {
+    pub(crate) fn disable(&mut self, name: &str) {
         self.disabled.insert(name.to_string());
     }
 
     /// Enable a specific procedure.
-    pub fn enable(&mut self, name: &str) {
+    pub(crate) fn enable(&mut self, name: &str) {
         self.disabled.remove(name);
     }
 
@@ -705,22 +710,26 @@ impl NativeProcedureRegistry {
     /// asserts "Python is canonical for this name", while disable
     /// asserts "the Rust implementation is not trustworthy right now".
     /// The runtime effect is identical (both bypass native).
-    pub fn set_python_override(&mut self, name: &str) {
+    pub(crate) fn set_python_override(&mut self, name: &str) {
         self.python_overrides.insert(name.to_string());
     }
 
     /// Remove a Python override.
-    pub fn remove_python_override(&mut self, name: &str) {
+    pub(crate) fn remove_python_override(&mut self, name: &str) {
         self.python_overrides.remove(name);
     }
 
     /// Check if a procedure has a Python override.
-    pub fn has_python_override(&self, name: &str) -> bool {
+    ///
+    /// Only `mod_tests` reads it back; the dispatcher consults
+    /// `python_overrides` directly (angr-9ke6b.214).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn has_python_override(&self, name: &str) -> bool {
         self.python_overrides.contains(name)
     }
 
     /// Get all registered procedure names.
-    pub fn procedure_names(&self) -> Vec<&str> {
+    pub(crate) fn procedure_names(&self) -> Vec<&str> {
         self.procedures
             .keys()
             .map(std::string::String::as_str)

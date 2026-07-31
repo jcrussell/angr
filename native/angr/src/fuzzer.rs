@@ -1,7 +1,7 @@
-pub mod corpus;
-pub mod executor;
-pub mod monitor;
-pub mod mutator;
+pub(crate) mod corpus;
+pub(crate) mod executor;
+pub(crate) mod monitor;
+pub(crate) mod mutator;
 
 use std::num::NonZeroUsize;
 use std::time::Duration;
@@ -224,7 +224,7 @@ impl Fuzzer {
 }
 
 #[pymodule]
-pub fn fuzzer(m: &Bound<'_, PyModule>) -> PyResult<()> {
+pub(crate) fn fuzzer(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Fuzzer>()?;
     m.add_class::<corpus::PyInMemoryCorpus>()?;
     m.add_class::<corpus::PyOnDiskCorpus>()?;

@@ -30,7 +30,7 @@ fn fd_offset_for_arch(name: &str) -> Option<u64> {
 /// `NativeFputs`); a negative `_fileno` propagates -1.
 /// Returns `size * nmemb` on success, matching angr's Python fwrite
 /// (which delegates to SimFileDescriptor.write and returns byte count).
-pub struct NativeFwrite;
+pub(crate) struct NativeFwrite;
 
 impl NativeSimProcedure for NativeFwrite {
     fn name(&self) -> &'static str {
@@ -151,7 +151,7 @@ fn resolve_fwrite_fd(state: &RustSimState, stream: &RustBV) -> Result<i32, Proce
 /// ```
 ///
 /// angr's Python proc returns 0 unconditionally — we match.
-pub struct NativeFflush;
+pub(crate) struct NativeFflush;
 
 impl NativeSimProcedure for NativeFflush {
     fn name(&self) -> &'static str {
@@ -183,7 +183,7 @@ impl NativeSimProcedure for NativeFflush {
 /// ```
 ///
 /// angr's Python proc returns 0 unconditionally — we match.
-pub struct NativeSetvbuf;
+pub(crate) struct NativeSetvbuf;
 
 impl NativeSimProcedure for NativeSetvbuf {
     fn name(&self) -> &'static str {
@@ -214,7 +214,7 @@ impl NativeSimProcedure for NativeSetvbuf {
 /// (`run(stream, buf): return`). We match: both args are ignored and no
 /// return register is written (`Ok(None)`), so the proc just performs the
 /// return-address dance — parity holds for symbolic args too.
-pub struct NativeSetbuf;
+pub(crate) struct NativeSetbuf;
 
 impl NativeSimProcedure for NativeSetbuf {
     fn name(&self) -> &'static str {
@@ -272,7 +272,7 @@ pub(crate) fn read_fileno_for_stream(
 /// can't return None from a procedure with a non-void signature, so a
 /// best-effort 0 (not EOF) is the safe default — Python's `feof` returns
 /// `None` in that case, which the caller would coerce to 0 anyway.
-pub struct NativeFeof;
+pub(crate) struct NativeFeof;
 
 impl NativeSimProcedure for NativeFeof {
     fn name(&self) -> &'static str {
@@ -321,7 +321,7 @@ impl NativeSimProcedure for NativeFeof {
 /// without this native entry the dispatcher falls back to angr's default
 /// (unbound) handling. Always returning 0 matches a successfully-read stream
 /// and is the most useful default for the symbolic-execution use case.
-pub struct NativeFerror;
+pub(crate) struct NativeFerror;
 
 impl NativeSimProcedure for NativeFerror {
     fn name(&self) -> &'static str {
@@ -360,7 +360,7 @@ const MAX_FPUTS_LEN: u64 = 4096;
 /// Any non-negative fd is handled inline: the bytes are appended to the
 /// tracked fd buffer via `write_fd` (`FileSystem::write`), regardless of
 /// underlying backing. `NativeFwrite` writes the same way.
-pub struct NativeFputs;
+pub(crate) struct NativeFputs;
 
 impl NativeSimProcedure for NativeFputs {
     fn name(&self) -> &'static str {

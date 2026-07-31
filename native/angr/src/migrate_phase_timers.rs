@@ -23,28 +23,36 @@
 //! `run_single.py --counters-json` (with `RUST_PARALLEL_SHADOW_PROBE=1`)
 //! reports them alongside `parallel_shadow_migration_ns`.
 
+// Every consumer (`state::snapshot`, `symbolic::snapshot_fork_ops`,
+// `exploration::stats_api`) sits behind `vex-engine-z3` — migration only exists
+// with the Z3-backed engine — so the whole module is unreachable in the
+// no-default-features and `vex-engine`-without-Z3 builds. The module itself
+// stays ungated because it has no feature-gated dependencies of its own and the
+// `cfg` churn would be worse than this one allow (angr-9ke6b.214).
+#![cfg_attr(not(feature = "vex-engine-z3"), allow(dead_code))]
+
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Cumulative ns spent emitting the solver SMT-LIB2 text dump
 /// (`SymContext::dump_solver_smtlib2`) on the detach side.
-pub static MIGRATE_SMTLIB2_EMIT_NS: AtomicU64 = AtomicU64::new(0);
+pub(crate) static MIGRATE_SMTLIB2_EMIT_NS: AtomicU64 = AtomicU64::new(0);
 /// Cumulative ns spent re-parsing the SMT-LIB2 text (`from_string` +
 /// `get_assertions` + re-add loop) on the reattach side.
-pub static MIGRATE_SMTLIB2_PARSE_NS: AtomicU64 = AtomicU64::new(0);
+pub(crate) static MIGRATE_SMTLIB2_PARSE_NS: AtomicU64 = AtomicU64::new(0);
 /// Cumulative ns spent in pure serde (json encode on detach + json decode on
 /// reattach), excluding the SMT-LIB2 emit/parse which are timed separately.
-pub static MIGRATE_SERDE_NS: AtomicU64 = AtomicU64::new(0);
+pub(crate) static MIGRATE_SERDE_NS: AtomicU64 = AtomicU64::new(0);
 /// Cumulative ns spent rebuilding the symbolic memory pages on reattach
 /// (`SymbolicMemory::from_snapshot`) — the non-solver "leaf rebuild" work.
-pub static MIGRATE_LEAF_REBUILD_NS: AtomicU64 = AtomicU64::new(0);
+pub(crate) static MIGRATE_LEAF_REBUILD_NS: AtomicU64 = AtomicU64::new(0);
 /// Cumulative count of *residual* (no-`RustBV`) solver assertions observed
 /// across migrated states, approximated as
 /// `z3_assertion_count - assumed_constraints.len()` per snapshot. Summed over
 /// all migrated states; divide by `parallel_shadow_migration_states` for a
 /// per-state average. ≈ 0 means the SMT-LIB2 text round-trip is pure overhead
 /// (the Phase-1 lever is clean).
-pub static MIGRATE_RAW_CONSTRAINT_COUNT: AtomicU64 = AtomicU64::new(0);
+pub(crate) static MIGRATE_RAW_CONSTRAINT_COUNT: AtomicU64 = AtomicU64::new(0);
 
 /// Cumulative wall ns of every migration `to_serialized` + `from_serialized`
 /// (env-gated). This is the **self-consistent denominator** for the per-phase
@@ -53,12 +61,12 @@ pub static MIGRATE_RAW_CONSTRAINT_COUNT: AtomicU64 = AtomicU64::new(0);
 /// round-trips (the process also serializes a handful of non-probe states —
 /// found/teardown — that the phase timers see but the shadow counter does
 /// not). Reported as `migrate_roundtrip_ns`.
-pub static MIGRATE_ROUNDTRIP_NS: AtomicU64 = AtomicU64::new(0);
+pub(crate) static MIGRATE_ROUNDTRIP_NS: AtomicU64 = AtomicU64::new(0);
 
 /// Read `ANGR_MIGRATE_PHASE_TIMERS` exactly once. Any non-empty value (the
 /// var merely being present) enables the timers.
 #[inline]
-pub fn enabled() -> bool {
+pub(crate) fn enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| std::env::var_os("ANGR_MIGRATE_PHASE_TIMERS").is_some())
 }
@@ -76,14 +84,14 @@ thread_local! {
 /// Mark the current thread as in/out of a migration serialize/deserialize.
 /// Returns the previous value so callers can restore it (nesting-safe).
 #[inline]
-pub fn set_serializing(on: bool) -> bool {
+pub(crate) fn set_serializing(on: bool) -> bool {
     SERIALIZING.with(|c| c.replace(on))
 }
 
 /// True when the current thread is inside a migration `to_serialized` /
 /// `from_serialized`.
 #[inline]
-pub fn serializing() -> bool {
+pub(crate) fn serializing() -> bool {
     SERIALIZING.with(std::cell::Cell::get)
 }
 
@@ -94,7 +102,7 @@ pub fn serializing() -> bool {
 /// snapshots) out of the attribution. When disabled this is a direct tail
 /// call to `f` (no clock read, no atomic store).
 #[inline]
-pub fn time_phase<R>(counter: &AtomicU64, f: impl FnOnce() -> R) -> R {
+pub(crate) fn time_phase<R>(counter: &AtomicU64, f: impl FnOnce() -> R) -> R {
     time_phase_armed(enabled() && serializing(), counter, f)
 }
 
@@ -117,7 +125,7 @@ fn time_phase_armed<R>(armed: bool, counter: &AtomicU64, f: impl FnOnce() -> R) 
 /// Add `n` residual (no-`RustBV`) assertions to the running count, gated on
 /// the env flag so it is zero-cost when off.
 #[inline]
-pub fn add_raw_constraint_count(n: u64) {
+pub(crate) fn add_raw_constraint_count(n: u64) {
     add_raw_constraint_count_armed(enabled() && serializing(), n);
 }
 
@@ -134,7 +142,7 @@ fn add_raw_constraint_count_armed(armed: bool, n: u64) {
 /// serialize/deserialize — the precondition for the residual-count probe
 /// (which calls the lazy-solver-materializing `z3_assertion_count`).
 #[inline]
-pub fn count_armed() -> bool {
+pub(crate) fn count_armed() -> bool {
     enabled() && serializing()
 }
 
@@ -143,7 +151,7 @@ pub fn count_armed() -> bool {
 /// `f`'s result. Pairs with the inner phase timers to give a self-consistent
 /// denominator over the same call set.
 #[inline]
-pub fn time_roundtrip_half<R>(f: impl FnOnce() -> R) -> R {
+pub(crate) fn time_roundtrip_half<R>(f: impl FnOnce() -> R) -> R {
     time_roundtrip_half_armed(enabled(), f)
 }
 
@@ -163,7 +171,7 @@ fn time_roundtrip_half_armed<R>(armed: bool, f: impl FnOnce() -> R) -> R {
 
 /// Snapshot of all phase counters (for `stats_api` surfacing):
 /// `(emit_ns, parse_ns, serde_ns, leaf_rebuild_ns, raw_count, roundtrip_ns)`.
-pub fn snapshot() -> (u64, u64, u64, u64, u64, u64) {
+pub(crate) fn snapshot() -> (u64, u64, u64, u64, u64, u64) {
     (
         MIGRATE_SMTLIB2_EMIT_NS.load(Ordering::Relaxed),
         MIGRATE_SMTLIB2_PARSE_NS.load(Ordering::Relaxed),
