@@ -216,8 +216,11 @@ struct ISub;
 struct IMul;
 /// Per-lane equality compare; lane is all-ones on equal, all-zeros otherwise.
 struct ICmpEq;
-/// Per-lane signed greater-than; lane is all-ones when `l > r` (signed).
-struct ICmpGtS;
+/// Per-lane greater-than; lane is all-ones when `l > r`. `signed` picks the
+/// signed (`Iop_CmpGT{N}Sx{M}`) vs unsigned (`Iop_CmpGT{N}Ux{M}`) comparison.
+struct ICmpGt {
+    signed: bool,
+}
 /// Per-lane signed/unsigned integer min or max.
 struct IMinMax {
     signed: bool,
@@ -267,23 +270,33 @@ impl IntLaneOp for ICmpEq {
     }
 }
 
-impl IntLaneOp for ICmpGtS {
+impl IntLaneOp for ICmpGt {
     fn arity(&self) -> usize {
         2
     }
     fn concrete_lane(&self, a: &[u128], elem_width: u32) -> u128 {
-        let l = VEXOps::sign_extend_low_to_i128(a[0], elem_width);
-        let r = VEXOps::sign_extend_low_to_i128(a[1], elem_width);
-        if l > r {
+        // Lanes arrive zero-extended into u128, so the unsigned compare is the
+        // raw one; only the signed form needs the sign-extend first.
+        let gt = if self.signed {
+            let l = VEXOps::sign_extend_low_to_i128(a[0], elem_width);
+            let r = VEXOps::sign_extend_low_to_i128(a[1], elem_width);
+            l > r
+        } else {
+            a[0] > a[1]
+        };
+        if gt {
             VEXOps::low_bit_mask_u128(elem_width)
         } else {
             0
         }
     }
     fn symbolic_lane(&self, a: &[RustBV], elem_width: u32, ctx: &SymContext) -> RustBV {
-        a[0].clone()
-            .sgt_into(a[1].clone(), ctx)
-            .sign_extend_into(elem_width, ctx)
+        let cmp = if self.signed {
+            a[0].clone().sgt_into(a[1].clone(), ctx)
+        } else {
+            a[0].clone().ugt_into(a[1].clone(), ctx)
+        };
+        cmp.sign_extend_into(elem_width, ctx)
     }
 }
 
@@ -1135,9 +1148,11 @@ impl VEXOps {
             IROp::VCmpEQ { elem, count } => {
                 Self::vec_int_lane_op(&[left, right], elem, count, &ICmpEq, ctx)
             }
-            IROp::VCmpGT { elem, count } => {
-                Self::vec_int_lane_op(&[left, right], elem, count, &ICmpGtS, ctx)
-            }
+            IROp::VCmpGT {
+                elem,
+                count,
+                signed,
+            } => Self::vec_int_lane_op(&[left, right], elem, count, &ICmpGt { signed }, ctx),
 
             // NEON lane extract (Iop_GetElem{N}x{M}): (vec, idx) -> lane.
             IROp::VGetElem { elem, count } => Self::vec_get_elem(left, right, elem, count, ctx),

@@ -10,7 +10,7 @@
 //! Covers the low/high interleave (unpack) ops
 //! (Iop_Interleave{LO,HI}{N}x{M}). The element-wise compare family
 //! (Iop_Cmp{EQ,GT}{N}x{M}) moved to the generic `vec_int_lane_op` driver
-//! (`ICmpEq`/`ICmpGtS` in ops.rs).
+//! (`ICmpEq`/`ICmpGt` in ops.rs).
 
 use super::{OpError, VEXOps};
 use crate::symbolic::{RustBV, SymContext};

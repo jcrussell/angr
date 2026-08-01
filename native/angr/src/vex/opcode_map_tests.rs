@@ -343,3 +343,39 @@ fn test_parse_vreverse_routing() {
         }
     }
 }
+
+/// angr-9ke6b.160: the unsigned vector greater-than family
+/// (`Iop_CmpGT{N}Ux{M}`) used to be entirely unmapped, so ARM NEON `VCGT.U*`
+/// fell back to Python. Pin both polarities of the whole table, including the
+/// absence of `Iop_CmpGT64Ux1` (libVEX defines no D-reg 64-bit lane).
+#[test]
+fn test_parse_vec_cmp_gt_signed_and_unsigned() {
+    let cases: &[(&str, IRType, u8, bool)] = &[
+        ("Iop_CmpGT8Sx8", IRType::I8, 8, true),
+        ("Iop_CmpGT16Sx4", IRType::I16, 4, true),
+        ("Iop_CmpGT32Sx2", IRType::I32, 2, true),
+        ("Iop_CmpGT8Sx16", IRType::I8, 16, true),
+        ("Iop_CmpGT16Sx8", IRType::I16, 8, true),
+        ("Iop_CmpGT32Sx4", IRType::I32, 4, true),
+        ("Iop_CmpGT64Sx2", IRType::I64, 2, true),
+        ("Iop_CmpGT8Ux8", IRType::I8, 8, false),
+        ("Iop_CmpGT16Ux4", IRType::I16, 4, false),
+        ("Iop_CmpGT32Ux2", IRType::I32, 2, false),
+        ("Iop_CmpGT8Ux16", IRType::I8, 16, false),
+        ("Iop_CmpGT16Ux8", IRType::I16, 8, false),
+        ("Iop_CmpGT32Ux4", IRType::I32, 4, false),
+        ("Iop_CmpGT64Ux2", IRType::I64, 2, false),
+    ];
+    for &(op_str, elem, count, signed) in cases {
+        assert_eq!(
+            parse_opcode(op_str),
+            IROp::VCmpGT {
+                elem,
+                count,
+                signed
+            },
+            "{op_str}"
+        );
+    }
+    assert!(matches!(parse_opcode("Iop_CmpGT64Ux1"), IROp::Unmapped(_)));
+}

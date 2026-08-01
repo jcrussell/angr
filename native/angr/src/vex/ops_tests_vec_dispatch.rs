@@ -97,6 +97,7 @@ fn vec_int_binops() -> Vec<IROp> {
         IROp::VCmpGT {
             elem: I32,
             count: 4,
+            signed: true,
         },
         IROp::VGetElem {
             elem: I32,
@@ -286,6 +287,7 @@ fn test_vec_int_binops_dispatch_reachable() {
             IROp::VCmpGT {
                 elem: IRType::I32,
                 count: 4,
+                signed: true,
             },
             128,
             128,

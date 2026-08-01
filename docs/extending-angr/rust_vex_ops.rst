@@ -472,6 +472,15 @@ NEON op families
      - Placeholder
      - Noted in ``parse_neon_unimplemented`` rustdoc — no enum
        variant or dispatch arm yet
+   * - Integer lane compare (``Iop_CmpEQ{N}x{M}`` /
+       ``Iop_CmpGT{N}{S,U}x{M}``)
+     - ~21
+     - Implemented
+     - ``IROp::VCmpEQ`` / ``IROp::VCmpGT { signed }`` via the
+       ``ICmpEq`` / ``ICmpGt`` ``IntLaneOp`` impls. The unsigned
+       ``CmpGT`` half (NEON ``VCGT.U*``) was unmapped until
+       angr-9ke6b.160. libVEX defines no ``Iop_CmpGT64Ux1``, so the
+       D-reg 64-bit lane is absent by design.
 
 The remaining placeholders (``Iop_PwAdd32Fx2``, ``Iop_QShlN*``) are
 the residual entries after the NEON campaign (``angr-tukg``) closed.

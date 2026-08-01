@@ -816,11 +816,19 @@ fn parse_vector(op_str: &str) -> Option<IROp> {
         "32x2" => (I32, 2), "32x4" => (I32, 4),
         "64x2" => (I64, 2),
     });
-    vec_arms!(op_str; "Iop_CmpGT" => VCmpGT {
-        "8Sx8" => (I8, 8), "8Sx16" => (I8, 16),
-        "16Sx4" => (I16, 4), "16Sx8" => (I16, 8),
-        "32Sx2" => (I32, 2), "32Sx4" => (I32, 4),
-        "64Sx2" => (I64, 2),
+    // Signed (S) and unsigned (U) suffixes both exist in libVEX; the U family
+    // backs ARM NEON VCGT.U8/U16/U32 and the SSE/AVX unsigned compares
+    // (angr-9ke6b.160). libVEX defines no Iop_CmpGT64Ux1 (D-reg), so that
+    // suffix is absent by design rather than omission.
+    vec_signed_arms!(op_str; "Iop_CmpGT" => VCmpGT {
+        "8Sx8" => (I8, 8, true), "8Sx16" => (I8, 16, true),
+        "16Sx4" => (I16, 4, true), "16Sx8" => (I16, 8, true),
+        "32Sx2" => (I32, 2, true), "32Sx4" => (I32, 4, true),
+        "64Sx2" => (I64, 2, true),
+        "8Ux8" => (I8, 8, false), "8Ux16" => (I8, 16, false),
+        "16Ux4" => (I16, 4, false), "16Ux8" => (I16, 8, false),
+        "32Ux2" => (I32, 2, false), "32Ux4" => (I32, 4, false),
+        "64Ux2" => (I64, 2, false),
     });
 
     // Vector interleave — count is implicit from elem.

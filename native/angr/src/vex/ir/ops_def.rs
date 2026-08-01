@@ -297,10 +297,14 @@ pub enum IROp {
         elem: IRType,
         count: u8,
     },
-    /// Vector compare greater than
+    /// Vector compare greater than. `signed` selects the S-suffixed
+    /// (`Iop_CmpGT{N}Sx{M}`) vs U-suffixed (`Iop_CmpGT{N}Ux{M}`) family —
+    /// ARM NEON `VCGT.U*` and SSE/AVX unsigned compares need the latter
+    /// (angr-9ke6b.160).
     VCmpGT {
         elem: IRType,
         count: u8,
+        signed: bool,
     },
     /// Interleave high
     VInterleaveLO {
