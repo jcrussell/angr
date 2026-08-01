@@ -5,7 +5,45 @@
 
 use super::*;
 
+/// Materialize an optional claripy AST argument for a breakpoint call.
+///
+/// Every `call_inspect_*` method that forwards a `value` / `guard` / `expr`
+/// attr passes `None` through as Python `None` rather than omitting the
+/// argument, so the Python endpoint sees a uniform arity.
+fn opt_ast_or_none(py: Python<'_>, ast: Option<&Py<PyAny>>) -> Py<PyAny> {
+    match ast {
+        Some(v) => v.clone_ref(py),
+        None => py.None(),
+    }
+}
+
 impl PythonCallbacks {
+    /// Shared prologue for every `call_inspect_*` method: attach to the
+    /// interpreter, open a GIL-profiling span attributed to the inspect site,
+    /// and invoke `f` with the registered callback.
+    ///
+    /// `absent` is returned when no callback is registered for the slot — the
+    /// no-breakpoint case is not an error. Note the attach and the profiling
+    /// guard deliberately happen *before* the slot check, so an unregistered
+    /// slot still shows up in the `CallbackSite::Inspect` GIL accounting the
+    /// way it did when each method open-coded this.
+    fn with_inspect_cb<R>(
+        &self,
+        slot: Option<&Py<PyAny>>,
+        absent: R,
+        f: impl FnOnce(Python<'_>, &Py<PyAny>) -> PyResult<R>,
+    ) -> PyResult<R> {
+        Python::attach(|py| {
+            let _gil = crate::gil_profile::GilWorkGuard::enter_site(
+                crate::gil_profile::CallbackSite::Inspect,
+            );
+            match slot {
+                Some(cb) => f(py, cb),
+                None => Ok(absent),
+            }
+        })
+    }
+
     /// Fast O(1) check for whether an inspect event is enabled.
     /// Bit N = `crate::state::InspectEvent` variant N (MemRead=0, MemWrite=1, …).
     /// `event_bit` is taken as `u8` for ergonomics; values up to 31 are valid
@@ -39,18 +77,8 @@ impl PythonCallbacks {
         value_ast: Option<&Py<PyAny>>,
         endness: &str,
     ) -> PyResult<Option<Py<PyAny>>> {
-        Python::attach(|py| {
-            let _gil = crate::gil_profile::GilWorkGuard::enter_site(
-                crate::gil_profile::CallbackSite::Inspect,
-            );
-            let cb = match self.inspect_mem_read.as_ref() {
-                Some(cb) => cb,
-                None => return Ok(None),
-            };
-            let value_obj: Py<PyAny> = match value_ast {
-                Some(v) => v.clone_ref(py),
-                None => py.None(),
-            };
+        self.with_inspect_cb(self.inspect_mem_read.as_ref(), None, |py, cb| {
+            let value_obj = opt_ast_or_none(py, value_ast);
             let ret = cb.call1(py, (state_id, when, addr, size, value_obj, endness))?;
             if ret.is_none(py) {
                 Ok(None)
@@ -74,18 +102,8 @@ impl PythonCallbacks {
         value_ast: Option<&Py<PyAny>>,
         endness: &str,
     ) -> PyResult<Option<Py<PyAny>>> {
-        Python::attach(|py| {
-            let _gil = crate::gil_profile::GilWorkGuard::enter_site(
-                crate::gil_profile::CallbackSite::Inspect,
-            );
-            let cb = match self.inspect_mem_write.as_ref() {
-                Some(cb) => cb,
-                None => return Ok(None),
-            };
-            let value_obj: Py<PyAny> = match value_ast {
-                Some(v) => v.clone_ref(py),
-                None => py.None(),
-            };
+        self.with_inspect_cb(self.inspect_mem_write.as_ref(), None, |py, cb| {
+            let value_obj = opt_ast_or_none(py, value_ast);
             let ret = cb.call1(py, (state_id, when, addr, size, value_obj, endness))?;
             if ret.is_none(py) {
                 Ok(None)
@@ -104,18 +122,8 @@ impl PythonCallbacks {
         size: u32,
         value_ast: Option<&Py<PyAny>>,
     ) -> PyResult<()> {
-        Python::attach(|py| {
-            let _gil = crate::gil_profile::GilWorkGuard::enter_site(
-                crate::gil_profile::CallbackSite::Inspect,
-            );
-            let cb = match self.inspect_reg_read.as_ref() {
-                Some(cb) => cb,
-                None => return Ok(()),
-            };
-            let value_obj: Py<PyAny> = match value_ast {
-                Some(v) => v.clone_ref(py),
-                None => py.None(),
-            };
+        self.with_inspect_cb(self.inspect_reg_read.as_ref(), (), |py, cb| {
+            let value_obj = opt_ast_or_none(py, value_ast);
             cb.call1(py, (state_id, when, offset, size, value_obj))?;
             Ok(())
         })
@@ -130,18 +138,8 @@ impl PythonCallbacks {
         size: u32,
         value_ast: Option<&Py<PyAny>>,
     ) -> PyResult<()> {
-        Python::attach(|py| {
-            let _gil = crate::gil_profile::GilWorkGuard::enter_site(
-                crate::gil_profile::CallbackSite::Inspect,
-            );
-            let cb = match self.inspect_reg_write.as_ref() {
-                Some(cb) => cb,
-                None => return Ok(()),
-            };
-            let value_obj: Py<PyAny> = match value_ast {
-                Some(v) => v.clone_ref(py),
-                None => py.None(),
-            };
+        self.with_inspect_cb(self.inspect_reg_write.as_ref(), (), |py, cb| {
+            let value_obj = opt_ast_or_none(py, value_ast);
             cb.call1(py, (state_id, when, offset, size, value_obj))?;
             Ok(())
         })
@@ -154,14 +152,7 @@ impl PythonCallbacks {
         when: &str,
         addr: u64,
     ) -> PyResult<()> {
-        Python::attach(|py| {
-            let _gil = crate::gil_profile::GilWorkGuard::enter_site(
-                crate::gil_profile::CallbackSite::Inspect,
-            );
-            let cb = match self.inspect_instruction.as_ref() {
-                Some(cb) => cb,
-                None => return Ok(()),
-            };
+        self.with_inspect_cb(self.inspect_instruction.as_ref(), (), |py, cb| {
             cb.call1(py, (state_id, when, addr))?;
             Ok(())
         })
@@ -169,14 +160,7 @@ impl PythonCallbacks {
 
     /// Invoke the Python inspect irsb (block) callback.
     pub(crate) fn call_inspect_irsb(&self, state_id: i64, when: &str, addr: u64) -> PyResult<()> {
-        Python::attach(|py| {
-            let _gil = crate::gil_profile::GilWorkGuard::enter_site(
-                crate::gil_profile::CallbackSite::Inspect,
-            );
-            let cb = match self.inspect_irsb.as_ref() {
-                Some(cb) => cb,
-                None => return Ok(()),
-            };
+        self.with_inspect_cb(self.inspect_irsb.as_ref(), (), |py, cb| {
             cb.call1(py, (state_id, when, addr))?;
             Ok(())
         })
@@ -191,18 +175,8 @@ impl PythonCallbacks {
         jumpkind: &str,
         guard_ast: Option<&Py<PyAny>>,
     ) -> PyResult<()> {
-        Python::attach(|py| {
-            let _gil = crate::gil_profile::GilWorkGuard::enter_site(
-                crate::gil_profile::CallbackSite::Inspect,
-            );
-            let cb = match self.inspect_exit.as_ref() {
-                Some(cb) => cb,
-                None => return Ok(()),
-            };
-            let guard_obj: Py<PyAny> = match guard_ast {
-                Some(v) => v.clone_ref(py),
-                None => py.None(),
-            };
+        self.with_inspect_cb(self.inspect_exit.as_ref(), (), |py, cb| {
+            let guard_obj = opt_ast_or_none(py, guard_ast);
             cb.call1(py, (state_id, when, target, jumpkind, guard_obj))?;
             Ok(())
         })
@@ -215,14 +189,7 @@ impl PythonCallbacks {
         when: &str,
         function_address: u64,
     ) -> PyResult<()> {
-        Python::attach(|py| {
-            let _gil = crate::gil_profile::GilWorkGuard::enter_site(
-                crate::gil_profile::CallbackSite::Inspect,
-            );
-            let cb = match self.inspect_call.as_ref() {
-                Some(cb) => cb,
-                None => return Ok(()),
-            };
+        self.with_inspect_cb(self.inspect_call.as_ref(), (), |py, cb| {
             cb.call1(py, (state_id, when, function_address))?;
             Ok(())
         })
@@ -235,14 +202,7 @@ impl PythonCallbacks {
         when: &str,
         function_address: u64,
     ) -> PyResult<()> {
-        Python::attach(|py| {
-            let _gil = crate::gil_profile::GilWorkGuard::enter_site(
-                crate::gil_profile::CallbackSite::Inspect,
-            );
-            let cb = match self.inspect_return.as_ref() {
-                Some(cb) => cb,
-                None => return Ok(()),
-            };
+        self.with_inspect_cb(self.inspect_return.as_ref(), (), |py, cb| {
             cb.call1(py, (state_id, when, function_address))?;
             Ok(())
         })
@@ -256,18 +216,8 @@ impl PythonCallbacks {
         tmp_num: u32,
         value_ast: Option<&Py<PyAny>>,
     ) -> PyResult<()> {
-        Python::attach(|py| {
-            let _gil = crate::gil_profile::GilWorkGuard::enter_site(
-                crate::gil_profile::CallbackSite::Inspect,
-            );
-            let cb = match self.inspect_tmp_read.as_ref() {
-                Some(cb) => cb,
-                None => return Ok(()),
-            };
-            let value_obj: Py<PyAny> = match value_ast {
-                Some(v) => v.clone_ref(py),
-                None => py.None(),
-            };
+        self.with_inspect_cb(self.inspect_tmp_read.as_ref(), (), |py, cb| {
+            let value_obj = opt_ast_or_none(py, value_ast);
             cb.call1(py, (state_id, when, tmp_num, value_obj))?;
             Ok(())
         })
@@ -281,18 +231,8 @@ impl PythonCallbacks {
         tmp_num: u32,
         value_ast: Option<&Py<PyAny>>,
     ) -> PyResult<()> {
-        Python::attach(|py| {
-            let _gil = crate::gil_profile::GilWorkGuard::enter_site(
-                crate::gil_profile::CallbackSite::Inspect,
-            );
-            let cb = match self.inspect_tmp_write.as_ref() {
-                Some(cb) => cb,
-                None => return Ok(()),
-            };
-            let value_obj: Py<PyAny> = match value_ast {
-                Some(v) => v.clone_ref(py),
-                None => py.None(),
-            };
+        self.with_inspect_cb(self.inspect_tmp_write.as_ref(), (), |py, cb| {
+            let value_obj = opt_ast_or_none(py, value_ast);
             cb.call1(py, (state_id, when, tmp_num, value_obj))?;
             Ok(())
         })
@@ -305,14 +245,7 @@ impl PythonCallbacks {
         when: &str,
         stmt_idx: u32,
     ) -> PyResult<()> {
-        Python::attach(|py| {
-            let _gil = crate::gil_profile::GilWorkGuard::enter_site(
-                crate::gil_profile::CallbackSite::Inspect,
-            );
-            let cb = match self.inspect_statement.as_ref() {
-                Some(cb) => cb,
-                None => return Ok(()),
-            };
+        self.with_inspect_cb(self.inspect_statement.as_ref(), (), |py, cb| {
             cb.call1(py, (state_id, when, stmt_idx))?;
             Ok(())
         })
@@ -328,18 +261,8 @@ impl PythonCallbacks {
         when: &str,
         expr_result: Option<&Py<PyAny>>,
     ) -> PyResult<()> {
-        Python::attach(|py| {
-            let _gil = crate::gil_profile::GilWorkGuard::enter_site(
-                crate::gil_profile::CallbackSite::Inspect,
-            );
-            let cb = match self.inspect_expr.as_ref() {
-                Some(cb) => cb,
-                None => return Ok(()),
-            };
-            let value_obj: Py<PyAny> = match expr_result {
-                Some(v) => v.clone_ref(py),
-                None => py.None(),
-            };
+        self.with_inspect_cb(self.inspect_expr.as_ref(), (), |py, cb| {
+            let value_obj = opt_ast_or_none(py, expr_result);
             cb.call1(py, (state_id, when, value_obj))?;
             Ok(())
         })
@@ -357,22 +280,19 @@ impl PythonCallbacks {
         addr_ast: &Py<PyAny>,
         result: Option<Vec<u64>>,
     ) -> PyResult<()> {
-        Python::attach(|py| {
-            let _gil = crate::gil_profile::GilWorkGuard::enter_site(
-                crate::gil_profile::CallbackSite::Inspect,
-            );
-            let cb = match self.inspect_address_concretization.as_ref() {
-                Some(cb) => cb,
-                None => return Ok(()),
-            };
-            let addr_obj = addr_ast.clone_ref(py);
-            let result_obj: Py<PyAny> = match result {
-                Some(addrs) => pyo3::types::PyList::new(py, addrs)?.into_any().unbind(),
-                None => py.None(),
-            };
-            cb.call1(py, (state_id, when, action, addr_obj, result_obj))?;
-            Ok(())
-        })
+        self.with_inspect_cb(
+            self.inspect_address_concretization.as_ref(),
+            (),
+            |py, cb| {
+                let addr_obj = addr_ast.clone_ref(py);
+                let result_obj: Py<PyAny> = match result {
+                    Some(addrs) => pyo3::types::PyList::new(py, addrs)?.into_any().unbind(),
+                    None => py.None(),
+                };
+                cb.call1(py, (state_id, when, action, addr_obj, result_obj))?;
+                Ok(())
+            },
+        )
     }
 
     /// Invoke the Python inspect symbolic_variable callback.
@@ -387,14 +307,7 @@ impl PythonCallbacks {
         size: u32,
         expr_ast: &Py<PyAny>,
     ) -> PyResult<()> {
-        Python::attach(|py| {
-            let _gil = crate::gil_profile::GilWorkGuard::enter_site(
-                crate::gil_profile::CallbackSite::Inspect,
-            );
-            let cb = match self.inspect_symbolic_variable.as_ref() {
-                Some(cb) => cb,
-                None => return Ok(()),
-            };
+        self.with_inspect_cb(self.inspect_symbolic_variable.as_ref(), (), |py, cb| {
             let expr_obj = expr_ast.clone_ref(py);
             cb.call1(py, (state_id, when, name, size, expr_obj))?;
             Ok(())
@@ -406,14 +319,7 @@ impl PythonCallbacks {
     /// deferred-fork processing in `exploration/stepping.rs`.
     /// No attrs — the BP just sees the forked state's id.
     pub(crate) fn call_inspect_fork(&self, state_id: i64, when: &str) -> PyResult<()> {
-        Python::attach(|py| {
-            let _gil = crate::gil_profile::GilWorkGuard::enter_site(
-                crate::gil_profile::CallbackSite::Inspect,
-            );
-            let cb = match self.inspect_fork.as_ref() {
-                Some(cb) => cb,
-                None => return Ok(()),
-            };
+        self.with_inspect_cb(self.inspect_fork.as_ref(), (), |py, cb| {
             cb.call1(py, (state_id, when))?;
             Ok(())
         })
@@ -439,14 +345,7 @@ impl PythonCallbacks {
         guard: &crate::symbolic::RustBV,
         is_true: bool,
     ) -> PyResult<()> {
-        Python::attach(|py| {
-            let _gil = crate::gil_profile::GilWorkGuard::enter_site(
-                crate::gil_profile::CallbackSite::Inspect,
-            );
-            let cb = match self.inspect_constraints.as_ref() {
-                Some(cb) => cb,
-                None => return Ok(()),
-            };
+        self.with_inspect_cb(self.inspect_constraints.as_ref(), (), |py, cb| {
             let claripy = py.import("claripy")?;
             let constraint = match crate::claripy_bridge::assumed_guard_to_claripy(
                 py,
@@ -486,14 +385,7 @@ impl PythonCallbacks {
         size: Option<u32>,
         buff: Option<&[u8]>,
     ) -> PyResult<()> {
-        Python::attach(|py| {
-            let _gil = crate::gil_profile::GilWorkGuard::enter_site(
-                crate::gil_profile::CallbackSite::Inspect,
-            );
-            let cb = match self.inspect_vex_lift.as_ref() {
-                Some(cb) => cb,
-                None => return Ok(()),
-            };
+        self.with_inspect_cb(self.inspect_vex_lift.as_ref(), (), |py, cb| {
             let buff_obj = buff.map(|b| PyBytes::new(py, b));
             cb.call1(py, (state_id, when, addr, size, buff_obj))?;
             Ok(())
