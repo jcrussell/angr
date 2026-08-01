@@ -62,6 +62,50 @@ fn test_dfa_minimization() {
 }
 
 #[test]
+fn test_overwriting_transition_retires_stale_reverse_edge() {
+    // 0 -a-> 1, then re-add 0 -a-> 2. State 0 must no longer be reported as a
+    // predecessor of 1 on 'a', or Hopcroft refinement in minimize() would split
+    // partitions on an edge that does not exist.
+    let mut dfa = DFA::new();
+    for _ in 0..3 {
+        dfa.add_state();
+    }
+    dfa.set_start_state(0);
+
+    dfa.add_transition(0, 0, 1);
+    assert_eq!(dfa.transition(0, 0), Some(1));
+    assert!(
+        dfa.find_predecessors(&StateSet::singleton(1, 3), 0)
+            .contains(0)
+    );
+
+    dfa.add_transition(0, 0, 2);
+    assert_eq!(dfa.transition(0, 0), Some(2));
+    assert!(
+        !dfa.find_predecessors(&StateSet::singleton(1, 3), 0)
+            .contains(0),
+        "stale reverse edge to the overwritten destination survived"
+    );
+    assert!(
+        dfa.find_predecessors(&StateSet::singleton(2, 3), 0)
+            .contains(0)
+    );
+
+    // Re-adding the same destination is idempotent, and other sources sharing
+    // the old destination are untouched.
+    dfa.add_transition(1, 0, 1);
+    dfa.add_transition(0, 0, 2);
+    assert!(
+        dfa.find_predecessors(&StateSet::singleton(1, 3), 0)
+            .contains(1)
+    );
+    assert_eq!(
+        dfa.find_predecessors(&StateSet::singleton(2, 3), 0).len(),
+        1
+    );
+}
+
+#[test]
 fn test_empty_dfa() {
     let dfa = DFA::new();
     assert!(dfa.is_empty());

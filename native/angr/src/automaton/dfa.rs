@@ -61,9 +61,25 @@ impl DFA {
     }
 
     /// Add a transition.
+    ///
+    /// Re-adding a transition for an existing `(source, symbol)` pair overwrites
+    /// the previous destination; the stale `reverse_transitions` entry for the
+    /// old destination is retired so `find_predecessors` (and therefore
+    /// `minimize`'s Hopcroft refinement) never sees an edge that no longer exists.
     pub fn add_transition(&mut self, source: StateId, symbol: SymbolId, destination: StateId) {
         self.alphabet.insert(symbol);
-        self.transitions.insert((source, symbol), destination);
+        let previous = self.transitions.insert((source, symbol), destination);
+
+        // Drop the reverse edge left behind by an overwritten destination.
+        if let Some(old_destination) = previous
+            && old_destination != destination
+            && let Some(sources) = self.reverse_transitions.get_mut(&(old_destination, symbol))
+        {
+            sources.remove(source);
+            if sources.is_empty() {
+                self.reverse_transitions.remove(&(old_destination, symbol));
+            }
+        }
 
         // Also update reverse transitions
         self.reverse_transitions
