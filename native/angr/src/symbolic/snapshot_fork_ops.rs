@@ -1047,6 +1047,25 @@ impl SymContext {
             }
         }
 
+        // angr-9ke6b.139: the same shared-prefix dedup for the `assumed` pairs.
+        // `fork()` also freezes into `assumed_constraints_shared` and hands the
+        // SAME Arc to the child, so the per-arm loop below would re-append the
+        // identical ancestor prefix once PER ARM — inflating the Python-visible
+        // `state.solver.constraints` (`get_assumed_constraints`) N-fold and
+        // compounding multiplicatively across nested diamond merges. Tracked
+        // independently of `common_prefix` above: the two shared vectors are
+        // separate Arcs, and a `add_constraint_raw`-only arm can diverge on one
+        // without diverging on the other.
+        let common_assumed = Arc::clone(&all_contexts[0].assumed_constraints_shared.lock());
+        let assumed_prefix_shared_by_all = all_contexts[1..]
+            .iter()
+            .all(|ctx| Arc::ptr_eq(&ctx.assumed_constraints_shared.lock(), &common_assumed));
+        let dedup_assumed_prefix = assumed_prefix_shared_by_all && !common_assumed.is_empty();
+        if dedup_assumed_prefix {
+            let mut ml = merged.local_constraints.lock();
+            ml.assumed.extend(common_assumed.iter().cloned());
+        }
+
         for (ctx, cond) in all_contexts.iter().zip(merge_conditions.iter()) {
             // Compute NOT(cond) up front so cond_bool can be moved into
             // all_z3_conditions without cloning the Z3 AST.
@@ -1056,7 +1075,6 @@ impl SymContext {
 
             // Collect all Z3 assertions and assumed pairs from this context.
             let shared = Arc::clone(&ctx.z3_assertions_shared.lock());
-            let assumed_shared = Arc::clone(&ctx.assumed_constraints_shared.lock());
             let ctx_local = ctx.local_constraints.lock();
 
             // On the shared-prefix fast path guard ONLY the divergent local
@@ -1089,10 +1107,16 @@ impl SymContext {
                 super::context::merge_instrument::note_guarded();
             }
 
-            // Also merge assumed_constraints for Python export
+            // Also merge assumed_constraints for Python export. The shared
+            // prefix was appended once above when every arm holds the same Arc
+            // (angr-9ke6b.139); otherwise each arm contributes its own.
             {
+                let arm_assumed_shared = (!dedup_assumed_prefix)
+                    .then(|| Arc::clone(&ctx.assumed_constraints_shared.lock()));
                 let mut merged_local = merged.local_constraints.lock();
-                merged_local.assumed.extend(assumed_shared.iter().cloned());
+                if let Some(assumed_shared) = arm_assumed_shared {
+                    merged_local.assumed.extend(assumed_shared.iter().cloned());
+                }
                 merged_local
                     .assumed
                     .extend(ctx_local.assumed.iter().cloned());

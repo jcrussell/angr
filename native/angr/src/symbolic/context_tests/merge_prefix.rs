@@ -248,3 +248,120 @@ fn test_snapshot_roundtrips_lineage_flags() {
         "restored context must recover the shared-lineage opt-in"
     );
 }
+
+// =============================================================================
+// angr-9ke6b.139 — `assumed_constraints` shared-prefix dedup
+// =============================================================================
+
+/// ACCEPTANCE: on a diamond whose arms hold the SAME frozen
+/// `assumed_constraints_shared` Arc, `merge` appends the ancestor prefix
+/// exactly once — not once per arm. Before the fix the per-arm loop
+/// unconditionally extended `merged.assumed` with each arm's (identical)
+/// shared prefix, so the Python-visible `state.solver.constraints` list carried
+/// every ancestor constraint N times for an N-way merge.
+#[test]
+fn test_merge_dedups_shared_assumed_prefix() {
+    let (base, x) = build_base();
+    let (arm_a, arm_b) = build_arms(&base, &x);
+
+    // Precondition: the siblings really do share the frozen assumed Arc.
+    assert!(Arc::ptr_eq(
+        &arm_a.assumed_constraints_shared.lock(),
+        &arm_b.assumed_constraints_shared.lock()
+    ));
+    assert_eq!(
+        arm_a.assumed_constraint_count(),
+        SHARED_CONSTRAINTS + DIVERGENT_PER_ARM
+    );
+
+    let f0 = RustBV::symbolic(&base, "amerge_flag_0", 1);
+    let f1 = RustBV::symbolic(&base, "amerge_flag_1", 1);
+    let merged = arm_a.merge(&[&arm_b], &[f0, f1]);
+
+    // prefix once + each arm's divergent local suffix.
+    let expected = SHARED_CONSTRAINTS + N_ARMS * DIVERGENT_PER_ARM;
+    assert_eq!(
+        merged.assumed_constraint_count(),
+        expected,
+        "shared assumed prefix must be appended once, not once per arm"
+    );
+    // Sanity: the pre-fix shape would have been N * prefix + Σ divergent.
+    let duplicated = N_ARMS * SHARED_CONSTRAINTS + N_ARMS * DIVERGENT_PER_ARM;
+    assert!(
+        merged.assumed_constraint_count() < duplicated,
+        "must beat the per-arm-duplicated shape"
+    );
+    // `get_assumed_constraints` (what `_export_state_constraints` reads) sees
+    // the same deduped list.
+    assert_eq!(merged.get_assumed_constraints().len(), expected);
+}
+
+/// ACCEPTANCE (diamond-of-diamonds): the dedup must hold across a NESTED merge,
+/// where the second diamond's arms fork off an already-merged context. Without
+/// the fix the duplication compounds multiplicatively (each round doubles the
+/// carried prefix).
+#[test]
+fn test_nested_merge_does_not_compound_assumed_prefix() {
+    let (base, x) = build_base();
+    let (arm_a, arm_b) = build_arms(&base, &x);
+
+    let f0 = RustBV::symbolic(&base, "nest_flag_0", 1);
+    let f1 = RustBV::symbolic(&base, "nest_flag_1", 1);
+    let merged = arm_a.merge(&[&arm_b], &[f0, f1]);
+    let round1 = SHARED_CONSTRAINTS + N_ARMS * DIVERGENT_PER_ARM;
+    assert_eq!(merged.assumed_constraint_count(), round1);
+
+    // Second diamond: fork the merged context twice. `fork` freezes merged's
+    // local assumed into `shared`, handing both children the same Arc.
+    let sub_a = merged.fork();
+    sub_a.assume_true(&x.ugt(&RustBV::concrete(180, 32), &sub_a));
+    let sub_b = merged.fork();
+    sub_b.assume_true(&x.ult(&RustBV::concrete(240, 32), &sub_b));
+    assert!(Arc::ptr_eq(
+        &sub_a.assumed_constraints_shared.lock(),
+        &sub_b.assumed_constraints_shared.lock()
+    ));
+
+    let g0 = RustBV::symbolic(&base, "nest_flag_2", 1);
+    let g1 = RustBV::symbolic(&base, "nest_flag_3", 1);
+    let merged2 = sub_a.merge(&[&sub_b], &[g0, g1]);
+
+    assert_eq!(
+        merged2.assumed_constraint_count(),
+        round1 + N_ARMS,
+        "nested merge must not re-duplicate the round-1 prefix"
+    );
+}
+
+/// ACCEPTANCE (fallback): arms with NO common frozen assumed prefix still get
+/// every pair carried over — the dedup must not drop an arm's private prefix.
+#[test]
+fn test_no_shared_assumed_prefix_keeps_every_arm_prefix() {
+    let ctx_a = SymContext::new();
+    let a = RustBV::symbolic(&ctx_a, "a_assumed_indep", 32);
+    ctx_a.assume_true(&a.ugt(&RustBV::concrete(10, 32), &ctx_a));
+    ctx_a.assume_true(&a.ult(&RustBV::concrete(20, 32), &ctx_a));
+
+    let ctx_b = SymContext::new();
+    let b = RustBV::symbolic(&ctx_b, "b_assumed_indep", 32);
+    ctx_b.assume_true(&b.ugt(&RustBV::concrete(100, 32), &ctx_b));
+    ctx_b.assume_true(&b.ult(&RustBV::concrete(200, 32), &ctx_b));
+
+    // Fork freezes each arm's pairs into its OWN shared Arc — not ptr-equal.
+    let arm_a = ctx_a.fork();
+    let arm_b = ctx_b.fork();
+    assert!(!Arc::ptr_eq(
+        &arm_a.assumed_constraints_shared.lock(),
+        &arm_b.assumed_constraints_shared.lock()
+    ));
+
+    let f0 = RustBV::symbolic(&ctx_a, "amf0", 1);
+    let f1 = RustBV::symbolic(&ctx_a, "amf1", 1);
+    let merged = arm_a.merge(&[&arm_b], &[f0, f1]);
+
+    assert_eq!(
+        merged.assumed_constraint_count(),
+        4,
+        "distinct per-arm prefixes must all be carried"
+    );
+}
