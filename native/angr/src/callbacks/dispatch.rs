@@ -192,61 +192,6 @@ impl PythonCallbacks {
         })
     }
 
-    /// Call the hook execution callback.
-    ///
-    /// Returns the new PC after hook execution.
-    ///
-    /// Reference pattern for the `avoid-silent-no-op-callback-fallbacks`
-    /// invariant (module-level invariant 1). When [`Self::on_hook`] is
-    /// `None`, hard-error rather than no-op — see the module-level docs
-    /// for why silent fallbacks mask wiring bugs.
-    /// **No Rust caller** (angr-9ke6b.214): the Python side still registers
-    /// `get_register` / `put_register` (`rust_manager.py::_setup_callbacks`),
-    /// and `set_on_hook` / `set_on_syscall` remain on the `#[pymethods]`
-    /// surface, but the engine reads and writes registers through
-    /// `RustSimState` and routes hooks/syscalls through
-    /// `ExplorationEvent` bounces instead of these direct callbacks. Retiring
-    /// the path means dropping the pyclass setters and the Python
-    /// registration too, so it is flagged rather than deleted here.
-    #[allow(dead_code)]
-    pub(crate) fn call_on_hook(&self, addr: u64) -> PyResult<u64> {
-        Python::attach(|py| {
-            let _gil = crate::gil_profile::GilWorkGuard::enter_site(
-                crate::gil_profile::CallbackSite::OnHook,
-            );
-            let cb = self.on_hook.as_ref().ok_or_else(|| {
-                pyo3::exceptions::PyRuntimeError::new_err("on_hook callback not set")
-            })?;
-
-            let result = cb.call1(py, (addr,))?;
-            result.extract(py)
-        })
-    }
-
-    /// Call the syscall handling callback.
-    /// **No Rust caller** (angr-9ke6b.214): the Python side still registers
-    /// `get_register` / `put_register` (`rust_manager.py::_setup_callbacks`),
-    /// and `set_on_hook` / `set_on_syscall` remain on the `#[pymethods]`
-    /// surface, but the engine reads and writes registers through
-    /// `RustSimState` and routes hooks/syscalls through
-    /// `ExplorationEvent` bounces instead of these direct callbacks. Retiring
-    /// the path means dropping the pyclass setters and the Python
-    /// registration too, so it is flagged rather than deleted here.
-    #[allow(dead_code)]
-    pub(crate) fn call_on_syscall(&self, num: u64) -> PyResult<()> {
-        Python::attach(|py| {
-            let _gil = crate::gil_profile::GilWorkGuard::enter_site(
-                crate::gil_profile::CallbackSite::OnSyscall,
-            );
-            let cb = self.on_syscall.as_ref().ok_or_else(|| {
-                pyo3::exceptions::PyRuntimeError::new_err("on_syscall callback not set")
-            })?;
-
-            cb.call1(py, (num,))?;
-            Ok(())
-        })
-    }
-
     /// Call the block lifting callback.
     ///
     /// Returns the IRSB as a JSON string.
@@ -287,13 +232,11 @@ impl PythonCallbacks {
     ///
     /// Returns (data_bytes, is_symbolic, symbolic_ast).
     /// **No Rust caller** (angr-9ke6b.214): the Python side still registers
-    /// `get_register` / `put_register` (`rust_manager.py::_setup_callbacks`),
-    /// and `set_on_hook` / `set_on_syscall` remain on the `#[pymethods]`
-    /// surface, but the engine reads and writes registers through
-    /// `RustSimState` and routes hooks/syscalls through
-    /// `ExplorationEvent` bounces instead of these direct callbacks. Retiring
-    /// the path means dropping the pyclass setters and the Python
-    /// registration too, so it is flagged rather than deleted here.
+    /// `get_register` / `put_register` (`rust_manager.py::_setup_callbacks`)
+    /// on every run, but the engine reads and writes registers through
+    /// `RustSimState` instead of these direct callbacks. Retiring the path
+    /// means dropping the pyclass setters and the Python registration too,
+    /// so it is flagged rather than deleted here (angr-9ke6b.218 item 1).
     #[allow(dead_code)]
     pub(crate) fn call_get_register(
         &self,
@@ -315,14 +258,9 @@ impl PythonCallbacks {
     }
 
     /// Call the register put callback.
-    /// **No Rust caller** (angr-9ke6b.214): the Python side still registers
-    /// `get_register` / `put_register` (`rust_manager.py::_setup_callbacks`),
-    /// and `set_on_hook` / `set_on_syscall` remain on the `#[pymethods]`
-    /// surface, but the engine reads and writes registers through
-    /// `RustSimState` and routes hooks/syscalls through
-    /// `ExplorationEvent` bounces instead of these direct callbacks. Retiring
-    /// the path means dropping the pyclass setters and the Python
-    /// registration too, so it is flagged rather than deleted here.
+    /// **No Rust caller** (angr-9ke6b.214): see [`Self::call_get_register`] —
+    /// same dead cross-language pipeline, retired together or not at all
+    /// (angr-9ke6b.218 item 1).
     #[allow(dead_code)]
     pub(crate) fn call_put_register(&self, offset: u32, data: &[u8]) -> PyResult<()> {
         Python::attach(|py| {

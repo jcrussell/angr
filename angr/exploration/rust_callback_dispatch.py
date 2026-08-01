@@ -649,11 +649,13 @@ class RustCallbackDispatchMixin:
         - But we must NOT re-trigger the hook (which would cause infinite loop)
         - Solution: Tell Rust to skip the hook for this address on next step
 
-        Enters Python from ``RunResult::SimProcedure`` / ``RunResult::Hook``
-        in the Rust callbacks (``call_on_hook`` in ``callbacks.rs`` —
-        ``avoid-silent-no-op-callback-fallbacks`` ensures the Rust side
-        hard-errors when the hook is unset rather than silently producing
-        a wrong PC).
+        Entered from ``RustExplorationManager._dispatch_callback`` on a
+        ``"simprocedure"`` event. Rust never calls a dedicated hook callback:
+        the interpreter looks the address up in its own hook table
+        (``interpreter/execution.rs``), the run loop turns the resulting
+        ``RunResult::SimProcedure`` / ``RunResult::Hook`` into a
+        ``CallbackReason::SimProcedure`` bounce (``exploration/stepping.rs``),
+        and the manager dispatches it here.
         """
         _sp_total_start = time.perf_counter_ns()
         addr = event.callback_addr
@@ -1817,12 +1819,10 @@ class RustCallbackDispatchMixin:
         Uses cached state to preserve symbolic memory and constraints,
         then syncs changes back to Rust after syscall execution.
 
-        Entered from ``RunResult::Syscall`` via ``call_on_syscall``
-        (``callbacks.rs``). The Rust side hard-errors when the
-        ``on_syscall`` hook is ``None`` per
-        ``avoid-silent-no-op-callback-fallbacks`` (callbacks.rs module
-        invariant 1); never assume a missing hook turns syscalls into
-        no-ops.
+        Entered from ``RustExplorationManager._dispatch_callback`` on a
+        ``"syscall"`` event: the run loop turns ``RunResult::Syscall`` into a
+        ``CallbackReason::Syscall`` bounce (``exploration/stepping.rs``).
+        There is no ``PythonCallbacks`` entry on this path.
         """
         _sc_total_start = time.perf_counter_ns()
         try:

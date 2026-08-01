@@ -66,14 +66,6 @@ fn unset_dispatch_callbacks_hard_error() {
             Box::new(|| cb.call_memory_store(0x1000, &[0u8; 4])),
         ),
         (
-            "on_hook callback not set",
-            Box::new(|| cb.call_on_hook(0x1000).map(|_| ())),
-        ),
-        (
-            "on_syscall callback not set",
-            Box::new(|| cb.call_on_syscall(60)),
-        ),
-        (
             "lift_block callback not set",
             Box::new(|| cb.call_lift_block(0x1000, None, None).map(|_| ())),
         ),

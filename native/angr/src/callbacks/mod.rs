@@ -13,8 +13,10 @@
 //!
 //! 1. **`avoid-silent-no-op-callback-fallbacks`** — every `call_*` method
 //!    on [`PythonCallbacks`] MUST hard-error when the hook is `None`.
-//!    The exemplar is [`PythonCallbacks::call_on_hook`]: it `ok_or_else`'s
-//!    into `PyRuntimeError::new_err("on_hook callback not set")`. Silent
+//!    The exemplar is [`PythonCallbacks::call_lift_block`]: it `ok_or_else`'s
+//!    into `PyRuntimeError::new_err("lift_block callback not set")`, and
+//!    `dispatch_tests::unset_dispatch_callbacks_hard_error` pins that shape
+//!    for every `call_*` on the struct. Silent
 //!    `Ok(())` fallbacks (the removed `call_memory_store_symbolic_ast`)
 //!    mask wiring bugs by making the engine appear to run while stores
 //!    are silently dropped, which produces divergent Rust↔Python memory
@@ -117,8 +119,6 @@ macro_rules! with_callback_fields {
             memory_store,
             memory_store_batch,
             memory_load_batch,
-            on_hook,
-            on_syscall,
             lift_block,
             get_register,
             put_register,
@@ -161,7 +161,7 @@ macro_rules! with_callback_fields {
 /// * **No silent `Ok(())` fallback.** See module-level invariant 1
 ///   (`avoid-silent-no-op-callback-fallbacks`). When a hook is `None`,
 ///   the `call_*` method MUST return `Err(PyRuntimeError)` rather than
-///   no-op. The reference pattern is [`Self::call_on_hook`].
+///   no-op. The reference pattern is [`Self::call_lift_block`].
 /// * **`Clone` + shared atomics.** `PythonCallbacks` is `Clone` because the
 ///   Rust exploration manager keeps a cloned copy of the original passed
 ///   in via `set_callbacks`. Any mutable state shared with Python after
@@ -182,10 +182,6 @@ pub struct PythonCallbacks {
     /// Each tuple in input is (address, size). Returns list of (data, is_symbolic, ast_or_none).
     /// This is more efficient than individual loads when multiple loads can be batched.
     pub memory_load_batch: Option<Py<PyAny>>,
-    /// Callback for hook execution: fn(addr: u64) -> new_pc
-    pub on_hook: Option<Py<PyAny>>,
-    /// Callback for syscall handling: fn(num: u64) -> None
-    pub on_syscall: Option<Py<PyAny>>,
     /// Callback for lifting a block: fn(addr: u64) -> irsb_json
     pub lift_block: Option<Py<PyAny>>,
     /// Callback for getting register value: fn(offset: u32, size: u32) -> (bytes, is_symbolic, symbolic_ast?)
@@ -494,24 +490,6 @@ impl PythonCallbacks {
     /// If not set, falls back to individual loads.
     pub fn set_memory_load_batch(&mut self, cb: Py<PyAny>) {
         self.memory_load_batch = Some(cb);
-    }
-
-    /// Set the hook execution callback.
-    ///
-    /// The callback should have signature:
-    /// `fn(addr: int) -> int`
-    ///
-    /// Returns the new PC after hook execution.
-    pub fn set_on_hook(&mut self, cb: Py<PyAny>) {
-        self.on_hook = Some(cb);
-    }
-
-    /// Set the syscall handling callback.
-    ///
-    /// The callback should have signature:
-    /// `fn(num: int) -> None`
-    pub fn set_on_syscall(&mut self, cb: Py<PyAny>) {
-        self.on_syscall = Some(cb);
     }
 
     /// Set the block lifting callback.

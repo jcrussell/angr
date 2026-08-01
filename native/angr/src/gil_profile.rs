@@ -162,8 +162,6 @@ pub(crate) enum CallbackSite {
     MemoryStoreSymbolicValue,
     MemoryStoreSymbolicFull,
     MemoryLoadSymbolicFull,
-    OnHook,
-    OnSyscall,
     LiftBlock,
     GetRegister,
     PutRegister,
@@ -179,7 +177,7 @@ pub(crate) enum CallbackSite {
 }
 
 impl CallbackSite {
-    const COUNT: usize = 20;
+    const COUNT: usize = 18;
 
     /// Stable counter suffix, used to name the `gil_work_ns_callback_*` keys.
     pub(crate) fn name(self) -> &'static str {
@@ -193,8 +191,6 @@ impl CallbackSite {
             CallbackSite::MemoryStoreSymbolicValue => "memory_store_symbolic_value",
             CallbackSite::MemoryStoreSymbolicFull => "memory_store_symbolic_full",
             CallbackSite::MemoryLoadSymbolicFull => "memory_load_symbolic_full",
-            CallbackSite::OnHook => "on_hook",
-            CallbackSite::OnSyscall => "on_syscall",
             CallbackSite::LiftBlock => "lift_block",
             CallbackSite::GetRegister => "get_register",
             CallbackSite::PutRegister => "put_register",
@@ -218,8 +214,6 @@ impl CallbackSite {
             CallbackSite::MemoryStoreSymbolicValue,
             CallbackSite::MemoryStoreSymbolicFull,
             CallbackSite::MemoryLoadSymbolicFull,
-            CallbackSite::OnHook,
-            CallbackSite::OnSyscall,
             CallbackSite::LiftBlock,
             CallbackSite::GetRegister,
             CallbackSite::PutRegister,
