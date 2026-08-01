@@ -112,6 +112,18 @@ pub(crate) fn execute_irsb_for_test(irsb_json: &str, arch_name: &str) -> PyResul
 #[cfg(feature = "vex-engine-z3")]
 #[pyfunction]
 fn set_shared_z3_context(py_z3_ctx_ptr: usize) -> PyResult<bool> {
+    install_shared_z3_context(py_z3_ctx_ptr)
+}
+
+/// Rust-callable body of [`set_shared_z3_context`].
+///
+/// Split out so Rust unit tests that exercise a claripy-Z3-pointer path (e.g.
+/// the Z3-ptr rescue arm of
+/// `RustExplorationManager::sync_constraints_from_python`) can perform the same
+/// handshake `rust_manager._setup_shared_z3_context` does in production,
+/// instead of open-coding the `unsafe` block a second time.
+#[cfg(feature = "vex-engine-z3")]
+pub(crate) fn install_shared_z3_context(py_z3_ctx_ptr: usize) -> PyResult<bool> {
     if py_z3_ctx_ptr == 0 {
         return Err(pyo3::exceptions::PyValueError::new_err(
             "Z3 context pointer is null",

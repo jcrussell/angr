@@ -1001,7 +1001,13 @@ impl RustExplorationManager {
         }
 
         // P14: If many constraints failed to convert, do explicit SAT check
-        // Failed conversions can leave state in divergent state
+        // Failed conversions can leave state in divergent state.
+        // Defence-in-depth only: under `vex-engine-z3` the P12 block above
+        // SAT-checks unconditionally, so it already rejects everything this
+        // gate could catch. Kept for a build where P12's check is compiled
+        // out. `sync_constraints_partial_failure_unsat_is_pruned`
+        // (helpers_tests.rs) pins the observable contract — partial sync plus
+        // contradictory constraints prunes — not which gate fires.
         #[cfg(feature = "vex-engine-z3")]
         if failed_count > 0 && success_count > 0 {
             let is_sat = sym_ctx.is_sat();
