@@ -135,8 +135,8 @@ pub(super) fn sym_flags_add(
 /// Mirrors `calc_flags_adc` (the concrete path) exactly, including VEX's
 /// `argR = dep2 ^ oldC` encoding and the oldC-dependent carry test
 /// (`res <= argL` with an incoming carry, `res < argL` without). Before
-/// angr-9ke6b.88 this category had no symbolic builder, so any ADC/SBB with a
-/// symbolic operand fell out of `sym_flags_for_category` as `Unsupported`.
+/// angr-9ke6b.88 this category had no symbolic builder, so `sym_flags_for_category`
+/// declined it and any ADC/SBB with a symbolic operand fell back to Python.
 pub(super) fn sym_flags_adc(
     nbits: u32,
     dep1: &RustBV,
@@ -251,6 +251,155 @@ pub(super) fn sym_flags_dec(
     SymFlags { cf, pf, zf, sf, of }
 }
 
+/// SHL: `dep1` is the post-shift result, `dep2` the pre-shift value rotated so
+/// its MSB is the last bit shifted out.
+///
+/// Mirrors `calc_flags_shl`. VEX only records enough state for a shift-by-1
+/// OF (`CF ^ SF`), which is what the concrete path computes too.
+pub(super) fn sym_flags_shl(
+    nbits: u32,
+    dep1: &RustBV,
+    dep2: &RustBV,
+    ctx: &SymContext,
+) -> SymFlags {
+    let remaining = extract_to_nbits(dep1, nbits, ctx);
+    let shifted = extract_to_nbits(dep2, nbits, ctx);
+    let zero = RustBV::concrete(0, nbits);
+
+    // CF = last bit shifted out = MSB of the shifted-out value.
+    let cf = shifted.extract(nbits - 1, nbits - 1, ctx);
+    let zf = remaining.eq(&zero, ctx);
+    let sf = remaining.extract(nbits - 1, nbits - 1, ctx);
+    let of = cf.xor(&sf, ctx);
+    let pf = symbolic_parity(&remaining, ctx);
+    SymFlags { cf, pf, zf, sf, of }
+}
+
+/// SHR / SAR: `dep1` is the post-shift result, `dep2` the pre-shift value
+/// rotated so its LSB is the last bit shifted out.
+///
+/// Mirrors `calc_flags_shr`; OF is the XOR of the two values' MSBs.
+pub(super) fn sym_flags_shr(
+    nbits: u32,
+    dep1: &RustBV,
+    dep2: &RustBV,
+    ctx: &SymContext,
+) -> SymFlags {
+    let remaining = extract_to_nbits(dep1, nbits, ctx);
+    let shifted = extract_to_nbits(dep2, nbits, ctx);
+    let zero = RustBV::concrete(0, nbits);
+
+    // CF = last bit shifted out = LSB of the shifted-out value.
+    let cf = shifted.extract(0, 0, ctx);
+    let zf = remaining.eq(&zero, ctx);
+    let sf = remaining.extract(nbits - 1, nbits - 1, ctx);
+    let of = shifted.extract(nbits - 1, nbits - 1, ctx).xor(&sf, ctx);
+    let pf = symbolic_parity(&remaining, ctx);
+    SymFlags { cf, pf, zf, sf, of }
+}
+
+/// ROL: `dep1` is the rotate result; PF/ZF/SF are *preserved* from `ndep`.
+///
+/// Mirrors `calc_flags_rol`. Rotates on x86 touch only CF and OF, so the other
+/// three flags come out of the saved EFLAGS in `cc_ndep` rather than from the
+/// result — the same preservation `sym_flags_inc`/`sym_flags_dec` do for CF.
+pub(super) fn sym_flags_rol(
+    nbits: u32,
+    dep1: &RustBV,
+    ndep: &RustBV,
+    ctx: &SymContext,
+) -> SymFlags {
+    let res = extract_to_nbits(dep1, nbits, ctx);
+
+    // CF = LSB of the result (the bit rotated around from the top).
+    let cf = res.extract(0, 0, ctx);
+    let pf = sym_extract_flag(ndep, flag_shift::G_CC_SHIFT_P, ctx);
+    let zf = sym_extract_flag(ndep, flag_shift::G_CC_SHIFT_Z, ctx);
+    let sf = sym_extract_flag(ndep, flag_shift::G_CC_SHIFT_S, ctx);
+    // OF = MSB ^ LSB of the result.
+    let of = res.extract(nbits - 1, nbits - 1, ctx).xor(&cf, ctx);
+    SymFlags { cf, pf, zf, sf, of }
+}
+
+/// ROR: `dep1` is the rotate result; PF/ZF/SF are *preserved* from `ndep`.
+///
+/// Mirrors `calc_flags_ror`; see [`sym_flags_rol`] for the preservation rule.
+pub(super) fn sym_flags_ror(
+    nbits: u32,
+    dep1: &RustBV,
+    ndep: &RustBV,
+    ctx: &SymContext,
+) -> SymFlags {
+    let res = extract_to_nbits(dep1, nbits, ctx);
+
+    // CF = MSB of the result (the bit rotated around from the bottom).
+    let cf = res.extract(nbits - 1, nbits - 1, ctx);
+    let pf = sym_extract_flag(ndep, flag_shift::G_CC_SHIFT_P, ctx);
+    let zf = sym_extract_flag(ndep, flag_shift::G_CC_SHIFT_Z, ctx);
+    let sf = sym_extract_flag(ndep, flag_shift::G_CC_SHIFT_S, ctx);
+    // OF = XOR of the two top bits of the result.
+    let of = cf.xor(&res.extract(nbits - 2, nbits - 2, ctx), ctx);
+    SymFlags { cf, pf, zf, sf, of }
+}
+
+/// UMUL: unsigned `dep1 * dep2`; CF = OF = "the product does not fit in nbits".
+///
+/// Mirrors `calc_flags_umul`. Both operands are zero-extended to `2 * nbits`
+/// so the full product is exact, then split — that is the symbolic equivalent
+/// of the concrete path's `u128` widening for the 64-bit case.
+pub(super) fn sym_flags_umul(
+    nbits: u32,
+    dep1: &RustBV,
+    dep2: &RustBV,
+    ctx: &SymContext,
+) -> SymFlags {
+    let wide = nbits * 2;
+    let a = extract_to_nbits(dep1, nbits, ctx).zero_extend(wide, ctx);
+    let b = extract_to_nbits(dep2, nbits, ctx).zero_extend(wide, ctx);
+    let product = a.mul(&b, ctx);
+    let lo = product.extract(nbits - 1, 0, ctx);
+    let hi = product.extract(wide - 1, nbits, ctx);
+    let zero = RustBV::concrete(0, nbits);
+
+    // CF = OF = high half non-zero (result truncated).
+    let cf = hi.ne(&zero, ctx);
+    let of = cf.clone();
+    // ZF/SF/PF are architecturally undefined after MUL; VEX computes them
+    // anyway, so mirror that rather than inventing a different answer.
+    let zf = lo.eq(&zero, ctx);
+    let sf = lo.extract(nbits - 1, nbits - 1, ctx);
+    let pf = symbolic_parity(&lo, ctx);
+    SymFlags { cf, pf, zf, sf, of }
+}
+
+/// SMUL: signed `dep1 * dep2`; CF = OF = "the high half is not the sign
+/// extension of the low half".
+///
+/// Mirrors `calc_flags_smul`; see [`sym_flags_umul`] for the widening scheme.
+pub(super) fn sym_flags_smul(
+    nbits: u32,
+    dep1: &RustBV,
+    dep2: &RustBV,
+    ctx: &SymContext,
+) -> SymFlags {
+    let wide = nbits * 2;
+    let a = extract_to_nbits(dep1, nbits, ctx).sign_extend(wide, ctx);
+    let b = extract_to_nbits(dep2, nbits, ctx).sign_extend(wide, ctx);
+    let product = a.mul(&b, ctx);
+    let lo = product.extract(nbits - 1, 0, ctx);
+    let hi = product.extract(wide - 1, nbits, ctx);
+    let zero = RustBV::concrete(0, nbits);
+
+    let sf = lo.extract(nbits - 1, nbits - 1, ctx);
+    // Sign extension of `lo`: all-ones when its MSB is set, all-zeros otherwise.
+    let lo_sign_ext = sf.sign_extend(nbits, ctx);
+    let cf = hi.ne(&lo_sign_ext, ctx);
+    let of = cf.clone();
+    let zf = lo.eq(&zero, ctx);
+    let pf = symbolic_parity(&lo, ctx);
+    SymFlags { cf, pf, zf, sf, of }
+}
+
 /// Extract a single flag bit at the given shift from a packed-EFLAGS BV.
 pub(super) fn sym_extract_flag(packed: &RustBV, shift: u32, ctx: &SymContext) -> RustBV {
     packed.extract(shift, shift, ctx)
@@ -258,18 +407,15 @@ pub(super) fn sym_extract_flag(packed: &RustBV, shift: u32, ctx: &SymContext) ->
 
 /// Why `sym_flags_for_category` may decline to build a `SymFlags`.
 ///
-/// Distinguishing these lets callers fall back to the Python ccall path
-/// deliberately (and lets future profiling code attribute the fallback to a
-/// specific category) instead of swallowing an unannotated `None`.
+/// Since angr-9ke6b.219 every non-Copy category has a symbolic builder, so
+/// `Copy` is the only reason left. The error type stays because callers still
+/// need to distinguish "declined" from "built", and a future category added to
+/// [`OpCategory`] would land here rather than silently degrading.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) enum SymFlagsError {
     /// `OpCategory::Copy` was passed. Copy's flags live directly in `dep1`;
     /// callers must invoke `sym_flags_from_copy` instead.
     CopyHandledByCaller,
-    /// No symbolic builder yet for this category — rare in branch flags but
-    /// hit by Adc/Sbb/Shl/Shr/Rol/Ror/Umul/Smul. Caller should fall back to
-    /// the Python ccall implementation.
-    Unsupported(OpCategory),
 }
 
 /// Dispatch table: build `SymFlags` for a non-Copy category.
@@ -277,6 +423,10 @@ pub(super) enum SymFlagsError {
 /// Callers MUST handle `OpCategory::Copy` before invoking this — Copy is
 /// reported as `Err(SymFlagsError::CopyHandledByCaller)` rather than handled
 /// in-place because Copy's flags live in `dep1` and need a different extraction.
+///
+/// The match is deliberately exhaustive (no `_` arm): a new `OpCategory` must
+/// be given a symbolic builder, not silently routed to the Python ccall path —
+/// angr-9ke6b.88 measured that fallback at 30x wall-clock on a real bench.
 pub(super) fn sym_flags_for_category(
     category: OpCategory,
     nbits: u32,
@@ -294,12 +444,12 @@ pub(super) fn sym_flags_for_category(
         OpCategory::Dec => Ok(sym_flags_dec(nbits, dep1, ndep, ctx)),
         OpCategory::Adc => Ok(sym_flags_adc(nbits, dep1, dep2, ndep, ctx)),
         OpCategory::Sbb => Ok(sym_flags_sbb(nbits, dep1, dep2, ndep, ctx)),
-        OpCategory::Shl
-        | OpCategory::Shr
-        | OpCategory::Rol
-        | OpCategory::Ror
-        | OpCategory::Umul
-        | OpCategory::Smul => Err(SymFlagsError::Unsupported(category)),
+        OpCategory::Shl => Ok(sym_flags_shl(nbits, dep1, dep2, ctx)),
+        OpCategory::Shr => Ok(sym_flags_shr(nbits, dep1, dep2, ctx)),
+        OpCategory::Rol => Ok(sym_flags_rol(nbits, dep1, ndep, ctx)),
+        OpCategory::Ror => Ok(sym_flags_ror(nbits, dep1, ndep, ctx)),
+        OpCategory::Umul => Ok(sym_flags_umul(nbits, dep1, dep2, ctx)),
+        OpCategory::Smul => Ok(sym_flags_smul(nbits, dep1, dep2, ctx)),
     }
 }
 

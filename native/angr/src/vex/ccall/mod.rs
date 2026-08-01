@@ -519,12 +519,6 @@ pub fn handle_ccall_with_ctx(
                         sym_ctx,
                     ) {
                         Ok(f) => f,
-                        Err(SymFlagsError::Unsupported(cat)) => {
-                            log::debug!(
-                                "ccall {name}: no symbolic SymFlags builder for {cat:?}; falling back to Python"
-                            );
-                            return None;
-                        }
                         // Unreachable: the surrounding `if` handles Copy first.
                         Err(SymFlagsError::CopyHandledByCaller) => return None,
                     }
@@ -608,10 +602,22 @@ pub fn handle_ccall_with_ctx(
                         flag_shift::G_CC_SHIFT_C,
                         sym_ctx,
                     )),
-                    // ADC/SBB carry is oldC-dependent (see `sym_flags_adc` /
-                    // `sym_flags_sbb`); reuse the shared builder rather than
-                    // re-deriving it here (angr-9ke6b.88).
-                    OpCategory::Adc | OpCategory::Sbb => sym_flags_for_category(
+                    // Everything else: reuse the shared `SymFlags` builder and
+                    // take its CF rather than re-deriving each formula here.
+                    // ADC/SBB carry is oldC-dependent (angr-9ke6b.88); the
+                    // shift/rotate/multiply carries read cc_dep2 / cc_ndep in
+                    // ways that are equally easy to get subtly wrong
+                    // (angr-9ke6b.219). Listed exhaustively so a new
+                    // `OpCategory` fails to compile instead of falling back to
+                    // Python (30x wall-clock, measured on angr-9ke6b.88).
+                    OpCategory::Adc
+                    | OpCategory::Sbb
+                    | OpCategory::Shl
+                    | OpCategory::Shr
+                    | OpCategory::Rol
+                    | OpCategory::Ror
+                    | OpCategory::Umul
+                    | OpCategory::Smul => sym_flags_for_category(
                         info.category,
                         nb,
                         &args[1],
@@ -621,7 +627,6 @@ pub fn handle_ccall_with_ctx(
                     )
                     .ok()
                     .map(|f| f.cf),
-                    _ => None,
                 };
                 if let Some(c) = cf {
                     return Some(c.zero_extend(ret_bits, sym_ctx));

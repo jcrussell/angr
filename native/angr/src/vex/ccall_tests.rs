@@ -504,6 +504,148 @@ fn diff_fuzz_sym_flags_dec() {
     }
 }
 
+// angr-9ke6b.219: Shl/Shr/Rol/Ror/Umul/Smul had no symbolic builder, so after
+// angr-9ke6b.88 tightened the fallback they routed every symbolic crossing to
+// Python. Same masking invariant as `diff_fuzz_sym_flags_sub`.
+
+#[test]
+fn diff_fuzz_sym_flags_shl() {
+    let mut rng = Lcg::new(0x5c1_0f00);
+    for nbits in [8u32, 16, 32, 64] {
+        let m = get_mask(nbits);
+        for _ in 0..200 {
+            // d1 = post-shift result, d2 = value holding the shifted-out bits.
+            let d1 = rng.next() & m;
+            let d2 = rng.next() & m;
+            let conc = flags_to_tuple(calc_flags_shl(nbits, d1, d2));
+            let sym = sym_flags_to_tuple(OpCategory::Shl, nbits, d1, d2, 0);
+            assert_eq!(sym, conc, "nbits={nbits} d1={d1:x} d2={d2:x}");
+        }
+    }
+}
+
+#[test]
+fn diff_fuzz_sym_flags_shr() {
+    let mut rng = Lcg::new(0x5c2_0f00);
+    for nbits in [8u32, 16, 32, 64] {
+        let m = get_mask(nbits);
+        for _ in 0..200 {
+            let d1 = rng.next() & m;
+            let d2 = rng.next() & m;
+            let conc = flags_to_tuple(calc_flags_shr(nbits, d1, d2));
+            let sym = sym_flags_to_tuple(OpCategory::Shr, nbits, d1, d2, 0);
+            assert_eq!(sym, conc, "nbits={nbits} d1={d1:x} d2={d2:x}");
+        }
+    }
+}
+
+#[test]
+fn diff_fuzz_sym_flags_rol() {
+    // ROL/ROR preserve PF/ZF/SF from cc_ndep, so sweep the full flag word
+    // rather than just the CF bit.
+    let mut rng = Lcg::new(0x201_0f00);
+    for nbits in [8u32, 16, 32, 64] {
+        let m = get_mask(nbits);
+        for _ in 0..200 {
+            let d1 = rng.next() & m;
+            let nd = rng.next();
+            let conc = flags_to_tuple(calc_flags_rol(nbits, d1, nd));
+            let sym = sym_flags_to_tuple(OpCategory::Rol, nbits, d1, 0, nd);
+            assert_eq!(sym, conc, "nbits={nbits} d1={d1:x} nd={nd:x}");
+        }
+    }
+}
+
+#[test]
+fn diff_fuzz_sym_flags_ror() {
+    let mut rng = Lcg::new(0x202_0f00);
+    for nbits in [8u32, 16, 32, 64] {
+        let m = get_mask(nbits);
+        for _ in 0..200 {
+            let d1 = rng.next() & m;
+            let nd = rng.next();
+            let conc = flags_to_tuple(calc_flags_ror(nbits, d1, nd));
+            let sym = sym_flags_to_tuple(OpCategory::Ror, nbits, d1, 0, nd);
+            assert_eq!(sym, conc, "nbits={nbits} d1={d1:x} nd={nd:x}");
+        }
+    }
+}
+
+#[test]
+fn diff_fuzz_sym_flags_umul() {
+    let mut rng = Lcg::new(0x0117_0f00);
+    for nbits in [8u32, 16, 32, 64] {
+        let m = get_mask(nbits);
+        for _ in 0..200 {
+            let d1 = rng.next() & m;
+            let d2 = rng.next() & m;
+            let conc = flags_to_tuple(calc_flags_umul(nbits, d1, d2));
+            let sym = sym_flags_to_tuple(OpCategory::Umul, nbits, d1, d2, 0);
+            assert_eq!(sym, conc, "nbits={nbits} d1={d1:x} d2={d2:x}");
+        }
+    }
+}
+
+#[test]
+fn diff_fuzz_sym_flags_smul() {
+    let mut rng = Lcg::new(0x0217_0f00);
+    for nbits in [8u32, 16, 32, 64] {
+        let m = get_mask(nbits);
+        for _ in 0..200 {
+            let d1 = rng.next() & m;
+            let d2 = rng.next() & m;
+            let conc = flags_to_tuple(calc_flags_smul(nbits, d1, d2));
+            let sym = sym_flags_to_tuple(OpCategory::Smul, nbits, d1, d2, 0);
+            assert_eq!(sym, conc, "nbits={nbits} d1={d1:x} d2={d2:x}");
+        }
+    }
+}
+
+/// The 64-bit UMUL/SMUL builders widen the operands to a 128-bit product —
+/// the only place in the x86 ccall path that builds a BV wider than 64 bits.
+/// The diff-fuzz tests above feed concrete BVs, which constant-fold before Z3
+/// ever sees the wide sort, so drive it once with a genuinely symbolic operand
+/// and check the solver still agrees with the concrete reference.
+#[test]
+fn sym_flags_wide_mul_roundtrips_through_z3() {
+    for (i, (d1, d2)) in [
+        (0x1_0000_0000u64, 0x1_0000_0000u64), // product needs bit 64
+        (3u64, 5u64),                         // fits in the low half
+        (u64::MAX, 2u64),                     // -1 signed / huge unsigned
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        for (cat, conc) in [
+            (OpCategory::Umul, calc_flags_umul(64, d1, d2)),
+            (OpCategory::Smul, calc_flags_smul(64, d1, d2)),
+        ] {
+            // Fresh context per case: the constraint pins the symbol to d1.
+            let ctx = crate::symbolic::SymContext::new_mock();
+            let sym_d1 = RustBV::symbolic(&ctx, format!("wide_mul_d1_{i}"), 64);
+            ctx.add_bv_constraint(&sym_d1, d1 as u128);
+            let d2_bv = RustBV::concrete(d2 as u128, 64);
+            let f = sym_flags_for_category(cat, 64, &sym_d1, &d2_bv, &d2_bv, &ctx)
+                .expect("category should be supported");
+            let got = (
+                ctx.eval(&f.cf),
+                ctx.eval(&f.pf),
+                ctx.eval(&f.zf),
+                ctx.eval(&f.sf),
+                ctx.eval(&f.of),
+            );
+            let want = (
+                Some(conc.cf as u128),
+                Some(conc.pf as u128),
+                Some(conc.zf as u128),
+                Some(conc.sf as u128),
+                Some(conc.of as u128),
+            );
+            assert_eq!(got, want, "{cat:?} d1={d1:x} d2={d2:x}");
+        }
+    }
+}
+
 /// Regression for angr-g6dg: `amd64g_calculate_rflags_c` for INC/DEC
 /// cc_ops must derive the carry from cc_ndep (CF is preserved by INC/DEC),
 /// even when the concrete fast-path declines because cc_dep1 is symbolic.
