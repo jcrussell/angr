@@ -32,7 +32,7 @@ use crate::symbolic::{
     record_vex_qop, record_vex_triop, record_vex_unop,
 };
 use crate::vex::ccall;
-use crate::vex::dirty::DirtyHelperDispatch;
+use crate::vex::dirty::{DirtyHelperDispatch, DirtyHelperState};
 use crate::vex::ir::{
     IRConst, IRExpr, IRLoadGOp, IROp, IRSB, IRStmt, IRType, JumpKind, TypeEnv, VexArch,
 };
@@ -689,6 +689,11 @@ pub(crate) struct VEXInterpreter<'a> {
     page_prefetch_count: u32,
     /// Dirty helper dispatch table for native handling of common helpers.
     dirty_dispatch: DirtyHelperDispatch,
+    /// Per-state scratch space for stateful dirty helpers (the simulated TSC).
+    /// Seeded from `RustSimState::tsc_counter` before the step and written
+    /// back after it, so RDTSC is deterministic per execution path instead of
+    /// depending on a process-wide counter (angr-9ke6b.173).
+    pub dirty_helper_state: DirtyHelperState,
     /// Registry mapping hook addresses to SimProcedure info.
     /// When a hook is hit, we can extract arguments using this info.
     /// Arc-shared on fork (O(1) clone). Mutators use Arc::make_mut for CoW.
@@ -810,6 +815,7 @@ impl<'a> VEXInterpreter<'a> {
             symbolic_ip_at_exit: None,
             page_prefetch_count: 2, // Prefetch 2 pages in each direction by default
             dirty_dispatch: DirtyHelperDispatch::new(),
+            dirty_helper_state: DirtyHelperState::default(),
             simprocedure_registry: Arc::new(FxHashMap::default()),
             calling_convention: cc,
             last_branch_condition: None,
@@ -1254,6 +1260,9 @@ impl<'a> VEXInterpreter<'a> {
             symbolic_ip_at_exit: None,
             page_prefetch_count: self.page_prefetch_count, // Inherit page prefetch count
             dirty_dispatch: DirtyHelperDispatch::new(),    // Fresh dispatch (stateless)
+            // Stateful helper scratch (TSC) DOES carry over: a forked path
+            // continues the parent's timeline rather than restarting it.
+            dirty_helper_state: self.dirty_helper_state.clone(),
             simprocedure_registry: Arc::clone(&self.simprocedure_registry), // Share SimProcedure registry
             calling_convention: cc,
             last_branch_condition: None,               // Fresh for fork

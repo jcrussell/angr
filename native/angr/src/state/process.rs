@@ -183,6 +183,22 @@ impl RustSimState {
         self.mmap_base = addr;
     }
 
+    /// Next value the `RDTSC` dirty helper will return for this state.
+    ///
+    /// Per-state rather than process-wide (angr-9ke6b.173): seeded into
+    /// `VEXInterpreter::dirty_helper_state` by `run_interpreter_step_core`
+    /// and written back by `apply_interpreter_step_result`, so the Nth RDTSC
+    /// along a path is reproducible regardless of what other states — or
+    /// other parallel workers — executed first.
+    pub fn tsc_counter(&self) -> u64 {
+        self.tsc_counter
+    }
+
+    /// Set the simulated timestamp counter. See [`Self::tsc_counter`].
+    pub fn set_tsc_counter(&mut self, tsc: u64) {
+        self.tsc_counter = tsc;
+    }
+
     /// Locale ctype table pointers (see [`CtypeLocPtrs`]). Read by the native
     /// `__ctype_b_loc` / `__ctype_tolower_loc` / `__ctype_toupper_loc` procs.
     pub fn ctype_loc(&self) -> CtypeLocPtrs {

@@ -72,6 +72,9 @@ pub(crate) struct InterpreterStepResult {
     pub(crate) new_pc: u64,
     pub(crate) new_call_stack: Vec<CallStackEntry>,
     pub(crate) new_detailed_history: Vec<HistoryEntry>,
+    /// Simulated TSC after the step; written back to `RustSimState` so the
+    /// counter is per-state rather than process-wide (angr-9ke6b.173).
+    pub(crate) new_tsc_counter: u64,
     pub(crate) recovered_memory: Option<SymbolicMemory>,
     pub(crate) step_stats: ExecutionStats,
     pub(crate) updated_block_cache: LruCache<u64, Arc<IRSB>>,
@@ -91,6 +94,10 @@ pub(crate) struct InterpreterStepResult {
 /// fields by value rather than the whole `InterpreterStepResult` because both
 /// callers have already partially moved `step_stats` / `updated_block_cache`
 /// out by this point.
+// Deliberately by-value and wide (see the doc above): both callers have
+// already partially moved `step_stats` / `updated_block_cache` out of the
+// `InterpreterStepResult`, so it cannot be re-borrowed as a whole here.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn apply_interpreter_step_result(
     state: &mut RustSimState,
     recovered_memory: Option<SymbolicMemory>,
@@ -99,6 +106,7 @@ pub(crate) fn apply_interpreter_step_result(
     symbolic_ip_at_exit: Option<RustBV>,
     new_call_stack: Vec<CallStackEntry>,
     new_detailed_history: Vec<HistoryEntry>,
+    new_tsc_counter: u64,
 ) {
     // Restore memory from interpreter back to state FIRST.
     // This must happen before any PendingCallback creation
@@ -121,6 +129,8 @@ pub(crate) fn apply_interpreter_step_result(
     // Restore call stack and detailed history from interpreter.
     state.set_call_stack(new_call_stack);
     state.set_detailed_history(new_detailed_history);
+    // Carry the simulated TSC forward; forks made below inherit it.
+    state.set_tsc_counter(new_tsc_counter);
     // Add to history.
     state.add_to_history(state.pc());
 }
@@ -211,6 +221,7 @@ impl RustExplorationManager {
             step.symbolic_ip_at_exit,
             step.new_call_stack,
             step.new_detailed_history,
+            step.new_tsc_counter,
         );
 
         let deferred_forks = step.deferred_forks;

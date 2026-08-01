@@ -770,7 +770,11 @@ impl<'a> VEXInterpreter<'a> {
 
         // Try native dirty helper dispatch first
         if all_args_concrete
-            && let Some(result) = self.dirty_dispatch.try_call(&dirty.cee.name, &arg_vals)
+            && let Some(result) = self.dirty_dispatch.try_call(
+                &mut self.dirty_helper_state,
+                &dirty.cee.name,
+                &arg_vals,
+            )
         {
             // Native handler succeeded!
             log::trace!(

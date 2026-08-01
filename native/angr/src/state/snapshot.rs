@@ -54,7 +54,7 @@ pub enum SnapshotError {
 ///
 /// * **Bucket A (trivials)** — pc, state_id, parent_id, history,
 ///   detailed_history, max_history, heap_brk, posix_brk, mmap_base,
-///   getopt_optind, getopt_optchar, getopt_extern,
+///   tsc_counter, getopt_optind, getopt_optchar, getopt_extern,
 ///   stdin_symbols, call_stack, heap_metadata, no_ip_concretization,
 ///   no_symbolic_jump_resolution, keep_ip_symbolic, vex_arch,
 ///   inspection, concretizer, fs, track_history, drop_terminal flag
@@ -90,6 +90,12 @@ pub struct RustSimStateSnapshot {
     pub heap_brk: u64,
     pub posix_brk: u64,
     pub mmap_base: u64,
+    /// Simulated RDTSC counter (angr-9ke6b.173). `#[serde(default)]` keeps
+    /// pre-.173 snapshots loadable; they restore to 0, which is harmless — the
+    /// counter only has to be monotonic within a state, not start at
+    /// `TSC_INITIAL`.
+    #[serde(default)]
+    pub tsc_counter: u64,
     pub getopt_optind: u32,
     pub getopt_optchar: u32,
     pub getopt_extern: crate::state::GetoptExternAddrs,
@@ -171,6 +177,7 @@ impl RustSimState {
             heap_brk: self.heap_brk,
             posix_brk: self.posix_brk,
             mmap_base: self.mmap_base,
+            tsc_counter: self.tsc_counter,
             getopt_optind: self.getopt_optind,
             getopt_optchar: self.getopt_optchar,
             getopt_extern: self.getopt_extern,
@@ -232,6 +239,7 @@ impl RustSimState {
             heap_brk: snap.heap_brk,
             posix_brk: snap.posix_brk,
             mmap_base: snap.mmap_base,
+            tsc_counter: snap.tsc_counter,
             getopt_optind: snap.getopt_optind,
             getopt_optchar: snap.getopt_optchar,
             getopt_extern: snap.getopt_extern,

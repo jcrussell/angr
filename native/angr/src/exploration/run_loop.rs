@@ -443,6 +443,7 @@ fn parallel_process_state(
         step.symbolic_ip_at_exit,
         step.new_call_stack,
         step.new_detailed_history,
+        step.new_tsc_counter,
     );
 
     let inputs = PostStepInputs {

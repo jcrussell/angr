@@ -400,6 +400,14 @@ pub struct RustSimState {
     /// `posix_brk`. Future cross-engine sync work should address both fields
     /// at the syscall callback boundary.
     mmap_base: u64,
+    /// Simulated timestamp counter backing the `RDTSC` dirty helper. Per-state
+    /// (was a process-wide `AtomicU64` — angr-9ke6b.173) so the Nth RDTSC along
+    /// a path is reproducible across runs, worker counts, and unrelated states.
+    /// Default [`crate::vex::dirty::TSC_INITIAL`]; advances by
+    /// [`crate::vex::dirty::TSC_STEP`] per RDTSC. Carried across fork +
+    /// snapshot; merged as `max` (time is a monotonic watermark, like
+    /// `heap_brk`/`mmap_base`).
+    tsc_counter: u64,
     /// getopt(3) cursor — index into `argv` (POSIX `optind`). Per-state,
     /// mirrors Python's `state.libc.getopt_optind`. Default 1. Carried across
     /// fork + snapshot so each path resumes option scanning correctly.

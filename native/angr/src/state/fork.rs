@@ -109,6 +109,7 @@ impl RustSimState {
             heap_brk: self.heap_brk,
             posix_brk: self.posix_brk,
             mmap_base: self.mmap_base,
+            tsc_counter: self.tsc_counter,
             getopt_optind: self.getopt_optind,
             getopt_optchar: self.getopt_optchar,
             getopt_extern: self.getopt_extern,
@@ -205,6 +206,7 @@ impl RustSimState {
             heap_brk: self.heap_brk,
             posix_brk: self.posix_brk,
             mmap_base: self.mmap_base,
+            tsc_counter: self.tsc_counter,
             getopt_optind: self.getopt_optind,
             getopt_optchar: self.getopt_optchar,
             getopt_extern: self.getopt_extern,
@@ -406,6 +408,13 @@ impl RustSimState {
             mmap_base: others
                 .iter()
                 .fold(self.mmap_base, |m, o| m.max(o.mmap_base)),
+            // Simulated time is a monotonic watermark like the allocator
+            // bases above: take the furthest-advanced branch so the merged
+            // state's next RDTSC can't read earlier than one an arm already
+            // observed (which would make time appear to run backwards).
+            tsc_counter: others
+                .iter()
+                .fold(self.tsc_counter, |m, o| m.max(o.tsc_counter)),
             getopt_optind: self.getopt_optind,
             getopt_optchar: self.getopt_optchar,
             getopt_extern: self.getopt_extern,

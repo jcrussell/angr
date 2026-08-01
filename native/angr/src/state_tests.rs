@@ -1069,6 +1069,7 @@ fn build_populated_state() -> RustSimState {
     s.set_no_symbolic_jump_resolution(true);
     s.set_posix_brk(0x1B0_4000);
     s.set_mmap_base(0xC100_8000);
+    s.set_tsc_counter(0x0010_000F_A000);
     s.set_getopt_cursor(7, 3);
     s.set_getopt_extern(GetoptExternAddrs {
         optind: Some(0x602000),
@@ -1115,6 +1116,7 @@ fn assert_state_round_trip(orig: &RustSimState, restored: &RustSimState) {
     assert_eq!(restored.heap_brk(), orig.heap_brk());
     assert_eq!(restored.posix_brk(), orig.posix_brk());
     assert_eq!(restored.mmap_base(), orig.mmap_base());
+    assert_eq!(restored.tsc_counter(), orig.tsc_counter());
     assert_eq!(restored.getopt_cursor(), orig.getopt_cursor());
     {
         let (ro, oo) = (restored.getopt_extern(), orig.getopt_extern());
@@ -1998,6 +2000,52 @@ fn test_merge_unions_other_only_overlays_and_takes_max_brk() {
     assert_eq!(merged.heap_brk(), 0x20_0000, "heap_brk must be max(a, b)");
     assert_eq!(merged.posix_brk(), 0x30_0000, "posix_brk must be max(a, b)");
     assert_eq!(merged.mmap_base(), 0x50_0000, "mmap_base must be max(a, b)");
+}
+
+// angr-9ke6b.173: the simulated RDTSC counter moved from a process-wide
+// AtomicU64 onto RustSimState. It must default to TSC_INITIAL, survive a fork
+// (a child continues the parent's clock and then diverges independently), and
+// merge as a max watermark so the merged state's next RDTSC can't read earlier
+// than a value one of the arms already observed.
+#[test]
+fn test_tsc_counter_forks_and_merges_as_watermark() {
+    Python::initialize();
+
+    let mut a = RustSimState::new("amd64").unwrap();
+    assert_eq!(
+        a.tsc_counter(),
+        crate::vex::dirty::TSC_INITIAL,
+        "a fresh state starts at the fixed initial TSC, not wherever some \
+         other state left a global counter"
+    );
+
+    a.set_tsc_counter(crate::vex::dirty::TSC_INITIAL + 5 * crate::vex::dirty::TSC_STEP);
+    let mut child = a.fork();
+    assert_eq!(
+        child.tsc_counter(),
+        a.tsc_counter(),
+        "fork inherits the parent's clock"
+    );
+
+    // Diverge: the child executes more RDTSCs than the parent.
+    child.set_tsc_counter(child.tsc_counter() + 3 * crate::vex::dirty::TSC_STEP);
+    assert_ne!(child.tsc_counter(), a.tsc_counter());
+
+    let m0 = {
+        let s = a.solver().borrow();
+        RustBV::symbolic(&s, "tsc173_m0", 1)
+    };
+    let m1 = {
+        let s = a.solver().borrow();
+        RustBV::symbolic(&s, "tsc173_m1", 1)
+    };
+    let expected = child.tsc_counter();
+    let merged = a.merge(&[&child], &[m0, m1]);
+    assert_eq!(
+        merged.tsc_counter(),
+        expected,
+        "merge must take the furthest-advanced TSC across branches"
+    );
 }
 
 // angr-n0irt.2: RustSimState::merge must extend the angr-ph300.51 max-merge fix

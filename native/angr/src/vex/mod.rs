@@ -21,7 +21,7 @@ pub mod ops;
 pub mod pyvex_bridge;
 pub mod transcendentals;
 
-pub use dirty::{DirtyHelperDispatch, DirtyHelperResult};
+pub use dirty::{DirtyHelperDispatch, DirtyHelperResult, DirtyHelperState};
 pub use ir::*;
 pub use lifter::{LiftError, VEXLifter};
 pub use opcode_map::{parse_endness, parse_jumpkind, parse_opcode, parse_type};

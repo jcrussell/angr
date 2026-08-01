@@ -237,6 +237,9 @@ pub(crate) fn run_interpreter_step_core(
     // Transfer call stack and detailed history to interpreter
     interp.call_stack = state.call_stack().to_vec();
     interp.detailed_history = state.detailed_history().iter().cloned().collect();
+    // Seed the per-state simulated TSC so RDTSC continues this state's own
+    // timeline instead of a process-wide counter (angr-9ke6b.173).
+    interp.dirty_helper_state.tsc = state.tsc_counter();
 
     // Set up hooks, skipping the one we just processed (for zero-length hooks)
     for &addr in &ctx.hooks {
@@ -323,6 +326,7 @@ pub(crate) fn run_interpreter_step_core(
     let new_pc = interp.get_pc();
     let new_call_stack = std::mem::take(&mut interp.call_stack);
     let new_detailed_history = std::mem::take(&mut interp.detailed_history);
+    let new_tsc_counter = interp.dirty_helper_state.tsc;
 
     // Flush any remaining pending stores to rust_memory before recovery.
     interp.flush_stores_to_rust_memory();
@@ -346,6 +350,7 @@ pub(crate) fn run_interpreter_step_core(
         new_pc,
         new_call_stack,
         new_detailed_history,
+        new_tsc_counter,
         recovered_memory,
         step_stats,
         updated_block_cache,

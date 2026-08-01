@@ -50,7 +50,37 @@ pub struct DirtyHelperDispatch {
     handlers: HashMap<&'static str, DirtyHandlerFn>,
 }
 
-type DirtyHandlerFn = fn(&[u64]) -> Option<DirtyHelperResult>;
+type DirtyHandlerFn = fn(&mut DirtyHelperState, &[u64]) -> Option<DirtyHelperResult>;
+
+/// Initial value of a state's simulated timestamp counter.
+pub const TSC_INITIAL: u64 = 0x1000000000;
+
+/// Amount the simulated timestamp counter advances per `RDTSC`.
+pub const TSC_STEP: u64 = 1000;
+
+/// Mutable per-state scratch space threaded into the dirty helpers.
+///
+/// Helpers that model stateful hardware (currently only `RDTSC`) read and
+/// advance this instead of a process-wide static, so two states executing
+/// independently — including concurrently under the parallel scheduler — see
+/// values that depend only on their own execution history. That makes RDTSC
+/// reproducible across runs and across worker counts, which matters for the
+/// timing / anti-analysis checks that actually read the TSC.
+///
+/// Lives on `VEXInterpreter` for the duration of a step and is transferred
+/// to/from `RustSimState::tsc_counter` by `run_interpreter_step_core` and
+/// `apply_interpreter_step_result`, so it forks and merges with the state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirtyHelperState {
+    /// Next value `RDTSC` will return.
+    pub tsc: u64,
+}
+
+impl Default for DirtyHelperState {
+    fn default() -> Self {
+        DirtyHelperState { tsc: TSC_INITIAL }
+    }
+}
 
 impl Default for DirtyHelperDispatch {
     fn default() -> Self {
@@ -79,14 +109,20 @@ impl DirtyHelperDispatch {
     /// Try to handle a dirty call natively.
     ///
     /// # Arguments
+    /// * `helper_state` - Per-state scratch space (e.g. the simulated TSC)
     /// * `name` - The helper function name
     /// * `args` - Concrete argument values
     ///
     /// # Returns
     /// Some(result) if handled natively, None if Python callback needed.
-    pub fn try_call(&self, name: &str, args: &[u64]) -> Option<DirtyHelperResult> {
+    pub fn try_call(
+        &self,
+        helper_state: &mut DirtyHelperState,
+        name: &str,
+        args: &[u64],
+    ) -> Option<DirtyHelperResult> {
         if let Some(handler) = self.handlers.get(name) {
-            handler(args)
+            handler(helper_state, args)
         } else {
             None
         }
@@ -97,15 +133,15 @@ impl DirtyHelperDispatch {
 // RDTSC Handlers
 // ============================================================================
 
-/// Simulated TSC value.
-/// We use a static counter that increments on each call.
-use std::sync::atomic::{AtomicU64, Ordering};
-
-static TSC_COUNTER: AtomicU64 = AtomicU64::new(0x1000000000);
-
-fn handle_rdtsc(_args: &[u64]) -> Option<DirtyHelperResult> {
-    // Return an incrementing timestamp value
-    let tsc = TSC_COUNTER.fetch_add(1000, Ordering::Relaxed);
+/// Simulated TSC value: return the state's current counter and advance it.
+///
+/// The counter is per-state (see [`DirtyHelperState`]), not process-wide, so
+/// the Nth `RDTSC` along a given execution path always yields the same value
+/// regardless of what other states did first. Saturates rather than wrapping
+/// so a pathological RDTSC loop cannot make time appear to run backwards.
+fn handle_rdtsc(state: &mut DirtyHelperState, _args: &[u64]) -> Option<DirtyHelperResult> {
+    let tsc = state.tsc;
+    state.tsc = state.tsc.saturating_add(TSC_STEP);
     Some(DirtyHelperResult::with_return(tsc))
 }
 
@@ -113,12 +149,12 @@ fn handle_rdtsc(_args: &[u64]) -> Option<DirtyHelperResult> {
 // I/O Port Handlers
 // ============================================================================
 
-fn handle_in_port(_args: &[u64]) -> Option<DirtyHelperResult> {
+fn handle_in_port(_state: &mut DirtyHelperState, _args: &[u64]) -> Option<DirtyHelperResult> {
     // Return 0xFF for all IN port reads (safe default)
     Some(DirtyHelperResult::with_return(0xFF))
 }
 
-fn handle_out_port(_args: &[u64]) -> Option<DirtyHelperResult> {
+fn handle_out_port(_state: &mut DirtyHelperState, _args: &[u64]) -> Option<DirtyHelperResult> {
     // OUT has no return value - just ignore it
     Some(DirtyHelperResult::empty())
 }
