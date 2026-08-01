@@ -53,6 +53,21 @@ mod pending_api;
 mod profiling;
 mod resume;
 mod run_loop;
+/// The single-threaded run loop (`run_loop_single_threaded` + `step_one`), the
+/// always-compiled default driver. Split out of `run_loop.rs` (angr-9ke6b.49).
+mod run_loop_single;
+/// The steady-state parallel coordinator (angr-nkoct). Z3-gated: it drives the
+/// scheduler, which transports [`crate::state::StateMigrationPayload`].
+#[cfg(feature = "vex-engine-z3")]
+mod run_loop_steady;
+/// The per-wave parallel coordinator (angr-vh834 Phase 5). Z3-gated for the
+/// same reason as [`run_loop_steady`].
+#[cfg(feature = "vex-engine-z3")]
+mod run_loop_wave;
+/// The GIL-free worker body both parallel coordinators dispatch. Z3-gated for
+/// the same reason as [`run_loop_steady`].
+#[cfg(feature = "vex-engine-z3")]
+mod run_loop_worker;
 /// Work-stealing scheduler machinery for parallel exploration (angr-1ilq.3).
 /// Z3-gated: it transports [`crate::state::StateMigrationPayload`], which only
 /// exists with the Z3-backed engine.
@@ -409,7 +424,7 @@ pub struct RustExplorationManager {
     /// on any exploration-config mutation (`steady_config_guard`), and at
     /// manager teardown.
     #[cfg(feature = "vex-engine-z3")]
-    pub(crate) parallel_session: Option<self::run_loop::SteadySession>,
+    pub(crate) parallel_session: Option<self::run_loop_steady::SteadySession>,
     /// The Python driver's promise that nothing reads or mutates the active
     /// stash between `run()` calls (set per explore loop by rust_manager.py;
     /// default false). One of the steady-state engagement conditions — without

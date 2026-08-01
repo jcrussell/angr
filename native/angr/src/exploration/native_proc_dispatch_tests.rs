@@ -8,7 +8,7 @@ use crate::symbolic::RustBV;
 
 // ---------------------------------------------------------------------------
 // dispatch_native_proc — the shared proc-dispatch decision consumed by BOTH
-// `step_one` (run_loop.rs) and `handle_simprocedure_core`
+// `step_one` (run_loop_single.rs) and `handle_simprocedure_core`
 // (core_outcome_handlers.rs). Only the parallel copy was covered before
 // angr-ph300.73, so the serial copy was free to drift.
 // ---------------------------------------------------------------------------

@@ -7,7 +7,7 @@
 //!      deque (the push side).
 //!
 //! Historically these were a single `use_lifo: bool` open-coded as
-//! `pop_front`/`pop_back` in `run_loop.rs`, with an unconditional `push_back`
+//! `pop_front`/`pop_back` in `run_loop_single.rs`, with an unconditional `push_back`
 //! at every fork site. This trait factors that decision behind two hooks so
 //! richer policies (random-path, coverage-guided, CFG-distance directed —
 //! angr-a32jl.2+) can slot in without touching the run loop.
@@ -25,7 +25,7 @@
 //! in this module's seam:
 //!
 //!   * **The select chokepoint** — `policy.select` is the only place the run
-//!     loop (`run_loop.rs`) removes a state from `active`. Every built-in below
+//!     loop (`run_loop_single.rs`) removes a state from `active`. Every built-in below
 //!     picks an index into the `VecDeque` and calls `remove(idx)`, which
 //!     preserves the relative order of the survivors. Where a policy ranks
 //!     states it must terminate its key with the *front index* `i` so ties are

@@ -517,7 +517,7 @@ fn test_drain_local_hands_off_the_residual_frontier() {
 // has (angr-ua7fd follow-up): `local.drain(..)` detaches every residual state
 // without going through `policy.select`. This path is more routine than
 // offload_surplus's — it fires on essentially every steady-session
-// pause/finalize (`finalize_steady_session` in run_loop.rs) — and drained
+// pause/finalize (`finalize_steady_session` in run_loop_steady.rs) — and drained
 // states get reseeded through the shared injector the same way, so a
 // memoizing policy's per-state side table (LoopHeadRoundRobin::key_cache)
 // needs the same eviction notification here.

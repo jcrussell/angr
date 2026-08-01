@@ -376,7 +376,7 @@ fn test_link_register_is_unwired_pending_serial_subcall_fix() {
             assert!(
                 cc.link_register().is_none(),
                 "{arch}: link_register() is now wired up — the serial sub-call \
-                 path in run_loop.rs must be fixed to resolve caller_return_addr \
+                 path in run_loop_single.rs must be fixed to resolve caller_return_addr \
                  through the calling convention before this is safe",
             );
         }

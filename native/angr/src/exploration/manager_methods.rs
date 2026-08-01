@@ -2311,7 +2311,7 @@ impl RustExplorationManager {
     }
 
     // =========================================================================
-    // Run loop (body in run_loop.rs)
+    // Run loop (body in run_loop.rs + its run_loop_{single,wave,steady} siblings)
     // =========================================================================
 
     /// Run the exploration loop.

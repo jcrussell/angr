@@ -183,7 +183,7 @@ pub(crate) trait CallingConvention: Send + Sync {
     /// serial sub-call path.** `RustExplorationManager::get_return_addr`
     /// (`exploration/helpers.rs`) reads `[sp]` unconditionally, and the serial
     /// `NativeProcDisposition::SubCall` arm in `RustExplorationManager::step_one`
-    /// (`exploration/run_loop.rs`) uses it to fill `NativeSubcall::caller_return_addr`.
+    /// (`exploration/run_loop_single.rs`) uses it to fill `NativeSubcall::caller_return_addr`.
     /// On a link-register ABI that value is whatever happened to be on the
     /// stack, and `handle_native_resume` later does `state.set_pc(frame
     /// .caller_return_addr)` with it. Today the `None` here makes

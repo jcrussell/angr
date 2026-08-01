@@ -203,7 +203,7 @@ impl LoopExecutionEvent {
     ///
     /// **No production caller** (angr-9ke6b.214). The live Rust->Python event
     /// path is `exploration::event::ExplorationEvent`, built in
-    /// `run_loop::callback_event`; this `LoopExecutionEvent` conversion is the
+    /// `run_loop_single::callback_event`; this `LoopExecutionEvent` conversion is the
     /// superseded predecessor, still driven only by `events_tests` /
     /// `callbacks_tests`. Retiring it (and its tests, and the `#[pyclass]`
     /// registration in `engine::vex_engine`) is a deliberate removal, not a

@@ -289,7 +289,7 @@ impl RustExplorationManager {
     /// Route a successor state to the found/avoid/active stash by its PC.
     ///
     /// Centralizes the find_addrs/avoid_addrs/active triage that the
-    /// successor and deferred-fork loops in run_loop.rs and resume.rs would
+    /// successor and deferred-fork loops in run_loop_single.rs and resume.rs would
     /// otherwise open-code identically. The `find_addrs` -> STASH_FOUND and
     /// `avoid_addrs` -> push_or_drop_terminal(STASH_AVOID) legs are byte
     /// identical at every call site; only the FOUND-push gating varies.
@@ -496,7 +496,7 @@ impl RustExplorationManager {
     ///
     /// Returns an [`ExtractionError`] instead of silently zero-padding when
     /// the stack pointer is symbolic or a stack slot cannot be read. Callers
-    /// (the native-procedure dispatchers in `stepping.rs` / `run_loop.rs`)
+    /// (the native-procedure dispatchers in `stepping.rs` / `run_loop_single.rs`)
     /// treat any error as a signal to skip the native fast path and fall
     /// through to the Python SimProcedure callback rather than handing the
     /// handler a fabricated `RustBV::zero` that would silently mask a real

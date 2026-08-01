@@ -295,7 +295,7 @@ impl TaskOutcome {
 /// back into a [`SchedulerStats`] after the pool joins.
 ///
 /// `pub(crate)` so the coordinator's forthcoming duplex-protocol `RunSession`
-/// (run_loop.rs) can own one directly (angr-vh834 steady-state redesign, Phase
+/// (run_loop_steady.rs) can own one directly (angr-vh834 steady-state redesign, Phase
 /// 1). The scheduler still constructs and reads it here.
 #[derive(Default)]
 pub(crate) struct SchedulerCounters {
@@ -322,7 +322,7 @@ pub(crate) struct SchedulerCounters {
     /// coordinator reattaches on paths other than an injector steal (Phase 2+).
     reattaches: AtomicUsize,
     /// Bounce states that made a full worker->coordinator->worker round trip.
-    /// Wired by the steady-state coordinator (run_loop.rs); 0 in wave mode.
+    /// Wired by the steady-state coordinator (run_loop_steady.rs); 0 in wave mode.
     pub(crate) bounce_roundtrips: AtomicUsize,
     /// States re-injected after a Python resume callback
     /// ([`RunSession::inject_resumed`]); 0 in wave mode.
@@ -556,7 +556,7 @@ fn snapshot_stats(seeds: usize, counters: &SchedulerCounters) -> SchedulerStats 
     }
 }
 
-/// A boxed, thread-safe per-state processor. Production (`run_loop.rs`) wraps
+/// A boxed, thread-safe per-state processor. Production (`run_loop_wave.rs` / `run_loop_steady.rs`) wraps
 /// `parallel_process_state`, capturing the owned `StepContext` plus `Arc`-shared
 /// callbacks / profiling / native registries / `ParallelShared`; the scheduler
 /// unit tests wrap synthetic closures. Boxing behind a `dyn` (one indirect call
@@ -613,7 +613,7 @@ pub(crate) struct WorkTransport {
     /// cap is applied by [`worker::absorb_continues`] against `pending`
     /// (queued + in-flight = the resident frontier). `None` = unbounded, which
     /// is what every Rust-side / test construction gets by default; the two
-    /// production sites in `run_loop.rs` thread the manager's value in.
+    /// production sites in `run_loop_wave.rs` / `run_loop_steady.rs` thread the manager's value in.
     max_active_states: Option<usize>,
     /// Dispatch budget for this wave — the parallel mirror of the run loop's
     /// `run(n)` step budget (angr-9ke6b.52). The wave coordinator's own budget

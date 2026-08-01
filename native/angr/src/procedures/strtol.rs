@@ -429,7 +429,7 @@ crate::declare_proc! {
     /// the integer return register (caller usually uses split eax:edx).
     ///
     /// This is a deliberate, tested fallback — not a TODO. The single-register
-    /// return path in the dispatcher (`run_loop.rs` / `stepping.rs`, which call
+    /// return path in the dispatcher (`run_loop_single.rs` / `stepping.rs`, which call
     /// `set_register_by_offset(return_register(), rv)`) has no way to populate
     /// the high half of a split-register result, and silently returning only
     /// the low 32 bits would corrupt any value above 2^32. The Python

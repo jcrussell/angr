@@ -281,7 +281,7 @@ pub(super) fn worker_session_loop(
 /// directly by `dispatch_next`'s steal branch, never re-entering through
 /// `on_fork`/`select` — the identical bypass `offload_surplus` has, just on a
 /// more routine path (fires on essentially every steady-session pause/finalize,
-/// `finalize_steady_session` in `run_loop.rs`). So this drain must call
+/// `finalize_steady_session` in `run_loop_steady.rs`). So this drain must call
 /// `policy.on_state_removed` per state too, or a memoizing policy's per-state
 /// side table leaks the same way (angr-ua7fd).
 fn drain_local_with(

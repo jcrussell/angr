@@ -1507,7 +1507,7 @@ baby-re catastrophe. New counters: ``lineage_dismantled``,
 Threshold justification (35 %)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The 35 % hot-cache threshold (``run_loop.rs`` —
+The 35 % hot-cache threshold (``run_loop_single.rs`` —
 ``tick_and_sample_for_thrash(10, 20, 35)``) was tuned on N = 4 workload
 data points (``angr-1gfa``, 2026-05-25), running each with
 ``use_shared_lineage_solver=True`` and reading
@@ -3362,7 +3362,7 @@ Where memory accumulates
   still hold their full ``SymContext`` (including the Z3 solver
   clone). On wide explorations like ``hackcon2016_angry-reverser``
   these accumulate hundreds of solver clones; the engine drops them
-  at the push sites in ``exploration/run_loop.rs`` to bound the
+  at the push sites in ``exploration/run_loop_single.rs`` to bound the
   per-stash cost, but a user-controlled ``mgr.avoid`` workload can
   still grow O(paths).
 * **claripy AST caches** — Python-side, ``WeakValueDictionary`` based;
@@ -4025,7 +4025,7 @@ avoids?
 
 #. **No ungated eager solves in the step loop.** Every
    ``.satisfiable()`` on the stepping path in
-   ``native/angr/src/exploration/`` (``run_loop.rs``, ``resume.rs``,
+   ``native/angr/src/exploration/`` (``run_loop_single.rs``, ``resume.rs``,
    ``stepping.rs``) is guarded by ``lazy_solves || …``, and the
    interpreter's per-fork ``check_branch_feasibility``
    (``interpreter/statements.rs``) is short-circuited to
@@ -4033,7 +4033,7 @@ avoids?
    ``.satisfiable()`` calls are the three explicit user-facing API
    queries in ``exploration/state_api.rs`` (correct by design) and the
    defensive re-check on the rare *find*-successor path
-   (``run_loop.rs`` ``push`` into ``STASH_FOUND``) — necessary because a
+   (``run_loop_single.rs`` ``push`` into ``STASH_FOUND``) — necessary because a
    find state reached via straight-line (non-forking) code is never
    feasibility-checked by the interpreter.
 
