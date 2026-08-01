@@ -73,18 +73,21 @@ pub struct ExplorationStateSnapshot {
 // surface is load-bearing:
 //
 // * LOAD-BEARING — consumed by the Python bridge in rust_state_export.py's
-//   `_snapshot_to_angr` reconstruction path: `get_registers_named`,
-//   `get_symbolic_register_names`, `get_registers_raw` (register writeback +
-//   lazy symbolic-register proxy, angr-4ju9e) and `page_count` / `get_page`
-//   (memory-page writeback). Removing or renaming any of these breaks
-//   materialization — sweep rust_state_export.py in the same change.
+//   `_snapshot_to_angr` reconstruction path: `get_registers_named` and
+//   `get_symbolic_register_names` (register writeback + lazy symbolic-register
+//   proxy, angr-4ju9e) and `page_count` / `get_page` (memory-page writeback).
+//   Removing or renaming any of these breaks materialization — sweep
+//   rust_state_export.py in the same change.
 //
 // * INTROSPECTION / DEBUG-ONLY — no current Python caller (verified by grep
 //   over angr/ at audit time): `get_call_stack`, `get_call_stack_depth`,
 //   `get_detailed_history`, `get_detailed_history_str`, `get_heap_allocated`,
 //   `get_heap_freed`, `get_heap_alloc_count`, `get_heap_free_count`,
 //   `get_open_fds`, `get_fd_count`, `get_inspection_counts`,
-//   `get_symbolic_offsets`, `memory_load`, `page_addresses`, `get_history`.
+//   `get_symbolic_offsets`, `memory_load`, `page_addresses`, `get_history`,
+//   `get_registers_raw` (angr-9ke6b.5 re-audit: the Python bridge reconstructs
+//   registers from `get_registers_named` + `get_symbolic_register_names`; the
+//   flat buffer is only read by the Rust/pytest arch-offset parity tests).
 //   The Python sync helpers (`_sync_rust_callstack_to_state`,
 //   `_sync_rust_heap_brk_to_state`, `_sync_state_posix_fds_to_rust`, ...) read
 //   the LIVE `rust_mgr.get_state_*` accessors instead of a materialized

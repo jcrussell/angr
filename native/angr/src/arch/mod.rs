@@ -589,10 +589,25 @@ impl RegisterFile {
     /// Copy concrete register values to a byte slice.
     ///
     /// This is used to extract the register state after execution.
-    /// Note: symbolic values are converted to their concrete value (0 if unknown).
+    ///
+    /// A register that currently holds a symbolic value reads back as **zero**,
+    /// never as the concrete bytes it happened to hold before the symbolic write
+    /// (angr-9ke6b.5). `put`'s symbolic branches leave `self.data` alone — or,
+    /// for a partially-concrete sub-register write into a wider symbolic, update
+    /// only the written bytes — so without this pass the flat buffer would hand
+    /// a caller a stale pre-symbolic value it has no way to distinguish from a
+    /// live concrete one. The whole span of a symbolic entry is zeroed, including
+    /// any concrete sub-register bytes composed into it: the register as a whole
+    /// is not concretely representable, and the symbolic value itself travels
+    /// separately (`get_symbolic_register_names` on the export snapshot).
     pub(crate) fn copy_to_bytes(&self, bytes: &mut [u8]) {
         let len = std::cmp::min(bytes.len(), self.data.len());
         bytes[..len].copy_from_slice(&self.data[..len]);
+        for (&offset, sym_val) in &self.symbolic {
+            let start = std::cmp::min(offset as usize, len);
+            let end = std::cmp::min(start + (sym_val.width() / 8) as usize, len);
+            bytes[start..end].fill(0);
+        }
     }
 
     /// Fork the register file for path splitting.

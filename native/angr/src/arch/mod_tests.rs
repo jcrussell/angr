@@ -388,6 +388,72 @@ fn test_register_file_symbolic() {
     assert!(rax.is_symbolic());
 }
 
+/// `copy_to_bytes` must report a now-symbolic register as zero, not as the
+/// concrete value it held before the symbolic write (angr-9ke6b.5). `put`'s
+/// symbolic branch only touches the `symbolic` map, so the stale bytes are
+/// still sitting in `data` — a consumer of the flat buffer (the export
+/// snapshot's `registers_raw`) cannot tell them apart from a live concrete
+/// value.
+#[test]
+fn copy_to_bytes_zeroes_symbolic_registers() {
+    let ctx = SymContext::new_mock();
+    let mut regs = RegisterFile::new(Box::new(AMD64));
+
+    // rax concrete, then overwritten symbolically; rbx stays concrete.
+    regs.put_reg("rax", RustBV::concrete(0x1234_5678_9ABC_DEF0, 64));
+    regs.put_reg("rbx", RustBV::concrete(0x0BAD_C0DE_0BAD_C0DE, 64));
+    regs.put_reg("rax", RustBV::symbolic(&ctx, "rax_sym", 64));
+
+    let mut bytes = vec![0u8; AMD64.state_size()];
+    regs.copy_to_bytes(&mut bytes);
+
+    let rax_off = AMD64.register_offset("rax").unwrap() as usize;
+    let rbx_off = AMD64.register_offset("rbx").unwrap() as usize;
+    assert_eq!(
+        &bytes[rax_off..rax_off + 8],
+        &[0u8; 8],
+        "symbolic rax leaked its stale concrete bytes into the flat buffer"
+    );
+    assert_eq!(
+        u64::from_le_bytes(bytes[rbx_off..rbx_off + 8].try_into().unwrap()),
+        0x0BAD_C0DE_0BAD_C0DE,
+        "zeroing the symbolic span must not touch neighboring concrete registers"
+    );
+
+    // Writing rax back concretely clears the symbolic overlay: the buffer
+    // reports the live value again.
+    regs.put_reg("rax", RustBV::concrete(0x00FF_00FF_00FF_00FF, 64));
+    regs.copy_to_bytes(&mut bytes);
+    assert_eq!(
+        u64::from_le_bytes(bytes[rax_off..rax_off + 8].try_into().unwrap()),
+        0x00FF_00FF_00FF_00FF
+    );
+}
+
+/// A concrete sub-register write into a wider symbolic register (`put`'s
+/// compose branch updates `data` for the written bytes but keeps a symbolic
+/// entry covering the whole register) must still read back as all-zero: the
+/// register as a whole is not concretely representable.
+#[test]
+fn copy_to_bytes_zeroes_partially_concrete_symbolic_register() {
+    let ctx = SymContext::new_mock();
+    let mut regs = RegisterFile::new(Box::new(AMD64));
+
+    regs.put_reg("rax", RustBV::symbolic(&ctx, "rax_sym", 64));
+    // `al` is the low byte of rax — composes into the symbolic entry.
+    let al_off = AMD64.register_offset("rax").unwrap();
+    regs.put(al_off, RustBV::concrete(0xEF, 8));
+
+    let mut bytes = vec![0u8; AMD64.state_size()];
+    regs.copy_to_bytes(&mut bytes);
+    let rax_off = al_off as usize;
+    assert_eq!(
+        &bytes[rax_off..rax_off + 8],
+        &[0u8; 8],
+        "partially-concrete symbolic rax must not report a half-real value"
+    );
+}
+
 /// Copy-on-write fork isolation for the `Arc`-wrapped register buffer:
 /// after `fork()` the child shares the parent's `data` Arc, but the first
 /// concrete write to either side must `Arc::make_mut`-clone so the other
