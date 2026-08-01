@@ -2,14 +2,39 @@
 
 use fixedbitset::FixedBitSet;
 use std::fmt;
+use std::hash::{Hash, Hasher};
 
 /// A state identifier represented as a u32.
 pub type StateId = u32;
 
 /// A set of states implemented using a fixed-size bit set for efficiency.
-#[derive(Clone, PartialEq, Eq, Hash)]
+///
+/// `PartialEq`/`Eq`/`Hash` are implemented by hand over the *logical* contents
+/// (the set bits), never over the backing `FixedBitSet`. The derived impls
+/// would fold in the bitset's capacity, so `StateSet::with_capacity(16)` with
+/// bit 3 set would compare unequal to `StateSet::singleton(3, 100)` — making
+/// the type unsafe as a `HashMap`/`HashSet` key.
+#[derive(Clone)]
 pub struct StateSet {
     bits: FixedBitSet,
+}
+
+impl PartialEq for StateSet {
+    fn eq(&self, other: &Self) -> bool {
+        self.bits.ones().eq(other.bits.ones())
+    }
+}
+
+impl Eq for StateSet {}
+
+impl Hash for StateSet {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        // Length first so that hashing the element sequence is prefix-free.
+        self.len().hash(state);
+        for member in self.iter() {
+            member.hash(state);
+        }
+    }
 }
 
 impl StateSet {

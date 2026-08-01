@@ -60,3 +60,51 @@ fn test_state_set_singleton() {
     assert_eq!(set.len(), 1);
     assert!(set.contains(5));
 }
+
+/// Regression: `PartialEq`/`Hash` must reflect logical contents only. The
+/// derived impls delegated to `FixedBitSet`, whose own derives include the
+/// capacity, so equal sets built at different capacities compared unequal.
+#[test]
+fn test_state_set_eq_hash_ignore_capacity() {
+    use std::collections::HashMap;
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    fn hash_of(set: &StateSet) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        set.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    let mut small = StateSet::with_capacity(16);
+    small.insert(3);
+    let large = StateSet::singleton(3, 100);
+
+    assert_eq!(small, large);
+    assert_eq!(hash_of(&small), hash_of(&large));
+
+    // Grown-then-shrunk sets stay equal to a freshly built one.
+    let mut grown = StateSet::with_capacity(4);
+    grown.insert(3);
+    grown.insert(64);
+    grown.remove(64);
+    assert_eq!(grown, small);
+    assert_eq!(hash_of(&grown), hash_of(&small));
+
+    // Empty sets at any capacity are one key.
+    let empty_small = StateSet::with_capacity(0);
+    let empty_large = StateSet::with_capacity(256);
+    assert_eq!(empty_small, empty_large);
+    assert_eq!(hash_of(&empty_small), hash_of(&empty_large));
+
+    // Distinct contents still differ.
+    assert_ne!(small, StateSet::singleton(4, 100));
+    assert_ne!(small, StateSet::from_iter([3, 4]));
+
+    // The point of the fix: usable directly as a map key.
+    let mut map: HashMap<StateSet, u32> = HashMap::new();
+    map.insert(small.clone(), 1);
+    map.insert(large.clone(), 2);
+    assert_eq!(map.len(), 1);
+    assert_eq!(map.get(&small), Some(&2));
+}
