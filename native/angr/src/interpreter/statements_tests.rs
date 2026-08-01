@@ -1,5 +1,6 @@
 //! Tests for VEX statement execution (extracted from statements.rs).
 use super::*;
+use crate::memory::PAGE_SIZE;
 use crate::vex::ir::{Endness, IRType, MBusEvent};
 
 fn new_interp(ctx: &SymContext) -> VEXInterpreter<'_> {
@@ -630,4 +631,144 @@ fn handle_symbolic_store_multiple_invalidates_cached_candidate_only() {
          (no over-eager invalidation)"
     );
     assert!(interp.is_code_page_dirtied(0x6001));
+}
+
+/// angr-9ke6b.83: a `LoadG` reading an address that an earlier `Store` in the
+/// same block wrote must observe the stored value. `resolve_loadg_load` used to
+/// call `load_from_callback` directly, skipping the pending-store buffer that
+/// ordinary `Load` consults, so the guarded load fell through to (stale) Python
+/// memory. Callback-mode variant (`use_rust_memory == false`), where the store
+/// only lives in `pending_stores` until flush.
+#[test]
+fn loadg_sees_pending_store_from_same_block() {
+    let ctx = SymContext::new_mock();
+    let mut interp = new_interp(&ctx);
+    assert!(!interp.use_rust_memory);
+    let irsb = make_irsb_with_temps(0x1000, &[IRType::I32]);
+    interp.temps.resize(1, None);
+
+    let store = IRStmt::Store {
+        addr: IRExpr::Const(IRConst::U64(0x4000)),
+        data: IRExpr::Const(IRConst::U32(0xdead_beef)),
+        endness: Endness::Little,
+    };
+    let loadg = IRStmt::LoadG {
+        dst: 0,
+        addr: Box::new(IRExpr::Const(IRConst::U64(0x4000))),
+        alt: Box::new(IRExpr::Const(IRConst::U32(0))),
+        guard: Box::new(IRExpr::Const(IRConst::U1(true))),
+        cvt: IRLoadGOp::Identity,
+        endness: Endness::Little,
+    };
+
+    with_python(|cb| {
+        interp
+            .execute_stmt_with_callbacks(cb, &store, &irsb)
+            .expect("store should buffer");
+        interp
+            .execute_stmt_with_callbacks(cb, &loadg, &irsb)
+            .expect("loadg should read the buffered store");
+    });
+
+    assert_eq!(
+        interp.temps[0].as_ref().and_then(|bv| bv.as_u64()),
+        Some(0xdead_beef),
+        "LoadG must observe the pending store, not stale Python memory"
+    );
+}
+
+/// angr-9ke6b.83, Rust-memory variant: with `use_rust_memory` on (the
+/// production configuration — `exploration/step_core.rs` installs the state's
+/// memory into the interpreter) stores commit only to `rust_memory` and are
+/// never synced to Python, so a `LoadG` that skipped `try_rust_memory_load`
+/// read an unrelated value from the Python callback.
+#[test]
+fn loadg_sees_rust_memory_store_from_same_block() {
+    let ctx = SymContext::new_mock();
+    let mut interp = new_interp(&ctx);
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    mem.map_page(0x4000u64, vec![0u8; PAGE_SIZE as usize], Permission::RW);
+    interp.set_rust_memory(mem);
+    assert!(interp.use_rust_memory);
+
+    let irsb = make_irsb_with_temps(0x1000, &[IRType::I32]);
+    interp.temps.resize(1, None);
+
+    let store = IRStmt::Store {
+        addr: IRExpr::Const(IRConst::U64(0x4010)),
+        data: IRExpr::Const(IRConst::U32(0x1234_5678)),
+        endness: Endness::Little,
+    };
+    let loadg = IRStmt::LoadG {
+        dst: 0,
+        addr: Box::new(IRExpr::Const(IRConst::U64(0x4010))),
+        alt: Box::new(IRExpr::Const(IRConst::U32(0))),
+        guard: Box::new(IRExpr::Const(IRConst::U1(true))),
+        cvt: IRLoadGOp::Identity,
+        endness: Endness::Little,
+    };
+
+    with_python(|cb| {
+        interp
+            .execute_stmt_with_callbacks(cb, &store, &irsb)
+            .expect("store into rust memory");
+        interp
+            .execute_stmt_with_callbacks(cb, &loadg, &irsb)
+            .expect("loadg should read rust memory");
+    });
+
+    assert_eq!(
+        interp.temps[0].as_ref().and_then(|bv| bv.as_u64()),
+        Some(0x1234_5678),
+        "LoadG must read the value the Store committed to rust_memory"
+    );
+}
+
+/// angr-9ke6b.83, `Single` concretization arm: a symbolic address pinned to one
+/// solution takes `resolve_loadg_load`'s `ConcretizationResult::Single` branch,
+/// which must go through the same layered read (`load_layered_at`) rather than
+/// straight to the Python callback.
+#[test]
+fn loadg_single_concretization_sees_rust_memory_store() {
+    let ctx = SymContext::new_mock();
+    let mut interp = new_interp(&ctx);
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    mem.map_page(0x4000u64, vec![0u8; PAGE_SIZE as usize], Permission::RW);
+    interp.set_rust_memory(mem);
+
+    // t0 = symbolic address constrained to exactly 0x4020.
+    let irsb = make_irsb_with_temps(0x1000, &[IRType::I64, IRType::I32]);
+    interp.temps.resize(2, None);
+    let sym_addr = RustBV::symbolic(&ctx, "loadg_addr", 64);
+    ctx.assume_true(&sym_addr.eq(&RustBV::concrete(0x4020, 64), &ctx));
+    interp.temps[0] = Some(sym_addr);
+
+    let store = IRStmt::Store {
+        addr: IRExpr::Const(IRConst::U64(0x4020)),
+        data: IRExpr::Const(IRConst::U32(0xcafe_babe)),
+        endness: Endness::Little,
+    };
+    let loadg = IRStmt::LoadG {
+        dst: 1,
+        addr: Box::new(IRExpr::RdTmp(0)),
+        alt: Box::new(IRExpr::Const(IRConst::U32(0))),
+        guard: Box::new(IRExpr::Const(IRConst::U1(true))),
+        cvt: IRLoadGOp::Identity,
+        endness: Endness::Little,
+    };
+
+    with_python(|cb| {
+        interp
+            .execute_stmt_with_callbacks(cb, &store, &irsb)
+            .expect("store into rust memory");
+        interp
+            .execute_stmt_with_callbacks(cb, &loadg, &irsb)
+            .expect("loadg with symbolic (Single) address");
+    });
+
+    assert_eq!(
+        interp.temps[1].as_ref().and_then(|bv| bv.as_u64()),
+        Some(0xcafe_babe),
+        "LoadG on a Single-concretized address must read the just-stored value"
+    );
 }

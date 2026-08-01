@@ -161,29 +161,7 @@ impl<'a> VEXInterpreter<'a> {
             self.stats.load_stmt_count += 1;
         }
 
-        let value: RustBV = 'load: {
-            // Try Rust-native memory first if enabled - mirrors try_rust_memory_store
-            if self.use_rust_memory
-                && let Some(value) =
-                    self.try_rust_memory_load(callbacks, &addr_val, size, load_start)?
-            {
-                // SymbolicMemory::load_concrete already bumped record_mem_load.
-                break 'load value;
-            }
-
-            // angr-obrm: callback-path loads bypass SymbolicMemory, so bump
-            // the global mem_load counter here for parity with the
-            // Rust-memory path. Catches pending-store buffer hits, prefetch
-            // cache hits, concrete_memory cache hits, and Python-callback
-            // fallbacks alike.
-            record_mem_load(size as u64);
-
-            if let Some(addr_concrete) = addr_val.as_u64() {
-                self.load_concrete_addr(callbacks, addr_concrete, size)?
-            } else {
-                self.load_symbolic_addr(callbacks, &addr_val, size)?
-            }
-        };
+        let value = self.load_layered(callbacks, &addr_val, size, load_start)?;
 
         if let Some(injected) =
             self.dispatch_mem_read_inspect(callbacks, &addr_val, &value, size, endness)
@@ -247,6 +225,60 @@ impl<'a> VEXInterpreter<'a> {
             return None;
         }
         self.symbolic_overlap_load(map, addr, size)
+    }
+
+    /// The full layered memory read, shared by `Load` (`eval_load`) and
+    /// `LoadG` (`resolve_loadg_load`): Rust-native memory first when enabled,
+    /// then — for the callback path — the pending / flushed store buffers and
+    /// concrete caches in `load_concrete_addr`, or the concretizing
+    /// `load_symbolic_addr` for a symbolic address.
+    ///
+    /// LoadG used to call `load_from_callback` directly (angr-9ke6b.83), which
+    /// skips every one of those layers, so a guarded load reading an address
+    /// written earlier in the same block observed stale Python memory instead
+    /// of the just-stored value.
+    fn load_layered(
+        &mut self,
+        callbacks: &PythonCallbacks,
+        addr_val: &RustBV,
+        size: usize,
+        load_start: Option<Instant>,
+    ) -> Result<RustBV, CbExecutionError> {
+        // Try Rust-native memory first if enabled - mirrors try_rust_memory_store
+        if self.use_rust_memory
+            && let Some(value) = self.try_rust_memory_load(callbacks, addr_val, size, load_start)?
+        {
+            // SymbolicMemory::load_concrete already bumped record_mem_load.
+            return Ok(value);
+        }
+
+        // angr-obrm: callback-path loads bypass SymbolicMemory, so bump
+        // the global mem_load counter here for parity with the
+        // Rust-memory path. Catches pending-store buffer hits, prefetch
+        // cache hits, concrete_memory cache hits, and Python-callback
+        // fallbacks alike.
+        record_mem_load(size as u64);
+
+        if let Some(addr_concrete) = addr_val.as_u64() {
+            self.load_concrete_addr(callbacks, addr_concrete, size)
+        } else {
+            self.load_symbolic_addr(callbacks, addr_val, size)
+        }
+    }
+
+    /// `load_layered` at an address that a caller already concretized out of a
+    /// symbolic `addr_val` (LoadG's Single / Multiple shapes). The concrete
+    /// address is rebuilt as a BV of the original address width so the
+    /// Rust-memory layer sees the same pointer size the block does.
+    fn load_layered_at(
+        &mut self,
+        callbacks: &PythonCallbacks,
+        addr_val: &RustBV,
+        addr_concrete: u64,
+        size: usize,
+    ) -> Result<RustBV, CbExecutionError> {
+        let concrete_bv = RustBV::concrete(addr_concrete as u128, addr_val.width());
+        self.load_layered(callbacks, &concrete_bv, size, None)
     }
 
     /// Concrete-address load path: walk pending/flushed store buffers, prefetch
@@ -860,8 +892,10 @@ impl<'a> VEXInterpreter<'a> {
         }
     }
 
-    /// Resolve a LoadG load given its address BV. Handles concrete addresses,
-    /// Single/Multiple concretizations, and falls back to the Python full
+    /// Resolve a LoadG load given its address BV. Concrete addresses and
+    /// Single/Multiple concretizations go through `load_layered` — the same
+    /// Rust-memory / pending-store / flushed-store / concrete-cache ladder
+    /// ordinary `Load` uses (angr-9ke6b.83) — and it falls back to the Python full
     /// symbolic load callback for TooLarge / Strided / Failed shapes (so the
     /// load no longer hard-errors when angr's address strategies could resolve
     /// it). Multiple addresses still take the first solution to preserve the
@@ -874,20 +908,20 @@ impl<'a> VEXInterpreter<'a> {
         load_size: usize,
         context: &str,
     ) -> Result<RustBV, CbExecutionError> {
-        if let Some(addr_concrete) = addr_val.as_u64() {
-            return self.load_from_callback(callbacks, addr_concrete, load_size);
+        if addr_val.as_u64().is_some() {
+            return self.load_layered(callbacks, addr_val, load_size, None);
         }
         let conc = self.concretize_cached_read(addr_val);
         match &*conc {
             ConcretizationResult::Single(a) => {
                 let a = *a;
-                self.load_from_callback(callbacks, a, load_size)
+                self.load_layered_at(callbacks, addr_val, a, load_size)
             }
             ConcretizationResult::Multiple(addrs) => {
                 let a = *addrs.first().ok_or_else(|| {
                     CbExecutionError::Unsupported(format!("{context} with empty address set"))
                 })?;
-                self.load_from_callback(callbacks, a, load_size)
+                self.load_layered_at(callbacks, addr_val, a, load_size)
             }
             ConcretizationResult::Strided {
                 base,
