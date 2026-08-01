@@ -23,6 +23,18 @@ use super::ProcedureError;
 use crate::state::RustSimState;
 use crate::symbolic::{RustBV, SymContext};
 
+/// C-locale `isspace()`: `' '` plus the `0x09..=0x0d` run (`\t \n \v \f \r`).
+///
+/// The single source of truth for "is this byte whitespace" across the native
+/// procedures — `NativeIsSpace` below plus the leading-whitespace skips in
+/// `strtod::floating_prefix_len` / `strtod`'s endptr rescan and
+/// `strtol::parse_concrete_prefix`. Deliberately *not* Rust's
+/// `is_ascii_whitespace`, which omits `\v` (0x0b); see
+/// `invariant-ctype-mirror-python-not-rust-std`.
+pub(crate) fn is_c_space(c: u8) -> bool {
+    c == b' ' || (0x09..=0x0d).contains(&c)
+}
+
 /// Truncate an argument to its low 8 bits, matching the concrete `as u8` path.
 fn arg_byte(arg: &RustBV, ctx: &SymContext) -> RustBV {
     arg.extract(7, 0, ctx)
@@ -213,9 +225,7 @@ crate::declare_proc! {
     struct = NativeIsSpace,
     args = [c: bv],
     call |state| {
-        ranges_predicate(state, &c, &[(0x09, 0x0d), (b' ', b' ')], |c| {
-            c == b' ' || (0x09..=0x0d).contains(&c)
-        })
+        ranges_predicate(state, &c, &[(0x09, 0x0d), (b' ', b' ')], is_c_space)
     }
 }
 

@@ -36,6 +36,51 @@ fn test_strtod_simple_decimal() {
     assert_eq!(read_xmm0_low64(&state), 42.5f64.to_bits());
 }
 
+/// Both whitespace skips (`floating_prefix_len` and the `f64::from_str`
+/// rescan) must use the C-locale `isspace` set, `\v` (0x0b) included —
+/// Rust's `is_ascii_whitespace` drops it (angr-2j9sk). See
+/// `procedures::ctype::is_c_space`.
+#[test]
+fn test_strtod_skips_full_c_isspace_set() {
+    for ws in [b' ', 0x09, 0x0a, 0x0b, 0x0c, 0x0d] {
+        let mut state = RustSimState::new("amd64").unwrap();
+        setup_string(&mut state, 0x1000, &[ws, b'4', b'2', b'.', b'5']);
+        state.map_memory_data(0x2000, &[0u8; 8], Permission::RWX);
+        NativeStrtod
+            .call(
+                &mut state,
+                &[RustBV::concrete(0x1000, 64), RustBV::concrete(0x2000, 64)],
+            )
+            .unwrap();
+        assert_eq!(
+            read_xmm0_low64(&state),
+            42.5f64.to_bits(),
+            "strtod with leading {ws:#04x}"
+        );
+        let end = state.memory_load(0x2000, 8).unwrap();
+        assert_eq!(end.as_u64(), Some(0x1000 + 5), "endptr with {ws:#04x}");
+    }
+}
+
+/// A byte just outside the whitespace run stops the parse at index 0.
+#[test]
+fn test_strtod_does_not_skip_non_space_control_bytes() {
+    for non_ws in [0x08u8, 0x0e] {
+        let mut state = RustSimState::new("amd64").unwrap();
+        setup_string(&mut state, 0x1000, &[non_ws, b'4', b'2', b'.', b'5']);
+        state.map_memory_data(0x2000, &[0u8; 8], Permission::RWX);
+        NativeStrtod
+            .call(
+                &mut state,
+                &[RustBV::concrete(0x1000, 64), RustBV::concrete(0x2000, 64)],
+            )
+            .unwrap();
+        assert_eq!(read_xmm0_low64(&state), 0.0f64.to_bits());
+        let end = state.memory_load(0x2000, 8).unwrap();
+        assert_eq!(end.as_u64(), Some(0x1000), "endptr with {non_ws:#04x}");
+    }
+}
+
 #[test]
 fn test_strtod_negative_exponent() {
     let mut state = RustSimState::new("amd64").unwrap();

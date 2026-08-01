@@ -18,6 +18,7 @@
 //! written to the low 64 bits of that register. The dispatcher's default
 //! integer-return store is suppressed by returning `Ok(None)`.
 
+use super::ctype::is_c_space;
 use super::strings::scan_concrete_bounded;
 use super::{ProcedureError, extract_concrete_arg};
 use crate::arch::cc_for_arch;
@@ -41,8 +42,8 @@ const MAX_LEN: usize = 256;
 /// ```
 fn floating_prefix_len(bytes: &[u8]) -> usize {
     let mut i = 0;
-    // whitespace
-    while i < bytes.len() && (bytes[i] as char).is_ascii_whitespace() {
+    // whitespace (C-locale `isspace`, `\v` included — see `ctype::is_c_space`)
+    while i < bytes.len() && is_c_space(bytes[i]) {
         i += 1;
     }
     let prefix_start = i;
@@ -167,7 +168,7 @@ crate::declare_proc! {
             // Skip leading whitespace to find the start of the parseable run
             // for f64::from_str (it does not accept leading whitespace).
             let mut start = 0;
-            while start < bytes.len() && (bytes[start] as char).is_ascii_whitespace() {
+            while start < bytes.len() && is_c_space(bytes[start]) {
                 start += 1;
             }
             let slice = &bytes[start..prefix_end];

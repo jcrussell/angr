@@ -68,6 +68,37 @@ fn test_atoi_whitespace_concrete() {
     assert_eq!(result.as_u64(), Some(56));
 }
 
+/// The leading-whitespace skip must use the C-locale `isspace` set, which
+/// includes vertical tab (0x0b) and form feed (0x0c) — Rust's
+/// `is_ascii_whitespace` drops `\v`, so `"\v42"` used to parse as 0
+/// (angr-2j9sk). See `procedures::ctype::is_c_space`.
+#[test]
+fn test_atoi_skips_full_c_isspace_set() {
+    for ws in [b' ', 0x09, 0x0a, 0x0b, 0x0c, 0x0d] {
+        let mut state = RustSimState::new("amd64").unwrap();
+        setup_string(&mut state, 0x1000, &[ws, b'4', b'2']);
+        let result = NativeAtoi
+            .call(&mut state, &[RustBV::concrete(0x1000, 64)])
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.as_u64(), Some(42), "atoi with leading {ws:#04x}");
+    }
+}
+
+/// Bytes just outside the whitespace run must *not* be skipped.
+#[test]
+fn test_atoi_does_not_skip_non_space_control_bytes() {
+    for non_ws in [0x08u8, 0x0e] {
+        let mut state = RustSimState::new("amd64").unwrap();
+        setup_string(&mut state, 0x1000, &[non_ws, b'4', b'2']);
+        let result = NativeAtoi
+            .call(&mut state, &[RustBV::concrete(0x1000, 64)])
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.as_u64(), Some(0), "atoi with leading {non_ws:#04x}");
+    }
+}
+
 #[test]
 fn test_strtol_hex() {
     let mut state = RustSimState::new("amd64").unwrap();

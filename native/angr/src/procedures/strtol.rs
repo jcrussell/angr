@@ -22,6 +22,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use super::ProcedureError;
+use super::ctype::is_c_space;
 use crate::state::RustSimState;
 use crate::symbolic::{RustBV, SymContext};
 
@@ -89,10 +90,13 @@ fn parse_concrete_prefix(
     let mut idx = 0;
 
     // Whitespace: only consume *concretely* whitespace bytes. A symbolic
-    // byte is treated as start-of-digit-region.
+    // byte is treated as start-of-digit-region. The classifier is C-locale
+    // `isspace` (`\v` included) via `ctype::is_c_space`, matching libc —
+    // angr's Python `strtol` SimProcedure skips no whitespace at all, so
+    // there is no Python behaviour to mirror here.
     while idx < bytes.len() {
         match bytes[idx].as_u64() {
-            Some(b) if (b as u8 as char).is_ascii_whitespace() => idx += 1,
+            Some(b) if is_c_space(b as u8) => idx += 1,
             _ => break,
         }
     }
