@@ -120,8 +120,6 @@ macro_rules! with_callback_fields {
             memory_store_batch,
             memory_load_batch,
             lift_block,
-            get_register,
-            put_register,
             dirty_call,
             fetch_page,
             batch_fetch_pages,
@@ -184,10 +182,6 @@ pub struct PythonCallbacks {
     pub memory_load_batch: Option<Py<PyAny>>,
     /// Callback for lifting a block: fn(addr: u64) -> irsb_json
     pub lift_block: Option<Py<PyAny>>,
-    /// Callback for getting register value: fn(offset: u32, size: u32) -> (bytes, is_symbolic, symbolic_ast?)
-    pub get_register: Option<Py<PyAny>>,
-    /// Callback for setting register value: fn(offset: u32, data: bytes) -> None
-    pub put_register: Option<Py<PyAny>>,
     /// Callback for dirty helper calls: fn(name: str, args: list\[int\], ret_ty_bits: int) -> (bytes, bool, object | None)
     /// This handles VEX dirty calls to helper functions (CPUID, RDTSC, etc.)
     pub dirty_call: Option<Py<PyAny>>,
@@ -500,24 +494,6 @@ impl PythonCallbacks {
     /// Returns the IRSB as a JSON string.
     pub fn set_lift_block(&mut self, cb: Py<PyAny>) {
         self.lift_block = Some(cb);
-    }
-
-    /// Set the register get callback.
-    ///
-    /// The callback should have signature:
-    /// `fn(offset: int, size: int) -> tuple[bytes, bool, object | None]`
-    ///
-    /// Returns (concrete_bytes, is_symbolic, symbolic_ast_or_none).
-    pub fn set_get_register(&mut self, cb: Py<PyAny>) {
-        self.get_register = Some(cb);
-    }
-
-    /// Set the register put callback.
-    ///
-    /// The callback should have signature:
-    /// `fn(offset: int, data: bytes) -> None`
-    pub fn set_put_register(&mut self, cb: Py<PyAny>) {
-        self.put_register = Some(cb);
     }
 
     /// Set the dirty call callback.

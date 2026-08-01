@@ -10,8 +10,8 @@ use super::*;
 ///
 /// The trailing AST element is optional on the Python side: a 2-tuple, and a
 /// 3-tuple whose last element is `None`, both mean "no symbolic AST". Shared
-/// by `call_memory_load`, `call_memory_load_batch`, `call_get_register` and
-/// `call_dirty_call` so a fix to the decoding lands on all four at once.
+/// by `call_memory_load`, `call_memory_load_batch` and `call_dirty_call` so a
+/// fix to the decoding lands on all three at once.
 fn extract_data_tuple(tuple: &Bound<'_, pyo3::types::PyTuple>) -> PyResult<BatchLoadEntry> {
     let data: Vec<u8> = tuple.get_item(0)?.extract()?;
     let is_symbolic: bool = tuple.get_item(1)?.extract()?;
@@ -225,55 +225,6 @@ impl PythonCallbacks {
                 }
             };
             result.extract(py)
-        })
-    }
-
-    /// Call the register get callback.
-    ///
-    /// Returns (data_bytes, is_symbolic, symbolic_ast).
-    /// **No Rust caller** (angr-9ke6b.214): the Python side still registers
-    /// `get_register` / `put_register` (`rust_manager.py::_setup_callbacks`)
-    /// on every run, but the engine reads and writes registers through
-    /// `RustSimState` instead of these direct callbacks. Retiring the path
-    /// means dropping the pyclass setters and the Python registration too,
-    /// so it is flagged rather than deleted here (angr-9ke6b.218 item 1).
-    #[allow(dead_code)]
-    pub(crate) fn call_get_register(
-        &self,
-        offset: u32,
-        size: u32,
-    ) -> PyResult<(Vec<u8>, bool, Option<Py<PyAny>>)> {
-        Python::attach(|py| {
-            let _gil = crate::gil_profile::GilWorkGuard::enter_site(
-                crate::gil_profile::CallbackSite::GetRegister,
-            );
-            let cb = self.get_register.as_ref().ok_or_else(|| {
-                pyo3::exceptions::PyRuntimeError::new_err("get_register callback not set")
-            })?;
-
-            let result = cb.call1(py, (offset, size))?;
-            let tuple = result.cast_bound::<pyo3::types::PyTuple>(py)?;
-            extract_data_tuple(tuple)
-        })
-    }
-
-    /// Call the register put callback.
-    /// **No Rust caller** (angr-9ke6b.214): see [`Self::call_get_register`] —
-    /// same dead cross-language pipeline, retired together or not at all
-    /// (angr-9ke6b.218 item 1).
-    #[allow(dead_code)]
-    pub(crate) fn call_put_register(&self, offset: u32, data: &[u8]) -> PyResult<()> {
-        Python::attach(|py| {
-            let _gil = crate::gil_profile::GilWorkGuard::enter_site(
-                crate::gil_profile::CallbackSite::PutRegister,
-            );
-            let cb = self.put_register.as_ref().ok_or_else(|| {
-                pyo3::exceptions::PyRuntimeError::new_err("put_register callback not set")
-            })?;
-
-            let py_bytes = PyBytes::new(py, data);
-            cb.call1(py, (offset, py_bytes))?;
-            Ok(())
         })
     }
 

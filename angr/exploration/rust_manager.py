@@ -2235,8 +2235,6 @@ class RustExplorationManager(
         callbacks.set_memory_store(self._cb_memory_store)
         callbacks.set_lift_block(self._cb_lift_block)
         callbacks.set_fetch_page(self._cb_fetch_page)
-        callbacks.set_get_register(self._cb_get_register)
-        callbacks.set_put_register(self._cb_put_register)
         callbacks.set_dirty_call(self._cb_dirty_call)
         callbacks.set_resolve_function(self._cb_resolve_function)
         if hasattr(callbacks, "set_memory_store_batch"):
@@ -2480,37 +2478,6 @@ class RustExplorationManager(
                 return (bytes(4096), 0, False)
         finally:
             self._perf_stats.record_fetch_page(time.perf_counter_ns() - _fp_start)
-
-    def _cb_get_register(self, offset: int, size: int) -> tuple[bytes, bool, object | None]:
-        state = self._get_callback_state() or self._get_default_state()
-        if state is None:
-            return (bytes(size), False, None)
-        try:
-            val = state.registers.load(offset, size, endness=state.arch.register_endness)
-            is_sym = getattr(val, "symbolic", False)
-            concrete = state.solver.eval(val).to_bytes(size, "little")
-            if is_sym:
-                self._register_handle(id(val), val)
-                return (concrete, True, val)
-            return (concrete, False, None)
-        except Exception as e:
-            # cat-(c) WRONG-ANSWER RISK: register read failed — Rust receives
-            # zero bytes where the SimState may have a real value. Already
-            # warns.
-            l.warning(f"get_register error at offset {offset}: {e}")
-            return (bytes(size), False, None)
-
-    def _cb_put_register(self, offset: int, data: bytes):
-        state = self._get_callback_state() or self._get_default_state()
-        if state is None:
-            return
-        try:
-            val = claripy.BVV(int.from_bytes(data, "little"), len(data) * 8)
-            state.registers.store(offset, val, endness=state.arch.register_endness)
-        except Exception as e:
-            # cat-(c) WRONG-ANSWER RISK: register write failed — Python state
-            # diverges from Rust on this register. Already warns.
-            l.warning(f"put_register error at offset {offset}: {e}")
 
     def _cb_dirty_call(self, name: str, args: list, ret_ty_bits: int) -> tuple[bytes, bool, object | None]:
         state = self._get_callback_state() or self._get_default_state()

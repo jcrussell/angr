@@ -70,14 +70,6 @@ fn unset_dispatch_callbacks_hard_error() {
             Box::new(|| cb.call_lift_block(0x1000, None, None).map(|_| ())),
         ),
         (
-            "get_register callback not set",
-            Box::new(|| cb.call_get_register(16, 8).map(|_| ())),
-        ),
-        (
-            "put_register callback not set",
-            Box::new(|| cb.call_put_register(16, &[0u8; 8])),
-        ),
-        (
             "dirty_call callback not set",
             Box::new(|| {
                 cb.call_dirty_call("amd64g_dirtyhelper_RDTSC", &[], 64)

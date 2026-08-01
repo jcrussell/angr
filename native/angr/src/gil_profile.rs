@@ -163,8 +163,6 @@ pub(crate) enum CallbackSite {
     MemoryStoreSymbolicFull,
     MemoryLoadSymbolicFull,
     LiftBlock,
-    GetRegister,
-    PutRegister,
     DirtyCall,
     FetchPage,
     BatchFetchPages,
@@ -177,7 +175,7 @@ pub(crate) enum CallbackSite {
 }
 
 impl CallbackSite {
-    const COUNT: usize = 18;
+    const COUNT: usize = 16;
 
     /// Stable counter suffix, used to name the `gil_work_ns_callback_*` keys.
     pub(crate) fn name(self) -> &'static str {
@@ -192,8 +190,6 @@ impl CallbackSite {
             CallbackSite::MemoryStoreSymbolicFull => "memory_store_symbolic_full",
             CallbackSite::MemoryLoadSymbolicFull => "memory_load_symbolic_full",
             CallbackSite::LiftBlock => "lift_block",
-            CallbackSite::GetRegister => "get_register",
-            CallbackSite::PutRegister => "put_register",
             CallbackSite::DirtyCall => "dirty_call",
             CallbackSite::FetchPage => "fetch_page",
             CallbackSite::BatchFetchPages => "batch_fetch_pages",
@@ -215,8 +211,6 @@ impl CallbackSite {
             CallbackSite::MemoryStoreSymbolicFull,
             CallbackSite::MemoryLoadSymbolicFull,
             CallbackSite::LiftBlock,
-            CallbackSite::GetRegister,
-            CallbackSite::PutRegister,
             CallbackSite::DirtyCall,
             CallbackSite::FetchPage,
             CallbackSite::BatchFetchPages,
@@ -493,7 +487,7 @@ mod tests {
             {
                 // A nested site must not steal the region from the outermost one.
                 let _outer = GilWorkGuard::enter_site(CallbackSite::MemoryLoad);
-                let _inner = GilWorkGuard::enter_site(CallbackSite::GetRegister);
+                let _inner = GilWorkGuard::enter_site(CallbackSite::FetchPage);
                 busy_ns(50_000);
             }
             {
@@ -514,7 +508,7 @@ mod tests {
         assert!(callback_site_ns(CallbackSite::LiftBlock) > 0);
         assert!(callback_site_ns(CallbackSite::MemoryLoad) > 0);
         assert_eq!(
-            callback_site_ns(CallbackSite::GetRegister),
+            callback_site_ns(CallbackSite::FetchPage),
             0,
             "a nested site must not be attributed"
         );
