@@ -21,13 +21,18 @@
 //!   They are thread-locals; the run-loop wall guard ([`RunLoopWallGuard`])
 //!   banks elapsed on `Drop`, capturing every exit path (early `return`, `?`,
 //!   panic) without touching `self`.
-//! * **Off by default.** Gated on a thread-local `ENABLED` flag set from the
-//!   manager's `profiling_enabled` at run-loop entry; when off, every guard is a
-//!   single `Cell` read and the hot path (bench-regression gate) is unaffected.
+//! * **Off by default.** Gated on the thread-local [`ACTIVE`] flag, which
+//!   [`RunLoopWallGuard`] sets from the manager's `profiling_enabled` at
+//!   run-loop entry; when off, every guard is a single `Cell` read and the hot
+//!   path (bench-regression gate) is unaffected.
 //!
 //! Both accumulators are monotonic across run-loop invocations and are read
-//! cumulatively by `stats()` on the same thread. [`reset`] clears them at
-//! `set_profiling(true)` so a fresh manager on a reused thread starts clean.
+//! cumulatively by `stats()` on the same thread. Nothing in production clears
+//! them: they are deliberately **process-cumulative across managers**, so the
+//! last manager's `stats()` reports the whole-process GIL fraction even when a
+//! bench builds several managers. See
+//! `exploration::manager_methods::RustExplorationManager::set_profiling` for
+//! that decision; [`reset`] exists only so unit tests can isolate.
 //!
 //! **Coherence by construction.** GIL timing is gated on an `ACTIVE` flag that
 //! is set only while a profiled [`RunLoopWallGuard`] is live. The bridge
@@ -233,15 +238,16 @@ pub(crate) fn callback_site_ns(site: CallbackSite) -> u64 {
     SITE_ACCUM_NS.with(|s| s.get()[site as usize])
 }
 
-/// Reset both accumulators and the depth/region state. Call when (re)enabling
-/// profiling so a fresh manager on a reused thread does not inherit stale time.
+/// Reset both accumulators and the depth/region state, so one unit test's
+/// banked nanoseconds do not leak into the next test on the same thread.
 ///
-/// **Nothing calls this today** (angr-9ke6b.214). Kept because the contract it
-/// documents is real: a second `RustExplorationManager` built on a worker
-/// thread that already profiled inherits the first manager's accumulated
-/// nanoseconds. Wiring it into profiling-enable is a behaviour change and
-/// belongs on its own bead, so the gap is recorded here rather than deleted.
-#[allow(dead_code)]
+/// **Test-only by design** (angr-9ke6b.218 item 3). Production deliberately
+/// never resets: `RustExplorationManager::set_profiling` documents that the
+/// accumulators are process-cumulative across managers, so a second manager on
+/// a reused thread *should* inherit the first one's nanoseconds — that is what
+/// makes the final `stats()` report the whole-process GIL fraction. Calling
+/// this from a production path would silently truncate that total.
+#[cfg(test)]
 pub(crate) fn reset() {
     ACTIVE.with(|a| a.set(false));
     DEPTH.with(|d| d.set(0));

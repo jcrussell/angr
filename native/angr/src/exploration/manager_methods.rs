@@ -669,7 +669,9 @@ impl RustExplorationManager {
         // process-cumulative GIL vs run-loop-wall totals across ALL of them, so
         // the last manager's `stats()` reports the whole-bench fraction. The
         // thread-locals start at zero per process, so there is no cross-bench
-        // contamination. `gil_profile::reset()` remains available for tests.
+        // contamination. `gil_profile::reset()` is `#[cfg(test)]` precisely so
+        // this stays true — it exists to isolate unit tests, not to be wired in
+        // here (angr-9ke6b.218 item 3).
     }
 
     /// Set the maximum length of each state's `history` / `detailed_history`
