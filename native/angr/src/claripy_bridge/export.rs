@@ -446,18 +446,40 @@ fn rustbv_to_claripy_memo(
             // inside Rust (e.g. a `stdin_N_i` byte from the native read proc).
             //
             // Register the fresh claripy BVS against THIS symbol id under the
-            // RUST name (angr-izov2). `claripy.BVS(name, w)` without
-            // `explicit_name` renames the symbol to `name_<counter>_<w>`, so
-            // without a registration neither the hash nor the name+width lookup
-            // in `claripy_to_rustbv` can recognise the AST on the way back: the
-            // importer mints a brand new, unconstrained Rust symbol and every
-            // constraint carried by the original leaf silently stops binding.
-            // That is exactly what a Python bounce (SimProcedure hook) does to
-            // a symbolic value it returns. Registering by hash also pins the
-            // exported AST, so repeated exports of this symbol hand Python the
-            // same claripy object.
+            // RUST name (angr-izov2). Without a registration neither the hash
+            // nor the name+width lookup in `claripy_to_rustbv` can recognise the
+            // AST on the way back: the importer mints a brand new, unconstrained
+            // Rust symbol and every constraint carried by the original leaf
+            // silently stops binding. That is exactly what a Python bounce
+            // (SimProcedure hook) does to a symbolic value it returns.
+            // Registering by hash also pins the exported AST, so repeated
+            // exports of this symbol hand Python the same claripy object.
+            //
+            // `explicit_name=True` is what makes losing that registration *safe*
+            // rather than silently wrong (angr-9ke6b.222). `claripy.BVS(name, w)`
+            // without it renames the symbol to `name_<counter>_<w>`, so a
+            // re-import after a registry miss mints a Rust leaf whose Z3
+            // constant is named `name_<counter>_<w>` — a brand-new variable no
+            // existing constraint binds. With the flag the claripy name is the
+            // Rust name verbatim, and since `RustBV::from_parts` derives a
+            // leaf's Z3 term from its NAME (`invariant-symbol-identity-is-by-name`),
+            // the re-minted leaf lands on the *same* Z3 constant: a registry
+            // miss costs object identity and annotations, not soundness.
+            // Rust-minted names are process-unique where it matters (the
+            // `symbol_counter` prefixes) and deliberately address-derived where
+            // it does not (`mem_<addr>_<size>`), which is aliasing Rust already
+            // performs in Z3; the flag only propagates it to claripy.
+            //
+            // The name used is the Rust one, tag included: a Bool leaf's
+            // `!bool!` prefix (angr-9ke6b.223) has to survive the round trip or
+            // the re-minted leaf would be a plain `BV::new_const` instead of the
+            // original `Bool::new_const(..).ite(1, 0)`. Registering under
+            // `BitVector` matches: the AST minted here *is* a `BVS`, so that is
+            // the kind a re-import computes for it.
+            let kwargs = pyo3::types::PyDict::new(py);
+            kwargs.set_item("explicit_name", true)?;
             let ast: Py<PyAny> = claripy_mod
-                .call_method1("BVS", (&**name, *width))
+                .call_method("BVS", (&**name, *width), Some(&kwargs))
                 .map(Py::<PyAny>::from)?;
             let py_hash = ast.bind(py).hash()? as i64;
             // The AST just minted is a `BVS`, so it registers under the

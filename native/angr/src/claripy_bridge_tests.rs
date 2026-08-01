@@ -582,3 +582,64 @@ fn test_bvs_width1_and_bools_same_name_do_not_alias() {
         assert_eq!(bool_op, "BoolS");
     });
 }
+
+/// angr-9ke6b.222: a purely Rust-minted leaf must export under its Rust name
+/// verbatim, so that losing its registry entry is a *fidelity* loss (object
+/// identity, annotations) rather than a soundness one.
+///
+/// `claripy.BVS(name, w)` without `explicit_name` renames to
+/// `name_<counter>_<w>`. Re-importing such an AST after a registry miss mints a
+/// Rust leaf named `name_<counter>_<w>`, and because `RustBV::from_parts`
+/// derives the Z3 constant from the NAME, that leaf is a brand-new variable no
+/// existing constraint binds — the angr-izov2 failure mode, silently wrong. The
+/// assertions below pin both halves: the exported claripy name is the Rust name,
+/// and a leaf re-minted from that name denotes the same Z3 constant despite
+/// carrying a different `rust_id`.
+#[test]
+fn test_rust_minted_leaf_exports_under_its_rust_name() {
+    pyo3::Python::initialize();
+    Python::attach(|py| {
+        let claripy = match py.import("claripy") {
+            Ok(m) => m,
+            Err(_) => return, // claripy not importable in this env — skip
+        };
+        let ctx = SymContext::new_mock();
+
+        // A leaf that never came from claripy, e.g. `stdin_<n>_<i>` from the
+        // native read proc: nothing has registered a claripy AST for it, so
+        // export takes the mint path.
+        let rust_name = "ke6b222_native_leaf";
+        let minted = RustBV::symbolic(&ctx, rust_name, 8);
+
+        let ast = rustbv_to_claripy(py, &minted, claripy.as_any()).expect("export");
+        let exported_name: String = ast
+            .bind(py)
+            .getattr("args")
+            .unwrap()
+            .get_item(0)
+            .unwrap()
+            .extract()
+            .unwrap();
+        assert_eq!(
+            exported_name, rust_name,
+            "export must not let claripy rename the leaf to {rust_name}_<counter>_8"
+        );
+
+        // What a re-import after a registry miss would build: a fresh id, same
+        // name. Different identity, identical Z3 constant.
+        let reminted = RustBV::symbolic(&ctx, exported_name.as_str(), 8);
+        let (RustBV::Symbolic { id: a, .. }, RustBV::Symbolic { id: b, .. }) = (&minted, &reminted)
+        else {
+            panic!("both leaves must be Symbolic");
+        };
+        assert_ne!(
+            a, b,
+            "the re-mint models a registry MISS, so the id differs"
+        );
+        assert_eq!(
+            minted.to_z3_ast(),
+            reminted.to_z3_ast(),
+            "a registry miss must not change which Z3 variable the leaf denotes"
+        );
+    });
+}
