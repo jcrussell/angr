@@ -2499,9 +2499,11 @@ class TestNativeReadCacheSync:
         no-op on non-z3 builds) and had no raw-Z3-pointer path, so an AST the
         claripy->RustBV bridge cannot convert silently vanished from the pending
         solver. The fix ports the raw-pointer fast path from
-        ``_add_constraints_to_state`` verbatim and un-gates the slow path. This
-        test asserts the call path executes cleanly and the manager keeps
-        stepping afterward.
+        ``_add_constraints_to_state`` and un-gates the slow path; angr-9ke6b.71
+        then collapsed the two copies onto the shared
+        ``exploration::constraints::import_python_constraints`` helper, so both
+        entry points now execute one body. This test asserts the call path
+        executes cleanly and the manager keeps stepping afterward.
 
         NOTE: full soundness (an unconvertible AST actually *binds* to the
         pending solver, or a contradiction turning it UNSAT) is NOT observable
@@ -2510,7 +2512,8 @@ class TestNativeReadCacheSync:
         and ``satisfiable()`` / ``export_pending_constraints`` never reflect it
         (a concrete ``1 != 1`` reads SAT here). That verification is blocked on
         the shared-context fixture scoped by angr-ph300.3.1; the fix's soundness
-        rests on mirroring the production-tested ``_add_constraints_to_state``.
+        rests on sharing the production-tested ``_add_constraints_to_state``
+        body.
         """
         import claripy
 

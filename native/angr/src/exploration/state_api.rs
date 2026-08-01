@@ -34,70 +34,10 @@ impl RustExplorationManager {
     ) -> PyResult<bool> {
         self.with_state_mut(state_id, |state| {
             let solver_ref = state.solver();
-            let sym_ctx = solver_ref.borrow();
-            let ctx_ref: &SymContext = &sym_ctx;
-
-            // Pre-fetch Z3 backend for fast path
-            // SILENT(cat-a): probing for claripy's optional z3 backend; a
-            // missing backend is expected control flow (the loop below simply
-            // takes the generic slow path instead of the typed fast path), so
-            // collapsing the error to None here loses no correctness.
-            #[cfg(feature = "vex-engine-z3")]
-            let z3_backend = py
-                .import("claripy")
-                .and_then(|c| c.getattr("backends"))
-                .and_then(|b| b.getattr("z3"))
-                .ok();
-
-            let mut added = 0u32;
-            for item in constraints.iter() {
-                // Fast path: extract typed Z3 AST handle and assert directly
-                #[cfg(feature = "vex-engine-z3")]
-                {
-                    if let Some(ref backend) = z3_backend
-                        && let Ok(z3_obj) = backend.call_method1("convert", (&item,))
-                        && let Ok(ast_ref) = z3_obj.call_method0("as_ast")
-                        && let Ok(ptr) = ast_ref.getattr("value").and_then(|v| v.extract::<usize>())
-                    {
-                        let z3_ctx = z3::Context::thread_local();
-                        // SAFETY: claripy's z3 backend returned
-                        // this pointer for a live AST it caches;
-                        // matches our thread-local Z3 context.
-                        if let Some(z3_ast) = unsafe { Z3AstPtr::from_borrowed_raw(&z3_ctx, ptr) } {
-                            // Convert first: a constraint that has a RustBV form
-                            // is recorded in the assumed IR, and must therefore
-                            // NOT also be logged as a residual — see
-                            // `add_constraint_raw_assumed` (angr-op0dn.14.2).
-                            match claripy_to_rustbv(py, &item, ctx_ref) {
-                                Ok(bv) => {
-                                    ctx_ref.add_constraint_raw_assumed(z3_ast);
-                                    ctx_ref.assumed_constraints_push(bv, true);
-                                }
-                                Err(_) => ctx_ref.add_constraint_raw(z3_ast),
-                            }
-                            added += 1;
-                            continue;
-                        }
-                    }
-                }
-
-                // Slow path: convert via RustBV
-                match claripy_to_rustbv(py, &item, ctx_ref) {
-                    Ok(bv) => {
-                        if bv.width() == 1 {
-                            sym_ctx.assume_true(&bv);
-                        } else {
-                            let zero = RustBV::concrete(0, bv.width());
-                            let neq = bv.ne(&zero, ctx_ref);
-                            sym_ctx.assume_true(&neq);
-                        }
-                        added += 1;
-                    }
-                    Err(e) => {
-                        log::debug!("Could not convert initial constraint: {e}");
-                    }
-                }
-            }
+            let added = {
+                let sym_ctx = solver_ref.borrow();
+                import_python_constraints(py, &sym_ctx, constraints, "initial")
+            };
             log::debug!("Added {added} initial constraints to state {state_id}");
             Ok(state.satisfiable())
         })

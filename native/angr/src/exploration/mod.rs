@@ -71,7 +71,7 @@ mod stats_api;
 mod step_core;
 mod stepping;
 
-use self::constraints::{ConstraintSolver, ConstraintTracker};
+use self::constraints::{ConstraintSolver, ConstraintTracker, import_python_constraints};
 use self::execution_env::ExecutionEnvironment;
 use self::memory_config::MemoryConfiguration;
 use self::profiling::ProfilingCollector;

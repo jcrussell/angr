@@ -66,6 +66,99 @@ pub(crate) fn state_is_deterministic(_state: &crate::state::RustSimState) -> boo
     false
 }
 
+/// Import a Python list of claripy constraints into one solver context.
+///
+/// Single body shared by `_add_constraints_to_state` (state_api.rs) and
+/// `_add_constraints_to_pending` (pending_api.rs), which differ only in how
+/// they reach the `SymContext` and in their log wording — a correctness fix to
+/// the fast path used to have to land in two places (angr-9ke6b.71).
+///
+/// Two paths per constraint:
+///
+/// * **Fast path** (Z3 builds): ask claripy's z3 backend to convert the AST and
+///   assert the resulting raw Z3 pointer directly. The RustBV conversion is
+///   still attempted *first* so a constraint that has a RustBV form is recorded
+///   in the assumed IR rather than double-logged as a residual — see
+///   [`SymContext::add_constraint_raw_assumed`](crate::symbolic::SymContext::add_constraint_raw_assumed)
+///   (angr-op0dn.14.2).
+/// * **Slow path**: convert to a `RustBV` and assume it true (widening a
+///   non-boolean value to `bv != 0`).
+///
+/// `kind` is the noun used in the per-constraint failure log ("initial" /
+/// "pending"); the caller emits its own summary line. Returns the number of
+/// constraints successfully asserted — unconvertible ones are skipped, matching
+/// the pre-existing behavior of both call sites.
+pub(crate) fn import_python_constraints(
+    py: pyo3::Python<'_>,
+    ctx: &crate::symbolic::SymContext,
+    constraints: &pyo3::Bound<'_, pyo3::types::PyList>,
+    kind: &str,
+) -> u32 {
+    use crate::claripy_bridge::claripy_to_rustbv;
+    use crate::symbolic::RustBV;
+    use pyo3::prelude::*;
+
+    // Pre-fetch Z3 backend for the raw-pointer fast path.
+    // SILENT(cat-a): probing for claripy's optional z3 backend; a missing
+    // backend is expected control flow (the loop below simply takes the
+    // generic slow path instead of the typed fast path), so collapsing the
+    // error to None here loses no correctness.
+    #[cfg(feature = "vex-engine-z3")]
+    let z3_backend = py
+        .import("claripy")
+        .and_then(|c| c.getattr("backends"))
+        .and_then(|b| b.getattr("z3"))
+        .ok();
+
+    let mut added = 0u32;
+    for item in constraints.iter() {
+        // Fast path: extract typed Z3 AST handle and assert directly.
+        #[cfg(feature = "vex-engine-z3")]
+        {
+            if let Some(ref backend) = z3_backend
+                && let Ok(z3_obj) = backend.call_method1("convert", (&item,))
+                && let Ok(ast_ref) = z3_obj.call_method0("as_ast")
+                && let Ok(ptr) = ast_ref.getattr("value").and_then(|v| v.extract::<usize>())
+            {
+                let z3_ctx = z3::Context::thread_local();
+                // SAFETY: claripy's z3 backend returned this pointer for a live
+                // AST it caches; matches our thread-local Z3 context.
+                if let Some(z3_ast) =
+                    unsafe { crate::symbolic::Z3AstPtr::from_borrowed_raw(&z3_ctx, ptr) }
+                {
+                    match claripy_to_rustbv(py, &item, ctx) {
+                        Ok(bv) => {
+                            ctx.add_constraint_raw_assumed(z3_ast);
+                            ctx.assumed_constraints_push(bv, true);
+                        }
+                        Err(_) => ctx.add_constraint_raw(z3_ast),
+                    }
+                    added += 1;
+                    continue;
+                }
+            }
+        }
+
+        // Slow path: convert via RustBV.
+        match claripy_to_rustbv(py, &item, ctx) {
+            Ok(bv) => {
+                if bv.width() == 1 {
+                    ctx.assume_true(&bv);
+                } else {
+                    let zero = RustBV::concrete(0, bv.width());
+                    let neq = bv.ne(&zero, ctx);
+                    ctx.assume_true(&neq);
+                }
+                added += 1;
+            }
+            Err(e) => {
+                log::debug!("Could not convert {kind} constraint: {e}");
+            }
+        }
+    }
+    added
+}
+
 /// Per-run tracking sets used by uniqueness filtering and the find/avoid
 /// predicate skip-list machinery.
 #[derive(Debug, Default)]
