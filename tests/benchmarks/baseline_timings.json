@@ -153,9 +153,9 @@
   },
   "flareon2015_2": {
     "callback_count": 0,
-    "peak_memory_mb": 397.5,
+    "peak_memory_mb": 418.0,
     "python_time": 4.7,
-    "rust_time": 3.202,
+    "rust_time": 3.81,
     "state_creations": 0,
     "steps": 0
   },
