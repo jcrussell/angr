@@ -1164,7 +1164,18 @@ fn worker_thread(worker_id: usize, job_rx: Receiver<WorkerCtl>, done_tx: Sender<
                 // finalized session), so no `!Send` state is ever parked inside
                 // this thread across the coordinator boundary.
                 worker_session_loop(&session, worker_id, &z3ctx, &mut block_cache, &mut local);
-                debug_assert!(local.is_empty(), "session worker parked with live states");
+                // Always-on, NOT `debug_assert!` (angr-9ke6b.68): the release
+                // profile leaves `debug-assertions = false`, so a `debug_assert!`
+                // here would give the shipped `.so` zero protection for the one
+                // invariant that keeps `!Send` states from crossing the
+                // coordinator boundary — a violation would silently re-park a
+                // worker holding stale states and mis-route them with no
+                // diagnostic trail. Under `panic = "abort"` this fails the way
+                // the "Panic policy" header describes every other invariant guard
+                // in this module: a loud SIGABRT at the violation site. Cost is
+                // one `VecDeque::is_empty` per session-loop return, which is off
+                // the per-step hot path.
+                assert!(local.is_empty(), "session worker parked with live states");
             }
             Ok(WorkerCtl::Shutdown) | Err(_) => break,
         }
