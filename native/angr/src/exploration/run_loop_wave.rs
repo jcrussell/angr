@@ -54,7 +54,9 @@ impl RustExplorationManager {
     /// Predicate-driven find/avoid (`find_needs_python` / `avoid_needs_python`)
     /// falls back to the single-threaded loop — its cross-callback skip-state
     /// tracking has no clean parallel analogue and addresses-based exploration is
-    /// the parallel-favourable case.
+    /// the parallel-favourable case. A `run(n)` budget smaller than the worker
+    /// count falls back the same way (angr-9ke6b.221): see the residual-drain
+    /// comment on the `max_steps < workers` check below.
     ///
     /// **`num_find` early-exit preserves the active frontier (Bug M1, fixed in
     /// angr-op0dn.13.8).** When a wave reaches `num_find`, a worker trips the
@@ -91,6 +93,28 @@ impl RustExplorationManager {
 
         let max_steps = n.unwrap_or(self.max_steps_per_run) as u64;
         let workers = self.parallel_real_workers.max(2);
+
+        // A step budget too small to hand every worker one dispatch cannot pay
+        // for a wave (angr-9ke6b.221). `set_max_dispatches` below caps the wave
+        // at the remaining budget, so such a wave dispatches a handful of
+        // states, trips its `CancelToken`, and then detaches+reattaches the
+        // ENTIRE resident frontier through serde to leave it resumable in
+        // `STASH_ACTIVE`. Python's `RustExplorationManager.run(n=N)` step /
+        // `step_func` mode maps to N native `run(1)` calls, so that is ~one
+        // full-frontier drain per useful dispatch, every step.
+        //
+        // Measured on the 8-leaf pbounce synthetic
+        // (`tests/engines/rust/test_parallel_wave.py`), `mgr.run(n=4096)`,
+        // same found/steps at every worker count: serial 0.19s / 0 drains vs
+        // workers=2 2.92s / 178 drains and workers=4 2.60s / 169 drains — a
+        // ~15x step-mode penalty for zero parallelism. The single-threaded loop
+        // honors the same budget exactly and leaves the frontier in
+        // `STASH_ACTIVE` by construction, so route there instead. It also
+        // flushes `pending_parallel_bounces` on entry, so a queue a prior
+        // large-budget wave parked is not stranded by the switch.
+        if max_steps < workers as u64 {
+            return self.run_loop_single_threaded(n);
+        }
 
         let callbacks = self
             .callbacks

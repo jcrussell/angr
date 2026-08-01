@@ -879,13 +879,26 @@ def _drain_pbounce(project, workers, monkeypatch):
     *counters* are a property of the search tree rather than of where a cancel
     token happened to land — the only regime in which the serial and parallel
     arms are comparable at all (see ``snapshot-resume-spread-is-dump-side``).
+
+    Driven through ``explore`` (a BATCH native budget), not ``run(n=...)``:
+    since angr-9ke6b.221 a step-mode ``run(n=N)`` — N native ``run(1)`` calls —
+    routes to the single-threaded loop because a per-wave dispatch budget of 1
+    costs a full-frontier residual drain per dispatch. Only the batch entry
+    point still engages the wave, which is what these terminal-accounting tests
+    are about. ``drop_terminal_states`` is pinned off around the explore because
+    the address path (unlike ``run()``) leaves terminals droppable by default,
+    and the stash population is part of what is asserted.
     """
     if workers > 1:
         monkeypatch.setenv("RUST_PARALLEL_WORKERS", str(workers))
     else:
         monkeypatch.delenv("RUST_PARALLEL_WORKERS", raising=False)
     mgr = RustExplorationManager(project, [_pbounce_state(project)])
-    mgr.run(n=4096)
+    mgr._rust_mgr.set_drop_terminal_states(False)
+    try:
+        mgr.explore(num_find=None)
+    finally:
+        mgr._rust_mgr.set_drop_terminal_states(True)
     return mgr
 
 
@@ -1065,3 +1078,61 @@ class TestEnvParallelIneligibleDowngrade:
         # restores the env-configured worker count.
         mgr.explore(find=target, num_find=_SYNTH_LEAVES, n=4096)
         assert mgr.stats["parallel_real_workers"] == 2
+
+
+def _run_pbounce_step_mode(project, workers, monkeypatch, steps=4096):
+    """Drive the 8-leaf synthetic through ``run(n=...)`` STEP mode, not ``explore``.
+
+    ``RustExplorationManager.run(n=N)`` maps to N native ``run(1)`` calls, so
+    each native call carries a dispatch budget of 1 — the regime angr-9ke6b.221
+    is about. Find state is set directly on the Rust manager because ``run()``
+    forwards its kwargs to ``step()``, which has no find/avoid surface.
+    """
+    if workers > 1:
+        monkeypatch.setenv("RUST_PARALLEL_WORKERS", str(workers))
+    else:
+        monkeypatch.delenv("RUST_PARALLEL_WORKERS", raising=False)
+
+    target = project.loader.find_symbol("reach_target").rebased_addr
+    mgr = RustExplorationManager(project, [_pbounce_state(project)])
+    assert mgr.stats["parallel_real_workers"] == workers
+    mgr._rust_mgr.set_find_addrs([target])
+    mgr._rust_mgr.set_find_needs_python(False)
+    mgr._rust_mgr.set_num_find(_SYNTH_LEAVES)
+    mgr.run(n=steps)
+    return mgr, target
+
+
+class TestStepModeBudgetRoutesSerial:
+    """angr-9ke6b.221: a ``run(n)`` budget below the worker count goes serial.
+
+    ``run_loop_parallel`` caps each wave at the call's remaining step budget
+    (angr-9ke6b.52). Under step mode that budget is 1, so a wave dispatched ~one
+    state, tripped its ``CancelToken``, and drained the ENTIRE resident frontier
+    back through serde to keep it resumable — ~one full-frontier detach+reattach
+    round trip per useful dispatch. Measured on this synthetic before the fix:
+    serial 0.19s / 0 drains vs workers=2 2.92s / 178 drains, identical
+    found/steps. The wave loop now routes such a call to the single-threaded
+    loop, which honors the same budget exactly and leaves the frontier in
+    STASH_ACTIVE by construction.
+    """
+
+    @pytest.mark.parametrize("workers", [2, 4])
+    def test_step_mode_pays_no_residual_drain(self, pbounce_project, workers, monkeypatch):
+        mgr, _ = _run_pbounce_step_mode(pbounce_project, workers, monkeypatch)
+        assert mgr.stats["parallel_residual_drains"] == 0
+        # Nothing was dispatched through the pool either — the whole run was
+        # serial, so no wave was ever built.
+        assert sum(mgr.stats["parallel_worker_dispatch"]) == 0
+
+    @pytest.mark.parametrize("workers", [2, 4])
+    def test_step_mode_terminal_accounting_matches_serial(self, pbounce_project, workers, monkeypatch):
+        serial, _ = _run_pbounce_step_mode(pbounce_project, 1, monkeypatch)
+        par, _ = _run_pbounce_step_mode(pbounce_project, workers, monkeypatch)
+        assert par.stats["steps"] == serial.stats["steps"]
+        assert par.stash_counts() == serial.stash_counts()
+
+    def test_batch_explore_still_goes_parallel(self, pbounce_project, monkeypatch):
+        """The guard is budget-scoped: ``explore`` still dispatches through the pool."""
+        mgr, _ = _explore_pbounce_find_k(pbounce_project, 2, monkeypatch, num_find=_SYNTH_LEAVES)
+        assert sum(mgr.stats["parallel_worker_dispatch"]) > 0
