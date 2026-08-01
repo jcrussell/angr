@@ -58,7 +58,11 @@ EXAMPLE_CATALOG = {
         "notes": "Symbolic writes, callable predicates (rust 0.44s post-perf-wave; was medium tier pre-2026)",
     },
     "securityfest_fairlight": {"tier": "medium", "rust_ok": True, "notes": "Heavy VEX interpretation"},
-    "flareon2015_5": {"tier": "medium", "rust_ok": True, "notes": "Complex symbolic memory"},
+    "flareon2015_5": {
+        "tier": "fast",
+        "rust_ok": True,
+        "notes": "Complex symbolic memory. Retiered medium->fast (angr-a1k7j, 2026-08-01): rust is 2.92s in baseline_timings.json and re-measured 2.93-3.13s over 8 runs, well inside the <5s fast bucket and not even within validate_tier's ±10% boundary slack. Like sym-write / flareon2015_10 / ekopartyctf2016_rev250 it stays in run_regression.MEDIUM_SUITE, which is a hand-maintained runtime-budget list, not a mirror of this tier field.",
+    },
     "flareon2015_10": {
         "tier": "fast",
         "rust_ok": True,

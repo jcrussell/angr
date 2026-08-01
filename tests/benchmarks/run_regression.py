@@ -103,7 +103,7 @@ FASTPATH_COUNTERS = [
 # so the `baseline_val > 0` guard below already makes --check-counts a no-op for
 # it — adding it to COUNT_EXEMPT would be redundant.
 #
-# The seven MEDIUM-tier benches (sym-write, flareon2015_5/10,
+# The seven MEDIUM_SUITE benches (sym-write, flareon2015_5/10,
 # ekopartyctf2016_rev250, csaw_wyvern, codegate_2017-angrybird, mma_howtouse)
 # were soak-validated as deterministic — 0% variance in
 # callback_count/state_creations/steps across 5 runs/bench (angr-lagp,
@@ -124,6 +124,13 @@ COUNT_EXEMPT = frozenset(
 )
 
 # Tiered benchmark suites. Each entry: (name, timeout_seconds, [strategy, [rust_only]])
+# FAST_SUITE/MEDIUM_SUITE membership is a hand-maintained runtime *budget* split
+# (fast <10s, medium 10-60s) and is deliberately NOT a mirror of the ``tier``
+# field in run_single.EXAMPLE_CATALOG (fast <5s, medium 5-30s, validated by
+# validate_tier.py). Six MEDIUM_SUITE members — sym-write, flareon2015_5,
+# flareon2015_10, ekopartyctf2016_rev250, csaw_wyvern, codegate_2017-angrybird —
+# are catalog tier='fast' after the perf waves and stay here on purpose;
+# retiering the catalog must not move them.
 # strategy: "bfs" (default) or "dfs"
 # rust_only: True when the Python engine is unreliable under the 4GB memory
 # limit (OOM/timeout) OR when Z3 model nondeterminism produces benign output

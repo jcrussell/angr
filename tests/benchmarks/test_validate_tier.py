@@ -107,3 +107,23 @@ def test_audit_real_catalog_smoke():
         baseline = json.load(fh)
     drift, _, _ = validate_tier.audit(EXAMPLE_CATALOG, baseline)
     assert drift == [], f"Unexpected tier drift: {drift}"
+
+
+def test_medium_suite_membership_is_independent_of_catalog_tier():
+    """MEDIUM_SUITE is a hand-maintained runtime-budget list, not a mirror of
+    ``EXAMPLE_CATALOG[...]['tier']``. Several members are catalog tier='fast'
+    after the perf waves and must stay in the medium gate (angr-a1k7j) — a
+    future retiering pass that "syncs" the two would silently shrink what
+    ``run_regression.py --full`` covers."""
+    from run_regression import MEDIUM_SUITE
+    from run_single import EXAMPLE_CATALOG
+
+    fast_members = {entry[0] for entry in MEDIUM_SUITE if EXAMPLE_CATALOG[entry[0]]["tier"] == "fast"}
+    assert fast_members == {
+        "sym-write",
+        "flareon2015_5",
+        "flareon2015_10",
+        "ekopartyctf2016_rev250",
+        "csaw_wyvern",
+        "codegate_2017-angrybird",
+    }, f"MEDIUM_SUITE fast-tier membership changed: {sorted(fast_members)}"
