@@ -163,6 +163,50 @@ fn test_map_zero_size_is_noop_regardless_of_alignment() {
 }
 
 #[test]
+fn test_zero_size_access_is_rejected_not_looped() {
+    // Regression (angr-9ke6b.99): `end_page = (addr + size - 1) >> 12` underflows
+    // at size == 0. The workspace release profile leaves `overflow-checks` off,
+    // so instead of panicking it wrapped to u64::MAX >> 12 and `check_perms_range`
+    // iterated ~4.5e15 pages — a hang, not an error. addr == 0 is the worst case
+    // (it underflows even in a debug build), and enforce_permissions is what turns
+    // the bad end_page into the loop. If this test ever hangs, the guard is gone.
+    let ctx = SymContext::new_mock();
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    mem.map(0x0, 0x1000, Permission::RWX);
+    mem.set_enforce_permissions(true);
+
+    for &addr in &[0u64, 0x400, 0x1000] {
+        assert!(
+            matches!(
+                mem.load_concrete(addr, 0, &ctx),
+                Err(MemoryError::ZeroSize { .. })
+            ),
+            "zero-size load at 0x{addr:x} must be a clean error"
+        );
+        assert!(
+            matches!(
+                mem.load_concrete_lazy(addr, 0, &ctx),
+                Err(MemoryError::ZeroSize { .. })
+            ),
+            "zero-size lazy load at 0x{addr:x} must be a clean error"
+        );
+    }
+
+    // Store side: `size = value.width() / 8`, so any sub-byte-width BV lands on
+    // the same underflow. Nothing may be written before the rejection.
+    let one_bit = RustBV::concrete(1, 1);
+    assert!(matches!(
+        mem.store_concrete(0x0u64, one_bit),
+        Err(MemoryError::ZeroSize { .. })
+    ));
+    assert_eq!(
+        mem.load_concrete(0x0u64, 1, &ctx).unwrap().as_u64(),
+        Some(0),
+        "a rejected zero-size store must not have written anything"
+    );
+}
+
+#[test]
 fn test_unmap_zero_size_is_noop_regardless_of_alignment() {
     // Sibling of the map() guard: a zero-length unmap must not drop a page.
     let mut mem = SymbolicMemory::new(Endness::Little);

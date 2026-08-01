@@ -22,7 +22,7 @@ use crate::symbolic::{
 use crate::vex::Endness;
 
 use super::page::{PAGE_SIZE, Permission};
-use super::{Address, MemoryError, SymbolicMemory};
+use super::{Address, MemoryError, SymbolicMemory, end_page_inclusive};
 
 impl SymbolicMemory {
     /// angr-jvjf partial-overwrite guard (shared by `load_concrete` and
@@ -44,7 +44,10 @@ impl SymbolicMemory {
             || (0..size as u64).any(|i| self.symbolic_spans.contains_key(&(addr + i)));
         if has_wider_sym_claim && !self.bytes_all_marked_symbolic(addr, size) {
             let start_page = addr.page_num();
-            let end_page = (addr.raw() + size as u64 - 1) >> 12;
+            let end_page = match end_page_inclusive(addr.raw(), size as u64) {
+                Ok(p) => p,
+                Err(e) => return Some(Err(e)),
+            };
             if let Err(e) = self.check_perms_range(start_page, end_page, Permission::R) {
                 return Some(Err(e));
             }
@@ -119,6 +122,15 @@ impl SymbolicMemory {
     ) -> Result<RustBV, MemoryError> {
         let addr = addr.into();
         record_mem_load(size as u64);
+        // angr-9ke6b.99: reject a zero-size load before any of the fast paths
+        // below. `_pending_memory_load` forwards a Python-supplied size here
+        // unchecked, and `size == 0` breaks two of them: the wider-symbolic
+        // extract computes `size * 8 - 1` (u32 underflow, no overflow-checks in
+        // release), and `end_page_inclusive` would have to compute
+        // `addr + 0 - 1`. There is no valid 0-width BV to return either way.
+        if size == 0 {
+            return Err(MemoryError::ZeroSize { addr: addr.raw() });
+        }
         // angr-9ke6b.96: Multi cells supersede plain Symbolic (memory
         // `invariant-multi-vs-symbolic-cell-states`), and the page
         // `symbolic_bitmap` is NOT set for a Multi byte — so none of the
@@ -132,7 +144,7 @@ impl SymbolicMemory {
         // `_pending_memory_load`.
         if self.range_has_multi(addr, size) {
             let start_page = addr.page_num();
-            let end_page = (addr.raw() + size as u64 - 1) >> 12;
+            let end_page = end_page_inclusive(addr.raw(), size as u64)?;
             self.check_perms_range(start_page, end_page, Permission::R)?;
             return self.assemble_load_with_multi(addr, size, ctx);
         }
@@ -220,7 +232,7 @@ impl SymbolicMemory {
         }
 
         let start_page = addr.page_num();
-        let end_page = (addr.raw() + size as u64 - 1) >> 12;
+        let end_page = end_page_inclusive(addr.raw(), size as u64)?;
 
         self.check_perms_range(start_page, end_page, Permission::R)?;
 
@@ -584,6 +596,11 @@ impl SymbolicMemory {
         size: u32,
         ctx: &SymContext,
     ) -> Result<RustBV, MemoryError> {
+        // angr-9ke6b.99: same zero-size rejection as `load_concrete` — see the
+        // guard there for why it precedes every fast path.
+        if size == 0 {
+            return Err(MemoryError::ZeroSize { addr: addr.raw() });
+        }
         // Phase 1.2 (angr-n082): Multi-cell lazy load. When any byte in
         // [addr, addr+size) carries lazy alternatives, fall through to a
         // per-byte reconstruction that folds the alternatives into an
@@ -592,7 +609,7 @@ impl SymbolicMemory {
         // check runs BEFORE the symbolic_objects fast path.
         if self.range_has_multi(addr, size) {
             let start_page = addr.page_num();
-            let end_page = (addr.raw() + size as u64 - 1) >> 12;
+            let end_page = end_page_inclusive(addr.raw(), size as u64)?;
             self.check_perms_range(start_page, end_page, Permission::R)?;
             return self.assemble_load_with_multi(addr, size, ctx);
         }
@@ -615,7 +632,7 @@ impl SymbolicMemory {
         }
 
         let start_page = addr.page_num();
-        let end_page = (addr.raw() + size as u64 - 1) >> 12;
+        let end_page = end_page_inclusive(addr.raw(), size as u64)?;
 
         self.check_perms_range(start_page, end_page, Permission::R)?;
 

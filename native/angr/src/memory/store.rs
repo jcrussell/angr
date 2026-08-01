@@ -24,7 +24,7 @@ use crate::vex::Endness;
 
 use super::multi::{MultiAlternative, MultiPayload};
 use super::page::{MemoryPage, PAGE_SIZE, Permission};
-use super::{Address, MemoryError, SymbolicMemory};
+use super::{Address, MemoryError, SymbolicMemory, end_page_inclusive};
 
 impl SymbolicMemory {
     /// Store a value to memory.
@@ -66,6 +66,11 @@ impl SymbolicMemory {
     }
 
     /// Store to a concrete address.
+    ///
+    /// angr-9ke6b.99: a sub-byte-width `value` makes `size` zero, which
+    /// `end_page_inclusive` rejects as [`MemoryError::ZeroSize`] before any
+    /// page is touched — so a rejected zero-size store installs nothing, the
+    /// same all-or-nothing property the permission check below has.
     pub fn store_concrete(
         &mut self,
         addr: impl Into<Address>,
@@ -77,7 +82,7 @@ impl SymbolicMemory {
 
         // Check if pages are mapped (fast path for same-page stores)
         let start_page = addr.page_num();
-        let end_page = (addr.raw() + size as u64 - 1) >> 12;
+        let end_page = end_page_inclusive(addr.raw(), size as u64)?;
 
         if start_page == end_page {
             if !self.pages.contains_key(&start_page) {
@@ -490,7 +495,7 @@ impl SymbolicMemory {
         // only ever sees already-mapped pages.
         for &cand in addrs {
             let start_page = cand >> 12;
-            let end_page = (cand + size as u64 - 1) >> 12;
+            let end_page = end_page_inclusive(cand, size as u64)?;
             self.check_perms_range(start_page, end_page, Permission::W)?;
         }
 
@@ -499,7 +504,7 @@ impl SymbolicMemory {
         // permission check happens up-front for every page.
         for &cand in addrs {
             let start_page = cand >> 12;
-            let end_page = (cand + size as u64 - 1) >> 12;
+            let end_page = end_page_inclusive(cand, size as u64)?;
             for page_num in start_page..=end_page {
                 self.pages
                     .entry(page_num)
@@ -573,7 +578,7 @@ impl SymbolicMemory {
         let mut ready: Vec<u64> = Vec::with_capacity(addrs.len());
         for &cand in addrs {
             let start_page = cand >> 12;
-            let end_page = (cand + size as u64 - 1) >> 12;
+            let end_page = end_page_inclusive(cand, size as u64)?;
             let mut all_mapped = true;
             for page_num in start_page..=end_page {
                 if !self.pages.contains_key(&page_num) {

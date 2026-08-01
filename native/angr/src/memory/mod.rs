@@ -110,12 +110,41 @@ pub enum MemoryError {
     /// Out of bounds access.
     #[error("out of bounds access at 0x{addr:x} (size {size})")]
     OutOfBounds { addr: u64, size: u64 },
+    /// A zero-size access. Rejected up-front by [`end_page_inclusive`] rather
+    /// than allowed to compute `addr + 0 - 1` (see that function for why).
+    /// A zero-byte load could not produce a valid BV anyway (Z3 has no
+    /// 0-width bitvector), and a zero-byte store has nothing to write, so
+    /// both are caller bugs — surfacing them lets the Python side fall back
+    /// or raise instead of hanging.
+    #[error("zero-size memory access at 0x{addr:x}")]
+    ZeroSize { addr: u64 },
     /// A concrete value was expected but the BV was symbolic. Defense-in-depth:
     /// the concrete store path is guarded by an `is_symbolic()` early-return, so
     /// this should be unreachable in practice — it converts a would-be panic
     /// into a recoverable error if that guard is ever bypassed.
     #[error("expected concrete value at 0x{addr:x}, found symbolic")]
     UnexpectedSymbolic { addr: u64 },
+}
+
+/// Inclusive number of the last page touched by `[addr, addr + size)`.
+///
+/// angr-9ke6b.99: every page-range check used to inline
+/// `(addr + size - 1) >> 12`. That underflows when `size == 0` — and the
+/// workspace `[profile.release]` does not set `overflow-checks`, so a release
+/// build wraps to `u64::MAX` instead of panicking. `check_perms_range` then
+/// iterates `start_page..=u64::MAX >> 12`, i.e. ~4.5e15 iterations: a hang,
+/// not an error. Route every such computation through here so `size == 0` is
+/// rejected as [`MemoryError::ZeroSize`] before any arithmetic happens.
+///
+/// `size == 0` is reachable from untrusted input: `_pending_memory_load`
+/// (`exploration/pending_api.rs`) forwards a Python-supplied size straight to
+/// `load_concrete`, and on the store side `size = value.width() / 8` is zero
+/// for any sub-byte-width BV.
+pub(super) fn end_page_inclusive(addr: u64, size: u64) -> Result<u64, MemoryError> {
+    if size == 0 {
+        return Err(MemoryError::ZeroSize { addr });
+    }
+    Ok((addr + size - 1) >> 12)
 }
 
 impl ConcretizationResult {
