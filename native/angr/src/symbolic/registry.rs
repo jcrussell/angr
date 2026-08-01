@@ -32,7 +32,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 /// one-shot unbounded-growth warning.
 ///
 /// The registry has no production GC caller (see [`SymbolicIdentityRegistry::retain`]
-/// for why a sound one is not trivially available), so an exploration that
+/// for what one would still cost), so an exploration that
 /// mints fresh symbols without bound grows all four maps without bound, each
 /// entry pinning a claripy AST alive from the Rust side. That is invisible
 /// today; warning once per order of magnitude makes it loud instead of
@@ -488,30 +488,31 @@ impl SymbolicIdentityRegistry {
 
     /// Prune symbols not in the given set of active IDs.
     ///
-    /// # Safety precondition — read before adding a caller
+    /// # What dropping a still-reachable id costs
     ///
-    /// `active_ids` MUST be a **superset** of every symbol id reachable from
-    /// anything still live in the process: the registers, memory and
-    /// constraints of every state in every stash, states in flight on worker
-    /// threads, values held by pending Python callbacks, and the `RustBV`s
-    /// pinned inside the thread-local bridge caches (`claripy_bridge::cache`).
+    /// Object identity and any annotations attached to the collected leaf — not
+    /// soundness. On the next export, `rustbv_to_claripy` misses the registry
+    /// and re-mints the leaf; because it mints with `explicit_name=True`
+    /// (angr-9ke6b.222) the claripy name is the Rust name verbatim, and
+    /// `RustBV::from_parts` derives the Z3 constant from that name, so the
+    /// re-minted leaf denotes the *same* Z3 variable and every constraint on the
+    /// original still binds.
     ///
-    /// Dropping an id that is still reachable is **silently wrong, not loud**:
-    /// on the next export, `rustbv_to_claripy` misses the registry and mints a
-    /// fresh `claripy.BVS(name, width)`. Without `explicit_name`, claripy
-    /// renames that to `name_<counter>_<width>`, so the re-exported leaf is a
-    /// brand-new unconstrained variable and every constraint carried by the
-    /// original stops binding (the angr-izov2 failure mode).
+    /// That was not always true. Minting without `explicit_name` let claripy
+    /// rename the leaf to `name_<counter>_<width>`, making a re-export a
+    /// brand-new unconstrained variable — silently wrong, and the reason
+    /// angr-9ke6b.40 ruled an approximate active set out. Keep the export path's
+    /// `explicit_name` flag if you keep this method: it is the whole reason an
+    /// approximate `active_ids` is now merely lossy.
     ///
     /// # Why there is no production caller yet
     ///
-    /// Computing that superset needs a full live-symbol traversal at a
-    /// quiescent point in the exploration loop; no such traversal exists today
-    /// (angr-9ke6b.40 → follow-up bead). Until one does, the only production
-    /// mutation of the registry is the wholesale `reset_for_new_exploration`
-    /// clear at exploration start, and unbounded growth within a single run is
-    /// surfaced by `maybe_warn_growth` / the `symbol_registry_size` stat rather
-    /// than collected. Do not wire an approximate active set into this method.
+    /// Nothing computes an active set at a quiescent point in the exploration
+    /// loop, so the only production mutation of the registry is the wholesale
+    /// `reset_for_new_exploration` clear at exploration start, and growth within
+    /// a single run is surfaced by `maybe_warn_growth` / the
+    /// `symbol_registry_size` stat rather than collected. Wiring that up is a
+    /// memory/fidelity trade now, no longer a correctness one.
     pub fn retain(&self, active_ids: &std::collections::HashSet<u64>) {
         let mut id_to_py = self.rust_id_to_py.write();
         let mut hash_to_id = self.py_hash_to_rust_id.write();
