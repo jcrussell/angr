@@ -39,6 +39,14 @@ fn test_isspace() {
     assert_eq!(call_with(&p, &mut s, b'\t'), 1);
     assert_eq!(call_with(&p, &mut s, b'\n'), 1);
     assert_eq!(call_with(&p, &mut s, b'a'), 0);
+    // The whole 0x09..=0x0d run counts, `\v` (0x0b) included — matching
+    // `angr/procedures/libc/isspace.py` and real libc, not Rust's
+    // `is_ascii_whitespace` (which drops `\v`).
+    for c in 0x09u8..=0x0d {
+        assert_eq!(call_with(&p, &mut s, c), 1, "isspace({c:#04x})");
+    }
+    assert_eq!(call_with(&p, &mut s, 0x08), 0);
+    assert_eq!(call_with(&p, &mut s, 0x0e), 0);
 }
 
 #[test]

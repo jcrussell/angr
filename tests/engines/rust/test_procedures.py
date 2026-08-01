@@ -665,6 +665,11 @@ class TestSymbolicLibcProcedures:
         """isspace on a symbolic int constrained to ASCII 'a' returns rax = 0."""
         self._run_ctype_predicate(fauxware_project, "isspace", "a", 0)
 
+    def test_isspace_symbolic_returns_true_for_vertical_tab(self, fauxware_project):
+        """isspace('\\v') is true, matching libc — the native set must not use
+        Rust's is_ascii_whitespace, which omits 0x0b."""
+        self._run_ctype_predicate(fauxware_project, "isspace", "\v", 1)
+
     def test_isalnum_symbolic_returns_true_for_digit(self, fauxware_project):
         """isalnum on a symbolic int constrained to ASCII '7' returns rax = 1."""
         self._run_ctype_predicate(fauxware_project, "isalnum", "7", 1)

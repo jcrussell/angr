@@ -203,14 +203,19 @@ crate::declare_proc! {
 
 crate::declare_proc! {
     /// `int isspace(int c)`.
-    /// ASCII whitespace per is_ascii_whitespace: ' ', '\t', '\n', '\x0c', '\r'.
-    /// (No '\x0b' — matches Rust's definition; kept consistent with the
-    /// pre-existing concrete path so symbolic and concrete agree.)
+    /// C locale whitespace: ' ' plus the 0x09..=0x0d run (`\t \n \v \f \r`).
+    /// Note this deliberately does *not* use Rust's `is_ascii_whitespace`,
+    /// which omits `\v` (0x0b) — the Python `isspace` SimProcedure matches on
+    /// `c == 32 || (9 <= c <= 13)`, and so does real libc, so excluding `\v`
+    /// would make a guest tokenizer take a different branch under the native
+    /// fast path than under Python.
     name = "isspace",
     struct = NativeIsSpace,
     args = [c: bv],
     call |state| {
-        set_predicate(state, &c, &[b' ', b'\t', b'\n', 0x0c, b'\r'], |c| c.is_ascii_whitespace())
+        ranges_predicate(state, &c, &[(0x09, 0x0d), (b' ', b' ')], |c| {
+            c == b' ' || (0x09..=0x0d).contains(&c)
+        })
     }
 }
 
