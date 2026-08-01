@@ -7,9 +7,7 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 use crate::arch::arch_from_name;
-use crate::callbacks::{
-    BranchPolicy, DeferredFork, ExecutionConfig, LoopExecutionEvent, PythonCallbacks,
-};
+use crate::callbacks::{DeferredFork, ExecutionConfig, LoopExecutionEvent, PythonCallbacks};
 use crate::errors::RustExecError;
 use crate::interpreter::CbExecutionError;
 use crate::solver::RustSolverContext;
@@ -436,7 +434,6 @@ pub(crate) fn vex_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<crate::symbolic::RustBVHandle>()?;
     // Deferred fork types
     m.add_class::<DeferredFork>()?;
-    m.add_class::<BranchPolicy>()?;
     m.add_class::<ExecutionConfig>()?;
     // Rust-first state
     m.add_class::<crate::state::PyRustSimState>()?;

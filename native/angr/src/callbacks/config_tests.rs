@@ -1,7 +1,7 @@
 //! In-module unit tests for `callbacks/config.rs` (angr-c4xcs.7).
 //!
-//! These cover the pure value types — `DeferredFork`, `BranchPolicy`, and
-//! `ExecutionConfig` — with no Z3 context and no GIL: the pyclass structs are
+//! These cover the pure value types — `DeferredFork` and `ExecutionConfig` —
+//! with no Z3 context and no GIL: the pyclass structs are
 //! plain Rust structs whose constructors/`__repr__` take no `Python<'_>`, so
 //! `condition_ast=None` keeps every case Python-free (mirrors the existing
 //! `callbacks_tests::test_loop_execution_event`, which also skips
@@ -32,25 +32,6 @@ fn test_deferred_fork_repr_hex_and_pushlevel() {
 }
 
 #[test]
-fn test_branch_policy_default_is_take_true() {
-    // The engine's documented default branch policy.
-    assert_eq!(BranchPolicy::default(), BranchPolicy::TakeTrue);
-}
-
-#[test]
-fn test_branch_policy_staticmethod_constructors() {
-    assert_eq!(BranchPolicy::take_true(), BranchPolicy::TakeTrue);
-    assert_eq!(BranchPolicy::take_false(), BranchPolicy::TakeFalse);
-    assert_eq!(
-        BranchPolicy::take_fallthrough(),
-        BranchPolicy::TakeFallthrough
-    );
-    assert_eq!(BranchPolicy::alternate(), BranchPolicy::Alternate);
-    // Distinct variants must not compare equal.
-    assert_ne!(BranchPolicy::TakeTrue, BranchPolicy::TakeFalse);
-}
-
-#[test]
 fn test_execution_config_py_new_overrides_only_two_args() {
     // py_new starts from Default and overrides ONLY the two Python-tunable
     // args; every other field (notably enable_eager_prefetch=false) comes
@@ -60,11 +41,9 @@ fn test_execution_config_py_new_overrides_only_two_args() {
     assert_eq!(cfg.max_deferred_forks, 123);
     assert!(!cfg.use_deferred_forks);
     // Everything the args did NOT touch matches Default.
-    assert_eq!(cfg.branch_policy, def.branch_policy);
     assert_eq!(cfg.enable_eager_prefetch, def.enable_eager_prefetch);
     assert!(!cfg.enable_eager_prefetch, "inherited from Default (off)");
     assert_eq!(cfg.max_prefetch_batch, def.max_prefetch_batch);
-    assert_eq!(cfg.max_concretization_range, def.max_concretization_range);
     assert_eq!(cfg.enable_stride_detection, def.enable_stride_detection);
     assert_eq!(cfg.max_symbolic_ip_targets, def.max_symbolic_ip_targets);
 }
@@ -79,14 +58,12 @@ fn test_execution_config_py_new_defaults_match_default_trait() {
     assert_eq!(cfg.max_deferred_forks, def.max_deferred_forks);
     assert_eq!(cfg.use_deferred_forks, def.use_deferred_forks);
     assert!(cfg.use_deferred_forks, "Default enables deferred forks");
-    assert_eq!(cfg.branch_policy, def.branch_policy);
     assert_eq!(cfg.enable_eager_prefetch, def.enable_eager_prefetch);
     assert!(
         !cfg.enable_eager_prefetch,
         "Default disables eager prefetch (per-page on demand)"
     );
     assert_eq!(cfg.max_prefetch_batch, def.max_prefetch_batch);
-    assert_eq!(cfg.max_concretization_range, def.max_concretization_range);
     assert_eq!(cfg.enable_stride_detection, def.enable_stride_detection);
     assert_eq!(cfg.max_symbolic_ip_targets, def.max_symbolic_ip_targets);
 }
@@ -97,5 +74,6 @@ fn test_execution_config_repr_contains_key_knobs() {
     let repr = cfg.__repr__();
     assert!(repr.contains("max_deferred_forks=42"), "{repr}");
     assert!(repr.contains("use_deferred_forks=true"), "{repr}");
-    assert!(repr.contains("TakeTrue"), "{repr}");
+    assert!(repr.contains("eager_prefetch=false"), "{repr}");
+    assert!(repr.contains("max_prefetch_batch=256"), "{repr}");
 }

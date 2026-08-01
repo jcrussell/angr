@@ -615,12 +615,6 @@ pub(crate) struct VEXInterpreter<'a> {
     block_forks_asserted: usize,
     /// Execution configuration.
     config: ExecutionConfig,
-    /// Counter for alternating branch policy.
-    ///
-    /// Write-only (angr-9ke6b.214): `BranchPolicy::Alternate` is never
-    /// selected by the live config path, so nothing reads the counter back.
-    #[allow(dead_code)]
-    branch_counter: u64,
     /// Next condition ID for tracking branch conditions.
     next_condition_id: u64,
     /// Current solver push level for constraint tracking.
@@ -799,7 +793,6 @@ impl<'a> VEXInterpreter<'a> {
             block_solver_pushed: false,
             block_forks_asserted: 0,
             config,
-            branch_counter: 0,
             next_condition_id: 0,
             push_level: 0,
             concrete_memory: Arc::new(Vec::new()),
@@ -1240,7 +1233,6 @@ impl<'a> VEXInterpreter<'a> {
             block_solver_pushed: false,
             block_forks_asserted: 0,
             config: self.config.clone(),
-            branch_counter: self.branch_counter,
             next_condition_id: self.next_condition_id,
             push_level: self.push_level, // Inherit push level for forked interpreter
             concrete_memory: Arc::clone(&self.concrete_memory), // Share concrete memory (read-only)

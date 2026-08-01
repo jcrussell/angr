@@ -5392,7 +5392,7 @@ The plain ``#[pyclass]`` types (without ``unsendable``) are all
 ``Py<PyAny>`` handles (which PyO3 declares ``Send + Sync`` since the
 GIL controls actual dereference). No refactor needed for these:
 
-- ``DeferredFork``, ``BranchPolicy``, ``ExecutionConfig``,
+- ``DeferredFork``, ``ExecutionConfig``,
   ``PythonCallbacks`` (``callbacks/mod.rs``), ``LoopExecutionEvent``
   (``native/angr/src/callbacks/events.rs``) — value types, plus ``Py<PyAny>``
   callback handles (Send+Sync) and ``Arc<Atomic*>`` shared toggles.

@@ -68,49 +68,20 @@ impl DeferredFork {
     }
 }
 
-/// Policy for choosing which branch to take when both paths are feasible.
-#[pyclass]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum BranchPolicy {
-    /// Always take the true branch (default).
-    #[default]
-    TakeTrue,
-    /// Always take the false branch.
-    TakeFalse,
-    /// Take the branch that continues to the next instruction (fall-through).
-    TakeFallthrough,
-    /// Alternate between true and false branches.
-    Alternate,
-}
-
-#[pymethods]
-impl BranchPolicy {
-    /// Create the TakeTrue policy.
-    #[staticmethod]
-    pub fn take_true() -> Self {
-        BranchPolicy::TakeTrue
-    }
-
-    /// Create the TakeFalse policy.
-    #[staticmethod]
-    pub fn take_false() -> Self {
-        BranchPolicy::TakeFalse
-    }
-
-    /// Create the TakeFallthrough policy.
-    #[staticmethod]
-    pub fn take_fallthrough() -> Self {
-        BranchPolicy::TakeFallthrough
-    }
-
-    /// Create the Alternate policy.
-    #[staticmethod]
-    pub fn alternate() -> Self {
-        BranchPolicy::Alternate
-    }
-}
-
 /// Configuration for the execution loop with deferred forks.
+///
+/// Scope note (angr-9ke6b.17): symbolic-address concretization is *not*
+/// configured here. Those bounds live in
+/// [`ConcretizerConfig`](crate::concretize::ConcretizerConfig)'s
+/// `read_range_limit` / `write_range_limit`, driven by SimOptions. A
+/// `max_concretization_range` knob used to sit on this struct and was never
+/// read by anything — don't re-add it; extend `ConcretizerConfig` instead.
+///
+/// Likewise (angr-9ke6b.16) there is no branch-selection policy knob: the
+/// engine always continues down the true branch and defers the other side
+/// (see `use_deferred_forks`). A `BranchPolicy` enum was exposed to Python
+/// here but never consulted by the fork path, so it was removed rather than
+/// left as a silent no-op.
 ///
 /// `#[non_exhaustive]` per angr-irwe: minor versions may add new
 /// `#[pyo3(get, set)]` knob fields. Construction outside this crate
@@ -125,9 +96,6 @@ pub struct ExecutionConfig {
     /// max_blocks hasn't been hit.
     #[pyo3(get, set)]
     pub max_deferred_forks: u32,
-    /// Branch selection policy.
-    #[pyo3(get, set)]
-    pub branch_policy: BranchPolicy,
     /// Whether to use deferred forks (if false, returns immediately on symbolic branch).
     #[pyo3(get, set)]
     pub use_deferred_forks: bool,
@@ -137,9 +105,6 @@ pub struct ExecutionConfig {
     /// Maximum pages to prefetch in a single batch (default: 256 = 1MB).
     #[pyo3(get, set)]
     pub max_prefetch_batch: usize,
-    /// Maximum concretization range for symbolic addresses (default: 65536).
-    #[pyo3(get, set)]
-    pub max_concretization_range: u64,
     /// Enable stride detection for array access patterns (default: true).
     #[pyo3(get, set)]
     pub enable_stride_detection: bool,
@@ -171,10 +136,9 @@ impl ExecutionConfig {
 
     fn __repr__(&self) -> String {
         format!(
-            "ExecutionConfig(max_deferred_forks={}, use_deferred_forks={}, policy={:?}, eager_prefetch={}, max_prefetch_batch={})",
+            "ExecutionConfig(max_deferred_forks={}, use_deferred_forks={}, eager_prefetch={}, max_prefetch_batch={})",
             self.max_deferred_forks,
             self.use_deferred_forks,
-            self.branch_policy,
             self.enable_eager_prefetch,
             self.max_prefetch_batch
         )
@@ -185,7 +149,6 @@ impl Default for ExecutionConfig {
     fn default() -> Self {
         ExecutionConfig {
             max_deferred_forks: 500, // Increased from 100 for complex binaries
-            branch_policy: BranchPolicy::TakeTrue,
             // Deferred forks enabled with one-per-step limit:
             // interpreter.rs limits to one deferred fork per
             // run_until_event call, then falls back to non-deferred
@@ -197,7 +160,6 @@ impl Default for ExecutionConfig {
             // Individual pages are fetched on demand instead.
             enable_eager_prefetch: false,
             max_prefetch_batch: 256, // 256 pages = 1MB (unused when eager disabled)
-            max_concretization_range: 65536,
             enable_stride_detection: true,
             max_symbolic_ip_targets: 257, // Match Python angr default
         }

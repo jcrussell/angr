@@ -94,7 +94,7 @@ mod dispatch;
 mod events;
 mod inspect;
 
-pub(crate) use config::{BranchPolicy, DeferredFork, ExecutionConfig};
+pub(crate) use config::{DeferredFork, ExecutionConfig};
 pub(crate) use events::{LoopExecutionEvent, RunErrorKind, RunResult};
 
 /// Single source of truth for the set of `Option<Py<PyAny>>` callback slots
