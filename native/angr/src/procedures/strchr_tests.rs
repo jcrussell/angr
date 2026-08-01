@@ -441,3 +441,105 @@ fn test_memrchr_ignores_nul_bytes_in_window() {
         .unwrap();
     assert_eq!(result.as_u64(), Some(0x1002)); // second 'x', past a NUL
 }
+
+/// Map `MAX_SCAN + 1000` filler bytes at 0x1000 with a single `needle` planted
+/// at `needle_off`, so a scan capped at MAX_SCAN can be aimed either side of
+/// the cap.
+fn map_buffer_spanning_scan_cap(state: &mut RustSimState, needle: u8, needle_off: usize) {
+    let mut buf = vec![b'A'; MAX_SCAN + 1000];
+    buf[needle_off] = needle;
+    state.map_memory_data(0x1000, &buf, Permission::RWX);
+}
+
+#[test]
+fn test_memchr_n_over_scan_cap_with_match_past_cap_defers_to_python() {
+    // The only occurrence lies past MAX_SCAN, so the capped scan sees nothing.
+    // Returning NULL here would be a wrong answer — bail so Python takes it.
+    let mut state = RustSimState::new("amd64").unwrap();
+    map_buffer_spanning_scan_cap(&mut state, b'Z', MAX_SCAN + 500);
+
+    let p = NativeMemchr;
+    let err = p
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x1000, 64),
+                RustBV::concrete(b'Z' as u128, 64),
+                RustBV::concrete((MAX_SCAN + 1000) as u128, 64),
+            ],
+        )
+        .unwrap_err();
+    assert!(
+        matches!(err, ProcedureError::MaxIterations(n) if n == MAX_SCAN + 1000),
+        "expected MaxIterations fallback, got {err:?}"
+    );
+}
+
+#[test]
+fn test_memchr_n_over_scan_cap_with_match_inside_cap_serves_natively() {
+    // A match inside the scanned prefix is the true *first* match no matter
+    // what the unscanned tail holds, so the native path stays.
+    let mut state = RustSimState::new("amd64").unwrap();
+    map_buffer_spanning_scan_cap(&mut state, b'Z', 10);
+
+    let p = NativeMemchr;
+    let result = p
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x1000, 64),
+                RustBV::concrete(b'Z' as u128, 64),
+                RustBV::concrete((MAX_SCAN + 1000) as u128, 64),
+            ],
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(result.as_u64(), Some(0x100A));
+}
+
+#[test]
+fn test_memrchr_n_over_scan_cap_defers_even_with_match_inside_cap() {
+    // memrchr wants the LAST match in n bytes; one past the cap would override
+    // this one, so no prefix result is trustworthy once n exceeds MAX_SCAN.
+    let mut state = RustSimState::new("amd64").unwrap();
+    map_buffer_spanning_scan_cap(&mut state, b'Z', 10);
+
+    let p = NativeMemrchr;
+    let err = p
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x1000, 64),
+                RustBV::concrete(b'Z' as u128, 64),
+                RustBV::concrete((MAX_SCAN + 1000) as u128, 64),
+            ],
+        )
+        .unwrap_err();
+    assert!(
+        matches!(err, ProcedureError::MaxIterations(n) if n == MAX_SCAN + 1000),
+        "expected MaxIterations fallback, got {err:?}"
+    );
+}
+
+#[test]
+fn test_rawmemchr_absent_within_scan_cap_defers_to_python() {
+    // rawmemchr's contract guarantees the byte is present, so "not in the first
+    // MAX_SCAN bytes" means it is past the cap — never NULL.
+    let mut state = RustSimState::new("amd64").unwrap();
+    map_buffer_spanning_scan_cap(&mut state, b'Z', MAX_SCAN + 500);
+
+    let p = NativeRawmemchr;
+    let err = p
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x1000, 64),
+                RustBV::concrete(b'Z' as u128, 64),
+            ],
+        )
+        .unwrap_err();
+    assert!(
+        matches!(err, ProcedureError::MaxIterations(n) if n == MAX_SCAN),
+        "expected MaxIterations fallback, got {err:?}"
+    );
+}

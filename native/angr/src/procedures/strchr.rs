@@ -17,6 +17,19 @@ use crate::symbolic::{RustBV, SymContext};
 
 const MAX_SCAN: usize = 4096;
 
+/// Is a forward-scan result trustworthy even though the scan stopped short of
+/// the caller's `n`?
+///
+/// Only a concrete non-NULL address is: it names a byte inside the scanned
+/// prefix, and no byte past the cap can precede it, so it is the true *first*
+/// match. Everything else depends on the unscanned tail — a concrete NULL
+/// means "absent from the prefix", and a symbolic ITE chain may still evaluate
+/// to NULL. Callers that scanned fewer than `n` bytes must defer those to
+/// Python instead of reporting a truncated "not found".
+fn forward_match_is_conclusive(result: &Option<RustBV>) -> bool {
+    matches!(result.as_ref().and_then(RustBV::as_u64), Some(a) if a != 0)
+}
+
 /// Build the symbolic ITE chain for strchr/memchr starting at `start_i`.
 ///
 /// `byte_loads`: list of (byte_addr, byte_val_8bit) already collected. The
@@ -405,10 +418,18 @@ crate::declare_proc! {
     args = [addr: concrete, c: bv, n: concrete],
     call |state| {
         let scan_len = n.min(MAX_SCAN as u64);
-        scan_for_byte(
+        let result = scan_for_byte(
             state, addr, &c, scan_len, /*stop_at_null=*/ false,
             /*nul_returns_addr=*/ false,
-        )
+        )?;
+
+        // An `n` past the scan cap is only servable when the prefix we did scan
+        // pins the answer; otherwise a match past the cap would have been the
+        // real result and reporting NULL is silently wrong. Defer to Python.
+        if n > MAX_SCAN as u64 && !forward_match_is_conclusive(&result) {
+            return Err(ProcedureError::MaxIterations(n as usize));
+        }
+        Ok(result)
     }
 }
 
@@ -420,16 +441,22 @@ crate::declare_proc! {
     /// void *rawmemchr(const void *s, int c);
     /// ```
     ///
-    /// We scan up to MAX_SCAN bytes; if the byte is not found we return NULL
-    /// (the UB case), matching the non-found behavior of the bounded memchr.
+    /// We scan up to MAX_SCAN bytes. The caller's guarantee means an absent
+    /// byte is one that lives past the cap, so a non-conclusive scan defers to
+    /// Python rather than returning the wrong NULL — rawmemchr's bound is
+    /// unbounded, so the cap is always "short of `n`".
     name = "rawmemchr",
     struct = NativeRawmemchr,
     args = [addr: concrete, c: bv],
     call |state| {
-        scan_for_byte(
+        let result = scan_for_byte(
             state, addr, &c, MAX_SCAN as u64, /*stop_at_null=*/ false,
             /*nul_returns_addr=*/ false,
-        )
+        )?;
+        if !forward_match_is_conclusive(&result) {
+            return Err(ProcedureError::MaxIterations(MAX_SCAN));
+        }
+        Ok(result)
     }
 }
 
@@ -446,8 +473,14 @@ crate::declare_proc! {
     struct = NativeMemrchr,
     args = [addr: concrete, c: bv, n: concrete],
     call |state| {
-        let scan_len = n.min(MAX_SCAN as u64);
-        scan_for_byte_last(state, addr, &c, scan_len, /*stop_at_null=*/ false)
+        // Unlike memchr, no prefix result survives truncation: memrchr wants the
+        // *last* match in `n` bytes, and any match past the cap would override
+        // whatever the prefix found. So an oversized `n` always defers to Python
+        // (the unconditional strncpy shape rather than memchr's refinement).
+        if n > MAX_SCAN as u64 {
+            return Err(ProcedureError::MaxIterations(n as usize));
+        }
+        scan_for_byte_last(state, addr, &c, n, /*stop_at_null=*/ false)
     }
 }
 
