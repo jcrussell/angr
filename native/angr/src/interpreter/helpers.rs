@@ -63,6 +63,36 @@ pub(super) fn bv_to_bytes(bv: &RustBV) -> Vec<u8> {
     }
 }
 
+/// Reject a byte-level store of a *symbolic* value (angr-9ke6b.19).
+///
+/// Several store paths fall back to [`bv_to_bytes`] + the byte-level
+/// `memory_store` callback when `PythonCallbacks::has_memory_store_symbolic_value`
+/// is false. `bv_to_bytes` yields all-zero bytes for a symbolic expression, so
+/// that fallback would silently overwrite memory with 0 instead of storing the
+/// value — a wrong answer, not a degraded one. Concrete values *are* exact
+/// under `bv_to_bytes`, so only the symbolic case is an error.
+///
+/// Call this immediately before any `bv_to_bytes`-based fallback that a
+/// `has_memory_store_symbolic_value()` guard would otherwise have skipped, so
+/// the loud error the `avoid-silent-no-op-callback-fallbacks` invariant
+/// promises fires even if a future caller drops the guard.
+/// `PythonCallbacks::call_memory_store_symbolic_value` enforces the same rule
+/// on its own fallback path.
+pub(super) fn reject_symbolic_byte_store(
+    value: &RustBV,
+    addr: u64,
+    site: &str,
+) -> Result<(), CbExecutionError> {
+    if value.is_symbolic() {
+        return Err(CbExecutionError::Unsupported(format!(
+            "{site}: symbolic store to 0x{addr:x} needs the \
+             memory_store_symbolic_value callback, which is not set \
+             (refusing to zero-fill memory)"
+        )));
+    }
+    Ok(())
+}
+
 /// Convert bytes (little-endian) to a RustBV.
 pub(super) fn bytes_to_bv(bytes: &[u8], width: u32) -> RustBV {
     let mut value: u128 = 0;

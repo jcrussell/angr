@@ -1,4 +1,4 @@
-use super::helpers::bv_to_bytes;
+use super::helpers::{bv_to_bytes, reject_symbolic_byte_store};
 use super::statements_cas::CasArgs;
 use super::*;
 
@@ -496,6 +496,7 @@ impl<'a> VEXInterpreter<'a> {
                         .call_memory_store_symbolic_value(addr_concrete, &ite_result)
                         .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
                 } else {
+                    reject_symbolic_byte_store(&ite_result, addr_concrete, "StoreG")?;
                     let ite_bytes = bv_to_bytes(&ite_result);
                     self.pending_stores.push(addr_concrete, ite_bytes);
                     if self.pending_stores.len() >= self.max_pending_stores {
@@ -526,6 +527,11 @@ impl<'a> VEXInterpreter<'a> {
                                 .call_memory_store_symbolic_value(addr_concrete, &ite_result)
                                 .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
                         } else {
+                            reject_symbolic_byte_store(
+                                &ite_result,
+                                addr_concrete,
+                                "StoreG (concretized addr)",
+                            )?;
                             let ite_bytes = bv_to_bytes(&ite_result);
                             callbacks
                                 .call_memory_store(addr_concrete, &ite_bytes)

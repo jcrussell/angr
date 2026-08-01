@@ -457,9 +457,14 @@ fn cas_store_symbolic_data_concrete_addr_invalidates_cached_block() {
     let call_irsb = make_irsb_with_temps(0x1010, &[]);
 
     with_python(|cb| {
-        interp
+        // Bare `PythonCallbacks::new()` has no memory_store_symbolic_value, so
+        // the store itself must hard-error rather than zero-fill (angr-9ke6b.19,
+        // asserted by `cas_symbolic_store_without_callback_errors_not_zero_fills`
+        // below). Invalidation happens before that dispatch and still applies.
+        let err = interp
             .cas_store_symbolic_data(cb, &addr_expr, &data_bv, &call_irsb)
-            .expect("cas_store_symbolic_data (concrete addr)");
+            .expect_err("symbolic CAS data with no symbolic-store callback must error");
+        assert!(matches!(err, CbExecutionError::Unsupported(_)), "{err}");
     });
 
     assert!(
@@ -467,6 +472,42 @@ fn cas_store_symbolic_data_concrete_addr_invalidates_cached_block() {
         "stale cached block must be invalidated by a CAS store to its address"
     );
     assert!(interp.is_code_page_dirtied(0x1010));
+}
+
+// angr-9ke6b.19: with `memory_store_symbolic_value` unwired, the symbolic-CAS
+// store path used to fall back to `bv_to_bytes` — which yields all zeros for a
+// symbolic expression — and push those zeros into `pending_stores`, so a later
+// `flush_stores` would overwrite real memory with 0 and report success. That is
+// a wrong answer, not a degraded one; the module's
+// `avoid-silent-no-op-callback-fallbacks` invariant says hard-error instead.
+#[test]
+fn cas_symbolic_store_without_callback_errors_not_zero_fills() {
+    let ctx = SymContext::new_mock();
+    let mut interp = new_interp(&ctx);
+    interp.add_concrete_memory(0x1000, vec![0xffu8; 0x1000]);
+
+    let addr_expr = IRExpr::Const(IRConst::U64(0x1010));
+    let data_bv = RustBV::symbolic(&ctx, "cas_sym", 32);
+    let call_irsb = make_irsb_with_temps(0x1010, &[]);
+
+    with_python(|cb| {
+        assert!(!cb.has_memory_store_symbolic_value());
+        let err = interp
+            .cas_store_symbolic_data(cb, &addr_expr, &data_bv, &call_irsb)
+            .expect_err("symbolic store without its callback must not silently succeed");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("memory_store_symbolic_value") && msg.contains("0x1010"),
+            "unexpected error: {msg}"
+        );
+    });
+
+    // The critical half: no zero bytes were queued for a later flush.
+    assert_eq!(
+        interp.pending_stores.len(),
+        0,
+        "the refused store must leave no zero-filled bytes behind"
+    );
 }
 
 // Symbolic-address branch: the CAS-target address itself is unresolved at

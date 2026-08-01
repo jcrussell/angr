@@ -9,7 +9,7 @@
 //! needs no second unwrap.
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
-use super::helpers::bv_to_bytes;
+use super::helpers::{bv_to_bytes, reject_symbolic_byte_store};
 use super::*;
 
 /// DCAS-only state bundled together so the single-CAS path can pass `None`
@@ -331,6 +331,7 @@ impl<'a> VEXInterpreter<'a> {
                     .call_memory_store_symbolic_value(addr_concrete, data_bv)
                     .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
             } else {
+                reject_symbolic_byte_store(data_bv, addr_concrete, "CAS store")?;
                 self.evict_overlapping_symbolic_stores(addr_concrete, data_size);
                 self.pending_symbolic_stores
                     .insert(addr_concrete, data_bv.clone());

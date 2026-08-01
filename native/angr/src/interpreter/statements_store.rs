@@ -1,4 +1,4 @@
-use super::helpers::bv_to_bytes;
+use super::helpers::{bv_to_bytes, reject_symbolic_byte_store};
 use super::*;
 
 impl<'a> VEXInterpreter<'a> {
@@ -435,6 +435,11 @@ impl<'a> VEXInterpreter<'a> {
                         .call_memory_store_symbolic_value(addr_concrete, data_val)
                         .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
                 } else {
+                    reject_symbolic_byte_store(
+                        data_val,
+                        addr_concrete,
+                        "symbolic store (single concretization)",
+                    )?;
                     let data_bytes = bv_to_bytes(data_val);
                     callbacks
                         .call_memory_store(addr_concrete, &data_bytes)

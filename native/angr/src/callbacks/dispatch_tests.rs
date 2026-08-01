@@ -138,9 +138,9 @@ fn store_symbolic_errors_when_full_callback_unset() {
 
 /// The documented degraded mode of `call_memory_store_symbolic_value`: with no
 /// symbolic-value callback it falls back to the byte-level `memory_store`.
-/// Asserted with *concrete* data, where `bv_to_bytes` is exact — the symbolic
-/// zero-fill case is the separate open bug angr-9ke6b.19 and is deliberately
-/// not pinned here.
+/// Asserted with *concrete* data, where `bv_to_bytes` is exact. The symbolic
+/// case takes the other branch — see
+/// `store_symbolic_value_without_callback_errors_instead_of_zero_filling`.
 #[test]
 fn store_symbolic_value_falls_back_to_byte_store() {
     Python::initialize();
@@ -170,6 +170,44 @@ def store_cb(addr, data):
         assert_eq!(addr, 0x2000);
         // bv_to_bytes is little-endian.
         assert_eq!(data, vec![0x02, 0x01]);
+    });
+}
+
+/// The other half of the fallback (angr-9ke6b.19): `bv_to_bytes` returns all
+/// zeros for a symbolic expression, so byte-storing one would report success
+/// while overwriting memory with 0. Must hard-error, and must not reach
+/// `memory_store` at all.
+#[test]
+fn store_symbolic_value_without_callback_errors_instead_of_zero_filling() {
+    Python::initialize();
+    let ctx = crate::symbolic::SymContext::new_mock();
+    let value = RustBV::symbolic(&ctx, "sv", 16);
+    Python::attach(|py| {
+        let globals = defs(
+            py,
+            c"_stores = []
+def store_cb(addr, data):
+    _stores.append((addr, bytes(data)))
+",
+        );
+        let mut cb = PythonCallbacks::new();
+        cb.set_memory_store(obj(&globals, "store_cb"));
+        assert!(!cb.has_memory_store_symbolic_value());
+
+        let err = cb
+            .call_memory_store_symbolic_value(0x2000, &value)
+            .expect_err("symbolic store without its callback must not silently succeed");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("memory_store_symbolic_value") && msg.contains("0x2000"),
+            "unexpected error: {msg}"
+        );
+
+        assert_eq!(
+            recorder(&globals, "_stores").len(),
+            0,
+            "the refused store must not zero-fill via the byte-level callback"
+        );
     });
 }
 

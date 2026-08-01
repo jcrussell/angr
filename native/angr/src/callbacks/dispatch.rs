@@ -489,7 +489,9 @@ impl PythonCallbacks {
     /// * `value` - The symbolic RustBV value with expression tree
     ///
     /// # Returns
-    /// Ok(()) on success, or falls back to byte-based store if callback unavailable.
+    /// Ok(()) on success. With the callback unset, a *concrete* value falls
+    /// back to the byte-level `memory_store`; a *symbolic* value is an error
+    /// (see the fallback comment below).
     pub(crate) fn call_memory_store_symbolic_value(
         &self,
         addr: u64,
@@ -512,8 +514,24 @@ impl PythonCallbacks {
                 return Ok(());
             }
 
-            // Fallback: use the standard memory_store with byte representation
-            // This will lose symbolic information but maintains backward compatibility
+            // Fallback: use the standard memory_store with byte representation.
+            // Sound only for a concrete value, where `bv_to_bytes` is exact.
+            // For a symbolic value `bv_to_bytes` returns all zeros, so this
+            // fallback would report success while overwriting memory with 0 —
+            // a wrong answer, not a degraded one (angr-9ke6b.19). Hard-error
+            // instead, matching `call_memory_store_symbolic_full` and module
+            // invariant 1 (`avoid-silent-no-op-callback-fallbacks`). Every
+            // production call site guards with
+            // `has_memory_store_symbolic_value()` first and
+            // `rust_manager.py::_setup_callbacks` always registers the
+            // callback, so this is only reachable from a future unguarded
+            // caller or a minimal embedding — surface it loudly.
+            if value.is_symbolic() {
+                return Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
+                    "memory_store_symbolic_value callback not set; refusing to \
+                     zero-fill symbolic store at 0x{addr:x}"
+                )));
+            }
             let data_bytes = bv_to_bytes(value);
             self.call_memory_store(addr, &data_bytes)
         })
