@@ -91,6 +91,62 @@ mod inspect;
 pub(crate) use config::{BranchPolicy, DeferredFork, ExecutionConfig};
 pub(crate) use events::{LoopExecutionEvent, RunErrorKind, RunResult};
 
+/// Single source of truth for the set of `Option<Py<PyAny>>` callback slots
+/// on [`PythonCallbacks`].
+///
+/// Expands to `$m! { field, field, ... }`, so every consumer generated below
+/// — [`PythonCallbacks::new`], [`PythonCallbacks::traverse_fields`] and
+/// [`PythonCallbacks::clear_fields`] — is driven by this one list and cannot
+/// drift apart. A field that is visited by `__traverse__` but not dropped by
+/// `__clear__` (or vice versa) silently reintroduces the reference-cycle GC
+/// leak documented on `__traverse__`; deriving both from one list makes that
+/// state unrepresentable.
+///
+/// **Adding a callback** means editing exactly two places: the `struct`
+/// definition (for the doc comment + type) and this list. Forgetting the
+/// list is a *compile* error, not a silent leak — `clear_fields` destructures
+/// `Self` exhaustively (no `..`), so an unlisted field has no binding.
+macro_rules! with_callback_fields {
+    ($m:ident) => {
+        $m! {
+            memory_load,
+            memory_store,
+            memory_store_batch,
+            memory_load_batch,
+            on_hook,
+            on_syscall,
+            lift_block,
+            get_register,
+            put_register,
+            dirty_call,
+            fetch_page,
+            batch_fetch_pages,
+            memory_store_symbolic_value,
+            memory_store_symbolic_full,
+            memory_load_symbolic_full,
+            resolve_function,
+            inspect_mem_read,
+            inspect_mem_write,
+            inspect_reg_read,
+            inspect_reg_write,
+            inspect_instruction,
+            inspect_irsb,
+            inspect_exit,
+            inspect_call,
+            inspect_return,
+            inspect_tmp_read,
+            inspect_tmp_write,
+            inspect_statement,
+            inspect_expr,
+            inspect_address_concretization,
+            inspect_symbolic_variable,
+            inspect_fork,
+            inspect_constraints,
+            inspect_vex_lift,
+        }
+    };
+}
+
 /// Python callback holder for the Rust VEX engine.
 ///
 /// This struct holds references to Python callback functions that the Rust
@@ -377,46 +433,22 @@ impl PythonCallbacks {
     /// Create a new empty callback holder.
     #[new]
     pub fn new() -> Self {
-        PythonCallbacks {
-            memory_load: None,
-            memory_store: None,
-            memory_store_batch: None,
-            memory_load_batch: None,
-            on_hook: None,
-            on_syscall: None,
-            lift_block: None,
-            get_register: None,
-            put_register: None,
-            dirty_call: None,
-            fetch_page: None,
-            batch_fetch_pages: None,
-            memory_store_symbolic_value: None,
-            memory_store_symbolic_full: None,
-            memory_load_symbolic_full: None,
-            resolve_function: None,
-            inspect_mem_read: None,
-            inspect_mem_write: None,
-            inspect_reg_read: None,
-            inspect_reg_write: None,
-            inspect_instruction: None,
-            inspect_irsb: None,
-            inspect_exit: None,
-            inspect_call: None,
-            inspect_return: None,
-            inspect_tmp_read: None,
-            inspect_tmp_write: None,
-            inspect_statement: None,
-            inspect_expr: None,
-            inspect_address_concretization: None,
-            inspect_symbolic_variable: None,
-            inspect_fork: None,
-            inspect_constraints: None,
-            inspect_vex_lift: None,
-            inspect_enabled: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
-            memory_is_rust_proxy: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            python_servable_pages: std::sync::Arc::new(std::sync::RwLock::new(None)),
-            python_page_universe: std::sync::Arc::new(std::sync::RwLock::new(None)),
+        macro_rules! empty_holder {
+            ($($field:ident),+ $(,)?) => {
+                PythonCallbacks {
+                    $($field: None,)+
+                    inspect_enabled: std::sync::Arc::new(
+                        std::sync::atomic::AtomicU32::new(0),
+                    ),
+                    memory_is_rust_proxy: std::sync::Arc::new(
+                        std::sync::atomic::AtomicBool::new(false),
+                    ),
+                    python_servable_pages: std::sync::Arc::new(std::sync::RwLock::new(None)),
+                    python_page_universe: std::sync::Arc::new(std::sync::RwLock::new(None)),
+                }
+            };
         }
+        with_callback_fields!(empty_holder)
     }
 
     /// Set the memory load callback.
@@ -1004,90 +1036,48 @@ impl PythonCallbacks {
     /// Visit every `Py<PyAny>` field. Used by __traverse__ on this type and
     /// by RustExplorationManager.__traverse__ which holds a cloned copy of
     /// PythonCallbacks (and so participates in the same cycle).
+    ///
+    /// Generated from [`with_callback_fields`], the same list that drives
+    /// [`Self::clear_fields`] — the two cannot cover different field sets.
     pub(crate) fn traverse_fields(&self, visit: &PyVisit<'_>) -> Result<(), PyTraverseError> {
-        for obj in [
-            &self.memory_load,
-            &self.memory_store,
-            &self.memory_store_batch,
-            &self.memory_load_batch,
-            &self.on_hook,
-            &self.on_syscall,
-            &self.lift_block,
-            &self.get_register,
-            &self.put_register,
-            &self.dirty_call,
-            &self.fetch_page,
-            &self.batch_fetch_pages,
-            &self.memory_store_symbolic_value,
-            &self.memory_store_symbolic_full,
-            &self.memory_load_symbolic_full,
-            &self.resolve_function,
-            &self.inspect_mem_read,
-            &self.inspect_mem_write,
-            &self.inspect_reg_read,
-            &self.inspect_reg_write,
-            &self.inspect_instruction,
-            &self.inspect_irsb,
-            &self.inspect_exit,
-            &self.inspect_call,
-            &self.inspect_return,
-            &self.inspect_tmp_read,
-            &self.inspect_tmp_write,
-            &self.inspect_statement,
-            &self.inspect_expr,
-            &self.inspect_address_concretization,
-            &self.inspect_symbolic_variable,
-            &self.inspect_fork,
-            &self.inspect_constraints,
-            &self.inspect_vex_lift,
-        ]
-        .into_iter()
-        .flatten()
-        {
-            visit.call(obj)?;
+        macro_rules! visit_fields {
+            ($($field:ident),+ $(,)?) => {
+                for obj in [$(&self.$field,)+].into_iter().flatten() {
+                    visit.call(obj)?;
+                }
+            };
         }
+        with_callback_fields!(visit_fields);
         Ok(())
     }
 
     /// Drop every `Py<PyAny>` field. Used by __clear__ on this type and on
     /// RustExplorationManager (which has a cloned copy in its `callbacks` field).
+    ///
+    /// The exhaustive `let Self { .. }` destructure (deliberately without a
+    /// `..` rest pattern) is what keeps [`with_callback_fields`] honest: a
+    /// field added to the struct but not to that list has no binding here and
+    /// fails to compile, instead of silently escaping both this method and
+    /// [`Self::traverse_fields`] and leaking the manager through the GC cycle.
     pub(crate) fn clear_fields(&mut self) {
-        self.memory_load = None;
-        self.memory_store = None;
-        self.memory_store_batch = None;
-        self.memory_load_batch = None;
-        self.on_hook = None;
-        self.on_syscall = None;
-        self.lift_block = None;
-        self.get_register = None;
-        self.put_register = None;
-        self.dirty_call = None;
-        self.fetch_page = None;
-        self.batch_fetch_pages = None;
-        self.memory_store_symbolic_value = None;
-        self.memory_store_symbolic_full = None;
-        self.memory_load_symbolic_full = None;
-        self.resolve_function = None;
-        self.inspect_mem_read = None;
-        self.inspect_mem_write = None;
-        self.inspect_reg_read = None;
-        self.inspect_reg_write = None;
-        self.inspect_instruction = None;
-        self.inspect_irsb = None;
-        self.inspect_exit = None;
-        self.inspect_call = None;
-        self.inspect_return = None;
-        self.inspect_tmp_read = None;
-        self.inspect_tmp_write = None;
-        self.inspect_statement = None;
-        self.inspect_expr = None;
-        self.inspect_address_concretization = None;
-        self.inspect_symbolic_variable = None;
-        self.inspect_fork = None;
-        self.inspect_constraints = None;
-        self.inspect_vex_lift = None;
-        self.inspect_enabled
-            .store(0, std::sync::atomic::Ordering::Relaxed);
+        macro_rules! clear_all {
+            ($($field:ident),+ $(,)?) => {{
+                let Self {
+                    $($field,)+
+                    inspect_enabled,
+                    // Non-`Py` state: shared with the Python side through
+                    // `Arc`, not part of the reference cycle, so `__clear__`
+                    // leaves it alone. Named (rather than elided with `..`)
+                    // only to keep the destructure exhaustive.
+                    memory_is_rust_proxy: _,
+                    python_servable_pages: _,
+                    python_page_universe: _,
+                } = self;
+                $(*$field = None;)+
+                inspect_enabled.store(0, std::sync::atomic::Ordering::Relaxed);
+            }};
+        }
+        with_callback_fields!(clear_all);
     }
 }
 

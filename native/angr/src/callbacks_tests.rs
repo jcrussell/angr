@@ -110,3 +110,45 @@ def store_cb(addr, data):
         );
     });
 }
+
+/// angr-9ke6b.27: `clear_fields` (the body of `__clear__`, and of
+/// `RustExplorationManager.__clear__`) must drop *every* `Py<PyAny>` callback
+/// slot. A slot it misses keeps the `mgr -> _callbacks -> bound method -> mgr`
+/// reference cycle alive and leaks the manager plus its `_state_cache`.
+///
+/// Completeness is enforced at compile time by the exhaustive destructure in
+/// `clear_fields` (see `with_callback_fields!`); this pins the runtime half —
+/// that the fields really are dropped and `inspect_enabled` really is reset,
+/// so a future rewrite away from the macro still fails loudly.
+#[test]
+fn clear_fields_drops_every_callback_slot() {
+    use std::sync::atomic::Ordering;
+
+    Python::initialize();
+    Python::attach(|py| {
+        let sentinel: Py<PyAny> = py.None();
+
+        macro_rules! fill_and_check {
+            ($($field:ident),+ $(,)?) => {{
+                let mut cb = PythonCallbacks::new();
+                $(cb.$field = Some(sentinel.clone_ref(py));)+
+                cb.inspect_enabled.store(u32::MAX, Ordering::Relaxed);
+                assert!(cb.is_ready(), "every slot should be populated pre-clear");
+
+                cb.clear_fields();
+
+                $(assert!(
+                    cb.$field.is_none(),
+                    concat!("clear_fields left `", stringify!($field), "` set"),
+                );)+
+                assert_eq!(
+                    cb.inspect_enabled.load(Ordering::Relaxed),
+                    0,
+                    "clear_fields must reset the inspect bitmask",
+                );
+                assert!(!cb.is_ready(), "cleared holder must not report ready");
+            }};
+        }
+        with_callback_fields!(fill_and_check);
+    });
+}
