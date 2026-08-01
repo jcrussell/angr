@@ -28,6 +28,47 @@ fn union_overlay<'a, V>(
     }
 }
 
+/// Union an `Arc<HashSet<_>>` config field across every merge branch.
+///
+/// Shared by `merge`'s `hooks` and `sim_options` unions (angr-9ke6b.121). A
+/// branch whose `Arc` is pointer-equal to `base` contributes nothing, so the
+/// common case (nobody mutated the set after the fork) returns `base`'s `Arc`
+/// unchanged and allocates nothing.
+fn union_arc_set<'a, T>(
+    base: &Arc<HashSet<T>>,
+    others: impl IntoIterator<Item = &'a Arc<HashSet<T>>>,
+) -> Arc<HashSet<T>>
+where
+    T: Clone + Eq + std::hash::Hash + 'a,
+{
+    let mut merged: Option<HashSet<T>> = None;
+    for other in others {
+        if Arc::ptr_eq(base, other) {
+            continue;
+        }
+        merged
+            .get_or_insert_with(|| (**base).clone())
+            .extend(other.iter().cloned());
+    }
+    merged.map_or_else(|| Arc::clone(base), Arc::new)
+}
+
+/// Warn when a per-path config scalar disagrees across merge branches.
+///
+/// The merged state carries `self`'s value for the fields routed through here
+/// (see [`RustSimState::merge`]); there is no meaningful union for a cursor or
+/// an init-time pointer, so this makes the drop *loud* instead of silent —
+/// exactly the treatment the `fs` merge already gives its dropped branches
+/// (angr-9ke6b.121).
+fn warn_config_divergence(field: &str, diverged: bool) {
+    if diverged {
+        log::warn!(
+            "merge: branches disagree on `{field}`; merged state keeps the first \
+             branch's value and the other branches' values are dropped"
+        );
+    }
+}
+
 impl RustSimState {
     /// Clone the three Python-AST metadata maps so the parent and the fork hold
     /// independent maps over shared AST handles.
@@ -381,6 +422,88 @@ impl RustSimState {
             );
             union_overlay(&mut addr_to_ast, other.addr_to_ast(), "addr_to_ast");
         }
+
+        // ---- Config-like fields (angr-9ke6b.121) ----------------------------
+        // Each of these can be mutated per-state *after* a fork (native procs:
+        // setenv/getopt/__ctype_*_loc; Python setters: set_option, add_hook,
+        // set_concretizer, inspection), so carrying only `self`'s value silently
+        // loses a divergent branch's change. Set-like fields union; genuinely
+        // per-path or init-time scalars keep `self`'s value but warn, the same
+        // contract the `fs` merge above uses when it drops a branch.
+        let merged_hooks = union_arc_set(&self.hooks, others.iter().map(|o| &o.hooks));
+        // `sim_options` and the four booleans below are two views of the same
+        // Python option set, so they merge the same way: union / logical-OR. An
+        // option a branch switched on stays on in the merged state rather than
+        // being reverted by whichever branch happened to be `self`.
+        let merged_sim_options =
+            union_arc_set(&self.sim_options, others.iter().map(|o| &o.sim_options));
+        let merged_no_ip_concretization =
+            self.no_ip_concretization || others.iter().any(|o| o.no_ip_concretization);
+        let merged_no_symbolic_jump_resolution = self.no_symbolic_jump_resolution
+            || others.iter().any(|o| o.no_symbolic_jump_resolution);
+        let merged_keep_ip_symbolic =
+            self.keep_ip_symbolic || others.iter().any(|o| o.keep_ip_symbolic);
+        let merged_force_eager_forks =
+            self.force_eager_forks || others.iter().any(|o| o.force_eager_forks);
+        // Environment: union with self-wins on a conflicting *value*, mirroring
+        // `union_overlay`'s earlier-state-wins rule. A key only one branch set
+        // (setenv on that path) would otherwise vanish.
+        let merged_environment = {
+            let mut merged: Option<HashMap<Vec<u8>, Vec<u8>>> = None;
+            for other in others {
+                if Arc::ptr_eq(&self.environment, &other.environment) {
+                    continue;
+                }
+                let acc = merged.get_or_insert_with(|| (*self.environment).clone());
+                for (key, value) in other.environment.iter() {
+                    match acc.get(key) {
+                        Some(existing) if existing != value => log::warn!(
+                            "merge: conflicting environment value for `{}`; keeping the \
+                             earlier branch's value",
+                            String::from_utf8_lossy(key)
+                        ),
+                        Some(_) => {}
+                        None => {
+                            acc.insert(key.clone(), value.clone());
+                        }
+                    }
+                }
+            }
+            merged.map_or_else(|| Arc::clone(&self.environment), Arc::new)
+        };
+        // No union exists for these: a getopt cursor is a per-path scan
+        // position, and the concretizer / inspection / extern-pointer fields are
+        // init-time config that is *not expected* to diverge — a warning here
+        // means something mutated one branch's config mid-run.
+        warn_config_divergence(
+            "getopt_optind",
+            others.iter().any(|o| o.getopt_optind != self.getopt_optind),
+        );
+        warn_config_divergence(
+            "getopt_optchar",
+            others
+                .iter()
+                .any(|o| o.getopt_optchar != self.getopt_optchar),
+        );
+        warn_config_divergence(
+            "getopt_extern",
+            others.iter().any(|o| o.getopt_extern != self.getopt_extern),
+        );
+        warn_config_divergence(
+            "ctype_loc",
+            others.iter().any(|o| o.ctype_loc != self.ctype_loc),
+        );
+        warn_config_divergence(
+            "concretizer",
+            others.iter().any(|o| o.concretizer != self.concretizer),
+        );
+        warn_config_divergence(
+            "inspection",
+            others
+                .iter()
+                .any(|o| o.inspection.enabled_mask() != self.inspection.enabled_mask()),
+        );
+
         RustSimState {
             arch: self.arch.clone(),
             vex_arch: self.vex_arch,
@@ -393,7 +516,7 @@ impl RustSimState {
             history: self.history.clone(),
             detailed_history: self.detailed_history.clone(),
             max_history: self.max_history,
-            hooks: self.hooks.clone(),
+            hooks: merged_hooks,
             concretizer: self.concretizer.clone(),
             track_history: self.track_history,
             fs: best_fs,
@@ -434,15 +557,15 @@ impl RustSimState {
                 hm
             },
             inspection: self.inspection.clone(),
-            environment: self.environment.clone(),
+            environment: merged_environment,
             symbolic_pages,
             hook_symbolic_memory,
             addr_to_ast,
             last_time: self.last_time.clone(),
-            no_ip_concretization: self.no_ip_concretization,
-            no_symbolic_jump_resolution: self.no_symbolic_jump_resolution,
-            keep_ip_symbolic: self.keep_ip_symbolic,
-            force_eager_forks: self.force_eager_forks,
+            no_ip_concretization: merged_no_ip_concretization,
+            no_symbolic_jump_resolution: merged_no_symbolic_jump_resolution,
+            keep_ip_symbolic: merged_keep_ip_symbolic,
+            force_eager_forks: merged_force_eager_forks,
             // CGC allocate(2) bumps DOWNWARD from cgc_allocation_base
             // (checked_sub in syscalls/cgc.rs::NativeAllocateSyscall), so —
             // unlike the up-growing heap_brk/posix_brk/mmap_base watermarks
@@ -470,7 +593,7 @@ impl RustSimState {
                 .copied()
                 .filter(|hole| others.iter().all(|o| o.cgc_sinkholes.contains(hole)))
                 .collect(),
-            sim_options: self.sim_options.clone(),
+            sim_options: merged_sim_options,
         }
     }
 }
