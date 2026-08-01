@@ -868,6 +868,94 @@ fn test_load_concrete_partial_overlap_later_store_wins() {
     );
 }
 
+/// angr-9ke6b.97: the same angr-3zhl partial-overlap merge must hold on the
+/// *lazy* load path. Before `load_concrete` and `load_concrete_lazy_inner`
+/// were unified behind `load_concrete_common`, the inner-overlap scan lived
+/// only in the eager copy, so `load_concrete_lazy` — the path behind every
+/// ITE-tree leaf and `store_concrete`'s read-modify-write — returned the
+/// stale wider object with no error. Same setup as
+/// `test_load_concrete_partial_overlap_later_store_wins`, loaded through
+/// the lazy entry point.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_load_concrete_lazy_partial_overlap_later_store_wins() {
+    let ctx = SymContext::new_mock();
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    mem.map(0x1000, 0x1000, Permission::RWX);
+
+    let k1: u128 = 0x1122_3344_5566_7788;
+    let k2: u128 = 0xAABB_CCDD_EEFF_0011;
+    let sym1 = RustBV::symbolic(&ctx, "sym1_97_lazy", 64);
+    let sym2 = RustBV::symbolic(&ctx, "sym2_97_lazy", 64);
+    ctx.assume_true(&sym1.eq(&RustBV::concrete(k1, 64), &ctx));
+    ctx.assume_true(&sym2.eq(&RustBV::concrete(k2, 64), &ctx));
+
+    mem.store_concrete(0x1000, sym1).expect("store sym1");
+    mem.store_concrete(0x1004, sym2).expect("store sym2");
+    assert!(ctx.is_sat(), "context must remain SAT after both stores");
+
+    let loaded = mem
+        .load_concrete_lazy(0x1000, 8, &ctx)
+        .expect("8-byte lazy load at 0x1000 must succeed");
+    let expected: u128 = ((k2 & 0xFFFF_FFFF) << 32) | (k1 & 0xFFFF_FFFF);
+    assert_eq!(
+        ctx.eval(&loaded),
+        Some(expected),
+        "load_concrete_lazy(0x1000, 8) must merge sym1's low half with sym2's \
+         low half; expected 0x{expected:016x}, the pre-unification bug returned \
+         sym1 entire (0x{k1:016x})",
+    );
+
+    // The eager and lazy paths must now agree byte-for-byte on this setup.
+    let eager = mem
+        .load_concrete(0x1000, 8, &ctx)
+        .expect("8-byte eager load at 0x1000 must succeed");
+    assert_eq!(
+        ctx.eval(&eager),
+        ctx.eval(&loaded),
+        "load_concrete and load_concrete_lazy must agree after unification"
+    );
+}
+
+/// angr-9ke6b.97: partial read of a wider symbolic object based at the load
+/// address must work on the lazy path too. `load_concrete_lazy_inner`'s
+/// exact-address fast path only accepted `sym.width() == size * 8`; a
+/// narrower read fell through to the page scan and only recovered via the
+/// LE-only `containing_wider_sym` tail. Sharing `load_concrete`'s
+/// endianness-aware fast path fixes the big-endian case, which previously
+/// extracted the wrong lane.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_load_concrete_lazy_partial_read_of_wider_sym_big_endian() {
+    let ctx = SymContext::new_mock();
+    let mut mem = SymbolicMemory::new(Endness::Big);
+    mem.map(0x1000, 0x1000, Permission::RWX);
+
+    let k: u128 = 0x1122_3344_5566_7788;
+    let sym = RustBV::symbolic(&ctx, "sym_97_be", 64);
+    ctx.assume_true(&sym.eq(&RustBV::concrete(k, 64), &ctx));
+    mem.store_concrete(0x1000, sym).expect("store sym");
+
+    // BE: byte 0 of the stored value is the MSB, so a 4-byte read at the
+    // base address is the high half (0x11223344), not the low half.
+    let loaded = mem
+        .load_concrete_lazy(0x1000, 4, &ctx)
+        .expect("4-byte lazy load at 0x1000 must succeed");
+    assert_eq!(
+        ctx.eval(&loaded),
+        Some(0x1122_3344),
+        "BE load_concrete_lazy(0x1000, 4) must be the wide value's high half"
+    );
+    let eager = mem
+        .load_concrete(0x1000, 4, &ctx)
+        .expect("4-byte eager load at 0x1000 must succeed");
+    assert_eq!(
+        ctx.eval(&eager),
+        ctx.eval(&loaded),
+        "load_concrete and load_concrete_lazy must agree on BE partial reads"
+    );
+}
+
 /// angr-5zbe: a pending write registered with `add_pending_write`
 /// must NOT be visible to a subsequent load until
 /// `flush_pending_writes` materializes it. This documents the

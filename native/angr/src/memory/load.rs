@@ -114,6 +114,14 @@ impl SymbolicMemory {
     }
 
     /// Load from a concrete address.
+    ///
+    /// Thin wrapper over [`SymbolicMemory::load_concrete_common`] — the only
+    /// difference from [`SymbolicMemory::load_concrete_lazy_inner`] is that an
+    /// unmapped page is always a hard `Unmapped` here (no lazy-region fetch
+    /// hint), plus the `record_mem_load` counter bump. Per
+    /// `invariant-mem-counter-two-paths` the volume counter lives on this entry
+    /// point only: the `_lazy` path is reached from ITE-tree leaves and
+    /// `store_concrete`'s read-modify-write, which must not inflate it.
     pub fn load_concrete(
         &self,
         addr: impl Into<Address>,
@@ -122,6 +130,26 @@ impl SymbolicMemory {
     ) -> Result<RustBV, MemoryError> {
         let addr = addr.into();
         record_mem_load(size as u64);
+        self.load_concrete_common(addr, size, ctx, false)
+    }
+
+    /// Shared body of [`SymbolicMemory::load_concrete`] and
+    /// [`SymbolicMemory::load_concrete_lazy_inner`] (angr-9ke6b.97).
+    ///
+    /// These were ~200-line near-duplicates that drifted apart repeatedly —
+    /// Multi-cell dispatch, the angr-3zhl partial-overlap merge, the wider-sym
+    /// fast paths and the endianness-aware `containing_wider_sym` extract each
+    /// landed in one copy only. `lazy` now carries the single real difference:
+    /// whether an unmapped page inside a lazy region is reported as
+    /// `UnmappedPageInRegion` (so the interpreter can fetch it) or as a plain
+    /// `Unmapped` error.
+    fn load_concrete_common(
+        &self,
+        addr: Address,
+        size: u32,
+        ctx: &SymContext,
+        lazy: bool,
+    ) -> Result<RustBV, MemoryError> {
         // angr-9ke6b.99: reject a zero-size load before any of the fast paths
         // below. `_pending_memory_load` forwards a Python-supplied size here
         // unchecked, and `size == 0` breaks two of them: the wider-symbolic
@@ -136,12 +164,13 @@ impl SymbolicMemory {
         // `symbolic_bitmap` is NOT set for a Multi byte — so none of the
         // symbolic fast paths below would fire and the load would fall
         // through to `bytes_to_bv` over the stale concrete placeholder
-        // byte, silently returning the wrong value. Dispatch to the same
-        // per-byte assembler `load_concrete_lazy_inner` uses, ahead of
-        // every other path. Production callers that land here rather than
-        // on the `_lazy` path: `RustSimState::memory_load` (the
-        // `memory_load` pymethod, used by every SimProcedure) and
-        // `_pending_memory_load`.
+        // byte, silently returning the wrong value. Dispatch to the
+        // per-byte assembler `assemble_load_with_multi` ahead of every
+        // other path. Sharing this body between the eager and lazy entry
+        // points (angr-9ke6b.97) is what keeps the gate on both — it was
+        // originally added to `load_concrete_lazy_inner` only, leaving
+        // `RustSimState::memory_load` (the `memory_load` pymethod used by
+        // every SimProcedure) and `_pending_memory_load` silently wrong.
         if self.range_has_multi(addr, size) {
             let start_page = addr.page_num();
             let end_page = end_page_inclusive(addr.raw(), size as u64)?;
@@ -241,10 +270,19 @@ impl SymbolicMemory {
 
         if start_page == end_page {
             // Fast path: entire load within a single page (common case)
-            let page = self.pages.get(&start_page).ok_or(MemoryError::Unmapped {
-                addr: start_page << 12,
-                size: PAGE_SIZE,
-            })?;
+            let page = match self.pages.get(&start_page) {
+                Some(p) => p,
+                None => {
+                    return Err(self.unmapped_page_error(
+                        start_page,
+                        lazy,
+                        MemoryError::Unmapped {
+                            addr: start_page << 12,
+                            size: PAGE_SIZE,
+                        },
+                    ));
+                }
+            };
             let offset = addr.page_offset();
             bytes = page.load_concrete(offset, size as u16);
             // Check symbolic markers
@@ -268,10 +306,14 @@ impl SymbolicMemory {
                     let byte = page.load_concrete(offset, 1);
                     bytes.push(byte.first().copied().unwrap_or(0));
                 } else {
-                    return Err(MemoryError::Unmapped {
-                        addr: byte_addr.raw(),
-                        size: 1,
-                    });
+                    return Err(self.unmapped_page_error(
+                        page_num,
+                        lazy,
+                        MemoryError::Unmapped {
+                            addr: byte_addr.raw(),
+                            size: 1,
+                        },
+                    ));
                 }
             }
         }
@@ -338,6 +380,23 @@ impl SymbolicMemory {
         // angr-24pv4.3: endianness-aware concrete byte packing, including the
         // >16-byte wide-load case that cannot fit a u128. See `bytes_to_bv`.
         Ok(bytes_to_bv(&bytes, size, self.endness, ctx))
+    }
+
+    /// Classify a load that hit an unmapped page (angr-9ke6b.97).
+    ///
+    /// The lazy entry points report a miss inside a registered lazy region as
+    /// `UnmappedPageInRegion` so the interpreter can fetch the page from Python
+    /// and retry; every other case (and every eager `load_concrete`) keeps the
+    /// caller-supplied hard `Unmapped` error, whose shape differs between the
+    /// single-page fast path (whole page) and the cross-page walk (one byte).
+    fn unmapped_page_error(&self, page_num: u64, lazy: bool, fallback: MemoryError) -> MemoryError {
+        if lazy && self.is_in_lazy_region(page_num) {
+            MemoryError::UnmappedPageInRegion {
+                page_addr: page_num << 12,
+            }
+        } else {
+            fallback
+        }
     }
 
     /// Load from a symbolic address with concretization support.
@@ -589,161 +648,20 @@ impl SymbolicMemory {
         Ok(self.apply_pending_writes_concrete(addr, size, base, ctx))
     }
 
-    /// Internal implementation of load_concrete_lazy.
+    /// Internal implementation of `load_concrete_lazy`.
+    ///
+    /// Identical to [`SymbolicMemory::load_concrete`] except that an unmapped
+    /// page inside a registered lazy region surfaces as `UnmappedPageInRegion`
+    /// (so the interpreter can fetch it) rather than a hard `Unmapped`, and
+    /// that it does not bump the `mem_load` volume counter. See
+    /// [`SymbolicMemory::load_concrete_common`].
     pub(super) fn load_concrete_lazy_inner(
         &self,
         addr: Address,
         size: u32,
         ctx: &SymContext,
     ) -> Result<RustBV, MemoryError> {
-        // angr-9ke6b.99: same zero-size rejection as `load_concrete` — see the
-        // guard there for why it precedes every fast path.
-        if size == 0 {
-            return Err(MemoryError::ZeroSize { addr: addr.raw() });
-        }
-        // Phase 1.2 (angr-n082): Multi-cell lazy load. When any byte in
-        // [addr, addr+size) carries lazy alternatives, fall through to a
-        // per-byte reconstruction that folds the alternatives into an
-        // ITE chain. Multi supersedes plain Symbolic per
-        // memory `invariant-multi-vs-symbolic-cell-states`, so this
-        // check runs BEFORE the symbolic_objects fast path.
-        if self.range_has_multi(addr, size) {
-            let start_page = addr.page_num();
-            let end_page = end_page_inclusive(addr.raw(), size as u64)?;
-            self.check_perms_range(start_page, end_page, Permission::R)?;
-            return self.assemble_load_with_multi(addr, size, ctx);
-        }
-
-        // angr-jvjf: same partial-overwrite guard as load_concrete. A
-        // wider sym whose middle byte has been concrete-overwritten by
-        // `store_concrete` will pass the `symbolic_objects[addr]` /
-        // `symbolic_spans[addr]` fast-path checks below and shadow the
-        // page byte. Route to `assemble_load_with_multi` (which honors
-        // the page bitmap per byte) on bitmap mismatch.
-        if let Some(r) = self.try_partial_overwrite_load(addr, size, ctx) {
-            return r;
-        }
-
-        // Check for stored symbolic object first
-        if let Some(sym) = self.symbolic_objects.get(&addr)
-            && sym.width() == size * 8
-        {
-            return Ok(sym.clone());
-        }
-
-        let start_page = addr.page_num();
-        let end_page = end_page_inclusive(addr.raw(), size as u64)?;
-
-        self.check_perms_range(start_page, end_page, Permission::R)?;
-
-        let mut bytes;
-        let mut has_symbolic = false;
-
-        if start_page == end_page {
-            // Fast path: single page
-            let page = match self.pages.get(&start_page) {
-                Some(p) => p,
-                None => {
-                    if self.is_in_lazy_region(start_page) {
-                        return Err(MemoryError::UnmappedPageInRegion {
-                            page_addr: start_page << 12,
-                        });
-                    } else {
-                        return Err(MemoryError::Unmapped {
-                            addr: start_page << 12,
-                            size: PAGE_SIZE,
-                        });
-                    }
-                }
-            };
-            let offset = addr.page_offset();
-            bytes = page.load_concrete(offset, size as u16);
-            for i in 0..size as u16 {
-                if page.is_symbolic(offset + i) {
-                    has_symbolic = true;
-                    break;
-                }
-            }
-        } else {
-            // Slow path: cross-page load
-            bytes = Vec::with_capacity(size as usize);
-            for i in 0..size {
-                let byte_addr = addr + i as u64;
-                let page_num = byte_addr.page_num();
-                let offset = byte_addr.page_offset();
-
-                if let Some(page) = self.pages.get(&page_num) {
-                    if page.is_symbolic(offset) {
-                        has_symbolic = true;
-                    }
-                    let byte = page.load_concrete(offset, 1);
-                    bytes.push(byte.first().copied().unwrap_or(0));
-                } else if self.is_in_lazy_region(page_num) {
-                    return Err(MemoryError::UnmappedPageInRegion {
-                        page_addr: page_num << 12,
-                    });
-                } else {
-                    return Err(MemoryError::Unmapped {
-                        addr: byte_addr.raw(),
-                        size: 1,
-                    });
-                }
-            }
-        }
-
-        if has_symbolic {
-            // Return stored symbolic object if available and width matches
-            if let Some(sym) = self.symbolic_objects.get(&addr)
-                && sym.width() == size * 8
-            {
-                return Ok(sym.clone());
-            }
-
-            // Try to combine individual byte objects into a multi-byte value
-            // This handles the case where hooks write byte-by-byte
-            let mut all_bytes_have_objects = true;
-            let mut byte_objects: Vec<RustBV> = Vec::with_capacity(size as usize);
-            for i in 0..size {
-                let byte_addr = addr + i as u64;
-                if let Some(sym) = self.symbolic_objects.get(&byte_addr) {
-                    if sym.width() == 8 {
-                        byte_objects.push(sym.clone());
-                    } else {
-                        all_bytes_have_objects = false;
-                        break;
-                    }
-                } else {
-                    all_bytes_have_objects = false;
-                    break;
-                }
-            }
-
-            if all_bytes_have_objects && byte_objects.len() == size as usize {
-                // Combine bytes into a single value using a balanced Concat
-                // tree (angr-kg58). byte_objects[0] is the byte at the
-                // lowest address.
-                return Ok(concat_bytes_endian(byte_objects, self.endness, ctx));
-            }
-
-            // angr-uwtj: spans-first containment lookup. O(1) via the
-            // reverse-span index; falls back to a linear scan over
-            // symbolic_objects when spans is stale/missing.
-            if let Some((sym_addr, sym_val)) = self.containing_wider_sym(addr, size) {
-                let byte_offset = (addr - sym_addr) as u32;
-                let high = (byte_offset + size) * 8 - 1;
-                let low = byte_offset * 8;
-                return Ok(sym_val.extract(high, low, ctx));
-            }
-
-            // Cannot reconstruct - return error for Python fallback
-            return Err(MemoryError::SymbolicAddress {
-                description: "symbolic bytes not fully tracked".to_string(),
-            });
-        }
-
-        // angr-24pv4.3: endianness-aware concrete byte packing, including the
-        // >16-byte wide-load case that cannot fit a u128. See `bytes_to_bv`.
-        Ok(bytes_to_bv(&bytes, size, self.endness, ctx))
+        self.load_concrete_common(addr, size, ctx, true)
     }
 
     /// True when any byte in `[addr, addr + size)` carries a Multi cell.
