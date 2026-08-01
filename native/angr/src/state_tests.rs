@@ -2586,3 +2586,51 @@ fn test_export_full_smoke_history_callstack_arch() {
         "populated state pushed a call frame"
     );
 }
+
+/// angr-9ke6b.96: `memory_load` — the SimProcedure-facing load exposed as
+/// the `memory_load` pymethod — goes through `SymbolicMemory::load_concrete`,
+/// not the `_lazy` variant. A prior symbolic-address store that concretized
+/// to Multiple/Strided leaves the value in un-flushed Multi cells with the
+/// page's symbolic bitmap clear, so before the fix this returned the stale
+/// concrete placeholder bytes with no error.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_memory_load_sees_unflushed_multi_cells() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory(0x1000, 0x4000, crate::memory::Permission::RWX);
+
+    let addr_var = {
+        let ctx = state.solver().borrow();
+        let addr_var = RustBV::symbolic(&ctx, "state_multi_addr", 64);
+        ctx.assume_true(
+            &addr_var
+                .eq(&RustBV::concrete(0x1000, 64), &ctx)
+                .or(&addr_var.eq(&RustBV::concrete(0x2000, 64), &ctx), &ctx),
+        );
+        addr_var
+    };
+
+    state
+        .memory_store_symbolic(addr_var.clone(), RustBV::concrete(0xDEADBEEF, 32))
+        .expect("symbolic-address store must succeed");
+    assert_eq!(
+        state.memory().multi_cell_count(),
+        8,
+        "Multiple/Strided concretization installs per-byte Multi cells"
+    );
+
+    let loaded = state
+        .memory_load(0x1000, 4)
+        .expect("memory_load must succeed");
+    assert!(
+        loaded.as_u64().is_none(),
+        "a Multi-covered load must be symbolic, not the placeholder concrete byte"
+    );
+    let probe = state.solver().borrow().fork();
+    probe.assume_true(&addr_var.eq(&RustBV::concrete(0x1000, 64), &probe));
+    assert_eq!(
+        probe.eval(&loaded),
+        Some(0xDEADBEEF),
+        "memory_load must reconstruct the Multi alternative"
+    );
+}

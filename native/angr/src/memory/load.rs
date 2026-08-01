@@ -119,6 +119,23 @@ impl SymbolicMemory {
     ) -> Result<RustBV, MemoryError> {
         let addr = addr.into();
         record_mem_load(size as u64);
+        // angr-9ke6b.96: Multi cells supersede plain Symbolic (memory
+        // `invariant-multi-vs-symbolic-cell-states`), and the page
+        // `symbolic_bitmap` is NOT set for a Multi byte — so none of the
+        // symbolic fast paths below would fire and the load would fall
+        // through to `bytes_to_bv` over the stale concrete placeholder
+        // byte, silently returning the wrong value. Dispatch to the same
+        // per-byte assembler `load_concrete_lazy_inner` uses, ahead of
+        // every other path. Production callers that land here rather than
+        // on the `_lazy` path: `RustSimState::memory_load` (the
+        // `memory_load` pymethod, used by every SimProcedure) and
+        // `_pending_memory_load`.
+        if self.range_has_multi(addr, size) {
+            let start_page = addr.page_num();
+            let end_page = (addr.raw() + size as u64 - 1) >> 12;
+            self.check_perms_range(start_page, end_page, Permission::R)?;
+            return self.assemble_load_with_multi(addr, size, ctx);
+        }
         // angr-3zhl: a later partial store that begins inside [addr+1, addr+size)
         // overwrites trailing bytes of an earlier wider object at `addr`. The
         // exact-address and span fast paths below would return the stale wider
@@ -573,9 +590,7 @@ impl SymbolicMemory {
         // ITE chain. Multi supersedes plain Symbolic per
         // memory `invariant-multi-vs-symbolic-cell-states`, so this
         // check runs BEFORE the symbolic_objects fast path.
-        if !self.multi_objects.is_empty()
-            && (0..size as u64).any(|i| self.multi_objects.contains_key(&(addr + i)))
-        {
+        if self.range_has_multi(addr, size) {
             let start_page = addr.page_num();
             let end_page = (addr.raw() + size as u64 - 1) >> 12;
             self.check_perms_range(start_page, end_page, Permission::R)?;
@@ -712,6 +727,19 @@ impl SymbolicMemory {
         // angr-24pv4.3: endianness-aware concrete byte packing, including the
         // >16-byte wide-load case that cannot fit a u128. See `bytes_to_bv`.
         Ok(bytes_to_bv(&bytes, size, self.endness, ctx))
+    }
+
+    /// True when any byte in `[addr, addr + size)` carries a Multi cell.
+    ///
+    /// Shared gate for `assemble_load_with_multi` dispatch: every load path
+    /// must consult this *before* the `symbolic_objects` / `symbolic_spans`
+    /// fast paths, because `install_multi_for_candidates` never sets the
+    /// page's symbolic bit (see `invariant-multi-vs-symbolic-cell-states`).
+    /// The `is_empty()` guard keeps the common all-concrete load free of up
+    /// to `size` empty-map probes.
+    pub(super) fn range_has_multi(&self, addr: Address, size: u32) -> bool {
+        !self.multi_objects.is_empty()
+            && (0..size as u64).any(|i| self.multi_objects.contains_key(&(addr + i)))
     }
 
     /// Per-byte reconstruction for loads that touch at least one Multi cell

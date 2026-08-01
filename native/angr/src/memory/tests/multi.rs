@@ -1403,3 +1403,90 @@ fn test_concrete_overwrite_clears_multi_cell() {
          not the orphaned Multi alternative"
     );
 }
+
+// ============================================================================
+// angr-9ke6b.96: `load_concrete` (the non-lazy load path behind
+// `RustSimState::memory_load` / `_pending_memory_load`) must dispatch to
+// `assemble_load_with_multi` too. `install_multi_for_candidates` never sets
+// the page's symbolic bit, so before the fix every symbolic fast path in
+// `load_concrete` missed and the load silently returned the stale concrete
+// placeholder byte.
+// ============================================================================
+
+/// `load_concrete` on an un-flushed Multi cell must reconstruct the
+/// alternative, not return the placeholder byte underneath it.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_load_concrete_sees_unflushed_multi_cell() {
+    let ctx = SymContext::new_mock();
+    let concretizer = AddressConcretizer::new();
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    mem.map(0x1000, 0x4000, Permission::RWX);
+
+    let addr_var = RustBV::symbolic(&ctx, "lc_multi_addr", 64);
+    ctx.assume_true(
+        &addr_var
+            .eq(&RustBV::concrete(0x1000, 64), &ctx)
+            .or(&addr_var.eq(&RustBV::concrete(0x2000, 64), &ctx), &ctx),
+    );
+
+    mem.store_symbolic_unified(
+        addr_var.clone(),
+        RustBV::concrete(0xDEADBEEF, 32),
+        &ctx,
+        &concretizer,
+    )
+    .expect("symbolic-address store must succeed");
+    assert_eq!(
+        mem.multi_cell_count(),
+        8,
+        "both candidates get 4 Multi bytes"
+    );
+
+    // No flush: the value lives only in the Multi sidecar.
+    let loaded = mem
+        .load_concrete(0x1000, 4, &ctx)
+        .expect("load_concrete over a Multi range must succeed");
+    assert!(
+        loaded.as_u64().is_none(),
+        "a Multi-covered load must be symbolic, not the placeholder concrete byte"
+    );
+    let probe = ctx.fork();
+    probe.assume_true(&addr_var.eq(&RustBV::concrete(0x1000, 64), &probe));
+    assert_eq!(
+        probe.eval(&loaded),
+        Some(0xDEADBEEF),
+        "load_concrete must reconstruct the Multi alternative"
+    );
+
+    // The lazy path must agree — the two must not diverge.
+    let lazy = mem.load_concrete_lazy(0x1000, 4, &ctx).unwrap();
+    assert_eq!(probe.eval(&lazy), probe.eval(&loaded));
+}
+
+/// A Multi cell that only partially covers the loaded range must still
+/// route through the per-byte assembler; the untouched bytes keep their
+/// concrete page values.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_load_concrete_partial_multi_overlap() {
+    let ctx = SymContext::new_mock();
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    mem.map(0x1000, 0x1000, Permission::RWX);
+    mem.store_concrete(0x1000, RustBV::concrete(0x1122_3344, 32))
+        .expect("concrete seed store");
+
+    // Install a single Multi byte over the lowest byte only (LE byte 0).
+    let addr_var = RustBV::symbolic(&ctx, "lc_partial_addr", 64);
+    let payload = MultiPayload::from_alternatives(vec![make_alt(&ctx, &addr_var, 0x1000, 0xEE)]);
+    mem.set_multi_alternatives(0x1000, payload);
+
+    let loaded = mem.load_concrete(0x1000, 4, &ctx).unwrap();
+    let probe = ctx.fork();
+    probe.assume_true(&addr_var.eq(&RustBV::concrete(0x1000, 64), &probe));
+    assert_eq!(
+        probe.eval(&loaded),
+        Some(0x1122_33EE),
+        "Multi byte 0 must override; bytes 1..3 keep their concrete values"
+    );
+}
