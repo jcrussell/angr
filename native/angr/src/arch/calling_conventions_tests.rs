@@ -345,25 +345,15 @@ fn test_cc_arg_registers_resolve_to_expected_register_names() {
     }
 }
 
-/// Characterization (not aspiration) of `CallingConvention::link_register`.
+/// `CallingConvention::link_register` invariant (bead angr-9ke6b.3).
 ///
-/// The eventual invariant is `pops_return_addr() == false` implies
-/// `link_register().is_some()` — a link-register ABI that does not name its LR
-/// makes `setup_native_subcall` bail with `SubcallSetupError::UnsupportedAbi`
-/// and silently defers every native sub-call to Python. Today **no** CC
-/// overrides it, and that is load-bearing: the serial sub-call arm in
-/// `RustExplorationManager::step_one` fills `NativeSubcall::caller_return_addr`
-/// from `RustExplorationManager::get_return_addr`, which reads `[sp]`
-/// unconditionally, so on ARM/ARM64/MIPS the `UnsupportedAbi` bail is the only
-/// thing stopping a garbage return address from reaching
-/// `state.set_pc(frame.caller_return_addr)`. See the `link_register` doc
-/// comment for the full write-up.
-///
-/// So this test pins the status quo in both directions. When the serial path is
-/// fixed and the overrides land, flip the `is_none()` arm to `is_some()` — the
-/// name-resolution assertion below is the half that survives unchanged.
+/// `pops_return_addr() == false` implies `link_register().is_some()` — a
+/// link-register ABI that does not name its LR makes `setup_native_subcall`
+/// bail with `SubcallSetupError::UnsupportedAbi` and silently defers every
+/// native sub-call to Python. The converse also holds: a stack-return ABI
+/// (x86/AMD64) must not claim one, since its return address lives at `[sp]`.
 #[test]
-fn test_link_register_is_unwired_pending_serial_subcall_fix() {
+fn test_link_register_set_on_link_register_abis() {
     for desc in ALL_ARCHES {
         let arch = desc.name;
         let cc = (desc.make_cc)();
@@ -374,10 +364,9 @@ fn test_link_register_is_unwired_pending_serial_subcall_fix() {
             );
         } else {
             assert!(
-                cc.link_register().is_none(),
-                "{arch}: link_register() is now wired up — the serial sub-call \
-                 path in run_loop_single.rs must be fixed to resolve caller_return_addr \
-                 through the calling convention before this is safe",
+                cc.link_register().is_some(),
+                "{arch}: link-register ABI must name its LR, otherwise every \
+                 native sub-call falls back to the Python SimProcedure path",
             );
         }
         // Whatever an ABI does claim must be a real register on that arch.
@@ -387,6 +376,31 @@ fn test_link_register_is_unwired_pending_serial_subcall_fix() {
                 "{arch}: link_register offset {off} has no canonical register name",
             );
         }
+    }
+}
+
+/// `link_register()` must name the *same* register `get_return_addr()` reads,
+/// otherwise `setup_native_subcall` would write the resume sentinel into one
+/// register while the dispatcher captured the caller return address from
+/// another. The trait's default `get_return_addr` derives one from the other,
+/// so this locks that any future per-CC override keeps them in sync.
+#[test]
+fn test_link_register_matches_get_return_addr_register() {
+    let ctx = SymContext::new_mock();
+    for desc in ALL_ARCHES {
+        let arch = desc.name;
+        let cc = (desc.make_cc)();
+        let Some(lr) = cc.link_register() else {
+            continue;
+        };
+        let mut regs = RegisterFile::new((desc.make_arch)());
+        let marker = 0x0040_1234u64;
+        regs.put(lr, RustBV::concrete(marker as u128, cc.pointer_size() * 8));
+        assert_eq!(
+            cc.get_return_addr(&regs, None, &ctx),
+            Some(marker),
+            "{arch}: get_return_addr must read the register link_register() names",
+        );
     }
 }
 

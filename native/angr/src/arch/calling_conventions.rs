@@ -172,27 +172,26 @@ pub(crate) trait CallingConvention: Send + Sync {
     /// Register offset of the link/return-address register on ABIs where
     /// `call` writes the return address to a register rather than the stack
     /// (`pops_return_addr() == false`): ARM/ARM64 LR (R14/X30), MIPS `$ra`
-    /// (R31). Returns `None` on stack-return ABIs (x86/AMD64) and — for now —
-    /// on every link-register ABI too, so link-register sub-calls fall back to
-    /// the Python SimProcedure path.
+    /// (R31). Returns `None` on stack-return ABIs (x86/AMD64), where the
+    /// return address lives at `[sp]` instead.
     ///
     /// Used by the native sub-call dispatcher (S2, bead angr-5gf0s) to make a
-    /// guest routine return to the resume sentinel on link-register ABIs.
+    /// guest routine return to the resume sentinel on link-register ABIs:
+    /// `setup_native_subcall` writes the sentinel into this register instead of
+    /// over `[sp]`. A link-register ABI that leaves this `None` still works —
+    /// setup bails with `SubcallSetupError::UnsupportedAbi` and the proc falls
+    /// back to the Python SimProcedure path — so this is a fast-path enabler,
+    /// not a correctness requirement.
     ///
-    /// **Do not wire the ARM/ARM64/MIPS overrides up without first fixing the
-    /// serial sub-call path.** `RustExplorationManager::get_return_addr`
-    /// (`exploration/helpers.rs`) reads `[sp]` unconditionally, and the serial
-    /// `NativeProcDisposition::SubCall` arm in `RustExplorationManager::step_one`
-    /// (`exploration/run_loop_single.rs`) uses it to fill `NativeSubcall::caller_return_addr`.
-    /// On a link-register ABI that value is whatever happened to be on the
-    /// stack, and `handle_native_resume` later does `state.set_pc(frame
-    /// .caller_return_addr)` with it. Today the `None` here makes
-    /// `setup_native_subcall` bail with `SubcallSetupError::UnsupportedAbi`
-    /// before the bad value can be used; overriding it removes that guard. The
-    /// parallel/core path is unaffected — the interpreter hands it a
-    /// CC-resolved `return_addr`. Tracked as bead angr-9ke6b.216 child .3;
-    /// `calling_conventions_tests::test_link_register_is_unwired_pending_serial_subcall_fix`
-    /// characterizes the current state.
+    /// The override must name the same register the convention's
+    /// `get_return_addr` reads; `calling_conventions_tests::test_link_register_matches_get_return_addr_register`
+    /// locks that. Wiring the ARM/ARM64/MIPS overrides up additionally required
+    /// `RustExplorationManager::get_return_addr` (`exploration/helpers.rs`) to
+    /// resolve through the convention rather than reading `[sp]` unconditionally
+    /// — the serial `NativeProcDisposition::SubCall` arm in
+    /// `RustExplorationManager::step_one` (`exploration/run_loop_single.rs`)
+    /// feeds it into `NativeSubcall::caller_return_addr`, which the resume path
+    /// installs as the PC (bead angr-9ke6b.3).
     fn link_register(&self) -> Option<u32> {
         None
     }
@@ -258,9 +257,18 @@ pub(crate) trait CallingConvention: Send + Sync {
         Ok(args)
     }
 
-    /// Get the return address from the stack.
+    /// Get the return address at a call boundary.
     ///
-    /// For x86/AMD64, this is at \[rsp\] after a call instruction.
+    /// On stack-return ABIs (x86/AMD64, `pops_return_addr() == true`) this is
+    /// \[rsp\] after a `call` instruction, and reading it needs `memory`; with
+    /// `memory == None` the convention declines and the caller is expected to
+    /// read the slot itself.
+    ///
+    /// On link-register ABIs (ARM/ARM64/MIPS) the address is in the register
+    /// named by [`Self::link_register`] and `memory` is unused. Keeping both
+    /// answers on this one default is what makes `link_register()` and
+    /// `get_return_addr()` agree by construction rather than by two hardcoded
+    /// copies of the same offset (bead angr-9ke6b.3).
     fn get_return_addr(
         &self,
         regs: &RegisterFile,
@@ -268,6 +276,12 @@ pub(crate) trait CallingConvention: Send + Sync {
         ctx: &SymContext,
     ) -> Option<u64> {
         let ptr_size = self.pointer_size();
+        if !self.pops_return_addr() {
+            // A link-register ABI that has not named its LR gets `None`, never
+            // a stack read: `[sp]` holds no return address there.
+            let lr = self.link_register()?;
+            return regs.get(lr, ptr_size, ctx).as_u64();
+        }
         let sp = regs.get(regs.arch().sp_offset(), ptr_size, ctx);
         let sp_val = sp.as_u64()?;
 
@@ -484,14 +498,8 @@ impl CallingConvention for ARMEABI {
     }
 
     /// On ARM, BL stores the return address in LR (R14), not on the stack.
-    fn get_return_addr(
-        &self,
-        regs: &RegisterFile,
-        _memory: Option<&SymbolicMemory>,
-        ctx: &SymContext,
-    ) -> Option<u64> {
-        let lr = regs.get(arm_off::R14, 4, ctx);
-        lr.as_u64()
+    fn link_register(&self) -> Option<u32> {
+        Some(arm_off::R14)
     }
 
     fn pops_return_addr(&self) -> bool {
@@ -564,14 +572,8 @@ impl CallingConvention for AArch64CC {
     }
 
     /// On AArch64, BL stores the return address in X30 (LR), not on the stack.
-    fn get_return_addr(
-        &self,
-        regs: &RegisterFile,
-        _memory: Option<&SymbolicMemory>,
-        ctx: &SymContext,
-    ) -> Option<u64> {
-        let lr = regs.get(arm64_off::X30, 8, ctx);
-        lr.as_u64()
+    fn link_register(&self) -> Option<u32> {
+        Some(arm64_off::X30)
     }
 
     fn pops_return_addr(&self) -> bool {
@@ -650,15 +652,9 @@ impl CallingConvention for MipsO32 {
         Some((mips32_off::R7, -1133))
     }
 
-    fn get_return_addr(
-        &self,
-        regs: &RegisterFile,
-        _memory: Option<&SymbolicMemory>,
-        ctx: &SymContext,
-    ) -> Option<u64> {
-        // $ra (R31)
-        let ra = regs.get(mips32_off::R31, 4, ctx);
-        ra.as_u64()
+    /// On MIPS, JAL stores the return address in $ra (R31), not on the stack.
+    fn link_register(&self) -> Option<u32> {
+        Some(mips32_off::R31)
     }
 
     fn pops_return_addr(&self) -> bool {
@@ -733,15 +729,9 @@ impl CallingConvention for MipsN64 {
         Some((mips64_off::R7, -1133))
     }
 
-    fn get_return_addr(
-        &self,
-        regs: &RegisterFile,
-        _memory: Option<&SymbolicMemory>,
-        ctx: &SymContext,
-    ) -> Option<u64> {
-        // $ra (R31)
-        let ra = regs.get(mips64_off::R31, 8, ctx);
-        ra.as_u64()
+    /// On MIPS, JAL stores the return address in $ra (R31), not on the stack.
+    fn link_register(&self) -> Option<u32> {
+        Some(mips64_off::R31)
     }
 
     fn pops_return_addr(&self) -> bool {

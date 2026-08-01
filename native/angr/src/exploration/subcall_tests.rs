@@ -288,6 +288,101 @@ fn path_a_captures_caller_return_addr_via_get_return_addr() {
     });
 }
 
+/// Same Path-A sequence as `path_a_captures_caller_return_addr_via_get_return_addr`,
+/// but on the link-register ABIs (bead angr-9ke6b.3). Three things differ from
+/// amd64 and all three are load-bearing:
+///
+/// 1. the caller return address comes from LR/X30/`$ra`, not `[sp]` — `[sp]` is
+///    seeded with a poison value here, so a stack read would resume at garbage;
+/// 2. `setup_native_subcall` writes the resume sentinel into the link register
+///    and must leave `[sp]` alone;
+/// 3. the guest's return (`bx lr` / `jr $ra`) does not pop a slot, so SP is
+///    unchanged end to end.
+#[test]
+fn link_register_abi_subcall_roundtrip_resumes_at_lr() {
+    Python::initialize();
+    Python::attach(|_py| {
+        for arch in ["ARM", "ARM64", "MIPS32", "MIPS64"] {
+            let mut mgr = RustExplorationManager::new(arch, None).unwrap();
+            Arc::make_mut(&mut mgr.native_procedures).register(Arc::new(SubcallTestProc));
+            let cc_ptr = mgr.environment.calling_convention.pointer_size();
+            let lr_off = mgr
+                .environment
+                .calling_convention
+                .link_register()
+                .unwrap_or_else(|| panic!("{arch}: link-register ABI must name its LR"));
+
+            let sp = 0x7fff_0000u64;
+            let caller_ret = 0x0040_0123u64;
+            const STACK_POISON: u64 = 0xbadd_0bad;
+
+            let mut state = RustSimState::new(arch).unwrap();
+            state.map_memory(sp - 0x1000, 0x2000, Permission::RWX);
+            state
+                .memory_mut()
+                .store_concrete(sp, RustBV::concrete(STACK_POISON as u128, cc_ptr * 8))
+                .unwrap();
+            state.set_sp(RustBV::concrete(sp as u128, cc_ptr * 8));
+            state.set_register_by_offset(lr_off, RustBV::concrete(caller_ret as u128, cc_ptr * 8));
+
+            // (1) the capture reads LR, not the poisoned [sp].
+            let captured = mgr
+                .get_return_addr(&state)
+                .unwrap_or_else(|| panic!("{arch}: get_return_addr must read LR"));
+            assert_eq!(captured, caller_ret, "{arch}: caller return address");
+
+            mgr.setup_native_subcall(
+                &mut state,
+                NativeSubcall {
+                    proc_name: "subcall_test".into(),
+                    saved_args: vec![RustBV::concrete(41, (cc_ptr * 8) as u32)],
+                    caller_return_addr: captured,
+                    target: SubcallTestProc::GUEST_TARGET,
+                    sub_args: vec![],
+                    resume_tag: SubcallTestProc::RESUME_TAG,
+                },
+            )
+            .unwrap_or_else(|e| panic!("{arch}: setup_native_subcall failed: {e:?}"));
+
+            // (2) sentinel went into LR; the stack slot is untouched.
+            let sentinel = native_resume_sentinel(cc_ptr);
+            assert_eq!(
+                state.get_register_by_offset(lr_off, cc_ptr).as_u64(),
+                Some(sentinel),
+                "{arch}: sentinel must be written to the link register",
+            );
+            assert_eq!(
+                state.memory_load(sp, cc_ptr).unwrap().as_u64(),
+                Some(STACK_POISON),
+                "{arch}: link-register ABI must not overwrite [sp]",
+            );
+            assert_eq!(state.pc(), SubcallTestProc::GUEST_TARGET);
+
+            // Guest routine runs and returns via the link register: pc =
+            // sentinel, SP unchanged (no return slot to pop).
+            state.set_pc(sentinel);
+
+            let succ = match mgr.handle_native_resume(
+                state,
+                vec![],
+                FxHashMap::default(),
+                FxHashMap::default(),
+            ) {
+                Ok(s) => s,
+                Err(_) => panic!("{arch}: handle_native_resume returned a StepError"),
+            };
+            assert_eq!(succ.len(), 1);
+            assert_eq!(succ[0].pc(), caller_ret, "{arch}: resumed at caller");
+            // (3) SP balanced across the whole round trip.
+            assert_eq!(
+                succ[0].get_sp().as_u64(),
+                Some(sp),
+                "{arch}: link-register sub-call must not move SP",
+            );
+        }
+    });
+}
+
 #[test]
 fn resume_sentinel_name_and_address_are_stable() {
     // The sentinel name is the reserved constant, and the address is the

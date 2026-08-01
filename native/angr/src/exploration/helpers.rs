@@ -599,13 +599,37 @@ impl RustExplorationManager {
         Ok(args)
     }
 
-    /// Get return address from stack.
+    /// Get the caller's return address at a call boundary, resolved through the
+    /// calling convention.
+    ///
+    /// On link-register ABIs (ARM/ARM64/MIPS) `CallingConvention::get_return_addr`
+    /// reads LR/X30/`$ra` out of the register file and needs no memory view. On
+    /// stack-return ABIs (x86/AMD64) it declines — it is handed `None` for
+    /// memory, mirroring the `Returned` arm of `RustExplorationManager::step_one`
+    /// — and we read `[sp]` here, where the state's memory view is available.
+    ///
+    /// Routing through the convention instead of reading `[sp]` unconditionally
+    /// is a precondition for `CallingConvention::link_register` being wired up:
+    /// the serial `NativeProcDisposition::SubCall` arm feeds this value into
+    /// `NativeSubcall::caller_return_addr`, which the resume path later installs
+    /// as the PC. On a link-register ABI `[sp]` is not the return address, so
+    /// that would jump to whatever happened to be on the stack (bead
+    /// angr-9ke6b.3).
     pub(crate) fn get_return_addr(&self, state: &RustSimState) -> Option<u64> {
+        let cc = &self.environment.calling_convention;
+        {
+            let ctx = state.solver().borrow();
+            if let Some(addr) = cc.get_return_addr(state.registers(), None, &ctx) {
+                return Some(addr);
+            }
+        }
+        if !cc.pops_return_addr() {
+            // Link-register ABI whose LR/$ra is symbolic or unset — there is no
+            // stack slot to fall back to.
+            return None;
+        }
         let sp = state.get_sp().as_u64()?;
-        let ptr_size = self.environment.calling_convention.pointer_size();
-
-        // On x86/AMD64, return address is at [rsp] after call
-        state.memory_load(sp, ptr_size).ok()?.as_u64()
+        state.memory_load(sp, cc.pointer_size()).ok()?.as_u64()
     }
 }
 
