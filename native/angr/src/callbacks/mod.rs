@@ -95,7 +95,7 @@ mod events;
 mod inspect;
 
 pub(crate) use config::{DeferredFork, ExecutionConfig};
-pub(crate) use events::{LoopExecutionEvent, RunErrorKind, RunResult};
+pub(crate) use events::{RunErrorKind, RunResult};
 
 /// Single source of truth for the set of `Option<Py<PyAny>>` callback slots
 /// on [`PythonCallbacks`].

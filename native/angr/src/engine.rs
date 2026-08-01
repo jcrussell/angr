@@ -7,7 +7,7 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 use crate::arch::arch_from_name;
-use crate::callbacks::{DeferredFork, ExecutionConfig, LoopExecutionEvent, PythonCallbacks};
+use crate::callbacks::{DeferredFork, ExecutionConfig, PythonCallbacks};
 use crate::errors::RustExecError;
 use crate::interpreter::CbExecutionError;
 use crate::solver::RustSolverContext;
@@ -428,7 +428,6 @@ pub(crate) fn vex_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(pyo3::wrap_pyfunction!(_raise_typed_test_error, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(execute_irsb_for_test, m)?)?;
     m.add_class::<PythonCallbacks>()?;
-    m.add_class::<LoopExecutionEvent>()?;
     m.add_class::<RustSolverContext>()?;
     // Handle-based API for claripy bypass
     m.add_class::<crate::symbolic::RustBVHandle>()?;
