@@ -528,3 +528,57 @@ fn test_rustbv_to_claripy_long_chain_hits_depth_guard() {
         .join()
         .unwrap();
 }
+
+/// Regression for angr-9ke6b.38: `BVS(name, 1)` and `BoolS(name)` sharing an
+/// explicit name must import to DISTINCT rust ids and export back to their own
+/// claripy AST.
+///
+/// The symbol registry keys `name_to_info` by name+width; a `BoolS` leaf
+/// imports with a hardcoded width of 1, so before the `SymbolKind` tag was
+/// added to the key the second import resolved to the first's id and export
+/// answered both with whichever AST registered first — a `BVS` where the
+/// caller had a `Bool`, or vice versa.
+#[test]
+fn test_bvs_width1_and_bools_same_name_do_not_alias() {
+    pyo3::Python::initialize();
+    Python::attach(|py| {
+        let claripy = match py.import("claripy") {
+            Ok(m) => m,
+            Err(_) => return, // claripy not importable in this env — skip
+        };
+        let ctx = SymContext::new_mock();
+
+        // `explicit_name` is what makes the collision reachable: without it
+        // claripy renames to `name_<counter>_<width>` and the two never share
+        // a name in the first place.
+        let kwargs = pyo3::types::PyDict::new(py);
+        kwargs.set_item("explicit_name", true).unwrap();
+        let bvs = claripy
+            .call_method("BVS", ("ke6b38_dual", 1u32), Some(&kwargs))
+            .expect("BVS");
+        let bools = claripy
+            .call_method("BoolS", ("ke6b38_dual",), Some(&kwargs))
+            .expect("BoolS");
+
+        let bv_rust = claripy_to_rustbv(py, &bvs, &ctx).expect("import BVS");
+        let bool_rust = claripy_to_rustbv(py, &bools, &ctx).expect("import BoolS");
+
+        let (RustBV::Symbolic { id: bv_id, .. }, RustBV::Symbolic { id: bool_id, .. }) =
+            (&bv_rust, &bool_rust)
+        else {
+            panic!("both leaves must import as Symbolic");
+        };
+        assert_ne!(
+            bv_id, bool_id,
+            "BVS(name, 1) and BoolS(name) must not share a rust_id"
+        );
+
+        // Each id must round-trip to its OWN claripy leaf, not the sibling's.
+        let bv_back = rustbv_to_claripy(py, &bv_rust, claripy.as_any()).expect("export BVS");
+        let bool_back = rustbv_to_claripy(py, &bool_rust, claripy.as_any()).expect("export BoolS");
+        let bv_op: String = bv_back.bind(py).getattr("op").unwrap().extract().unwrap();
+        let bool_op: String = bool_back.bind(py).getattr("op").unwrap().extract().unwrap();
+        assert_eq!(bv_op, "BVS");
+        assert_eq!(bool_op, "BoolS");
+    });
+}

@@ -20,7 +20,7 @@ use std::num::NonZeroUsize;
 use lru::LruCache;
 use pyo3::prelude::*;
 
-use crate::symbolic::{RustBV, global_registry};
+use crate::symbolic::{RustBV, SymbolKind, global_registry};
 
 /// Maximum number of AST nodes to cache.
 const AST_CACHE_SIZE: usize = 10000;
@@ -131,6 +131,7 @@ pub(crate) fn store_claripy_ast_with_info(
     symbol_id: u64,
     name: &str,
     width: u32,
+    kind: SymbolKind,
     ast: Py<PyAny>,
 ) {
     debug_assert_ne!(
@@ -141,7 +142,7 @@ pub(crate) fn store_claripy_ast_with_info(
     );
 
     // Register in global registry with full information.
-    global_registry().register(py_hash, symbol_id, name, width, ast);
+    global_registry().register(py_hash, symbol_id, name, width, kind, ast);
 }
 
 /// Retrieve a previously stored claripy AST by symbol ID.
@@ -179,14 +180,17 @@ pub(crate) fn lookup_symbol_name_by_id(rust_id: u64) -> Option<String> {
     global_registry().lookup_name_by_id(rust_id)
 }
 
-/// Look up symbol info by name and width.
+/// Look up symbol info by name, width and claripy sort.
 ///
-/// This is the preferred method after D2 fix which uses width-qualified names.
+/// The key is name+width+sort: width separates same-name symbols of different
+/// widths (D2 fix), and the sort keeps `BVS(name, 1)` and `BoolS(name)` from
+/// aliasing to one id (angr-9ke6b.38).
 pub(crate) fn lookup_symbol_by_name_and_width(
     name: &str,
     width: u32,
+    kind: SymbolKind,
 ) -> Option<crate::symbolic::SymbolInfo> {
-    global_registry().lookup_by_name_and_width(name, width)
+    global_registry().lookup_by_name_and_width(name, width, kind)
 }
 
 /// Store the original claripy AST keyed by an imported Expression's

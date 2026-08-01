@@ -11,12 +11,16 @@ fn test_registry_basic() {
     Python::initialize();
     Python::attach(|py| {
         let obj = py.None();
-        registry.register(12345, 1, "x", 32, obj);
+        registry.register(12345, 1, "x", 32, SymbolKind::BitVector, obj);
 
         // Lookup should succeed
         assert_eq!(registry.lookup_by_hash(12345), Some(1));
         // D2 Fix: lookup_by_name_and_width uses width-qualified names
-        assert!(registry.lookup_by_name_and_width("x", 32).is_some());
+        assert!(
+            registry
+                .lookup_by_name_and_width("x", 32, SymbolKind::BitVector)
+                .is_some()
+        );
         assert!(registry.has_original(1));
     });
 }
@@ -28,7 +32,7 @@ fn test_registry_clear() {
     Python::initialize();
     Python::attach(|py| {
         let obj = py.None();
-        registry.register(12345, 1, "x", 32, obj);
+        registry.register(12345, 1, "x", 32, SymbolKind::BitVector, obj);
 
         assert!(!registry.is_empty());
 
@@ -47,7 +51,7 @@ fn test_registry_remove_prunes_name_map() {
 
     Python::initialize();
     Python::attach(|py| {
-        registry.register(12345, 1, "x", 32, py.None());
+        registry.register(12345, 1, "x", 32, SymbolKind::BitVector, py.None());
         assert_eq!(registry.lookup_name_by_id(1).as_deref(), Some("x"));
 
         registry.remove(1);
@@ -64,8 +68,8 @@ fn test_registry_retain_prunes_name_map() {
 
     Python::initialize();
     Python::attach(|py| {
-        registry.register(111, 1, "keep", 32, py.None());
-        registry.register(222, 2, "drop", 32, py.None());
+        registry.register(111, 1, "keep", 32, SymbolKind::BitVector, py.None());
+        registry.register(222, 2, "drop", 32, SymbolKind::BitVector, py.None());
 
         let mut active = std::collections::HashSet::new();
         active.insert(1u64);
@@ -165,13 +169,91 @@ fn register_tracks_live_count_for_the_growth_warning() {
 
     Python::initialize();
     Python::attach(|py| {
-        registry.register(1, 1, "a", 32, py.None());
-        registry.register(2, 2, "b", 32, py.None());
+        registry.register(1, 1, "a", 32, SymbolKind::BitVector, py.None());
+        registry.register(2, 2, "b", 32, SymbolKind::BitVector, py.None());
         // Re-registering an existing id must not double-count: the warning is
         // driven by live entries, not by cumulative registrations.
-        registry.register(3, 2, "b", 32, py.None());
+        registry.register(3, 2, "b", 32, SymbolKind::BitVector, py.None());
 
         assert_eq!(registry.len(), 2);
         assert_eq!(registry.stats().new_registrations, 3);
+    });
+}
+
+#[test]
+fn bvs_width_1_and_bools_of_the_same_name_get_distinct_slots() {
+    // angr-9ke6b.38: `BVS("flag", 1)` and `BoolS("flag")` are both width-1
+    // Symbolics on the Rust side. Keyed on name+width alone they collided, and
+    // the second import resolved to the first's rust_id — after which export
+    // answered `get_original_ast` with the wrong-sorted claripy AST.
+    let registry = SymbolicIdentityRegistry::new();
+
+    Python::initialize();
+    Python::attach(|py| {
+        registry.register(0xB7, 7, "flag", 1, SymbolKind::BitVector, py.None());
+        registry.register(0xB8, 8, "flag", 1, SymbolKind::Bool, py.None());
+
+        let bv = registry
+            .lookup_by_name_and_width("flag", 1, SymbolKind::BitVector)
+            .expect("BV slot");
+        let boolean = registry
+            .lookup_by_name_and_width("flag", 1, SymbolKind::Bool)
+            .expect("Bool slot");
+
+        assert_eq!(bv.rust_id, 7);
+        assert_eq!(boolean.rust_id, 8);
+        assert_eq!(bv.kind, SymbolKind::BitVector);
+        assert_eq!(boolean.kind, SymbolKind::Bool);
+        assert_eq!(registry.len(), 2);
+    });
+}
+
+#[test]
+fn lookup_by_name_and_width_does_not_cross_sorts() {
+    // A symbol registered under one sort must be invisible to a lookup under
+    // the other, so the importer mints a fresh id instead of aliasing.
+    let registry = SymbolicIdentityRegistry::new();
+
+    Python::initialize();
+    Python::attach(|py| {
+        registry.register(0xC1, 1, "only_bool", 1, SymbolKind::Bool, py.None());
+
+        assert!(
+            registry
+                .lookup_by_name_and_width("only_bool", 1, SymbolKind::BitVector)
+                .is_none()
+        );
+        assert!(
+            registry
+                .lookup_by_name_and_width("only_bool", 1, SymbolKind::Bool)
+                .is_some()
+        );
+    });
+}
+
+#[test]
+fn remove_prunes_only_the_matching_sort_slot() {
+    // The name map holds one entry per (name, width, sort); removing one id
+    // must not evict its same-named sibling of the other sort.
+    let registry = SymbolicIdentityRegistry::new();
+
+    Python::initialize();
+    Python::attach(|py| {
+        registry.register(0xD1, 1, "dual", 1, SymbolKind::BitVector, py.None());
+        registry.register(0xD2, 2, "dual", 1, SymbolKind::Bool, py.None());
+
+        registry.remove(1);
+
+        assert!(
+            registry
+                .lookup_by_name_and_width("dual", 1, SymbolKind::BitVector)
+                .is_none()
+        );
+        assert_eq!(
+            registry
+                .lookup_by_name_and_width("dual", 1, SymbolKind::Bool)
+                .map(|i| i.rust_id),
+            Some(2)
+        );
     });
 }

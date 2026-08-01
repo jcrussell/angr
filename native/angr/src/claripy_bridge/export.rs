@@ -11,7 +11,7 @@ use std::sync::Arc;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyInt};
 
-use crate::symbolic::RustBV;
+use crate::symbolic::{RustBV, SymbolKind};
 
 use super::cache::{
     evict_claripy_ast, get_claripy_ast, get_expression_ast_by_operands,
@@ -460,7 +460,17 @@ fn rustbv_to_claripy_memo(
                 .call_method1("BVS", (&**name, *width))
                 .map(Py::<PyAny>::from)?;
             let py_hash = ast.bind(py).hash()? as i64;
-            store_claripy_ast_with_info(py_hash, *id, name, *width, ast.clone_ref(py));
+            // The AST just minted is a `BVS`, so it registers under the
+            // BitVector sort — a `BoolS` of the same name/width keeps its own
+            // registry slot (angr-9ke6b.38).
+            store_claripy_ast_with_info(
+                py_hash,
+                *id,
+                name,
+                *width,
+                SymbolKind::BitVector,
+                ast.clone_ref(py),
+            );
             Ok(ast)
         }
         RustBV::Constrained { value, width, .. } => {

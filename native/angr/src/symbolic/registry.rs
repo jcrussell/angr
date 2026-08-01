@@ -17,7 +17,7 @@
 //! The `SymbolicIdentityRegistry` maintains bidirectional mappings:
 //! - `py_hash_to_rust_id`: Python AST hash -> Rust symbol ID
 //! - `rust_id_to_py`: Rust symbol ID -> Original Python AST
-//! - `name_to_info`: Symbol name -> (id, width) for name-based lookup
+//! - `name_to_info`: Symbol name+width+sort -> (id, width, sort) for name-based lookup
 //!
 //! On import: Check registry before creating new symbol
 //! On export: Return original `Py<PyAny>` if in registry
@@ -38,6 +38,47 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 /// silently degrading, and gives a future GC a metric to gate on.
 const GROWTH_WARN_THRESHOLDS: [usize; 3] = [100_000, 1_000_000, 10_000_000];
 
+/// Claripy-side sort of a registered symbol.
+///
+/// `name_to_info` is keyed by symbol name, and a claripy `BoolS` leaf imports
+/// with a hardcoded width of 1 (the `"BoolS"` arm of
+/// `claripy_bridge::import::claripy_to_rustbv_depth`). Without a sort tag in
+/// the key, `BVS("flag", 1)` and `BoolS("flag")` — same explicit name — would
+/// collide, and the second import would resolve to the first's `rust_id`.
+/// Export then answers `get_original_ast` for that id with whichever claripy
+/// AST registered first, handing a `BV` back where the caller had a `Bool`
+/// (angr-9ke6b.38).
+///
+/// Note this separates *identity*, not the Z3 constant: `RustBV` has no Bool
+/// sort, so both symbols still build `BV::new_const(name, 1)` and remain the
+/// same variable to Z3. Distinguishing them there needs a real Bool sort in
+/// `RustBV` — tracked separately.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SymbolKind {
+    /// A claripy `BVS` bitvector leaf.
+    BitVector,
+    /// A claripy `BoolS` boolean leaf.
+    Bool,
+}
+
+impl SymbolKind {
+    /// Short tag used to namespace the `name_to_info` key.
+    fn tag(self) -> &'static str {
+        match self {
+            SymbolKind::BitVector => "bv",
+            SymbolKind::Bool => "bool",
+        }
+    }
+}
+
+/// Build the `name_to_info` key for a symbol.
+///
+/// Single source of truth for the key format so `register` and
+/// `lookup_by_name_and_width` cannot drift apart.
+fn qualified_key(name: &str, width: u32, kind: SymbolKind) -> String {
+    format!("{}:{name}_w{width}", kind.tag())
+}
+
 /// Information about a registered symbol.
 #[derive(Clone, Debug)]
 pub struct SymbolInfo {
@@ -45,6 +86,8 @@ pub struct SymbolInfo {
     pub rust_id: u64,
     /// Bit width of the symbol.
     pub width: u32,
+    /// Claripy-side sort the symbol was registered under.
+    pub kind: SymbolKind,
     /// Original Python hash (for reverse lookup).
     pub py_hash: i64,
 }
@@ -130,8 +173,17 @@ impl SymbolicIdentityRegistry {
     /// * `rust_id` - The Rust symbol ID
     /// * `name` - The symbol name
     /// * `width` - The bit width
+    /// * `kind` - The claripy-side sort (see [`SymbolKind`])
     /// * `py_ast` - The original Python AST object
-    pub fn register(&self, py_hash: i64, rust_id: u64, name: &str, width: u32, py_ast: Py<PyAny>) {
+    pub fn register(
+        &self,
+        py_hash: i64,
+        rust_id: u64,
+        name: &str,
+        width: u32,
+        kind: SymbolKind,
+        py_ast: Py<PyAny>,
+    ) {
         // Store mappings. Each guard is scoped to its own statement so no two
         // of the four maps are ever write-locked at once here — `remove` and
         // `retain` acquire them in a different order (angr-zi35f.12).
@@ -144,12 +196,14 @@ impl SymbolicIdentityRegistry {
         // D2 Fix: Include width in the name key to prevent collisions
         // when symbols have the same name but different widths.
         // E.g., "x" with width 32 vs "x" with width 64 should not collide.
-        let qualified_name = format!("{name}_w{width}");
+        // The sort tag additionally separates BVS(name, 1) from BoolS(name),
+        // which share a width — see [`SymbolKind`].
         self.name_to_info.write().insert(
-            qualified_name,
+            qualified_key(name, width, kind),
             SymbolInfo {
                 rust_id,
                 width,
+                kind,
                 py_hash,
             },
         );
@@ -219,22 +273,22 @@ impl SymbolicIdentityRegistry {
         result
     }
 
-    /// Look up symbol info by name (deprecated - use lookup_by_name_and_width).
+    /// Look up symbol info by name, width and sort.
     ///
-    /// Returns the SymbolInfo if a symbol with this name was registered.
-    /// Note: Since D2 fix, names are stored as "{name}_w{width}", so this
-    /// method is only useful for backwards compatibility.
-    pub fn lookup_by_name(&self, name: &str) -> Option<SymbolInfo> {
-        self.name_to_info.read().get(name).cloned()
-    }
-
-    /// Look up symbol info by name and width.
-    ///
-    /// Returns the SymbolInfo if a symbol with this name and width was registered.
-    /// This is the preferred method after D2 fix which uses width-qualified names.
-    pub fn lookup_by_name_and_width(&self, name: &str, width: u32) -> Option<SymbolInfo> {
-        let qualified_name = format!("{name}_w{width}");
-        self.name_to_info.read().get(&qualified_name).cloned()
+    /// Returns the `SymbolInfo` if a symbol with this exact name, width and
+    /// [`SymbolKind`] was registered. All three are part of the key: width
+    /// separates `BVS("x", 32)` from `BVS("x", 64)` (the D2 fix), and the sort
+    /// separates `BVS("x", 1)` from `BoolS("x")` (angr-9ke6b.38).
+    pub fn lookup_by_name_and_width(
+        &self,
+        name: &str,
+        width: u32,
+        kind: SymbolKind,
+    ) -> Option<SymbolInfo> {
+        self.name_to_info
+            .read()
+            .get(&qualified_key(name, width, kind))
+            .cloned()
     }
 
     /// Get the original Python AST for a Rust symbol ID.

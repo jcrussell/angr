@@ -23,7 +23,14 @@ fn test_worker_local_clear_preserves_global_registry() {
 
     Python::initialize();
     Python::attach(|py| {
-        store_claripy_ast_with_info(0x7777, SYMBOL_ID, "ilq2_sym", 64, py.None());
+        store_claripy_ast_with_info(
+            0x7777,
+            SYMBOL_ID,
+            "ilq2_sym",
+            64,
+            SymbolKind::BitVector,
+            py.None(),
+        );
 
         // Precondition: identity is live in the global registry.
         assert!(
@@ -125,7 +132,14 @@ fn test_evict_claripy_ast_clears_both_stores() {
 
     Python::initialize();
     Python::attach(|py| {
-        store_claripy_ast_with_info(0x54AA, SYMBOL_ID, "evict_sym", 32, py.None());
+        store_claripy_ast_with_info(
+            0x54AA,
+            SYMBOL_ID,
+            "evict_sym",
+            32,
+            SymbolKind::BitVector,
+            py.None(),
+        );
         assert!(
             global_registry().has_original(SYMBOL_ID),
             "setup: registry must hold the symbol after store",
