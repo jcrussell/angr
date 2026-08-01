@@ -431,6 +431,20 @@ fn config_mutators_apply_and_are_guard_safe_without_session() {
             "set_os_name lowercased and stored the name"
         );
 
+        // angr-9ke6b.53: the frontier cap is snapshotted into the steady
+        // session by `ensure_steady_session`, so its setter needs the guard
+        // for the same reason the six above do.
+        assert!(
+            mgr.get_max_active_states().is_none(),
+            "unbounded by default"
+        );
+        mgr.set_max_active_states(Some(7));
+        assert_eq!(
+            mgr.get_max_active_states(),
+            Some(7),
+            "set_max_active_states applied the new cap"
+        );
+
         // The guard ran on the no-session path for every mutator above and
         // left the session absent (nothing to finalize).
         assert!(

@@ -508,8 +508,15 @@ impl RustExplorationManager {
     /// Set the maximum number of states in the active stash.
     /// When the limit is reached, new forked states are pruned to avoid OOM.
     /// None (default) means no limit.
+    ///
+    /// Guarded like every sibling exploration-config setter (angr-9ke6b.53):
+    /// `ensure_steady_session` hands the cap to `RunSession::new_with_policy`
+    /// once, for the session's whole life, so a mid-steady mutation would
+    /// otherwise be silently ignored by the resident frontier while the
+    /// manager reported the new value.
     #[pyo3(signature = (limit=None))]
     pub fn set_max_active_states(&mut self, limit: Option<usize>) {
+        self.steady_config_guard();
         self.max_active_states = limit;
     }
 
