@@ -235,49 +235,14 @@ fn claripy_to_rustbv_depth(
                 ast.getattr("length")?.extract()?
             };
 
-            // CRITICAL: Check global registry first for identity preservation
-            // If this symbol was already imported, return the existing RustBV
-            // to maintain identity across Python<->Rust boundary
-            if let Some(existing_id) = lookup_symbol_by_hash(ast_hash) {
-                // Symbol already registered, return a reference to it.
-                //
-                // Rebuild it under the CANONICAL Rust name, not the name this
-                // claripy AST carries: the Z3 constant behind a Symbolic is
-                // `BV::new_const(name, width)`, so reusing the id with a
-                // different string produces a variable Z3 considers unrelated
-                // to the original — the id makes the RustBV/export layer look
-                // right while every constraint quietly stops binding
-                // (angr-izov2). The names differ whenever the symbol was minted
-                // in Rust and exported: `claripy.BVS(name, w)` renames to
-                // `name_<counter>_<w>` unless `explicit_name` is set.
-                let canonical = lookup_symbol_name_by_id(existing_id);
-                let bound_name = canonical.as_deref().unwrap_or(&name);
-                return Ok(RustBV::symbolic_with_id(existing_id, bound_name, width));
-            }
-
-            // Also check by name+width for cases where the hash changed but name is stable
-            // D2 Fix: Use width-qualified lookup to avoid collisions
-            if let Some(info) = lookup_symbol_by_name_and_width(&name, width, SymbolKind::BitVector)
-            {
-                // Symbol with same name/width exists, return reference
-                return Ok(RustBV::symbolic_with_id(info.rust_id, &name, width));
-            }
-
-            // Create new symbol and register with full info
-            let bv = RustBV::symbolic(ctx, &name, width);
-            // Store the original claripy AST so we can return it when converting back
-            // This preserves symbol identity for Python's memory model
-            if let RustBV::Symbolic { id, .. } = &bv {
-                store_claripy_ast_with_info(
-                    ast_hash,
-                    *id,
-                    &name,
-                    width,
-                    SymbolKind::BitVector,
-                    ast.clone().unbind(),
-                );
-            }
-            Ok(bv)
+            Ok(import_symbolic_leaf(
+                ast,
+                ast_hash,
+                &name,
+                width,
+                SymbolKind::BitVector,
+                ctx,
+            ))
         }
 
         // Arithmetic operations
@@ -650,34 +615,18 @@ fn claripy_to_rustbv_depth(
                 .cast::<PyTuple>()
                 .map_err(|e| BridgeError::TypeMismatch(e.to_string()))?;
             let name: String = args_tuple.get_item(0)?.extract()?;
-            let width: u32 = 1;
-
-            if let Some(existing_id) = lookup_symbol_by_hash(ast_hash) {
-                // Canonical Rust name, per the BVS branch above (angr-izov2).
-                let canonical = lookup_symbol_name_by_id(existing_id);
-                let bound_name = canonical.as_deref().unwrap_or(&name);
-                return Ok(RustBV::symbolic_with_id(existing_id, bound_name, width));
-            }
             // Registered under the Bool sort so this does NOT collide with a
             // same-named `BVS(name, 1)` (angr-9ke6b.38): both are width-1
             // Symbolics here, and aliasing them would make export hand back
             // the other one's claripy AST — a BV where a Bool was expected.
-            if let Some(info) = lookup_symbol_by_name_and_width(&name, width, SymbolKind::Bool) {
-                return Ok(RustBV::symbolic_with_id(info.rust_id, &name, width));
-            }
-
-            let bv = RustBV::symbolic(ctx, &name, width);
-            if let RustBV::Symbolic { id, .. } = &bv {
-                store_claripy_ast_with_info(
-                    ast_hash,
-                    *id,
-                    &name,
-                    width,
-                    SymbolKind::Bool,
-                    ast.clone().unbind(),
-                );
-            }
-            Ok(bv)
+            Ok(import_symbolic_leaf(
+                ast,
+                ast_hash,
+                &name,
+                1,
+                SymbolKind::Bool,
+                ctx,
+            ))
         }
 
         // If-then-else
@@ -767,6 +716,52 @@ fn claripy_to_rustbv_depth(
     }
 
     result
+}
+
+/// Import a symbolic *leaf* (`BVS` / `BoolS`) while preserving symbol identity
+/// across the Python↔Rust boundary (angr-9ke6b.37 extracted this from the two
+/// arms that had each grown their own copy).
+///
+/// Three-step resolution, in order:
+///
+/// 1. **By claripy hash** — the symbol was already imported from this exact
+///    AST, so reuse its id. Rebuild it under the CANONICAL Rust name, not the
+///    name this claripy AST carries: the Z3 constant behind a `Symbolic` is
+///    `BV::new_const(name, width)`, so reusing the id with a different string
+///    produces a variable Z3 considers unrelated to the original — the id
+///    makes the RustBV/export layer look right while every constraint quietly
+///    stops binding (angr-izov2). The names differ whenever the symbol was
+///    minted in Rust and exported: `claripy.BVS(name, w)` renames to
+///    `name_<counter>_<w>` unless `explicit_name` is set.
+/// 2. **By name+width+sort** — the hash changed but the identity is stable.
+///    The key includes `kind` so a `BoolS("x")` and a `BVS("x", 1)` occupy
+///    distinct slots (angr-9ke6b.38); dropping it re-aliases them and export
+///    hands back the wrong sort's claripy AST.
+/// 3. **Mint + register** — first sighting; store the originating claripy AST
+///    so the reverse conversion can return it verbatim.
+fn import_symbolic_leaf(
+    ast: &Bound<'_, PyAny>,
+    ast_hash: i64,
+    name: &str,
+    width: u32,
+    kind: SymbolKind,
+    ctx: &SymContext,
+) -> RustBV {
+    if let Some(existing_id) = lookup_symbol_by_hash(ast_hash) {
+        let canonical = lookup_symbol_name_by_id(existing_id);
+        let bound_name = canonical.as_deref().unwrap_or(name);
+        return RustBV::symbolic_with_id(existing_id, bound_name, width);
+    }
+
+    if let Some(info) = lookup_symbol_by_name_and_width(name, width, kind) {
+        return RustBV::symbolic_with_id(info.rust_id, name, width);
+    }
+
+    let bv = RustBV::symbolic(ctx, name, width);
+    if let RustBV::Symbolic { id, .. } = &bv {
+        store_claripy_ast_with_info(ast_hash, *id, name, width, kind, ast.clone().unbind());
+    }
+    bv
 }
 
 /// Byte-reverse a RustBV value.
