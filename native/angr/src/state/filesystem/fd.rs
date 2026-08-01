@@ -87,6 +87,23 @@ pub struct FileDescriptor {
     /// earlier snapshots loadable (reconstitutes to `None`).
     #[serde(default)]
     pub registry_key: Option<String>,
+    /// The cwd-normalized absolute path this fd was opened as, frozen at
+    /// open time — the same "freeze cwd-at-open" rule `known_paths` and
+    /// `registry_key` already implement. Path-keyed queries
+    /// (`FileSystem::content_size_for_path`, `register_file_content`'s
+    /// stamp scan, `is_demoted_fd`) compare against this instead of
+    /// re-normalizing `name` against the *current* cwd, so a guest
+    /// `chdir` between open and query cannot decouple an fd from its
+    /// path (angr-9ke6b.120). `name` itself stays raw because `fd_info`
+    /// exposes it to Python verbatim.
+    ///
+    /// `None` for descriptors minted outside the `open` family (the three
+    /// std fds, pipe ends, the write-side auto-vivified fds) and for
+    /// pre-angr-9ke6b.120 snapshots; [`FileSystem::fd_norm_name`] falls
+    /// back to normalizing `name` in that case, which is exact for the
+    /// absolute pseudo-paths those descriptors carry.
+    #[serde(default)]
+    pub norm_name: Option<String>,
 }
 
 impl FileDescriptor {
@@ -101,6 +118,7 @@ impl FileDescriptor {
             symbolic: false,
             content_sym: None,
             registry_key: None,
+            norm_name: None,
         }
     }
 
@@ -115,6 +133,7 @@ impl FileDescriptor {
             symbolic: false,
             content_sym: None,
             registry_key: None,
+            norm_name: None,
         }
     }
 
@@ -130,6 +149,7 @@ impl FileDescriptor {
             symbolic: true,
             content_sym: None,
             registry_key: None,
+            norm_name: None,
         }
     }
 

@@ -55,7 +55,7 @@ impl FileSystem {
         let stamp: Vec<u32> = self
             .fds
             .iter()
-            .filter(|(_, d)| d.registry_key.is_none() && self.normalize_path(&d.name) == norm)
+            .filter(|(_, d)| d.registry_key.is_none() && self.fd_norm_name(d) == norm)
             .map(|(k, _)| *k)
             .collect();
         if !stamp.is_empty() {
@@ -305,7 +305,7 @@ impl FileSystem {
         }
         self.fds
             .get(&fd)
-            .is_some_and(|d| self.demoted_paths.contains(&self.normalize_path(&d.name)))
+            .is_some_and(|d| self.demoted_paths.contains(self.fd_norm_name(d).as_ref()))
     }
 
     /// The cwd-normalized paths this lineage has demoted (angr-qluof).

@@ -205,6 +205,28 @@ fn content_size_for_path_uses_max_across_fds() {
     assert_eq!(fs.content_size_for_path("f"), Some(6));
 }
 
+/// angr-9ke6b.120: `content_size_for_path` must key each fd off the cwd
+/// normalization frozen at open (`FileDescriptor::norm_name`), not the
+/// *current* cwd. Two fds opened on the same real file under different
+/// cwds must both count toward the reported size after a `chdir`.
+#[test]
+fn content_size_for_path_uses_cwd_at_open_across_chdir() {
+    let mut fs = FileSystem::default();
+    fs.set_cwd(b"/x/y".to_vec());
+    // fd A: relative "a.txt" under /x/y  ->  /x/y/a.txt
+    let a = fs.open_with_content("a.txt".to_string(), FdFlags::ReadWrite, b"abcdef".to_vec());
+    // Guest chdir to /x, then reopen the same real file relative to it.
+    fs.set_cwd(b"/x".to_vec());
+    let b = fs.open_with_content("y/a.txt".to_string(), FdFlags::ReadWrite, b"abc".to_vec());
+    assert_ne!(a, b);
+    // Both spellings name /x/y/a.txt, so the max across both fds wins.
+    assert_eq!(fs.content_size_for_path("y/a.txt"), Some(6));
+    assert_eq!(fs.content_size_for_path("/x/y/a.txt"), Some(6));
+    // fd A must not leak into /x/a.txt, the path a current-cwd
+    // re-normalization of its raw name would have produced.
+    assert_eq!(fs.content_size_for_path("/x/a.txt"), None);
+}
+
 #[test]
 fn effective_len_maxes_concrete_buffer() {
     let d = FileDescriptor::with_content("f".to_string(), FdFlags::ReadOnly, b"hello".to_vec());

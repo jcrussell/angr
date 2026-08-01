@@ -4,6 +4,7 @@
 //! in [`super::ops`].
 
 use super::*;
+use std::borrow::Cow;
 
 impl FileSystem {
     /// Normalize `path` against the current working directory, mirroring
@@ -37,6 +38,21 @@ impl FileSystem {
             }
         }
         format!("/{}", keys.join("/"))
+    }
+
+    /// The cwd-normalized absolute path a descriptor was opened as.
+    ///
+    /// Prefers the [`norm_name`](FileDescriptor::norm_name) frozen at open
+    /// time; only descriptors minted outside the `open` family (std fds,
+    /// pipe ends, auto-vivified write fds) and pre-angr-9ke6b.120
+    /// snapshots fall back to normalizing the raw `name` against the
+    /// *current* cwd. Every path-keyed fd scan goes through this so a
+    /// guest `chdir` between open and query cannot mis-key an fd.
+    pub(super) fn fd_norm_name<'a>(&self, d: &'a FileDescriptor) -> Cow<'a, str> {
+        match d.norm_name.as_deref() {
+            Some(n) => Cow::Borrowed(n),
+            None => Cow::Owned(self.normalize_path(&d.name)),
+        }
     }
 
     /// True if `fd` is open and flagged as a symbolic stream (reads mint
@@ -99,12 +115,13 @@ impl FileSystem {
     /// without minting a fresh fd.
     pub fn content_size_for_path(&self, name: &str) -> Option<usize> {
         let norm = self.normalize_path(name);
-        // Stored `d.name` stays raw (fd_info exposes it to Python), so
-        // normalize the fd names on the fly for comparison.
+        // Stored `d.name` stays raw (fd_info exposes it to Python); compare
+        // against each fd's cwd-at-open normalization rather than
+        // re-normalizing against the *current* cwd (angr-9ke6b.120).
         let fd_max = self
             .fds
             .values()
-            .filter(|d| self.normalize_path(&d.name) == norm)
+            .filter(|d| self.fd_norm_name(d) == norm)
             .map(FileDescriptor::effective_len)
             .max();
         let reg_len = self.file_contents.get(&norm).map(|v| v.len());
