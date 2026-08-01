@@ -855,6 +855,223 @@ fn merge_point_defers_then_fires_on_counter() {
     assert_eq!(active_ids.len(), 2, "live state + merged product");
 }
 
+// --- Timeout / LengthLimiter / LoopBound native techniques (angr-9ke6b.77) -
+// The other three `apply_native_techniques` arms. LengthLimiter and LoopBound
+// share the "scan active, collect indices, remove in reverse, re-home the
+// removals" shape, so every test here pins BOTH which states moved and which
+// survivors stayed (by id, in order): a forward-iterating index removal
+// shifts the tail and takes the wrong states, which a count-only assertion
+// would happily accept.
+
+/// Push an amd64 state into the active stash whose block history is `blocks`
+/// (the input LengthLimiter and LoopBound scan). Returns its state id.
+fn push_active_with_history(mgr: &mut RustExplorationManager, blocks: &[u64]) -> u64 {
+    let mut s = RustSimState::new("amd64").expect("state");
+    for &b in blocks {
+        s.add_to_history(b);
+    }
+    let sid = s.state_id();
+    mgr.sm.push(STASH_ACTIVE, s);
+    sid
+}
+
+/// Backdate every registered Timeout's start so the deadline is unambiguously
+/// in the past. The arm arms `start_time` lazily on its first apply, so a
+/// freshly-registered 0.0s timeout would otherwise race the clock's
+/// resolution (`elapsed() > 0.0` on a coarse clock can read false).
+fn expire_timeouts(mgr: &mut RustExplorationManager) {
+    for tech in &mut mgr.native_techniques {
+        if let NativeTechnique::Timeout { start_time, .. } = tech {
+            *start_time =
+                std::time::Instant::now().checked_sub(std::time::Duration::from_secs(3600));
+        }
+    }
+}
+
+/// Before the deadline the Timeout arm is inert: active is untouched and the
+/// run is not reported complete.
+#[test]
+fn timeout_before_deadline_leaves_active_untouched() {
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    let a = push_active_with_history(&mut mgr, &[0x1000]);
+    let b = push_active_with_history(&mut mgr, &[0x2000]);
+    mgr.register_timeout(3600.0);
+
+    assert!(
+        !mgr.apply_native_techniques(),
+        "deadline not reached -> run not complete"
+    );
+    assert_eq!(mgr.sm.state_ids(STASH_ACTIVE), vec![a, b]);
+    assert!(
+        mgr.sm
+            .get("timeout")
+            .expect("register_timeout materializes the stash")
+            .is_empty()
+    );
+}
+
+/// Past the deadline the whole active frontier drains into "timeout" (order
+/// preserved) and the arm reports the run complete.
+#[test]
+fn timeout_after_deadline_drains_active_into_timeout_stash() {
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    let a = push_active_with_history(&mut mgr, &[0x1000]);
+    let b = push_active_with_history(&mut mgr, &[0x2000]);
+    mgr.register_timeout(0.0);
+    expire_timeouts(&mut mgr);
+
+    assert!(
+        mgr.apply_native_techniques(),
+        "expired timeout completes the run"
+    );
+    assert!(mgr.sm.get(STASH_ACTIVE).expect("active").is_empty());
+    assert_eq!(mgr.sm.state_ids("timeout"), vec![a, b]);
+}
+
+/// An expired timeout with nothing active still reports complete (the run
+/// ends on the deadline, not on having states to move).
+#[test]
+fn timeout_after_deadline_completes_with_empty_active() {
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    mgr.register_timeout(0.0);
+    expire_timeouts(&mut mgr);
+
+    assert!(mgr.apply_native_techniques());
+    assert!(mgr.sm.get("timeout").expect("timeout stash").is_empty());
+}
+
+/// LengthLimiter with `drop=false` moves only the over-limit states to "cut"
+/// and leaves the survivors in their original active order.
+#[test]
+fn length_limiter_cuts_over_limit_states_and_keeps_survivors_in_order() {
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    // History lengths 4, 2, 5, 1, 6 against max_length 3 -> active indices
+    // 0, 2 and 4 are over the limit (non-adjacent, so reverse removal matters).
+    let a = push_active_with_history(&mut mgr, &[1, 2, 3, 4]);
+    let b = push_active_with_history(&mut mgr, &[1, 2]);
+    let c = push_active_with_history(&mut mgr, &[1, 2, 3, 4, 5]);
+    let d = push_active_with_history(&mut mgr, &[1]);
+    let e = push_active_with_history(&mut mgr, &[1, 2, 3, 4, 5, 6]);
+    mgr.register_length_limiter(3, false);
+
+    assert!(
+        !mgr.apply_native_techniques(),
+        "LengthLimiter never completes the run"
+    );
+    assert_eq!(
+        mgr.sm.state_ids(STASH_ACTIVE),
+        vec![b, d],
+        "exactly the under-limit states survive, in order"
+    );
+    let mut cut = mgr.sm.state_ids("cut");
+    cut.sort_unstable();
+    let mut expected = vec![a, c, e];
+    expected.sort_unstable();
+    assert_eq!(cut, expected);
+}
+
+/// `drop=true` discards the over-limit states outright — and never
+/// materializes the "cut" stash in the first place.
+#[test]
+fn length_limiter_drop_discards_instead_of_cutting() {
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    push_active_with_history(&mut mgr, &[1, 2, 3]);
+    let survivor = push_active_with_history(&mut mgr, &[1]);
+    push_active_with_history(&mut mgr, &[1, 2, 3, 4]);
+    mgr.register_length_limiter(1, true);
+
+    mgr.apply_native_techniques();
+
+    assert_eq!(mgr.sm.state_ids(STASH_ACTIVE), vec![survivor]);
+    assert!(
+        mgr.sm.get("cut").is_none(),
+        "drop=true must not create the cut stash"
+    );
+}
+
+/// The limit is strictly-greater-than: a history of exactly `max_length`
+/// blocks survives, one block more is cut.
+#[test]
+fn length_limiter_boundary_is_strictly_greater_than_max() {
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    let at_limit = push_active_with_history(&mut mgr, &[1, 2, 3]);
+    let over_limit = push_active_with_history(&mut mgr, &[1, 2, 3, 4]);
+    mgr.register_length_limiter(3, false);
+
+    mgr.apply_native_techniques();
+
+    assert_eq!(mgr.sm.state_ids(STASH_ACTIVE), vec![at_limit]);
+    assert_eq!(mgr.sm.state_ids("cut"), vec![over_limit]);
+}
+
+/// LoopBound moves the spinning states to the discard stash; a state whose
+/// hottest address appears exactly `bound` times survives (the bound is
+/// strictly-greater-than, same as LengthLimiter's).
+#[test]
+fn loop_bound_moves_spinning_states_to_discard_stash() {
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    // Spinners at active indices 1 and 3 (0x10 seen 3x > bound 2).
+    let at_bound = push_active_with_history(&mut mgr, &[0x10, 0x20, 0x10]);
+    let spin_a = push_active_with_history(&mut mgr, &[0x10, 0x20, 0x10, 0x30, 0x10]);
+    let straight = push_active_with_history(&mut mgr, &[0x10, 0x20, 0x30, 0x40]);
+    let spin_b = push_active_with_history(&mut mgr, &[0x99, 0x99, 0x99]);
+    mgr.register_loop_bound(2, "spinning");
+
+    assert!(
+        !mgr.apply_native_techniques(),
+        "LoopBound never completes the run"
+    );
+    assert_eq!(
+        mgr.sm.state_ids(STASH_ACTIVE),
+        vec![at_bound, straight],
+        "exactly-at-bound and non-looping states survive, in order"
+    );
+    let mut spun = mgr.sm.state_ids("spinning");
+    spun.sort_unstable();
+    let mut expected = vec![spin_a, spin_b];
+    expected.sort_unstable();
+    assert_eq!(spun, expected);
+}
+
+/// The discard stash name is honored: nothing lands in the "spinning" default.
+#[test]
+fn loop_bound_honors_custom_discard_stash_name() {
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    let spinner = push_active_with_history(&mut mgr, &[0x40, 0x40]);
+    mgr.register_loop_bound(1, "my_spin");
+
+    mgr.apply_native_techniques();
+
+    assert!(mgr.sm.get(STASH_ACTIVE).expect("active").is_empty());
+    assert_eq!(mgr.sm.state_ids("my_spin"), vec![spinner]);
+    assert!(
+        mgr.sm.get("spinning").is_none(),
+        "the default stash name must not be created"
+    );
+}
+
+/// Under `drop_terminal_states` the spinners are dropped rather than filed:
+/// they leave active, and the (pre-created) discard stash stays empty.
+#[test]
+fn loop_bound_drops_spinners_when_drop_terminal_states_is_set() {
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    push_active_with_history(&mut mgr, &[0x40, 0x40]);
+    let survivor = push_active_with_history(&mut mgr, &[0x40]);
+    mgr.register_loop_bound(1, "spinning");
+    mgr.set_drop_terminal_states(true);
+
+    mgr.apply_native_techniques();
+
+    assert_eq!(mgr.sm.state_ids(STASH_ACTIVE), vec![survivor]);
+    assert!(
+        mgr.sm
+            .get("spinning")
+            .expect("register_loop_bound pre-creates the stash")
+            .is_empty(),
+        "drop_terminal_states discards instead of filing"
+    );
+}
+
 // amd64 RIP guest-state offset — writing here bypasses `set_ip`, which would
 // otherwise sync `self.pc` and hide the stale-pc case we need to reproduce.
 const RIP: u32 = 184;
