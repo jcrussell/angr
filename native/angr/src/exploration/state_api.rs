@@ -756,10 +756,14 @@ impl RustExplorationManager {
     }
 
     /// Concrete-address concrete-value memory store on `state_id`
-    /// (angr-j28e write-through). Mirrors `_set_pending_memory` for an
-    /// arbitrary state. Used by the Python-side `RustMemoryProxy.store`
-    /// when a hook callback or `state.inspect` user code mutates memory
-    /// through the proxy with a concrete address + concrete bytes.
+    /// (angr-j28e write-through). Used by the Python-side
+    /// `RustMemoryProxy.store` when a hook callback or `state.inspect` user
+    /// code mutates memory through the proxy with a concrete address +
+    /// concrete bytes. This is also the write path for a *pending* callback
+    /// state: `with_state_mut` -> `find_state_mut` checks `pending_callbacks`
+    /// before the stash manager, so no separate pending-only store method is
+    /// needed (the dead `_set_pending_memory` / `_pending_memory_store` pair
+    /// was removed as redundant in angr-9ke6b.72).
     pub(crate) fn _set_state_memory_concrete(
         &mut self,
         state_id: u64,

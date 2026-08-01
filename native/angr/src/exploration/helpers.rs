@@ -616,10 +616,10 @@ impl RustExplorationManager {
 /// 16 bytes into a single value shift-overflows for byte indices >= 16 and the
 /// downstream `store_concrete` page-fill loop emits a 16-byte-cycle pattern
 /// across the entire `data.len()` range, corrupting memory wholesale. This is
-/// the canonical safe loop (was hand-copied into `_set_state_memory_concrete`
-/// and `_pending_memory_store`); the sink closure abstracts the only
-/// divergence between call sites (which memory API to write through, and how
-/// to map its error into a `PyErr`).
+/// the canonical safe loop (it was hand-copied into every concrete-store entry
+/// point before angr-5aj8); the sink closure abstracts the only divergence
+/// between call sites (which memory API to write through, and how to map its
+/// error into a `PyErr`).
 pub(crate) fn store_concrete_bytes_chunked<F>(addr: u64, data: &[u8], mut store: F) -> PyResult<()>
 where
     F: FnMut(u64, RustBV) -> PyResult<()>,

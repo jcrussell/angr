@@ -31,21 +31,6 @@ impl RustExplorationManager {
         })
     }
 
-    pub(crate) fn _pending_state_map_memory(
-        &mut self,
-        state_id: u64,
-        addr: u64,
-        data: &[u8],
-        permissions: u8,
-    ) -> PyResult<()> {
-        self.with_pending_mut(state_id, |pending| {
-            pending
-                .state
-                .map_memory_data(addr, data, Permission::from_bits(permissions));
-            Ok(())
-        })
-    }
-
     pub(crate) fn _active_states_map_memory(&mut self, addr: u64, data: &[u8], permissions: u8) {
         if let Some(stash) = self.sm.get_mut(STASH_ACTIVE) {
             for state in stash.iter_mut() {
@@ -349,25 +334,6 @@ impl RustExplorationManager {
                 ))
             })?;
             Ok(super::helpers::u128_to_le_bytes(value, size as usize))
-        })
-    }
-
-    pub(crate) fn _set_pending_memory(
-        &mut self,
-        state_id: u64,
-        addr: u64,
-        data: &[u8],
-    ) -> PyResult<()> {
-        // angr-5aj8: route through the shared 16-byte-chunk helper. The prior
-        // single-pack implementation here silently truncated/overflowed for
-        // data.len() > 16 (RustBV::concrete is u128-backed); chunking fixes it.
-        self.with_pending_mut(state_id, |pending| {
-            super::helpers::store_concrete_bytes_chunked(addr, data, |chunk_addr, bv| {
-                pending
-                    .state
-                    .memory_store(chunk_addr, bv)
-                    .map_err(|e| PyValueError::new_err(e.to_string()))
-            })
         })
     }
 
@@ -764,43 +730,6 @@ impl RustExplorationManager {
                     "pending memory load at 0x{addr:x} failed: {e}"
                 ))),
             }
-        })
-    }
-
-    pub(crate) fn _pending_memory_store(
-        &mut self,
-        state_id: u64,
-        addr: u64,
-        data: &[u8],
-    ) -> PyResult<()> {
-        // angr-5aj8: split into 16-byte chunks. RustBV::Concrete is u128-backed;
-        // packing more than 16 bytes (the prior implementation silently truncated
-        // and constructed an oversized concrete BV) leaves store_concrete to emit
-        // a 16-byte-cycle pattern across the entire claimed width. Use the safe
-        // pattern from RustSimState::apply_changes.
-        self.with_pending_mut(state_id, |pending| {
-            super::helpers::store_concrete_bytes_chunked(addr, data, |chunk_addr, bv| {
-                pending
-                    .state
-                    .memory_mut()
-                    .store_concrete(chunk_addr, bv)
-                    .map_err(|e| PyRuntimeError::new_err(format!("memory store error: {e}")))
-            })
-        })
-    }
-
-    pub(crate) fn _pending_memory_map_data(
-        &mut self,
-        state_id: u64,
-        addr: u64,
-        data: &[u8],
-        perm: u8,
-    ) -> PyResult<()> {
-        self.with_pending_mut(state_id, |pending| {
-            pending
-                .state
-                .map_memory_data(addr, data, crate::memory::Permission::from_bits(perm));
-            Ok(())
         })
     }
 

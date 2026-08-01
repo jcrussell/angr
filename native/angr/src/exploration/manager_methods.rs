@@ -999,19 +999,6 @@ impl RustExplorationManager {
         self._set_pending_state_pc(state_id, pc)
     }
 
-    /// Map memory in the pending state.
-    /// See `pending_api::_pending_state_map_memory` for the body.
-    #[pyo3(signature = (state_id, addr, data, permissions=7))]
-    pub fn pending_state_map_memory(
-        &mut self,
-        state_id: u64,
-        addr: u64,
-        data: &[u8],
-        permissions: u8,
-    ) -> PyResult<()> {
-        self._pending_state_map_memory(state_id, addr, data, permissions)
-    }
-
     /// Map memory in active states.
     /// See `pending_api::_active_states_map_memory` for the body.
     #[pyo3(signature = (addr, data, permissions=7))]
@@ -1198,12 +1185,6 @@ impl RustExplorationManager {
     /// See `pending_api::_get_pending_memory` for the body.
     pub fn get_pending_memory(&self, state_id: u64, addr: u64, size: u32) -> PyResult<Vec<u8>> {
         self._get_pending_memory(state_id, addr, size)
-    }
-
-    /// Store memory in pending state.
-    /// See `pending_api::_set_pending_memory` for the body.
-    pub fn set_pending_memory(&mut self, state_id: u64, addr: u64, data: &[u8]) -> PyResult<()> {
-        self._set_pending_memory(state_id, addr, data)
     }
 
     /// Get dirty page addresses from pending state.
@@ -1580,24 +1561,6 @@ impl RustExplorationManager {
     /// See `pending_api::_pending_memory_load` for the body.
     pub fn pending_memory_load(&self, state_id: u64, addr: u64, size: u32) -> PyResult<Vec<u8>> {
         self._pending_memory_load(state_id, addr, size)
-    }
-
-    /// Store to pending callback state's Rust memory.
-    /// See `pending_api::_pending_memory_store` for the body.
-    pub fn pending_memory_store(&mut self, state_id: u64, addr: u64, data: &[u8]) -> PyResult<()> {
-        self._pending_memory_store(state_id, addr, data)
-    }
-
-    /// Map memory with data in pending callback state.
-    /// See `pending_api::_pending_memory_map_data` for the body.
-    pub fn pending_memory_map_data(
-        &mut self,
-        state_id: u64,
-        addr: u64,
-        data: &[u8],
-        perm: u8,
-    ) -> PyResult<()> {
-        self._pending_memory_map_data(state_id, addr, data, perm)
     }
 
     /// Set address to skip hook check for on next step.
