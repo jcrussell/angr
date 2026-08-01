@@ -23,6 +23,18 @@ impl RustSimState {
         &mut self.memory
     }
 
+    /// The state's configured memory endianness.
+    ///
+    /// Always prefer this over `arch().is_little_endian()` when the answer
+    /// feeds observable state behaviour: every `Arch` impl hardcodes
+    /// little-endian, so the bi-endian arches (ARM/MIPS) carry their real
+    /// byte order only here, set once by `with_solver_endian` in
+    /// `state/construction.rs` from the `little_endian` override that
+    /// `rust_manager.py` computes off `project.arch.memory_endness`.
+    pub fn is_little_endian(&self) -> bool {
+        self.memory.endness() == Endness::Little
+    }
+
     /// Take ownership of the memory, replacing it with an empty SymbolicMemory.
     pub fn take_memory(&mut self) -> SymbolicMemory {
         let endness = self.memory.endness();

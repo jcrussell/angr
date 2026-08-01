@@ -27,7 +27,7 @@ fn host_network_swap(
     arg: &RustBV,
     low_bits: u32,
 ) -> Result<Option<RustBV>, ProcedureError> {
-    if !state.arch().is_little_endian() {
+    if !state.is_little_endian() {
         return Ok(Some(arg.clone()));
     }
     let bits = state.arch().bits();

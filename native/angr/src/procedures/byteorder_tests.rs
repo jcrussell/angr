@@ -63,3 +63,38 @@ fn test_symbolic_htonl_returns_bv() {
     assert_eq!(result.width(), 64);
     assert!(result.as_u64().is_none());
 }
+
+#[test]
+fn test_htonl_is_identity_on_big_endian_state() {
+    // Regression (angr-9ke6b.1): the swap decision read
+    // `Arch::is_little_endian()`, hardcoded true in every arch impl, so a
+    // genuinely big-endian ARM state still byte-swapped -- corrupting a value
+    // that is already in network order. Host order == network order on BE, so
+    // htonl/htons must be the identity there.
+    let mut s = RustSimState::new_with_endian("ARM", Some(false)).unwrap();
+    assert!(!s.is_little_endian());
+    // ARM is 32-bit, so the result is zero-extended back to 32 bits.
+    assert_eq!(call_with(&NativeHtonl, &mut s, 0x0102_0304), 0x0102_0304);
+    assert_eq!(call_with(&NativeHtons, &mut s, 0x0102), 0x0102);
+}
+
+#[test]
+fn test_htonl_still_swaps_on_little_endian_arm_state() {
+    // The mirror case: an ARM state left at its little-endian default (and one
+    // with the override set explicitly) must still perform the swap, so the
+    // fix above did not turn the conversion off wholesale.
+    for little in [None, Some(true)] {
+        let mut s = RustSimState::new_with_endian("ARM", little).unwrap();
+        assert!(s.is_little_endian());
+        assert_eq!(call_with(&NativeHtonl, &mut s, 0x0102_0304), 0x0403_0201);
+        assert_eq!(call_with(&NativeHtons, &mut s, 0x0102), 0x0201);
+    }
+}
+
+#[test]
+fn test_htonl_is_identity_on_big_endian_mips_state() {
+    // MIPS is the other bi-endian arch; big-endian MIPS32 is the common case
+    // in the wild, and `MIPS32::is_little_endian()` also hardcodes true.
+    let mut s = RustSimState::new_with_endian("MIPS32", Some(false)).unwrap();
+    assert_eq!(call_with(&NativeHtonl, &mut s, 0xdead_beef), 0xdead_beef);
+}

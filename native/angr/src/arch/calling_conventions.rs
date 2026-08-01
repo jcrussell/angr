@@ -633,9 +633,10 @@ impl CallingConvention for MipsO32 {
     }
 
     fn endness(&self) -> Endness {
-        // MIPS may be either-endian; default to little. The arch's own
-        // `is_little_endian()` is the authoritative endianness for memory
-        // access on a given state.
+        // MIPS may be either-endian; default to little. `Arch::is_little_endian`
+        // is NOT authoritative (every impl hardcodes little) -- the real
+        // per-state byte order is `RustSimState::is_little_endian`, seeded from
+        // the `little_endian` override in `with_solver_endian`.
         Endness::Little
     }
 
@@ -715,9 +716,10 @@ impl CallingConvention for MipsN64 {
     }
 
     fn endness(&self) -> Endness {
-        // MIPS may be either-endian; default to little. The arch's own
-        // `is_little_endian()` is the authoritative endianness for memory
-        // access on a given state.
+        // MIPS may be either-endian; default to little. `Arch::is_little_endian`
+        // is NOT authoritative (every impl hardcodes little) -- the real
+        // per-state byte order is `RustSimState::is_little_endian`, seeded from
+        // the `little_endian` override in `with_solver_endian`.
         Endness::Little
     }
 

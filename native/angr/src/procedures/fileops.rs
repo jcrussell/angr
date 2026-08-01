@@ -277,7 +277,7 @@ crate::declare_proc! {
         // Write the two 32-bit fds as raw bytes at pipefd[0..4] and pipefd[4..8].
         // Use byte-by-byte little/big-endian encoding so pipefd[0] reads back correctly
         // through the standard 32-bit memory load (which respects arch endianness).
-        let little = state.arch().is_little_endian();
+        let little = state.is_little_endian();
         let read_bytes = if little {
             read_fd.to_le_bytes()
         } else {

@@ -347,6 +347,48 @@ fn test_pipe_basic() {
 }
 
 #[test]
+fn test_pipe_honors_big_endian_state_override() {
+    // Regression (angr-9ke6b.1): `pipe` encoded the fd bytes off
+    // `Arch::is_little_endian()`, which is hardcoded true on every arch --
+    // so a genuinely big-endian ARM state got LE-encoded fds that then read
+    // back byte-reversed through the BE memory load. The fd byte order must
+    // follow the state's configured endness, not the arch default.
+    let mut state = RustSimState::new_with_endian("ARM", Some(false)).unwrap();
+    assert!(!state.is_little_endian());
+    state.map_memory_data(0x1000, &[0u8; 16], Permission::RWX);
+
+    let result = NativePipe
+        .call(&mut state, &[RustBV::concrete(0x1000, 32)])
+        .unwrap();
+    assert_eq!(result.unwrap().as_u64(), Some(0));
+
+    // Loads go through the same BE memory, so a matching encoding round-trips.
+    assert_eq!(state.memory_load(0x1000, 4).unwrap().as_u64(), Some(3));
+    assert_eq!(state.memory_load(0x1004, 4).unwrap().as_u64(), Some(4));
+
+    // Byte-level check: BE puts the fd in the *last* byte of each word.
+    assert_eq!(state.memory_load(0x1000, 1).unwrap().as_u64(), Some(0));
+    assert_eq!(state.memory_load(0x1003, 1).unwrap().as_u64(), Some(3));
+    assert_eq!(state.memory_load(0x1007, 1).unwrap().as_u64(), Some(4));
+}
+
+#[test]
+fn test_pipe_honors_little_endian_state_override() {
+    // The mirror of the BE case: an explicitly-LE ARM state keeps LE encoding,
+    // with the fd in the *first* byte of each word.
+    let mut state = RustSimState::new_with_endian("ARM", Some(true)).unwrap();
+    state.map_memory_data(0x1000, &[0u8; 16], Permission::RWX);
+
+    NativePipe
+        .call(&mut state, &[RustBV::concrete(0x1000, 32)])
+        .unwrap();
+
+    assert_eq!(state.memory_load(0x1000, 4).unwrap().as_u64(), Some(3));
+    assert_eq!(state.memory_load(0x1000, 1).unwrap().as_u64(), Some(3));
+    assert_eq!(state.memory_load(0x1004, 1).unwrap().as_u64(), Some(4));
+}
+
+#[test]
 fn test_pipe_then_dup2_to_stdin() {
     // Realistic pattern: pipe(p); dup2(p[0], 0) — redirects stdin to read end.
     let mut state = RustSimState::new("amd64").unwrap();
