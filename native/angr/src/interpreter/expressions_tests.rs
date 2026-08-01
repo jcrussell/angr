@@ -217,6 +217,42 @@ fn eval_binop_symbolic_unsupported_routes_to_python_not_fabricate() {
 }
 
 #[test]
+fn eval_ccall_unsupported_cond_routes_to_python_not_fabricate() {
+    // angr-9ke6b.88: a condition-flag CCall the native handler cannot compute
+    // must route the block to Python, NOT fabricate a fresh unconstrained
+    // symbolic. The result of `*_calculate_condition` IS a branch guard, so an
+    // unconstrained stand-in explores both directions regardless of the real
+    // flag semantics. Same policy (and same opt-in gate) as `vex_op_fallback`.
+    use crate::callbacks::PythonCallbacks;
+    Python::initialize();
+    let callbacks = PythonCallbacks::new();
+    Python::attach(|_py| {
+        let ctx = SymContext::new_mock();
+        let mut interp = new_interp(&ctx);
+        interp.temps.resize(1, None);
+        interp.temps[0] = Some(RustBV::concrete(0, 64));
+        let env = TypeEnv::new();
+        let cee = IRCallee {
+            // Matches the is_cond_ccall name test, but with too few args for
+            // `handle_ccall_with_ctx` (which wants 5), so it returns None.
+            name: "amd64g_calculate_condition".to_string(),
+            addr: 0,
+            mcx_mask: 0,
+        };
+        let args = [IRExpr::RdTmp(0)];
+        let res = interp.eval_ccall(&callbacks, &cee, IRType::I64, &args, &env);
+        assert!(
+            matches!(res, Err(CbExecutionError::NeedPythonFallback(_))),
+            "unhandled cond-CCall must route to Python, got {res:?}"
+        );
+        assert_eq!(
+            interp.stats.vex_bypass_fabricate_count, 0,
+            "unhandled cond-CCall fabricated a symbol instead of routing to Python"
+        );
+    });
+}
+
+#[test]
 fn apply_loadg_conversion_widens_zero() {
     let ctx = SymContext::new_mock();
     let interp = new_interp(&ctx);

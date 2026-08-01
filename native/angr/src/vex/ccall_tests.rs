@@ -425,6 +425,42 @@ fn diff_fuzz_sym_flags_add() {
 }
 
 #[test]
+fn diff_fuzz_sym_flags_adc() {
+    // angr-9ke6b.88: ADC/SBB previously had no symbolic builder, so a
+    // symbolic operand fell through to the fabricate-a-fresh-symbol path.
+    // Same masking invariant as `diff_fuzz_sym_flags_sub`.
+    let mut rng = Lcg::new(0xadc_0f00);
+    for nbits in [8u32, 16, 32, 64] {
+        let m = get_mask(nbits);
+        for _ in 0..200 {
+            let d1 = rng.next() & m;
+            let d2 = rng.next() & m;
+            // Only the CF bit of cc_ndep is read; sweep both settings.
+            let nd = rng.next() & flag_mask::G_CC_MASK_C;
+            let conc = flags_to_tuple(calc_flags_adc(nbits, d1, d2, nd));
+            let sym = sym_flags_to_tuple(OpCategory::Adc, nbits, d1, d2, nd);
+            assert_eq!(sym, conc, "nbits={nbits} d1={d1:x} d2={d2:x} nd={nd:x}");
+        }
+    }
+}
+
+#[test]
+fn diff_fuzz_sym_flags_sbb() {
+    let mut rng = Lcg::new(0x5bb_0f00);
+    for nbits in [8u32, 16, 32, 64] {
+        let m = get_mask(nbits);
+        for _ in 0..200 {
+            let d1 = rng.next() & m;
+            let d2 = rng.next() & m;
+            let nd = rng.next() & flag_mask::G_CC_MASK_C;
+            let conc = flags_to_tuple(calc_flags_sbb(nbits, d1, d2, nd));
+            let sym = sym_flags_to_tuple(OpCategory::Sbb, nbits, d1, d2, nd);
+            assert_eq!(sym, conc, "nbits={nbits} d1={d1:x} d2={d2:x} nd={nd:x}");
+        }
+    }
+}
+
+#[test]
 fn diff_fuzz_sym_flags_logic() {
     let mut rng = Lcg::new(0x0001_0c1c_aaaa);
     for nbits in [8u32, 16, 32, 64] {

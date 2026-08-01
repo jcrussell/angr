@@ -608,6 +608,19 @@ pub fn handle_ccall_with_ctx(
                         flag_shift::G_CC_SHIFT_C,
                         sym_ctx,
                     )),
+                    // ADC/SBB carry is oldC-dependent (see `sym_flags_adc` /
+                    // `sym_flags_sbb`); reuse the shared builder rather than
+                    // re-deriving it here (angr-9ke6b.88).
+                    OpCategory::Adc | OpCategory::Sbb => sym_flags_for_category(
+                        info.category,
+                        nb,
+                        &args[1],
+                        &args[2],
+                        &args[3],
+                        sym_ctx,
+                    )
+                    .ok()
+                    .map(|f| f.cf),
                     _ => None,
                 };
                 if let Some(c) = cf {

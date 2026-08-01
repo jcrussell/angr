@@ -23,7 +23,8 @@ fn is_dispatch_fabricate_family(op: &IROp) -> bool {
 }
 
 /// Opt-in escape hatch (`ANGR_RUST_FABRICATE_UNSUPPORTED_IROP`) for the
-/// symbolic-operand arm of [`VEXInterpreter::vex_op_fallback`]. When set (to any
+/// symbolic-operand arm of [`VEXInterpreter::vex_op_fallback`] and for the
+/// condition-flag arm of [`VEXInterpreter::eval_ccall`]. When set (to any
 /// non-empty, non-`"0"` value) an unsupported op with a symbolic operand
 /// fabricates a fresh unconstrained symbolic (the pre-angr-oyzvj behavior)
 /// instead of routing the block to Python. Default (unset): route to Python —
@@ -687,19 +688,26 @@ impl<'a> VEXInterpreter<'a> {
             return Ok(result);
         }
 
-        // For eflags/rflags CCalls that we couldn't handle symbolically,
-        // return a fresh symbolic variable rather than concrete 0.
-        // Concrete 0 corrupts register values; a symbolic variable is sound
-        // (unconstrained) and lets the solver handle it.
+        // eflags/rflags condition-calculation CCalls that we couldn't handle
+        // symbolically follow the same policy as `vex_op_fallback` (angr-oyzvj,
+        // angr-9ke6b.88): route the block to Python by default. Fabricating a
+        // fresh unconstrained symbolic here is *worse* than for an ordinary op,
+        // because the result of a `calculate_condition` CCall IS a branch
+        // guard — an unconstrained one explores both directions regardless of
+        // the real flag semantics. Retained only as an explicit opt-in via
+        // `ANGR_RUST_FABRICATE_UNSUPPORTED_IROP` (same gate, same
+        // `vex_bypass_fabricate_count` visibility).
         let is_cond_ccall = cee.name.contains("calculate_condition")
             || cee.name.contains("calculate_eflags")
             || cee.name.contains("calculate_rflags");
-        if is_cond_ccall {
+        if is_cond_ccall && fabricate_unsupported_irop() {
             log::debug!(
-                "CCall '{}' not handled symbolically at 0x{:x}, returning symbolic variable",
+                "CCall '{}' not handled symbolically at 0x{:x}, fabricating symbolic variable \
+                 (ANGR_RUST_FABRICATE_UNSUPPORTED_IROP)",
                 cee.name,
                 self.pc
             );
+            self.stats.vex_bypass_fabricate_count += 1;
             return Ok(RustBV::symbolic(
                 self.ctx,
                 format!("ccall_unsupported_{:x}", self.pc),
@@ -707,7 +715,7 @@ impl<'a> VEXInterpreter<'a> {
             ));
         }
 
-        // Any other unsupported CCall must defer to Python's VEX engine.
+        // Every other unsupported CCall must defer to Python's VEX engine.
         // Returning concrete(0) would silently corrupt the result and let
         // execution continue with bad data.
         Err(CbExecutionError::NeedPythonFallback(format!(

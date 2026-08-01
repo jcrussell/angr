@@ -284,8 +284,12 @@ define_execution_stats! {
     /// Number of Unop/Binop evaluations that took the *fabricate-fresh-symbolic*
     /// BYPASS (the `any_sym` arm of `eval_unop`/`eval_binop`): the op returned an
     /// `OpError`, an input was symbolic, so a fresh unconstrained symbolic stood
-    /// in for the real value. A strict subset of `python_vex_op_fallback_count`
-    /// (excludes the concrete-arg arm, which propagates a typed error). Since
+    /// in for the real value. For those op arms it is a strict subset of
+    /// `python_vex_op_fallback_count` (excludes the concrete-arg arm, which
+    /// propagates a typed error). It ALSO counts the condition-flag arm of
+    /// `eval_ccall` (angr-9ke6b.88), which fabricates under the same opt-in
+    /// gate but does not bump `python_vex_op_fallback_count` — so the subset
+    /// relation holds per-arm, not in aggregate. Since
     /// angr-oyzvj this BYPASS is OPT-IN — it fires only when
     /// `ANGR_RUST_FABRICATE_UNSUPPORTED_IROP` is set; by default the symbolic arm
     /// routes to Python (`NeedPythonFallback`), so this counter stays 0 unless

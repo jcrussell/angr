@@ -130,6 +130,73 @@ pub(super) fn sym_flags_add(
     SymFlags { cf, pf, zf, sf, of }
 }
 
+/// ADC: symbolic flags for `dep1 + (dep2 ^ oldC) + oldC` at the given width.
+///
+/// Mirrors `calc_flags_adc` (the concrete path) exactly, including VEX's
+/// `argR = dep2 ^ oldC` encoding and the oldC-dependent carry test
+/// (`res <= argL` with an incoming carry, `res < argL` without). Before
+/// angr-9ke6b.88 this category had no symbolic builder, so any ADC/SBB with a
+/// symbolic operand fell out of `sym_flags_for_category` as `Unsupported`.
+pub(super) fn sym_flags_adc(
+    nbits: u32,
+    dep1: &RustBV,
+    dep2: &RustBV,
+    ndep: &RustBV,
+    ctx: &SymContext,
+) -> SymFlags {
+    let old_c = sym_extract_flag(ndep, flag_shift::G_CC_SHIFT_C, ctx);
+    let old_c_n = old_c.zero_extend(nbits, ctx);
+    let arg_l = extract_to_nbits(dep1, nbits, ctx);
+    let arg_r = extract_to_nbits(dep2, nbits, ctx).xor(&old_c_n, ctx);
+    let result = arg_l.add(&arg_r, ctx).add(&old_c_n, ctx);
+    let zero = RustBV::concrete(0, nbits);
+
+    let zf = result.eq(&zero, ctx);
+    let sf = result.extract(nbits - 1, nbits - 1, ctx);
+    // CF = oldC ? (result <= argL) : (result < argL)
+    let cf = old_c.ite(&result.ule(&arg_l, ctx), &result.ult(&arg_l, ctx), ctx);
+    // OF = (~(argL ^ argR) & (argL ^ result))[msb]
+    let of = arg_l
+        .xor(&arg_r, ctx)
+        .not(ctx)
+        .and(&arg_l.xor(&result, ctx), ctx)
+        .extract(nbits - 1, nbits - 1, ctx);
+    let pf = symbolic_parity(&result, ctx);
+    SymFlags { cf, pf, zf, sf, of }
+}
+
+/// SBB: symbolic flags for `dep1 - (dep2 ^ oldC) - oldC` at the given width.
+///
+/// Mirrors `calc_flags_sbb`; see [`sym_flags_adc`] for the shared oldC
+/// encoding. The borrow test compares the *operands* (`argL` vs `argR`), not
+/// the result, which is why it cannot reuse `sym_flags_sub`.
+pub(super) fn sym_flags_sbb(
+    nbits: u32,
+    dep1: &RustBV,
+    dep2: &RustBV,
+    ndep: &RustBV,
+    ctx: &SymContext,
+) -> SymFlags {
+    let old_c = sym_extract_flag(ndep, flag_shift::G_CC_SHIFT_C, ctx);
+    let old_c_n = old_c.zero_extend(nbits, ctx);
+    let arg_l = extract_to_nbits(dep1, nbits, ctx);
+    let arg_r = extract_to_nbits(dep2, nbits, ctx).xor(&old_c_n, ctx);
+    let result = arg_l.sub(&arg_r, ctx).sub(&old_c_n, ctx);
+    let zero = RustBV::concrete(0, nbits);
+
+    let zf = result.eq(&zero, ctx);
+    let sf = result.extract(nbits - 1, nbits - 1, ctx);
+    // CF = oldC ? (argL <= argR) : (argL < argR)
+    let cf = old_c.ite(&arg_l.ule(&arg_r, ctx), &arg_l.ult(&arg_r, ctx), ctx);
+    // OF = ((argL ^ argR) & (argL ^ result))[msb]
+    let of = arg_l
+        .xor(&arg_r, ctx)
+        .and(&arg_l.xor(&result, ctx), ctx)
+        .extract(nbits - 1, nbits - 1, ctx);
+    let pf = symbolic_parity(&result, ctx);
+    SymFlags { cf, pf, zf, sf, of }
+}
+
 /// LOGIC (AND/OR/XOR/TEST): result is in dep1; CF=0, OF=0.
 pub(super) fn sym_flags_logic(nbits: u32, dep1: &RustBV, ctx: &SymContext) -> SymFlags {
     let result = extract_to_nbits(dep1, nbits, ctx);
@@ -225,9 +292,9 @@ pub(super) fn sym_flags_for_category(
         OpCategory::Logic => Ok(sym_flags_logic(nbits, dep1, ctx)),
         OpCategory::Inc => Ok(sym_flags_inc(nbits, dep1, ndep, ctx)),
         OpCategory::Dec => Ok(sym_flags_dec(nbits, dep1, ndep, ctx)),
-        OpCategory::Adc
-        | OpCategory::Sbb
-        | OpCategory::Shl
+        OpCategory::Adc => Ok(sym_flags_adc(nbits, dep1, dep2, ndep, ctx)),
+        OpCategory::Sbb => Ok(sym_flags_sbb(nbits, dep1, dep2, ndep, ctx)),
+        OpCategory::Shl
         | OpCategory::Shr
         | OpCategory::Rol
         | OpCategory::Ror
