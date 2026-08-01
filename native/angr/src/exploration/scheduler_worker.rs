@@ -380,11 +380,48 @@ pub(super) fn dispatch_next(
 /// Push live successors onto the worker's local queue and count them IN before
 /// the caller counts the parent task OUT (`pending` must never dip to zero with
 /// live descendants queued).
+///
+/// **Frontier cap (angr-9ke6b.48).** When the transport carries a
+/// `max_active_states` limit, forks beyond it are pruned HERE rather than
+/// queued. The serial loop enforces the same limit in
+/// `RustExplorationManager::push_to_active_or_drop` against
+/// `sm.active_count()`, but a parallel frontier lives in the workers' local
+/// queues + the injector for the whole wave/session and only reaches
+/// `STASH_ACTIVE` at a wave boundary — so without this the cap was a no-op the
+/// moment `RUST_PARALLEL_WORKERS > 1` (or steady mode) engaged, and the OOM
+/// safety valve the option exists for never tripped.
+///
+/// `pending` (queued + in-flight) is the parallel analogue of `active_count()`,
+/// minus one for the parent task still counted in it — the parent is counted
+/// OUT by the caller immediately after, exactly as the serial loop's
+/// currently-stepping state is already popped out of `STASH_ACTIVE`. With `W`
+/// workers the bound is soft by up to `W - 1` (each peer's in-flight parent is
+/// still counted), which is the point: it is a runaway-growth backstop, not an
+/// exact quota.
+///
+/// Pruned forks become `Pruned` [`TerminalSummary`] counter entries and are
+/// dropped in-context — the same treatment every other worker-side dead path
+/// gets. They are NOT recoverable in `STASH_PRUNED` the way the serial path's
+/// are; materializing them would pay serde for states the cap exists to
+/// discard.
 pub(super) fn absorb_continues(
     t: &WorkTransport,
     local: &mut VecDeque<RustSimState>,
-    continue_states: Vec<RustSimState>,
+    mut continue_states: Vec<RustSimState>,
 ) {
+    if let Some(limit) = t.max_active_states {
+        let live = t.pending.load(Ordering::SeqCst).saturating_sub(1);
+        let budget = limit.saturating_sub(live);
+        if budget < continue_states.len() {
+            let pruned: Vec<TerminalSummary> = continue_states[budget..]
+                .iter()
+                .map(|s| TerminalSummary::of(s, TerminalDisposition::Pruned))
+                .collect();
+            continue_states.truncate(budget);
+            t.counters.record_summaries(&pruned);
+        }
+    }
+
     let spawned = continue_states.len();
     for child in continue_states {
         // Fork insertion goes through the selection policy (angr-1ilq.9); both

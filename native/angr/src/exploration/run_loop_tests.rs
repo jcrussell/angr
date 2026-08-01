@@ -824,8 +824,11 @@ fn seed_steady_session_from_active_notifies_policy_on_state_removed() {
         // Hand-build a live steady session (mirrors `ensure_steady_session`,
         // but with a trivial process so no real interpreter step is needed).
         let pool = PersistentPool::new(WORKERS);
-        let (session, up_rx) =
-            RunSession::new_with_policy(Box::new(terminal_only_process()), Arc::clone(&mgr.policy));
+        let (session, up_rx) = RunSession::new_with_policy(
+            Box::new(terminal_only_process()),
+            Arc::clone(&mgr.policy),
+            mgr.max_active_states,
+        );
         pool.start_session(&session);
         mgr.parallel_session = Some(SteadySession {
             session,

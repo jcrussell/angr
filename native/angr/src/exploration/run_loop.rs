@@ -905,7 +905,12 @@ impl RustExplorationManager {
             // GIL thread — `Py<T>::clone` needs the GIL, so it must never run
             // inside a worker.
             let process = self.build_parallel_process(callbacks.clone(), &prof, &shared);
-            let job = WaveJob::new_with_policy(seeds, process, Arc::clone(&self.policy));
+            let mut job = WaveJob::new_with_policy(seeds, process, Arc::clone(&self.policy));
+            // Mirror the manager's frontier cap onto the wave: in-wave forks
+            // never touch `push_to_active_or_drop`, so this is the only place
+            // `max_active_states` is enforced under parallel dispatch
+            // (angr-9ke6b.48).
+            job.set_max_active_states(self.max_active_states);
 
             // Release the GIL and run the wave to quiescence on the persistent
             // pool. Workers keep live successors thread-local (the f≈0 path) and
@@ -1418,7 +1423,12 @@ impl RustExplorationManager {
             .expect("callbacks checked by caller")
             .clone();
         let process = self.build_parallel_process(proc_callbacks, &prof, &shared);
-        let (session, up_rx) = RunSession::new_with_policy(process, Arc::clone(&self.policy));
+        // The frontier cap travels with the session for its whole lifetime —
+        // a steady session never rounds its frontier through `STASH_ACTIVE`,
+        // so this is the only `max_active_states` enforcement it gets
+        // (angr-9ke6b.48).
+        let (session, up_rx) =
+            RunSession::new_with_policy(process, Arc::clone(&self.policy), self.max_active_states);
         let workers = self.parallel_pool.as_ref().expect("pool set").num_workers();
         self.parallel_pool
             .as_ref()

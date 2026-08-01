@@ -299,6 +299,65 @@ fn test_absorb_then_dispatch_conserves_pending() {
     );
 }
 
+// angr-9ke6b.48: with a `max_active_states` cap on the transport, forks beyond
+// the cap are pruned instead of queued. `pending` starts at 1 (the parent task
+// in flight, which `absorb_continues` discounts), so a cap of 3 admits exactly
+// 3 of 5 children and summarizes the other 2 as Pruned.
+#[test]
+fn test_absorb_continues_enforces_max_active_states() {
+    let mut t = lifo_transport();
+    t.max_active_states = Some(3);
+    t.pending.store(1, Ordering::SeqCst); // the parent being processed
+    let mut local: VecDeque<RustSimState> = VecDeque::new();
+
+    let children: Vec<RustSimState> = (0..5).map(|_| plain_state()).collect();
+    absorb_continues(&t, &mut local, children);
+
+    assert_eq!(local.len(), 3, "only the budgeted forks are queued");
+    assert_eq!(
+        t.pending.load(Ordering::SeqCst),
+        4,
+        "pending counts the parent plus the 3 admitted children",
+    );
+    assert_eq!(
+        t.counters.summarized_pruned.load(Ordering::SeqCst),
+        2,
+        "the 2 over-cap forks are recorded as Pruned summaries, not dropped silently",
+    );
+}
+
+// The cap must still let a saturated frontier make progress: with the frontier
+// already at the limit, the parent's discount leaves room for exactly one
+// replacement child — the same steady-state the serial `push_to_active_or_drop`
+// reaches (the stepping state is already out of `STASH_ACTIVE`). A naive
+// `pending >= limit` check would starve the wave to a halt instead.
+#[test]
+fn test_absorb_continues_saturated_frontier_still_advances() {
+    let mut t = lifo_transport();
+    t.max_active_states = Some(2);
+    t.pending.store(2, Ordering::SeqCst); // frontier full, parent in flight
+    let mut local: VecDeque<RustSimState> = VecDeque::new();
+
+    absorb_continues(&t, &mut local, (0..4).map(|_| plain_state()).collect());
+
+    assert_eq!(local.len(), 1, "one child replaces the retiring parent");
+    assert_eq!(t.counters.summarized_pruned.load(Ordering::SeqCst), 3);
+}
+
+// No cap configured (the default for every Rust-side / test construction) must
+// leave the pre-angr-9ke6b.48 behavior byte-identical: every fork is queued.
+#[test]
+fn test_absorb_continues_unbounded_without_cap() {
+    let t = lifo_transport();
+    assert!(t.max_active_states.is_none(), "unbounded by default");
+    let mut local: VecDeque<RustSimState> = VecDeque::new();
+
+    absorb_continues(&t, &mut local, (0..8).map(|_| plain_state()).collect());
+
+    assert_eq!(local.len(), 8);
+    assert_eq!(t.counters.summarized_pruned.load(Ordering::SeqCst), 0);
+}
+
 // Absorbing an empty successor vec must not perturb `pending` (the fetch_add is
 // guarded) — otherwise every dead-ended task would inflate the quiescence count.
 #[test]

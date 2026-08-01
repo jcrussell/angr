@@ -203,6 +203,94 @@ fn test_scheduler_fork_tree_quiesces() {
     }
 }
 
+// angr-9ke6b.48: `max_active_states` must bound the resident frontier DURING a
+// parallel wave, not merely at the wave boundary. Same binary fork tree as
+// `test_scheduler_fork_tree_quiesces` — which grows to 128 live leaves with no
+// cap — run on 4 workers with a cap of 8. `max_width` is the peak `pending`
+// (queued + in-flight) sampled at dispatch, so it is the direct measurement of
+// the resident frontier; it must stay inside the soft bound `cap + workers - 1`
+// (each peer's in-flight parent is discounted only by its own worker). The
+// pruned-summary count proves the cap actually fired rather than the workload
+// simply never reaching it (the `max-active-states-test-pattern` trap: a
+// width-only assertion passes vacuously on a workload that never forks wide).
+/// Run a wide fork tree (`FANOUT ^ TREE_DEPTH` leaves) on `WORKERS` workers with
+/// an optional frontier cap, returning `(stats, collected_leaves)`.
+fn run_fork_tree_capped(cap: Option<usize>) -> (super::SchedulerStats, usize) {
+    const TREE_DEPTH: u64 = 4;
+    const FANOUT: usize = 4; // 256 leaves uncapped
+
+    let mut root = pinned_state("capped_tree", 0xFEED_FACE);
+    root.set_register("rbx", RustBV::concrete(0, 64));
+
+    let mut job = WaveJob::new(
+        vec![root.detach_for_migration()],
+        Box::new(
+            |state: RustSimState,
+             _cancel: &super::CancelToken,
+             _cache: &mut lru::LruCache<u64, Arc<crate::vex::IRSB>>| {
+                let depth = state
+                    .get_register("rbx")
+                    .and_then(|d| d.as_u64())
+                    .expect("depth marker present");
+                if depth >= TREE_DEPTH {
+                    return TaskOutcome::terminal(vec![state]);
+                }
+                let next = RustBV::concrete((depth + 1) as u128, 64);
+                let children: Vec<RustSimState> = (0..FANOUT)
+                    .map(|_| {
+                        let mut c = state.fork();
+                        c.set_register("rbx", next.clone());
+                        c
+                    })
+                    .collect();
+                TaskOutcome::continuing(children)
+            },
+        ),
+    );
+    job.set_max_active_states(cap);
+
+    let pool = PersistentPool::new(TREE_WORKERS);
+    let (job, _barrier_stats) = pool.run_wave(job);
+    let stats = job.stats();
+    let leaves = job.take_results().len();
+    (stats, leaves)
+}
+
+const TREE_WORKERS: usize = 4;
+
+#[test]
+fn test_wave_frontier_respects_max_active_states() {
+    const CAP: usize = 6;
+
+    let (uncapped, uncapped_leaves) = run_fork_tree_capped(None);
+    assert!(
+        uncapped.max_width >= CAP + TREE_WORKERS,
+        "the workload must genuinely outgrow the cap when unbounded, else the capped \
+         assertion below is vacuous (max_width={})",
+        uncapped.max_width,
+    );
+    assert_eq!(
+        uncapped.summarized_pruned, 0,
+        "an uncapped wave prunes nothing — pre-angr-9ke6b.48 behavior is unchanged",
+    );
+
+    let (capped, capped_leaves) = run_fork_tree_capped(Some(CAP));
+    assert!(
+        capped.max_width < CAP + TREE_WORKERS,
+        "resident frontier must stay inside the cap's soft bound (cap + workers - 1): \
+         max_width={} cap={CAP} workers={TREE_WORKERS}",
+        capped.max_width,
+    );
+    assert!(
+        capped.summarized_pruned > 0,
+        "the cap must have actually pruned forks",
+    );
+    assert!(
+        capped_leaves < uncapped_leaves,
+        "a capped wave explores strictly less of the tree: {capped_leaves} vs {uncapped_leaves}",
+    );
+}
+
 // angr-1ilq.3: task-boundary cancellation. With many states queued and
 // every task requesting cancel, the first processed task trips the shared
 // CancelToken; all workers must stop at their next task boundary, so the

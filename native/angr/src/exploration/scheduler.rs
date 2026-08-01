@@ -568,6 +568,15 @@ pub(crate) struct WorkTransport {
     /// byte-for-byte zero-regression. Shared across worker threads as an `Arc`
     /// (the trait is `Send + Sync`).
     policy: Arc<dyn SelectionPolicy>,
+    /// The manager's `max_active_states` cap, mirrored onto the parallel
+    /// frontier (angr-9ke6b.48). The serial loop bounds `STASH_ACTIVE` in
+    /// `RustExplorationManager::push_to_active_or_drop`, but an in-wave /
+    /// in-session frontier never round-trips through that stash, so the same
+    /// cap is applied by [`worker::absorb_continues`] against `pending`
+    /// (queued + in-flight = the resident frontier). `None` = unbounded, which
+    /// is what every Rust-side / test construction gets by default; the two
+    /// production sites in `run_loop.rs` thread the manager's value in.
+    max_active_states: Option<usize>,
 }
 
 impl WorkTransport {
@@ -582,6 +591,7 @@ impl WorkTransport {
             idle_workers: AtomicUsize::new(0),
             counters: SchedulerCounters::default(),
             policy,
+            max_active_states: None,
         }
     }
 
@@ -695,6 +705,13 @@ impl WaveJob {
             seeds,
             process,
         }
+    }
+
+    /// Mirror the manager's `max_active_states` onto this wave's frontier cap
+    /// (angr-9ke6b.48). Call before handing the job to the pool; see the
+    /// [`WorkTransport::max_active_states`] field docs.
+    pub(crate) fn set_max_active_states(&mut self, limit: Option<usize>) {
+        self.transport.max_active_states = limit;
     }
 
     /// Snapshot the accumulated counters into a [`SchedulerStats`]. Call after
@@ -829,20 +846,28 @@ impl RunSession {
     /// via [`RunSession::new_with_policy`] to honor its configured policy.
     #[cfg(test)]
     pub(crate) fn new(process: Box<ProcessFn>) -> (Arc<Self>, Receiver<WorkerUp>) {
-        Self::new_with_policy(process, Arc::new(Lifo))
+        Self::new_with_policy(process, Arc::new(Lifo), None)
     }
 
     /// Build a session with an explicit worker-local [`SelectionPolicy`], so
     /// the steady-state `explore()` path honors the run loop's configured
     /// policy instead of the scheduler's LIFO default (angr-x1fya).
+    ///
+    /// `max_active_states` mirrors the manager's frontier cap onto the session
+    /// (angr-9ke6b.48); it is a constructor parameter rather than a setter
+    /// because the session is `Arc`-wrapped on the way out. See the
+    /// [`WorkTransport::max_active_states`] field docs.
     pub(crate) fn new_with_policy(
         process: Box<ProcessFn>,
         policy: Arc<dyn SelectionPolicy>,
+        max_active_states: Option<usize>,
     ) -> (Arc<Self>, Receiver<WorkerUp>) {
         let (up_tx, up_rx) = mpsc::channel();
+        let mut transport = WorkTransport::with_policy(policy);
+        transport.max_active_states = max_active_states;
         (
             Arc::new(Self {
-                transport: WorkTransport::with_policy(policy),
+                transport,
                 seeds: AtomicUsize::new(0),
                 up_tx,
                 process,
