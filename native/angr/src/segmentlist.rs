@@ -174,11 +174,14 @@ impl SegmentList {
         if size == 0 {
             return;
         }
-        // ensure address + size does not overflow
-        if address.checked_add(size).is_none() {
+        // SILENT(cat-a): an address+size that wraps u64 describes no real region, so
+        // there is nothing to occupy. Bailing keeps `rangemap` from seeing an inverted
+        // range, whose `assert!(range.start < range.end)` would abort the process under
+        // this crate's panic="abort" release profile.
+        let Some(end) = address.checked_add(size) else {
             return;
-        }
-        let new_range = address..address + size;
+        };
+        let new_range = address..end;
         let overlapped: u64 = self
             .map
             .overlapping(new_range.clone())
@@ -204,7 +207,12 @@ impl SegmentList {
         if size == 0 {
             return;
         }
-        let rem = address..address + size;
+        // SILENT(cat-a): same wrap-around guard as `occupy` — nothing to release, and
+        // `RangeMap::remove` would abort on the inverted range.
+        let Some(end) = address.checked_add(size) else {
+            return;
+        };
+        let rem = address..end;
         let removed: u64 = self
             .map
             .overlapping(rem.clone())

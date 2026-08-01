@@ -92,3 +92,43 @@ fn full_and_partial_release() {
     assert_eq!(sl.occupied_size(), 0);
     assert!(sl.is_empty());
 }
+
+// `rangemap::RangeMap::{insert,remove}` assert `range.start < range.end`, and this
+// crate builds with panic="abort", so an address+size that wraps u64 would take the
+// whole process down rather than raise. Both entry points must no-op instead.
+#[test]
+fn overflowing_release_is_a_noop() {
+    let mut sl = SegmentList::new();
+    sl.occupy(0x1000, 0x100, Some("code".into()));
+    assert_eq!(sl.occupied_size(), 0x100);
+
+    // address + size wraps: u64::MAX - 4 + 16
+    sl.release(u64::MAX - 4, 16);
+    sl.release(u64::MAX, u64::MAX);
+    sl.release(1, u64::MAX);
+
+    // The pre-existing segment is untouched.
+    assert_eq!(sl.occupied_size(), 0x100);
+    assert!(sl.is_occupied(0x1000));
+}
+
+#[test]
+fn overflowing_occupy_is_a_noop() {
+    let mut sl = SegmentList::new();
+    sl.occupy(u64::MAX - 4, 16, Some("code".into()));
+    sl.occupy(1, u64::MAX, None);
+    assert_eq!(sl.occupied_size(), 0);
+    assert!(sl.is_empty());
+}
+
+// The exact-fit boundary case must still work: address + size == u64::MAX + 1 is an
+// overflow, but address + size == u64::MAX is not.
+#[test]
+fn release_at_top_of_address_space() {
+    let mut sl = SegmentList::new();
+    sl.occupy(u64::MAX - 16, 16, Some("code".into()));
+    assert_eq!(sl.occupied_size(), 16);
+    sl.release(u64::MAX - 16, 16);
+    assert_eq!(sl.occupied_size(), 0);
+    assert!(sl.is_empty());
+}
