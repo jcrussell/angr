@@ -120,13 +120,34 @@ impl SymbolicMemory {
                     self.clear_multi_at(addr + i as u64);
                 }
             }
-            self.symbolic_objects.insert(addr, value.clone());
+            let old_sym_bytes = self
+                .symbolic_objects
+                .insert(addr, value.clone())
+                .map_or(0, |old| old.width() / 8);
             // Update reverse span index: map each byte offset to (base_addr, width)
             let width_bits = value.width();
             let sym_bytes = width_bits / 8;
             for i in 1..sym_bytes {
                 self.symbolic_spans
                     .insert(addr + i as u64, (addr, width_bits));
+            }
+            // angr-9ke6b.98: a narrower symbolic value overwriting a wider one
+            // at the same base abandons the tail `[addr+size, addr+old_bytes)`.
+            // The loop above only refreshed spans inside the new width, so the
+            // tail's `symbolic_spans` entries still name `(addr, old_width)` —
+            // a base whose live object no longer reaches them. `load_concrete`
+            // would follow such a span into an out-of-range extract and report
+            // `SymbolicAddress { "symbolic bytes not fully tracked" }`, turning
+            // a readable byte into a hard error. Retire the tail the same way
+            // the concrete branch's angr-7qon cleanup does: drop the spans and
+            // clear the bitmap so those bytes reclassify as concrete. Must run
+            // before the page-cloning loop below, which would otherwise flush a
+            // stale `symbolic_bitmap` back over the clear.
+            if old_sym_bytes > size {
+                for i in size..old_sym_bytes {
+                    self.symbolic_spans.remove(&(addr + i as u64));
+                }
+                self.clear_symbolic_bitmap_range(addr + size as u64, addr + old_sym_bytes as u64);
             }
             // Mark pages as having symbolic bytes — batch per-page
             let mut current_page_num = u64::MAX;
@@ -208,19 +229,7 @@ impl SymbolicMemory {
             // were never touched by `mark_symbolic` and remain whatever
             // they were prior to the sym store.
             if old_bytes > size {
-                let mut tail = addr + size as u64;
-                let tail_end = addr + old_bytes as u64;
-                while tail < tail_end {
-                    let page_num = tail.page_num();
-                    let page_offset = tail.page_offset();
-                    let bytes_in_page =
-                        ((PAGE_SIZE - page_offset as u64) as usize).min((tail_end - tail) as usize);
-                    if let Some(page) = self.pages.get_mut(&page_num) {
-                        page.clear_symbolic(page_offset, bytes_in_page as u16);
-                        self.dirty_pages.insert(page_num);
-                    }
-                    tail = tail + bytes_in_page as u64;
-                }
+                self.clear_symbolic_bitmap_range(addr + size as u64, addr + old_bytes as u64);
             }
         }
 
@@ -244,6 +253,30 @@ impl SymbolicMemory {
         }
 
         Ok(())
+    }
+
+    /// Clear the page `symbolic_bitmap` bits covering `[start, end)`.
+    ///
+    /// Shared by both `store_concrete` branches to retire the tail bytes a
+    /// narrower store abandons when it overwrites a wider symbolic object at
+    /// the same base (angr-7qon for the concrete branch, angr-9ke6b.98 for the
+    /// symbolic one). Caller is responsible for dropping the matching
+    /// `symbolic_spans` entries; this only touches the per-page bitmap and
+    /// walks page boundaries so a range spanning pages is fully cleared.
+    /// Unmapped pages in the range are skipped — there is no bitmap to clear.
+    fn clear_symbolic_bitmap_range(&mut self, start: Address, end: Address) {
+        let mut cur = start;
+        while cur < end {
+            let page_num = cur.page_num();
+            let page_offset = cur.page_offset();
+            let bytes_in_page =
+                ((PAGE_SIZE - page_offset as u64) as usize).min((end - cur) as usize);
+            if let Some(page) = self.pages.get_mut(&page_num) {
+                page.clear_symbolic(page_offset, bytes_in_page as u16);
+                self.dirty_pages.insert(page_num);
+            }
+            cur = cur + bytes_in_page as u64;
+        }
     }
 
     /// Store to a symbolic address with concretization support.

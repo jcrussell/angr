@@ -1380,3 +1380,54 @@ fn test_concrete_overwrite_at_base_truncates_wider_sym_crosses_page() {
         "cross-page survivor at 0x2000 must reclassify as concrete"
     );
 }
+
+/// Regression (angr-9ke6b.98): a narrower symbolic value overwriting a wider
+/// one at the same base must retire the abandoned tail. Before the fix,
+/// `store_concrete`'s symbolic branch refreshed `symbolic_spans` only inside
+/// the new width, so the tail bytes kept spans naming `(base, old_width)` —
+/// a live object that no longer reaches them — and the page bitmap still said
+/// symbolic. A later load of a tail byte followed that span into an
+/// out-of-range extract and hard-failed with `SymbolicAddress`, so a readable
+/// byte became an error. Mirrors the concrete branch's angr-7qon semantics:
+/// the tail reclassifies as concrete.
+#[test]
+fn test_narrower_sym_overwrite_at_base_truncates_wider_sym() {
+    let ctx = SymContext::new_mock();
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    mem.map(0x1000, 0x1000, Permission::RWX);
+
+    let wide = RustBV::symbolic(&ctx, "sym_98_wide", 128);
+    mem.store_concrete(0x1000, wide).expect("store 16-byte sym");
+
+    let narrow = RustBV::symbolic(&ctx, "sym_98_narrow", 64);
+    mem.store_concrete(0x1000, narrow.clone())
+        .expect("store 8-byte sym at same base");
+
+    // The abandoned tail [0x1008, 0x1010) must load cleanly, not raise
+    // MemoryError::SymbolicAddress ("symbolic bytes not fully tracked").
+    let tail = mem
+        .load_concrete(0x1008, 8, &ctx)
+        .expect("abandoned tail must load, not hard-fail");
+    assert_eq!(
+        ctx.eval(&tail),
+        Some(0),
+        "abandoned tail must reclassify as concrete (angr-7qon parity)"
+    );
+
+    // Per-byte too: the first tail byte is the one whose stale span pointed
+    // back at the still-live base.
+    let tail_byte = mem
+        .load_concrete(0x1008, 1, &ctx)
+        .expect("first abandoned tail byte must load");
+    assert_eq!(ctx.eval(&tail_byte), Some(0));
+
+    // The surviving head must still be the narrow symbolic value.
+    let head = mem.load_concrete(0x1000, 8, &ctx).expect("head must load");
+    assert!(head.is_symbolic(), "head must stay symbolic");
+    ctx.assume_true(&narrow.eq(&RustBV::concrete(0x1122_3344_5566_7788, 64), &ctx));
+    assert_eq!(
+        ctx.eval(&head),
+        Some(0x1122_3344_5566_7788),
+        "head must read back the narrow value that overwrote the wide one"
+    );
+}
