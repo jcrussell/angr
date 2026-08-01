@@ -291,6 +291,95 @@ fn test_wave_frontier_respects_max_active_states() {
     );
 }
 
+// angr-9ke6b.52: a wave must respect the run loop's `run(n)` step budget
+// DURING the wave, not merely at the wave barrier. This workload never
+// quiesces — every dispatch returns at least one live child — so before the
+// budget existed the wave (and with it `run(n)`) ran forever. `dispatches` is
+// therefore the direct measurement: it must land in `[budget, budget + workers
+// - 1]`, the same soft bound `max_active_states` carries (a task-boundary
+// check lets every peer commit one more in-flight dispatch).
+/// Run a never-terminating fork chain under a dispatch budget, returning
+/// `(stats, residual payloads recovered)`. Passing `None` would not terminate,
+/// so every caller must supply a budget.
+fn run_unbounded_chain(budget: u64) -> (super::SchedulerStats, usize) {
+    // Widen to 2^WIDEN_DEPTH live states so several workers stay busy, then
+    // chain 1:1 forever.
+    const WIDEN_DEPTH: u64 = 3;
+
+    let mut root = pinned_state("budget_chain", 0xB0DE_1234);
+    root.set_register("rbx", RustBV::concrete(0, 64));
+
+    // Escape hatch: a REGRESSION here means the budget is ignored and the wave
+    // never ends, which would hang CI instead of failing it. Past this many
+    // dispatches the workload quiesces on its own, so a broken budget surfaces
+    // as the bound assertion failing with a number.
+    let escape = Arc::new(AtomicUsize::new(0));
+    let escape_at = budget as usize * 8 + 1000;
+
+    let mut job = WaveJob::new(
+        vec![root.detach_for_migration()],
+        Box::new(
+            move |state: RustSimState,
+                  _cancel: &super::CancelToken,
+                  _cache: &mut lru::LruCache<u64, Arc<crate::vex::IRSB>>| {
+                if escape.fetch_add(1, Ordering::SeqCst) >= escape_at {
+                    return TaskOutcome::terminal(vec![state]);
+                }
+                let depth = state
+                    .get_register("rbx")
+                    .and_then(|d| d.as_u64())
+                    .expect("depth marker present");
+                let next = RustBV::concrete((depth + 1) as u128, 64);
+                let fanout = if depth < WIDEN_DEPTH { 2 } else { 1 };
+                let children: Vec<RustSimState> = (0..fanout)
+                    .map(|_| {
+                        let mut c = state.fork();
+                        c.set_register("rbx", next.clone());
+                        c
+                    })
+                    .collect();
+                TaskOutcome::continuing(children)
+            },
+        ),
+    );
+    job.set_max_dispatches(Some(budget));
+
+    let pool = PersistentPool::new(TREE_WORKERS);
+    let (job, _barrier_stats) = pool.run_wave(job);
+    let stats = job.stats();
+    let mut residual = job.take_results();
+    residual.extend(job.drain_residual_payloads());
+    (stats, residual.len())
+}
+
+#[test]
+fn test_wave_respects_dispatch_budget() {
+    const SMALL: u64 = 40;
+    const LARGE: u64 = 160;
+
+    let (small, small_residual) = run_unbounded_chain(SMALL);
+    assert!(
+        (SMALL..SMALL + TREE_WORKERS as u64).contains(&(small.dispatches() as u64)),
+        "a non-terminating wave must stop within the soft budget bound \
+         [{SMALL}, {SMALL}+{TREE_WORKERS}): dispatches={}",
+        small.dispatches(),
+    );
+    assert!(
+        small_residual > 0,
+        "the un-dispatched frontier must come back (resumable), not be dropped",
+    );
+
+    // Non-vacuity: the workload is genuinely unbounded, so a 4x budget buys 4x
+    // the exploration rather than the wave having quiesced on its own.
+    let (large, _) = run_unbounded_chain(LARGE);
+    assert!(
+        (LARGE..LARGE + TREE_WORKERS as u64).contains(&(large.dispatches() as u64)),
+        "budget must scale with the limit, not be an artifact of quiescence: \
+         dispatches={}",
+        large.dispatches(),
+    );
+}
+
 // angr-1ilq.3: task-boundary cancellation. With many states queued and
 // every task requesting cancel, the first processed task trips the shared
 // CancelToken; all workers must stop at their next task boundary, so the

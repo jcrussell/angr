@@ -392,12 +392,18 @@ fn parallel_process_state(
         )]);
     }
 
-    if cancel.is_cancelled() {
-        // A peer already hit `num_find` while this state was being dispatched.
+    if cancel.preempts_in_flight() {
+        // A peer already hit `num_find` (or the session finalized) while this
+        // state was being dispatched.
         // Bail WITHOUT stepping, but hand the state back as an untagged terminal
         // (no `kind_map` entry) so the coordinator routes it to `STASH_ACTIVE`:
         // it is an un-explored frontier state, and dropping it here would lose it
         // exactly like the pre-fix cancel path did (Bug M1, angr-op0dn.13.8).
+        //
+        // A *budget* cancel (angr-9ke6b.52) deliberately does NOT land here: the
+        // dispatch is already charged to `run(n)`'s budget, so the step must
+        // complete or a small `n` makes no progress at all. See
+        // [`CancelToken::preempts_in_flight`].
         return TaskOutcome {
             continue_states: Vec::new(),
             terminal_states: vec![state],
@@ -914,6 +920,19 @@ impl RustExplorationManager {
             // `max_active_states` is enforced under parallel dispatch
             // (angr-9ke6b.48).
             job.set_max_active_states(self.max_active_states);
+            // Bound the wave by the `run(n)` budget this call has LEFT
+            // (angr-9ke6b.52). The `dispatched_total >= max_steps` check at the
+            // bottom of this loop only fires between waves, and a wave runs its
+            // frontier to quiescence — so without this a single `run(n)` on a
+            // non-terminating frontier executed unboundedly many steps, unlike
+            // the single-threaded loop (checks every iteration) and the steady
+            // loop (`steady_pump` polls every 50ms). A spent budget trips the
+            // wave's `CancelToken`, so the un-dispatched frontier returns
+            // untagged and routes back to `STASH_ACTIVE`, exactly as the serial
+            // loop leaves it. Enforcement is soft by up to `workers - 1`
+            // dispatches (task-boundary check; see
+            // `WorkTransport::max_dispatches`).
+            job.set_max_dispatches(Some(max_steps.saturating_sub(dispatched_total)));
 
             // Release the GIL and run the wave to quiescence on the persistent
             // pool. Workers keep live successors thread-local (the f≈0 path) and

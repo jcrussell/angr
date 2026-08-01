@@ -61,6 +61,15 @@ pub(super) fn worker_loop(
     }
 
     loop {
+        // Wave step-budget backstop (angr-9ke6b.52). The coordinator can only
+        // test `dispatched_total >= max_steps` BETWEEN waves, and a wave runs to
+        // quiescence — so on a frontier that never terminates, `run(n)` used to
+        // execute unboundedly many steps. Spending the budget trips the same
+        // `cancel` a `num_find` hit does, so the un-dispatched frontier takes the
+        // residual-drain path below and stays resumable.
+        if t.dispatch_budget_exhausted() {
+            t.cancel.cancel_for_budget();
+        }
         if t.cancel.is_cancelled() {
             // Bug M1 fix (angr-op0dn.13.8): on cancel (e.g. the run loop hit
             // `num_find`) the worker stops HERE, at a task boundary, and DRAINS
@@ -92,7 +101,10 @@ pub(super) fn worker_loop(
         // Post-find speculative-waste accounting (angr-1ilq.8); see the twin in
         // `worker_session_loop`. The step's products are drained back on the next
         // iteration's cancel check, but the step itself was still speculative.
-        if t.cancel.is_cancelled() && !outcome.request_cancel {
+        // A budget stop (angr-9ke6b.52) is NOT speculative waste — the step was
+        // charged to `run(n)` and its products are kept — so it is excluded via
+        // `preempts_in_flight`.
+        if t.cancel.preempts_in_flight() && !outcome.request_cancel {
             t.counters.post_cancel_steps.fetch_add(1, Ordering::SeqCst);
         }
 

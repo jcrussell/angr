@@ -150,6 +150,17 @@ const LOCAL_HWM: usize = 64;
 #[derive(Clone, Default)]
 pub(crate) struct CancelToken {
     flag: Arc<AtomicBool>,
+    /// Set alongside `flag` when the stop was requested by the wave's dispatch
+    /// budget ([`WorkTransport::max_dispatches`], angr-9ke6b.52) rather than by
+    /// a find / finalize. The distinction matters for IN-FLIGHT work only: a
+    /// find cancel wants peers to drop the state they just picked up
+    /// (speculative waste past `num_find`), but a budget cancel must let it
+    /// finish — the dispatch was already charged to the budget, and dropping it
+    /// unstepped livelocks a small `run(n)`: with `n = 1` and W workers, the
+    /// peer that observes the budget spent cancels while the one worker that
+    /// dispatched is still mid-step, so the wave returns having advanced
+    /// nothing and the next `run(1)` repeats it forever.
+    budget: Arc<AtomicBool>,
 }
 
 impl CancelToken {
@@ -157,13 +168,30 @@ impl CancelToken {
         Self::default()
     }
 
-    /// Request that all workers stop at their next task boundary.
+    /// Request that all workers stop at their next task boundary, preempting any
+    /// in-flight step (find / finalize semantics).
     pub(crate) fn cancel(&self) {
+        // Clear `budget` FIRST: a find cancel always preempts, even if a budget
+        // stop got there first.
+        self.budget.store(false, Ordering::SeqCst);
+        self.flag.store(true, Ordering::SeqCst);
+    }
+
+    /// Request that all workers stop at their next task boundary, but let
+    /// already-dispatched states finish their step. See the `budget` field docs.
+    pub(crate) fn cancel_for_budget(&self) {
+        self.budget.store(true, Ordering::SeqCst);
         self.flag.store(true, Ordering::SeqCst);
     }
 
     pub(crate) fn is_cancelled(&self) -> bool {
         self.flag.load(Ordering::SeqCst)
+    }
+
+    /// Whether cancellation should preempt a state that is already dispatched.
+    /// True for find/finalize cancels, false for a pure budget stop.
+    pub(crate) fn preempts_in_flight(&self) -> bool {
+        self.is_cancelled() && !self.budget.load(Ordering::SeqCst)
     }
 }
 
@@ -348,6 +376,16 @@ pub(crate) struct SchedulerCounters {
 pub(crate) const MAX_TRACKED_WORKERS: usize = 32;
 
 impl SchedulerCounters {
+    /// Live total of dispatches so far (`local + injector`), the same sum
+    /// [`SchedulerStats::dispatches`] reports post-barrier. Read mid-run by
+    /// [`WorkTransport::dispatch_budget_exhausted`]; `Relaxed` is sufficient
+    /// because the budget it feeds is a soft, task-boundary-checked cap, not a
+    /// synchronization edge.
+    fn total_dispatches(&self) -> u64 {
+        (self.local_dispatches.load(Ordering::Relaxed)
+            + self.injector_dispatches.load(Ordering::Relaxed)) as u64
+    }
+
     /// Record one dispatch on `worker_id` observing `width` schedulable states
     /// (queued + in-flight, including the state being dispatched). Two relaxed
     /// bumps plus a max-CAS: cheap enough for the dispatch hot path.
@@ -577,6 +615,21 @@ pub(crate) struct WorkTransport {
     /// is what every Rust-side / test construction gets by default; the two
     /// production sites in `run_loop.rs` thread the manager's value in.
     max_active_states: Option<usize>,
+    /// Dispatch budget for this wave — the parallel mirror of the run loop's
+    /// `run(n)` step budget (angr-9ke6b.52). The wave coordinator's own budget
+    /// check only runs between whole-wave barriers, and a wave runs its frontier
+    /// to quiescence, so on a non-terminating frontier a single `run(n)` executed
+    /// unboundedly many steps before returning. [`worker::worker_loop`] checks
+    /// this at every task boundary and trips `cancel` once it is spent, which
+    /// routes through the existing Bug M1 residual-drain path (the un-dispatched
+    /// frontier comes back untagged and lands in `STASH_ACTIVE`, exactly as the
+    /// single-threaded loop leaves it when it runs out of budget).
+    ///
+    /// Soft by up to `workers - 1`, same as `max_active_states`: `W` workers can
+    /// each observe `limit - 1` simultaneously and dispatch, so the bound is
+    /// `limit + W - 1` dispatches. `None` = unbounded (every Rust-side/test
+    /// construction default); the wave loop threads its remaining budget in.
+    max_dispatches: Option<u64>,
 }
 
 impl WorkTransport {
@@ -592,7 +645,17 @@ impl WorkTransport {
             counters: SchedulerCounters::default(),
             policy,
             max_active_states: None,
+            max_dispatches: None,
         }
+    }
+
+    /// Whether this transport has spent its `max_dispatches` budget. Checked at
+    /// every task boundary by [`worker::worker_loop`]; `None` (the default)
+    /// always answers `false`. See the [`Self::max_dispatches`] field docs for
+    /// the soft-bound semantics.
+    fn dispatch_budget_exhausted(&self) -> bool {
+        self.max_dispatches
+            .is_some_and(|limit| self.counters.total_dispatches() >= limit)
     }
 
     /// Record one dispatch on `worker_id`, sampling the schedulable-frontier
@@ -712,6 +775,14 @@ impl WaveJob {
     /// [`WorkTransport::max_active_states`] field docs.
     pub(crate) fn set_max_active_states(&mut self, limit: Option<usize>) {
         self.transport.max_active_states = limit;
+    }
+
+    /// Bound this wave to `limit` dispatches (angr-9ke6b.52) — the run loop
+    /// passes the `run(n)` budget it has left. Call before handing the job to
+    /// the pool; see the [`WorkTransport::max_dispatches`] field docs for the
+    /// soft bound and the residual-drain path a spent budget takes.
+    pub(crate) fn set_max_dispatches(&mut self, limit: Option<u64>) {
+        self.transport.max_dispatches = limit;
     }
 
     /// Snapshot the accumulated counters into a [`SchedulerStats`]. Call after
