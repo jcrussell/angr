@@ -39,10 +39,12 @@ impl RustSimState {
     ///
     /// Choke-point contract (angr-0xyq2 Phase 2, see `FileSystem::write`):
     /// returns `false` — with the fd's bounded symbolic content demoted and
-    /// NOTHING written — when the fd carried `content_sym`. The caller must
-    /// convert that into its own Python-fallback error (never a hard/state
-    /// -killing error). Zero-length writes are a no-demotion no-op (`true`).
-    #[must_use = "false means the write was refused (symbolic content demoted); bounce to Python"]
+    /// NOTHING written — when the fd carried `content_sym`. Also returns
+    /// `false` — without demoting — when the fd is tracked but closed
+    /// (angr-9ke6b.118). The caller must convert either into its own
+    /// Python-fallback error (never a hard/state-killing error). Zero-length
+    /// writes are a no-demotion no-op (`true`).
+    #[must_use = "false means the write was refused (closed fd, or symbolic content demoted); bounce to Python"]
     pub fn write_fd(&mut self, fd: u32, data: &[u8]) -> bool {
         self.fs.write(fd, data)
     }

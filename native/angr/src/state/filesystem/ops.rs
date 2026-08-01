@@ -176,6 +176,19 @@ impl FileSystem {
             .is_some_and(|d| d.content_sym.is_some() || d.registry_key.is_some())
     }
 
+    /// True when `fd` is present in the table but already closed — the write
+    /// choke point must refuse rather than mutate it (angr-9ke6b.118).
+    ///
+    /// `read`/`read_at` guard on `is_open`, so bytes appended to a closed
+    /// descriptor could never be read back: the fd would silently accumulate
+    /// unreachable writes. A *missing* fd is deliberately NOT refused —
+    /// `write`/`write_at` auto-vivify a write-only entry for it, which is how
+    /// `write_fd(2, ..)` works on a state whose stderr was never opened.
+    #[inline]
+    fn write_closed(&self, fd: u32) -> bool {
+        self.fds.get(&fd).is_some_and(|d| !d.is_open)
+    }
+
     /// Write data to a file descriptor at its current position, advancing the
     /// position by `data.len()` (POSIX `write(2)` semantics).
     ///
@@ -195,10 +208,19 @@ impl FileSystem {
     /// (a fallback, NOT a state-killing error), which owns the file from
     /// then on. Zero-length writes are a POSIX no-op: they return `true`
     /// without demoting (and without creating a missing fd entry).
-    #[must_use = "false means the write was refused (symbolic content demoted); bounce to Python"]
+    ///
+    /// **Closed fds (angr-9ke6b.118):** a tracked-but-closed fd is refused
+    /// (`false`) *before* the symbolic check, with no demotion — the write is
+    /// an `EBADF` that never reaches file content, so native serving of the
+    /// file's sibling fds must stay intact. See
+    /// [`write_closed`](Self::write_closed).
+    #[must_use = "false means the write was refused (closed fd, or symbolic content demoted); bounce to Python"]
     pub fn write(&mut self, fd: u32, data: &[u8]) -> bool {
         if data.is_empty() {
             return true;
+        }
+        if self.write_closed(fd) {
+            return false;
         }
         if self.write_refused(fd) {
             self.demote_symbolic_content(fd);
@@ -289,13 +311,16 @@ impl FileSystem {
     /// gap) when `offset` is at or past EOF, so it is not append-only like
     /// `write`. Creates the fd entry if missing, matching `write`.
     ///
-    /// Same choke-point contract as [`write`](Self::write): symbolic-content
-    /// fds are demoted and refused (`false`), zero-length writes are a
-    /// no-demotion no-op (`true`).
-    #[must_use = "false means the write was refused (symbolic content demoted); bounce to Python"]
+    /// Same choke-point contract as [`write`](Self::write): closed fds are
+    /// refused without demotion, symbolic-content fds are demoted and refused
+    /// (`false`), zero-length writes are a no-demotion no-op (`true`).
+    #[must_use = "false means the write was refused (closed fd, or symbolic content demoted); bounce to Python"]
     pub fn write_at(&mut self, fd: u32, offset: u64, data: &[u8]) -> bool {
         if data.is_empty() {
             return true;
+        }
+        if self.write_closed(fd) {
+            return false;
         }
         if self.write_refused(fd) {
             self.demote_symbolic_content(fd);

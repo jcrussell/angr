@@ -812,6 +812,47 @@ fn test_read_sym_closed_fd_returns_none() {
     assert!(!fs.has_content_sym(fd));
 }
 
+/// angr-9ke6b.118: `read`/`read_at` guard on `is_open`, so `write`/`write_at`
+/// must too — otherwise a closed-but-tracked fd silently accumulates bytes
+/// that can never be read back. A closed fd is refused WITHOUT demoting the
+/// file's symbolic content (the write is an `EBADF` that never reaches the
+/// file, so sibling fds keep serving natively).
+#[test]
+fn test_write_to_closed_fd_is_refused() {
+    let mut fs = FileSystem::default();
+    let fd = fs.open("/tmp/wclosed".to_string(), FdFlags::ReadWrite);
+    assert!(fs.write(fd, b"open"));
+    assert!(fs.close(fd));
+
+    // Both write primitives refuse, and neither mutates the surviving buffer.
+    assert!(!fs.write(fd, b"after-close"));
+    assert!(!fs.write_at(fd, 0, b"AFTER"));
+    assert_eq!(
+        fs.fd_content(fd),
+        b"open",
+        "a closed fd must not accumulate writes"
+    );
+    // Zero-length writes stay a POSIX no-op even on a closed fd.
+    assert!(fs.write(fd, b""));
+    assert!(fs.write_at(fd, 0, b""));
+
+    // A *missing* fd is still auto-vivified (the `write_fd(2, ..)` path).
+    assert!(fs.write(4242, b"vivified"));
+    assert_eq!(fs.fd_content(4242), b"vivified");
+
+    // Refusing a closed fd must not demote the file's symbolic content:
+    // a sibling fd on the same file keeps serving natively.
+    fs.register_file_content("/tmp/wclosed_sym", sym_file_bytes(3, "wclosed"));
+    let a = fs.open("/tmp/wclosed_sym".to_string(), FdFlags::ReadWrite);
+    let b = fs.open("/tmp/wclosed_sym".to_string(), FdFlags::ReadOnly);
+    assert!(fs.close(a));
+    assert!(!fs.write(a, b"x"));
+    assert!(
+        fs.has_content_sym(b),
+        "closed-fd refusal must not demote the file"
+    );
+}
+
 /// A4 insurance (angr-0xyq2): a symbolic/unresolvable write fd could alias
 /// any registered file — `demote_all_symbolic_content` clears every
 /// registry entry and every fd's attachment in one shot.
