@@ -880,15 +880,16 @@ impl RustExplorationManager {
         self.sm
             .get(stash)
             .and_then(|s| s.get(index))
-            .map(super::helpers::effective_pc)
+            .map(super::native_proc_dispatch::effective_pc)
     }
 
     /// Get the PC of a state by its ID (O(1) via state index, no full export).
     pub fn get_state_pc_by_id(&self, state_id: u64) -> Option<u64> {
         // find_state already checks pending_callback first.
-        // angr-4rq7 (root cause #2): see `helpers::effective_pc` for why a
+        // angr-4rq7 (root cause #2): see `native_proc_dispatch::effective_pc` for why a
         // pc==0 state falls back to the IP register.
-        self.find_state(state_id).map(super::helpers::effective_pc)
+        self.find_state(state_id)
+            .map(super::native_proc_dispatch::effective_pc)
     }
 
     /// Get the tail of a state's bbl history (last `n` addresses).
@@ -929,7 +930,7 @@ impl RustExplorationManager {
     /// Used by Python predicate caching to skip re-evaluation when
     /// a state's address and stdout haven't changed.
     ///
-    /// `addr` goes through `helpers::effective_pc`: a stale-pc forked successor
+    /// `addr` goes through `native_proc_dispatch::effective_pc`: a stale-pc forked successor
     /// would otherwise be cached under key `(sid, 0)` and its find predicate
     /// evaluated at address 0, missing the genuine find (angr-ph300.23).
     #[pyo3(signature = (stash="active"))]
@@ -941,7 +942,7 @@ impl RustExplorationManager {
                     .map(|state| {
                         (
                             state.state_id(),
-                            super::helpers::effective_pc(state),
+                            super::native_proc_dispatch::effective_pc(state),
                             state.stdout_buffer().len(),
                         )
                     })

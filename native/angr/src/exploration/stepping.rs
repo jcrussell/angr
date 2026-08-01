@@ -939,13 +939,13 @@ impl RustExplorationManager {
         // Guards of the forks already materialized. `successors[0]` accumulates
         // them below, but a fork built from a pre-branch *snapshot* does not —
         // see `PriorGuards` (angr-62ar5).
-        let mut prior_guards = super::helpers::PriorGuards::new(true);
+        let mut prior_guards = super::fork_materialize::PriorGuards::new(true);
 
         for fork in &deferred_forks {
             if let Some(condition) = stored_conditions.get(&fork.condition_id) {
                 // Add the taken-path constraint to the main state (fires the
                 // constraints inspect BP around the add — angr-op0dn.14.4.1).
-                super::helpers::add_fork_guard_constraint(
+                super::fork_materialize::add_fork_guard_constraint(
                     self.callbacks.as_ref(),
                     &successors[0],
                     condition,
@@ -953,7 +953,7 @@ impl RustExplorationManager {
                 );
 
                 // Create forked state for the unexplored path
-                let forked = super::helpers::build_unexplored_fork(
+                let forked = super::fork_materialize::build_unexplored_fork(
                     &successors[0],
                     fork,
                     condition,

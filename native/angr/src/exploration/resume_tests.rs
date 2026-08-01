@@ -3,7 +3,7 @@
 // `_deadend_pending_callback`, `_resume_after_symbolic_branch`.
 //
 // All three hand the same `PendingCallback.deferred_forks` to the shared
-// `helpers::materialize_deferred_forks`, so an unexplored branch must survive
+// `fork_materialize::materialize_deferred_forks`, so an unexplored branch must survive
 // identically no matter which callback the step happened to park on. The
 // materializer itself is unit-tested in `helpers_tests.rs`; what this file
 // pins is the *plumbing* around it — which fork base each entry point builds

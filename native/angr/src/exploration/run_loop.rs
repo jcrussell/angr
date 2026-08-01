@@ -73,7 +73,9 @@ use super::core_outcome::{
     BounceKind, CoreCtx, CoreReturn, NativeSubcall, ParallelProfiling, PendingBounce,
     PostStepInputs, materialize_bounce_forks, run_post_step_core,
 };
-use super::helpers::{NativeProcCounters, NativeProcDisposition, dispatch_native_proc};
+use super::native_proc_dispatch::{
+    NativeProcCounters, NativeProcDisposition, dispatch_native_proc,
+};
 #[cfg(feature = "vex-engine-z3")]
 use super::scheduler::{
     CancelToken, PersistentPool, ProcessFn, RunSession, TaskOutcome,
@@ -2441,9 +2443,9 @@ impl RustExplorationManager {
                     let mut snapshots = pending.fork_snapshots;
                     let profiling_enabled = self.profiling.profiling_enabled;
                     let lazy_solves = self.constraint_solver.lazy_solves;
-                    let materialized = super::helpers::materialize_deferred_forks(
+                    let materialized = super::fork_materialize::materialize_deferred_forks(
                         pending.deferred_forks,
-                        super::helpers::MaterializeForkCtx {
+                        super::fork_materialize::MaterializeForkCtx {
                             fork_base: &fork_base,
                             stored_conditions: &pending.stored_conditions,
                             snapshots: &mut snapshots,

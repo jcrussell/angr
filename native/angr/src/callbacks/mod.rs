@@ -279,7 +279,7 @@ pub struct PythonCallbacks {
     ///
     /// Signature: `fn(state_id: int, when: str, added_constraints: list) -> Any`.
     /// Fired from the native fork-guard add sites (see
-    /// `exploration::helpers::add_fork_guard_constraint`) around the
+    /// `exploration::fork_materialize::add_fork_guard_constraint`) around the
     /// `assume_true` / `assume_false` that installs a branch guard on the
     /// continuing state, mirroring Python's `state_plugins/solver.py::add`.
     /// The Python endpoint is `RustExplorationManager._cb_inspect_constraints`,

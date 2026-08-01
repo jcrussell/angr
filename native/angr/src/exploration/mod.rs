@@ -39,12 +39,15 @@ use crate::syscalls::NativeSyscallRegistry;
 use std::cell::Cell;
 
 mod callback_types;
+mod constraint_sync;
 mod constraints;
 mod core_outcome;
 mod event;
 mod execution_env;
+mod fork_materialize;
 mod helpers;
 mod memory_config;
+mod native_proc_dispatch;
 mod native_technique;
 mod pending_api;
 mod profiling;

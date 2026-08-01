@@ -135,9 +135,9 @@ impl RustExplorationManager {
             // diverged before the callback occurred; adding callback constraints
             // would pollute the unexplored branches. The continuing state
             // already carries the taken-path guard, hence `guard_sink: None`.
-            let materialized = super::helpers::materialize_deferred_forks(
+            let materialized = super::fork_materialize::materialize_deferred_forks(
                 pending.deferred_forks,
-                super::helpers::MaterializeForkCtx {
+                super::fork_materialize::MaterializeForkCtx {
                     fork_base: fb,
                     stored_conditions: &pending.stored_conditions,
                     snapshots: &mut snapshots,
@@ -261,9 +261,9 @@ impl RustExplorationManager {
             let root_state_id = self.sm.root_or_self(state.state_id());
 
             let mut snapshots = fork_snapshots;
-            let materialized = super::helpers::materialize_deferred_forks(
+            let materialized = super::fork_materialize::materialize_deferred_forks(
                 deferred_forks,
-                super::helpers::MaterializeForkCtx {
+                super::fork_materialize::MaterializeForkCtx {
                     fork_base: &fork_base,
                     stored_conditions: &stored_conditions,
                     snapshots: &mut snapshots,
@@ -447,9 +447,9 @@ impl RustExplorationManager {
             // `guard_sink: None` — this handler mints both directions itself
             // (true_state / false_state above), so nothing here should receive
             // the taken-path guard.
-            let materialized = super::helpers::materialize_deferred_forks(
+            let materialized = super::fork_materialize::materialize_deferred_forks(
                 pending.deferred_forks,
-                super::helpers::MaterializeForkCtx {
+                super::fork_materialize::MaterializeForkCtx {
                     fork_base: fb,
                     stored_conditions: &pending.stored_conditions,
                     snapshots: &mut snapshots,

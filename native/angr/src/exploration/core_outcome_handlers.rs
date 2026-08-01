@@ -78,11 +78,11 @@ pub(super) fn materialize_deferred_forks_core(
     let deferred_fork_total = deferred_forks.len() as u64;
     // See `PriorGuards` (angr-62ar5): `base` accumulates each taken-path guard
     // below, but a snapshot-built fork does not.
-    let mut prior_guards = super::super::helpers::PriorGuards::new(true);
+    let mut prior_guards = super::super::fork_materialize::PriorGuards::new(true);
 
     for fork in deferred_forks {
         if let Some(condition) = stored_conditions.get(&fork.condition_id) {
-            super::super::helpers::add_fork_guard_constraint(
+            super::super::fork_materialize::add_fork_guard_constraint(
                 cc.callbacks,
                 base,
                 condition,
@@ -94,7 +94,7 @@ pub(super) fn materialize_deferred_forks_core(
             } else {
                 None
             };
-            let mut forked = super::super::helpers::build_unexplored_fork(
+            let mut forked = super::super::fork_materialize::build_unexplored_fork(
                 base,
                 &fork,
                 condition,
@@ -203,17 +203,17 @@ fn process_deferred_forks_into_core(
         return;
     }
 
-    let mut prior_guards = super::super::helpers::PriorGuards::new(true);
+    let mut prior_guards = super::super::fork_materialize::PriorGuards::new(true);
     for fork in &deferred_forks {
         if let Some(condition) = stored_conditions.get(&fork.condition_id) {
-            super::super::helpers::add_fork_guard_constraint(
+            super::super::fork_materialize::add_fork_guard_constraint(
                 cc.callbacks,
                 base,
                 condition,
                 fork.path_taken,
             );
 
-            let forked = super::super::helpers::build_unexplored_fork(
+            let forked = super::super::fork_materialize::build_unexplored_fork(
                 base,
                 fork,
                 condition,
@@ -518,8 +518,10 @@ pub(super) fn handle_symbolic_jump_target_core(
 // The proc-dispatch decision itself lives in `helpers.rs` so `step_one`'s
 // serial arm and this parallel one cannot drift (angr-ph300.73).
 #[cfg(test)]
-pub(super) use super::super::helpers::segfault_message;
-use super::super::helpers::{NativeProcCounters, NativeProcDisposition, dispatch_native_proc};
+pub(super) use super::super::native_proc_dispatch::segfault_message;
+use super::super::native_proc_dispatch::{
+    NativeProcCounters, NativeProcDisposition, dispatch_native_proc,
+};
 
 /// Mirror of `handle_simprocedure` (native fast path + native resume; Python
 /// fallback bounces).
