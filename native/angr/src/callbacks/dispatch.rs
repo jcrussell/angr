@@ -720,3 +720,7 @@ fn bv_to_bytes(bv: &RustBV) -> Vec<u8> {
         vec![0u8; num_bytes]
     }
 }
+
+#[cfg(test)]
+#[path = "dispatch_tests.rs"]
+mod dispatch_tests;

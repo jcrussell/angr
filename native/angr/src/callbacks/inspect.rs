@@ -500,3 +500,7 @@ impl PythonCallbacks {
         })
     }
 }
+
+#[cfg(test)]
+#[path = "inspect_tests.rs"]
+mod inspect_tests;
