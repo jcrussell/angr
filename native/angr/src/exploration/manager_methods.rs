@@ -1949,7 +1949,12 @@ impl RustExplorationManager {
     ///
     /// This searches all stashes for the state with the given ID and returns
     /// a complete snapshot that can be used to reconstruct an angr SimState.
-    pub fn export_state(&self, state_id: u64) -> PyResult<crate::state::ExplorationStateSnapshot> {
+    /// Deferred writes (pending writes and Multi cells) are flushed first, so
+    /// this is now an alias for `export_state_flushed` (angr-9ke6b.101).
+    pub fn export_state(
+        &mut self,
+        state_id: u64,
+    ) -> PyResult<crate::state::ExplorationStateSnapshot> {
         self._export_state(state_id)
     }
 
@@ -1978,7 +1983,11 @@ impl RustExplorationManager {
     }
 
     /// Export all found states as snapshots.
-    pub fn export_found_states(&self) -> Vec<crate::state::ExplorationStateSnapshot> {
+    ///
+    /// Flushes each state's deferred writes first (angr-9ke6b.101) — this is
+    /// the primary `explore(find=...)` result API, so an unflushed export here
+    /// silently drops Multi-cell bytes.
+    pub fn export_found_states(&mut self) -> Vec<crate::state::ExplorationStateSnapshot> {
         self._export_found_states()
     }
 

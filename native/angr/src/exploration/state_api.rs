@@ -469,39 +469,48 @@ impl RustExplorationManager {
     // State export
     // -------------------------------------------------------------------------
 
+    /// Export one state. Always flushes first — see `_export_state_flushed`.
     pub(crate) fn _export_state(
-        &self,
+        &mut self,
         state_id: u64,
     ) -> PyResult<crate::state::ExplorationStateSnapshot> {
-        self.with_state(state_id, |state| Ok(state.export_full()))
+        self._export_state_flushed(state_id)
     }
 
+    /// Export one state after materializing its deferred memory writes.
+    ///
+    /// The flush is mandatory, not an opt-in fast path (angr-9ke6b.101):
+    /// `export_full` walks `MemoryPage::symbolic_offsets`, which only reads
+    /// `symbolic_bitmap`, so any byte still living in a Multi cell (the
+    /// default representation for a symbolic-address store resolving to
+    /// `Multiple`/`Strided`) exports as its stale concrete backing byte
+    /// instead of the stored value. `flush_and_export_full` ->
+    /// `SymbolicMemory::flush_pending_writes` -> `flush_multi_cells`
+    /// collapses those cells into symbolic objects the exporter can see.
     pub(crate) fn _export_state_flushed(
         &mut self,
         state_id: u64,
     ) -> PyResult<crate::state::ExplorationStateSnapshot> {
-        // find_state_mut only checks stashes; we still need an explicit pending fallback.
-        if let Some(state) = self.find_state_mut(state_id) {
-            return Ok(state.flush_and_export_full());
-        }
-        if let Some(pending) = self.pending_callbacks.get_mut(&StateId::new(state_id)) {
-            return Ok(pending.state.flush_and_export_full());
-        }
-        Err(PyValueError::new_err(format!("state {state_id} not found")))
+        // find_state_mut mirrors find_state's pending-callback-first lookup,
+        // so this covers states parked in `pending_callbacks` too.
+        self.with_state_mut(state_id, |state| Ok(state.flush_and_export_full()))
     }
 
-    pub(crate) fn _export_stash(&self, stash: &str) -> Vec<crate::state::ExplorationStateSnapshot> {
+    pub(crate) fn _export_stash(
+        &mut self,
+        stash: &str,
+    ) -> Vec<crate::state::ExplorationStateSnapshot> {
         self.sm
-            .get(stash)
+            .get_mut(stash)
             .map(|s| {
-                s.iter()
-                    .map(super::super::state::RustSimState::export_full)
+                s.iter_mut()
+                    .map(super::super::state::RustSimState::flush_and_export_full)
                     .collect()
             })
             .unwrap_or_default()
     }
 
-    pub(crate) fn _export_found_states(&self) -> Vec<crate::state::ExplorationStateSnapshot> {
+    pub(crate) fn _export_found_states(&mut self) -> Vec<crate::state::ExplorationStateSnapshot> {
         self._export_stash(STASH_FOUND)
     }
 
@@ -1042,3 +1051,12 @@ impl RustExplorationManager {
         ctx.eval(&sym).map(|v| v as u64)
     }
 }
+
+#[cfg(test)]
+#[path = "state_api_tests.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable"
+)]
+mod tests;

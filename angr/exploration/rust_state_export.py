@@ -1149,34 +1149,20 @@ class RustStateExportMixin:
 
         try:
             # Use flushed export to materialize any pending symbolic writes
-            # before exporting memory pages to Python.
+            # (and Multi cells) before exporting memory pages to Python.
+            # Since angr-9ke6b.101 the plain ``export_state`` flushes too, so
+            # there is no unflushed fallback to retry with.
             snapshot = self._rust_mgr.export_state_flushed(state_id)
         except Exception as e_flushed:
-            try:
-                snapshot = self._rust_mgr.export_state(state_id)
-                # cat-(c) WRONG-ANSWER RISK: flushed failed but unflushed
-                # worked — pending symbolic writes may not be visible in
-                # Python memory. WARN so the user notices.
-                l.warning(
-                    "export_state_flushed(%d) failed (%s); falling "
-                    "back to unflushed snapshot — pending symbolic "
-                    "stores may be missing",
-                    state_id,
-                    e_flushed,
-                )
-            except Exception as e_unflushed:
-                # cat-(c) WRONG-ANSWER RISK: both export paths failed.
-                # Python state.memory will return zeros (or stale data)
-                # for any address Rust wrote.
-                l.warning(
-                    "Both export_state_flushed and export_state failed "
-                    "for state %d (flushed: %s; unflushed: %s) — "
-                    "Python memory will be stale",
-                    state_id,
-                    e_flushed,
-                    e_unflushed,
-                )
-                return  # State may not be in Rust stashes anymore
+            # cat-(c) WRONG-ANSWER RISK: the export failed. Python
+            # state.memory will return zeros (or stale data) for any
+            # address Rust wrote.
+            l.warning(
+                "export_state_flushed(%d) failed (%s) — Python memory will be stale",
+                state_id,
+                e_flushed,
+            )
+            return  # State may not be in Rust stashes anymore
 
         for i in range(snapshot.page_count()):
             page = snapshot.get_page(i)
@@ -1489,16 +1475,52 @@ class RustStateExportMixin:
         for offset, size in regions:
             sym_addr = page_addr + offset
             ast = self._recover_symbolic_ast(snapshot, sym_addr, size, recovery)
-            if ast is None:
-                # Fallback for symbols created in Rust without a tracked AST.
-                # angr-4o7d (2026-05-22): instrumented to measure fire rate.
-                # Snapshot-export path, not hot exploration loop — distinct
-                # threat model from rust_manager.py's mem_thunk_/sym_load_full_fail_
-                # fallbacks (which counter angr-ymoe showed are dead in practice).
-                sym_name = f"rust_sym_{sym_addr:x}_{snapshot.state_id}"
-                ast = claripy.BVS(sym_name, size * 8)
-                self._stats_orphan_bvs_snapshot_restore += 1
+            if ast is not None:
+                state.memory.store(sym_addr, ast, endness=arch.memory_endness, inspect=False)
+                continue
+
+            # Second chance: read the live Rust symbolic object directly
+            # (angr-9ke6b.101). Multi cells flushed by the export path
+            # collapse into Rust-minted ITE objects that were never routed
+            # through addr_to_ast, so the recovery maps above miss them and
+            # the orphan-BVS fallback below would replace a symbolic-address
+            # store's value with an unconstrained symbol.
+            ast = self._recover_rust_memory_ast(snapshot.state_id, sym_addr, size)
+            if ast is not None:
+                # get_state_memory_ast returns the raw LSB-first layout (byte
+                # i of memory at bits [i*8+7 : i*8]) regardless of arch — the
+                # same convention RustMemoryProxy.load documents. Iend_LE is
+                # the store endness that puts AST byte 0 back at sym_addr.
+                state.memory.store(sym_addr, ast, endness="Iend_LE", inspect=False)
+                continue
+
+            # Fallback for symbols created in Rust without a tracked AST.
+            # angr-4o7d (2026-05-22): instrumented to measure fire rate.
+            # Snapshot-export path, not hot exploration loop — distinct
+            # threat model from rust_manager.py's mem_thunk_/sym_load_full_fail_
+            # fallbacks (which counter angr-ymoe showed are dead in practice).
+            sym_name = f"rust_sym_{sym_addr:x}_{snapshot.state_id}"
+            ast = claripy.BVS(sym_name, size * 8)
+            self._stats_orphan_bvs_snapshot_restore += 1
             state.memory.store(sym_addr, ast, endness=arch.memory_endness, inspect=False)
+
+    def _recover_rust_memory_ast(self, state_id: int, sym_addr: int, size: int):
+        """Read a symbolic region straight out of the live Rust state.
+
+        Returns ``None`` when the state is gone from every stash, when the
+        address is unmapped, or when the region is concrete — all of which
+        leave the caller on its orphan-BVS fallback.
+        """
+        try:
+            return self._rust_mgr.get_state_memory_ast(state_id, sym_addr, size)
+        except Exception as e:
+            # SILENT(cat-b): the snapshot may outlive the Rust state (or the
+            # region may not round-trip through claripy). Losing the AST here
+            # only degrades to the orphan-BVS fallback below, which is the
+            # pre-existing behaviour — but log it, since the recovered value
+            # is silently replaced by an unconstrained symbol.
+            l.debug("get_state_memory_ast(%d, %#x, %d) failed: %s", state_id, sym_addr, size, e)
+            return None
 
     def _recover_symbolic_ast(self, snapshot, sym_addr: int, size: int, recovery: dict):
         """Look up the original claripy AST for a symbolic byte at sym_addr.
