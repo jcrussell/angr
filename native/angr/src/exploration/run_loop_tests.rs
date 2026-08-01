@@ -90,6 +90,62 @@ fn bounce_at_find_addr_routes_to_found_not_queue() {
     });
 }
 
+/// History-parity contract for the bounce-restore sites (angr-9ke6b.51): the
+/// bounce target lands in `history()` exactly once per visit, appended by
+/// whichever site is *last* to touch the state. The worker core's `bounce()`
+/// never appends it, so a TERMINAL restore must — here the find short-circuit,
+/// which pushes to FOUND and is never stepped again.
+#[test]
+fn terminal_bounce_restore_appends_the_target_to_history() {
+    Python::initialize();
+    Python::attach(|_py| {
+        let find = 0x40_3000;
+        let (mut mgr, state, _id) = mgr_and_state(0x40_0000);
+        mgr.set_find_addrs(vec![find]);
+        assert!(state.history().is_empty(), "core bounce() appended nothing");
+        let mut bounce_queue = Vec::new();
+
+        let kind = MatKind::Bounce(BounceKind::Hook { addr: find });
+        mgr.route_materialized_terminal(state, Some(kind), 7, &mut bounce_queue);
+
+        let found = mgr.sm.get(STASH_FOUND).expect("found stash exists");
+        assert_eq!(
+            found[0].history().iter().copied().collect::<Vec<_>>(),
+            vec![find],
+            "terminal restore appends the bounce target itself"
+        );
+    });
+}
+
+/// The other half of the same contract: `flush_parked_bounces_to_active` is NOT
+/// terminal — it hands the state back to STASH_ACTIVE, where the next step
+/// re-lifts the hook and `dispatch_bounce` appends the target. So the flush must
+/// restore the pc WITHOUT touching history; appending here too would record one
+/// visit twice (`add_to_history` never dedups).
+#[test]
+fn flush_parked_bounce_leaves_history_for_the_replay_to_append() {
+    Python::initialize();
+    Python::attach(|_py| {
+        const BOUNCE_ADDR: u64 = 0x40_5000;
+        // No find/avoid registered, so the flush routes to STASH_ACTIVE — the
+        // replayed, non-terminal leg.
+        let (mut mgr, mut state, id) = mgr_and_state(0x40_0000);
+        state.add_to_history(0x40_0000);
+        mgr.pending_parallel_bounces
+            .push((state, BounceKind::Hook { addr: BOUNCE_ADDR }, id));
+
+        mgr.flush_parked_bounces_to_active();
+
+        let active = mgr.sm.get(STASH_ACTIVE).expect("active stash exists");
+        assert_eq!(active[0].pc(), BOUNCE_ADDR, "pc restored for the replay");
+        assert_eq!(
+            active[0].history().iter().copied().collect::<Vec<_>>(),
+            vec![0x40_0000],
+            "flush leaves the bounce target for dispatch_bounce to append"
+        );
+    });
+}
+
 #[test]
 fn bounce_at_avoid_addr_routes_to_avoid_not_queue() {
     Python::initialize();

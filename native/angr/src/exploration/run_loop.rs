@@ -1940,6 +1940,19 @@ impl RustExplorationManager {
     /// no recoverable resume point and stay parked — logged, not silently
     /// dropped. Ids already resident in a stash are skipped so the flush can
     /// never double-insert a state.
+    ///
+    /// Deliberately `set_pc` WITHOUT `add_to_history`, unlike the sibling
+    /// bounce-restore sites (`dispatch_bounce`'s `Hook` /
+    /// `SimProcedurePython` arms and `route_materialized_terminal`'s
+    /// find/avoid short-circuit), which pair the two. The bounce target is
+    /// appended to history exactly once, by whichever site is *last* to touch
+    /// the state: those siblings are terminal for this bounce (the callback
+    /// dispatch, or a FOUND/AVOID push that is never stepped again), so they
+    /// must append it themselves — the worker core's `bounce()` does not.
+    /// This path is not terminal: the state goes back to `STASH_ACTIVE` and
+    /// its next step re-lifts the hook and re-enters `dispatch_bounce`, which
+    /// appends the address then. Appending here too would push it twice for
+    /// one visit, since `add_to_history` never dedups.
     pub(crate) fn flush_parked_bounces_to_active(&mut self) {
         if self.pending_parallel_bounces.is_empty() {
             return;
