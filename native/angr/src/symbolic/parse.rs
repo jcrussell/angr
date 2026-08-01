@@ -115,9 +115,12 @@ pub(super) fn parse_binary_to_bytes(s: &str, width: u32) -> Option<Vec<u8>> {
     // Build bytes from bits (big-endian). The sole caller
     // (extract_bv_value_wide in bv_codec.rs) derives `bits` and `width` from
     // the same Z3 BV, so `bits.len() <= byte_len * 8` always holds. Guard the
-    // pub(super) contract: saturating_sub avoids an underflow-panic if a future
-    // caller passes a too-long bit string, and the debug_assert flags it in dev.
-    debug_assert!(
+    // pub(super) contract. Always-on, NOT `debug_assert!` (angr-9ke6b.220):
+    // without it a too-long bit string would be *silently truncated* — the
+    // `saturating_sub` clamps `bit_offset` to 0 and the `byte_idx < byte_len`
+    // guard below drops the overflow bits, yielding a wrong value with no
+    // diagnostic. Wide-BV eval only, so the length compare is off the hot path.
+    assert!(
         bits.len() <= byte_len * 8,
         "parse_binary_to_bytes: {} bits exceed {} byte capacity",
         bits.len(),

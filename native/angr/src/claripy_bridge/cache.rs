@@ -134,7 +134,10 @@ pub(crate) fn store_claripy_ast_with_info(
     kind: SymbolKind,
     ast: Py<PyAny>,
 ) {
-    debug_assert_ne!(
+    // Always-on, NOT `debug_assert_ne!` (angr-9ke6b.220): a sentinel-keyed
+    // registry entry silently returns an unrelated AST on the next lookup,
+    // and this runs once per imported/exported leaf, not per step.
+    assert_ne!(
         symbol_id,
         RustBV::EXPRESSION_ID,
         "symbol identity registry must not be keyed by the EXPRESSION_ID sentinel; \

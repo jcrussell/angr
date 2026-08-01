@@ -558,10 +558,14 @@ impl SharedLineageSolver {
 
     /// Assert a base constraint at scope 0 (unscoped — never popped).
     ///
-    /// Debug-asserts that no scope frames are currently loaded; calling
+    /// Asserts (always-on) that no scope frames are currently loaded; calling
     /// after a `switch_to` would put the assertion at the wrong scope.
     pub fn assert_base(&self, assertion: &Bool) {
-        debug_assert!(
+        // Always-on, NOT `debug_assert!` (angr-9ke6b.220): a base constraint
+        // landing inside a scope frame is popped with that frame, so the
+        // constraint silently vanishes and the solver reports spurious SAT.
+        // Cost is a `Vec::is_empty` per base assertion (mint-time only).
+        assert!(
             self.loaded_path.is_empty(),
             "assert_base called while a scope path is loaded — would land at the wrong scope"
         );

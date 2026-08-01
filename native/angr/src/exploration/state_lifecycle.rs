@@ -86,8 +86,10 @@ impl RustExplorationManager {
         // distinct from the source PyRustSimState's ID. Tautological today
         // (fork() always calls next_state_id()); the assert catches a
         // future refactor that tried to "reuse" the source ID to avoid
-        // breaking a Python-side mapping.
-        debug_assert_ne!(
+        // breaking a Python-side mapping. Always-on (angr-9ke6b.220): a reused
+        // ID silently clobbers the stash index, and `_add_state` is an
+        // init-time path, not per-step.
+        assert_ne!(
             state_id,
             state.inner().state_id(),
             "fork() must mint a fresh state_id, got duplicate {state_id}",
@@ -149,7 +151,8 @@ impl RustExplorationManager {
         };
         let new_id = forked.state_id();
         // `state-id-never-reused`: fork() must mint a fresh monotonic ID.
-        debug_assert_ne!(
+        // Always-on (angr-9ke6b.220), same rationale as `_add_state`.
+        assert_ne!(
             new_id, parent_id,
             "fork() must mint a fresh state_id, got duplicate {new_id}"
         );
@@ -204,8 +207,10 @@ impl RustExplorationManager {
         // guard on the sibling minting sites _add_state / _fork_state_to_stash.
         // Tautological today (RustSimState::merge() allocates via
         // next_state_id()); the assert catches a future refactor that tried to
-        // reuse an input ID for the merged state.
-        debug_assert!(
+        // reuse an input ID for the merged state. Always-on (angr-9ke6b.220):
+        // merging is rare, so the linear scan over the (small) input ID list
+        // is off any hot path.
+        assert!(
             !state_ids.contains(&merged_id),
             "merge() must mint a fresh state_id, got duplicate {merged_id}",
         );

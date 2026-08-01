@@ -454,7 +454,11 @@ impl RustExplorationManager {
             // Every arm below that can push into `bounce_queue` returns in the
             // same breath, so the queue is necessarily empty at the loop top —
             // the budget yield can never strand a pending bounce (angr-ph300.14).
-            debug_assert!(
+            // Always-on, NOT `debug_assert!` (angr-9ke6b.220): a stranded
+            // bounce is a silently lost state, and the release profile leaves
+            // `debug-assertions = false`. Cost is a `Vec::is_empty` per pump
+            // iteration.
+            assert!(
                 bounce_queue.is_empty(),
                 "steady_pump reached loop top with {} pending bounces",
                 bounce_queue.len()

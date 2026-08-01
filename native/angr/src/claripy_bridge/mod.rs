@@ -34,10 +34,10 @@
 //!   route through `EXPRESSION_BY_OPERANDS_PTR`
 //!   instead. Crossing this boundary corrupts `RustBV::Expression { id: u64 }`
 //!   semantics — a leaf id stored in the Expression cache would collide
-//!   with an unrelated operands pointer, and vice versa. Enforced by
-//!   `debug_assert_ne!(symbol_id, RustBV::EXPRESSION_ID)` in
-//!   `store_claripy_ast{,_with_info}`. See `value.rs` `RustBV::Expression`
-//!   contract.
+//!   with an unrelated operands pointer, and vice versa. Enforced by an
+//!   always-on `assert_ne!(symbol_id, RustBV::EXPRESSION_ID)` in
+//!   `store_claripy_ast_with_info` (promoted from `debug_assert_ne!` in
+//!   angr-9ke6b.220). See `value.rs` `RustBV::Expression` contract.
 //!
 //! - **C3. Unified `clear_ast_cache` invalidation.** Both
 //!   thread-locals are cleared together in `clear_ast_cache`; a

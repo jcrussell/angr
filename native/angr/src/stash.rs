@@ -296,9 +296,11 @@ impl StashManager {
             // state_index. The caller pops from a stash before invoking
             // us, which un-indexes via `pop_active`; this assert documents
             // that contract and catches a regression where a drop path
-            // skips the un-index step.
-            #[cfg(debug_assertions)]
-            debug_assert!(
+            // skips the un-index step. Always-on (angr-9ke6b.220): a stale
+            // index entry pointing at a dropped state makes `find_state`
+            // silently resolve to nothing (or, after ID churn, to the wrong
+            // state). One hash lookup per dropped terminal.
+            assert!(
                 !self.state_index.contains_key(&sid),
                 "I6: state {} dropped while still indexed under stash {:?}",
                 sid,

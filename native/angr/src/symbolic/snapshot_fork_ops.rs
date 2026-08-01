@@ -88,6 +88,10 @@ impl SymContext {
             // `get_assertions()`. The bounds catch the real failure mode this
             // guard targets — a future caller asserting on the solver without
             // recording into a log — while tolerating those benign sub-counts.
+            // Kept debug-only (angr-9ke6b.220): unlike the other promoted
+            // sites this one is NOT free — computing the bounds takes two
+            // mutex locks plus a `z3_assertion_count()` (a Z3 `get_assertions`
+            // query) on every snapshot, which is squarely on the fork path.
             #[cfg(debug_assertions)]
             {
                 let non_bv_count = self.non_bv_assertions_shared.lock().len()
@@ -657,7 +661,9 @@ impl SymContext {
             // angr-a2br.1.1: debug-assert the gate is consistent at the
             // moment of mint. Tautological with the `if` condition but
             // documents the `invariant-v5a5-slice-1c-mint-semantics`
-            // contract for readers tracing this branch.
+            // contract for readers tracing this branch. Kept debug-only
+            // (angr-9ke6b.220): both re-read the exact values the enclosing
+            // `if` just tested, so they can only fire on a compiler bug.
             debug_assert!(
                 self.bare_z3_push_depth.load(Ordering::Relaxed) == 0,
                 "minting lineage with non-zero bare_z3_push_depth violates \

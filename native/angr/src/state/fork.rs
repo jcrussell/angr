@@ -123,8 +123,11 @@ impl RustSimState {
         // `state-id-never-reused`: monotonic counter must produce a value
         // strictly greater than the parent's ID. Tautological today; this
         // assert fires if a future refactor reorders the allocation or
-        // (worse) introduces ID recycling.
-        debug_assert!(
+        // (worse) introduces ID recycling. Always-on (angr-9ke6b.220): ID
+        // recycling silently clobbers the stash index and every `state_id`-keyed
+        // shadow map on the Python side, and the check is one `u64` compare
+        // per fork.
+        assert!(
             child_id > self.state_id,
             "next_state_id() must monotonically increase; got child={} parent={}",
             child_id,

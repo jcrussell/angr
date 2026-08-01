@@ -95,7 +95,9 @@
 //!   `_py_state_options`, `_py_state_globals`). Future shadow structures
 //!   keyed by `state_id` must prune against `any_stash`, not invent
 //!   per-structure LRU caps. Enforced at `next_state_id()` below; the
-//!   `debug_assert!` in `fork()` confirms the child ID is fresh.
+//!   always-on `assert!` in `fork_with()` confirms the child ID is fresh
+//!   (promoted from `debug_assert!` in angr-9ke6b.220, alongside the
+//!   sibling ID-minting guards in `exploration/state_lifecycle.rs`).
 //!   Snapshot restore imports IDs minted under a *foreign* counter, so
 //!   `from_snapshot` calls `reserve_state_id()` to lift the local counter
 //!   above every restored ID — otherwise a resumed manager re-mints live

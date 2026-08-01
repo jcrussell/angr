@@ -14,6 +14,17 @@
 //! with the ops they serve (used nowhere else). `RustBV::all_ones_mask` stays
 //! in `value.rs` (also used by the `ones` constructor) promoted to
 //! `pub(super)`.
+//!
+//! **`debug_assert!` policy (angr-9ke6b.220):** every width/arity check in
+//! this module stays `debug_assert!` and is deliberately compiled out of
+//! release. They sit on the per-op hot path (one per bitvector operation),
+//! and a width mismatch is not silent in release: the Python boundary rejects
+//! it up front in [`super::table`]'s binary-op macro (`BinaryOpError::
+//! WidthMismatch`), and anything that slipped past hits a Z3 sort error.
+//! The same reasoning covers `value_z3.rs`, `context.rs`, `constraint_ops.rs`
+//! and `solving_ops.rs`. Do NOT bulk-promote these — see the memory
+//! `invariant-assert-not-debug-assert-in-release` for the checks that *do*
+//! warrant a real `assert!`.
 
 use std::sync::Arc;
 

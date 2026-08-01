@@ -260,7 +260,9 @@ impl SymContext {
                 // angr-3ms1 step 1a: decrement after the Z3 pop succeeds.
                 // z3-rs panics on under-pop, so we never reach this on
                 // an unbalanced sequence — the counter stays in sync
-                // with the per-context solver's actual push depth.
+                // with the per-context solver's actual push depth. Kept
+                // debug-only (angr-9ke6b.220) for exactly that reason: the
+                // failure is already caught loudly one line up.
                 let prev = self.bare_z3_push_depth.fetch_sub(1, Ordering::Relaxed);
                 debug_assert!(
                     prev > 0,

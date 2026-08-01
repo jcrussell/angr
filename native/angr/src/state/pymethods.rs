@@ -255,8 +255,10 @@ impl PyRustSimState {
             // I5 cross-check: register_size returning Some implies the
             // register has a RegisterFile slot. This debug assert documents
             // intent and would catch a regression where arch lookup and
-            // RegisterFile membership drift apart.
-            #[cfg(debug_assertions)]
+            // RegisterFile membership drift apart. Kept `debug_assert!`
+            // (angr-9ke6b.220): a zero size is not silent — it produces a
+            // zero-width RustBV that the `set_register` false branch below
+            // turns into a loud `PyValueError`.
             debug_assert!(
                 size > 0,
                 "I5: register {name} has zero size — arch table is malformed"

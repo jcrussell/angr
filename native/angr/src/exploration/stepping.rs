@@ -295,6 +295,10 @@ impl RustExplorationManager {
             CoreReturn::Continue(succ) => {
                 for (s, tag) in succ {
                     if let Some(rh) = tag.root_hint {
+                        // Kept `debug_assert!` (angr-9ke6b.220): per-successor
+                        // per-step hot path, and a root_hint/is_fork mismatch
+                        // only mis-groups a state for lineage sharing (a
+                        // performance heuristic) — it cannot corrupt results.
                         debug_assert!(tag.is_fork);
                         self.sm.set_root(s.state_id(), rh);
                     }
