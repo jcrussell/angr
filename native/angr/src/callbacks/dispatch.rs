@@ -5,6 +5,33 @@
 
 use super::*;
 
+/// Decode a `(bytes, is_symbolic, symbolic_ast?)` tuple returned by a Python
+/// data callback.
+///
+/// The trailing AST element is optional on the Python side: a 2-tuple, and a
+/// 3-tuple whose last element is `None`, both mean "no symbolic AST". Shared
+/// by `call_memory_load`, `call_memory_load_batch`, `call_get_register` and
+/// `call_dirty_call` so a fix to the decoding lands on all four at once.
+fn extract_data_tuple(tuple: &Bound<'_, pyo3::types::PyTuple>) -> PyResult<BatchLoadEntry> {
+    let data: Vec<u8> = tuple.get_item(0)?.extract()?;
+    let is_symbolic: bool = tuple.get_item(1)?.extract()?;
+
+    let symbolic_ast = if tuple.len() > 2 {
+        let ast_obj = tuple.get_item(2)?;
+        // SILENT(cat-a): a Python `None` in slot 2 is the documented
+        // "concrete result, no AST" encoding, not a lost value.
+        if ast_obj.is_none() {
+            None
+        } else {
+            Some(ast_obj.unbind())
+        }
+    } else {
+        None
+    };
+
+    Ok((data, is_symbolic, symbolic_ast))
+}
+
 impl PythonCallbacks {
     /// Call the memory load callback.
     ///
@@ -24,24 +51,7 @@ impl PythonCallbacks {
 
             let result = cb.call1(py, (addr, size))?;
             let tuple = result.cast_bound::<pyo3::types::PyTuple>(py)?;
-
-            // Extract (bytes, is_symbolic, symbolic_ast?)
-            let data_obj = tuple.get_item(0)?;
-            let data: Vec<u8> = data_obj.extract()?;
-            let is_symbolic: bool = tuple.get_item(1)?.extract()?;
-
-            let symbolic_ast = if tuple.len() > 2 {
-                let ast_obj = tuple.get_item(2)?;
-                if ast_obj.is_none() {
-                    None
-                } else {
-                    Some(ast_obj.unbind())
-                }
-            } else {
-                None
-            };
-
-            Ok((data, is_symbolic, symbolic_ast))
+            extract_data_tuple(tuple)
         })
     }
 
@@ -124,24 +134,7 @@ impl PythonCallbacks {
 
                 for item in result_list.iter() {
                     let tuple = item.cast::<pyo3::types::PyTuple>()?;
-
-                    // Extract (bytes, is_symbolic, symbolic_ast?)
-                    let data_obj = tuple.get_item(0)?;
-                    let data: Vec<u8> = data_obj.extract()?;
-                    let is_symbolic: bool = tuple.get_item(1)?.extract()?;
-
-                    let symbolic_ast = if tuple.len() > 2 {
-                        let ast_obj = tuple.get_item(2)?;
-                        if ast_obj.is_none() {
-                            None
-                        } else {
-                            Some(ast_obj.unbind())
-                        }
-                    } else {
-                        None
-                    };
-
-                    results.push((data, is_symbolic, symbolic_ast));
+                    results.push(extract_data_tuple(tuple)?);
                 }
 
                 return Ok(results);
@@ -317,22 +310,7 @@ impl PythonCallbacks {
 
             let result = cb.call1(py, (offset, size))?;
             let tuple = result.cast_bound::<pyo3::types::PyTuple>(py)?;
-
-            let data: Vec<u8> = tuple.get_item(0)?.extract()?;
-            let is_symbolic: bool = tuple.get_item(1)?.extract()?;
-
-            let symbolic_ast = if tuple.len() > 2 {
-                let ast_obj = tuple.get_item(2)?;
-                if ast_obj.is_none() {
-                    None
-                } else {
-                    Some(ast_obj.unbind())
-                }
-            } else {
-                None
-            };
-
-            Ok((data, is_symbolic, symbolic_ast))
+            extract_data_tuple(tuple)
         })
     }
 
@@ -384,24 +362,7 @@ impl PythonCallbacks {
 
             let result = cb.call1(py, (name, args_list, ret_ty_bits))?;
             let tuple = result.cast_bound::<pyo3::types::PyTuple>(py)?;
-
-            // Extract (bytes, is_symbolic, symbolic_ast?)
-            let data_obj = tuple.get_item(0)?;
-            let data: Vec<u8> = data_obj.extract()?;
-            let is_symbolic: bool = tuple.get_item(1)?.extract()?;
-
-            let symbolic_ast = if tuple.len() > 2 {
-                let ast_obj = tuple.get_item(2)?;
-                if ast_obj.is_none() {
-                    None
-                } else {
-                    Some(ast_obj.unbind())
-                }
-            } else {
-                None
-            };
-
-            Ok((data, is_symbolic, symbolic_ast))
+            extract_data_tuple(tuple)
         })
     }
 

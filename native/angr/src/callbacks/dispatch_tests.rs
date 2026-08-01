@@ -429,3 +429,52 @@ fn bv_to_bytes_is_little_endian_and_width_rounded() {
     // Width rounds up to whole bytes.
     assert_eq!(bv_to_bytes(&RustBV::concrete(1, 1)), vec![0x01]);
 }
+
+/// The shared decoder behind memory load / load-batch / register get / dirty
+/// call (angr-9ke6b.24). All three tuple shapes are pinned in one place so a
+/// future fix to the AST-optionality rule can't land on only some callers.
+#[test]
+fn extract_data_tuple_handles_all_three_tuple_shapes() {
+    Python::initialize();
+    Python::attach(|py| {
+        let globals = defs(
+            py,
+            c"shapes = [(b'ab', False), (b'cd', True, None), (b'ef', True, 'sentinel-ast')]
+",
+        );
+        let shapes = globals
+            .get_item("shapes")
+            .unwrap()
+            .unwrap()
+            .cast_into::<PyList>()
+            .unwrap();
+        let decode = |i: usize| {
+            let tuple = shapes
+                .get_item(i)
+                .unwrap()
+                .cast_into::<pyo3::types::PyTuple>()
+                .unwrap();
+            extract_data_tuple(&tuple).expect("decode")
+        };
+
+        let (data, is_symbolic, ast) = decode(0);
+        assert_eq!(data, b"ab");
+        assert!(!is_symbolic);
+        assert!(ast.is_none(), "2-tuple means no AST");
+
+        let (data, is_symbolic, ast) = decode(1);
+        assert_eq!(data, b"cd");
+        assert!(is_symbolic);
+        assert!(ast.is_none(), "explicit None third element means no AST");
+
+        let (data, is_symbolic, ast) = decode(2);
+        assert_eq!(data, b"ef");
+        assert!(is_symbolic);
+        assert_eq!(
+            ast.expect("non-None third element survives")
+                .extract::<String>(py)
+                .unwrap(),
+            "sentinel-ast"
+        );
+    });
+}

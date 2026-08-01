@@ -81,6 +81,10 @@ use crate::symbolic::RustBV;
 /// `(data_bytes, is_symbolic, symbolic_ast)`. Shared with
 /// `interpreter::expressions` which consumes these slices to mint
 /// per-load `RustBV` values.
+///
+/// Also the return shape of every single-value data callback that decodes
+/// through `dispatch::extract_data_tuple` (memory load, register get, dirty
+/// call), so the four decode sites cannot drift apart.
 pub(crate) type BatchLoadEntry = (Vec<u8>, bool, Option<Py<PyAny>>);
 
 mod config;
