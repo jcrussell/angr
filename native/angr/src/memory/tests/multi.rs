@@ -437,6 +437,78 @@ fn test_concrete_overwrite_clears_multi_bit() {
     );
 }
 
+/// angr-9ke6b.95: the mirror direction of the test above — an ordinary
+/// `store_concrete` of a *symbolic* value over a pre-existing Multi cell must
+/// also drop the cell. `load_concrete_lazy_inner` dispatches to Multi before
+/// consulting `symbolic_objects`, so a surviving cell would shadow the value
+/// just stored.
+#[test]
+fn test_symbolic_overwrite_clears_multi_cell() {
+    let ctx = SymContext::new_mock();
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    mem.map(0x3000, 0x1000, Permission::RWX);
+
+    let addr_var = RustBV::symbolic(&ctx, "sym_over_multi_addr", 64);
+    mem.set_multi_alternatives(
+        0x3000,
+        MultiPayload::from_alternatives(vec![make_alt(&ctx, &addr_var, 0x3000, 0x42)]),
+    );
+    assert_eq!(mem.multi_cell_count(), 1);
+
+    // Ordinary store of a symbolic byte at the same address.
+    let fresh = RustBV::symbolic(&ctx, "sym_over_multi_val", 8);
+    mem.store_concrete(0x3000, fresh).unwrap();
+
+    assert!(
+        mem.get_multi_alternatives(0x3000).is_none(),
+        "symbolic overwrite must drop the Multi sidecar entry"
+    );
+    let page = mem.pages.get(&(0x3000 >> 12)).expect("page must exist");
+    assert!(
+        !page.is_multi(0),
+        "symbolic overwrite must clear the multi_bitmap bit"
+    );
+    assert!(
+        page.is_symbolic(0),
+        "the freshly stored symbolic byte must be marked Symbolic"
+    );
+}
+
+/// Value-level companion to the test above: after the symbolic overwrite the
+/// lazy load must resolve to the newly stored symbol, not the stale Multi
+/// alternative (0x42).
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_symbolic_overwrite_of_multi_loads_new_value() {
+    let ctx = SymContext::new_mock();
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    mem.map(0x3000, 0x1000, Permission::RWX);
+
+    let addr_var = RustBV::symbolic(&ctx, "sovm_addr", 64);
+    mem.set_multi_alternatives(
+        0x3000,
+        MultiPayload::from_alternatives(vec![make_alt(&ctx, &addr_var, 0x3000, 0x42)]),
+    );
+
+    let fresh = RustBV::symbolic(&ctx, "sovm_val", 8);
+    mem.store_concrete(0x3000, fresh.clone()).unwrap();
+
+    let loaded = mem
+        .load_concrete_lazy(0x3000, 1, &ctx)
+        .expect("lazy load must succeed");
+
+    // Pin the address to the Multi candidate so a surviving cell would fold
+    // to 0x42, then pin the fresh symbol to a distinguishable value.
+    let probe = ctx.fork();
+    probe.assume_true(&addr_var.eq(&RustBV::concrete(0x3000, 64), &probe));
+    probe.assume_true(&fresh.eq(&RustBV::concrete(0x77, 8), &probe));
+    assert_eq!(
+        probe.eval(&loaded),
+        Some(0x77),
+        "load must return the freshly stored symbol, not the stale Multi alternative"
+    );
+}
+
 // ============================================================================
 // Phase 1.3 (angr-aija): store_concrete_multi / store_symbolic_unified_multi
 // helpers. These exercise the store -> Multi -> load round-trip.

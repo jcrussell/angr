@@ -101,6 +101,20 @@ impl SymbolicMemory {
 
         // If symbolic, store in symbolic_objects
         if value.is_symbolic() {
+            // angr-9ke6b.95: mirror the concrete branch's angr-1tes cleanup
+            // below. A byte may be marked Multi *or* Symbolic but not both
+            // (invariant documented on `SymbolicMemory`), and
+            // `load_concrete_lazy_inner` dispatches to Multi cells *before*
+            // consulting `symbolic_objects` — so leaving a pre-existing Multi
+            // cell in place would make every later load return the stale
+            // alternatives and silently drop the value being stored here.
+            // Must run before the page-cloning loop below, which would
+            // otherwise flush a stale `multi_bitmap` back over the clear.
+            if !self.multi_objects.is_empty() {
+                for i in 0..size {
+                    self.clear_multi_at(addr + i as u64);
+                }
+            }
             self.symbolic_objects.insert(addr, value.clone());
             // Update reverse span index: map each byte offset to (base_addr, width)
             let width_bits = value.width();
