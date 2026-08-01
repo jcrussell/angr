@@ -698,7 +698,11 @@ impl SymbolicMemory {
             return Ok(None);
         }
 
-        let result = concretizer.concretize_write(&addr, ctx);
+        // This entry point is only reached for addresses that carry a
+        // `MultiwriteAnnotation` on the Python side, so it passes Python's
+        // `_multiwrite_filter` and keeps the Range strategy even when
+        // SYMBOLIC_WRITE_ADDRESSES is off (angr-9ke6b.194).
+        let result = concretizer.concretize_write_multiwrite(&addr, ctx);
         match &result {
             ConcretizationResult::Single(concrete_addr) => {
                 self.store_concrete_automap(*concrete_addr, value)?;

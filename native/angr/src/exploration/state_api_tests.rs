@@ -27,7 +27,13 @@ fn state_with_multi_cell_store(value: u32) -> RustSimState {
         (addr_var, RustBV::concrete(value as u128, 32))
     };
 
-    let concretizer = AddressConcretizer::new();
+    // SYMBOLIC_WRITE_ADDRESSES on so the Range strategy applies: the default
+    // Max-only chain concretizes an unannotated symbolic address to a single
+    // value and installs no Multi cells (angr-9ke6b.194).
+    let concretizer = AddressConcretizer {
+        symbolic_write_addresses: true,
+        ..AddressConcretizer::new()
+    };
     let ctx = state.solver().clone();
     let ctx = ctx.borrow();
     state

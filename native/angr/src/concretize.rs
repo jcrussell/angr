@@ -332,16 +332,42 @@ impl AddressConcretizer {
     fn range_limit_for_mode(&self, mode: ConcretizationMode) -> u64 {
         match mode {
             ConcretizationMode::Read => self.read_range_limit,
-            ConcretizationMode::Write => {
-                if self.symbolic_write_addresses {
-                    self.write_range_limit
-                } else {
-                    // Without SYMBOLIC_WRITE_ADDRESSES, writes should concretize to single value
-                    // But we still allow the range limit for annotated writes
-                    self.write_range_limit
-                }
-            }
+            ConcretizationMode::Write => self.write_range_limit,
         }
+    }
+
+    /// Whether the `Range(write_range_limit)` strategy is part of the write
+    /// chain for this address.
+    ///
+    /// Mirrors `_create_default_write_strategies` in
+    /// `angr/storage/memory_mixins/address_concretization_mixin.py`: with
+    /// `SYMBOLIC_WRITE_ADDRESSES` on, `Range(128)` applies to every write;
+    /// with it off, `Range(128)` carries `filter=_multiwrite_filter`, so it
+    /// only fires for ASTs annotated with `MultiwriteAnnotation`. Everything
+    /// else skips straight to `SimConcretizationStrategyMax()` — a *single*
+    /// address, not a candidate set.
+    #[inline]
+    fn write_range_applies(&self, multiwrite: bool) -> bool {
+        self.symbolic_write_addresses || multiwrite
+    }
+
+    /// `SimConcretizationStrategyMax`: the single maximum satisfying address.
+    ///
+    /// Returns `None` only when the solver can produce neither a range nor a
+    /// single evaluation — callers decide what that means for them.
+    fn max_solution(&self, addr: &RustBV, ctx: &SymContext) -> Option<ConcretizationResult> {
+        if let Some(concrete) = addr.as_u64() {
+            return Some(ConcretizationResult::Single(concrete));
+        }
+        if let Some((_min, max)) = ctx.range(addr) {
+            pin_fallback_addr(ctx, addr, max as u64);
+            return Some(ConcretizationResult::Single(max as u64));
+        }
+        if let Some(val) = ctx.eval(addr) {
+            pin_fallback_addr(ctx, addr, val as u64);
+            return Some(ConcretizationResult::Single(val as u64));
+        }
+        None
     }
 
     /// Concretize for a read operation.
@@ -364,24 +390,59 @@ impl AddressConcretizer {
         result
     }
 
-    /// Concretize for a write operation.
-    /// Uses write_range_limit and falls back to Max (maximum solution) if range is too large.
+    /// Concretize for a write operation whose address carries no
+    /// `MultiwriteAnnotation` — i.e. every address the Rust interpreter
+    /// computes natively.
+    ///
+    /// With `SYMBOLIC_WRITE_ADDRESSES` off this is a Max-only chain (one
+    /// address); with it on, Range(write_range_limit) → Max.
     pub fn concretize_write(&self, addr: &RustBV, ctx: &SymContext) -> ConcretizationResult {
-        let result = self.concretize_with_mode(addr, ctx, ConcretizationMode::Write);
-        let result = match result {
-            ConcretizationResult::TooLarge { .. } if self.write_fallback_max => {
+        self.concretize_write_gated(addr, ctx, false)
+    }
+
+    /// Concretize for a write whose address AST carries a
+    /// `MultiwriteAnnotation` (routed in from Python via
+    /// `RustExplorationManager::state_memory_store_symbolic_multi`).
+    ///
+    /// Annotated addresses pass Python's `_multiwrite_filter`, so the
+    /// Range(write_range_limit) strategy applies even with
+    /// `SYMBOLIC_WRITE_ADDRESSES` off.
+    pub fn concretize_write_multiwrite(
+        &self,
+        addr: &RustBV,
+        ctx: &SymContext,
+    ) -> ConcretizationResult {
+        self.concretize_write_gated(addr, ctx, true)
+    }
+
+    /// Shared body of the two write entry points; `multiwrite` decides
+    /// whether the Range strategy is in the chain (see `write_range_applies`).
+    fn concretize_write_gated(
+        &self,
+        addr: &RustBV,
+        ctx: &SymContext,
+        multiwrite: bool,
+    ) -> ConcretizationResult {
+        let result = if self.write_range_applies(multiwrite) {
+            let ranged = self.concretize_with_mode(addr, ctx, ConcretizationMode::Write);
+            match ranged {
                 // Fallback: SimConcretizationStrategyMax - return maximum solution
-                if let Some((_min, max)) = ctx.range(addr) {
-                    pin_fallback_addr(ctx, addr, max as u64);
-                    ConcretizationResult::Single(max as u64)
-                } else if let Some(val) = ctx.eval(addr) {
-                    pin_fallback_addr(ctx, addr, val as u64);
-                    ConcretizationResult::Single(val as u64)
-                } else {
-                    result
+                ConcretizationResult::TooLarge { .. } if self.write_fallback_max => {
+                    self.max_solution(addr, ctx).unwrap_or(ranged)
                 }
+                _ => ranged,
             }
-            _ => result,
+        } else if self.write_fallback_max {
+            // Python's chain for an unannotated write with
+            // SYMBOLIC_WRITE_ADDRESSES off is just `Max()` — no Range step, so
+            // the store lands on exactly one address.
+            self.max_solution(addr, ctx)
+                .unwrap_or_else(|| ConcretizationResult::Failed("no solutions found".to_string()))
+        } else {
+            // CONSERVATIVE_WRITE_STRATEGY equivalent: Range filtered out and no
+            // Max fallback leaves an empty chain, which Python surfaces as an
+            // unresolvable address rather than a silent single-address guess.
+            ConcretizationResult::Failed("no applicable write strategy".to_string())
         };
         record_concretize_write(candidate_count(&result));
         result

@@ -7,6 +7,19 @@ fn new_interp(ctx: &SymContext) -> VEXInterpreter<'_> {
     VEXInterpreter::new(VexArch::AMD64, ctx)
 }
 
+/// An interpreter whose concretizer has `SYMBOLIC_WRITE_ADDRESSES` on, so
+/// symbolic-address writes keep the Range strategy and resolve to a candidate
+/// set. The default chain is Max-only for unannotated addresses and yields
+/// `Single` — see `AddressConcretizer::write_range_applies` (angr-9ke6b.194).
+fn new_interp_multiwrite(ctx: &SymContext) -> VEXInterpreter<'_> {
+    let mut interp = new_interp(ctx);
+    interp.set_concretizer(crate::concretize::AddressConcretizer {
+        symbolic_write_addresses: true,
+        ..crate::concretize::AddressConcretizer::new()
+    });
+    interp
+}
+
 fn make_irsb_with_temps(addr: u64, temp_types: &[IRType]) -> IRSB {
     let mut irsb = IRSB::new(addr, VexArch::AMD64);
     irsb.statements.push(IRStmt::IMark {
@@ -524,7 +537,7 @@ fn cas_store_symbolic_data_symbolic_addr_invalidates_cached_block() {
 #[test]
 fn handle_symbolic_store_strided_invalidates_cached_candidate_only() {
     let ctx = SymContext::new_mock();
-    let mut interp = new_interp(&ctx);
+    let mut interp = new_interp_multiwrite(&ctx);
     interp.add_concrete_memory(0x5000, vec![0u8; 0x2000]);
 
     // idx in {0, 1, 2} -> addr in {0x5010, 0x5020, 0x5030} (stride 0x10).
@@ -587,7 +600,7 @@ fn handle_symbolic_store_strided_invalidates_cached_candidate_only() {
 #[test]
 fn handle_symbolic_store_multiple_invalidates_cached_candidate_only() {
     let ctx = SymContext::new_mock();
-    let mut interp = new_interp(&ctx);
+    let mut interp = new_interp_multiwrite(&ctx);
     interp.add_concrete_memory(0x6000, vec![0u8; 0x2000]);
 
     let idx = RustBV::symbolic(&ctx, "idx_multiple", 64);

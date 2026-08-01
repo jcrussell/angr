@@ -6,6 +6,19 @@ use super::super::*;
 // Phase 1.2 (angr-n082) and store-side helpers in Phase 1.3 (angr-aija).
 // ============================================================================
 
+/// A concretizer with `SYMBOLIC_WRITE_ADDRESSES` on, so the Range write
+/// strategy is part of the chain and a symbolic-address store concretizes to
+/// a candidate *set*. With the option off (the default) Python — and, since
+/// angr-9ke6b.194, Rust — uses a Max-only chain for unannotated addresses,
+/// which yields a single address and installs no Multi cells. See
+/// `AddressConcretizer::write_range_applies`.
+fn multi_write_concretizer() -> AddressConcretizer {
+    AddressConcretizer {
+        symbolic_write_addresses: true,
+        ..AddressConcretizer::new()
+    }
+}
+
 /// Build a Multi alternative `(addr == cand) -> byte(value)` for tests.
 fn make_alt(ctx: &SymContext, addr_var: &RustBV, cand: u64, value: u8) -> MultiAlternative {
     let cand_const = RustBV::concrete(cand as u128, addr_var.width());
@@ -703,7 +716,7 @@ fn test_store_symbolic_unified_multi_concrete_addr_no_multi() {
 #[test]
 fn test_phase2_gate_on_installs_multi() {
     let ctx = SymContext::new_mock();
-    let concretizer = AddressConcretizer::new();
+    let concretizer = multi_write_concretizer();
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x4000, Permission::RWX);
 
@@ -769,7 +782,7 @@ fn test_phase2_safe_install_lazy_region_signals() {
 #[test]
 fn test_phase2_safe_install_skips_unmapped_non_lazy() {
     let ctx = SymContext::new_mock();
-    let concretizer = AddressConcretizer::new();
+    let concretizer = multi_write_concretizer();
     let mut mem = SymbolicMemory::new(Endness::Little);
 
     // Only page 0x1000 is mapped. Page 0x2000 is unmapped and NOT lazy.
@@ -801,7 +814,7 @@ fn test_phase2_safe_install_skips_unmapped_non_lazy() {
 #[test]
 fn test_multi_install_enforces_write_permission() {
     let ctx = SymContext::new_mock();
-    let concretizer = AddressConcretizer::new();
+    let concretizer = multi_write_concretizer();
     let mut mem = SymbolicMemory::new(Endness::Little);
 
     // Candidate 0x1000 is read-only; 0x2000 is writable.
@@ -850,7 +863,7 @@ fn test_multi_install_enforces_write_permission() {
 #[test]
 fn test_multi_install_permission_check_off_by_default() {
     let ctx = SymContext::new_mock();
-    let concretizer = AddressConcretizer::new();
+    let concretizer = multi_write_concretizer();
     let mut mem = SymbolicMemory::new(Endness::Little);
 
     mem.map(0x1000, 0x1000, Permission::R);
@@ -915,7 +928,7 @@ fn test_phase2_flush_multi_to_symbolic_objects() {
 #[test]
 fn test_phase2_fork_independence_via_safe_install() {
     let ctx = SymContext::new_mock();
-    let concretizer = AddressConcretizer::new();
+    let concretizer = multi_write_concretizer();
     let mut parent = SymbolicMemory::new(Endness::Little);
     parent.map(0x1000, 0x4000, Permission::RWX);
 
@@ -1568,7 +1581,7 @@ fn test_concrete_overwrite_clears_multi_cell() {
 #[test]
 fn test_load_concrete_sees_unflushed_multi_cell() {
     let ctx = SymContext::new_mock();
-    let concretizer = AddressConcretizer::new();
+    let concretizer = multi_write_concretizer();
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x4000, Permission::RWX);
 

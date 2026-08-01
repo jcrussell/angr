@@ -260,3 +260,109 @@ fn test_write_fallback_pins_address_to_single_solution() {
         "write fallback must pin addr == chosen"
     );
 }
+
+/// angr-9ke6b.194: with `SYMBOLIC_WRITE_ADDRESSES` off, Python's write chain
+/// is `Range(128, filter=_multiwrite_filter)` → `Max()`. An address that
+/// carries no `MultiwriteAnnotation` fails the filter, so the *only* strategy
+/// that runs is `Max()` — the store lands on a single address (the maximum
+/// satisfying one), never on a candidate set. Rust used to run the Range
+/// strategy unconditionally and fan the store out to every candidate.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn unannotated_write_without_symbolic_write_addresses_is_max_only() {
+    let ctx = SymContext::new_mock();
+    let concretizer = AddressConcretizer::new();
+    assert!(!concretizer.symbolic_write_addresses, "precondition");
+
+    // Three satisfying addresses, well inside write_range_limit (128), so the
+    // Range strategy would happily return Multiple if it were in the chain.
+    let addr = RustBV::symbolic(&ctx, "unannotated_w", 64);
+    let a0 = addr.eq(&RustBV::concrete(0x1000, 64), &ctx);
+    let a1 = addr.eq(&RustBV::concrete(0x1004, 64), &ctx);
+    let a2 = addr.eq(&RustBV::concrete(0x1008, 64), &ctx);
+    ctx.assume_true(&a0.or(&a1, &ctx).or(&a2, &ctx));
+
+    match concretizer.concretize_write(&addr, &ctx) {
+        ConcretizationResult::Single(a) => {
+            assert_eq!(a, 0x1008, "Max() must pick the maximum satisfying address")
+        }
+        other => panic!("expected Single(0x1008) from the Max-only chain, got {other:?}"),
+    }
+}
+
+/// The complement: a `MultiwriteAnnotation`-tagged address (routed in through
+/// `store_symbolic_unified_multi`) passes `_multiwrite_filter`, so Range stays
+/// in the chain even with `SYMBOLIC_WRITE_ADDRESSES` off and the store keeps
+/// all its candidates.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn multiwrite_annotated_write_keeps_the_range_strategy() {
+    let ctx = SymContext::new_mock();
+    let concretizer = AddressConcretizer::new();
+
+    let addr = RustBV::symbolic(&ctx, "annotated_w", 64);
+    let a0 = addr.eq(&RustBV::concrete(0x1000, 64), &ctx);
+    let a1 = addr.eq(&RustBV::concrete(0x1001, 64), &ctx);
+    let a2 = addr.eq(&RustBV::concrete(0x1003, 64), &ctx);
+    ctx.assume_true(&a0.or(&a1, &ctx).or(&a2, &ctx));
+
+    // {0, 1, 3} deltas -> GCD 1, so stride detection declines and the result
+    // is a genuine Multiple rather than Strided.
+    match concretizer.concretize_write_multiwrite(&addr, &ctx) {
+        ConcretizationResult::Multiple(addrs) => {
+            assert_eq!(addrs, vec![0x1000, 0x1001, 0x1003]);
+        }
+        other => panic!("expected Multiple for an annotated write, got {other:?}"),
+    }
+}
+
+/// `SYMBOLIC_WRITE_ADDRESSES` on restores the Range strategy for *every*
+/// write, annotated or not — the option is the global equivalent of the
+/// annotation.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn symbolic_write_addresses_on_restores_range_for_unannotated_writes() {
+    let ctx = SymContext::new_mock();
+    let concretizer = AddressConcretizer {
+        symbolic_write_addresses: true,
+        ..AddressConcretizer::new()
+    };
+
+    let addr = RustBV::symbolic(&ctx, "swa_on_w", 64);
+    let a0 = addr.eq(&RustBV::concrete(0x2000, 64), &ctx);
+    let a1 = addr.eq(&RustBV::concrete(0x2001, 64), &ctx);
+    let a2 = addr.eq(&RustBV::concrete(0x2003, 64), &ctx);
+    ctx.assume_true(&a0.or(&a1, &ctx).or(&a2, &ctx));
+
+    match concretizer.concretize_write(&addr, &ctx) {
+        ConcretizationResult::Multiple(addrs) => {
+            assert_eq!(addrs, vec![0x2000, 0x2001, 0x2003]);
+        }
+        other => panic!("expected Multiple with SYMBOLIC_WRITE_ADDRESSES on, got {other:?}"),
+    }
+}
+
+/// The Max-only chain still pins `addr == chosen` so downstream loads and the
+/// exported solver agree on where the store landed.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn max_only_write_pins_the_chosen_address() {
+    let ctx = SymContext::new_mock();
+    let concretizer = AddressConcretizer::new();
+
+    let addr = RustBV::symbolic(&ctx, "max_only_pin", 64);
+    let a0 = addr.eq(&RustBV::concrete(0x4000, 64), &ctx);
+    let a1 = addr.eq(&RustBV::concrete(0x4008, 64), &ctx);
+    ctx.assume_true(&a0.or(&a1, &ctx));
+
+    let chosen = match concretizer.concretize_write(&addr, &ctx) {
+        ConcretizationResult::Single(a) => a,
+        other => panic!("expected Single, got {other:?}"),
+    };
+    assert_eq!(chosen, 0x4008);
+    assert_eq!(
+        ctx.solutions(&addr, 4),
+        vec![chosen as u128],
+        "Max() must pin addr == chosen, like the TooLarge fallback does"
+    );
+}

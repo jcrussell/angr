@@ -1035,7 +1035,13 @@ fn test_mem_ite_depth_counter_records_eager_multi_store() {
     );
 
     let ctx = SymContext::new_mock();
-    let concretizer = AddressConcretizer::new();
+    // SYMBOLIC_WRITE_ADDRESSES on so the Range strategy applies and the store
+    // fans out to 3 eager ITE candidates; the default Max-only chain would
+    // resolve to one address and record no ITE depth (angr-9ke6b.194).
+    let concretizer = AddressConcretizer {
+        symbolic_write_addresses: true,
+        ..AddressConcretizer::new()
+    };
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x1000, Permission::RWX);
 
@@ -1123,7 +1129,13 @@ fn test_concretize_counters_fire_on_symbolic_store() {
     let pre_max = pre.get("concretize_max_candidates").copied().unwrap_or(0);
 
     let ctx = SymContext::new_mock();
-    let concretizer = AddressConcretizer::new();
+    // SYMBOLIC_WRITE_ADDRESSES on so the Range strategy applies and the store
+    // sees K=3 candidates; the default Max-only chain would report K=1
+    // (angr-9ke6b.194).
+    let concretizer = AddressConcretizer {
+        symbolic_write_addresses: true,
+        ..AddressConcretizer::new()
+    };
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x3000, 0x1000, Permission::RWX);
 

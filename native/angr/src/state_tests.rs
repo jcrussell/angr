@@ -2597,6 +2597,13 @@ fn test_export_full_smoke_history_callstack_arch() {
 #[test]
 fn test_memory_load_sees_unflushed_multi_cells() {
     let mut state = RustSimState::new("amd64").unwrap();
+    // SYMBOLIC_WRITE_ADDRESSES on: without it an unannotated symbolic-address
+    // store uses Python's Max-only chain and lands on one address, installing
+    // no Multi cells (angr-9ke6b.194).
+    state.set_concretizer(crate::concretize::AddressConcretizer {
+        symbolic_write_addresses: true,
+        ..crate::concretize::AddressConcretizer::new()
+    });
     state.map_memory(0x1000, 0x4000, crate::memory::Permission::RWX);
 
     let addr_var = {

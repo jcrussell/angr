@@ -179,7 +179,13 @@ fn test_assert_address_disjunction_multiple_write_hoists() {
         .unwrap_or(0);
 
     let ctx = SymContext::new_mock();
-    let concretizer = AddressConcretizer::new();
+    // SYMBOLIC_WRITE_ADDRESSES on so the Range strategy applies; the default
+    // Max-only chain resolves an unannotated symbolic address to one value and
+    // hoists no disjunction (angr-9ke6b.194).
+    let concretizer = AddressConcretizer {
+        symbolic_write_addresses: true,
+        ..AddressConcretizer::new()
+    };
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x1000, Permission::RWX);
 
