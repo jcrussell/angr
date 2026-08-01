@@ -25,7 +25,18 @@
 use parking_lot::RwLock;
 use pyo3::prelude::*;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+
+/// Live-symbol counts at which [`SymbolicIdentityRegistry::register`] emits a
+/// one-shot unbounded-growth warning.
+///
+/// The registry has no production GC caller (see [`SymbolicIdentityRegistry::retain`]
+/// for why a sound one is not trivially available), so an exploration that
+/// mints fresh symbols without bound grows all four maps without bound, each
+/// entry pinning a claripy AST alive from the Rust side. That is invisible
+/// today; warning once per order of magnitude makes it loud instead of
+/// silently degrading, and gives a future GC a metric to gate on.
+const GROWTH_WARN_THRESHOLDS: [usize; 3] = [100_000, 1_000_000, 10_000_000];
 
 /// Information about a registered symbol.
 #[derive(Clone, Debug)]
@@ -71,6 +82,12 @@ pub struct SymbolicIdentityRegistry {
     /// Next available ID for new symbols.
     next_id: AtomicU64,
 
+    /// Index of the next unfired entry in [`GROWTH_WARN_THRESHOLDS`].
+    ///
+    /// Advanced monotonically by `maybe_warn_growth` so each threshold warns
+    /// at most once per registry lifetime; reset by [`SymbolicIdentityRegistry::clear`].
+    growth_warn_idx: AtomicUsize,
+
     /// Statistics for debugging.
     stats: RwLock<RegistryStats>,
 }
@@ -101,6 +118,7 @@ impl SymbolicIdentityRegistry {
             name_to_info: RwLock::new(HashMap::new()),
             rust_id_to_name: RwLock::new(HashMap::new()),
             next_id: AtomicU64::new(0),
+            growth_warn_idx: AtomicUsize::new(0),
             stats: RwLock::new(RegistryStats::default()),
         }
     }
@@ -114,9 +132,15 @@ impl SymbolicIdentityRegistry {
     /// * `width` - The bit width
     /// * `py_ast` - The original Python AST object
     pub fn register(&self, py_hash: i64, rust_id: u64, name: &str, width: u32, py_ast: Py<PyAny>) {
-        // Store mappings
+        // Store mappings. Each guard is scoped to its own statement so no two
+        // of the four maps are ever write-locked at once here — `remove` and
+        // `retain` acquire them in a different order (angr-zi35f.12).
         self.py_hash_to_rust_id.write().insert(py_hash, rust_id);
-        self.rust_id_to_py.write().insert(rust_id, py_ast);
+        let live = {
+            let mut id_to_py = self.rust_id_to_py.write();
+            id_to_py.insert(rust_id, py_ast);
+            id_to_py.len()
+        };
         // D2 Fix: Include width in the name key to prevent collisions
         // when symbols have the same name but different widths.
         // E.g., "x" with width 32 vs "x" with width 64 should not collide.
@@ -135,6 +159,40 @@ impl SymbolicIdentityRegistry {
 
         // Update stats
         self.stats.write().new_registrations += 1;
+
+        self.maybe_warn_growth(live);
+    }
+
+    /// Warn once per crossed entry of [`GROWTH_WARN_THRESHOLDS`].
+    ///
+    /// Split out of `register` so the growth policy is testable without
+    /// actually minting a hundred thousand symbols.
+    fn maybe_warn_growth(&self, live: usize) {
+        // Fast path for the overwhelmingly common case: one relaxed load, no
+        // branch into the CAS.
+        let idx = self.growth_warn_idx.load(Ordering::Relaxed);
+        let Some(&threshold) = GROWTH_WARN_THRESHOLDS.get(idx) else {
+            return;
+        };
+        if live < threshold {
+            return;
+        }
+        // Racing registrations must not both warn: only the thread that wins
+        // the CAS logs. A loser simply skips — the next registration re-reads
+        // the advanced index and warns for the following threshold if the
+        // count already blew past it.
+        if self
+            .growth_warn_idx
+            .compare_exchange(idx, idx + 1, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            log::warn!(
+                "symbolic identity registry holds {live} live symbols (crossed {threshold}); \
+                 it has no garbage collector, so every symbol minted by this exploration is \
+                 pinned — along with its original claripy AST — until the next \
+                 reset_for_new_exploration"
+            );
+        }
     }
 
     /// Look up the canonical Rust-side name of a registered symbol id.
@@ -256,6 +314,7 @@ impl SymbolicIdentityRegistry {
         self.rust_id_to_py.write().clear();
         self.name_to_info.write().clear();
         self.rust_id_to_name.write().clear();
+        self.growth_warn_idx.store(0, Ordering::SeqCst);
         *self.stats.write() = RegistryStats::default();
     }
 
@@ -320,8 +379,30 @@ impl SymbolicIdentityRegistry {
 
     /// Prune symbols not in the given set of active IDs.
     ///
-    /// This is used for garbage collection of symbols that are no longer
-    /// referenced by any state.
+    /// # Safety precondition — read before adding a caller
+    ///
+    /// `active_ids` MUST be a **superset** of every symbol id reachable from
+    /// anything still live in the process: the registers, memory and
+    /// constraints of every state in every stash, states in flight on worker
+    /// threads, values held by pending Python callbacks, and the `RustBV`s
+    /// pinned inside the thread-local bridge caches (`claripy_bridge::cache`).
+    ///
+    /// Dropping an id that is still reachable is **silently wrong, not loud**:
+    /// on the next export, `rustbv_to_claripy` misses the registry and mints a
+    /// fresh `claripy.BVS(name, width)`. Without `explicit_name`, claripy
+    /// renames that to `name_<counter>_<width>`, so the re-exported leaf is a
+    /// brand-new unconstrained variable and every constraint carried by the
+    /// original stops binding (the angr-izov2 failure mode).
+    ///
+    /// # Why there is no production caller yet
+    ///
+    /// Computing that superset needs a full live-symbol traversal at a
+    /// quiescent point in the exploration loop; no such traversal exists today
+    /// (angr-9ke6b.40 → follow-up bead). Until one does, the only production
+    /// mutation of the registry is the wholesale `reset_for_new_exploration`
+    /// clear at exploration start, and unbounded growth within a single run is
+    /// surfaced by `maybe_warn_growth` / the `symbol_registry_size` stat rather
+    /// than collected. Do not wire an approximate active set into this method.
     pub fn retain(&self, active_ids: &std::collections::HashSet<u64>) {
         let mut id_to_py = self.rust_id_to_py.write();
         let mut hash_to_id = self.py_hash_to_rust_id.write();

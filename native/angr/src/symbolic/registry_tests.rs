@@ -97,3 +97,81 @@ fn test_registry_ensure_id_at_least() {
     let next = registry.allocate_id();
     assert!(next >= 101);
 }
+
+// --- unbounded-growth warning policy (angr-9ke6b.40) ---
+//
+// The registry has no GC caller, so growth over a long run is surfaced by a
+// one-shot warning per threshold rather than collected. These exercise the
+// policy directly (`maybe_warn_growth`) so they cost nothing — driving it
+// through `register` would mean minting 100k symbols.
+
+#[test]
+fn growth_warn_index_does_not_advance_below_the_first_threshold() {
+    let registry = SymbolicIdentityRegistry::new();
+
+    registry.maybe_warn_growth(GROWTH_WARN_THRESHOLDS[0] - 1);
+
+    assert_eq!(registry.growth_warn_idx.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn growth_warn_fires_once_per_threshold_not_once_per_registration() {
+    let registry = SymbolicIdentityRegistry::new();
+
+    // Many registrations sitting between thresholds 0 and 1 must advance the
+    // index exactly once — otherwise every symbol past 100k logs a warning.
+    for _ in 0..5 {
+        registry.maybe_warn_growth(GROWTH_WARN_THRESHOLDS[0]);
+    }
+    assert_eq!(registry.growth_warn_idx.load(Ordering::SeqCst), 1);
+
+    // Crossing the next threshold arms the next warning.
+    registry.maybe_warn_growth(GROWTH_WARN_THRESHOLDS[1]);
+    assert_eq!(registry.growth_warn_idx.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn growth_warn_saturates_past_the_last_threshold() {
+    let registry = SymbolicIdentityRegistry::new();
+
+    // A count above every threshold must not index past the array.
+    for _ in 0..GROWTH_WARN_THRESHOLDS.len() + 3 {
+        registry.maybe_warn_growth(usize::MAX);
+    }
+
+    assert_eq!(
+        registry.growth_warn_idx.load(Ordering::SeqCst),
+        GROWTH_WARN_THRESHOLDS.len()
+    );
+}
+
+#[test]
+fn clear_rearms_the_growth_warning() {
+    let registry = SymbolicIdentityRegistry::new();
+
+    registry.maybe_warn_growth(usize::MAX);
+    assert_ne!(registry.growth_warn_idx.load(Ordering::SeqCst), 0);
+
+    // `clear` is the exploration-start reset; a fresh run must be able to warn
+    // again rather than inherit the previous run's exhausted thresholds.
+    registry.clear();
+
+    assert_eq!(registry.growth_warn_idx.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn register_tracks_live_count_for_the_growth_warning() {
+    let registry = SymbolicIdentityRegistry::new();
+
+    Python::initialize();
+    Python::attach(|py| {
+        registry.register(1, 1, "a", 32, py.None());
+        registry.register(2, 2, "b", 32, py.None());
+        // Re-registering an existing id must not double-count: the warning is
+        // driven by live entries, not by cumulative registrations.
+        registry.register(3, 2, "b", 32, py.None());
+
+        assert_eq!(registry.len(), 2);
+        assert_eq!(registry.stats().new_registrations, 3);
+    });
+}

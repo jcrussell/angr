@@ -50,6 +50,18 @@ impl RustExplorationManager {
         dict.set_item("find_addrs", self.find_addrs.len())?;
         dict.set_item("avoid_addrs", self.avoid_addrs.len())?;
         dict.set_item("block_cache_size", self.environment.block_cache.len())?;
+        // Symbolic-identity-registry size. PROCESS-GLOBAL, not per-manager:
+        // the registry is only ever cleared wholesale at exploration start,
+        // and has no garbage collector (see `SymbolicIdentityRegistry::retain`
+        // for why a sound one is not trivially available). Exported so that
+        // unbounded growth over a long run is measurable — every live entry
+        // pins one original claripy AST (angr-9ke6b.40).
+        let registry = crate::symbolic::global_registry();
+        dict.set_item("symbol_registry_size", registry.len())?;
+        dict.set_item(
+            "symbol_registry_registrations",
+            registry.stats().new_registrations,
+        )?;
         // IRSB block-cache hit/miss/eviction counters (always-on; merged from
         // the per-interpreter ExecutionStats on each `swap_block_cache`).
         // Use these to tune `BLOCK_CACHE_CAPACITY`: a high eviction-to-miss
