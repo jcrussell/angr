@@ -82,7 +82,17 @@ pub trait Arch: Send + Sync {
     /// Get the name of a register by offset.
     fn register_name(&self, offset: u32) -> Option<&'static str>;
 
-    /// Get all register names.
+    /// Get all register names that cross the Python boundary.
+    ///
+    /// This drives `register_names_for_arch` (the Python-side
+    /// `_supported_register_names` filter) and `RustSimState::export_full`'s
+    /// `named_registers`, so it is the set of registers that round-trip
+    /// through `state.regs.*`. It is a SUBSET of the per-arch `CANONICAL`
+    /// table: entries wider than 16 bytes must be omitted, because the
+    /// named-register channel carries each value as a `u128`
+    /// (`ExplorationStateSnapshot::get_registers_named`) and
+    /// `RegisterFile::get`'s concrete read composes bytes into a `u128`.
+    /// Today `fpreg` (64 B on x86/AMD64) is the only such register.
     fn register_names(&self) -> &[&'static str];
 
     /// Get the offset of the register holding the syscall number.

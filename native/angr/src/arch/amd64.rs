@@ -211,11 +211,16 @@ const ALIASES: &[RegEntry] = &[
     ("gs", offsets::GS_CONST, 8),
 ];
 
+// Registers exported to / imported from Python (see `Arch::register_names`).
+// Deliberately omits `fpreg`: it is 64 bytes wide and the named-register
+// channel is u128-capped, so it cannot round-trip here. The x87 control/status
+// words below are all <= 8 bytes and do round-trip (angr-9ke6b.6).
 const REGISTER_NAMES: &[&str] = &[
     "rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi", "r8", "r9", "r10", "r11", "r12", "r13",
     "r14", "r15", "rip", "cc_op", "cc_dep1", "cc_dep2", "cc_ndep", "dflag", "acflag", "idflag",
     "fs_const", "gs_const", "sseround", "xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "xmm5", "xmm6",
-    "xmm7", "xmm8", "xmm9", "xmm10", "xmm11", "xmm12", "xmm13", "xmm14", "xmm15",
+    "xmm7", "xmm8", "xmm9", "xmm10", "xmm11", "xmm12", "xmm13", "xmm14", "xmm15", "fptag",
+    "fpround", "fc3210", "ftop",
 ];
 
 impl Arch for AMD64 {

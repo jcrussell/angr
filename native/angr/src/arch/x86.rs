@@ -170,10 +170,12 @@ const ALIASES: &[RegEntry] = &[
     ("ftop", offsets::FTOP, 4),
 ];
 
+// Registers exported to / imported from Python (see `Arch::register_names`).
+// `fpreg` is omitted for the same u128-width reason as on AMD64 (angr-9ke6b.6).
 const REGISTER_NAMES: &[&str] = &[
     "eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi", "eip", "cc_op", "cc_dep1", "cc_dep2",
     "cc_ndep", "dflag", "idflag", "acflag", "xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "xmm5", "xmm6",
-    "xmm7",
+    "xmm7", "fptag", "fpround", "fc3210", "ftop",
 ];
 
 impl Arch for X86 {

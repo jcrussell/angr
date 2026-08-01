@@ -528,3 +528,78 @@ fn serde_unknown_arch_name_falls_back_to_amd64() {
     let restored: RegisterFile = serde_json::from_str(&s).expect("deserialize");
     assert_eq!(restored.arch().name(), "AMD64");
 }
+
+/// `register_names()` is the set that crosses the Python boundary
+/// (`register_names_for_arch` -> `_supported_register_names`, and
+/// `export_full`'s `named_registers`). Two invariants, for every arch:
+///
+///  1. Every name resolves through `register_offset` / `register_size`,
+///     otherwise `set_registers_bulk` raises `unknown register: ...` on the
+///     Python side and the whole bulk write is lost.
+///  2. No entry exceeds 16 bytes. The named-register channel carries each
+///     value as a `u128` (`ExplorationStateSnapshot::get_registers_named`),
+///     and `RegisterFile::get`'s concrete read shifts bytes into a `u128`, so
+///     a wider register would silently produce garbage. This is why `fpreg`
+///     (64 B) stays out of the x86/AMD64 lists (angr-9ke6b.6).
+#[test]
+fn register_names_all_resolve_and_fit_in_u128() {
+    for desc in ALL_ARCHES {
+        let arch = (desc.make_arch)();
+        for &name in arch.register_names() {
+            let offset = arch
+                .register_offset(name)
+                .unwrap_or_else(|| panic!("{}: register_names has unresolvable {name}", desc.name));
+            let size = arch
+                .register_size(name)
+                .unwrap_or_else(|| panic!("{}: register_names has unsized {name}", desc.name));
+            assert!(
+                size <= 16,
+                "{}: {name} is {size} bytes, too wide for the u128 named-register channel",
+                desc.name
+            );
+            assert!(
+                offset as usize + size as usize <= arch.state_size(),
+                "{}: {name} runs past the guest state",
+                desc.name
+            );
+        }
+    }
+}
+
+/// The x87 control/status words must round-trip through the named-register
+/// path on both x86 arches — they were absent from `REGISTER_NAMES` while
+/// present in `CANONICAL`, so x87 state silently never reached
+/// `state.regs.*` after Rust-engine exploration (angr-9ke6b.6).
+#[test]
+fn x87_control_registers_round_trip_through_register_names() {
+    let ctx = SymContext::new();
+    for arch in [
+        arch_from_name("AMD64").unwrap(),
+        arch_from_name("X86").unwrap(),
+    ] {
+        let arch_name = arch.name();
+        let mut regs = RegisterFile::new(arch);
+        let names = regs.arch().register_names();
+        for fpu in ["fptag", "fpround", "fc3210", "ftop"] {
+            assert!(
+                names.contains(&fpu),
+                "{arch_name}: {fpu} missing from register_names()"
+            );
+        }
+        assert!(
+            !names.contains(&"fpreg"),
+            "{arch_name}: fpreg is 64 bytes and cannot use the u128 channel"
+        );
+
+        for fpu in ["fptag", "fpround", "fc3210", "ftop"] {
+            let bits = regs.arch().register_size(fpu).unwrap() * 8;
+            assert!(
+                regs.put_reg(fpu, RustBV::concrete(0x25, bits)),
+                "{arch_name}: put_reg({fpu}) rejected"
+            );
+            let got = regs.get_reg(fpu, &ctx).expect("register readable");
+            assert_eq!(got.as_u128(), Some(0x25), "{arch_name}: {fpu} round-trip");
+            assert_eq!(got.width(), bits, "{arch_name}: {fpu} width");
+        }
+    }
+}
