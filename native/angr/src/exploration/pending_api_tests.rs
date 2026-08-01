@@ -102,3 +102,71 @@ fn pending_ancestry_without_root_is_state_plus_parent() {
     let ancestry = mgr._get_pending_ancestry(b_id).expect("ancestry");
     assert_eq!(ancestry, vec![b_id, a_id]);
 }
+
+/// GAP-6 regression (angr-9ke6b.47): two nested zero-length hooks at the SAME
+/// address push two skip tokens, and each occurrence must consume exactly one.
+/// The old `retain(|&(addr, _)| addr != pc)` collapsed both in a single call,
+/// so the second occurrence found no token, re-fired the hook, and re-armed
+/// the very infinite loop GAP 6 exists to prevent.
+#[test]
+fn consume_skip_hook_pops_one_entry_per_nested_occurrence() {
+    Python::initialize();
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+
+    mgr._set_skip_hook_addr(0x400123);
+    mgr._set_skip_hook_addr(0x400123);
+    assert_eq!(mgr.skip_hook_stack.len(), 2, "no dedup on push");
+
+    assert!(mgr.consume_skip_hook(0x400123), "first occurrence skips");
+    assert_eq!(
+        mgr.skip_hook_stack.len(),
+        1,
+        "exactly one token consumed, not all matches"
+    );
+    assert!(
+        mgr.consume_skip_hook(0x400123),
+        "second nested occurrence still has its own token"
+    );
+    assert!(mgr.skip_hook_stack.is_empty());
+    assert!(
+        !mgr.consume_skip_hook(0x400123),
+        "stack drained — hook fires normally again"
+    );
+}
+
+/// A token for a different address is untouched by consumption at `pc`, and an
+/// unmatched consume is a no-op rather than a blanket clear.
+#[test]
+fn consume_skip_hook_leaves_other_addresses_alone() {
+    Python::initialize();
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+
+    mgr._set_skip_hook_addr(0x400123);
+    mgr._set_skip_hook_addr(0x400456);
+
+    assert!(!mgr.consume_skip_hook(0x400789), "no token for this pc");
+    assert_eq!(mgr.skip_hook_stack.len(), 2);
+
+    assert!(mgr.consume_skip_hook(0x400123));
+    assert_eq!(
+        mgr.skip_hook_stack,
+        vec![(0x400456, mgr.steps + 2)],
+        "only the matching entry is popped"
+    );
+}
+
+/// Expired entries are dropped before the match, so a token that outlived its
+/// two-step window never suppresses a later, legitimate hook hit.
+#[test]
+fn consume_skip_hook_drops_expired_entries() {
+    Python::initialize();
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+
+    mgr._set_skip_hook_addr(0x400123); // expiry = steps + 2
+    mgr.steps += 2;
+    assert!(
+        !mgr.consume_skip_hook(0x400123),
+        "expired token must not skip"
+    );
+    assert!(mgr.skip_hook_stack.is_empty(), "expired entry pruned");
+}

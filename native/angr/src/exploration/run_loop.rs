@@ -2194,22 +2194,10 @@ impl RustExplorationManager {
         }
 
         // Check hooks (SimProcedures)
-        // GAP 6: Stack-based skip tracking for zero-length hooks
-        // Clean up expired skip entries before checking
-        self.skip_hook_stack
-            .retain(|&(_, expiry)| expiry > self.steps);
-
-        // Check if this address is in the skip stack
-        let should_skip_hook = self.skip_hook_stack.iter().any(|&(addr, _)| addr == pc);
-        if should_skip_hook {
-            // Remove this address from the skip stack (consumed)
-            self.skip_hook_stack.retain(|&(addr, _)| addr != pc);
-            log::debug!(
-                "Skipping hook at 0x{:x} (zero-length hook, step {})",
-                pc,
-                self.steps
-            );
-        }
+        // GAP 6: stack-based skip tracking for zero-length hooks. Expires
+        // stale entries and pops at most one token for `pc`; see
+        // `consume_skip_hook`.
+        let should_skip_hook = self.consume_skip_hook(pc);
         if self.hooks.contains(&pc) && !should_skip_hook {
             // Check if this is a registered SimProcedure
             if let Some((name, num_args, no_return)) = self.simprocedures.get(&pc).cloned() {
