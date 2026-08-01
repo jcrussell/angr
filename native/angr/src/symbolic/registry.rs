@@ -37,7 +37,15 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 /// entry pinning a claripy AST alive from the Rust side. That is invisible
 /// today; warning once per order of magnitude makes it loud instead of
 /// silently degrading, and gives a future GC a metric to gate on.
-const GROWTH_WARN_THRESHOLDS: [usize; 3] = [100_000, 1_000_000, 10_000_000];
+///
+/// **Measured cost per entry ≈ 1.7 KB** (angr-9ke6b.224, 2026-08-01): ~1.44 KB
+/// is the pinned claripy leaf (RSS delta over 100k `BVS(.., 32,
+/// explicit_name=True)` leaves), the remaining ~0.3 KB the four Rust maps. So
+/// these thresholds are ~170 MB and ~1.7 GB of resident memory. A third
+/// order-of-magnitude step used to sit at 10 million entries — ~17 GB, past the
+/// point any host survives to log it — so it is gone; 1 million is the last
+/// count a process can plausibly reach and still warn.
+const GROWTH_WARN_THRESHOLDS: [usize; 2] = [100_000, 1_000_000];
 
 /// Claripy-side sort of a registered symbol.
 ///
@@ -513,6 +521,24 @@ impl SymbolicIdentityRegistry {
     /// a single run is surfaced by `maybe_warn_growth` / the
     /// `symbol_registry_size` stat rather than collected. Wiring that up is a
     /// memory/fidelity trade now, no longer a correctness one.
+    ///
+    /// That trade was measured and declined (angr-9ke6b.224, 2026-08-01). Ten
+    /// `mma_howtouse` iterations in one process (450 Callable invocations,
+    /// `tests/benchmarks/run_leak_check.py`, which now reports the
+    /// `symbol_registry_size` series) grow the registry perfectly linearly at
+    /// 810 entries/iteration to 8100, ≈ 13.8 MB at the ~1.7 KB/entry measured
+    /// for [`GROWTH_WARN_THRESHOLDS`] — 3.5% of the 394 MB peak RSS, about a
+    /// third of that soak's total RSS growth, and the gate still passes at
+    /// 1.09x against a 1.5x threshold. Two things a future GC should know:
+    ///
+    /// - 84% of an entry is the pinned claripy AST, not the Rust maps. Dropping
+    ///   only `name_to_info` / `py_hash_to_rust_id` (the cheap, purely-Rust
+    ///   half) would recover almost nothing; `rust_id_to_py` is the one that
+    ///   matters.
+    /// - This implementation is O(removed × live): each removed id rescans
+    ///   `py_hash_to_rust_id` and `name_to_info` in full. Fine at the 8k scale
+    ///   above, quadratic at the 100k threshold — invert to a per-id index
+    ///   before wiring a caller that collects at that size.
     pub fn retain(&self, active_ids: &std::collections::HashSet<u64>) {
         let mut id_to_py = self.rust_id_to_py.write();
         let mut hash_to_id = self.py_hash_to_rust_id.write();

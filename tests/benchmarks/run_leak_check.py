@@ -96,15 +96,27 @@ def _run_iters_in_child(example_name, iters, mem_limit_mb, examples_dir, engine)
         sys.path.insert(0, bench_dir)
 
     managers_built = 0
+    # Running max of `symbol_registry_size` (the process-global
+    # SymbolicIdentityRegistry, which has no GC — angr-9ke6b.224). Sampled at
+    # manager *construction* rather than after `main()` so nothing here holds a
+    # manager alive past its natural lifetime and distorts the RSS series the
+    # gate reads; since the registry is process-global and monotonic, the value
+    # seen when iteration i+1 builds its first manager is the value iteration i
+    # finished with.
+    registry_size_seen = 0
     if engine == "rust":
         from engine_patch import install_rust_engine_patch
 
         from angr.exploration import RustExplorationManager
 
         def _make_rust_manager(project, states):
-            nonlocal managers_built
+            nonlocal managers_built, registry_size_seen
             managers_built += 1
-            return RustExplorationManager(project, states)
+            mgr = RustExplorationManager(project, states)
+            # `stats` is a @property on the wrapper, not a method (invariant
+            # I10 in rust_manager.py) — calling it raises TypeError.
+            registry_size_seen = max(registry_size_seen, mgr.stats.get("symbol_registry_size", 0))
+            return mgr
 
         install_rust_engine_patch(_make_rust_manager)
 
@@ -120,6 +132,7 @@ def _run_iters_in_child(example_name, iters, mem_limit_mb, examples_dir, engine)
 
     per_iter_rss_kb = []
     per_iter_wall_s = []
+    per_iter_registry = []
     for i in range(iters):
         t0 = time.perf_counter()
         try:
@@ -143,6 +156,7 @@ def _run_iters_in_child(example_name, iters, mem_limit_mb, examples_dir, engine)
         # process — so it is monotonically non-decreasing across iters,
         # which is exactly the signal we want for "did peak grow?".
         per_iter_rss_kb.append(_res.getrusage(_res.RUSAGE_SELF).ru_maxrss)
+        per_iter_registry.append(registry_size_seen)
 
     if engine == "rust" and managers_built == 0:
         # Guards the whole point of the gate: a bench whose managers never
@@ -160,6 +174,7 @@ def _run_iters_in_child(example_name, iters, mem_limit_mb, examples_dir, engine)
         "ok": True,
         "per_iter_rss_kb": per_iter_rss_kb,
         "per_iter_wall_s": per_iter_wall_s,
+        "per_iter_registry": per_iter_registry,
         "managers_built": managers_built,
     }
 
@@ -238,6 +253,10 @@ def run_leak_check(
         "iterN_rss_kb": iterN_rss,
         "per_iter_rss_kb": rss_kb,
         "per_iter_wall_s": wall_s,
+        # Reported, not gated: the symbol registry has no GC, so this series is
+        # expected to climb linearly. It is here so a future GC (angr-9ke6b.224)
+        # has a before/after number, and so its share of RSS stays visible.
+        "per_iter_registry": child_result.get("per_iter_registry", []),
     }
 
 
@@ -254,8 +273,10 @@ def _print_human(result: dict) -> None:
         f"managers_built={result.get('managers_built')} "
         f"iters={result['iters']} threshold={result['threshold']:.2f}x"
     )
+    registry = result.get("per_iter_registry") or []
     for i, (kb, sec) in enumerate(zip(result["per_iter_rss_kb"], result["per_iter_wall_s"]), start=1):
-        print(f"  iter {i:>2}: peak_rss_kb={kb:>10} wall={sec:.2f}s")
+        reg = f" symbol_registry={registry[i - 1]:>8}" if i <= len(registry) else ""
+        print(f"  iter {i:>2}: peak_rss_kb={kb:>10} wall={sec:.2f}s{reg}")
     print(
         f"  ratio = peak_rss(iter{result['iters']}) / peak_rss(iter1) = "
         f"{result['iterN_rss_kb']} / {result['iter1_rss_kb']} = {result['ratio']:.3f}"
