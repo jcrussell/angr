@@ -739,6 +739,15 @@ fn claripy_to_rustbv_depth(
 ///    hands back the wrong sort's claripy AST.
 /// 3. **Mint + register** — first sighting; store the originating claripy AST
 ///    so the reverse conversion can return it verbatim.
+///
+/// Every step works on `kind.rust_symbol_name(name)`, never the raw claripy
+/// name. A Bool leaf is modelled as a width-1 BV, so the sort tag in the
+/// registry key separates the two symbols' *identity* but on its own leaves
+/// them sharing one Z3 constant; the tagged name is what `RustBV::from_parts`
+/// decodes to build a Bool-sorted constant instead (angr-9ke6b.223). Tagging
+/// here — before any registry call — keeps the `name_to_info` key,
+/// `rust_id_to_name`, the `RustBV` name and the Z3 term in agreement, which is
+/// the precondition step 1 relies on.
 fn import_symbolic_leaf(
     ast: &Bound<'_, PyAny>,
     ast_hash: i64,
@@ -747,19 +756,21 @@ fn import_symbolic_leaf(
     kind: SymbolKind,
     ctx: &SymContext,
 ) -> RustBV {
+    let rust_name = kind.rust_symbol_name(name);
+
     if let Some(existing_id) = lookup_symbol_by_hash(ast_hash) {
         let canonical = lookup_symbol_name_by_id(existing_id);
-        let bound_name = canonical.as_deref().unwrap_or(name);
+        let bound_name = canonical.as_deref().unwrap_or(&rust_name);
         return RustBV::symbolic_with_id(existing_id, bound_name, width);
     }
 
-    if let Some(info) = lookup_symbol_by_name_and_width(name, width, kind) {
-        return RustBV::symbolic_with_id(info.rust_id, name, width);
+    if let Some(info) = lookup_symbol_by_name_and_width(&rust_name, width, kind) {
+        return RustBV::symbolic_with_id(info.rust_id, &rust_name, width);
     }
 
-    let bv = RustBV::symbolic(ctx, name, width);
+    let bv = RustBV::symbolic(ctx, &rust_name, width);
     if let RustBV::Symbolic { id, .. } = &bv {
-        store_claripy_ast_with_info(ast_hash, *id, name, width, kind, ast.clone().unbind());
+        store_claripy_ast_with_info(ast_hash, *id, &rust_name, width, kind, ast.clone().unbind());
     }
     bv
 }

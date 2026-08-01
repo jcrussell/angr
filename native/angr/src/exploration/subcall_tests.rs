@@ -335,7 +335,7 @@ fn link_register_abi_subcall_roundtrip_resumes_at_lr() {
                 &mut state,
                 NativeSubcall {
                     proc_name: "subcall_test".into(),
-                    saved_args: vec![RustBV::concrete(41, (cc_ptr * 8) as u32)],
+                    saved_args: vec![RustBV::concrete(41, cc_ptr * 8)],
                     caller_return_addr: captured,
                     target: SubcallTestProc::GUEST_TARGET,
                     sub_args: vec![],

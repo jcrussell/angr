@@ -94,3 +94,44 @@ class TestClaripyBridgeImport:
         then_b = claripy.If(b, claripy.BVV(1, 8), claripy.BVV(0, 8))
         # Same underlying leaf -> the two ites must agree bit-for-bit.
         assert set(ctx.eval_upto(then_a - then_b, 4)) == {0}
+
+    def test_explicit_name_bool_and_bv_are_independent_variables(self):
+        """``BVS("x", 1, explicit_name=True)`` and ``BoolS("x",
+        explicit_name=True)`` are distinct variables in claripy (different
+        sorts), so pinning the BV to 1 must not force the Bool true.
+
+        Rust models a Bool as a width-1 ``Symbolic`` and builds its Z3 constant
+        from the symbol *name*, so before angr-9ke6b.223 both leaves became the
+        same ``BV::new_const("x", 1)`` and this pair was UNSAT.  Only reachable
+        with ``explicit_name`` on both: claripy otherwise renames to
+        ``x_<counter>_1`` / ``x_<counter>_-1``, which never collide.
+        """
+        import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
+
+        ctx = RustSolverContext()
+        bv = claripy.BVS("x", 1, explicit_name=True)
+        flag = claripy.BoolS("x", explicit_name=True)
+        assert bv.args[0] == "x" and flag.args[0] == "x"
+
+        ctx.add_constraint_ast(bv == 1)
+        ctx.add_constraint_ast(claripy.Not(flag))
+
+        # Independent variables -> both constraints hold simultaneously.
+        assert ctx.satisfiable()
+        assert ctx.eval(bv) == 1
+        assert set(ctx.eval_upto(claripy.If(flag, claripy.BVV(1, 8), claripy.BVV(0, 8)), 4)) == {0}
+
+    def test_explicit_name_bool_keeps_its_own_identity_across_imports(self):
+        """The mangled Rust name must be stable: re-importing the same
+        ``BoolS`` leaf has to resolve to the same Z3 variable, or a constraint
+        added in one import silently stops binding in the next."""
+        import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
+
+        ctx = RustSolverContext()
+        flag = claripy.BoolS("y", explicit_name=True)
+
+        ctx.add_constraint_ast(flag)
+        # Second, separate import of the same leaf: it must see the constraint.
+        assert set(ctx.eval_upto(claripy.If(flag, claripy.BVV(0xAA, 8), claripy.BVV(0xBB, 8)), 4)) == {0xAA}

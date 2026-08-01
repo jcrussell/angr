@@ -645,7 +645,17 @@ impl RustBV {
     pub(super) fn from_parts(id: u64, name: Arc<str>, width: u32) -> Self {
         #[cfg(feature = "vex-engine-z3")]
         {
-            let ast = z3::ast::BV::new_const(&*name, width);
+            // A claripy `Bool` leaf has no `RustBV` sort of its own — it is
+            // modelled as a width-1 `Symbolic` whose NAME carries the sort tag
+            // (`SymbolKind::rust_symbol_name`). Decode it here so the Z3 term
+            // is a genuine Bool constant lowered to 1 bit, which is exactly how
+            // claripy's own z3 backend encodes `BoolS` — see
+            // `strip_bool_symbol_name` for why both halves of that matter.
+            let ast = match super::registry::strip_bool_symbol_name(&name) {
+                Some(claripy_name) => z3::ast::Bool::new_const(claripy_name)
+                    .ite(&z3::ast::BV::from_u64(1, 1), &z3::ast::BV::from_u64(0, 1)),
+                None => z3::ast::BV::new_const(&*name, width),
+            };
             RustBV::Symbolic {
                 id,
                 width,

@@ -24,6 +24,7 @@
 
 use parking_lot::RwLock;
 use pyo3::prelude::*;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
@@ -49,10 +50,13 @@ const GROWTH_WARN_THRESHOLDS: [usize; 3] = [100_000, 1_000_000, 10_000_000];
 /// AST registered first, handing a `BV` back where the caller had a `Bool`
 /// (angr-9ke6b.38).
 ///
-/// Note this separates *identity*, not the Z3 constant: `RustBV` has no Bool
-/// sort, so both symbols still build `BV::new_const(name, 1)` and remain the
-/// same variable to Z3. Distinguishing them there needs a real Bool sort in
-/// `RustBV` — tracked separately.
+/// Separating identity is not enough on its own: `RustBV` has no Bool sort, so
+/// a Bool leaf is modelled as a width-1 `Symbolic` whose Z3 term
+/// `RustBV::from_parts` builds from the leaf's *name*. Two leaves with distinct
+/// `rust_id`s but the same name would therefore still be *one* variable to Z3.
+/// [`SymbolKind::rust_symbol_name`] closes that by tagging the Rust-side name
+/// of a Bool leaf, which `from_parts` decodes back into a real Bool-sorted Z3
+/// constant (angr-9ke6b.223).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SymbolKind {
     /// A claripy `BVS` bitvector leaf.
@@ -60,6 +64,13 @@ pub enum SymbolKind {
     /// A claripy `BoolS` boolean leaf.
     Bool,
 }
+
+/// Prefix that namespaces the Rust-side name of a claripy `Bool` leaf.
+///
+/// Chosen to contain `!`, which claripy's own auto-renamer never emits (it
+/// appends `_<counter>_<width>`), so a mangled name can only collide with a
+/// caller that passes `explicit_name=True` and a literal `!bool!` prefix.
+const BOOL_NAME_PREFIX: &str = "!bool!";
 
 impl SymbolKind {
     /// Short tag used to namespace the `name_to_info` key.
@@ -69,6 +80,50 @@ impl SymbolKind {
             SymbolKind::Bool => "bool",
         }
     }
+
+    /// Map a claripy symbol name to the name Rust uses for it.
+    ///
+    /// `RustBV` has no Bool sort: a Bool leaf is a width-1 `Symbolic`, and its
+    /// Z3 term is built from the *name*. The name therefore has to carry the
+    /// sort, or `BVS("x", 1, explicit_name=True)` and `BoolS("x",
+    /// explicit_name=True)` collapse to one Z3 constant even though the
+    /// registry hands them separate `rust_id`s, and constraining one silently
+    /// constrains the other (angr-9ke6b.223).
+    ///
+    /// `BitVector` is the identity, so every existing name — and every Z3 term
+    /// already built from one — is unchanged. Callers must apply this *before*
+    /// touching the registry so the `name_to_info` key, `rust_id_to_name`, the
+    /// `RustBV` name and the Z3 term all agree; `lookup_symbol_name_by_id` then
+    /// hands importers back the same tagged name, which is what keeps
+    /// re-imports bound to the same Z3 variable (angr-izov2).
+    pub fn rust_symbol_name(self, name: &str) -> Cow<'_, str> {
+        match self {
+            SymbolKind::BitVector => Cow::Borrowed(name),
+            SymbolKind::Bool => Cow::Owned(format!("{BOOL_NAME_PREFIX}{name}")),
+        }
+    }
+}
+
+/// Recover the claripy name from a Bool leaf's Rust name, or `None` for a
+/// bitvector leaf.
+///
+/// Inverse of [`SymbolKind::rust_symbol_name`], and the reason the tag lives in
+/// the name rather than in a `RustBV` field: `RustBV::from_parts` is the single
+/// place that rebuilds a leaf's Z3 term — from the constructors, from
+/// `symbolic_with_id`, and from the `RustBVData` deserialize arm — and the name
+/// is the only part of a leaf all three already carry, so the sort survives a
+/// snapshot round-trip for free.
+///
+/// The name it returns is the *claripy* one on purpose. `from_parts` builds
+/// `Bool::new_const(claripy_name)`, which is bit-for-bit the declaration
+/// claripy's own z3 backend emits for `BoolS(claripy_name)`. That matters
+/// because `RustSolverContext::add_constraint_ast` has a raw-passthrough fast
+/// path that hands claripy's Z3 term straight to the solver: without the match,
+/// a constraint added through the fast path and a leaf imported through
+/// `claripy_to_rustbv` would name two unrelated Z3 declarations and the
+/// constraint would silently fail to bind.
+pub(crate) fn strip_bool_symbol_name(name: &str) -> Option<&str> {
+    name.strip_prefix(BOOL_NAME_PREFIX)
 }
 
 /// Build the `name_to_info` key for a symbol.
