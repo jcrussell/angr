@@ -16,9 +16,7 @@
 //! contract, not an input check.
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
-use super::format_common::{
-    LengthModifier, MAX_FORMAT_LEN, parse_length_modifier, parse_width_digits,
-};
+use super::format_common::{MAX_FORMAT_LEN, parse_length_modifier, parse_width_digits};
 use super::stdin_common::{mint_stdin_bytes, stdin_seed_unconsumed};
 use super::strings::scan_concrete_bounded;
 use super::{NativeSimProcedure, ProcedureError, extract_concrete_arg, symbol_counter};
@@ -83,7 +81,12 @@ fn scanset_body_len(fmt: &[u8], start: usize) -> Option<usize> {
 
 /// Parse scanf format specifiers from a format string.
 /// Returns a list of specifiers (one per conversion that stores a value).
-fn parse_scanf_format(fmt: &[u8]) -> Result<Vec<ScanfSpec>, ProcedureError> {
+///
+/// `arch_bits` sizes the `l`/`z`/`t` modifiers, which are `long`-width and so
+/// 32-bit on ILP32 targets — see `LengthModifier::int_conv_bits`. Each spec's
+/// `bits` becomes the width of the value stored at the caller's pointer, so
+/// over-sizing it writes past the guest object.
+fn parse_scanf_format(fmt: &[u8], arch_bits: u32) -> Result<Vec<ScanfSpec>, ProcedureError> {
     let mut specs = Vec::new();
     let mut i = 0;
 
@@ -125,8 +128,9 @@ fn parse_scanf_format(fmt: &[u8]) -> Result<Vec<ScanfSpec>, ProcedureError> {
         i += w_adv;
 
         // Parse length modifier. `h`/`hh` narrow the destination to 16/8 bits
-        // (matching Python's format_parser.py int_len_mod), `z`/`j`/`t` are
-        // honoured as 64-bit (glibc accepts them in scanf).
+        // and `l`/`z`/`t` widen it to `long` width (matching Python's
+        // format_parser.py int_len_mod); `z`/`j`/`t` are honoured at all
+        // because glibc accepts them in scanf.
         let (modifier, m_adv) = parse_length_modifier(fmt, i);
         i += m_adv;
 
@@ -139,12 +143,7 @@ fn parse_scanf_format(fmt: &[u8]) -> Result<Vec<ScanfSpec>, ProcedureError> {
 
         match spec {
             b'd' | b'i' | b'u' | b'x' | b'X' | b'o' => {
-                let bits = match modifier {
-                    LengthModifier::Char => 8,   // hh -> signed/unsigned char
-                    LengthModifier::Short => 16, // h  -> short
-                    m if m.is_64bit() => 64,     // l / ll / z / j / t
-                    _ => 32,                     // int
-                };
+                let bits = modifier.int_conv_bits(arch_bits);
                 specs.push(ScanfSpec {
                     bits,
                     is_string: false,
@@ -249,7 +248,7 @@ fn do_scanf(
     record_stdin: bool,
 ) -> Result<Option<RustBV>, ProcedureError> {
     let fmt = read_format_string(state, fmt_addr)?;
-    let specs = parse_scanf_format(&fmt)?;
+    let specs = parse_scanf_format(&fmt, state.arch().bits())?;
 
     // A numeric conversion models a decimal/hex *parse*: Python's
     // format_parser.py::FormatString.interpret reads `max_digits` bytes off the

@@ -38,23 +38,6 @@ fn unsigned_high_bit_set(masked: u64, bits: u32) -> bool {
     masked >> (bits - 1) != 0
 }
 
-/// Integer conversion width in bits implied by a length modifier, mirroring
-/// `format_parser.py`'s `int_len_mod` type sizes: `hh`->8 (char), `h`->16
-/// (short), no-modifier->32 (int), and `l`/`ll`/`z`/`j`/`t`->64 on our 64-bit
-/// targets. Python masks each concretized arg to `size*8` bits (line 96) before
-/// formatting, so native must narrow to the same width or %hd/%hhd/%hu/%hx/%ho
-/// diverge (angr-n0irt.4). Directly analogous to the scanf store-width fix
-/// (angr-vfhyx).
-fn int_conv_bits(modifier: super::format_common::LengthModifier) -> u32 {
-    use super::format_common::LengthModifier;
-    match modifier {
-        LengthModifier::Char => 8,
-        LengthModifier::Short => 16,
-        LengthModifier::None => 32,
-        _ => 64, // Long / LongLong / SizeT / IntMax / PtrDiff
-    }
-}
-
 /// Mask `val` to `bits` then sign-extend to i64, mirroring Python's mask
 /// (`c_val &= (1<<size*8)-1`) followed by the signed fold (`if signed and
 /// high bit set: c_val -= 1<<size*8`) for `d`/`i` specs.
@@ -85,6 +68,9 @@ fn format_string(
     let mut output = Vec::new();
     let mut arg_idx: usize = 0;
     let mut i = 0;
+    // `l`/`z`/`t` are `long`-width, i.e. 32-bit on ILP32 targets — see
+    // `LengthModifier::int_conv_bits`.
+    let arch_bits = state.arch().bits();
 
     while i < fmt.len() {
         if fmt[i] != b'%' {
@@ -216,7 +202,7 @@ fn format_string(
                 let val = extract_concrete_arg(&args[arg_idx], &format!("arg{arg_idx}"))?;
                 arg_idx += 1;
                 // Interpret as signed, narrowed to the modifier's width.
-                let signed_val = signed_at_width(val, int_conv_bits(modifier));
+                let signed_val = signed_at_width(val, modifier.int_conv_bits(arch_bits));
                 let formatted = if plus_sign && signed_val >= 0 {
                     format!("+{signed_val}")
                 } else if space_sign && signed_val >= 0 {
@@ -239,7 +225,7 @@ fn format_string(
                 }
                 let val = extract_concrete_arg(&args[arg_idx], &format!("arg{arg_idx}"))?;
                 arg_idx += 1;
-                let bits = int_conv_bits(modifier);
+                let bits = modifier.int_conv_bits(arch_bits);
                 let unsigned_val = unsigned_at_width(val, bits);
                 if unsigned_high_bit_set(unsigned_val, bits) {
                     return Err(ProcedureError::Other(
@@ -262,7 +248,7 @@ fn format_string(
                 }
                 let val = extract_concrete_arg(&args[arg_idx], &format!("arg{arg_idx}"))?;
                 arg_idx += 1;
-                let bits = int_conv_bits(modifier);
+                let bits = modifier.int_conv_bits(arch_bits);
                 let unsigned_val = unsigned_at_width(val, bits);
                 if unsigned_high_bit_set(unsigned_val, bits) {
                     return Err(ProcedureError::Other(
@@ -293,7 +279,7 @@ fn format_string(
                 }
                 let val = extract_concrete_arg(&args[arg_idx], &format!("arg{arg_idx}"))?;
                 arg_idx += 1;
-                let bits = int_conv_bits(modifier);
+                let bits = modifier.int_conv_bits(arch_bits);
                 let unsigned_val = unsigned_at_width(val, bits);
                 if unsigned_high_bit_set(unsigned_val, bits) {
                     return Err(ProcedureError::Other(

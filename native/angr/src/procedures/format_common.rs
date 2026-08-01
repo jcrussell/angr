@@ -47,18 +47,38 @@ pub enum LengthModifier {
 }
 
 impl LengthModifier {
-    /// True if this modifier promotes integer operands to 64-bit width.
-    /// On 64-bit targets, `long`, `long long`, `size_t`, `intmax_t`, and
-    /// `ptrdiff_t` are all 64-bit.
-    pub(crate) fn is_64bit(self) -> bool {
-        matches!(
-            self,
-            LengthModifier::Long
-                | LengthModifier::LongLong
-                | LengthModifier::SizeT
-                | LengthModifier::IntMax
-                | LengthModifier::PtrDiff
-        )
+    /// Integer conversion width in bits implied by this modifier on a target
+    /// whose `long`/pointer width is `arch_bits`, mirroring
+    /// `format_parser.py`'s `int_len_mod` sim_type sizes:
+    ///
+    /// | modifier | Python type                  | bits              |
+    /// |----------|------------------------------|-------------------|
+    /// | `hh`     | `SimTypeChar`                | 8                 |
+    /// | `h`      | `SimTypeShort`               | 16                |
+    /// | (none)   | `SimTypeInt`                 | 32                |
+    /// | `ll`,`j` | `SimTypeLongLong`            | 64 (arch-fixed)   |
+    /// | `l`,`t`  | `SimTypeLong`                | `arch_bits`       |
+    /// | `z`      | `SimTypeLength` (a `SimTypeLong` subclass) | `arch_bits` |
+    ///
+    /// The `l`/`z`/`t` row is why this takes `arch_bits` at all: on ILP32
+    /// targets (x86, arm32) `long`/`size_t`/`ptrdiff_t` are 32-bit, so
+    /// hardcoding 64 makes `sprintf("%ld")` mask to the wrong width and makes
+    /// `scanf("%ld", &x)` store 8 bytes into a 4-byte guest `long`, clobbering
+    /// adjacent memory the Python engine leaves untouched (angr-9ke6b.111).
+    /// `ll`/`j` stay 64-bit on every target, matching Python.
+    ///
+    /// `arch_bits` above 64 is clamped to 64: the native formatter and the
+    /// scanf store path both work in `u64`, and no supported arch exceeds it.
+    pub(crate) fn int_conv_bits(self, arch_bits: u32) -> u32 {
+        match self {
+            LengthModifier::Char => 8,
+            LengthModifier::Short => 16,
+            LengthModifier::None => 32,
+            LengthModifier::LongLong | LengthModifier::IntMax => 64,
+            LengthModifier::Long | LengthModifier::SizeT | LengthModifier::PtrDiff => {
+                arch_bits.min(64)
+            }
+        }
     }
 }
 

@@ -916,7 +916,14 @@ fn test_scanf_numeric_native_without_unread_seed() {
 /// `dst`, and assert exactly `expect_bytes` low bytes were overwritten with a
 /// symbolic value while every higher guard byte survived untouched.
 fn assert_scanf_store_width(fmt: &[u8], expect_bytes: u64) {
-    let mut state = setup_state();
+    assert_scanf_store_width_arch("amd64", fmt, expect_bytes);
+}
+
+/// `assert_scanf_store_width` on an explicit arch, for the `long`-width
+/// (`l`/`z`/`t`) modifiers whose store width tracks `arch().bits()`.
+fn assert_scanf_store_width_arch(arch: &str, fmt: &[u8], expect_bytes: u64) {
+    let mut state = RustSimState::new(arch).unwrap();
+    state.map_memory(0x2000, 0x1000, Permission::RWX);
     state.map_memory_data(0x1000, fmt, Permission::RWX);
     for off in 0..8u64 {
         state
@@ -970,6 +977,23 @@ fn test_scanf_int_and_long_store_widths_unchanged() {
     assert_scanf_store_width(b"%lld\x00", 8);
     assert_scanf_store_width(b"%zu\x00", 8);
     assert_scanf_store_width(b"%hx\x00", 2);
+}
+
+/// On ILP32 targets a guest `long` / `size_t` / `ptrdiff_t` is 4 bytes, so
+/// `scanf("%ld", &x)` must store 4 — storing 8 clobbers the 4 bytes after `x`,
+/// which the Python engine leaves untouched (angr-9ke6b.111). `ll`/`j` are
+/// `long long` and stay 8 bytes on every arch.
+#[test]
+fn test_scanf_long_family_store_width_follows_arch_on_ilp32() {
+    assert_scanf_store_width_arch("x86", b"%ld\x00", 4);
+    assert_scanf_store_width_arch("x86", b"%zu\x00", 4);
+    assert_scanf_store_width_arch("x86", b"%td\x00", 4);
+    assert_scanf_store_width_arch("x86", b"%lld\x00", 8);
+    assert_scanf_store_width_arch("x86", b"%jd\x00", 8);
+    // Arch-independent widths are unaffected.
+    assert_scanf_store_width_arch("x86", b"%d\x00", 4);
+    assert_scanf_store_width_arch("x86", b"%hd\x00", 2);
+    assert_scanf_store_width_arch("x86", b"%hhd\x00", 1);
 }
 
 /// A format string pointing at unmapped memory must propagate the memory-fault

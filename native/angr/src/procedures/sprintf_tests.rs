@@ -726,7 +726,14 @@ fn test_asprintf_symbolic_format_falls_back() {
 /// Run a single-vararg sprintf and return the bytes written to the dest buffer
 /// (excluding the trailing NUL), or `Err` if the proc deferred to Python.
 fn sprintf_one(fmt: &[u8], arg: u64) -> Result<Vec<u8>, ()> {
-    let mut state = setup_state();
+    sprintf_one_arch("amd64", fmt, arg)
+}
+
+/// `sprintf_one` on an explicit arch, for the `long`-width (`l`/`z`/`t`)
+/// modifiers whose conversion width tracks `arch().bits()`.
+fn sprintf_one_arch(arch: &str, fmt: &[u8], arg: u64) -> Result<Vec<u8>, ()> {
+    let mut state = RustSimState::new(arch).unwrap();
+    state.map_memory(0x2000, 0x1000, Permission::RWX);
     // Build "<fmt>\0" in memory at 0x1000.
     let mut fmtbuf = fmt.to_vec();
     fmtbuf.push(0);
@@ -879,4 +886,49 @@ fn test_sprintf_huge_explicit_width_is_clamped_and_fast() {
         let byte = state.memory_load(0x2000 + i, 1).unwrap();
         assert!(byte.as_u64().is_some(), "byte {i} of padded output missing");
     }
+}
+
+// --- `long`-family modifiers track arch width (angr-9ke6b.111) ---
+//
+// Python sizes `l`/`t` via SimTypeLong and `z` via SimTypeLength (a
+// SimTypeLong subclass), all of which are 32-bit on ILP32 targets; `ll`/`j`
+// are SimTypeLongLong and stay 64-bit everywhere. Native hardcoded 64 for the
+// whole family, so on x86 a %ld of a value with bit 31 set printed the
+// zero-extended 64-bit number where Python prints the sign-folded 32-bit one.
+
+#[test]
+fn test_sprintf_long_masks_to_32_bits_on_ilp32() {
+    // 0xFFFF_FFFF as a 32-bit long is -1.
+    assert_eq!(sprintf_one_arch("x86", b"%ld", 0xFFFF_FFFF).unwrap(), b"-1");
+    // The high half must be masked away, not printed.
+    assert_eq!(
+        sprintf_one_arch("x86", b"%ld", 0xDEAD_0000_0000_0001).unwrap(),
+        b"1"
+    );
+    // Same for %zd / %td, which share SimTypeLong's width.
+    assert_eq!(sprintf_one_arch("x86", b"%zd", 0xFFFF_FFFF).unwrap(), b"-1");
+    assert_eq!(sprintf_one_arch("x86", b"%td", 0xFFFF_FFFF).unwrap(), b"-1");
+}
+
+#[test]
+fn test_sprintf_long_stays_64_bits_on_lp64() {
+    // Same input on amd64 is a 64-bit long: positive, full value preserved.
+    assert_eq!(
+        sprintf_one_arch("amd64", b"%ld", 0xFFFF_FFFF).unwrap(),
+        b"4294967295"
+    );
+}
+
+#[test]
+fn test_sprintf_long_long_stays_64_bits_on_ilp32() {
+    // `ll` / `j` are SimTypeLongLong — arch-independent, so unlike %ld the
+    // x86 rendering keeps all 64 bits.
+    assert_eq!(
+        sprintf_one_arch("x86", b"%lld", 0xFFFF_FFFF).unwrap(),
+        b"4294967295"
+    );
+    assert_eq!(
+        sprintf_one_arch("x86", b"%jd", 0xFFFF_FFFF).unwrap(),
+        b"4294967295"
+    );
 }

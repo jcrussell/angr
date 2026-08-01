@@ -71,13 +71,29 @@ fn length_zjt() {
 }
 
 #[test]
-fn is_64bit_classification() {
-    assert!(LengthModifier::Long.is_64bit());
-    assert!(LengthModifier::LongLong.is_64bit());
-    assert!(LengthModifier::SizeT.is_64bit());
-    assert!(LengthModifier::IntMax.is_64bit());
-    assert!(LengthModifier::PtrDiff.is_64bit());
-    assert!(!LengthModifier::None.is_64bit());
-    assert!(!LengthModifier::Short.is_64bit());
-    assert!(!LengthModifier::Char.is_64bit());
+fn int_conv_bits_lp64() {
+    assert_eq!(LengthModifier::Char.int_conv_bits(64), 8);
+    assert_eq!(LengthModifier::Short.int_conv_bits(64), 16);
+    assert_eq!(LengthModifier::None.int_conv_bits(64), 32);
+    assert_eq!(LengthModifier::Long.int_conv_bits(64), 64);
+    assert_eq!(LengthModifier::LongLong.int_conv_bits(64), 64);
+    assert_eq!(LengthModifier::SizeT.int_conv_bits(64), 64);
+    assert_eq!(LengthModifier::IntMax.int_conv_bits(64), 64);
+    assert_eq!(LengthModifier::PtrDiff.int_conv_bits(64), 64);
+}
+
+/// `l`/`z`/`t` are `long`-width and must narrow to 32 on ILP32 targets
+/// (Python's `SimTypeLong` / `SimTypeLength`), while `ll`/`j`
+/// (`SimTypeLongLong`) stay 64-bit everywhere. angr-9ke6b.111.
+#[test]
+fn int_conv_bits_ilp32_narrows_long_family_only() {
+    assert_eq!(LengthModifier::Long.int_conv_bits(32), 32);
+    assert_eq!(LengthModifier::SizeT.int_conv_bits(32), 32);
+    assert_eq!(LengthModifier::PtrDiff.int_conv_bits(32), 32);
+    assert_eq!(LengthModifier::LongLong.int_conv_bits(32), 64);
+    assert_eq!(LengthModifier::IntMax.int_conv_bits(32), 64);
+    // The narrow modifiers are arch-independent.
+    assert_eq!(LengthModifier::Char.int_conv_bits(32), 8);
+    assert_eq!(LengthModifier::Short.int_conv_bits(32), 16);
+    assert_eq!(LengthModifier::None.int_conv_bits(32), 32);
 }
