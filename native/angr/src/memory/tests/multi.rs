@@ -792,6 +792,83 @@ fn test_phase2_safe_install_skips_unmapped_non_lazy() {
     assert!(mem.get_multi_alternatives(0x2000).is_none());
 }
 
+/// angr-9ke6b.94: with `enforce_permissions` on, a Multiple-concretized
+/// symbolic-address store into a read-only page must be rejected exactly like
+/// the Single-concretized store `store_concrete` already rejects. Before the
+/// fix `install_multi_for_candidates` never consulted `check_perms_range`, so
+/// the write silently mutated the read-only page.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_multi_install_enforces_write_permission() {
+    let ctx = SymContext::new_mock();
+    let concretizer = AddressConcretizer::new();
+    let mut mem = SymbolicMemory::new(Endness::Little);
+
+    // Candidate 0x1000 is read-only; 0x2000 is writable.
+    mem.map(0x1000, 0x1000, Permission::R);
+    mem.map(0x2000, 0x1000, Permission::RW);
+    mem.set_enforce_permissions(true);
+
+    let addr_var = RustBV::symbolic(&ctx, "perm_multi_addr", 64);
+    ctx.assume_true(
+        &addr_var
+            .eq(&RustBV::concrete(0x1000, 64), &ctx)
+            .or(&addr_var.eq(&RustBV::concrete(0x2000, 64), &ctx), &ctx),
+    );
+
+    let err = mem
+        .store_symbolic_unified(addr_var, RustBV::concrete(0xAB, 8), &ctx, &concretizer)
+        .expect_err("Multiple-concretized store into an R-only page must be rejected");
+    match err {
+        MemoryError::Permission {
+            addr,
+            required,
+            actual,
+        } => {
+            assert_eq!(addr, 0x1000);
+            assert!(required.write);
+            assert!(!actual.write);
+        }
+        other => panic!("expected Permission error, got {other:?}"),
+    }
+    // The check runs before any mutation, so nothing was installed — not even
+    // for the writable candidate.
+    assert_eq!(mem.multi_cell_count(), 0);
+
+    // Symmetry: the Single-concretized store on the same page is rejected the
+    // same way (this is the behavior the Multi path was diverging from).
+    let single_err = mem
+        .store_concrete(0x1000, RustBV::concrete(0xAB, 8))
+        .expect_err("Single-concretized store into an R-only page must be rejected");
+    assert!(matches!(single_err, MemoryError::Permission { .. }));
+}
+
+/// The permission gate must be inert when `enforce_permissions` is off (the
+/// default), so ordinary Multi installs into R-only or auto-mapped pages keep
+/// working.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_multi_install_permission_check_off_by_default() {
+    let ctx = SymContext::new_mock();
+    let concretizer = AddressConcretizer::new();
+    let mut mem = SymbolicMemory::new(Endness::Little);
+
+    mem.map(0x1000, 0x1000, Permission::R);
+    mem.map(0x2000, 0x1000, Permission::R);
+    assert!(!mem.enforce_permissions());
+
+    let addr_var = RustBV::symbolic(&ctx, "perm_off_multi_addr", 64);
+    ctx.assume_true(
+        &addr_var
+            .eq(&RustBV::concrete(0x1000, 64), &ctx)
+            .or(&addr_var.eq(&RustBV::concrete(0x2000, 64), &ctx), &ctx),
+    );
+
+    mem.store_symbolic_unified(addr_var, RustBV::concrete(0xAB, 8), &ctx, &concretizer)
+        .expect("permission enforcement off: R-only page must still accept the store");
+    assert_eq!(mem.multi_cell_count(), 2);
+}
+
 /// `flush_multi_cells` must collapse every Multi byte into a per-byte
 /// symbolic_objects entry and mark the page-level symbolic bit so the
 /// state export pipeline picks it up. This is the export-correctness

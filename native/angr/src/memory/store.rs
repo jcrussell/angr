@@ -465,6 +465,11 @@ impl SymbolicMemory {
     ///
     /// Per memory `invariant-mem-ite-depth-counter`, each per-byte
     /// `set_multi_alternatives` call records the payload length.
+    ///
+    /// Returns `MemoryError::Permission` (angr-9ke6b.94) when
+    /// `enforce_permissions` is on and any already-mapped candidate page is
+    /// not writable, matching `store_concrete`. The check precedes every
+    /// mutation, so a rejected store installs nothing at all.
     pub(super) fn install_multi_for_candidates(
         &mut self,
         addr_expr: &RustBV,
@@ -474,6 +479,20 @@ impl SymbolicMemory {
     ) -> Result<(), MemoryError> {
         let size = value.width() / 8;
         let endness = self.endness;
+
+        // angr-9ke6b.94: enforce W permission before mutating anything, so a
+        // Multiple/Strided-concretized store is rejected on a read-only page
+        // exactly like the Single-concretized one `store_concrete` handles.
+        // Must run before the auto-map loop below: that loop maps missing
+        // pages as RW, which would make the check vacuously pass for them.
+        // `check_perms_range` skips pages that aren't mapped yet, so only
+        // pre-existing pages are consulted — matching `store_concrete`, which
+        // only ever sees already-mapped pages.
+        for &cand in addrs {
+            let start_page = cand >> 12;
+            let end_page = (cand + size as u64 - 1) >> 12;
+            self.check_perms_range(start_page, end_page, Permission::W)?;
+        }
 
         // Auto-map all candidate byte addresses before installing — matches
         // what set_multi_alternatives does per-byte, but we batch it so the
