@@ -137,9 +137,11 @@ pub(crate) static VEX_OP_FP: AtomicU64 = AtomicU64::new(0);
 pub(crate) static VEX_OP_VEC: AtomicU64 = AtomicU64::new(0);
 pub(crate) static VEX_OP_OTHER: AtomicU64 = AtomicU64::new(0);
 
-// Memory volume — load/store call counts, total bytes, concrete-vs-symbolic
-// address split. Recorded at top-level `SymbolicMemory::{load,store}` only,
-// not at every internal helper, so the counter reflects the public surface.
+// Memory volume — load/store call counts and total bytes, recorded at
+// `SymbolicMemory::{load_concrete,store_concrete}` only, not at every internal
+// helper. The `*_SYMBOLIC_ADDR` pair below is a *sibling* counter, not a
+// subset: it tracks the concretizer entry points, which never pass through
+// `{load,store}_concrete`. See `record_mem_load_symbolic_addr`.
 pub(crate) static MEM_LOAD_COUNT: AtomicU64 = AtomicU64::new(0);
 pub(crate) static MEM_STORE_COUNT: AtomicU64 = AtomicU64::new(0);
 pub(crate) static MEM_LOAD_BYTES: AtomicU64 = AtomicU64::new(0);
@@ -974,17 +976,27 @@ pub fn record_mem_store(bytes: u64) {
     MEM_STORE_BYTES.fetch_add(bytes, Ordering::Relaxed);
 }
 
-/// Record that a public `SymbolicMemory::load` was called with a symbolic
-/// address (subset of `mem_load_count`). The symbolic-vs-concrete split is
-/// only visible at the public entry point — by the time we reach
-/// `load_concrete` the address has been evaluated to a u64.
+/// Record a load whose address BV was not a concrete literal, i.e. one that
+/// entered address concretization. angr-9ke6b.229: bumped by the *symbolic*
+/// entry points — `SymbolicMemory::{load_symbolic, load_symbolic_unified}`,
+/// each after its concrete fast path — not by `SymbolicMemory::load`, which no
+/// production path calls (see `.228`). Disjoint from `mem_load_count`, not a
+/// subset of it: the counted `load_concrete` is not on the symbolic path
+/// (`load_symbolic_unified` reaches memory via `load_concrete_automap` /
+/// `load_concrete_lazy`, neither of which bumps the volume counter).
+/// Counts *entries*, so the interpreter's `UnmappedPageInRegion` page-fetch
+/// retry in `try_rust_memory_load` ticks it twice for one guest load.
 #[inline]
 pub fn record_mem_load_symbolic_addr() {
     MEM_LOAD_SYMBOLIC_ADDR.fetch_add(1, Ordering::Relaxed);
 }
 
-/// Symbolic-addr counterpart to `record_mem_load_symbolic_addr`, for the
-/// public `SymbolicMemory::store` entry.
+/// Symbolic-addr counterpart to `record_mem_load_symbolic_addr`. Bumped by
+/// `SymbolicMemory::{store_symbolic, store_symbolic_unified,
+/// store_symbolic_unified_multi, store_with_concretization}` — the last of
+/// which is the interpreter's store path, and re-enters on the page-fetch
+/// retry in `try_rust_memory_store`, so the same caveats as the load side
+/// apply.
 #[inline]
 pub fn record_mem_store_symbolic_addr() {
     MEM_STORE_SYMBOLIC_ADDR.fetch_add(1, Ordering::Relaxed);

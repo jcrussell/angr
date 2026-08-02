@@ -135,13 +135,11 @@ impl SymbolicMemory {
 
     /// Load bytes from memory as a RustBV.
     pub fn load(&self, addr: RustBV, size: u32, ctx: &SymContext) -> Result<RustBV, MemoryError> {
-        // Symbolic-addr subcounter: only visible here (post-eval the addr is
-        // a concrete u64 indistinguishable from a load via `load_concrete`).
-        // The base load_count / load_bytes counters live in `load_concrete`
-        // so they catch the state.rs hot path too.
-        if addr.as_u64().is_none() {
-            record_mem_load_symbolic_addr();
-        }
+        // angr-9ke6b.229: the symbolic-addr subcounter bump used to live here,
+        // where it was dead — this wrapper has no production caller (`.228`).
+        // It now lives on `load_symbolic` / `load_symbolic_unified`, the two
+        // concretizer entry points production actually uses.
+        //
         // For symbolic addresses, we need to concretize or fork
         let concrete_addr = match addr.as_u64() {
             Some(a) => a,
@@ -492,6 +490,8 @@ impl SymbolicMemory {
         if let Some(concrete_addr) = addr.as_u64() {
             return self.load_concrete_lazy(Address(concrete_addr), size, ctx);
         }
+        // Past the fast path the address is genuinely symbolic (angr-9ke6b.229).
+        record_mem_load_symbolic_addr();
 
         // AVOID_MULTIVALUED_READS: bypass concretization and return an
         // unconstrained value. Mirrors Python's `_default_value(...)` branch
@@ -594,6 +594,8 @@ impl SymbolicMemory {
         if let Some(concrete_addr) = addr.as_u64() {
             return self.load_concrete_automap(Address(concrete_addr), size, ctx);
         }
+        // Past the fast path the address is genuinely symbolic (angr-9ke6b.229).
+        record_mem_load_symbolic_addr();
 
         // AVOID_MULTIVALUED_READS: bypass concretization and return an
         // unconstrained value.

@@ -1680,3 +1680,64 @@ fn test_lazy_page_fault_counter_ticks_on_both_sides() {
         Err(MemoryError::Unmapped { .. })
     ));
 }
+
+/// angr-9ke6b.229: the `mem_{load,store}_symbolic_addr` counters must tick from
+/// the *production* symbolic-address entry points, not from the test-only
+/// `SymbolicMemory::{load,store}` wrappers (which `.228` showed nothing calls).
+/// Lower-bound assertions only — the counters are process-global and other
+/// tests run concurrently in the same process.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_symbolic_addr_counters_tick_from_production_entry_points() {
+    let load_sym = || {
+        crate::symbolic::get_solver_stats()
+            .get("mem_load_symbolic_addr")
+            .copied()
+            .unwrap_or(0)
+    };
+    let store_sym = || {
+        crate::symbolic::get_solver_stats()
+            .get("mem_store_symbolic_addr")
+            .copied()
+            .unwrap_or(0)
+    };
+
+    let ctx = SymContext::new_mock();
+    let concretizer = AddressConcretizer::new();
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    mem.map(0x1000, 0x1000, Permission::RWX);
+
+    // A symbolic address pinned to a single concrete solution: still symbolic
+    // to `as_u64()`, so it goes past every fast path into the concretizer.
+    let addr = RustBV::symbolic(&ctx, "counter_addr", 64);
+    ctx.assume_true(&addr.eq(&RustBV::concrete(0x1000, 64), &ctx));
+    let value = RustBV::concrete(0x41, 8);
+
+    let base_store = store_sym();
+    mem.store_symbolic(addr.clone(), value.clone(), &ctx, &concretizer)
+        .expect("store_symbolic must succeed");
+    mem.store_symbolic_unified(addr.clone(), value.clone(), &ctx, &concretizer)
+        .expect("store_symbolic_unified must succeed");
+    mem.store_symbolic_unified_multi(addr.clone(), value.clone(), &ctx, &concretizer)
+        .expect("store_symbolic_unified_multi must succeed");
+    mem.store_with_concretization(&addr, value, &ConcretizationResult::Single(0x1000), &ctx)
+        .expect("store_with_concretization must succeed");
+    assert!(
+        store_sym() >= base_store + 4,
+        "each of the four symbolic store entry points must bump \
+         mem_store_symbolic_addr (base {base_store}, now {})",
+        store_sym()
+    );
+
+    let base_load = load_sym();
+    mem.load_symbolic(addr.clone(), 1, &ctx, &concretizer)
+        .expect("load_symbolic must succeed");
+    mem.load_symbolic_unified(addr, 1, &ctx, &concretizer)
+        .expect("load_symbolic_unified must succeed");
+    assert!(
+        load_sym() >= base_load + 2,
+        "both symbolic load entry points must bump mem_load_symbolic_addr \
+         (base {base_load}, now {})",
+        load_sym()
+    );
+}

@@ -93,11 +93,12 @@ impl SymbolicMemory {
         value: RustBV,
         ctx: &SymContext,
     ) -> Result<(), MemoryError> {
-        // Symbolic-addr subcounter only — the base count + bytes live in
-        // `store_concrete` so the state.rs hot path bumps them too.
-        if addr.as_u64().is_none() {
-            record_mem_store_symbolic_addr();
-        }
+        // angr-9ke6b.229: the symbolic-addr subcounter bump used to live here,
+        // where it was dead — this wrapper has no production caller (`.228`).
+        // It now lives on the four concretizer entry points production uses:
+        // `store_symbolic`, `store_symbolic_unified`,
+        // `store_symbolic_unified_multi` and `store_with_concretization`.
+        //
         // For symbolic addresses, we need to concretize
         let concrete_addr = match addr.as_u64() {
             Some(a) => a,
@@ -372,6 +373,8 @@ impl SymbolicMemory {
         if let Some(concrete_addr) = addr.as_u64() {
             return self.store_concrete_lazy(concrete_addr, value);
         }
+        // Past the fast path the address is genuinely symbolic (angr-9ke6b.229).
+        record_mem_store_symbolic_addr();
 
         // AVOID_MULTIVALUED_WRITES: silently drop the store. Mirrors the
         // early `return` at `address_concretization_mixin.py:327-329`.
@@ -468,6 +471,8 @@ impl SymbolicMemory {
             self.store_concrete_automap(concrete_addr, value)?;
             return Ok(Some(ConcretizationResult::Single(concrete_addr)));
         }
+        // Past the fast path the address is genuinely symbolic (angr-9ke6b.229).
+        record_mem_store_symbolic_addr();
 
         // AVOID_MULTIVALUED_WRITES: silently drop the store.
         // SILENT(cat-b): under the AVOID_MULTIVALUED_WRITES option the caller
@@ -523,6 +528,13 @@ impl SymbolicMemory {
         conc_result: &ConcretizationResult,
         ctx: &SymContext,
     ) -> Result<(), MemoryError> {
+        // angr-9ke6b.229: this is the interpreter's store path
+        // (`try_rust_memory_store`), which concretizes one step earlier and
+        // hands the result in — so the symbolic-vs-concrete split has to be
+        // read off `addr` rather than off an early-return fast path.
+        if addr.as_u64().is_none() {
+            record_mem_store_symbolic_addr();
+        }
         match conc_result {
             ConcretizationResult::Single(concrete_addr) => {
                 self.store_concrete_automap(*concrete_addr, value)
@@ -789,6 +801,8 @@ impl SymbolicMemory {
             self.store_concrete_automap(concrete_addr, value)?;
             return Ok(Some(ConcretizationResult::Single(concrete_addr)));
         }
+        // Past the fast path the address is genuinely symbolic (angr-9ke6b.229).
+        record_mem_store_symbolic_addr();
 
         // AVOID_MULTIVALUED_WRITES: silently drop the store.
         // SILENT(cat-b): under the AVOID_MULTIVALUED_WRITES option the caller
