@@ -322,11 +322,14 @@ impl NativeSyscallRegistry {
         //   angr is single-threaded symex so blocking is never modeled.
         //   epoll_ctl_old (214) / epoll_wait_old (215) intentionally NOT
         //   registered — pre-2.6 legacy that no current binary uses.
-        // readlink (89), readlinkat (267): always return -1 (angr-wv38).
-        //   The Rust FileSystem has no symlinks, so EINVAL/ENOENT covers
-        //   every case; the buffer is left untouched. readlinkat reads
-        //   the dirfd for symmetry with openat/faccessat but the result
-        //   is -1 either way. See file_path.rs module doc.
+        // readlink (89), readlinkat (267): consult the FileSystem symlink
+        //   table (angr-wv38, angr-11djq.6.2). A path registered via
+        //   FileSystem::add_symlink writes min(target_len, bufsiz) target
+        //   bytes (no NUL) and returns that count; anything else returns
+        //   -1 with the buffer untouched. The table is empty by default,
+        //   so an unconfigured state sees -1 for every path. readlinkat
+        //   reads the dirfd and applies the openat policy. See
+        //   file_path.rs module doc.
         // faccessat (269): native FileSystem::is_path_known query
         //   (angr-6009). Clone of NativeAccessSyscall with dirfd
         //   handling. Absolute paths and AT_FDCWD return 0/-1 from

@@ -89,13 +89,17 @@
 //!   to the fd's backing buffer) — concrete, not symbolic.
 //!
 //! Per-arch struct layouts cover AMD64 + ARM64 (64-bit `struct stat`,
-//! `fstat`) and i386 (`struct stat64` via the LFS `fstat64`/`stat64`/
+//! `fstat`), i386 (`struct stat64` via the LFS `fstat64`/`stat64`/
 //! `lstat64`/`fstatat64` syscalls — `write_i386_stat`, mirroring
-//! `fstat64.py::_store_i386`, angr-11djq.5.1). The legacy i386 `fstat`
-//! (108, old 32-bit `struct stat`) has no Rust writer — its Python
-//! proc raises — so it still falls through. ARM / MIPS32 likewise carry
-//! a legacy 32-bit `struct stat` with no Rust writer and fall through
-//! to the Python error path.
+//! `fstat64.py::_store_i386`, angr-11djq.5.1), and ARM EABI / MIPS32
+//! (their own 32-bit LFS `struct stat64` layouts — `write_arm_stat` /
+//! `write_mips32_stat`). `write_stat_for_arch` is the single dispatch
+//! point; anything outside those five arches returns `Other` and falls
+//! through to Python. On i386 and MIPS32 the legacy pre-LFS numbers
+//! (106/107/108 and 4106/4107/4108, old 32-bit `struct stat`) are
+//! deliberately left unregistered: modern 32-bit glibc emits the `*64`
+//! variants, and angr's own Python map has no writer for the legacy
+//! layout either — see the registration-table comments in `mod.rs`.
 //!
 //! Unknown fd → `-1` with no buffer write (matches
 //! `fstat_with_result`'s `result = -1` branch).
@@ -105,25 +109,25 @@
 //! `stat(pathname, statbuf) → 0 | -1` resolves `pathname` via
 //! `read_path`, returns `-1` for empty / unknown paths (via
 //! `FileSystem::is_path_known`), and otherwise writes a per-arch
-//! `struct stat` using the same `write_amd64_stat` /
-//! `write_aarch64_stat` helpers used by `fstat`. The size field is
-//! sourced from `FileSystem::content_size_for_path(path)` (largest
+//! `struct stat` via the same `write_stat_for_arch` dispatch used by
+//! `fstat`. The size field is sourced from
+//! `FileSystem::content_size_for_path(path)` (largest
 //! `content_len` across any fd that opened the path) — `0` if the
 //! path was registered via `register_known_path` without a content
 //! payload. This diverges from `procedures/linux_kernel/stat.py`,
 //! which opens a temp fd, calls `fstat`, then closes. The Rust path
 //! never mutates the fd table, so the next-fd counter is stable
-//! across stat queries. Arch coverage: AMD64 only — ARM64 has no
-//! legacy `stat` syscall (only `newfstatat` 79, already a stub).
-//! Other arches (x86 / ARM EABI / MIPS32 carry the legacy 32-bit
-//! `struct stat`) fall back to Python's error path, matching the
-//! `fstat` policy.
+//! across stat queries. Arch coverage: AMD64 (legacy `stat` 4) plus
+//! X86 / ARM EABI / MIPS32 via their LFS `stat64` numbers (195 / 195 /
+//! 4213). ARM64 is absent by design, not by omission — its asm-generic
+//! ABI dropped legacy `stat` entirely, leaving only `newfstatat` (79).
+//! Every other arch falls back to Python's error path.
 //!
 //! Symbolic pathname pointer / pathname byte → `SymbolicArgument`
 //! (dispatcher falls back to Python). Unmapped statbuf surfaces a
 //! `MemoryError` via the `?` conversion. Unsupported arch returns
 //! `Other("unsupported arch …")` — checked FIRST before reading the
-//! path, so a state on a non-AMD64 arch never even attempts to
+//! path, so a state on an unsupported arch never even attempts to
 //! traverse memory.
 //!
 //! ## `lstat` / `newfstatat` (angr-poao)
@@ -134,19 +138,20 @@
 //!
 //! * `lstat` would normally diverge on symbolic links — but the
 //!   `FileSystem` model has no symlinks (open / openat never produce
-//!   one), so it collapses to the same write as `stat`. AMD64 only,
-//!   matching the `stat` policy.
+//!   one — the `readlink` symlink table above is a separate, read-only
+//!   registry), so it collapses to the same write as `stat`. Same arch
+//!   coverage as `stat`: AMD64 + X86 + ARM + MIPS32.
 //! * `newfstatat` adds `openat`-style dirfd handling: absolute paths
 //!   and `AT_FDCWD` resolve via `FileSystem`; relative paths with any
 //!   other dirfd return `-1` (we do not model directory fds). The
 //!   `flag` arg (incl. `AT_EMPTY_PATH` 0x1000, which would route to
 //!   `NativeFstatSyscall(dirfd)`) is ignored — deferred. Arch coverage
-//!   is AMD64 + ARM64 (both have a 64-bit `struct stat` and a Python
-//!   `fstat.py` reference); `newfstatat` is in fact the only stat-shaped
-//!   syscall on ARM64's asm-generic ABI.
+//!   is the full `write_stat_for_arch` set (AMD64 / ARM64 / X86 / ARM /
+//!   MIPS32) — one arch wider than `stat` / `lstat`, since `newfstatat`
+//!   is the only stat-shaped syscall on ARM64's asm-generic ABI (79).
 //!
-//! Both reuse `write_amd64_stat` / `write_aarch64_stat` from `fstat`
-//! and `FileSystem::content_size_for_path` from `stat`. Arch-check
+//! Both reuse `write_stat_for_arch` from `fstat` and
+//! `FileSystem::content_size_for_path` from `stat`. Arch-check
 //! happens FIRST (before any memory read), matching the `stat` policy.
 
 use super::{NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg};
@@ -788,8 +793,9 @@ impl NativeSyscall for NativeFstatSyscall {
 /// per-arch `struct stat` using the existing `write_amd64_stat` /
 /// `write_i386_stat` / `write_arm_stat` helpers, return `0`. Unknown /
 /// empty path returns `-1` with no buffer write. Arch coverage:
-/// AMD64 + X86 + ARM (X86/ARM via the LFS `stat64` number; ARM64's
-/// asm-generic ABI dropped legacy `stat` — only `newfstatat` remains).
+/// AMD64 + X86 + ARM + MIPS32 (the latter three via their LFS `stat64`
+/// number; ARM64's asm-generic ABI dropped legacy `stat` — only
+/// `newfstatat` remains).
 /// Unsupported arch returns `Other` BEFORE touching the path, mirroring
 /// the `fstat` policy.
 pub(crate) struct NativeStatSyscall;
@@ -809,8 +815,9 @@ impl NativeSyscall for NativeStatSyscall {
         args: &[RustBV],
     ) -> Result<SyscallOutcome, SyscallError> {
         // Arch check first: avoid traversing memory if we will fall
-        // back to Python anyway. AMD64 is the only arch that retains
-        // a legacy `stat` syscall *and* has a working Python proc.
+        // back to Python anyway. ARM64 is absent because its
+        // asm-generic ABI has no `stat` number at all (only
+        // `newfstatat`), not because the writer is missing.
         let arch_name = state.arch().name();
         if arch_name != "AMD64" && arch_name != "X86" && arch_name != "ARM" && arch_name != "MIPS32"
         {
@@ -845,8 +852,12 @@ impl NativeSyscall for NativeStatSyscall {
 /// its content length via `FileSystem::content_size_for_path`, write
 /// the per-arch `struct stat` via `write_stat_for_arch`, return `0`.
 /// Unknown / empty path returns `-1` with no buffer write. Arch
-/// coverage: AMD64 + X86 + ARM (X86/ARM via the LFS `lstat64` number);
-/// ARM64's asm-generic ABI dropped legacy `lstat` entirely. Unsupported
+/// coverage: AMD64 + X86 + ARM + MIPS32 (the latter three via their
+/// LFS `lstat64` number); ARM64's asm-generic ABI dropped legacy
+/// `lstat` entirely. NOTE: ARM additionally registers the *legacy*
+/// number 107, whose pre-LFS `struct stat` layout does not match what
+/// `write_arm_stat` emits — tracked separately, see angr-9ke6b.226.
+/// Unsupported
 /// arch returns `Other` BEFORE touching the path, mirroring the `stat`
 /// policy.
 pub(crate) struct NativeLstatSyscall;
