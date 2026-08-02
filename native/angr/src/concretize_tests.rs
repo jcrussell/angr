@@ -19,25 +19,16 @@ fn test_concrete_address() {
 #[test]
 fn test_result_helpers() {
     let single = ConcretizationResult::Single(0x1000);
-    assert!(single.is_success());
-    assert_eq!(single.single(), Some(0x1000));
     assert_eq!(single.addresses(), Some(vec![0x1000]));
-    assert!(!single.is_strided());
 
     let multi = ConcretizationResult::Multiple(vec![0x1000, 0x1004, 0x1008]);
-    assert!(multi.is_success());
-    assert_eq!(multi.single(), None);
     assert_eq!(multi.addresses(), Some(vec![0x1000, 0x1004, 0x1008]));
-    assert!(!multi.is_strided());
 
     let strided = ConcretizationResult::Strided {
         base: 0x1000,
         stride: 4,
         count: 10,
     };
-    assert!(strided.is_success());
-    assert!(strided.is_strided());
-    assert_eq!(strided.strided_params(), Some((0x1000, 4, 10)));
     assert_eq!(
         strided.addresses(),
         Some(vec![
@@ -46,22 +37,14 @@ fn test_result_helpers() {
     );
 
     let failed = ConcretizationResult::Failed("test".to_string());
-    assert!(!failed.is_success());
     assert_eq!(failed.addresses(), None);
-}
 
-#[test]
-fn test_offset_adjustment() {
-    let ctx = SymContext::new_mock();
-    let concretizer = AddressConcretizer::new();
-
-    let base = RustBV::concrete(0x8000, 64);
-    let result = concretizer.concretize_with_offset(&base, -0x100, &ctx);
-
-    match result {
-        ConcretizationResult::Single(a) => assert_eq!(a, 0x7F00),
-        _ => panic!("expected Single result"),
-    }
+    let too_large = ConcretizationResult::TooLarge {
+        min: 0x1000,
+        max: 0x9000,
+        limit: 1024,
+    };
+    assert_eq!(too_large.addresses(), None);
 }
 
 #[test]

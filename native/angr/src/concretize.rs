@@ -78,16 +78,6 @@ pub enum ConcretizationResult {
 }
 
 impl ConcretizationResult {
-    /// Check if this is a successful concretization (Single, Multiple, or Strided).
-    pub fn is_success(&self) -> bool {
-        matches!(
-            self,
-            ConcretizationResult::Single(_)
-                | ConcretizationResult::Multiple(_)
-                | ConcretizationResult::Strided { .. }
-        )
-    }
-
     /// Get the concrete addresses if successful.
     /// For Strided results, generates all addresses in the pattern.
     pub fn addresses(&self) -> Option<Vec<u64>> {
@@ -99,31 +89,6 @@ impl ConcretizationResult {
                 stride,
                 count,
             } => Some((0..*count).map(|i| base + i * stride).collect()),
-            _ => None,
-        }
-    }
-
-    /// Get a single address if there's exactly one.
-    pub fn single(&self) -> Option<u64> {
-        match self {
-            ConcretizationResult::Single(addr) => Some(*addr),
-            _ => None,
-        }
-    }
-
-    /// Check if this is a strided access pattern.
-    pub fn is_strided(&self) -> bool {
-        matches!(self, ConcretizationResult::Strided { .. })
-    }
-
-    /// Get strided pattern parameters if this is a Strided result.
-    pub fn strided_params(&self) -> Option<(u64, u64, u64)> {
-        match self {
-            ConcretizationResult::Strided {
-                base,
-                stride,
-                count,
-            } => Some((*base, *stride, *count)),
             _ => None,
         }
     }
@@ -214,41 +179,6 @@ impl AddressConcretizer {
     /// Create a new concretizer with default settings.
     pub fn new() -> Self {
         Self::default()
-    }
-
-    /// Create a concretizer with custom settings.
-    pub fn with_limits(max_range: u64, max_solutions: usize) -> Self {
-        AddressConcretizer {
-            read_range_limit: max_range,
-            write_range_limit: max_range.min(128),
-            max_range,
-            max_solutions,
-            ..Default::default()
-        }
-    }
-
-    /// Create a concretizer with full custom settings.
-    pub fn with_full_config(
-        max_range: u64,
-        max_solutions: usize,
-        max_stride_count: u64,
-        enable_stride_detection: bool,
-    ) -> Self {
-        AddressConcretizer {
-            read_range_limit: max_range,
-            write_range_limit: max_range.min(128),
-            max_range,
-            max_solutions,
-            max_stride_count,
-            enable_stride_detection,
-            stride_sample_count: 4,
-            use_approximate: false,
-            symbolic_write_addresses: false,
-            read_fallback_any: true,
-            write_fallback_max: true,
-            avoid_multivalued_reads: false,
-            avoid_multivalued_writes: false,
-        }
     }
 
     /// Configure from Python sim_options (legacy interface).
@@ -731,39 +661,6 @@ impl AddressConcretizer {
             a = t;
         }
         a
-    }
-
-    /// Concretize with base+offset optimization.
-    ///
-    /// For patterns like `base + constant_offset` where `base` is symbolic
-    /// but `offset` is constant, we can concretize the base once and adjust.
-    ///
-    /// # Arguments
-    /// * `base` - The symbolic base address
-    /// * `offset` - The constant offset (can be negative via i64)
-    /// * `ctx` - The solver context
-    ///
-    /// # Returns
-    /// Concretization result with addresses adjusted by offset.
-    pub fn concretize_with_offset(
-        &self,
-        base: &RustBV,
-        offset: i64,
-        ctx: &SymContext,
-    ) -> ConcretizationResult {
-        match self.concretize(base, ctx) {
-            ConcretizationResult::Single(addr) => {
-                ConcretizationResult::Single((addr as i64).wrapping_add(offset) as u64)
-            }
-            ConcretizationResult::Multiple(addrs) => {
-                let adjusted: Vec<u64> = addrs
-                    .iter()
-                    .map(|&a| (a as i64).wrapping_add(offset) as u64)
-                    .collect();
-                ConcretizationResult::Multiple(adjusted)
-            }
-            other => other,
-        }
     }
 }
 
