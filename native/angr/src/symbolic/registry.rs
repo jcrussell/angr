@@ -305,9 +305,9 @@ impl SymbolicIdentityRegistry {
         {
             log::warn!(
                 "symbolic identity registry holds {live} live symbols (crossed {threshold}); \
-                 it has no garbage collector, so every symbol minted by this exploration is \
-                 pinned — along with its original claripy AST — until the next \
-                 reset_for_new_exploration"
+                 it has no garbage collector and nothing clears it in production, so every \
+                 symbol minted in this process stays pinned — along with its original \
+                 claripy AST — for the process lifetime"
             );
         }
     }
@@ -516,11 +516,12 @@ impl SymbolicIdentityRegistry {
     /// # Why there is no production caller yet
     ///
     /// Nothing computes an active set at a quiescent point in the exploration
-    /// loop, so the only production mutation of the registry is the wholesale
-    /// `reset_for_new_exploration` clear at exploration start, and growth within
-    /// a single run is surfaced by `maybe_warn_growth` / the
-    /// `symbol_registry_size` stat rather than collected. Wiring that up is a
-    /// memory/fidelity trade now, no longer a correctness one.
+    /// loop, and nothing clears the registry in production either
+    /// (`reset_for_new_exploration` is `#[cfg(test)]` — angr-9ke6b.218 item 4),
+    /// so the registry only ever grows for the life of the process. That growth
+    /// is surfaced by `maybe_warn_growth` / the `symbol_registry_size` stat
+    /// rather than collected. Wiring this up is a memory/fidelity trade now, no
+    /// longer a correctness one.
     ///
     /// That trade was measured and declined (angr-9ke6b.224, 2026-08-01). Ten
     /// `mma_howtouse` iterations in one process (450 Callable invocations,
@@ -581,7 +582,16 @@ pub fn global_registry() -> &'static SymbolicIdentityRegistry {
 
 /// Clear the global registry.
 ///
-/// Should be called at the start of each new exploration.
+/// **Test-only** (angr-9ke6b.218 item 4). Nothing in production clears the
+/// registry: symbol identity is process-global precisely so several
+/// `RustExplorationManager`s in one process agree on it, and wiping it while
+/// any earlier manager's states or `RustBV`s are still live would strand their
+/// rust ids (`lookup_name_by_id` -> `None` -> a renamed BVS that no existing
+/// constraint binds — the angr-izov2 failure mode). Bounding registry growth is
+/// a GC problem, tracked on angr-9ke6b.222, not a clear-it-at-startup one.
+/// Call `claripy_bridge::reset_for_new_exploration` rather than this directly;
+/// see cross-cache invariant C3.
+#[cfg(test)]
 pub fn clear_global_registry() {
     if let Some(registry) = GLOBAL_REGISTRY.get() {
         registry.clear();

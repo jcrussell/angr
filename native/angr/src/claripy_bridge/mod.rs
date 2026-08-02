@@ -47,10 +47,11 @@
 //!   extends the clear to the global registry; do NOT call
 //!   `clear_global_registry()` in isolation — that drops the canonical
 //!   `rust_id → AST` mapping while the thread-locals still reference those
-//!   ids. Under the Option-A parallel model (angr-1ilq) the global clear is
-//!   exploration-start / main-thread only; a worker clears only its own
-//!   thread-locals via `clear_worker_local_caches` so it cannot wipe
-//!   symbol identity that sibling workers still hold.
+//!   ids. The extended clear is `#[cfg(test)]` (angr-9ke6b.218 item 4):
+//!   production never wipes the global registry, because symbol identity is
+//!   shared across coexisting managers and across sibling workers under the
+//!   Option-A parallel model (angr-1ilq). A worker clears only its own
+//!   thread-locals via `clear_worker_local_caches`.
 //!
 //! - **C4. Expression nodes are cached by operands pointer only.**
 //!   `EXPRESSION_BY_OPERANDS_PTR` (keyed by `Arc::as_ptr(operands) as

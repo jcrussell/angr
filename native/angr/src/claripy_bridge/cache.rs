@@ -256,12 +256,18 @@ pub(crate) fn clear_worker_local_caches() {
 /// Clears the thread-local caches first, then the global registry, so the
 /// ordering still honors cross-cache invariant C3 (no partial clear is correct).
 ///
-/// **No production caller** (angr-9ke6b.214): the exploration-start path clears
-/// only the thread-local caches via `clear_ast_cache`, so the global registry
-/// survives across managers in one process. Only `cache_tests` drives the full
-/// reset. Whether the production path *should* call it is a behaviour question,
-/// not a visibility one, so this is flagged rather than deleted.
-#[cfg_attr(not(test), allow(dead_code))]
+/// **Test-only by design** (angr-9ke6b.218 item 4, resolving the .214 flag).
+/// Despite the name, no exploration start calls this and none should: the
+/// exploration-start path clears only the thread-local caches via
+/// `clear_ast_cache`, so the global registry deliberately survives across
+/// managers in one process. Wiping it when a second manager starts — managers
+/// coexist; a bench builds one per `simulation_manager()` call — would strand
+/// the rust ids that the first manager's live states and `RustBV`s still hold,
+/// and `rustbv_to_claripy` would mint a renamed BVS that no existing constraint
+/// binds (angr-izov2). Bounding registry growth is angr-9ke6b.222's GC problem,
+/// which angr-9ke6b.40 already ruled cannot be solved with an approximate
+/// active set. This exists so `cache_tests` can start from a clean registry.
+#[cfg(test)]
 pub(crate) fn reset_for_new_exploration() {
     clear_ast_cache();
     crate::symbolic::clear_global_registry();
