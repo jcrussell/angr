@@ -1309,16 +1309,31 @@ fn worker_thread(worker_id: usize, job_rx: Receiver<WorkerCtl>, done_tx: Sender<
             Ok(WorkerCtl::Shutdown) | Err(_) => break,
         }
     }
-    // Drop this worker's bridge thread-local AST caches WHILE `z3ctx` is still
-    // the live thread-local Z3 context (angr-bjk8 / angr-1yge9.9). The interpreter
-    // paths workers run (`claripy_to_rustbv` in interpreter/{mod,expressions}.rs)
-    // populate `AST_CACHE` with `RustBV` values whose z3 ASTs are bound to
-    // `z3ctx`. Rust runs `thread_local!` destructors at thread teardown — AFTER
-    // this function returns and `z3ctx` (a local) has already dropped — so
-    // without this call those `RustBV`s would `dec_ref` against a freed context
-    // (UAF). `clear_worker_local_caches` runs here, with `z3ctx` alive, so every
-    // cached AST drops against a valid context; it touches only this thread's
+    // Drop this worker's bridge thread-local AST caches eagerly, while `z3ctx`
+    // is still the live thread-local Z3 context. The interpreter paths workers
+    // run (`claripy_to_rustbv` in interpreter/{mod,expressions}.rs) populate
+    // `AST_CACHE` with `RustBV` values whose z3 ASTs are bound to `z3ctx`, and
+    // Rust runs `thread_local!` destructors at thread teardown — AFTER this
+    // function returns and `z3ctx` (a local) has dropped. This call releases
+    // that memory at a known point instead, and touches only this thread's
     // caches, never the cross-thread global registry (angr-1ilq.2).
+    //
+    // This is proactive resource hygiene, NOT a use-after-free fix, contrary to
+    // how angr-bjk8 / angr-1yge9.9 originally described it (angr-9ke6b.39). Two
+    // independent reasons the UAF it guarded against cannot occur here:
+    //   1. `z3-patched`'s `Context` (native/z3-patched/src/context.rs) wraps an
+    //      `Rc<ContextInternal>`, and every cached AST owns its own clone of it
+    //      (`BV { ctx: Context, .. }` in z3-patched/src/ast/bv.rs).
+    //      `Z3_del_context` runs from `ContextInternal::drop` only once the LAST
+    //      handle drops, so a cached `RustBV` outliving the `z3ctx` local keeps
+    //      the underlying context alive rather than dangling. Drop order is
+    //      irrelevant. (The pre-Rc z3-rs lifetime model that motivated the
+    //      original wording was superseded by commit d604c1f04.)
+    //   2. The "a panic unwinds past this call and destructors run later against
+    //      a freed context" sequence needs unwinding, and the shipped build has
+    //      none: root Cargo.toml sets `panic = "abort"` (angr-1cue) — the same
+    //      property the "Panic policy" header at the top of this module relies
+    //      on. A panic aborts the process at the panic site.
     crate::claripy_bridge::clear_worker_local_caches();
     // Shutdown / channel closed / coordinator gone: `z3ctx` drops here.
 }

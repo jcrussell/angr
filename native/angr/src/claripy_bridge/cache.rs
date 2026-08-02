@@ -238,6 +238,13 @@ pub(crate) fn clear_ast_cache() {
 /// [`reset_for_new_exploration`] (which wipes global symbol identity that
 /// sibling workers depend on). See cross-cache invariant C3 in the parent
 /// module rustdoc.
+///
+/// The `worker_thread` teardown call in `exploration/scheduler.rs` is eager
+/// resource release, **not** a use-after-free guard: cached `RustBV` ASTs each
+/// own an `Rc`-cloned `Context`, so the underlying `Z3_context` outlives them
+/// regardless of drop order, and the shipped build is `panic = "abort"` so no
+/// unwind can skip this call. See angr-9ke6b.39 (which corrects the earlier
+/// angr-bjk8 / angr-1yge9.9 framing) and the comment at that call site.
 #[cfg_attr(not(feature = "vex-engine-z3"), allow(dead_code))]
 pub(crate) fn clear_worker_local_caches() {
     clear_ast_cache();
