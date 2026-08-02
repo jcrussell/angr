@@ -32,7 +32,6 @@ pub enum IROp {
     DivU(IRType),  // Unsigned division
     ModS(IRType),  // Signed modulo
     ModU(IRType),  // Unsigned modulo
-    Neg(IRType),   // Negation
 
     /// DivMod: 64-bit dividend / 32-bit divisor -> 64-bit (low=quotient, high=remainder)
     DivModU64to32, // Unsigned
@@ -687,12 +686,6 @@ pub enum IROp {
         to: IRType,
     },
 
-    /// High half of multiplication result.
-    MulHi {
-        ty: IRType,
-        signed: bool,
-    },
-
     /// Concatenate two values.
     Concat {
         ty: IRType,
@@ -774,8 +767,7 @@ impl IROp {
             | IROp::DivS(t)
             | IROp::DivU(t)
             | IROp::ModS(t)
-            | IROp::ModU(t)
-            | IROp::Neg(t) => Some(*t),
+            | IROp::ModU(t) => Some(*t),
 
             // Widening multiply
             IROp::MullS(t) | IROp::MullU(t) => match t {
@@ -1043,7 +1035,6 @@ impl IROp {
             }
 
             IROp::Reinterpret { to, .. } => Some(*to),
-            IROp::MulHi { ty, .. } => Some(*ty),
             IROp::Concat { ty } => Some(*ty),
             IROp::Extract { to, .. } => Some(*to),
 

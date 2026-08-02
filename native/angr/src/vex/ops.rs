@@ -434,12 +434,10 @@ pub fn iropclass(op: &IROp) -> VexOpFamily {
         | IROp::DivU(_)
         | IROp::ModS(_)
         | IROp::ModU(_)
-        | IROp::Neg(_)
         | IROp::DivModU64to32
         | IROp::DivModS64to32
         | IROp::DivModU128to64
-        | IROp::DivModS128to64
-        | IROp::MulHi { .. } => VexOpFamily::Arith,
+        | IROp::DivModS128to64 => VexOpFamily::Arith,
 
         // Bitwise logic
         IROp::And(_) | IROp::Or(_) | IROp::Xor(_) | IROp::Not(_) => VexOpFamily::Logic,
@@ -600,7 +598,6 @@ impl VEXOps {
     pub fn unop(op: IROp, arg: RustBV, ctx: &SymContext) -> Result<RustBV, OpError> {
         match op {
             IROp::Not(ty) => width_unop!(arg, ty, not_into, ctx),
-            IROp::Neg(ty) => width_unop!(arg, ty, neg_into, ctx),
             IROp::Clz(ty) => width_unop!(arg, ty, clz_into, ctx),
             IROp::Ctz(ty) => width_unop!(arg, ty, ctz_into, ctx),
             IROp::PopCount(ty) => width_unop!(arg, ty, popcount_into, ctx),
@@ -806,7 +803,6 @@ impl VEXOps {
             | IROp::ModS(_)
             | IROp::MullU(_)
             | IROp::MullS(_)
-            | IROp::MulHi { .. }
             | IROp::DivModU64to32
             | IROp::DivModS64to32
             | IROp::DivModU128to64
@@ -927,9 +923,6 @@ impl VEXOps {
             // Widening multiply (result width is 2 * ty.bits()).
             IROp::MullU(ty) => Self::widening_mul(left, right, ty, false, ctx),
             IROp::MullS(ty) => Self::widening_mul(left, right, ty, true, ctx),
-
-            // High half of multiplication.
-            IROp::MulHi { ty, signed } => Self::mul_hi(left, right, ty, signed, ctx),
 
             // DivMod: 64-bit / 32-bit -> 64-bit (low=quotient, high=remainder).
             IROp::DivModU64to32 => Self::divmod_64_to_32(left, right, false, ctx),

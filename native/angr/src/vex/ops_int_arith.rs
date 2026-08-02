@@ -31,24 +31,6 @@ impl VEXOps {
         Ok(left_ext.mul_into(right_ext, ctx))
     }
 
-    /// High half of multiplication.
-    #[inline]
-    pub(super) fn mul_hi(
-        left: RustBV,
-        right: RustBV,
-        ty: IRType,
-        signed: bool,
-        ctx: &SymContext,
-    ) -> Result<RustBV, OpError> {
-        let width = ty.bits();
-        let double_width = width * 2;
-
-        // Delegate the extend+multiply to widening_mul (identical math), then
-        // extract the high half of the double-width product.
-        let product = Self::widening_mul(left, right, ty, signed, ctx)?;
-        Ok(product.extract_into(double_width - 1, width, ctx))
-    }
-
     /// DivMod: 64-bit dividend / 32-bit divisor -> 64-bit result.
     /// Low 32 bits = quotient, High 32 bits = remainder.
     pub(super) fn divmod_64_to_32(

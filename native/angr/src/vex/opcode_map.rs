@@ -248,7 +248,9 @@ fn parse_arithmetic(op_str: &str) -> Option<IROp> {
     tuple_arms!(op_str; "Iop_MullU" => MullU { "8" => I8, "16" => I16, "32" => I32, "64" => I64 });
     tuple_arms!(op_str; "Iop_DivS"  => DivS  { "32" => I32, "64" => I64 });
     tuple_arms!(op_str; "Iop_DivU"  => DivU  { "32" => I32, "64" => I64 });
-    tuple_arms!(op_str; "Iop_Neg"   => Neg   { "8" => I8, "16" => I16, "32" => I32, "64" => I64 });
+    // No scalar-integer Iop_Neg arm: real VEX only defines the float
+    // Iop_Neg{F16,F32,F64,F128} (mapped in parse_float) and the vector
+    // Iop_Neg<w>Fx<n> forms. Integer negation lifts as `0 - x` via Iop_Sub.
 
     match op_str {
         // DivMod - combined division and modulo
@@ -257,24 +259,10 @@ fn parse_arithmetic(op_str: &str) -> Option<IROp> {
         "Iop_DivModU128to64" => Some(IROp::DivModU128to64),
         "Iop_DivModS128to64" => Some(IROp::DivModS128to64),
 
-        // High half multiply
-        "Iop_MulHi32S" => Some(IROp::MulHi {
-            ty: IRType::I32,
-            signed: true,
-        }),
-        "Iop_MulHi32U" => Some(IROp::MulHi {
-            ty: IRType::I32,
-            signed: false,
-        }),
-        "Iop_MulHi64S" => Some(IROp::MulHi {
-            ty: IRType::I64,
-            signed: true,
-        }),
-        "Iop_MulHi64U" => Some(IROp::MulHi {
-            ty: IRType::I64,
-            signed: false,
-        }),
-
+        // No scalar high-half-multiply arm: real VEX has no Iop_MulHi{32,64}
+        // (the header only defines the vector Iop_MulHi<w>{U,S}x<n> family).
+        // x86 IMUL/MUL lift to Iop_MullS32/Iop_MullU32 followed by
+        // Iop_64HIto32, both of which are mapped above / in parse_conversion.
         _ => None,
     }
 }
