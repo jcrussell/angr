@@ -7,7 +7,6 @@ arch/mod_tests.rs	/// at arch/mod.rs:638), so a corrupted snapshot still loads i
 callbacks/mod.rs	/// FORKED state's id (matching Python `engines/successors.py:203`
 callbacks/mod.rs	/// Matches Python's callstack.py:430/432 semantics.
 callbacks/mod.rs	/// pushed). Matches Python's callstack.py:386/419 semantics.
-claripy_bridge/mod.rs	//!   downstream VEX ops. The check at the use site (line ~478) evicts
 concretize.rs	/// `address_concretization_mixin.py:327-329`.
 concretize.rs	/// branch at line 272 (`return self._default_value(...)`).
 exploration/run_loop.rs	//! rust_manager.py:98):** the run loop must terminate on EITHER (a)

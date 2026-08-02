@@ -72,7 +72,8 @@
 //!   content-addressed `__hash__()`, which already encodes length, so
 //!   width-mismatched hits are extremely rare — but in the case of a
 //!   recycled hash slot a wrong-width return would silently corrupt
-//!   downstream VEX ops. The check at the use site (line ~478) evicts
+//!   downstream VEX ops. The check at the use site
+//!   (`import::claripy_to_rustbv_depth`, the `AST_CACHE` hit arm) evicts
 //!   and reconverts on mismatch; Bool ASTs have `ast.length == None`
 //!   and are treated as width 1 (matches RustBV bool representation).
 //!   See `invariant-ast-cache-width-check`.

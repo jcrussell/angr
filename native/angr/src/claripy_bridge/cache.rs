@@ -55,8 +55,9 @@ const EXPRESSION_CACHE_SIZE_NZ: NonZeroUsize = match NonZeroUsize::new(10000) {
 //
 // Width invariant: hashes are content-addressed and include length,
 // but a stale entry from a recycled hash slot could in principle
-// produce a width mismatch. Defended at the use site (~L478) — see
-// cross-cache invariant C5.
+// produce a width mismatch. Defended at the use site — the `AST_CACHE`
+// hit arm of `import::claripy_to_rustbv_depth` — see cross-cache
+// invariant C5.
 //
 // Invalidation: cleared by `clear_ast_cache` (block boundary /
 // significant constraint changes) and `reset_for_new_exploration`
