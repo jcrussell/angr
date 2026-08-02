@@ -275,7 +275,7 @@ pub struct NativeResumeFrame {
     pub saved_args: Vec<RustBV>,
     /// Address the *original* caller of this proc should resume at once the
     /// continuation finishes. Captured at sub-call time and used as the PC on
-    /// the final [`crate::procedures::ProcOutcome::Return`] instead of reading
+    /// the final `crate::procedures::ProcOutcome::Return` instead of reading
     /// the stack: a stack-return ABI clobbers the slot when the guest routine
     /// returns to the resume sentinel, and a link-register ABI loses the
     /// original return address when the dispatcher overwrites LR with the

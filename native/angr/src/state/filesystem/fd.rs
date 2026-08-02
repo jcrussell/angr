@@ -99,7 +99,7 @@ pub struct FileDescriptor {
     ///
     /// `None` for descriptors minted outside the `open` family (the three
     /// std fds, pipe ends, the write-side auto-vivified fds) and for
-    /// pre-angr-9ke6b.120 snapshots; [`FileSystem::fd_norm_name`] falls
+    /// pre-angr-9ke6b.120 snapshots; `FileSystem::fd_norm_name` falls
     /// back to normalizing `name` in that case, which is exact for the
     /// absolute pseudo-paths those descriptors carry.
     #[serde(default)]

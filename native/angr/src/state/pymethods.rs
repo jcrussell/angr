@@ -359,7 +359,7 @@ impl PyRustSimState {
 
     /// Set a register to a symbolic value from a full claripy AST.
     ///
-    /// Unlike [`set_register_symbolic`] (which wraps a raw Z3 pointer as an
+    /// Unlike [`set_register_symbolic`](Self::set_register_symbolic) (which wraps a raw Z3 pointer as an
     /// opaque `RustBV::Symbolic` with a freshly-minted id and so loses
     /// leaf-symbol identity on export), this routes the claripy AST through
     /// `claripy_to_rustbv`. That interns every leaf BVS into the shared

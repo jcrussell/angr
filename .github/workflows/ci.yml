@@ -43,6 +43,14 @@ jobs:
           components: clippy, rustfmt
       - run: cargo clippy --all-targets --all-features -- -D warnings
       - run: cargo fmt --all -- --check
+      # Rustdoc intra-doc links (angr-9ke6b.225). Broken links render as plain
+      # text, so a stale `[`Foo::bar`]` citation silently loses its
+      # cross-reference instead of failing loudly. Count is zero as of this
+      # lane being added; `-D warnings` keeps it there.
+      - name: Rustdoc link check
+        run: cargo doc --manifest-path native/angr/Cargo.toml --no-deps --all-features
+        env:
+          RUSTDOCFLAGS: -D warnings
       - name: Silent-fallback tagging audit
         run: python3 tools/audit_silent_fallback.py
       - name: Stale line-number-citation check

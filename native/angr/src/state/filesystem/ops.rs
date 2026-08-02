@@ -198,7 +198,7 @@ impl FileSystem {
     /// only after a `seek` or an interleaved `read` moved the offset away from
     /// EOF: there, append-only would corrupt the buffer relative to Python's
     /// position-aware `simfd.write`. Zero-fills any gap when `position` is at or
-    /// past EOF (a sparse seek-then-write), mirroring [`write_at`].
+    /// past EOF (a sparse seek-then-write), mirroring [`write_at`](Self::write_at).
     ///
     /// **Choke point (angr-0xyq2 Phase 2):** an fd carrying bounded
     /// symbolic content (`content_sym` / a live `registry_key`) is never
@@ -213,7 +213,7 @@ impl FileSystem {
     /// (`false`) *before* the symbolic check, with no demotion — the write is
     /// an `EBADF` that never reaches file content, so native serving of the
     /// file's sibling fds must stay intact. See
-    /// [`write_closed`](Self::write_closed).
+    /// `write_closed`.
     #[must_use = "false means the write was refused (closed fd, or symbolic content demoted); bounce to Python"]
     pub fn write(&mut self, fd: u32, data: &[u8]) -> bool {
         if data.is_empty() {

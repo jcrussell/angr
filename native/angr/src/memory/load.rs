@@ -115,8 +115,8 @@ impl SymbolicMemory {
 
     /// Load from a concrete address.
     ///
-    /// Thin wrapper over [`SymbolicMemory::load_concrete_common`] — the only
-    /// difference from [`SymbolicMemory::load_concrete_lazy_inner`] is that an
+    /// Thin wrapper over `SymbolicMemory::load_concrete_common` — the only
+    /// difference from `SymbolicMemory::load_concrete_lazy_inner` is that an
     /// unmapped page is always a hard `Unmapped` here (no lazy-region fetch
     /// hint), plus the `record_mem_load` counter bump. Per
     /// `invariant-mem-counter-two-paths` the volume counter lives on this entry

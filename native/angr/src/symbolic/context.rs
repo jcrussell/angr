@@ -207,7 +207,7 @@ fn default_true() -> bool {
 ///
 /// 30 seconds — chosen to match claripy's historical default and to cap the
 /// occasional Z3 outlier on bimodal-SAT benches. Overridable per-state via
-/// [`RustExplorationManager::set_solver_timeout`](crate::exploration::RustExplorationManager).
+/// `RustExplorationManager::set_solver_timeout`.
 pub const DEFAULT_SOLVER_TIMEOUT_MS: u32 = 30_000;
 
 /// Local-only constraint state added after fork.

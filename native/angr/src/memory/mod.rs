@@ -110,7 +110,7 @@ pub enum MemoryError {
     /// Out of bounds access.
     #[error("out of bounds access at 0x{addr:x} (size {size})")]
     OutOfBounds { addr: u64, size: u64 },
-    /// A zero-size access. Rejected up-front by [`end_page_inclusive`] rather
+    /// A zero-size access. Rejected up-front by `end_page_inclusive` rather
     /// than allowed to compute `addr + 0 - 1` (see that function for why).
     /// A zero-byte load could not produce a valid BV anyway (Z3 has no
     /// 0-width bitvector), and a zero-byte store has nothing to write, so

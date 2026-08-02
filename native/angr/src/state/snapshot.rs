@@ -60,7 +60,7 @@ pub enum SnapshotError {
 ///   inspection, concretizer, fs, track_history, drop_terminal flag
 ///   (carried on StashManager side).
 /// * **Bucket B (concrete + symbolic overlay)** — registers
-///   ([`RegisterFile`] serde), memory (`SymbolicMemorySnapshot`).
+///   (`RegisterFile` serde), memory (`SymbolicMemorySnapshot`).
 /// * **Bucket C (Arc-shared collapse)** — hooks (`Vec<u64>`), environment
 ///   (BTreeMap<bytes, bytes>).
 /// * **SymContext** — captured via `SymContextSnapshot` (replays

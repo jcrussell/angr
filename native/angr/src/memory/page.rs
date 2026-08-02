@@ -366,7 +366,7 @@ impl MemoryPage {
 
     /// Check if this page has any Multi bytes.
     ///
-    /// Parallel to [`has_symbolic`]: `merge` uses it to decide whether the
+    /// Parallel to [`has_symbolic`](Self::has_symbolic): `merge` uses it to decide whether the
     /// page can take the concrete-equality early-out. A page carrying Multi
     /// cells must always walk its bytes because Multi divergence lives in
     /// `SymbolicMemory::multi_objects`, invisible to a `data[]` compare.

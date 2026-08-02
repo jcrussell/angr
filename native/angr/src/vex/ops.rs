@@ -11,7 +11,7 @@
 //! remaining `expect` shapes are operand-*count* invariants fixed by the
 //! dispatch table, not by guest data:
 //!
-//!   * [`float_minmax_symbolic`] — reached only through
+//!   * `float_minmax_symbolic` — reached only through
 //!     `VEXOps::vec_float_lane_op`, whose nine call sites each pass a
 //!     fixed-size array literal matching the op's `arity()` (`&[left, right]`
 //!     for `FMin`/`FMax`).

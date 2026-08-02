@@ -117,7 +117,7 @@ pub(crate) fn invalid_handle_id(ids: &[u64]) -> PyErr {
 
 /// Map a two-operand table failure to a `PyValueError`. Owns the pyo3
 /// conversion so `symbolic::table` stays Python-agnostic (angr-ph300.32).
-/// Reuses [`invalid_handle_id`] for the missing-handle case so its message
+/// Reuses `invalid_handle_id` for the missing-handle case so its message
 /// stays identical to the single-operand ops.
 impl From<BinaryOpError> for PyErr {
     fn from(err: BinaryOpError) -> Self {

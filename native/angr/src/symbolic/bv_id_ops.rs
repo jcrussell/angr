@@ -104,7 +104,7 @@ impl Drop for SymbolIdRebase {
 impl SymContext {
     /// Get the next unique ID for a symbolic variable.
     ///
-    /// Allocates from the process-global [`NEXT_SYMBOL_ID`], not a per-context
+    /// Allocates from the process-global `NEXT_SYMBOL_ID`, not a per-context
     /// counter — see that static for why.
     pub fn next_id(&self) -> u64 {
         NEXT_SYMBOL_ID.fetch_add(1, Ordering::SeqCst)

@@ -528,7 +528,7 @@ impl SymbolicIdentityRegistry {
     /// `tests/benchmarks/run_leak_check.py`, which now reports the
     /// `symbol_registry_size` series) grow the registry perfectly linearly at
     /// 810 entries/iteration to 8100, ≈ 13.8 MB at the ~1.7 KB/entry measured
-    /// for [`GROWTH_WARN_THRESHOLDS`] — 3.5% of the 394 MB peak RSS, about a
+    /// for `GROWTH_WARN_THRESHOLDS` — 3.5% of the 394 MB peak RSS, about a
     /// third of that soak's total RSS growth, and the gate still passes at
     /// 1.09x against a 1.5x threshold. Two things a future GC should know:
     ///

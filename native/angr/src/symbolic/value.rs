@@ -446,7 +446,7 @@ pub enum RustBV {
         /// thread-local Z3 context swaps (the cached BV carries its own
         /// `Context`, compared to the active one on read).
         ///
-        /// Excluded from the serde shadow ([`RustBVData`] has no such field),
+        /// Excluded from the serde shadow (`RustBVData` has no such field),
         /// from `PartialEq`/`Debug`, and from any identity key — it is a pure
         /// deterministic-function cache. With the `vex-engine-z3` feature off
         /// it collapses to `()` so construction sites stay cfg-free.
