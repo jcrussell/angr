@@ -246,79 +246,20 @@ fn claripy_to_rustbv_depth(
         }
 
         // Arithmetic operations
-        "__add__" => {
-            let args_list: Vec<Bound<'_, PyAny>> = args.extract()?;
-            if args_list.len() != 2 {
-                return Err(BridgeError::InvalidArgs("__add__ requires 2 args".into()));
-            }
-            let left = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
-            let right = claripy_to_rustbv_depth(py, &args_list[1], ctx, depth + 1)?;
-            Ok(left.add(&right, ctx))
-        }
-
-        "__sub__" => {
-            let args_list: Vec<Bound<'_, PyAny>> = args.extract()?;
-            if args_list.len() != 2 {
-                return Err(BridgeError::InvalidArgs("__sub__ requires 2 args".into()));
-            }
-            let left = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
-            let right = claripy_to_rustbv_depth(py, &args_list[1], ctx, depth + 1)?;
-            Ok(left.sub(&right, ctx))
-        }
-
-        "__mul__" => {
-            let args_list: Vec<Bound<'_, PyAny>> = args.extract()?;
-            if args_list.len() != 2 {
-                return Err(BridgeError::InvalidArgs("__mul__ requires 2 args".into()));
-            }
-            let left = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
-            let right = claripy_to_rustbv_depth(py, &args_list[1], ctx, depth + 1)?;
-            Ok(left.mul(&right, ctx))
-        }
-
-        "SDiv" => {
-            let args_list: Vec<Bound<'_, PyAny>> = args.extract()?;
-            if args_list.len() != 2 {
-                return Err(BridgeError::InvalidArgs("div requires 2 args".into()));
-            }
-            let left = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
-            let right = claripy_to_rustbv_depth(py, &args_list[1], ctx, depth + 1)?;
-            Ok(left.sdiv(&right, ctx))
-        }
+        "__add__" => import_binary_op(py, &args, ctx, depth, "__add__", RustBV::add),
+        "__sub__" => import_binary_op(py, &args, ctx, depth, "__sub__", RustBV::sub),
+        "__mul__" => import_binary_op(py, &args, ctx, depth, "__mul__", RustBV::mul),
+        "SDiv" => import_binary_op(py, &args, ctx, depth, "div", RustBV::sdiv),
 
         // claripy BV.__floordiv__ is UNSIGNED division (verified: BVV(0xFFFFFFFE,32)//3
         // == 0x55555554). Only the SDiv op-name maps to signed sdiv.
-        "__floordiv__" | "UDiv" => {
-            let args_list: Vec<Bound<'_, PyAny>> = args.extract()?;
-            if args_list.len() != 2 {
-                return Err(BridgeError::InvalidArgs("UDiv requires 2 args".into()));
-            }
-            let left = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
-            let right = claripy_to_rustbv_depth(py, &args_list[1], ctx, depth + 1)?;
-            Ok(left.udiv(&right, ctx))
-        }
+        "__floordiv__" | "UDiv" => import_binary_op(py, &args, ctx, depth, "UDiv", RustBV::udiv),
 
-        "SMod" => {
-            let args_list: Vec<Bound<'_, PyAny>> = args.extract()?;
-            if args_list.len() != 2 {
-                return Err(BridgeError::InvalidArgs("mod requires 2 args".into()));
-            }
-            let left = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
-            let right = claripy_to_rustbv_depth(py, &args_list[1], ctx, depth + 1)?;
-            Ok(left.srem(&right, ctx))
-        }
+        "SMod" => import_binary_op(py, &args, ctx, depth, "mod", RustBV::srem),
 
         // claripy BV.__mod__ is UNSIGNED remainder (verified: BVV(0xFFFFFFFE,32)%3 == 2).
         // Only the SMod op-name maps to signed srem (claripy SMod == z3 bvsrem).
-        "__mod__" | "URem" => {
-            let args_list: Vec<Bound<'_, PyAny>> = args.extract()?;
-            if args_list.len() != 2 {
-                return Err(BridgeError::InvalidArgs("URem requires 2 args".into()));
-            }
-            let left = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
-            let right = claripy_to_rustbv_depth(py, &args_list[1], ctx, depth + 1)?;
-            Ok(left.urem(&right, ctx))
-        }
+        "__mod__" | "URem" => import_binary_op(py, &args, ctx, depth, "URem", RustBV::urem),
 
         "__neg__" => {
             let args_list: Vec<Bound<'_, PyAny>> = args.extract()?;
@@ -330,35 +271,9 @@ fn claripy_to_rustbv_depth(
         }
 
         // Bitwise operations
-        "__and__" => {
-            let args_list: Vec<Bound<'_, PyAny>> = args.extract()?;
-            if args_list.len() != 2 {
-                return Err(BridgeError::InvalidArgs("__and__ requires 2 args".into()));
-            }
-            let left = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
-            let right = claripy_to_rustbv_depth(py, &args_list[1], ctx, depth + 1)?;
-            Ok(left.and(&right, ctx))
-        }
-
-        "__or__" => {
-            let args_list: Vec<Bound<'_, PyAny>> = args.extract()?;
-            if args_list.len() != 2 {
-                return Err(BridgeError::InvalidArgs("__or__ requires 2 args".into()));
-            }
-            let left = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
-            let right = claripy_to_rustbv_depth(py, &args_list[1], ctx, depth + 1)?;
-            Ok(left.or(&right, ctx))
-        }
-
-        "__xor__" => {
-            let args_list: Vec<Bound<'_, PyAny>> = args.extract()?;
-            if args_list.len() != 2 {
-                return Err(BridgeError::InvalidArgs("__xor__ requires 2 args".into()));
-            }
-            let left = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
-            let right = claripy_to_rustbv_depth(py, &args_list[1], ctx, depth + 1)?;
-            Ok(left.xor(&right, ctx))
-        }
+        "__and__" => import_binary_op(py, &args, ctx, depth, "__and__", RustBV::and),
+        "__or__" => import_binary_op(py, &args, ctx, depth, "__or__", RustBV::or),
+        "__xor__" => import_binary_op(py, &args, ctx, depth, "__xor__", RustBV::xor),
 
         "__invert__" => {
             let args_list: Vec<Bound<'_, PyAny>> = args.extract()?;
@@ -370,63 +285,11 @@ fn claripy_to_rustbv_depth(
         }
 
         // Shift operations
-        "__lshift__" => {
-            let args_list: Vec<Bound<'_, PyAny>> = args.extract()?;
-            if args_list.len() != 2 {
-                return Err(BridgeError::InvalidArgs(
-                    "__lshift__ requires 2 args".into(),
-                ));
-            }
-            let val = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
-            let amt = claripy_to_rustbv_depth(py, &args_list[1], ctx, depth + 1)?;
-            Ok(val.shl(&amt, ctx))
-        }
-
-        "LShR" => {
-            let args_list: Vec<Bound<'_, PyAny>> = args.extract()?;
-            if args_list.len() != 2 {
-                return Err(BridgeError::InvalidArgs("LShR requires 2 args".into()));
-            }
-            let val = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
-            let amt = claripy_to_rustbv_depth(py, &args_list[1], ctx, depth + 1)?;
-            Ok(val.lshr(&amt, ctx))
-        }
-
-        "__rshift__" => {
-            let args_list: Vec<Bound<'_, PyAny>> = args.extract()?;
-            if args_list.len() != 2 {
-                return Err(BridgeError::InvalidArgs(
-                    "__rshift__ requires 2 args".into(),
-                ));
-            }
-            let val = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
-            let amt = claripy_to_rustbv_depth(py, &args_list[1], ctx, depth + 1)?;
-            Ok(val.ashr(&amt, ctx))
-        }
-
-        "RotateLeft" => {
-            let args_list: Vec<Bound<'_, PyAny>> = args.extract()?;
-            if args_list.len() != 2 {
-                return Err(BridgeError::InvalidArgs(
-                    "RotateLeft requires 2 args".into(),
-                ));
-            }
-            let val = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
-            let amt = claripy_to_rustbv_depth(py, &args_list[1], ctx, depth + 1)?;
-            Ok(val.rotl(&amt, ctx))
-        }
-
-        "RotateRight" => {
-            let args_list: Vec<Bound<'_, PyAny>> = args.extract()?;
-            if args_list.len() != 2 {
-                return Err(BridgeError::InvalidArgs(
-                    "RotateRight requires 2 args".into(),
-                ));
-            }
-            let val = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
-            let amt = claripy_to_rustbv_depth(py, &args_list[1], ctx, depth + 1)?;
-            Ok(val.rotr(&amt, ctx))
-        }
+        "__lshift__" => import_binary_op(py, &args, ctx, depth, "__lshift__", RustBV::shl),
+        "LShR" => import_binary_op(py, &args, ctx, depth, "LShR", RustBV::lshr),
+        "__rshift__" => import_binary_op(py, &args, ctx, depth, "__rshift__", RustBV::ashr),
+        "RotateLeft" => import_binary_op(py, &args, ctx, depth, "RotateLeft", RustBV::rotl),
+        "RotateRight" => import_binary_op(py, &args, ctx, depth, "RotateRight", RustBV::rotr),
 
         // Extension operations
         "ZeroExt" => {
@@ -492,105 +355,16 @@ fn claripy_to_rustbv_depth(
         }
 
         // Comparison operations (return 1-bit result)
-        "__eq__" => {
-            let args_list: Vec<Bound<'_, PyAny>> = args.extract()?;
-            if args_list.len() != 2 {
-                return Err(BridgeError::InvalidArgs("__eq__ requires 2 args".into()));
-            }
-            let left = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
-            let right = claripy_to_rustbv_depth(py, &args_list[1], ctx, depth + 1)?;
-            Ok(left.eq(&right, ctx))
-        }
-
-        "__ne__" => {
-            let args_list: Vec<Bound<'_, PyAny>> = args.extract()?;
-            if args_list.len() != 2 {
-                return Err(BridgeError::InvalidArgs("__ne__ requires 2 args".into()));
-            }
-            let left = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
-            let right = claripy_to_rustbv_depth(py, &args_list[1], ctx, depth + 1)?;
-            Ok(left.ne(&right, ctx))
-        }
-
-        "ULT" => {
-            let args_list: Vec<Bound<'_, PyAny>> = args.extract()?;
-            if args_list.len() != 2 {
-                return Err(BridgeError::InvalidArgs("ULT requires 2 args".into()));
-            }
-            let left = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
-            let right = claripy_to_rustbv_depth(py, &args_list[1], ctx, depth + 1)?;
-            Ok(left.ult(&right, ctx))
-        }
-
-        "ULE" => {
-            let args_list: Vec<Bound<'_, PyAny>> = args.extract()?;
-            if args_list.len() != 2 {
-                return Err(BridgeError::InvalidArgs("ULE requires 2 args".into()));
-            }
-            let left = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
-            let right = claripy_to_rustbv_depth(py, &args_list[1], ctx, depth + 1)?;
-            Ok(left.ule(&right, ctx))
-        }
-
-        "UGT" => {
-            let args_list: Vec<Bound<'_, PyAny>> = args.extract()?;
-            if args_list.len() != 2 {
-                return Err(BridgeError::InvalidArgs("UGT requires 2 args".into()));
-            }
-            let left = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
-            let right = claripy_to_rustbv_depth(py, &args_list[1], ctx, depth + 1)?;
-            Ok(left.ugt(&right, ctx))
-        }
-
-        "UGE" => {
-            let args_list: Vec<Bound<'_, PyAny>> = args.extract()?;
-            if args_list.len() != 2 {
-                return Err(BridgeError::InvalidArgs("UGE requires 2 args".into()));
-            }
-            let left = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
-            let right = claripy_to_rustbv_depth(py, &args_list[1], ctx, depth + 1)?;
-            Ok(left.uge(&right, ctx))
-        }
-
-        "SLT" => {
-            let args_list: Vec<Bound<'_, PyAny>> = args.extract()?;
-            if args_list.len() != 2 {
-                return Err(BridgeError::InvalidArgs("SLT requires 2 args".into()));
-            }
-            let left = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
-            let right = claripy_to_rustbv_depth(py, &args_list[1], ctx, depth + 1)?;
-            Ok(left.slt(&right, ctx))
-        }
-
-        "SLE" => {
-            let args_list: Vec<Bound<'_, PyAny>> = args.extract()?;
-            if args_list.len() != 2 {
-                return Err(BridgeError::InvalidArgs("SLE requires 2 args".into()));
-            }
-            let left = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
-            let right = claripy_to_rustbv_depth(py, &args_list[1], ctx, depth + 1)?;
-            Ok(left.sle(&right, ctx))
-        }
-
-        "SGT" => {
-            let args_list: Vec<Bound<'_, PyAny>> = args.extract()?;
-            if args_list.len() != 2 {
-                return Err(BridgeError::InvalidArgs("SGT requires 2 args".into()));
-            }
-            let left = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
-            let right = claripy_to_rustbv_depth(py, &args_list[1], ctx, depth + 1)?;
-            Ok(left.sgt(&right, ctx))
-        }
-
-        "SGE" => {
-            let args_list: Vec<Bound<'_, PyAny>> = args.extract()?;
-            if args_list.len() != 2 {
-                return Err(BridgeError::InvalidArgs("SGE requires 2 args".into()));
-            }
-            let left = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
-            let right = claripy_to_rustbv_depth(py, &args_list[1], ctx, depth + 1)?;
-            Ok(left.sge(&right, ctx))
-        }
+        "__eq__" => import_binary_op(py, &args, ctx, depth, "__eq__", RustBV::eq),
+        "__ne__" => import_binary_op(py, &args, ctx, depth, "__ne__", RustBV::ne),
+        "ULT" => import_binary_op(py, &args, ctx, depth, "ULT", RustBV::ult),
+        "ULE" => import_binary_op(py, &args, ctx, depth, "ULE", RustBV::ule),
+        "UGT" => import_binary_op(py, &args, ctx, depth, "UGT", RustBV::ugt),
+        "UGE" => import_binary_op(py, &args, ctx, depth, "UGE", RustBV::uge),
+        "SLT" => import_binary_op(py, &args, ctx, depth, "SLT", RustBV::slt),
+        "SLE" => import_binary_op(py, &args, ctx, depth, "SLE", RustBV::sle),
+        "SGT" => import_binary_op(py, &args, ctx, depth, "SGT", RustBV::sgt),
+        "SGE" => import_binary_op(py, &args, ctx, depth, "SGE", RustBV::sge),
 
         // Boolean constant
         "BoolV" => {
@@ -716,6 +490,44 @@ fn claripy_to_rustbv_depth(
     }
 
     result
+}
+
+/// Shared body for the ~24 plain binary ops in [`claripy_to_rustbv_depth`]'s
+/// op-dispatch match (angr-9ke6b.45 collapsed them into this).
+///
+/// Every one of those arms — arithmetic, bitwise, shift/rotate, comparison —
+/// had grown its own verbatim copy of the same shape: extract `args` into a
+/// 2-element list, reject any other arity, recurse into both operands at
+/// `depth + 1`, then call the matching `RustBV` method. Duplicating it 24
+/// times gave an op-specific typo (recursing twice into `args_list[0]`,
+/// forgetting `depth + 1`, naming the wrong op in the error) 24 places to
+/// hide; there is now exactly one.
+///
+/// `op_name` is the label used in the arity error and is passed explicitly
+/// rather than reusing the dispatched `op` string, because several arms match
+/// two claripy op-names at once (`"__floordiv__" | "UDiv"`) and report the
+/// canonical one.
+///
+/// `apply` is a plain `fn` pointer, not an `impl Fn`, so all 24 call sites
+/// share a single instantiation of this function instead of monomorphizing
+/// one copy each.
+fn import_binary_op(
+    py: Python<'_>,
+    args: &Bound<'_, PyAny>,
+    ctx: &SymContext,
+    depth: u32,
+    op_name: &str,
+    apply: fn(&RustBV, &RustBV, &SymContext) -> RustBV,
+) -> Result<RustBV, BridgeError> {
+    let args_list: Vec<Bound<'_, PyAny>> = args.extract()?;
+    if args_list.len() != 2 {
+        return Err(BridgeError::InvalidArgs(format!(
+            "{op_name} requires 2 args"
+        )));
+    }
+    let left = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
+    let right = claripy_to_rustbv_depth(py, &args_list[1], ctx, depth + 1)?;
+    Ok(apply(&left, &right, ctx))
 }
 
 /// Import a symbolic *leaf* (`BVS` / `BoolS`) while preserving symbol identity
