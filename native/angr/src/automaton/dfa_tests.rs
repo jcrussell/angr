@@ -116,3 +116,38 @@ fn test_empty_dfa() {
     // No final states - should be empty
     assert!(dfa2.is_empty());
 }
+
+#[test]
+fn test_add_transition_auto_grows_state_count() {
+    // add_transition on unregistered endpoints must grow num_states rather than
+    // record an edge referencing a state that 0..num_states never visits (which
+    // left PyDFA::to_networkx emitting edges to nodes it had not added).
+    let mut dfa = DFA::new();
+    dfa.add_transition(2, 0, 5);
+
+    assert_eq!(dfa.num_states(), 6, "destination id 5 must be covered");
+    assert_eq!(dfa.transition(2, 0), Some(5));
+
+    for (src, _, dst) in dfa.transitions() {
+        assert!(src < dfa.num_states() && dst < dfa.num_states());
+    }
+
+    // A subsequent add_state() hands out the next id past the auto-grown range,
+    // so ids stay unique.
+    assert_eq!(dfa.add_state(), 6);
+}
+
+#[test]
+fn test_start_and_final_states_auto_grow_state_count() {
+    let mut dfa = DFA::new();
+    dfa.set_start_state(1);
+    assert_eq!(dfa.num_states(), 2);
+
+    dfa.add_final_state(4);
+    assert_eq!(dfa.num_states(), 5);
+    assert!(dfa.final_states().contains(4));
+
+    // Growing never shrinks: a lower id leaves the count alone.
+    dfa.add_final_state(0);
+    assert_eq!(dfa.num_states(), 5);
+}

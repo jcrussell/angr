@@ -45,23 +45,45 @@ impl DFA {
         id
     }
 
-    /// Set the start state.
+    /// Ensure a state exists, expanding `num_states` if needed.
+    ///
+    /// Mirrors `EpsilonNFA::ensure_state`: every entry point that names a state
+    /// id auto-grows the state count rather than silently recording an id that
+    /// `num_states()` (and everything iterating `0..num_states`, e.g. the node
+    /// list `PyDFA::to_networkx` emits) would not report.
+    fn ensure_state(&mut self, state: StateId) {
+        if state >= self.num_states {
+            self.num_states = state + 1;
+        }
+    }
+
+    /// Set the start state, registering it if it was not added via
+    /// [`add_state`](Self::add_state).
     pub fn set_start_state(&mut self, state: StateId) {
+        self.ensure_state(state);
         self.start_state = Some(state);
     }
 
-    /// Add a final (accepting) state.
+    /// Add a final (accepting) state, registering it if it was not added via
+    /// [`add_state`](Self::add_state).
     pub fn add_final_state(&mut self, state: StateId) {
+        self.ensure_state(state);
         self.final_states.insert(state);
     }
 
     /// Add a transition.
+    ///
+    /// Both endpoints are registered via [`add_state`](Self::add_state)-equivalent
+    /// auto-growth if they are at or past the current state count, so an edge can
+    /// never reference a state that `num_states()` does not cover.
     ///
     /// Re-adding a transition for an existing `(source, symbol)` pair overwrites
     /// the previous destination; the stale `reverse_transitions` entry for the
     /// old destination is retired so `find_predecessors` (and therefore
     /// `minimize`'s Hopcroft refinement) never sees an edge that no longer exists.
     pub fn add_transition(&mut self, source: StateId, symbol: SymbolId, destination: StateId) {
+        self.ensure_state(source);
+        self.ensure_state(destination);
         self.alphabet.insert(symbol);
         let previous = self.transitions.insert((source, symbol), destination);
 
