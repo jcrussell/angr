@@ -1008,6 +1008,44 @@ fn test_inspection_ring_buffer() {
     assert_eq!(mgr.event_counts()[InspectEvent::MemRead as usize], 5);
 }
 
+/// `set_max_events` shrinking drops the OLDEST events, keeping the newest
+/// `max`, and a subsequent `record` still honours the new cap.
+#[test]
+fn test_inspection_set_max_events_shrinks_from_the_front() {
+    let mut mgr = InspectionManager::default();
+    mgr.enable(InspectEvent::MemRead);
+    for i in 0..5 {
+        mgr.record(InspectEvent::MemRead, i * 0x100, 4, 0);
+    }
+    assert_eq!(mgr.events().len(), 5);
+
+    mgr.set_max_events(2);
+    assert_eq!(mgr.events().len(), 2);
+    assert_eq!(mgr.events()[0].addr, 0x300);
+    assert_eq!(mgr.events()[1].addr, 0x400);
+
+    mgr.record(InspectEvent::MemRead, 0x500, 4, 0);
+    assert_eq!(mgr.events().len(), 2);
+    assert_eq!(mgr.events()[0].addr, 0x400);
+    assert_eq!(mgr.events()[1].addr, 0x500);
+    assert_eq!(mgr.event_counts()[InspectEvent::MemRead as usize], 6);
+}
+
+/// `max_events == 0` means "count but retain nothing" — it must not panic
+/// and must not leave a stray entry in the buffer.
+#[test]
+fn test_inspection_max_events_zero_retains_nothing() {
+    let mut mgr = InspectionManager::default();
+    mgr.enable(InspectEvent::MemWrite);
+    mgr.set_max_events(0);
+
+    mgr.record(InspectEvent::MemWrite, 0x1000, 4, 0);
+    mgr.record(InspectEvent::MemWrite, 0x2000, 4, 0);
+
+    assert!(mgr.events().is_empty());
+    assert_eq!(mgr.event_counts()[InspectEvent::MemWrite as usize], 2);
+}
+
 #[test]
 fn test_inspection_on_state() {
     let mut state = RustSimState::new("amd64").unwrap();

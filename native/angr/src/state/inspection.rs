@@ -1,5 +1,7 @@
 //! Inspection / breakpoint event subsystem for `RustSimState`.
 
+use std::collections::VecDeque;
+
 /// Types of inspection events that can be tracked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[repr(u8)]
@@ -64,15 +66,21 @@ pub struct InspectRecord {
 /// Inspection/breakpoint manager for state events.
 ///
 /// Tracks which event types are enabled for logging and maintains a
-/// ring buffer of recent events. Designed for minimal overhead when
-/// no inspections are registered (single bool check).
+/// ring buffer of the `max_events` most recent events. Designed for
+/// minimal overhead when no inspections are registered (single bool
+/// check); once the buffer is full, `record` evicts the oldest entry in
+/// O(1) via the `VecDeque`'s head, so a hot mem_read/mem_write path pays
+/// no per-event memmove.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct InspectionManager {
     /// Bitmask of enabled event types (bit N = InspectEvent with value N).
     enabled: u8,
-    /// Ring buffer of recent events (capacity = max_events).
-    events: Vec<InspectRecord>,
-    /// Maximum number of events to retain (ring buffer capacity).
+    /// Ring buffer of recent events (capacity = max_events). A `VecDeque`
+    /// so eviction of the oldest event is O(1); serializes as a plain
+    /// sequence, same wire shape as the `Vec` it replaced.
+    events: VecDeque<InspectRecord>,
+    /// Maximum number of events to retain (ring buffer capacity). Zero
+    /// means "count events but retain none".
     max_events: usize,
     /// Total event count per type (never reset, for statistics).
     event_counts: [u64; InspectEvent::COUNT],
@@ -82,7 +90,7 @@ impl Default for InspectionManager {
     fn default() -> Self {
         InspectionManager {
             enabled: 0,
-            events: Vec::new(),
+            events: VecDeque::new(),
             max_events: 1024,
             event_counts: [0; InspectEvent::COUNT],
         }
@@ -122,22 +130,28 @@ impl InspectionManager {
         self.enabled = 0;
     }
 
-    /// Set the maximum number of events to retain.
+    /// Set the maximum number of events to retain. Shrinking drops the
+    /// oldest events so the newest `max` survive.
     pub fn set_max_events(&mut self, max: usize) {
         self.max_events = max;
-        if self.events.len() > max {
-            let drain = self.events.len() - max;
-            self.events.drain(0..drain);
+        while self.events.len() > max {
+            self.events.pop_front();
         }
     }
 
     /// Record an event. Only called when the event type is enabled.
+    ///
+    /// The per-type count always ticks; retention is capped at
+    /// `max_events`, evicting the oldest entry in O(1).
     pub fn record(&mut self, event: InspectEvent, addr: u64, size: u32, block_addr: u64) {
         self.event_counts[event as usize] += 1;
-        if self.events.len() >= self.max_events {
-            self.events.remove(0);
+        if self.max_events == 0 {
+            return;
         }
-        self.events.push(InspectRecord {
+        if self.events.len() >= self.max_events {
+            self.events.pop_front();
+        }
+        self.events.push_back(InspectRecord {
             event,
             addr,
             size,
@@ -145,8 +159,8 @@ impl InspectionManager {
         });
     }
 
-    /// Get all recorded events.
-    pub fn events(&self) -> &[InspectRecord] {
+    /// Get all recorded events, oldest first.
+    pub fn events(&self) -> &VecDeque<InspectRecord> {
         &self.events
     }
 
