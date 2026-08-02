@@ -49,8 +49,8 @@
 use std::sync::atomic::AtomicU64;
 
 use super::{
-    NativeSyscall, SyscallError, SyscallOutcome, exit, extract_concrete_arg, fresh_byte_names,
-    mint_symbolic_bytes,
+    MAX_IO_SIZE as MAX_CGC_BYTES, NativeSyscall, SyscallError, SyscallOutcome, exit,
+    extract_concrete_arg, fresh_byte_names, mint_symbolic_bytes,
 };
 use crate::memory::Permission;
 use crate::procedures::stdin_common::mint_stdin_bytes;
@@ -80,10 +80,11 @@ const CGC_FLAG_PAGE_END: u64 = CGC_FLAG_PAGE_START + 0x1000;
 /// alongside the other CGC handlers.
 pub(crate) use exit::NativeExitSyscall as NativeTerminateSyscall;
 
-/// Cap on transmit / receive / random byte counts. Same value as the
-/// per-syscall MAX in `read.rs` / `write.rs`; keeps a runaway concrete
-/// count from filling memory before the dispatcher can react.
-const MAX_CGC_BYTES: u64 = 4096;
+// The transmit / receive / random byte cap is the shared `MAX_IO_SIZE`
+// (aliased above as `MAX_CGC_BYTES`) — see `syscalls::mod`. It keeps a
+// runaway concrete count from filling memory before the dispatcher can react,
+// and sharing the constant stops these handlers desyncing from read/write/fd_io
+// if the cap ever moves (angr-9ke6b.157).
 
 /// Unique-name counters; one per name-minting syscall family. Each mints
 /// `(family)_{id}_{i}` for byte `i` of read `id`. `transmit` has no counter

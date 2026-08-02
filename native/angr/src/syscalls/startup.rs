@@ -21,7 +21,9 @@
 
 use std::sync::atomic::AtomicU64;
 
-use super::{NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg};
+use super::{
+    MAX_IO_SIZE as MAX_GETRANDOM, NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg,
+};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
@@ -29,8 +31,9 @@ use crate::symbolic::RustBV;
 /// `linux_kernel/uname.py`.
 const UTSNAME_FIELD: u64 = 65;
 
-/// Cap on `getrandom` buflen handled natively; larger falls back.
-const MAX_GETRANDOM: u64 = 4096;
+// The `getrandom` buflen cap handled natively is the shared `MAX_IO_SIZE`
+// (aliased above as `MAX_GETRANDOM`) — see `syscalls::mod`; larger falls back
+// to Python. Shared so it can't desync from read/write/fd_io (angr-9ke6b.157).
 
 /// Counter for unique getrandom byte names (see `read::SYS_READ_COUNTER`).
 static SYS_GETRANDOM_COUNTER: AtomicU64 = AtomicU64::new(0);
