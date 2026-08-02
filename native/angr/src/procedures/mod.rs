@@ -496,8 +496,8 @@ impl NativeProcedureRegistry {
         registry.register(Arc::new(fgets::NativeGets));
         // Output procedures (stdout)
         registry.register(Arc::new(puts::NativePutchar));
+        // NativeFputc also covers putc / *_unlocked via its aliases().
         registry.register(Arc::new(puts::NativeFputc));
-        registry.register(Arc::new(puts::NativePutc));
         // String duplication
         registry.register(Arc::new(strcpy::NativeStrdup));
         registry.register(Arc::new(strcpy::NativeStrndup));

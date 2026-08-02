@@ -137,18 +137,21 @@ fn test_fputc_writes_to_stderr_fd() {
 
 #[test]
 fn test_putc_writes_to_arbitrary_fd() {
+    // `putc` has no struct of its own — it is an alias of NativeFputc — so go
+    // through the registry to prove the dispatch name still reaches the impl.
+    let registry = crate::procedures::NativeProcedureRegistry::new();
+    let putc = registry.get("putc").expect("putc should resolve").clone();
     let mut state = RustSimState::new("amd64").unwrap();
     let file_ptr = 0x5000;
     setup_file_struct(&mut state, file_ptr, 7);
-    NativePutc
-        .call(
-            &mut state,
-            &[
-                RustBV::concrete(b'q' as u128, 32),
-                RustBV::concrete(file_ptr as u128, 64),
-            ],
-        )
-        .unwrap();
+    putc.call(
+        &mut state,
+        &[
+            RustBV::concrete(b'q' as u128, 32),
+            RustBV::concrete(file_ptr as u128, 64),
+        ],
+    )
+    .unwrap();
     assert_eq!(state.fd_buffer(7), b"q");
 }
 

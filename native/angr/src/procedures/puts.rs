@@ -85,10 +85,17 @@ crate::declare_proc! {
     /// fails) falls back to Python. Mirrors NativeFputs / NativeFwrite, which
     /// also route any non-negative fd through `write_fd` rather than assuming
     /// stdout.
+    ///
+    /// `putc` (and both `_unlocked` spellings) are registered as aliases:
+    /// glibc defines `putc` as a macro alias for `fputc`, and Python angr
+    /// mirrors that with `fputc_unlocked = putc_unlocked = fputc`
+    /// (`angr/procedures/libc/fputc.py`). Sharing one impl keeps a future
+    /// change to the fd-resolution / demotion protocol from silently
+    /// diverging `putc` from `fputc` in the same binary.
     name = "fputc",
     struct = NativeFputc,
     args = [c: concrete, stream: concrete],
-    aliases = ["fputc_unlocked"],
+    aliases = ["fputc_unlocked", "putc", "putc_unlocked"],
     call |state| {
         let byte = (c & 0xFF) as u8;
         let fd = match crate::procedures::stdio::read_fileno_for_stream(state, stream) {
@@ -110,37 +117,6 @@ crate::declare_proc! {
         if !state.write_fd(fd as u32, &[byte]) {
             return Err(crate::procedures::ProcedureError::Other(format!(
                 "fputc to fd={fd} with symbolic content falls back to Python (demoted)"
-            )));
-        }
-        Ok(Some(RustBV::concrete(byte as u128, 32)))
-    }
-}
-
-crate::declare_proc! {
-    /// Native putc implementation (alias for fputc).
-    ///
-    /// `putc` is a macro alias for `fputc` in glibc — same fd resolution.
-    name = "putc",
-    struct = NativePutc,
-    args = [c: concrete, stream: concrete],
-    aliases = ["putc_unlocked"],
-    call |state| {
-        let byte = (c & 0xFF) as u8;
-        let fd = match crate::procedures::stdio::read_fileno_for_stream(state, stream) {
-            Ok(fd) => fd,
-            Err(e) => {
-                // See NativeFputc.
-                state.file_system().demote_all_symbolic_content();
-                return Err(e);
-            }
-        };
-        if fd < 0 {
-            return Ok(Some(RustBV::concrete((-1i64 as u64) as u128, 32)));
-        }
-        // Refusal contract — see NativeFputc.
-        if !state.write_fd(fd as u32, &[byte]) {
-            return Err(crate::procedures::ProcedureError::Other(format!(
-                "putc to fd={fd} with symbolic content falls back to Python (demoted)"
             )));
         }
         Ok(Some(RustBV::concrete(byte as u128, 32)))
