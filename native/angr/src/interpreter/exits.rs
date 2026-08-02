@@ -164,12 +164,11 @@ impl<'a> VEXInterpreter<'a> {
                 // Store the expression for constraint addition later
                 let condition_id = self.next_condition_id;
                 self.next_condition_id += 1;
-                self.stored_conditions.insert(condition_id, expr.clone());
+                self.stored_conditions.insert(condition_id, expr);
 
                 Ok(BlockResult::SymbolicJumpTarget {
                     targets,
                     condition_id,
-                    target_expr: expr,
                     jumpkind: irsb.jumpkind,
                 })
             }

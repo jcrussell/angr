@@ -482,14 +482,6 @@ enum StmtResult {
 /// Result of executing a single block.
 #[derive(Debug)]
 pub(crate) enum BlockResult {
-    /// Continue to the next block at given address.
-    ///
-    /// Never constructed (angr-9ke6b.214): `execute_block` ends a block with
-    /// `BlockEnd`/`Hook`/`Syscall`/... and the caller advances the PC itself,
-    /// so the "plain continue" case has no producer. Kept as the exhaustive
-    /// shape of the enum's contract; `run_until_event` still matches it.
-    #[allow(dead_code)]
-    Continue { next_addr: u64 },
     /// Syscall encountered. `num` is `None` when the syscall-number register
     /// is symbolic (angr-gffd); callers must route those cases to Python so
     /// `engines/successors.py::_resolve_syscall` can enumerate or honor
@@ -504,12 +496,6 @@ pub(crate) enum BlockResult {
     },
     /// Hook address hit.
     Hook { addr: u64 },
-    /// Block execution error.
-    ///
-    /// Never constructed (angr-9ke6b.214): block-level failures propagate as
-    /// `Err(ExecutionError)` from `execute_block` rather than as this variant.
-    #[allow(dead_code)]
-    Error { message: String },
     /// Normal block end with jumpkind.
     BlockEnd { next_addr: u64, jumpkind: JumpKind },
     /// Symbolic jump target with multiple concrete targets after concretization.
@@ -518,14 +504,12 @@ pub(crate) enum BlockResult {
         /// Concrete target addresses after concretization.
         targets: Vec<u64>,
         /// ID for the stored symbolic expression (for constraint addition).
-        condition_id: u64,
-        /// The symbolic expression for the jump target.
         ///
-        /// Write-only (angr-9ke6b.214): every consumer matches
-        /// `SymbolicJumpTarget` for `targets` + `condition_id` and re-reads the
-        /// expression from the pending-condition store instead.
-        #[allow(dead_code)]
-        target_expr: RustBV,
+        /// The expression itself is NOT carried on this variant: producers
+        /// (`interpreter::exits::handle_default_exit`) park it in the
+        /// interpreter's pending-condition store under this id, and every
+        /// consumer re-reads it from there (angr-9ke6b.218 item 8).
+        condition_id: u64,
         /// Jump kind (Ijk_Ret, Ijk_Call, etc.).
         jumpkind: JumpKind,
     },
@@ -593,13 +577,6 @@ pub(crate) struct VEXInterpreter<'a> {
     native_lift_enabled: bool,
     /// Block cache (shared across runs) using Arc for O(1) cloning.
     block_cache: LruCache<u64, Arc<IRSB>>,
-    /// Whether to use callbacks for memory (vs local registers).
-    ///
-    /// Write-only (angr-9ke6b.214): set from `ExecutionConfig` at construction
-    /// but never read — memory routing is decided by whether `rust_memory` is
-    /// attached.
-    #[allow(dead_code)]
-    use_memory_callbacks: bool,
     /// Deferred forks collected during execution.
     /// Each fork represents a branch where we took one path and deferred the other.
     deferred_forks: Vec<DeferredFork>,
@@ -787,7 +764,6 @@ impl<'a> VEXInterpreter<'a> {
             // run_interpreter_step_core swaps the shared cache in, but the two
             // *placeholder* caches there ARE zero-preallocation `unbounded()`.
             block_cache: LruCache::new(BLOCK_CACHE_CAPACITY_NZ),
-            use_memory_callbacks: true,
             deferred_forks: Vec::new(),
             deferred_fork_this_step: false,
             block_solver_pushed: false,
@@ -1227,8 +1203,7 @@ impl<'a> VEXInterpreter<'a> {
             #[cfg(feature = "libvex-ffi")]
             native_lift_enabled: self.native_lift_enabled,
             block_cache: self.block_cache.clone(), // Share lifted blocks with parent (Arc values = cheap clone)
-            use_memory_callbacks: self.use_memory_callbacks,
-            deferred_forks: Vec::new(), // Fresh deferred forks for fork
+            deferred_forks: Vec::new(),            // Fresh deferred forks for fork
             deferred_fork_this_step: false,
             block_solver_pushed: false,
             block_forks_asserted: 0,

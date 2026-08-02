@@ -134,10 +134,6 @@ impl<'a> VEXInterpreter<'a> {
                     profile_add!(block_start, self.stats.block_exec_time_ns);
 
                     match result {
-                        BlockResult::Continue { next_addr } => {
-                            self.pc = next_addr;
-                            // Continue to next block
-                        }
                         BlockResult::BlockEnd {
                             next_addr,
                             jumpkind,
@@ -269,22 +265,9 @@ impl<'a> VEXInterpreter<'a> {
                             }
                             return (RunResult::Hook { addr }, blocks_executed, forks);
                         }
-                        BlockResult::Error { message } => {
-                            let forks = self.take_deferred_forks();
-                            return (
-                                RunResult::Error {
-                                    message,
-                                    addr: self.pc,
-                                    kind: RunErrorKind::Fatal,
-                                },
-                                blocks_executed,
-                                forks,
-                            );
-                        }
                         BlockResult::SymbolicJumpTarget {
                             targets,
                             condition_id,
-                            target_expr: _,
                             jumpkind,
                         } => {
                             let forks = self.take_deferred_forks();
