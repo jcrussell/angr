@@ -280,11 +280,11 @@ impl StashManager {
     /// `state_index`. Both maps move together here. See module-level I6.
     pub fn push_or_drop_terminal(&mut self, stash_name: &str, state: RustSimState) {
         match stash_name {
-            "avoid" => self.avoided_count += 1,
-            "pruned" => self.pruned_count += 1,
-            "deadended" => self.deadended_count += 1,
-            "errored" => self.errored_count += 1,
-            "unconstrained" => self.unconstrained_count += 1,
+            STASH_AVOID => self.avoided_count += 1,
+            STASH_PRUNED => self.pruned_count += 1,
+            STASH_DEADENDED => self.deadended_count += 1,
+            STASH_ERRORED => self.errored_count += 1,
+            STASH_UNCONSTRAINED => self.unconstrained_count += 1,
             _ => {}
         }
         if !self.drop_terminal_states {

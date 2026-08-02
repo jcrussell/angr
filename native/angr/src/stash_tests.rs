@@ -27,6 +27,37 @@ fn test_counts() {
     }
 }
 
+/// Regression guard for angr-9ke6b.197: every terminal counter must be
+/// driven by the `STASH_*` constant, not by a copy of its string value.
+///
+/// The table below is keyed on the constants themselves, so if a future
+/// change edits a constant's value the test still drives the same code
+/// path — and it fails loudly if `push_or_drop_terminal`'s match arms are
+/// ever re-hardcoded to literals that drift from the constants.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_push_or_drop_terminal_counters_track_stash_constants() {
+    type CounterFn = fn(&StashManager) -> u64;
+    let cases: [(&str, CounterFn); 5] = [
+        (STASH_AVOID, |m| m.avoided_count),
+        (STASH_PRUNED, |m| m.pruned_count),
+        (STASH_DEADENDED, |m| m.deadended_count),
+        (STASH_ERRORED, |m| m.errored_count),
+        (STASH_UNCONSTRAINED, |m| m.unconstrained_count),
+    ];
+    for (stash, counter) in cases {
+        let mut mgr = StashManager::new();
+        assert_eq!(counter(&mgr), 0);
+        mgr.push_or_drop_terminal(stash, RustSimState::new("amd64").unwrap());
+        assert_eq!(
+            counter(&mgr),
+            1,
+            "counter for terminal stash {stash:?} did not increment"
+        );
+        assert_eq!(mgr.count(stash), 1, "state not stored in {stash:?}");
+    }
+}
+
 /// Round-trip a non-empty StashManager via the per-state codec.
 ///
 /// Pushes two states into `active` and one into `found`, then dumps via
