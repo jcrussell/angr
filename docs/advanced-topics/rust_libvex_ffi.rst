@@ -114,8 +114,9 @@ a ``NativeLibVEXLifter`` slots in beside the pyvex-callback path. Steps:
 3. Marshal the C ``VEXLiftResult->irsb`` into Rust ``vex::ir::IRSB`` — the same
    target shape ``pyvex_bridge.rs::PyVexIRSB`` documents, but read from the C
    struct instead of JSON (no serde round-trip).
-4. AMD64 only for Stage 1; call ``vex_init()`` once per process (it is
-   idempotent / guarded — see ``vex_initdone``).
+4. AMD64 only for Stage 1 (ARM, ARM64, MIPS32 and MIPS64 were added later —
+   see ``ffi_vex_arch`` for the current accepted set); call ``vex_init()``
+   once per process (it is idempotent / guarded — see ``vex_initdone``).
 5. **Parity harness:** dump the corpus unique-block set from the warm LRU cache
    and replay each block through both ``NativeLibVEXLifter`` and the
    pyvex-serialized path, asserting structural ``IRSB`` equality. Gate:

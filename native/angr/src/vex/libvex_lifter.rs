@@ -1,4 +1,10 @@
-//! Native libVEX lifter (`libvex-ffi` feature, AMD64 only for Stage-1).
+//! Native libVEX lifter (`libvex-ffi` feature).
+//!
+//! Accepted guest arches are whatever `ffi_vex_arch` maps: AMD64, ARM, ARM64,
+//! MIPS32 and MIPS64 (AMD64 landed in Stage-1; the other four in angr-qwyti.20,
+//! which also extended the corpus parity gate to them). X86, PPC32, PPC64 and
+//! S390X still return [`LiftError::InvalidArch`] so the caller falls back to
+//! the pyvex-callback path.
 //!
 //! `NativeLibVEXLifter` implements the [`VEXLifter`] trait by calling the
 //! `vex_lift` shim exported from `libpyvex.so` (the *same* object pyvex loads
@@ -66,8 +72,9 @@ static VEX_INIT: Once = Once::new();
 
 /// Native libVEX lifter backed by `libpyvex.so`'s `vex_lift` shim.
 ///
-/// AMD64 only for Stage-1; other arches return [`LiftError::InvalidArch`] so the
-/// caller falls back to the pyvex-callback path.
+/// Handles the arches `ffi_vex_arch` maps (AMD64, ARM, ARM64, MIPS32, MIPS64);
+/// the rest return [`LiftError::InvalidArch`] so the caller falls back to the
+/// pyvex-callback path.
 #[derive(Debug, Default)]
 pub struct NativeLibVEXLifter;
 

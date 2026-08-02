@@ -1,4 +1,4 @@
-//! Tests for the native libVEX lifter (feature `libvex-ffi`, AMD64 only).
+//! Tests for the native libVEX lifter (feature `libvex-ffi`).
 //!
 //! These exercise the real `libpyvex.so` `vex_lift` shim, so they only build
 //! and run under `cargo test --features libvex-ffi`. The exhaustive
@@ -69,13 +69,43 @@ fn test_lift_conditional_jump_has_exit() {
     assert!(has_exit, "conditional block should contain an Exit stmt");
 }
 
+/// The four arches `ffi_vex_arch` still has no archinfo mapping for must be
+/// refused up front so the caller falls back to the pyvex-callback path. This
+/// is deliberately *not* "everything except AMD64" — see
+/// `test_supported_arches_are_not_rejected`.
 #[test]
-fn test_non_amd64_rejected() {
+fn test_unsupported_arches_rejected() {
     let lifter = NativeLibVEXLifter::new();
-    let err = lifter
-        .lift(&[0x90], 0x400000, VexArch::X86)
-        .expect_err("non-AMD64 must be rejected in Stage-1");
-    assert!(matches!(err, LiftError::InvalidArch(_)));
+    for arch in [VexArch::X86, VexArch::PPC32, VexArch::PPC64, VexArch::S390X] {
+        let err = lifter
+            .lift(&[0x90], 0x400000, arch)
+            .expect_err("arch without an ffi_vex_arch mapping must be rejected");
+        assert!(
+            matches!(err, LiftError::InvalidArch(_)),
+            "{arch:?} should be InvalidArch, got {err:?}"
+        );
+    }
+}
+
+/// Companion to the above: since angr-qwyti.20 the native lifter accepts ARM,
+/// ARM64, MIPS32 and MIPS64 alongside AMD64 (the corpus parity gate in
+/// `libvex_corpus_tests.rs` replays real blocks for all five). Pin the arch
+/// gate itself rather than a lift, so the assertion does not depend on
+/// hand-assembling valid guest bytes per arch.
+#[test]
+fn test_supported_arches_are_not_rejected() {
+    for arch in [
+        VexArch::AMD64,
+        VexArch::ARM,
+        VexArch::ARM64,
+        VexArch::MIPS32,
+        VexArch::MIPS64,
+    ] {
+        assert!(
+            ffi_vex_arch(arch).is_some(),
+            "{arch:?} must map to an ffi::VexArch guest tag"
+        );
+    }
 }
 
 /// libVEX stores restricted-vector consts as one bit per byte lane; pyvex
