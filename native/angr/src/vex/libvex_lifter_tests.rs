@@ -99,3 +99,91 @@ fn test_expand_v256_pattern() {
     assert_eq!(expand_v256(0x0000_0100), [0, 0xff, 0, 0]);
     assert_eq!(expand_v256(0x8000_0000), [0, 0, 0, 0xff << 56]);
 }
+
+/// Every `ILGop_*` tag the vendored cffi cdef defines today.
+///
+/// `loadg_op` matches these by name; anything else falls through to
+/// `IRLoadGOp::Unknown`, which makes the interpreter drop the widening and
+/// silently load the wrong value rather than fail. Keep in sync with
+/// `test_loadg_op_handles_every_vendored_variant` below.
+const VENDORED_ILGOP_TAGS: &[&str] = &[
+    "ILGop_INVALID",
+    "ILGop_IdentV128",
+    "ILGop_Ident64",
+    "ILGop_Ident32",
+    "ILGop_16Uto32",
+    "ILGop_16Sto32",
+    "ILGop_8Uto32",
+    "ILGop_8Sto32",
+];
+
+/// Tripwire for a VEX pin bump that grows `IRLoadGOp`.
+///
+/// The two lifting paths diverge here on purpose: `pyvex_bridge::parse_loadg_op`
+/// (JSON path) also accepts the `ILGop_{16,32}{U,S}to64` widening forms
+/// defensively, but `loadg_op` (native FFI path) cannot — it matches bindgen
+/// constants, and bindgen only emits what the vendored header declares, which
+/// today is the eight tags above and no `*to64` form. So the native path has no
+/// way to pre-handle a variant that does not exist yet; the next best thing is
+/// to fail loudly the moment one appears. If this test breaks after
+/// `tools/regen-pyvex-ffi-header.py`, add the new tag to `loadg_op`, to
+/// `parse_loadg_op`, and to `VENDORED_ILGOP_TAGS`.
+#[test]
+fn test_vendored_header_ilgop_variant_set_is_unchanged() {
+    let header = include_str!("../../vendor/pyvex_ffi.h");
+
+    let mut found: Vec<&str> = Vec::new();
+    let mut rest = header;
+    while let Some(pos) = rest.find("ILGop_") {
+        let tail = &rest[pos..];
+        let end = tail
+            .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+            .unwrap_or(tail.len());
+        found.push(&tail[..end]);
+        rest = &tail[end..];
+    }
+    found.sort_unstable();
+    found.dedup();
+
+    let mut expected: Vec<&str> = VENDORED_ILGOP_TAGS.to_vec();
+    expected.sort_unstable();
+
+    assert_eq!(
+        found, expected,
+        "vendored pyvex_ffi.h ILGop_* set changed; teach loadg_op (and \
+         pyvex_bridge::parse_loadg_op) the new tags before updating this list"
+    );
+}
+
+/// Pins the native FFI path's `IRLoadGOp` mapping, so a reordered enum (the
+/// tags are implicitly numbered from `ILGop_INVALID=0x1D00`) or a dropped arm
+/// shows up as a failure rather than a silent `Unknown`.
+#[test]
+fn test_loadg_op_handles_every_vendored_variant() {
+    use crate::vex::ir::IRLoadGOp;
+
+    assert_eq!(
+        loadg_op(ffi::IRLoadGOp::ILGop_IdentV128),
+        IRLoadGOp::Identity
+    );
+    assert_eq!(loadg_op(ffi::IRLoadGOp::ILGop_Ident64), IRLoadGOp::Identity);
+    assert_eq!(loadg_op(ffi::IRLoadGOp::ILGop_Ident32), IRLoadGOp::Identity);
+    assert_eq!(
+        loadg_op(ffi::IRLoadGOp::ILGop_8Uto32),
+        IRLoadGOp::WidenZ { src_bits: 8 }
+    );
+    assert_eq!(
+        loadg_op(ffi::IRLoadGOp::ILGop_8Sto32),
+        IRLoadGOp::WidenS { src_bits: 8 }
+    );
+    assert_eq!(
+        loadg_op(ffi::IRLoadGOp::ILGop_16Uto32),
+        IRLoadGOp::WidenZ { src_bits: 16 }
+    );
+    assert_eq!(
+        loadg_op(ffi::IRLoadGOp::ILGop_16Sto32),
+        IRLoadGOp::WidenS { src_bits: 16 }
+    );
+    // INVALID is the one vendored tag that legitimately has no mapping.
+    assert_eq!(loadg_op(ffi::IRLoadGOp::ILGop_INVALID), IRLoadGOp::Unknown);
+}
