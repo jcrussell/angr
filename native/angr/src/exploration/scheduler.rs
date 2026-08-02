@@ -60,8 +60,10 @@
 //!
 //! # Panic policy: why the `.expect` sites are invariant guards, not error paths
 //!
-//! The shipped `.so` is built with `[profile.release] panic = "abort"`
-//! (workspace `Cargo.toml`, angr-1cue). That single fact settles the
+//! **Scope: everything in this section is about the shipped `.so`**, which is
+//! built with `[profile.release] panic = "abort"` (workspace `Cargo.toml`,
+//! angr-1cue). `cargo test` is the documented exception — see *Under `cargo
+//! test`* below. For the shipped build that single fact settles the
 //! panic-hardening audit (CQ .8) for this module:
 //!
 //! * **Mutex poisoning cannot happen.** A `Mutex` is only poisoned when a
@@ -69,8 +71,8 @@
 //!   is no unwind: a panic while a guard is held aborts the process at the panic
 //!   site, before the guard's `Drop` could ever flag the lock. Every
 //!   `.lock().expect("… poisoned")` here (results/summaries/done_rx) is
-//!   therefore *provably unreachable* — the message names a state that this
-//!   build can never produce.
+//!   therefore *provably unreachable in that build* — the message names a state
+//!   the shipped profile can never produce.
 //! * **A worker cannot "die" mid-wave into a live-pool disconnect.** A worker
 //!   thread leaves [`worker_thread`] only on `Shutdown`/closed-channel (clean
 //!   teardown) or by panicking — and a panic aborts the whole process. So while
@@ -86,8 +88,33 @@
 //! for its own `catch_unwind`-is-useless reasoning. The `.expect` messages are
 //! kept as invariant labels: if one ever *did* fire it would mean the
 //! panic-strategy assumption changed, which is exactly the signal a future
-//! reader wants. A forced-poison test is deliberately **not** added — it cannot
-//! observe a Python exception under this profile, only an abort.
+//! reader wants. A forced-poison test is deliberately **not** added — under the
+//! shipped profile it cannot observe a Python exception, only an abort, and
+//! under `cargo test` it would assert nothing but the cascade described next.
+//!
+//! ## Under `cargo test` the argument does *not* hold (and that is expected)
+//!
+//! Cargo forces `panic = "unwind"` on test/bench harness binaries regardless of
+//! the profile's `panic` setting — libtest needs to unwind to report a failing
+//! test — and no `[profile.test]` override can opt back into abort. So
+//! `cargo test --release --lib`, which is what runs this module's
+//! `scheduler_tests.rs` / `scheduler_worker_tests.rs`, executes the code under
+//! unwind semantics, where poisoning *is* reachable:
+//!
+//! * A worker that panics while holding the `job.results` / `job.summaries`
+//!   guard ([`worker::worker_loop`]'s terminal and summary drains,
+//!   `worker::drain_local_into_results`) unwinds out of the live guard and
+//!   poisons that lock.
+//! * The coordinator then trips the poison on its next lock —
+//!   [`WaveJob::take_results`], `WaveJob::into_results`, or the `done_rx`
+//!   guard in [`run_wave`](PersistentPool::run_wave) — so the `.expect("…
+//!   poisoned")` fires and the test fails with a *second*, cascaded panic.
+//!
+//! That cascade is acceptable rather than a violated invariant: the poison guard
+//! is faithfully reporting a real prior panic, and the shipped build would have
+//! aborted at the first one anyway. When debugging such a failure, ignore the
+//! `… mutex poisoned` panic and look for the *earliest* panic in the test
+//! output — that one is the actual bug.
 //!
 //! The one site the argument above does *not* cover is
 //! `Builder::spawn(..).expect("failed to spawn persistent worker thread")` in
