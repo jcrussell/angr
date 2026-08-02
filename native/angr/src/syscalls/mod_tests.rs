@@ -1109,3 +1109,44 @@ fn all_arches_have_exit_handler() {
         assert_eq!(h.num_args(), 0, "{arch} exit takes 0 args");
     }
 }
+
+#[test]
+fn fresh_byte_names_uniquifies_per_batch_and_index() {
+    // angr-9ke6b.158: the naming scheme all five mint-N-symbolic-bytes call
+    // sites now share. Two properties are load-bearing (see `fresh_symbolic`
+    // for why): the counter bumps once per *batch* so a batch's names are
+    // `<prefix>_<id>_0..n`, and two batches from the same callsite never
+    // collide (which would alias them to the same Z3 constant).
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    let first = fresh_byte_names("sys_probe", &COUNTER, 3);
+    let second = fresh_byte_names("sys_probe", &COUNTER, 3);
+
+    assert_eq!(
+        first,
+        vec!["sys_probe_0_0", "sys_probe_0_1", "sys_probe_0_2"]
+    );
+    assert_eq!(
+        second,
+        vec!["sys_probe_1_0", "sys_probe_1_1", "sys_probe_1_2"]
+    );
+    assert!(
+        first.iter().all(|n| !second.contains(n)),
+        "batches must not share names"
+    );
+}
+
+#[test]
+fn fresh_byte_names_empty_batch_still_bumps_the_counter() {
+    // A zero-length request yields no names but must not hand the *next*
+    // batch the id it would have used — every handler guards count==0 before
+    // calling, so this only pins that the shared helper can't silently
+    // reuse an id if a future caller drops that guard.
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    assert!(fresh_byte_names("sys_probe", &COUNTER, 0).is_empty());
+    assert_eq!(
+        fresh_byte_names("sys_probe", &COUNTER, 1),
+        vec!["sys_probe_1_0"]
+    );
+}

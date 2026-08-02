@@ -101,6 +101,51 @@ pub(crate) fn fresh_symbolic(
     RustBV::symbolic(ctx, format!("{prefix}_{id}"), width)
 }
 
+/// Allocate the `<prefix>_<id>_<i>` names for a batch of `count` fresh
+/// symbolic bytes, bumping `counter` once for the whole batch.
+///
+/// Split out from [`mint_symbolic_bytes`] because the CGC `receive` path needs
+/// the names *before* the bytes exist: it hands them to
+/// `procedures::stdin_common::mint_stdin_bytes`, which binds each leaf to a
+/// harness-seeded fd-0 byte instead of minting a plain constant. Every caller
+/// shares this one naming scheme so per-handler drift (see `fresh_symbolic`
+/// for why the uniquifying `id` is load-bearing) is impossible.
+pub(crate) fn fresh_byte_names(
+    prefix: &str,
+    counter: &std::sync::atomic::AtomicU64,
+    count: u64,
+) -> Vec<String> {
+    let id = counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    (0..count).map(|i| format!("{prefix}_{id}_{i}")).collect()
+}
+
+/// Mint `count` fresh symbolic bytes named `<prefix>_<id>_<i>` and store them
+/// one 8-bit store per byte into `[base, base + count)`.
+///
+/// The single implementation of the "fill this buffer with fresh symbolic
+/// bytes" pattern shared by `read`, `readv`, `getrandom` and CGC `random`
+/// (angr-9ke6b.158). `counter` is the caller's per-handler `AtomicU64`, which
+/// keeps repeat invocations of the *same* callsite uniquely named; `prefix`
+/// disambiguates callsites (and, for the fd-keyed readers, streams).
+pub(crate) fn mint_symbolic_bytes(
+    state: &mut RustSimState,
+    base: u64,
+    count: u64,
+    prefix: &str,
+    counter: &std::sync::atomic::AtomicU64,
+) -> Result<(), SyscallError> {
+    let names = fresh_byte_names(prefix, counter, count);
+    let sym_bytes: Vec<RustBV> = {
+        let ctx = state.solver().borrow();
+        names
+            .iter()
+            .map(|name| RustBV::symbolic(&ctx, name, 8))
+            .collect()
+    };
+    crate::procedures::strings::write_bv_bytes(state, base, sym_bytes)?;
+    Ok(())
+}
+
 /// What the dispatcher should do after a syscall handler runs.
 #[derive(Debug)]
 pub(crate) enum SyscallOutcome {

@@ -46,11 +46,15 @@
 //!   consecutive mapped pages, unmaps them, and adds the run to the
 //!   sinkhole freelist on success.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
 
-use super::{NativeSyscall, SyscallError, SyscallOutcome, exit, extract_concrete_arg};
+use super::{
+    NativeSyscall, SyscallError, SyscallOutcome, exit, extract_concrete_arg, fresh_byte_names,
+    mint_symbolic_bytes,
+};
 use crate::memory::Permission;
 use crate::procedures::stdin_common::mint_stdin_bytes;
+use crate::procedures::strings::write_bv_bytes;
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
@@ -242,22 +246,16 @@ impl NativeSyscall for NativeReceiveSyscall {
         // so a downstream `posix.dumps(0)` over the Python state can
         // recover the model — same precedent as `NativeReadSyscall` for
         // Linux stdin.
-        let read_id = RECEIVE_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let names: Vec<String> = (0..count)
-            .map(|i| format!("cgc_receive_{read_id}_{i}"))
-            .collect();
-        // `mint_stdin_bytes` binds each leaf to a harness-seeded fd-0 byte when
-        // the harness pre-filled `posix.stdin.content`, and records the unseeded
-        // ones under state.stdin_symbols (in read order) so the Python-side
+        let names = fresh_byte_names("cgc_receive", &RECEIVE_COUNTER, count);
+        // Not `mint_symbolic_bytes`: `mint_stdin_bytes` binds each leaf to a
+        // harness-seeded fd-0 byte when the harness pre-filled
+        // `posix.stdin.content`, and records the unseeded ones under
+        // state.stdin_symbols (in read order) so the Python-side
         // `_inject_rust_stdin` can evaluate them via the Rust solver and feed
         // posix.dumps(0) — same precedent as `read_stdin_symbolic` for Linux
-        // stdin, which shares the helper.
+        // stdin, which shares the helper. Only the naming is shared.
         let sym_bytes: Vec<RustBV> = mint_stdin_bytes(state, &names);
-        for (i, sym_byte) in sym_bytes.into_iter().enumerate() {
-            state
-                .memory_store(buf.wrapping_add(i as u64), sym_byte)
-                .map_err(SyscallError::Memory)?;
-        }
+        write_bv_bytes(state, buf, sym_bytes)?;
 
         if rx_bytes != 0 {
             store_u32_le(state, rx_bytes, count as u32)?;
@@ -402,21 +400,7 @@ impl NativeSyscall for NativeRandomSyscall {
             return Ok(SyscallOutcome::Continue { ret: 0 });
         }
 
-        let read_id = RANDOM_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let sym_bytes: Vec<RustBV> = {
-            let ctx = state.solver().borrow();
-            (0..count)
-                .map(|i| {
-                    let name = format!("cgc_random_{read_id}_{i}");
-                    RustBV::symbolic(&ctx, &name, 8)
-                })
-                .collect()
-        };
-        for (i, sym_byte) in sym_bytes.into_iter().enumerate() {
-            state
-                .memory_store(buf.wrapping_add(i as u64), sym_byte)
-                .map_err(SyscallError::Memory)?;
-        }
+        mint_symbolic_bytes(state, buf, count, "cgc_random", &RANDOM_COUNTER)?;
 
         if rnd_bytes != 0 {
             store_u32_le(state, rnd_bytes, count as u32)?;

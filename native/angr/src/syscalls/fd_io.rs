@@ -42,7 +42,7 @@
 //!     append-only `write`). Symbolic offset / symbolic data / fds not open
 //!     natively fall back to Python.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
 
 use super::{MAX_IO_SIZE, NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg};
 use crate::procedures::strings::write_bv_bytes;
@@ -372,14 +372,9 @@ fn scatter_symbolic(
 ) -> Result<SyscallOutcome, SyscallError> {
     let mut total = 0u64;
     for &(base, len) in segments {
-        let read_id = SYS_READV_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let sym_bytes: Vec<RustBV> = {
-            let ctx = state.solver().borrow();
-            (0..len)
-                .map(|i| RustBV::symbolic(&ctx, format!("{prefix}_{read_id}_{i}"), 8))
-                .collect()
-        };
-        write_bv_bytes(state, base, sym_bytes)?;
+        // One counter bump per segment (not per call), so two segments of the
+        // same call get distinct name batches.
+        crate::syscalls::mint_symbolic_bytes(state, base, len, prefix, &SYS_READV_COUNTER)?;
         total += len;
     }
     Ok(SyscallOutcome::Continue { ret: total })

@@ -19,7 +19,7 @@
 //!
 //! Symbolic / oversize args fall back to Python per the usual pattern.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
 
 use super::{NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg};
 use crate::state::RustSimState;
@@ -165,16 +165,13 @@ impl NativeSyscall for NativeGetrandomSyscall {
             return Ok(SyscallOutcome::Continue { ret: 0 });
         }
 
-        let read_id = SYS_GETRANDOM_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let sym_bytes: Vec<RustBV> = {
-            let ctx = state.solver().borrow();
-            (0..buflen)
-                .map(|i| RustBV::symbolic(&ctx, format!("sys_getrandom_{read_id}_{i}"), 8))
-                .collect()
-        };
-        for (i, b) in sym_bytes.into_iter().enumerate() {
-            state.memory_store(buf.wrapping_add(i as u64), b)?;
-        }
+        crate::syscalls::mint_symbolic_bytes(
+            state,
+            buf,
+            buflen,
+            "sys_getrandom",
+            &SYS_GETRANDOM_COUNTER,
+        )?;
         Ok(SyscallOutcome::Continue { ret: buflen })
     }
 }

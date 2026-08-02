@@ -27,7 +27,7 @@
 //!
 //! See `procedures/read.rs` for the fd-table sync invariant (angr-8j16).
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
 
 use super::{
     MAX_IO_SIZE as MAX_READ_SIZE, NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg,
@@ -145,20 +145,7 @@ fn read_symbolic(
     count: u64,
     prefix: &str,
 ) -> Result<SyscallOutcome, SyscallError> {
-    let read_id = SYS_READ_COUNTER.fetch_add(1, Ordering::Relaxed);
-
-    let sym_bytes: Vec<RustBV> = {
-        let ctx = state.solver().borrow();
-        (0..count)
-            .map(|i| {
-                let name = format!("{prefix}_{read_id}_{i}");
-                RustBV::symbolic(&ctx, &name, 8)
-            })
-            .collect()
-    };
-
-    write_bv_bytes(state, buf, sym_bytes)?;
-
+    crate::syscalls::mint_symbolic_bytes(state, buf, count, prefix, &SYS_READ_COUNTER)?;
     Ok(SyscallOutcome::Continue { ret: count })
 }
 
