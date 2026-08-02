@@ -2042,7 +2042,12 @@ class RustHeapProxy:
 
     @property
     def freed(self):
-        """List of freed addresses in free-call order."""
+        """Distinct freed addresses, in first-free order.
+
+        A set, not a log: freeing the same pointer twice records one entry
+        (matching what a state merge does with a free both branches
+        inherited), so this list never contains duplicates.
+        """
         try:
             _allocated, freed = self._mgr.get_state_heap_metadata(self._state_id)
             return list(freed)

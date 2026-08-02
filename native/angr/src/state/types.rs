@@ -26,7 +26,13 @@ pub struct CallStackEntry {
 pub struct HeapMetadata {
     /// Currently allocated regions: address -> size in bytes.
     pub allocated: FxHashMap<u64, u64>,
-    /// Freed addresses (in order of free calls).
+    /// Freed addresses, as a **set** in first-free order.
+    ///
+    /// Membership, not multiplicity: freeing the same pointer twice on one
+    /// path records one entry, matching what `union_from` does when both
+    /// merged branches inherited the same free. A `Vec` (not a hash set)
+    /// because export order must stay deterministic; see `record_free` for
+    /// why the linear membership scan is acceptable.
     pub freed: Vec<u64>,
 }
 
@@ -36,10 +42,23 @@ impl HeapMetadata {
         self.allocated.insert(addr, size);
     }
 
-    /// Record a free. Returns the size of the freed region, or None if not tracked.
+    /// Record a free. Returns the size of the freed region, or None if not
+    /// tracked (never allocated here, or already freed).
+    ///
+    /// `freed` is a set: a double free of the same pointer on one path records
+    /// one entry, so `free_count` means the same thing whether the state was
+    /// merged or not. Nothing derives double-free detection from a duplicate
+    /// entry — the `None` return already distinguishes the second free, and
+    /// under the bump allocator (`RustSimState::heap_alloc`) an address is
+    /// never handed out twice, so a repeat free is always the same allocation.
+    ///
+    /// The membership check is a linear scan, matching `union_from`; `freed`
+    /// holds one entry per distinct freed pointer on a path, which stays small
+    /// enough that a hash set would cost more (allocation, nondeterministic
+    /// export order) than it saves.
     pub fn record_free(&mut self, addr: u64) -> Option<u64> {
         let size = self.allocated.remove(&addr);
-        if addr != 0 {
+        if addr != 0 && !self.freed.contains(&addr) {
             self.freed.push(addr);
         }
         size
@@ -60,7 +79,8 @@ impl HeapMetadata {
         self.allocated.len()
     }
 
-    /// Get the number of free calls.
+    /// Get the number of distinct freed addresses (see `freed`: a set, so a
+    /// double free of one pointer counts once).
     pub fn free_count(&self) -> usize {
         self.freed.len()
     }

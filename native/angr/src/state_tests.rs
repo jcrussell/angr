@@ -2243,6 +2243,49 @@ fn test_heap_metadata_union_from() {
     assert!(a.freed.contains(&0x8000), "other-only free must be present");
 }
 
+// angr-9ke6b.127 (unit): `freed` is a set on the single-path side too — a
+// double free of the same pointer records one entry, so `free_count` means the
+// same thing whether the duplication arrived via `union_from` or via two
+// `record_free` calls on one path.
+#[test]
+fn test_heap_metadata_record_free_dedups() {
+    let mut hm = HeapMetadata::default();
+    hm.record_alloc(0x1000, 0x10);
+    hm.record_alloc(0x2000, 0x20);
+
+    assert_eq!(
+        hm.record_free(0x1000),
+        Some(0x10),
+        "first free returns size"
+    );
+    assert_eq!(
+        hm.record_free(0x1000),
+        None,
+        "double free is already distinguishable by the None return"
+    );
+    hm.record_free(0x2000);
+    hm.record_free(0x3000); // never allocated here; still recorded once
+    hm.record_free(0x3000);
+
+    assert_eq!(
+        hm.free_count(),
+        3,
+        "freed is a set: {{0x1000, 0x2000, 0x3000}}"
+    );
+    assert_eq!(
+        hm.freed,
+        vec![0x1000, 0x2000, 0x3000],
+        "first-free order preserved (export determinism)"
+    );
+
+    // A merge of a double-freeing path into another is idempotent too.
+    let mut other = HeapMetadata::default();
+    other.record_free(0x1000);
+    other.record_free(0x4000);
+    hm.union_from(&other);
+    assert_eq!(hm.freed, vec![0x1000, 0x2000, 0x3000, 0x4000]);
+}
+
 // angr-ph300.75: RustSimState::merge keeps the longest-stdout branch's
 // FileSystem wholesale (documented stdout-only merge contract). This locks in
 // that contract: the merged fs is the longest-stdout branch's fd table, ties

@@ -2254,9 +2254,9 @@ impl RustExplorationManager {
     ///
     /// Returns dict with:
     /// - allocated: list of (addr, size) tuples for active allocations
-    /// - freed: list of freed addresses
+    /// - freed: list of distinct freed addresses (a set — see `HeapMetadata::freed`)
     /// - alloc_count: number of active allocations
-    /// - free_count: number of free calls
+    /// - free_count: number of distinct freed addresses
     pub fn get_state_heap_metadata(&self, state_id: u64) -> PyResult<HeapMetadataReturn> {
         self._get_state_heap_metadata(state_id)
     }

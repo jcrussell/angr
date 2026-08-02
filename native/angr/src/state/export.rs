@@ -199,7 +199,8 @@ impl ExplorationStateSnapshot {
         self.heap_allocated.len()
     }
 
-    /// Get number of heap free calls.
+    /// Get number of distinct freed heap addresses (`HeapMetadata::freed` is a
+    /// set — a pointer freed twice counts once).
     pub fn get_heap_free_count(&self) -> usize {
         self.heap_freed.len()
     }
