@@ -95,6 +95,11 @@ impl SegmentList {
         self.map.len()
     }
 
+    /// Ordinal lookup. This is an O(idx) walk from the start of the map — the
+    /// backing `RangeMap` is keyed by address, not by position — so it must not
+    /// be called in a loop over consecutive indices. Callers that want to walk
+    /// backwards from a `search` hit want `iter_backward_from` instead, which
+    /// pays that cost once rather than once per step (angr-9ke6b.200).
     pub fn __getitem__(&self, idx: usize) -> PyResult<Segment> {
         self.map
             .iter()
@@ -107,6 +112,34 @@ impl SegmentList {
 
     pub fn __iter__(slf: PyRef<'_, Self>) -> SegmentListIter {
         SegmentListIter::snapshot(&slf)
+    }
+
+    /// Iterates the segment `search(addr)` names and every segment before it,
+    /// in descending address order.
+    ///
+    /// This is the walk `search` + repeated `__getitem__` used to express; done
+    /// that way it is quadratic, because `__getitem__` re-walks the map from
+    /// index 0 every step. Here the whole prefix is snapshotted in one pass, so
+    /// the walk costs what a single `search` already did (angr-9ke6b.200).
+    ///
+    /// Yields nothing when `addr` is past the last segment, mirroring `search`
+    /// returning `None` there.
+    pub fn iter_backward_from(&self, addr: u64) -> SegmentListIter {
+        let mut segments = Vec::new();
+        let mut found = false;
+        for (range, sort) in self.map.iter() {
+            segments.push((range.start, range.end, sort.clone()));
+            // Same predicate `search` uses to pick the segment `addr` lands in.
+            if range.end > addr {
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            segments.clear();
+        }
+        segments.reverse();
+        SegmentListIter::new(segments)
     }
 
     #[getter]
@@ -238,15 +271,17 @@ pub struct SegmentListIter {
 }
 
 impl SegmentListIter {
+    fn new(segments: Vec<(u64, u64, Option<String>)>) -> Self {
+        Self { segments, idx: 0 }
+    }
+
     fn snapshot(list: &SegmentList) -> Self {
-        Self {
-            segments: list
-                .map
+        Self::new(
+            list.map
                 .iter()
                 .map(|(range, sort)| (range.start, range.end, sort.clone()))
                 .collect(),
-            idx: 0,
-        }
+        )
     }
 }
 

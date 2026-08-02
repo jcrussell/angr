@@ -1,3 +1,4 @@
+from collections.abc import Iterator
 from typing import override
 
 from . import automaton, fuzzer, icicle
@@ -88,6 +89,16 @@ class SegmentList:
 
         :arg addr: The address to search.
         :returns: The offset of the segment.
+        """
+
+    def iter_backward_from(self, addr: int) -> Iterator[Segment]:
+        """
+        Iterate the segment that :meth:`search` would name for `addr`, then every segment before it, in
+        descending address order. Prefer this over ``search`` plus repeated indexing: ``__getitem__`` walks
+        the list from index 0 on every call, so the indexed form is quadratic.
+
+        :arg addr: The address to start the backwards walk at.
+        :returns: An iterator of segments, empty if `addr` is past the last segment.
         """
 
     def next_free_pos(self, address: int) -> int:

@@ -1451,25 +1451,22 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int, object], CFGBase): 
     def _nodecode_bytes_ratio(self, cutoff_addr: int, window_size: int) -> float:
         if cutoff_addr - 1 < 0:
             return 0.0
-        idx = self._seg_list.search(cutoff_addr - 1)
-        if idx is None or idx >= len(self._seg_list):
-            return 0.0
-        segment = self._seg_list[idx]
-        if segment.sort != "nodecode":
-            return 0.0
-
         total_bytes = 0
         nodecode_bytes = 0
-        while idx >= 0:
-            segment = self._seg_list[idx]
+        # iter_backward_from walks the segment at cutoff_addr - 1 and then every
+        # segment before it. Indexing the SegmentList per step instead would be
+        # quadratic — SegmentList.__getitem__ is an O(idx) walk.
+        for i, segment in enumerate(self._seg_list.iter_backward_from(cutoff_addr - 1)):
+            if i == 0 and segment.sort != "nodecode":
+                # The window must end inside a nodecode segment.
+                return 0.0
             if segment.sort == "nodecode":
                 nodecode_bytes += segment.size
             total_bytes += segment.size
             if total_bytes >= window_size:
                 break
-            idx -= 1
 
-        if total_bytes < window_size:
+        if total_bytes == 0 or total_bytes < window_size:
             return 0.0
 
         return nodecode_bytes / total_bytes

@@ -3,6 +3,17 @@
 
 use super::{SegmentList, SegmentListIter};
 
+/// Drains an iterator without a Python interpreter: `__next__` hands back
+/// `Segment` pyobjects, which these tests have no GIL to build.
+fn drain(mut it: SegmentListIter) -> Vec<(u64, u64, Option<String>)> {
+    std::iter::from_fn(|| {
+        it.segments.get(it.idx).cloned().inspect(|_seg| {
+            it.idx += 1;
+        })
+    })
+    .collect()
+}
+
 #[test]
 fn empty_list() {
     let mut sl = SegmentList::new();
@@ -60,19 +71,67 @@ fn iter_snapshot_yields_in_order() {
     sl.occupy(0, 10, Some("A".to_string()));
     sl.occupy(40, 3, None);
 
-    let mut it = SegmentListIter::snapshot(&sl);
-    let collected: Vec<_> = std::iter::from_fn(|| {
-        it.segments.get(it.idx).cloned().inspect(|_seg| {
-            it.idx += 1;
-        })
-    })
-    .collect();
     assert_eq!(
-        collected,
+        drain(SegmentListIter::snapshot(&sl)),
         vec![
             (0, 10, Some("A".to_string())),
             (20, 25, Some("B".to_string())),
             (40, 43, None),
+        ]
+    );
+}
+
+// `iter_backward_from` must yield exactly what `search` + descending
+// `__getitem__` did, only without the per-step O(n) re-walk (angr-9ke6b.200).
+#[test]
+fn iter_backward_from_matches_search_plus_indexing() {
+    let mut sl = SegmentList::new();
+    sl.occupy(0, 10, Some("A".to_string()));
+    sl.occupy(20, 5, Some("B".to_string()));
+    sl.occupy(40, 3, None);
+
+    for addr in 0..50u64 {
+        let expected: Vec<_> = match sl.search(addr) {
+            None => vec![],
+            Some(idx) => (0..=idx)
+                .rev()
+                .map(|i| {
+                    let seg = sl.__getitem__(i).expect("index from search is in range");
+                    (seg.start, seg.end, seg.sort.clone())
+                })
+                .collect(),
+        };
+        assert_eq!(drain(sl.iter_backward_from(addr)), expected, "addr {addr}");
+    }
+}
+
+// A `search` miss (address past the last segment) must yield nothing rather
+// than the whole list — the caller reads an empty walk as "no window here".
+#[test]
+fn iter_backward_from_past_end_is_empty() {
+    let mut sl = SegmentList::new();
+    sl.occupy(0, 10, Some("A".to_string()));
+    sl.occupy(20, 5, Some("B".to_string()));
+
+    assert_eq!(sl.search(25), None);
+    assert!(drain(sl.iter_backward_from(25)).is_empty());
+    assert!(drain(sl.iter_backward_from(u64::MAX)).is_empty());
+    assert!(drain(SegmentList::new().iter_backward_from(0)).is_empty());
+}
+
+// The first item is the segment `addr` lands in even when `addr` sits in a gap
+// before it, matching `search`'s "may not actually belong to the block" note.
+#[test]
+fn iter_backward_from_addr_in_a_gap() {
+    let mut sl = SegmentList::new();
+    sl.occupy(0, 10, Some("A".to_string()));
+    sl.occupy(20, 5, Some("B".to_string()));
+
+    assert_eq!(
+        drain(sl.iter_backward_from(15)),
+        vec![
+            (20, 25, Some("B".to_string())),
+            (0, 10, Some("A".to_string()))
         ]
     );
 }
