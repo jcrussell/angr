@@ -39,6 +39,49 @@ where
 }
 
 impl RustExplorationManager {
+    /// Set the shared block of Python-fallback / native-syscall counters that
+    /// BOTH [`RustExplorationManager::_stats`] and
+    /// [`RustExplorationManager::_get_fallback_stats`] export under identical
+    /// key names (angr-9ke6b.70). Keeping it in one place is what stops a new
+    /// counter from being added to one exporter and silently missing from the
+    /// other — the same drift `build_count_dict` guards one level down.
+    ///
+    /// Callers own the rest of their dict; this only appends keys.
+    fn set_fallback_counter_items(&self, py: Python<'_>, dict: &Bound<'_, PyDict>) -> PyResult<()> {
+        dict.set_item("dcas_unsupported_count", self.dcas_unsupported_count)?;
+        dict.set_item(
+            "vecret_gsptr_fallback_count",
+            self.vecret_gsptr_fallback_count,
+        )?;
+        dict.set_item(
+            "simprocedure_python_fallback_count",
+            self.simprocedure_python_fallback_count,
+        )?;
+        let (fallback_by_name, _) = build_count_dict(
+            py,
+            self.simprocedure_fallback_by_name
+                .iter()
+                .map(|(n, c)| (n, *c)),
+        )?;
+        dict.set_item("simprocedure_fallback_by_name", fallback_by_name)?;
+        dict.set_item(
+            "syscall_python_fallback_count",
+            self.syscall_python_fallback_count,
+        )?;
+        let (syscall_fallback_by_num, _) = build_count_dict(
+            py,
+            self.syscall_python_fallback_by_num
+                .iter()
+                .map(|(n, c)| (*n, *c)),
+        )?;
+        dict.set_item("syscall_python_fallback_by_num", syscall_fallback_by_num)?;
+        dict.set_item("syscall_native_count", self.syscall_native_count)?;
+        let (syscall_native_by_num, _) =
+            build_count_dict(py, self.syscall_native_by_num.iter().map(|(n, c)| (*n, *c)))?;
+        dict.set_item("syscall_native_by_num", syscall_native_by_num)?;
+        Ok(())
+    }
+
     pub(crate) fn _stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let dict = PyDict::new(py);
         dict.set_item("steps", self.steps)?;
@@ -126,37 +169,7 @@ impl RustExplorationManager {
         dict.set_item("state_roots_size", self.sm.roots().len())?;
         dict.set_item("vex_fallback_count", self.vex_fallback_count)?;
         dict.set_item("vex_fallback_unique_addrs", self.vex_fallback_addrs.len())?;
-        dict.set_item("dcas_unsupported_count", self.dcas_unsupported_count)?;
-        dict.set_item(
-            "vecret_gsptr_fallback_count",
-            self.vecret_gsptr_fallback_count,
-        )?;
-        dict.set_item(
-            "simprocedure_python_fallback_count",
-            self.simprocedure_python_fallback_count,
-        )?;
-        let (fallback_by_name, _) = build_count_dict(
-            py,
-            self.simprocedure_fallback_by_name
-                .iter()
-                .map(|(n, c)| (n, *c)),
-        )?;
-        dict.set_item("simprocedure_fallback_by_name", fallback_by_name)?;
-        dict.set_item(
-            "syscall_python_fallback_count",
-            self.syscall_python_fallback_count,
-        )?;
-        let (syscall_fallback_by_num, _) = build_count_dict(
-            py,
-            self.syscall_python_fallback_by_num
-                .iter()
-                .map(|(n, c)| (*n, *c)),
-        )?;
-        dict.set_item("syscall_python_fallback_by_num", syscall_fallback_by_num)?;
-        dict.set_item("syscall_native_count", self.syscall_native_count)?;
-        let (syscall_native_by_num, _) =
-            build_count_dict(py, self.syscall_native_by_num.iter().map(|(n, c)| (*n, *c)))?;
-        dict.set_item("syscall_native_by_num", syscall_native_by_num)?;
+        self.set_fallback_counter_items(py, &dict)?;
         // DS-instr (angr-11djq.16): state-reconvergence counters. A collision
         // == two+ active states sharing a (pc, callstack) key at the same step.
         // `reconvergence_rate` = collision_states / active_observed over all
@@ -323,37 +336,7 @@ impl RustExplorationManager {
             addrs.set_item(format!("0x{addr:x}"), reason)?;
         }
         dict.set_item("addresses", addrs)?;
-        dict.set_item("dcas_unsupported_count", self.dcas_unsupported_count)?;
-        dict.set_item(
-            "vecret_gsptr_fallback_count",
-            self.vecret_gsptr_fallback_count,
-        )?;
-        dict.set_item(
-            "simprocedure_python_fallback_count",
-            self.simprocedure_python_fallback_count,
-        )?;
-        let (fallback_by_name, _) = build_count_dict(
-            py,
-            self.simprocedure_fallback_by_name
-                .iter()
-                .map(|(n, c)| (n, *c)),
-        )?;
-        dict.set_item("simprocedure_fallback_by_name", fallback_by_name)?;
-        dict.set_item(
-            "syscall_python_fallback_count",
-            self.syscall_python_fallback_count,
-        )?;
-        let (syscall_fallback_by_num, _) = build_count_dict(
-            py,
-            self.syscall_python_fallback_by_num
-                .iter()
-                .map(|(n, c)| (*n, *c)),
-        )?;
-        dict.set_item("syscall_python_fallback_by_num", syscall_fallback_by_num)?;
-        dict.set_item("syscall_native_count", self.syscall_native_count)?;
-        let (syscall_native_by_num, _) =
-            build_count_dict(py, self.syscall_native_by_num.iter().map(|(n, c)| (*n, *c)))?;
-        dict.set_item("syscall_native_by_num", syscall_native_by_num)?;
+        self.set_fallback_counter_items(py, &dict)?;
         Ok(dict)
     }
 
