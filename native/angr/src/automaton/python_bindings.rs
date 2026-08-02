@@ -131,7 +131,7 @@ impl PyEpsilon {
 
 const EPSILON_HASH: u64 = 0xDEAD_BEEF_CAFE_BABE;
 
-/// Helper struct for tracking Python object to ID mappings.
+/// A bidirectional interner assigning dense `u32` IDs to Python objects.
 ///
 /// Identity follows Python's own dict/set contract: bucket by `hash()`, then
 /// disambiguate within the bucket with `__eq__`. An earlier version keyed on
@@ -140,16 +140,20 @@ const EPSILON_HASH: u64 = 0xDEAD_BEEF_CAFE_BABE;
 /// and a `repr` (easy with a generic/truncated `__repr__`, or a custom
 /// `__hash__`/`__eq__` pair that disagrees with `repr`) were silently merged
 /// into one automaton state/symbol. See `angr-9ke6b.187`.
+///
+/// `StateId` and `SymbolId` are both `u32`, so one interner serves both; the
+/// only difference is that the symbol side reserves `EPSILON` as a sentinel.
 #[derive(Clone)]
-struct ObjectMapper {
-    /// Maps a Python object hash to every state ID sharing that hash
-    state_buckets: IndexMap<isize, Vec<StateId>>,
-    /// Maps state IDs back to Python objects
-    id_to_state: Vec<Py<PyAny>>,
-    /// Maps a Python object hash to every symbol ID sharing that hash
-    symbol_buckets: IndexMap<isize, Vec<SymbolId>>,
-    /// Maps symbol IDs back to Python objects
-    id_to_symbol: Vec<Py<PyAny>>,
+struct IdInterner {
+    /// Maps a Python object hash to every ID sharing that hash
+    buckets: IndexMap<isize, Vec<u32>>,
+    /// Maps IDs back to Python objects
+    interned: Vec<Py<PyAny>>,
+    /// ID reserved as a sentinel and never handed out (`EPSILON` for symbols);
+    /// `None` when the whole `u32` range is assignable.
+    reserved: Option<u32>,
+    /// Plural noun for the "Too many …" exhaustion error
+    kind: &'static str,
 }
 
 /// Look up `value` in a hash bucket, comparing candidates with Python `__eq__`.
@@ -158,7 +162,9 @@ struct ObjectMapper {
 /// already hashed to the same value. Returns the matching ID, or `None` when
 /// this is a genuinely new object. A raising `__eq__` propagates rather than
 /// being swallowed into a false "distinct" verdict.
-/// `StateId` and `SymbolId` are both `u32`, so one helper serves both maps.
+///
+/// Free function rather than an `IdInterner` method because the caller holds a
+/// mutable borrow of `buckets` across the scan and needs `interned` separately.
 fn find_in_bucket(
     py: Python<'_>,
     value: &Bound<'_, PyAny>,
@@ -173,54 +179,70 @@ fn find_in_bucket(
     Ok(None)
 }
 
+impl IdInterner {
+    fn new(reserved: Option<u32>, kind: &'static str) -> Self {
+        Self {
+            buckets: IndexMap::new(),
+            interned: Vec::new(),
+            reserved,
+            kind,
+        }
+    }
+
+    /// Return `value`'s existing ID, or assign it the next free one.
+    fn get_or_create(&mut self, py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<u32> {
+        let hash = value.hash()?;
+        let bucket = self.buckets.entry(hash).or_default();
+
+        if let Some(id) = find_in_bucket(py, value, bucket, &self.interned)? {
+            return Ok(id);
+        }
+        let id = self.interned.len() as u32;
+        if Some(id) == self.reserved {
+            return Err(PyValueError::new_err(format!("Too many {}", self.kind)));
+        }
+        bucket.push(id);
+        self.interned.push(value.clone().unbind());
+        Ok(id)
+    }
+
+    /// Map an ID back to its Python object; the reserved sentinel has none.
+    fn get(&self, id: u32) -> Option<&Py<PyAny>> {
+        if Some(id) == self.reserved {
+            None
+        } else {
+            self.interned.get(id as usize)
+        }
+    }
+}
+
+/// Helper struct for tracking Python object to ID mappings.
+#[derive(Clone)]
+struct ObjectMapper {
+    /// Interner for automaton states
+    states: IdInterner,
+    /// Interner for transition symbols; reserves `EPSILON`
+    symbols: IdInterner,
+}
+
 impl ObjectMapper {
     fn new() -> Self {
         Self {
-            state_buckets: IndexMap::new(),
-            id_to_state: Vec::new(),
-            symbol_buckets: IndexMap::new(),
-            id_to_symbol: Vec::new(),
+            states: IdInterner::new(None, "states"),
+            symbols: IdInterner::new(Some(EPSILON), "symbols"),
         }
     }
 
     fn get_or_create_state_id(&mut self, py: Python<'_>, state: &PyState) -> PyResult<StateId> {
-        let value = state.value.bind(py);
-        let hash = value.hash()?;
-        let bucket = self.state_buckets.entry(hash).or_default();
-
-        if let Some(id) = find_in_bucket(py, value, bucket, &self.id_to_state)? {
-            return Ok(id);
-        }
-        let id = self.id_to_state.len() as StateId;
-        bucket.push(id);
-        self.id_to_state.push(state.value.clone());
-        Ok(id)
+        self.states.get_or_create(py, state.value.bind(py))
     }
 
     fn get_or_create_symbol_id(&mut self, py: Python<'_>, symbol: &PySymbol) -> PyResult<SymbolId> {
-        let value = symbol.value.bind(py);
-        let hash = value.hash()?;
-        let bucket = self.symbol_buckets.entry(hash).or_default();
-
-        if let Some(id) = find_in_bucket(py, value, bucket, &self.id_to_symbol)? {
-            return Ok(id);
-        }
-        let id = self.id_to_symbol.len() as SymbolId;
-        // Reserve EPSILON (u32::MAX) for epsilon transitions
-        if id == EPSILON {
-            return Err(PyValueError::new_err("Too many symbols"));
-        }
-        bucket.push(id);
-        self.id_to_symbol.push(symbol.value.clone());
-        Ok(id)
+        self.symbols.get_or_create(py, symbol.value.bind(py))
     }
 
     fn get_symbol_by_id(&self, id: SymbolId) -> Option<&Py<PyAny>> {
-        if id == EPSILON {
-            None
-        } else {
-            self.id_to_symbol.get(id as usize)
-        }
+        self.symbols.get(id)
     }
 }
 

@@ -63,11 +63,11 @@ fn test_hash_repr_collision_keeps_states_distinct() {
             id_a, id_b,
             "hash+repr collision must not merge __eq__-distinct states"
         );
-        assert_eq!(mapper.id_to_state.len(), 2);
+        assert_eq!(mapper.states.interned.len(), 2);
         // Both landed in the one hash bucket, so the __eq__ scan is what
         // separated them.
-        assert_eq!(mapper.state_buckets.len(), 1);
-        assert_eq!(mapper.state_buckets[&7], vec![id_a, id_b]);
+        assert_eq!(mapper.states.buckets.len(), 1);
+        assert_eq!(mapper.states.buckets[&7], vec![id_a, id_b]);
     });
 }
 
@@ -86,7 +86,7 @@ fn test_hash_repr_collision_keeps_symbols_distinct() {
             .unwrap();
 
         assert_ne!(id_a, id_b);
-        assert_eq!(mapper.id_to_symbol.len(), 2);
+        assert_eq!(mapper.symbols.interned.len(), 2);
         // Each ID still round-trips back to its own object, not the other's.
         assert!(
             mapper
@@ -120,7 +120,7 @@ fn test_eq_equal_objects_share_one_id() {
             .unwrap();
 
         assert_eq!(id_a, id_b, "__eq__-equal objects must share a state ID");
-        assert_eq!(mapper.id_to_state.len(), 1);
+        assert_eq!(mapper.states.interned.len(), 1);
     });
 }
 
@@ -143,7 +143,7 @@ fn test_repeated_lookup_is_stable() {
 
         assert_ne!(first, other);
         assert_eq!(first, again);
-        assert_eq!(mapper.id_to_state.len(), 2);
+        assert_eq!(mapper.states.interned.len(), 2);
     });
 }
 
@@ -172,7 +172,7 @@ b = Boom()
             .get_or_create_state_id(py, &PyState::new(objs[1].clone()))
             .expect_err("a raising __eq__ must surface, not be swallowed");
         assert!(err.is_instance_of::<pyo3::exceptions::PyRuntimeError>(py));
-        assert_eq!(mapper.id_to_state.len(), 1);
+        assert_eq!(mapper.states.interned.len(), 1);
     });
 }
 
@@ -187,6 +187,6 @@ fn test_unhashable_object_is_rejected() {
             .get_or_create_state_id(py, &PyState::new(objs[0].clone()))
             .expect_err("hash() failure must propagate");
         assert!(err.is_instance_of::<pyo3::exceptions::PyTypeError>(py));
-        assert!(mapper.id_to_state.is_empty());
+        assert!(mapper.states.interned.is_empty());
     });
 }
