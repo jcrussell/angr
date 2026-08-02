@@ -364,6 +364,76 @@ fn insert_query_class_stats(stats: &mut HashMap<String, u64>, counts: &[u64], na
     }
 }
 
+/// The three audit-added measurement counter groups, each paired with the
+/// `get_solver_stats()` key it is emitted under.
+///
+/// These counters are pure measurement — nothing in the engine branches on
+/// them — so they are emitted and cleared by table-driven loops rather than
+/// by hand-written `stats.insert` / `.store(0, ..)` pairs. One table means a
+/// counter cannot be emitted but not reset (or vice versa), and the key
+/// string exists in exactly one place (angr-9ke6b.150).
+///
+/// - angr-g7nq: trivial-constraint fast path.
+/// - angr-acoq: claripy-export soundness.
+/// - angr-1joc: constraint-dedup measurement.
+pub(crate) static MEASUREMENT_COUNTERS: [(&str, &AtomicU64); 13] = [
+    ("zext_cmp_collapse_count", &ZEXT_CMP_COLLAPSE_COUNT),
+    (
+        "zext_cmp_trivial_decide_count",
+        &ZEXT_CMP_TRIVIAL_DECIDE_COUNT,
+    ),
+    ("rust_export_sound_clz", &EXPORT_SOUND_CLZ_COUNT),
+    (
+        "rust_export_unconstrained_clz",
+        &EXPORT_UNCONSTRAINED_CLZ_COUNT,
+    ),
+    (
+        "rust_export_unconstrained_fp",
+        &EXPORT_UNCONSTRAINED_FP_COUNT,
+    ),
+    (
+        "rustbv_commutative_canonicalize_count",
+        &RUSTBV_COMMUTATIVE_CANONICALIZE_COUNT,
+    ),
+    (
+        "rustbv_commutative_swap_count",
+        &RUSTBV_COMMUTATIVE_SWAP_COUNT,
+    ),
+    ("claripy_ast_cache_hit_count", &CLARIPY_AST_CACHE_HIT_COUNT),
+    (
+        "claripy_ast_cache_miss_count",
+        &CLARIPY_AST_CACHE_MISS_COUNT,
+    ),
+    (
+        "add_constraint_raw_dedup_scanned",
+        &ADD_CONSTRAINT_RAW_DEDUP_SCANNED_COUNT,
+    ),
+    (
+        "add_constraint_raw_dedup_hit",
+        &ADD_CONSTRAINT_RAW_DEDUP_HIT_COUNT,
+    ),
+    ("z3_assume_dedup_scanned", &Z3_ASSUME_DEDUP_SCANNED_COUNT),
+    ("z3_assume_dedup_hit", &Z3_ASSUME_DEDUP_HIT_COUNT),
+];
+
+/// Emit every `(key, counter)` pair in `counters` into `stats`.
+///
+/// Always-emit, like `insert_query_class_stats`: a zero here means "the path
+/// never fired", which is the measurement these counters exist to report.
+fn insert_measurement_stats(stats: &mut HashMap<String, u64>, counters: &[(&str, &AtomicU64)]) {
+    for (key, counter) in counters {
+        stats.insert((*key).into(), counter.load(Ordering::Relaxed));
+    }
+}
+
+/// Zero every counter in `counters`. The reset half of
+/// `insert_measurement_stats`, driven by the same table.
+fn reset_measurement_counters(counters: &[(&str, &AtomicU64)]) {
+    for (_, counter) in counters {
+        counter.store(0, Ordering::Relaxed);
+    }
+}
+
 /// Get all solver profiling stats as a HashMap.
 pub fn get_solver_stats() -> HashMap<String, u64> {
     let mut stats = HashMap::new();
@@ -565,45 +635,9 @@ pub fn get_solver_stats() -> HashMap<String, u64> {
         "bvop_extract_count".into(),
         BVOP_EXTRACT_COUNT.load(Ordering::Relaxed),
     );
-    // angr-g7nq: trivial-constraint fast path
-    stats.insert(
-        "zext_cmp_collapse_count".into(),
-        ZEXT_CMP_COLLAPSE_COUNT.load(Ordering::Relaxed),
-    );
-    stats.insert(
-        "zext_cmp_trivial_decide_count".into(),
-        ZEXT_CMP_TRIVIAL_DECIDE_COUNT.load(Ordering::Relaxed),
-    );
-    // angr-acoq: claripy-export soundness counters.
-    stats.insert(
-        "rust_export_sound_clz".into(),
-        EXPORT_SOUND_CLZ_COUNT.load(Ordering::Relaxed),
-    );
-    stats.insert(
-        "rust_export_unconstrained_clz".into(),
-        EXPORT_UNCONSTRAINED_CLZ_COUNT.load(Ordering::Relaxed),
-    );
-    stats.insert(
-        "rust_export_unconstrained_fp".into(),
-        EXPORT_UNCONSTRAINED_FP_COUNT.load(Ordering::Relaxed),
-    );
-    // angr-1joc: constraint-dedup measurement counters.
-    stats.insert(
-        "rustbv_commutative_canonicalize_count".into(),
-        RUSTBV_COMMUTATIVE_CANONICALIZE_COUNT.load(Ordering::Relaxed),
-    );
-    stats.insert(
-        "rustbv_commutative_swap_count".into(),
-        RUSTBV_COMMUTATIVE_SWAP_COUNT.load(Ordering::Relaxed),
-    );
-    stats.insert(
-        "claripy_ast_cache_hit_count".into(),
-        CLARIPY_AST_CACHE_HIT_COUNT.load(Ordering::Relaxed),
-    );
-    stats.insert(
-        "claripy_ast_cache_miss_count".into(),
-        CLARIPY_AST_CACHE_MISS_COUNT.load(Ordering::Relaxed),
-    );
+    // angr-g7nq / angr-acoq / angr-1joc measurement groups, table-driven so
+    // emit and reset cannot drift apart. See `MEASUREMENT_COUNTERS`.
+    insert_measurement_stats(&mut stats, &MEASUREMENT_COUNTERS);
     stats.insert(
         "add_constraint_raw_total".into(),
         ADD_CONSTRAINT_RAW_TOTAL_COUNT.load(Ordering::Relaxed),
@@ -615,22 +649,6 @@ pub fn get_solver_stats() -> HashMap<String, u64> {
     stats.insert(
         "branch_cond_simplify_reduced".into(),
         BRANCH_COND_SIMPLIFY_REDUCED_COUNT.load(Ordering::Relaxed),
-    );
-    stats.insert(
-        "add_constraint_raw_dedup_scanned".into(),
-        ADD_CONSTRAINT_RAW_DEDUP_SCANNED_COUNT.load(Ordering::Relaxed),
-    );
-    stats.insert(
-        "add_constraint_raw_dedup_hit".into(),
-        ADD_CONSTRAINT_RAW_DEDUP_HIT_COUNT.load(Ordering::Relaxed),
-    );
-    stats.insert(
-        "z3_assume_dedup_scanned".into(),
-        Z3_ASSUME_DEDUP_SCANNED_COUNT.load(Ordering::Relaxed),
-    );
-    stats.insert(
-        "z3_assume_dedup_hit".into(),
-        Z3_ASSUME_DEDUP_HIT_COUNT.load(Ordering::Relaxed),
     );
     // angr-0xyq2 Phase 2: bounded symbolic file content serving.
     stats.insert(
@@ -768,24 +786,14 @@ pub fn reset_solver_stats() {
     BVOP_REVERSE_COUNT.store(0, Ordering::Relaxed);
     BVOP_CONCAT_COUNT.store(0, Ordering::Relaxed);
     BVOP_EXTRACT_COUNT.store(0, Ordering::Relaxed);
-    ZEXT_CMP_COLLAPSE_COUNT.store(0, Ordering::Relaxed);
-    ZEXT_CMP_TRIVIAL_DECIDE_COUNT.store(0, Ordering::Relaxed);
-    EXPORT_SOUND_CLZ_COUNT.store(0, Ordering::Relaxed);
-    EXPORT_UNCONSTRAINED_CLZ_COUNT.store(0, Ordering::Relaxed);
-    EXPORT_UNCONSTRAINED_FP_COUNT.store(0, Ordering::Relaxed);
-    // angr-1joc constraint-dedup measurement counters.
-    RUSTBV_COMMUTATIVE_CANONICALIZE_COUNT.store(0, Ordering::Relaxed);
-    RUSTBV_COMMUTATIVE_SWAP_COUNT.store(0, Ordering::Relaxed);
-    CLARIPY_AST_CACHE_HIT_COUNT.store(0, Ordering::Relaxed);
-    CLARIPY_AST_CACHE_MISS_COUNT.store(0, Ordering::Relaxed);
+    // angr-g7nq / angr-acoq / angr-1joc measurement groups: same table
+    // `get_solver_stats` emits from, so a counter cannot be emitted without
+    // also being cleared here.
+    reset_measurement_counters(&MEASUREMENT_COUNTERS);
     ADD_CONSTRAINT_RAW_TOTAL_COUNT.store(0, Ordering::Relaxed);
     BRANCH_COND_SIMPLIFY_SAMPLED_COUNT.store(0, Ordering::Relaxed);
     BRANCH_COND_SIMPLIFY_REDUCED_COUNT.store(0, Ordering::Relaxed);
     SIMPLIFY_SAMPLE_TICKER.store(0, Ordering::Relaxed);
-    ADD_CONSTRAINT_RAW_DEDUP_SCANNED_COUNT.store(0, Ordering::Relaxed);
-    ADD_CONSTRAINT_RAW_DEDUP_HIT_COUNT.store(0, Ordering::Relaxed);
-    Z3_ASSUME_DEDUP_SCANNED_COUNT.store(0, Ordering::Relaxed);
-    Z3_ASSUME_DEDUP_HIT_COUNT.store(0, Ordering::Relaxed);
     // angr-0xyq2 Phase 2: bounded symbolic file content serving.
     SYMFILE_READS_NATIVE.store(0, Ordering::Relaxed);
     SYMFILE_WRITE_DEMOTIONS.store(0, Ordering::Relaxed);

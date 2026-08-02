@@ -215,8 +215,112 @@ fn test_saved_check_total_excludes_ast_memo_hit() {
     );
 }
 
+/// Every measurement counter is emitted under exactly the key the table
+/// names, and the key strings are the ones a `--counters-json` capture (and
+/// `bench_diff.py`) expects.
+///
+/// The table is the single source of truth for both emit and reset, so this
+/// is where a typo'd key string would surface — nothing else in the crate
+/// looks these up. `ZEXT_CMP_TRIVIAL_DECIDE_COUNT` already carries a
+/// `_count` suffix its neighbours lack, which is exactly the confusion this
+/// pins.
+#[test]
+fn test_measurement_counter_keys_are_stable() {
+    let keys: Vec<&str> = MEASUREMENT_COUNTERS.iter().map(|(k, _)| *k).collect();
+    assert_eq!(
+        keys,
+        [
+            "zext_cmp_collapse_count",
+            "zext_cmp_trivial_decide_count",
+            "rust_export_sound_clz",
+            "rust_export_unconstrained_clz",
+            "rust_export_unconstrained_fp",
+            "rustbv_commutative_canonicalize_count",
+            "rustbv_commutative_swap_count",
+            "claripy_ast_cache_hit_count",
+            "claripy_ast_cache_miss_count",
+            "add_constraint_raw_dedup_scanned",
+            "add_constraint_raw_dedup_hit",
+            "z3_assume_dedup_scanned",
+            "z3_assume_dedup_hit",
+        ],
+        "measurement counter key names are a public capture-format contract"
+    );
+    let unique: std::collections::HashSet<&str> = keys.iter().copied().collect();
+    assert_eq!(
+        unique.len(),
+        keys.len(),
+        "a duplicate key would collapse two counters into one entry"
+    );
+}
+
+/// Each table entry's atomic really reaches `get_solver_stats()` under its
+/// own key — i.e. the emit loop is wired to `MEASUREMENT_COUNTERS` and the
+/// pairing inside the table is correct.
+///
+/// Marker-bump rather than a delta: these counters are process-global and a
+/// concurrently-running sibling test may bump them, which can only raise the
+/// observed value. See `MARK` / `undo_bump`.
+#[test]
+fn test_measurement_counters_reach_their_stats_key() {
+    for (key, counter) in MEASUREMENT_COUNTERS {
+        counter.fetch_add(MARK, Ordering::Relaxed);
+        let observed = get_solver_stats().get(key).copied();
+        undo_bump(counter);
+        assert!(
+            observed.is_some_and(|v| v >= MARK),
+            "{key} missing from get_solver_stats() or not wired to its atomic (got {observed:?})"
+        );
+    }
+}
+
+/// The emit half of the table loop: always-emit semantics, zeros included,
+/// so a capture can distinguish "path never fired" from "key dropped".
+///
+/// Driven through local atomics, so it is deterministic under the parallel
+/// runner — the same pure-seam technique as `insert_query_class_stats`.
+#[test]
+fn test_insert_measurement_stats_emits_every_pair() {
+    let quiet = AtomicU64::new(0);
+    let busy = AtomicU64::new(9);
+    let mut stats: HashMap<String, u64> = HashMap::new();
+    insert_measurement_stats(&mut stats, &[("quiet", &quiet), ("busy", &busy)]);
+
+    assert_eq!(stats.len(), 2, "every pair must emit, got {stats:?}");
+    assert_eq!(stats.get("quiet"), Some(&0));
+    assert_eq!(stats.get("busy"), Some(&9));
+}
+
+/// The reset half: `reset_measurement_counters` zeroes every entry it is
+/// given, leaving nothing behind for the next capture.
+///
+/// Combined with `reset_solver_stats()` passing the very same
+/// `MEASUREMENT_COUNTERS` that `get_solver_stats()` emits from, this is what
+/// rules out the "counter emitted but its `.store(0, ..)` was dropped" bug —
+/// checking that by actually calling `reset_solver_stats()` here is not an
+/// option, see the note at the bottom of this file.
+#[test]
+fn test_reset_measurement_counters_zeroes_every_entry() {
+    let a = AtomicU64::new(7);
+    let b = AtomicU64::new(u64::MAX);
+    let c = AtomicU64::new(0);
+    reset_measurement_counters(&[("a", &a), ("b", &b), ("c", &c)]);
+
+    for (name, counter) in [("a", &a), ("b", &b), ("c", &c)] {
+        assert_eq!(
+            counter.load(Ordering::Relaxed),
+            0,
+            "{name} must be cleared by reset_measurement_counters"
+        );
+    }
+}
+
 // NOTE: this file deliberately does NOT call `reset_solver_stats()`. Sibling
-// tests (`context_tests/constraints.rs`) delta-assert process-global counters
-// with a plain `after - before`, which underflows if a reset lands inside
-// their window. Reset coverage belongs with the counter-wiring work
-// (angr-9ke6b.150), where it can be serialized against those tests.
+// tests (`context_tests/constraints.rs`, `syscalls/fd_io_tests.rs`,
+// `memory/tests/symbolic.rs`, `context_tests/solver.rs`, ...) delta-assert
+// process-global counters with a plain `after - before` or `after > before`,
+// any of which a reset landing inside their window would break — and they are
+// spread across six files, so no lock short of a crate-wide one would make it
+// safe. Reset is instead covered structurally (angr-9ke6b.150): both halves
+// run off `MEASUREMENT_COUNTERS`, and the loop itself is tested above against
+// local atomics.
