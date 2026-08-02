@@ -182,7 +182,28 @@ impl DFA {
             return DFA::new();
         }
 
-        // Worklist of (partition_index, symbol) pairs to process
+        // Worklist of (partition_index, symbol) pairs to process.
+        //
+        // This diverges from the textbook Hopcroft presentation, which enqueues the
+        // splitter *set* and, when a pending splitter Y is itself split into Y1/Y2,
+        // replaces the pending entry with both halves. Here an entry names a partition
+        // *index*: when a partition splits, the larger half keeps the old index (and so
+        // inherits every still-pending entry that referenced it), and only the smaller
+        // half is enqueued, under a fresh index.
+        //
+        // That bookkeeping is still sound. Say `(i, s)` is pending when partition
+        // `i` = Y splits into `keep` (staying at `i`) and `add` (new index `j`).
+        // Because the automaton is deterministic, a state has at most one `s`-successor,
+        // which lands in exactly one of the two halves -- so
+        // `pred(Y, s) = pred(keep, s) ∪ pred(add, s)` and the two are *disjoint*.
+        // Refining by `pred(keep, s)` (what the inherited entry now does) and by
+        // `pred(add, s)` (what the freshly enqueued `(j, s)` does) therefore separates
+        // every pair the original `pred(Y, s)` would have. No distinction is lost; the
+        // refinement is merely spread over two pops.
+        //
+        // Regression coverage for exactly this case lives in `dfa_tests.rs`:
+        // `test_minimize_splits_pending_splitter` and
+        // `test_minimize_matches_moore_reference`.
         let mut worklist: VecDeque<(usize, SymbolId)> = VecDeque::new();
 
         // Initialize worklist with all (partition, symbol) pairs
