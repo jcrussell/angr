@@ -22,11 +22,15 @@ use super::*;
 /// test's reading.
 const MARK: u64 = 1 << 40;
 
-/// Serializes the two marker-bump tests against each other. They both read
-/// `z3_saved_check_total` while a `MARK` is live, so running concurrently the
-/// exclusion test would observe the *sum* test's marker and conclude
-/// `z3_ast_memo_hit` had been folded in. Poison-tolerant: a panic in one must
-/// not cascade into the other.
+/// Serializes *every* `MARK` bump in this file against every other. A test
+/// that reads a process-global stat while some other test's marker is live
+/// misattributes that marker to its own bump: the exclusion test would see the
+/// sum test's marker folded into `z3_saved_check_total`, and the ticker test —
+/// which scans the *whole* stats map for any `>= MARK` value — would report a
+/// leak for whichever counter `test_measurement_counters_reach_their_stats_key`
+/// happened to be bumping. So the rule is: hold this lock for the entire window
+/// in which a `MARK` is applied, not just in the two tests that read the total.
+/// Poison-tolerant: a panic in one must not cascade into the others.
 static MARKER_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Take `MARKER_TEST_LOCK` for the duration of a marker-bump window.
@@ -261,8 +265,13 @@ fn test_measurement_counter_keys_are_stable() {
 /// Marker-bump rather than a delta: these counters are process-global and a
 /// concurrently-running sibling test may bump them, which can only raise the
 /// observed value. See `MARK` / `undo_bump`.
+///
+/// Takes `marker_guard()` for the whole loop: these bumps land on real emitted
+/// counters, so a marker live here is visible to any sibling reading the stats
+/// map — see `MARKER_TEST_LOCK`.
 #[test]
 fn test_measurement_counters_reach_their_stats_key() {
+    let _serial = marker_guard();
     for (key, counter) in MEASUREMENT_COUNTERS {
         counter.fetch_add(MARK, Ordering::Relaxed);
         let observed = get_solver_stats().get(key).copied();
