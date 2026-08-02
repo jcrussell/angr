@@ -9,6 +9,7 @@
 mod dfa;
 mod epsilon_nfa;
 mod python_bindings;
+mod reachability;
 mod state;
 mod subset_construction;
 mod symbol;

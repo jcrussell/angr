@@ -1,5 +1,6 @@
 //! Deterministic Finite Automaton (DFA) implementation with Hopcroft minimization.
 
+use crate::automaton::reachability::reachable_from;
 use crate::automaton::state::{StateId, StateSet};
 use crate::automaton::symbol::SymbolId;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -108,40 +109,15 @@ impl DFA {
     }
 
     /// Check if the DFA is empty (accepts no strings).
+    ///
+    /// A DFA with no start state reaches nothing, so `find_reachable_states`
+    /// already returns the empty set for it.
     pub fn is_empty(&self) -> bool {
-        let Some(start) = self.start_state else {
-            return true;
-        };
-
         if self.final_states.is_empty() {
             return true;
         }
 
-        // BFS to find if any final state is reachable
-        let mut visited = StateSet::with_capacity(self.num_states as usize);
-        let mut queue = VecDeque::new();
-        queue.push_back(start);
-
-        while let Some(state) = queue.pop_front() {
-            if visited.contains(state) {
-                continue;
-            }
-            visited.insert(state);
-
-            if self.final_states.contains(state) {
-                return false;
-            }
-
-            for &symbol in &self.alphabet {
-                if let Some(next) = self.transition(state, symbol)
-                    && !visited.contains(next)
-                {
-                    queue.push_back(next);
-                }
-            }
-        }
-
-        true
+        !self.final_states.intersects(&self.find_reachable_states())
     }
 
     /// Get all transitions as an iterator.
@@ -248,31 +224,13 @@ impl DFA {
 
     /// Find all states reachable from the start state.
     fn find_reachable_states(&self) -> StateSet {
-        let mut reachable = StateSet::with_capacity(self.num_states as usize);
-
-        let Some(start) = self.start_state else {
-            return reachable;
-        };
-
-        let mut queue = VecDeque::new();
-        queue.push_back(start);
-
-        while let Some(state) = queue.pop_front() {
-            if reachable.contains(state) {
-                continue;
-            }
-            reachable.insert(state);
-
-            for &symbol in &self.alphabet {
-                if let Some(next) = self.transition(state, symbol)
-                    && !reachable.contains(next)
-                {
-                    queue.push_back(next);
-                }
-            }
-        }
-
-        reachable
+        reachable_from(self.start_state, self.num_states as usize, |state, out| {
+            out.extend(
+                self.alphabet
+                    .iter()
+                    .filter_map(|&symbol| self.transition(state, symbol)),
+            );
+        })
     }
 
     /// Find all states that can reach the target set on a given symbol.

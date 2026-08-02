@@ -1,8 +1,9 @@
 //! Epsilon Non-deterministic Finite Automaton (ε-NFA) implementation.
 
+use crate::automaton::reachability::reachable_from;
 use crate::automaton::state::{StateId, StateSet};
 use crate::automaton::symbol::{EPSILON, SymbolId, is_epsilon};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 
 /// An Epsilon Non-deterministic Finite Automaton.
 #[derive(Debug, Clone)]
@@ -187,46 +188,27 @@ impl EpsilonNFA {
     }
 
     /// Check if the NFA accepts any string (i.e., if the language is non-empty).
-    /// Uses BFS from start states following all transitions.
+    /// Uses BFS from the epsilon closure of the start states, following every
+    /// non-epsilon transition into the closure of its destinations.
     pub fn is_empty(&self) -> bool {
-        if self.start_states.is_empty() {
+        if self.start_states.is_empty() || self.final_states.is_empty() {
             return true;
         }
 
-        let mut visited = StateSet::with_capacity(self.num_states as usize);
-        let mut queue: VecDeque<StateId> = VecDeque::new();
-
-        // Start from epsilon closure of start states
         let start_closure = self.epsilon_closure(&self.start_states);
-        for state in start_closure.iter() {
-            queue.push_back(state);
-        }
-
-        while let Some(state) = queue.pop_front() {
-            if visited.contains(state) {
-                continue;
-            }
-            visited.insert(state);
-
-            // Check if we reached a final state
-            if self.final_states.contains(state) {
-                return false;
-            }
-
-            // Explore all transitions
-            for &symbol in &self.alphabet {
-                if let Some(destinations) = self.transitions.get(&(state, symbol)) {
-                    let closure = self.epsilon_closure(destinations);
-                    for dest in closure.iter() {
-                        if !visited.contains(dest) {
-                            queue.push_back(dest);
-                        }
+        let reachable = reachable_from(
+            start_closure.iter(),
+            self.num_states as usize,
+            |state, out| {
+                for &symbol in &self.alphabet {
+                    if let Some(destinations) = self.transitions.get(&(state, symbol)) {
+                        out.extend(self.epsilon_closure(destinations).iter());
                     }
                 }
-            }
-        }
+            },
+        );
 
-        true
+        !self.final_states.intersects(&reachable)
     }
 }
 
