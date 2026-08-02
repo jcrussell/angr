@@ -1,3 +1,63 @@
+//! `rustylib` — the native core of angr's Rust symbolic-execution engine.
+//!
+//! This crate is compiled twice by one `[lib]` entry: as a `cdylib` it is the
+//! CPython extension module imported as `angr.rustylib`, and as an `rlib` it is
+//! linked by the in-repo `benches/`, `examples/`, `tests/` targets and the
+//! `fuzz/` cargo-fuzz project. (The crate is *named* `angr` in `Cargo.toml`
+//! but produces a library named `rustylib` so the Python import path works.)
+//!
+//! Python drives it through `angr.exploration.RustExplorationManager` (or
+//! `use_rust_engine=True`); the Rust side then lifts, interprets and solves
+//! without returning to the interpreter per basic block. Z3 is shared with
+//! claripy — the same `libz3.so` is loaded by both sides so ASTs pass through
+//! by handle rather than being re-parsed.
+//!
+//! # Entry points
+//!
+//! `rustylib()` is the `#[pymodule]` initializer. It registers the
+//! per-subsystem submodules via `import_submodule`:
+//!
+//! - `angr.rustylib.vex_engine` — the engine proper (`engine::vex_engine`),
+//!   including `RustExplorationManager`, `RustSimState` and `RustSolverContext`
+//! - `angr.rustylib.segmentlist` — the CFG's `SegmentList`/`Segment`
+//! - `angr.rustylib.automaton` — DFA/NFA support for
+//!   `angr.analyses.typehoon.dfa`
+//! - `angr.rustylib.fuzzer`, `angr.rustylib.icicle` — optional fuzzing backends
+//!
+//! # Module map
+//!
+//! - [`vex`] / `interpreter` — IRSB lifting and VEX statement/expression
+//!   execution
+//! - [`state`] / [`memory`] / [`stash`] — simulation state, the lazy
+//!   copy-on-write memory model, and the exploration stashes
+//! - [`symbolic`] / `solver` / `claripy_bridge` — the Z3 context, constraint
+//!   solving, and AST import/export across the Python boundary
+//! - `procedures` / `syscalls` — native SimProcedures and syscall handlers,
+//!   each falling back to Python via `ProcedureError`/`SyscallError`
+//! - `exploration` — the run loop, work-stealing scheduler and step core
+//! - [`concretize`] — concretization strategies for symbolic addresses
+//!
+//! # Feature flags
+//!
+//! `default = ["vex-engine", "vex-engine-z3", "automaton"]`; `setup.py`
+//! additionally appends `libvex-ffi`, so a stock `pip install -e .` builds with
+//! native cold-block lifting.
+//!
+//! - `vex-engine` — the interpreter, state model and native procedures
+//! - `vex-engine-z3` — adds the Z3-backed solver and the parallel scheduler
+//! - `automaton` — the DFA/NFA module
+//! - `libvex-ffi` — lift cold blocks through libVEX directly instead of pyvex
+//! - `fuzzer` — icicle/libafl backends; `fuzzing` — widen hostile-input parsers
+//!   to a crate-`pub` surface for the cargo-fuzz targets (see `fuzz_api`)
+//!
+//! # Further reading
+//!
+//! `docs/advanced-topics/rust_engine.rst` is the authoritative architecture and
+//! usage overview (support matrix, `SimOption` coverage, known-slow benches).
+//! See also `rust_z3_sharing.rst`, `rust_lazy_memory_design.rst`,
+//! `rust_parallel_design.rst` and `rust_libvex_ffi.rst` in the same directory,
+//! plus `docs/extending-angr/rust_vex_ops.rst` for adding a VEX op.
+
 // clippy::unwrap_used/expect_used (workspace lint, angr-9ke6b guardrail) is
 // scoped to production code. `cfg(test)` applies to the WHOLE crate when
 // compiled as the test harness, not just individual `#[test]` fns, so this
