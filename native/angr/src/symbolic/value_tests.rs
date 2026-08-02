@@ -1155,6 +1155,70 @@ fn serde_roundtrip_constrained() {
     }
 }
 
+/// Rebuild a `Constrained` the only way live code ever does — snapshot
+/// deserialization (`RustBVData::Constrained` → `RustBV::Constrained`).
+fn constrained_via_snapshot(id: u64, value: u128, width: u32) -> RustBV {
+    let json = serde_json::to_string(&RustBV::Constrained { id, value, width }).expect("serialize");
+    serde_json::from_str(&json).expect("deserialize")
+}
+
+fn constrained_id(bv: &RustBV) -> Option<u64> {
+    match bv {
+        RustBV::Constrained { id, .. } => Some(*id),
+        _ => None,
+    }
+}
+
+/// angr-9ke6b.128: a same-width `truncate` and a full-width `extract` are the
+/// identity, so they must hand back the `Constrained` untouched. Folding them
+/// through `as_u128()` (which is `Some` for `Constrained`) would produce a bare
+/// `Concrete` and drop the symbol `id` that `query_class` /
+/// `memory::ite_builder` / `interpreter::concretize_cache` key off — the value
+/// would silently start reading as fully concrete.
+#[test]
+fn identity_truncate_extract_preserve_constrained_id() {
+    let ctx = SymContext::new_mock();
+    let bv = constrained_via_snapshot(42, 7, 64);
+
+    let truncated = bv.truncate(64, &ctx);
+    assert_eq!(constrained_id(&truncated), Some(42), "same-width truncate");
+    assert!(truncated.is_symbolic());
+    assert_eq!(truncated.width(), 64);
+
+    let extracted = bv.extract(63, 0, &ctx);
+    assert_eq!(constrained_id(&extracted), Some(42), "full-width extract");
+    assert!(extracted.is_symbolic());
+    assert_eq!(extracted.width(), 64);
+
+    // Same for the consuming variants, which are the ones the interpreter calls.
+    let truncated = bv.clone().truncate_into(64, &ctx);
+    assert_eq!(constrained_id(&truncated), Some(42), "truncate_into");
+    let extracted = bv.extract_into(63, 0, &ctx);
+    assert_eq!(constrained_id(&extracted), Some(42), "extract_into");
+}
+
+/// The flip side of the invariant above: a *narrowing* truncate / *partial*
+/// extract produces a different value, so it is a new concrete leaf rather than
+/// the same symbol — matching `zero_extend_into` / `sign_extend_into`, which
+/// also fold a `Constrained` away once they actually change the width.
+#[test]
+fn narrowing_truncate_extract_fold_constrained_to_concrete() {
+    let ctx = SymContext::new_mock();
+    let bv = constrained_via_snapshot(42, 0xdead_beef, 64);
+
+    let truncated = bv.truncate(16, &ctx);
+    assert!(truncated.is_concrete());
+    assert_eq!(truncated.as_u64(), Some(0xbeef));
+
+    let extracted = bv.extract(31, 16, &ctx);
+    assert!(extracted.is_concrete());
+    assert_eq!(extracted.as_u64(), Some(0xdead));
+
+    let extended = bv.zero_extend(96, &ctx);
+    assert!(extended.is_concrete());
+    assert_eq!(extended.as_u64(), Some(0xdead_beef));
+}
+
 #[cfg(feature = "vex-engine-z3")]
 #[test]
 fn serde_roundtrip_symbolic() {

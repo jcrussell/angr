@@ -949,6 +949,15 @@ impl RustBV {
     #[inline]
     pub fn truncate_into(self, to_width: u32, _ctx: &SymContext) -> Self {
         debug_assert!(to_width <= self.width());
+        // No truncation needed. Checked *before* `as_u128()` for the same reason
+        // `zero_extend_into` / `sign_extend_into` check their width identity
+        // first: `as_u128()` is `Some` for a `RustBV::Constrained` too, so the
+        // fold below would rebuild it as a bare `Concrete` and drop the symbol
+        // `id` that `query_class`, `memory::ite_builder` and
+        // `interpreter::concretize_cache` key off (angr-9ke6b.128).
+        if to_width == self.width() {
+            return self;
+        }
         match self.as_u128() {
             Some(v) => Self::concrete(v, to_width),
             None => {
@@ -1417,9 +1426,9 @@ pub(super) trait ExtractTarget {
 /// Ordering note: the concrete fast-path is checked before the identity rule so
 /// a full-width extract of a literal folds to a fresh constant — matching the
 /// RustBV construction-time builders. The two orders diverge only for a
-/// full-width extract of a `Constrained` inner, which no builder ever
-/// constructs (they all fold it away first), so both targets are behavior-
-/// preserving.
+/// full-width extract of a `Constrained` inner, which is handled by the
+/// explicit identity check ahead of both (see below), so the remaining
+/// `Concrete`-only ordering is behavior-preserving on both targets.
 pub(super) fn drive_extract<T: ExtractTarget>(
     target: &mut T,
     inner: &RustBV,
@@ -1429,6 +1438,20 @@ pub(super) fn drive_extract<T: ExtractTarget>(
     debug_assert!(high >= low);
     debug_assert!(high < inner.width());
     let result_width = high - low + 1;
+
+    // Identity on a `Constrained` inner, checked ahead of the concrete
+    // fast path: `RustBV::as_u128` returns `Some` for `Constrained`, so the
+    // fold below would rebuild `Extract(w-1, 0, Constrained{id, ..})` as a bare
+    // `Concrete` and silently drop the symbol `id` that `query_class`,
+    // `memory::ite_builder`, `memory::multi` and `interpreter::concretize_cache`
+    // key off for symbol tracking, structural hashing and cache keys
+    // (angr-9ke6b.128). This mirrors `zero_extend_into` / `sign_extend_into` /
+    // `truncate_into`, which all check their width identity before folding.
+    // A *partial* extract still folds — like a real extension, it produces a
+    // different value, so it is a new leaf rather than the same symbol.
+    if matches!(inner, RustBV::Constrained { .. }) && high == inner.width() - 1 && low == 0 {
+        return target.identity(inner);
+    }
 
     // Concrete fast path — fold at the Rust level (shared with every Extract
     // site, see bv_codec::concrete_extract_u128).
