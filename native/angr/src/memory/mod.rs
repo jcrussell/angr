@@ -5,6 +5,14 @@
 //! - Mixed concrete/symbolic value storage
 //! - Efficient symbolic address handling
 //!
+//! **Which `load_*` / `store_*` variant do I want?** The entry points differ on
+//! four axes — permission checking, unmapped-page handling, auto-mapping, and
+//! `Multi`-cell awareness — and the `_lazy` / `_automap` / `_unified` suffixes
+//! do not signal them consistently. A row-per-variant matrix lives in the
+//! `memory::load` and `memory::store` module docs (angr-9ke6b.102); read it
+//! before adding a variant or a new cross-cutting feature, and add a row when
+//! you do.
+//!
 //! **Panic policy (angr-9ke6b.212):** every address that reaches this module is
 //! guest-derived, so nothing here may panic on address shape — unresolvable
 //! addresses surface as [`MemoryError`] variants the caller routes to the

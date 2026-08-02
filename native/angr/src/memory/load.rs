@@ -4,6 +4,64 @@
 //! family in a single file. Multiple `impl SymbolicMemory` blocks across files are
 //! fine — Rust permits inherent impls to be split.
 //!
+//! # Variant matrix (angr-9ke6b.102)
+//!
+//! The `load_*` family is large and the `_lazy` / `_automap` / `_unified`
+//! suffixes do **not** consistently signal behavior (`load_concrete_automap`
+//! notably does *not* auto-map — the name is historical). Every row below is
+//! classified on four axes:
+//!
+//! * **Perm** — does the path run `check_perms_range(.., Permission::R)`?
+//! * **Unmapped** — `Unmapped` hard error, or `UnmappedPageInRegion` for a page
+//!   inside a registered lazy region (the interpreter's cue to fetch + retry)?
+//! * **Auto-map** — does it materialize a missing page? **No load path does.**
+//!   Speculative zero pages diverge from Python's backer data (see
+//!   `SymbolicMemory::prepare_addresses_for_ite`).
+//! * **Multi** — does it honor `Multi` cells? Every path that reaches
+//!   `SymbolicMemory::load_concrete_common` does, via the `range_has_multi`
+//!   dispatch it performs ahead of all other fast paths.
+//!
+//! | Entry point | Address | Perm | Unmapped | Auto-map | Multi |
+//! |---|---|---|---|---|---|
+//! | [`SymbolicMemory::load`] | symbolic (`ctx.eval` + pin fallback) | R | `Unmapped` | no | yes |
+//! | [`SymbolicMemory::load_concrete`] | concrete | R | `Unmapped` | no | yes |
+//! | [`SymbolicMemory::load_concrete_lazy`] | concrete | R | `UnmappedPageInRegion` | no | yes |
+//! | `SymbolicMemory::load_concrete_lazy_inner` (`pub(super)`) | concrete | R | `UnmappedPageInRegion` | no | yes |
+//! | [`SymbolicMemory::load_concrete_automap`] | concrete | R | `UnmappedPageInRegion` | **no** (name is historical) | yes |
+//! | [`SymbolicMemory::load_concrete_or_unconstrained`] | concrete | R, but **result discarded** | *swallowed* → fresh `unc_mem_*` BVS | no | yes |
+//! | [`SymbolicMemory::load_symbolic`] | symbolic (concretizer) | R | `UnmappedPageInRegion` | no | yes |
+//! | [`SymbolicMemory::load_symbolic_unified`] | symbolic (concretizer) | R (leaf-dependent) | leaf-dependent | no (filters instead) | yes |
+//!
+//! Notes that the axes alone don't carry:
+//!
+//! * Only `load_concrete` bumps the `mem_load` volume counter — per
+//!   `invariant-mem-counter-two-paths` the `_lazy` paths must not, since they
+//!   are reached from ITE-tree leaves and `store_concrete`'s read-modify-write.
+//! * The `Unmapped` cells are the `lazy=false` contract of
+//!   `SymbolicMemory::unmapped_page_error`, and it has one documented leak: a
+//!   load that dispatches to `assemble_load_with_multi` reports a lazy-region
+//!   miss as `UnmappedPageInRegion` regardless of the flag, so `load` /
+//!   `load_concrete` can surface it too when a `Multi` cell is in range.
+//! * `load_concrete_or_unconstrained` is infallible **by design** (ITE-leaf
+//!   filler): it converts *every* error — including `MemoryError::Permission` —
+//!   into an unconstrained value, so it is the one row where a permission
+//!   check exists but cannot reject the load. Do not use it on a guest-visible
+//!   load path.
+//! * `load_symbolic` (eager) builds ITE leaves with the error-propagating
+//!   `load_concrete_lazy`; `load_symbolic_unified` builds them with
+//!   `load_concrete_or_unconstrained` after `prepare_addresses_for_ite` has
+//!   dropped candidates whose page is unmapped. Hence the leaf-dependent cells.
+//! * Both symbolic entry points short-circuit to
+//!   `SymbolicMemory::unconstrained_read_value` under AVOID_MULTIVALUED_READS,
+//!   before any page is touched (no perm check, no Multi consult).
+//!
+//! **Adding a variant:** place its body behind `load_concrete_common` rather
+//! than re-deriving the fast paths — that is what keeps the Multi dispatch and
+//! the angr-jvjf / angr-3zhl partial-overwrite guards on every path (the
+//! angr-9ke6b.96 bug was exactly a Multi gate living on one copy only). Then
+//! add a row here. The store-side matrix lives in the `memory::store` module
+//! docs.
+//!
 //! **Panic policy (angr-9ke6b.212):** loads run on guest-supplied addresses, so
 //! nothing here may panic on address shape. The concretization dispatch reports
 //! an unresolvable address as `MemoryError::SymbolicAddress` (via

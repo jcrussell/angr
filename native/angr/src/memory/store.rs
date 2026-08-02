@@ -4,6 +4,65 @@
 //! install_multi_for_candidates family in a single file. Multiple `impl SymbolicMemory`
 //! blocks across files are fine — Rust permits inherent impls to be split.
 //!
+//! # Variant matrix (angr-9ke6b.102)
+//!
+//! Same four axes as the `memory::load` matrix, with `Multi` reading
+//! differently on the write side — a store either **clears** the Multi cells it
+//! overwrites or **installs** new ones:
+//!
+//! * **Perm** — `check_perms_range(.., Permission::W)`. Every eager path
+//!   inherits it from `SymbolicMemory::store_concrete`; the Multi-installing
+//!   paths run their own copy in `install_multi_for_candidates` (angr-9ke6b.94)
+//!   *before* their auto-map loop, so an already-mapped read-only candidate is
+//!   still rejected.
+//! * **Unmapped** — `Unmapped` hard error vs. `UnmappedPageInRegion` (fetch +
+//!   retry) vs. auto-mapped away.
+//! * **Auto-map** — unlike loads, several store paths *do* map missing pages as
+//!   zero-filled RW. That is safe only where Python holds no backer data for
+//!   the page; the `_safe` Multi installer exists precisely to refuse it.
+//! * **Multi** — `clear` = drops any `Multi` cell on the overwritten bytes
+//!   (required by `invariant-multi-vs-symbolic-cell-states`: a byte is Multi
+//!   *or* Symbolic, never both). `install` = appends `(cond, byte)`
+//!   alternatives for load-time collapse instead of folding eager ITEs.
+//!
+//! | Entry point | Address | Perm | Unmapped | Auto-map | Multi |
+//! |---|---|---|---|---|---|
+//! | [`SymbolicMemory::store`] | symbolic (`ctx.eval` + pin fallback) | W | `Unmapped` | no | clear |
+//! | [`SymbolicMemory::store_concrete`] | concrete | W | `Unmapped` | no | clear |
+//! | [`SymbolicMemory::store_concrete_lazy`] | concrete | W | `UnmappedPageInRegion` | no | clear |
+//! | [`SymbolicMemory::store_concrete_automap`] | concrete | W | `UnmappedPageInRegion` | **no** (name is historical) | clear |
+//! | [`SymbolicMemory::store_concrete_automap_internal`] | concrete | W | `Unmapped` (non-lazy only) | **yes**, zero RW in lazy regions | clear |
+//! | [`SymbolicMemory::store_concrete_le_bytes_automap_internal`] | concrete | W | `Unmapped` (non-lazy only) | **yes**, per chunk | clear |
+//! | [`SymbolicMemory::store_symbolic`] | symbolic (concretizer) | W | `UnmappedPageInRegion` | no | clear (eager ITE per candidate) |
+//! | [`SymbolicMemory::store_symbolic_unified`] | symbolic (concretizer) | W | `UnmappedPageInRegion` | mapped candidates only | **install** (`_safe`) |
+//! | [`SymbolicMemory::store_symbolic_unified_multi`] | symbolic (multiwrite concretizer) | W | `UnmappedPageInRegion` (concrete-address path only) | **yes**, zero RW for every candidate | **install** (bare) |
+//! | [`SymbolicMemory::store_with_concretization`] | pre-computed result | W | `UnmappedPageInRegion` | mapped candidates only | **install** (`_safe`) |
+//! | [`SymbolicMemory::store_concrete_multi`] | explicit candidate list | W | never — auto-mapped | **yes**, zero RW | **install** (bare, test rig) |
+//!
+//! Notes that the axes alone don't carry:
+//!
+//! * Only `store_concrete` bumps the `mem_store` volume counter (mirror of the
+//!   load-side `invariant-mem-counter-two-paths` rule).
+//! * `store_concrete_lazy` and `store_concrete_automap` currently have
+//!   *identical* bodies (`check_pages_mapped_lazy` then `store_concrete`); the
+//!   names record intended caller class, not differing behavior.
+//! * `store_concrete` uses an **inclusive** end-page range
+//!   (`end_page_inclusive`); the two lazy wrappers use an exclusive ceil-div
+//!   range via `check_pages_mapped_lazy`. Both cover the accessed bytes.
+//! * The bare vs. `_safe` Multi installer is the whole auto-map distinction:
+//!   `install_multi_for_candidates` maps every candidate page RW, while
+//!   `install_multi_for_candidates_safe` returns `UnmappedPageInRegion` for a
+//!   lazy-region miss (so Python's backer data is fetched first) and silently
+//!   filters non-lazy misses as unreachable.
+//! * Every symbolic entry point drops the store entirely under
+//!   AVOID_MULTIVALUED_WRITES, before any page is touched (tagged
+//!   `SILENT(cat-b)` at the two `_unified` sites).
+//!
+//! **Adding a variant:** route it through `store_concrete` (which owns the
+//! permission check, the Multi clear, and the counter) or, for a Multi-cell
+//! path, through `install_multi_for_candidates{,_safe}` — then add a row here.
+//! The load-side matrix lives in the `memory::load` module docs.
+//!
 //! **Panic policy (angr-9ke6b.212):** stores run on guest-supplied addresses
 //! and values, so nothing here may panic on their shape. An unresolvable
 //! address becomes `MemoryError::SymbolicAddress` (via
