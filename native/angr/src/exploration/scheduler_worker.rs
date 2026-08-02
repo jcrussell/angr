@@ -373,9 +373,16 @@ pub(super) fn dispatch_next(
                                 return Some(state);
                             }
                             Err(err) => {
-                                // Unreachable in practice (the worker set its own ctx
-                                // as thread-local), but never silently keep a phantom
-                                // task outstanding.
+                                // The `ContextMismatch` half is unreachable in practice
+                                // (the worker set its own ctx as thread-local), but
+                                // `reattach` also propagates whatever
+                                // `RustSimState::from_serialized` returns, so this arm
+                                // is a real failure surface. Drop the task loudly and
+                                // never silently keep a phantom outstanding — the
+                                // `fetch_sub` is what makes quiescence reachable.
+                                // Covered by
+                                // `test_dispatch_next_drops_a_corrupt_payload_and_keeps_stealing`
+                                // and `test_dispatch_next_corrupt_only_payload_reaches_quiescence`.
                                 log::error!("scheduler reattach failed, dropping task: {err:?}");
                                 t.pending.fetch_sub(1, Ordering::SeqCst);
                                 continue;

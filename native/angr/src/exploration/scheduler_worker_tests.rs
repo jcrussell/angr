@@ -404,6 +404,88 @@ fn test_dispatch_next_steals_and_reattaches_from_injector() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// angr-9ke6b.58: the worker-side half of the reattach-failure contract. The
+// coordinator-side twin lives in `run_loop_wave_tests.rs`
+// (`corrupt_payload_is_dropped_and_later_payloads_still_route`, angr-ph300.11);
+// `dispatch_next`'s `Err` arm had no failure-injection coverage. `reattach` can
+// fail for more than the `ContextMismatch` its inline comment focuses on —
+// `RustSimState::from_serialized` propagates too — so the log+retire+continue
+// behavior is pinned rather than assumed unreachable.
+//
+// Both tests rely on `Injector::steal` being FIFO, so the corrupt payload
+// pushed first is the one stolen first.
+// ---------------------------------------------------------------------------
+
+// A corrupt payload must be retired out of `pending` (never left outstanding as
+// a phantom task) and must not stop the worker from stealing the payload queued
+// behind it.
+#[test]
+fn test_dispatch_next_drops_a_corrupt_payload_and_keeps_stealing() {
+    let ctx = Context::thread_local();
+    let t = lifo_transport();
+    let mut local: VecDeque<RustSimState> = VecDeque::new();
+
+    let good = plain_state();
+    let good_id = good.state_id();
+    t.pending.fetch_add(2, Ordering::SeqCst);
+    t.injector.push(StateMigrationPayload::corrupt_for_test());
+    t.injector.push(detach_timed(good, &t.counters));
+
+    let got = dispatch_next(0, &t, &mut local, &ctx).expect("the good payload behind the corrupt");
+    assert_eq!(
+        got.state_id(),
+        good_id,
+        "the corrupt payload was skipped, not returned"
+    );
+    assert_eq!(
+        t.pending.load(Ordering::SeqCst),
+        1,
+        "the dropped task was counted OUT; only the dispatched one stays outstanding",
+    );
+    assert_eq!(
+        t.counters.injector_dispatches.load(Ordering::SeqCst),
+        2,
+        "both steals are counted; the counter is a steal count, not a success count",
+    );
+    assert_eq!(
+        t.counters.reattaches.load(Ordering::SeqCst),
+        1,
+        "only the payload that actually rebuilt a state counts as a reattach",
+    );
+}
+
+// A corrupt payload as the ONLY outstanding task: the retire inside the `Err`
+// arm is what lets the next `steal_from_injector` see `pending == 0` and report
+// quiescence. Without it the worker would spin/sleep forever waiting on a task
+// that can never arrive.
+#[test]
+fn test_dispatch_next_corrupt_only_payload_reaches_quiescence() {
+    let ctx = Context::thread_local();
+    let t = lifo_transport();
+    let mut local: VecDeque<RustSimState> = VecDeque::new();
+
+    t.pending.fetch_add(1, Ordering::SeqCst);
+    t.injector.push(StateMigrationPayload::corrupt_for_test());
+
+    assert!(
+        dispatch_next(0, &t, &mut local, &ctx).is_none(),
+        "a dropped-only injector reaches quiescence instead of hanging",
+    );
+    assert_eq!(
+        t.pending.load(Ordering::SeqCst),
+        0,
+        "the phantom task is retired, so quiescence is reachable",
+    );
+    assert_eq!(t.counters.reattaches.load(Ordering::SeqCst), 0);
+    assert_eq!(t.counters.injector_dispatches.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        t.counters.local_dispatches.load(Ordering::SeqCst),
+        0,
+        "nothing ever reached the local frontier",
+    );
+}
+
 // Quiescence: an empty injector with nothing outstanding is the only way
 // `dispatch_next` returns `None` without cancellation. It must not spin.
 #[test]
