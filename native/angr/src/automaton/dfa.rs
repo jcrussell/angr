@@ -4,9 +4,6 @@ use crate::automaton::state::{StateId, StateSet};
 use crate::automaton::symbol::SymbolId;
 use std::collections::{HashMap, HashSet, VecDeque};
 
-/// A labeled edge in the graph representation: (source, destination, label).
-pub(super) type GraphEdge = (StateId, StateId, Vec<u8>);
-
 /// A Deterministic Finite Automaton.
 #[derive(Debug, Clone)]
 pub struct DFA {
@@ -24,8 +21,6 @@ pub struct DFA {
     alphabet: HashSet<SymbolId>,
     /// Mapping from DFA states to original NFA states (if created via subset construction)
     state_mapping: Option<HashMap<StateId, Vec<StateId>>>,
-    /// Labels for transitions (for graph export)
-    transition_labels: HashMap<(StateId, SymbolId), Vec<u8>>,
 }
 
 impl DFA {
@@ -39,7 +34,6 @@ impl DFA {
             reverse_transitions: HashMap::new(),
             alphabet: HashSet::new(),
             state_mapping: None,
-            transition_labels: HashMap::new(),
         }
     }
 
@@ -88,18 +82,6 @@ impl DFA {
             .insert(source);
     }
 
-    /// Add a transition with a label (for graph export).
-    pub fn add_transition_with_label(
-        &mut self,
-        source: StateId,
-        symbol: SymbolId,
-        destination: StateId,
-        label: Vec<u8>,
-    ) {
-        self.add_transition(source, symbol, destination);
-        self.transition_labels.insert((source, symbol), label);
-    }
-
     /// Get the transition from a state on a symbol.
     pub fn transition(&self, source: StateId, symbol: SymbolId) -> Option<StateId> {
         self.transitions.get(&(source, symbol)).copied()
@@ -120,24 +102,9 @@ impl DFA {
         &self.final_states
     }
 
-    /// Get the alphabet.
-    pub fn alphabet(&self) -> &HashSet<SymbolId> {
-        &self.alphabet
-    }
-
     /// Set the state mapping from original NFA states.
     pub fn set_state_mapping(&mut self, mapping: HashMap<StateId, Vec<StateId>>) {
         self.state_mapping = Some(mapping);
-    }
-
-    /// Get the state mapping.
-    pub fn state_mapping(&self) -> Option<&HashMap<StateId, Vec<StateId>>> {
-        self.state_mapping.as_ref()
-    }
-
-    /// Get transition labels.
-    pub fn transition_labels(&self) -> &HashMap<(StateId, SymbolId), Vec<u8>> {
-        &self.transition_labels
     }
 
     /// Check if the DFA is empty (accepts no strings).
@@ -361,13 +328,6 @@ impl DFA {
                         && let Some(&new_dest) = state_to_partition.get(&dest)
                     {
                         minimized.add_transition(part_idx as StateId, symbol, new_dest);
-
-                        // Copy label if exists
-                        if let Some(label) = self.transition_labels.get(&(representative, symbol)) {
-                            minimized
-                                .transition_labels
-                                .insert((part_idx as StateId, symbol), label.clone());
-                        }
                     }
                 }
             }
@@ -391,24 +351,6 @@ impl DFA {
         }
 
         minimized
-    }
-
-    /// Convert to a graph representation (edges with labels).
-    /// Returns: (nodes, edges) where edges are (src, dst, label)
-    pub fn to_graph(&self) -> (Vec<StateId>, Vec<GraphEdge>) {
-        let nodes: Vec<StateId> = (0..self.num_states).collect();
-        let mut edges = Vec::new();
-
-        for (&(src, symbol), &dst) in &self.transitions {
-            let label = self
-                .transition_labels
-                .get(&(src, symbol))
-                .cloned()
-                .unwrap_or_else(|| format!("{symbol}").into_bytes());
-            edges.push((src, dst, label));
-        }
-
-        (nodes, edges)
     }
 }
 

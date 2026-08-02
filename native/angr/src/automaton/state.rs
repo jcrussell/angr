@@ -123,11 +123,6 @@ impl StateSet {
         }
     }
 
-    /// Clear all states from the set.
-    pub fn clear(&mut self) {
-        self.bits.clear();
-    }
-
     /// Get a canonical representation for hashing (as a sorted vec).
     pub fn to_vec(&self) -> Vec<StateId> {
         self.iter().collect()
