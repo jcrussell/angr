@@ -90,13 +90,13 @@ impl TypeEnv {
 
 mod arch;
 mod ast;
-mod aux;
+mod descriptors;
 mod ops_def;
 mod types;
 
 pub use arch::*;
 pub use ast::*;
-pub use aux::*;
+pub use descriptors::*;
 pub use ops_def::*;
 pub use types::*;
 
