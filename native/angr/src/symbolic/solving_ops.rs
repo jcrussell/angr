@@ -422,10 +422,91 @@ impl SymContext {
     /// same holds under signed interpretation.
     #[cfg(feature = "vex-engine-z3")]
     fn cached_model_eval(&self, ast: &z3::ast::BV) -> Option<u128> {
+        self.cached_model_eval_with(ast, extract_bv_value)
+    }
+
+    /// Generic core of `cached_model_eval`: read `ast`'s value out of the warm
+    /// cached model (if any) with a caller-supplied extractor. The wide
+    /// (`Vec<u8>`) enumeration path in `enumerate_distinct` needs the same
+    /// warm-model read with `extract_bv_value_wide` instead.
+    #[cfg(feature = "vex-engine-z3")]
+    fn cached_model_eval_with<T>(
+        &self,
+        ast: &z3::ast::BV,
+        extract: impl Fn(&z3::ast::BV) -> Option<T>,
+    ) -> Option<T> {
         let cache = self.model_cache.borrow();
         let model = cache.as_ref()?;
         let result = model.eval(ast, true)?;
-        extract_bv_value(&result)
+        extract(&result)
+    }
+
+    /// Enumerate up to `n` distinct satisfying values of `ast`, in canonical
+    /// ascending order. Shared core of `eval_upto` and `eval_upto_wide` — see
+    /// those for the per-width fast paths and the soundness argument; this is
+    /// only the enumeration machinery, so a fix here lands on both.
+    ///
+    /// Iteration 0 is seeded from the warm `model_cache` when present
+    /// (angr-ovqja.4), skipping exactly one check+get_model. Each subsequent
+    /// iteration does check → get_model → `extract` → assert
+    /// `ast != exclusion_of(value)`. Anything but a decided Sat stops the loop:
+    /// Unsat means the set is exhausted, Unknown (timeout) means undetermined —
+    /// either way the prefix gathered so far is a valid set (angr-ph300.43). A
+    /// missing model or failed extraction stops it the same way.
+    ///
+    /// The trailing sort is canonical *presentation* order (angr-op0dn.10.1):
+    /// the exclude-loop decides WHICH values come back, this only decides in
+    /// what order. Any future short-circuit must land ABOVE that sort.
+    ///
+    /// The check/get_model/assert-exclude iterations share one solver lock
+    /// acquisition via `with_z3_solver`. The push/pop pair is balanced inside
+    /// the closure, so the Z3 scope stack returns to its pre-closure depth
+    /// before `f` returns — safe for both the None (per-context) and Some
+    /// (shared-lineage) dispatch paths.
+    #[cfg(feature = "vex-engine-z3")]
+    fn enumerate_distinct<T: Ord>(
+        &self,
+        ast: &z3::ast::BV,
+        n: usize,
+        extract: impl Fn(&z3::ast::BV) -> Option<T>,
+        exclusion_of: impl Fn(&T) -> z3::ast::BV,
+    ) -> Vec<T> {
+        let mut results = Vec::with_capacity(n);
+        let seeded = self.cached_model_eval_with(ast, &extract);
+
+        self.with_z3_solver(|solver| {
+            solver.push();
+
+            let mut remaining = n;
+            if let Some(value) = seeded {
+                Z3_EVAL_UPTO_MODEL_HIT_COUNT.fetch_add(1, Ordering::Relaxed);
+                solver.assert(ast.eq(exclusion_of(&value)).not());
+                results.push(value);
+                remaining -= 1;
+            }
+
+            for _ in 0..remaining {
+                if timed_check(solver, CheckSite::EvalUpto).decided() != Some(true) {
+                    break;
+                }
+                let Some(model) = solver.get_model() else {
+                    break;
+                };
+                let Some(result) = model.eval(ast, true) else {
+                    break;
+                };
+                let Some(value) = extract(&result) else {
+                    break;
+                };
+                solver.assert(ast.eq(exclusion_of(&value)).not());
+                results.push(value);
+            }
+
+            solver.pop(1);
+        });
+
+        results.sort_unstable();
+        results
     }
 
     /// Evaluate a bitvector to bytes (for values > 128 bits).
@@ -592,76 +673,25 @@ impl SymContext {
             return self.eval_upto_ascending(bv, n);
         }
 
-        let mut results = Vec::with_capacity(n);
         let ast = bv.to_z3_ast();
         let _class =
             query_class::scope(|| query_class::classify_eval(bv, &self.get_assumed_constraints()));
 
-        // Seed iteration 0 from a warm cached model when present (angr-ovqja.4).
-        // Soundness: per `invalidate_model_if_inconsistent`, a surviving cached
-        // model satisfies all permanent constraints, and iteration-0 runs under
-        // a fresh empty push scope (no exclude constraints yet), so M(ast) with
-        // completion is a genuine feasible solution. Seeding it lets us skip
-        // exactly one check+get_model. The exclude-loop below then enumerates
-        // the remaining distinct values exactly as before. eval_upto is treated
-        // as unordered by callers (e.g. `solutions()`), and the result count is
+        // Soundness of the warm-model seed `enumerate_distinct` applies: per
+        // `invalidate_model_if_inconsistent`, a surviving cached model satisfies
+        // all permanent constraints, and iteration-0 runs under a fresh empty
+        // push scope (no exclude constraints yet), so M(ast) with completion is
+        // a genuine feasible solution (angr-ovqja.4). eval_upto is treated as
+        // unordered by callers (e.g. `solutions()`), and the result count is
         // unchanged (min(n, #feasible)), so the solution set is faithful.
-        let seeded = self.cached_model_eval(&ast);
-
-        // The remaining check/get_model/assert-exclude iterations share one
-        // solver lock acquisition via with_z3_solver. The outer push/pop pair
-        // is balanced inside the closure, so the Z3 scope stack returns to its
-        // pre-closure depth before f returns — safe for both the None
-        // (per-context) and Some (shared-lineage) dispatch paths.
-        self.with_z3_solver(|solver| {
-            solver.push();
-
-            let mut remaining = n;
-            if let Some(value) = seeded {
-                Z3_EVAL_UPTO_MODEL_HIT_COUNT.fetch_add(1, Ordering::Relaxed);
-                results.push(value);
-                let val_ast = make_bv_const(value, bv.width());
-                solver.assert(ast.eq(&val_ast).not());
-                remaining -= 1;
-            }
-
-            for _ in 0..remaining {
-                // Stop enumerating on anything but a decided Sat: Unsat means the
-                // set is exhausted, Unknown (timeout) means undetermined — either
-                // way the prefix gathered so far is a valid set (angr-ph300.43).
-                match timed_check(solver, CheckSite::EvalUpto).decided() {
-                    Some(true) => {
-                        if let Some(model) = solver.get_model() {
-                            if let Some(result) = model.eval(&ast, true) {
-                                if let Some(value) = extract_bv_value(&result) {
-                                    results.push(value);
-                                    // Add constraint to exclude this value
-                                    let val_ast = make_bv_const(value, bv.width());
-                                    solver.assert(ast.eq(&val_ast).not());
-                                } else {
-                                    break;
-                                }
-                            } else {
-                                break;
-                            }
-                        } else {
-                            break;
-                        }
-                    }
-                    _ => break,
-                }
-            }
-
-            solver.pop(1);
-        });
-        // Canonical presentation order (angr-op0dn.10.1). Pure post-processing
-        // on the enumerated set: the exclude-loop above decides WHICH values are
-        // returned, this only decides in what order. Makes the exhaustive case
-        // (n >= #feasible, e.g. `solutions()`) bit-for-bit reproducible across
-        // runs regardless of which witness Z3 or the warm-model seed found
-        // first. Any future short-circuit must land ABOVE this sort.
-        results.sort_unstable();
-        results
+        //
+        // The canonical ascending order the helper returns makes the exhaustive
+        // case (n >= #feasible) bit-for-bit reproducible across runs regardless
+        // of which witness Z3 or the warm-model seed found first.
+        let width = bv.width();
+        self.enumerate_distinct(&ast, n, extract_bv_value, |value| {
+            make_bv_const(*value, width)
+        })
     }
 
     /// Canonical joint witness: the lexicographic minimum over `parts`, in the
@@ -829,75 +859,24 @@ impl SymContext {
             return vec![];
         }
 
-        let mut results = Vec::with_capacity(n);
         let ast = bv.to_z3_ast();
         let _class =
             query_class::scope(|| query_class::classify_eval(bv, &self.get_assumed_constraints()));
 
-        // Seed iteration 0 from a warm cached model when present (angr-ovqja.4).
-        // Same soundness argument as eval_upto: the cached model satisfies all
-        // permanent constraints, and iteration-0 runs under a fresh empty push
-        // scope, so the wide witness is a genuine feasible solution. Saves one
-        // check+get_model; the exclude-loop enumerates the rest unchanged.
-        let seeded: Option<Vec<u8>> = {
-            let cache = self.model_cache.borrow();
-            cache
-                .as_ref()
-                .and_then(|m| m.eval(&ast, true))
-                .and_then(|r| extract_bv_value_wide(&r, width))
-        };
-
-        // The remaining check/get_model/assert-exclude iterations share one
-        // solver lock acquisition via with_z3_solver. The outer push/pop pair
-        // is balanced inside the closure, so the Z3 scope stack returns to its
-        // pre-closure depth before f returns — safe for both the None
-        // (per-context) and Some (shared-lineage) dispatch paths.
-        self.with_z3_solver(|solver| {
-            solver.push();
-
-            let mut remaining = n;
-            if let Some(bytes) = seeded {
-                Z3_EVAL_UPTO_MODEL_HIT_COUNT.fetch_add(1, Ordering::Relaxed);
-                let val_ast = make_bv_from_bytes(&bytes, width);
-                solver.assert(ast.eq(&val_ast).not());
-                results.push(bytes);
-                remaining -= 1;
-            }
-
-            for _ in 0..remaining {
-                // As in eval_upto: only a decided Sat continues enumerating;
-                // Unsat/Unknown stop with the valid prefix (angr-ph300.43).
-                match timed_check(solver, CheckSite::EvalUpto).decided() {
-                    Some(true) => {
-                        if let Some(model) = solver.get_model() {
-                            if let Some(result) = model.eval(&ast, true) {
-                                if let Some(bytes) = extract_bv_value_wide(&result, width) {
-                                    // Exclude this value from future solutions
-                                    // Build Z3 constant from bytes for full-precision exclusion
-                                    let val_ast = make_bv_from_bytes(&bytes, width);
-                                    solver.assert(ast.eq(&val_ast).not());
-                                    results.push(bytes);
-                                } else {
-                                    break;
-                                }
-                            } else {
-                                break;
-                            }
-                        } else {
-                            break;
-                        }
-                    }
-                    _ => break,
-                }
-            }
-
-            solver.pop(1);
-        });
-        // Canonical ascending numeric order (angr-op0dn.10.1). Every witness is
-        // `width` bits wide, so all byte vectors have the same length and
-        // big-endian lexicographic order coincides with numeric order.
-        results.sort_unstable();
-        results
+        // Same warm-seed soundness argument as eval_upto, and the exclusion
+        // constants are built from the full byte string so the exclusion is
+        // full-precision at any width.
+        //
+        // The helper's canonical order is ascending *numeric* order here too:
+        // every witness is `width` bits wide, so all byte vectors have the same
+        // length and big-endian lexicographic order coincides with numeric
+        // order (angr-op0dn.10.1).
+        self.enumerate_distinct(
+            &ast,
+            n,
+            |result| extract_bv_value_wide(result, width),
+            |bytes| make_bv_from_bytes(bytes, width),
+        )
     }
 
     /// Get the minimum value of a bitvector using binary search (O(log N)).
