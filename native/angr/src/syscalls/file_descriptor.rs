@@ -70,11 +70,12 @@
 //! into Python's `state.posix.fd` — same precedent as
 //! `procedures/fileops::NativeDup` / `NativeDup2`, which already
 //! manipulate the Rust-side `FileSystem` without touching the Python
-//! plugin. Python `procedures/posix/dup.py` allocates a "lowest-free"
-//! fd; the Rust `FileSystem::dup` uses a monotonic `next_fd` instead, a
-//! divergence that only surfaces when an exploration closes an fd and
-//! later expects the freed slot to be reused. No current bench / test
-//! relies on slot reuse, so we keep the Rust monotonic allocator.
+//! plugin. Like Python `procedures/posix/dup.py`, `FileSystem::dup`
+//! allocates the lowest free fd, so a closed slot is reused (angr-9ke6b.119
+//! replaced the earlier monotonic `next_fd` allocator, which diverged from
+//! both POSIX and Python once an exploration closed an fd). The one
+//! remaining divergence is Python's multi-gap scan quirk — see
+//! `FileSystem::dup`'s doc comment.
 //!
 //! Error returns use the kernel ABI: `-EBADF` (negative errno) on
 //! invalid `oldfd` and on out-of-range `newfd` for `dup2`/`dup3`

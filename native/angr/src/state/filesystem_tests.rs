@@ -138,6 +138,30 @@ fn dup_clones_state_at_lowest_free_fd() {
 }
 
 #[test]
+fn dup_reuses_a_closed_fd_slot() {
+    // angr-9ke6b.119: dup(2) hands out the lowest free number, not a
+    // monotonically increasing one. open 3, open 4, close 3 -> the next dup
+    // must land back on 3 even though next_fd has moved past it.
+    let mut fs = FileSystem::default();
+    let a = fs.open("a".to_string(), FdFlags::ReadOnly);
+    let b = fs.open("b".to_string(), FdFlags::ReadOnly);
+    assert_eq!((a, b), (3, 4));
+    assert!(fs.close(a));
+    assert_eq!(fs.next_fd(), 5);
+
+    let dupd = fs.dup(b).expect("dup of open fd");
+    assert_eq!(dupd, 3, "dup must reuse the freed slot");
+    assert!(fs.is_open(3));
+    assert_eq!(fs.fd_info(3).map(|i| i.0), Some("b"));
+    // The reused slot is no longer a candidate; the next gap is 5 (== next_fd).
+    let dupd2 = fs.dup(b).expect("dup of open fd");
+    assert_eq!(dupd2, 5);
+    // next_fd stays past every allocated fd so a later open cannot collide.
+    assert_eq!(fs.next_fd(), 6);
+    assert_eq!(fs.open("c".to_string(), FdFlags::ReadOnly), 6);
+}
+
+#[test]
 fn dup2_closes_target_and_bumps_next_fd() {
     let mut fs = FileSystem::default();
     let src = fs.open_with_content("f".to_string(), FdFlags::ReadWrite, b"xy".to_vec());

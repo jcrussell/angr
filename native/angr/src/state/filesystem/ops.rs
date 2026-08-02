@@ -345,18 +345,44 @@ impl FileSystem {
         self.cwd = cwd;
     }
 
+    /// Lowest fd number that is not currently open — the POSIX allocation
+    /// rule for [`dup`](Self::dup). A number that was opened and later
+    /// `close`d counts as free even though its (closed) descriptor is still
+    /// parked in `fds`; reusing it overwrites that tombstone, which is
+    /// exactly what a real kernel does when the slot is handed out again.
+    ///
+    /// O(k) hash lookups for k = the returned fd, and k is bounded by the
+    /// number of open fds, so the scan always terminates.
+    fn lowest_free_fd(&self) -> u32 {
+        let mut fd = 0u32;
+        while self.fds.get(&fd).is_some_and(|d| d.is_open) {
+            fd += 1;
+        }
+        fd
+    }
+
     /// Duplicate an open file descriptor, allocating the lowest unused fd.
     /// Returns the new fd, or None if `oldfd` is not open.
     ///
-    /// Like POSIX `dup(2)`: the new fd refers to the same underlying state.
-    /// We model this by cloning the `FileDescriptor` (name/position/flags/content).
+    /// Like POSIX `dup(2)`: the new fd is the lowest number not currently
+    /// open (see [`lowest_free_fd`](Self::lowest_free_fd)), and it refers to
+    /// the same underlying state. We model the sharing by cloning the
+    /// `FileDescriptor` (name/position/flags/content). `next_fd` is bumped
+    /// past the allocated number so a later [`open`](Self::open) cannot
+    /// hand out the same slot.
+    ///
+    /// Divergence from Python `procedures/posix/dup.py` (angr-9ke6b.119):
+    /// its gap scan keeps the *last* mismatching index rather than breaking
+    /// at the first, so with two or more gaps it can return an fd that is
+    /// still open and clobber it. We return the true lowest free fd; the two
+    /// agree for the single-gap case that real binaries hit.
     pub fn dup(&mut self, oldfd: u32) -> Option<u32> {
         if !self.fds.get(&oldfd).is_some_and(|d| d.is_open) {
             return None;
         }
         let cloned = self.fds.get(&oldfd).cloned()?;
-        let newfd = self.next_fd;
-        self.next_fd += 1;
+        let newfd = self.lowest_free_fd();
+        self.next_fd = self.next_fd.max(newfd.saturating_add(1));
         Arc::make_mut(&mut self.fds).insert(newfd, cloned);
         Some(newfd)
     }
