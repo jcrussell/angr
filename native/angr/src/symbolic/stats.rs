@@ -318,6 +318,52 @@ pub(crate) const SITE_NAMES: [&str; NUM_CHECK_SITES] = [
     "max_search",
 ];
 
+/// Emit the per-`CheckSite` count/time pairs into `stats`.
+///
+/// Key-presence policy: a site whose count is 0 is **omitted entirely** —
+/// including its `_time_ns` key — so a capture only carries the sites that
+/// actually fired. This deliberately differs from
+/// `insert_query_class_stats`, which always emits; see that function's doc
+/// for why the two loops diverge. A site with a non-zero count always emits
+/// both keys, even when its accumulated time rounded to 0 ns.
+///
+/// Split out of `get_solver_stats` so the policy is exercisable from
+/// `stats_tests` against synthetic inputs, with no dependence on the
+/// process-global atomics (angr-9ke6b.146).
+#[cfg(feature = "vex-engine-z3")]
+fn insert_check_site_stats(
+    stats: &mut HashMap<String, u64>,
+    counts: &[u64],
+    times_ns: &[u64],
+    names: &[&str],
+) {
+    for ((name, &count), &time_ns) in names.iter().zip(counts).zip(times_ns) {
+        if count > 0 {
+            stats.insert(format!("z3_site_{name}_count"), count);
+            stats.insert(format!("z3_site_{name}_time_ns"), time_ns);
+        }
+    }
+}
+
+/// Emit the structural query-class counters into `stats` (S1 spike,
+/// angr-op0dn.3).
+///
+/// Key-presence policy: **always emitted**, zeros included, so a
+/// counters-json capture shows the classifier was off (everything lands in
+/// `unclassified`) rather than silently omitting the keys. The class key
+/// space is fixed and tiny (`NUM_QUERY_CLASSES`), so always-emit costs
+/// nothing; the check-site space is larger and per-site, hence the
+/// count>0 filter there.
+///
+/// Split out of `get_solver_stats` alongside `insert_check_site_stats` so
+/// both policies are directly testable (angr-9ke6b.146).
+#[cfg(feature = "vex-engine-z3")]
+fn insert_query_class_stats(stats: &mut HashMap<String, u64>, counts: &[u64], names: &[&str]) {
+    for (name, &count) in names.iter().zip(counts) {
+        stats.insert(format!("z3_check_class_{name}"), count);
+    }
+}
+
 /// Get all solver profiling stats as a HashMap.
 pub fn get_solver_stats() -> HashMap<String, u64> {
     let mut stats = HashMap::new();
@@ -623,25 +669,25 @@ pub fn get_solver_stats() -> HashMap<String, u64> {
         stats.insert(name.into(), value);
     }
     #[cfg(feature = "vex-engine-z3")]
-    for i in 0..NUM_CHECK_SITES {
-        let count = Z3_CHECK_SITE_COUNT[i].load(Ordering::Relaxed);
-        let time_ns = Z3_CHECK_SITE_TIME_NS[i].load(Ordering::Relaxed);
-        if count > 0 {
-            stats.insert(format!("z3_site_{}_count", SITE_NAMES[i]), count);
-            stats.insert(format!("z3_site_{}_time_ns", SITE_NAMES[i]), time_ns);
-        }
-    }
-    // Structural query classes (S1 spike, angr-op0dn.3). Always emitted so a
-    // counters-json capture shows the classifier was off (everything lands in
-    // `unclassified`) rather than silently omitting the keys.
-    #[cfg(feature = "vex-engine-z3")]
-    for i in 0..crate::symbolic::query_class::NUM_QUERY_CLASSES {
-        stats.insert(
-            format!(
-                "z3_check_class_{}",
-                crate::symbolic::query_class::CLASS_NAMES[i]
-            ),
-            crate::symbolic::query_class::Z3_CHECK_CLASS_COUNT[i].load(Ordering::Relaxed),
+    {
+        let counts: Vec<u64> = Z3_CHECK_SITE_COUNT
+            .iter()
+            .map(|c| c.load(Ordering::Relaxed))
+            .collect();
+        let times_ns: Vec<u64> = Z3_CHECK_SITE_TIME_NS
+            .iter()
+            .map(|t| t.load(Ordering::Relaxed))
+            .collect();
+        insert_check_site_stats(&mut stats, &counts, &times_ns, &SITE_NAMES);
+
+        let class_counts: Vec<u64> = crate::symbolic::query_class::Z3_CHECK_CLASS_COUNT
+            .iter()
+            .map(|c| c.load(Ordering::Relaxed))
+            .collect();
+        insert_query_class_stats(
+            &mut stats,
+            &class_counts,
+            &crate::symbolic::query_class::CLASS_NAMES,
         );
     }
     // angr-op0dn.9.5: one headline key aggregating every family that answers a
@@ -1043,3 +1089,7 @@ pub fn record_symfile_read_native() {
 pub fn record_symfile_write_demotion() {
     SYMFILE_WRITE_DEMOTIONS.fetch_add(1, Ordering::Relaxed);
 }
+
+#[cfg(test)]
+#[path = "stats_tests.rs"]
+mod stats_tests;
