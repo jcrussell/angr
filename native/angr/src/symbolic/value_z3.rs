@@ -197,8 +197,21 @@ impl RustBV {
     /// For comparison ops (Eq, Ne, Ult, etc.), produces the native Z3 Bool
     /// directly instead of going through ITE(cmp, BV(1,1), BV(0,1)) then
     /// `._eq(BV(1,1))`. Saves 3 Z3 AST nodes per comparison constraint.
+    ///
+    /// # Panics (debug builds)
+    ///
+    /// The 1-bit precondition is enforced here rather than left to callers:
+    /// a wider BV must be narrowed first (`bv.ne(&zero, ctx)`, as
+    /// `assume_true_ast` and `add_constraint_from_ast` do). See
+    /// `to_z3_bool_cached` for why a multi-bit input would be silently
+    /// mis-converted instead of rejected.
     #[cfg(feature = "vex-engine-z3")]
     pub fn to_z3_bool(&self) -> z3::ast::Bool {
+        debug_assert_eq!(
+            self.width(),
+            1,
+            "to_z3_bool expects a 1-bit RustBV; narrow with ne(0) first"
+        );
         super::stats::record_z3_ast_build();
         // Bracket the conversion with the node counters so the Bool path's
         // built-vs-memo-reused split is attributable (angr-op0dn.9.6): only
@@ -257,11 +270,27 @@ impl RustBV {
         })
     }
 
+    /// Cached worker behind `to_z3_bool` — same 1-bit precondition.
+    ///
+    /// # Panics (debug builds)
+    ///
+    /// Asserts `self.width() == 1`. Without it a multi-bit input is not an
+    /// error but a *wrong answer*: the `BVOp::Not` arm below negates the
+    /// operand's Bool, which is only the right reading of `Not` when the
+    /// operand is a 1-bit boolean — `not_into` (`value_ops.rs`) also serves
+    /// bitwise-NOT at arbitrary width, where `!x != (x == 0)`. Matches the
+    /// `debug_assert_eq!` width convention the binary ops in `value_ops.rs`
+    /// use.
     #[cfg(feature = "vex-engine-z3")]
     pub fn to_z3_bool_cached(
         &self,
         cache: &mut std::collections::HashMap<usize, z3::ast::BV>,
     ) -> z3::ast::Bool {
+        debug_assert_eq!(
+            self.width(),
+            1,
+            "to_z3_bool_cached expects a 1-bit RustBV; narrow with ne(0) first"
+        );
         match self {
             RustBV::Concrete { value, .. } | RustBV::Constrained { value, .. } => {
                 z3::ast::Bool::from_bool(*value != 0)
