@@ -1063,6 +1063,99 @@ fn test_fork_pending_writes_visible_in_both_after_flush() {
     );
 }
 
+/// angr-9ke6b.100: when a pending symbolic-address write concretizes to
+/// several candidates and one of them lands on a page that is unmapped in
+/// Rust but declared lazy, `flush_pending_writes` must surface
+/// `UnmappedPageInRegion` (Python still holds that page's backer data)
+/// rather than materializing an ITE whose `else` branch is a zero fill.
+/// Candidates preceding the lazy one still materialize against their real
+/// prior contents.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_pending_write_flush_signals_lazy_unmapped_candidate() {
+    let ctx = SymContext::new_mock();
+    let mut concretizer = AddressConcretizer::new();
+    // SYMBOLIC_WRITE_ADDRESSES: without it the write chain is Max-only and
+    // collapses to a Single candidate, never reaching materialize_pending_ite.
+    concretizer.symbolic_write_addresses = true;
+
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    // Page 0x1000 is real; page 0x2000 is unmapped but inside a lazy region.
+    mem.map(0x1000, 0x1000, Permission::RWX);
+    mem.add_lazy_region(0x2000, 0x1000);
+    mem.store_concrete(0x1000, RustBV::concrete(0xAAAA, 16))
+        .unwrap();
+
+    let addr = RustBV::symbolic(&ctx, "pw_lazy_addr", 64);
+    ctx.assume_true(
+        &addr
+            .eq(&RustBV::concrete(0x1000, 64), &ctx)
+            .or(&addr.eq(&RustBV::concrete(0x2000, 64), &ctx), &ctx),
+    );
+    mem.add_pending_write(PendingWrite {
+        addr,
+        value: RustBV::concrete(0xBBBB, 16),
+        size: 2,
+        condition: None,
+        page_hint: None,
+    });
+
+    let err = mem
+        .flush_pending_writes(&ctx, &concretizer)
+        .expect_err("lazy unmapped candidate must surface the fetch-me signal");
+    match err {
+        MemoryError::UnmappedPageInRegion { page_addr } => {
+            assert_eq!(page_addr, 0x2000, "must point at the lazy page");
+        }
+        other => panic!("expected UnmappedPageInRegion, got {other:?}"),
+    }
+
+    // The mapped candidate kept its real prior byte in the ITE's else arm:
+    // under addr == 0x2000 the cell at 0x1000 must still read 0xAAAA, not 0.
+    let solver_check = mem.load_concrete(0x1000, 2, &ctx).unwrap();
+    assert!(
+        solver_check.as_u64().is_none(),
+        "0x1000 should now hold the materialized ITE, not a constant"
+    );
+}
+
+/// angr-9ke6b.100 companion: when the unmapped candidate is NOT in a lazy
+/// region there is genuinely no prior value anywhere, so the zero `current`
+/// default stands and the flush fails only on the store's own mapping check.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_pending_write_flush_never_mapped_candidate_is_plain_unmapped() {
+    let ctx = SymContext::new_mock();
+    let mut concretizer = AddressConcretizer::new();
+    concretizer.symbolic_write_addresses = true;
+
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    mem.map(0x1000, 0x1000, Permission::RWX);
+    // No add_lazy_region: 0x2000 is unmapped everywhere.
+
+    let addr = RustBV::symbolic(&ctx, "pw_nomap_addr", 64);
+    ctx.assume_true(
+        &addr
+            .eq(&RustBV::concrete(0x1000, 64), &ctx)
+            .or(&addr.eq(&RustBV::concrete(0x2000, 64), &ctx), &ctx),
+    );
+    mem.add_pending_write(PendingWrite {
+        addr,
+        value: RustBV::concrete(0xBBBB, 16),
+        size: 2,
+        condition: None,
+        page_hint: None,
+    });
+
+    let err = mem
+        .flush_pending_writes(&ctx, &concretizer)
+        .expect_err("never-mapped candidate still cannot be stored");
+    assert!(
+        matches!(err, MemoryError::Unmapped { .. }),
+        "expected plain Unmapped, got {err:?}"
+    );
+}
+
 /// angr-xok8: dual of the wide-store test for loads. With a W-only
 /// middle page, a 3-page load must surface a Permission error on
 /// the middle page (R required, W actual).

@@ -346,7 +346,17 @@ impl RustSimState {
         // Flush pending writes using the current solver context
         {
             let ctx = self.solver.borrow();
-            let _ = self.memory.flush_pending_writes(&ctx, &self.concretizer);
+            // SILENT(cat-b): export has no way to fetch a lazy page or retry a
+            // failed materialization, so a flush error costs the rest of the
+            // queue (`flush_pending_writes` already took it). Log it rather
+            // than exporting a silently-incomplete snapshot without a trace
+            // (angr-9ke6b.100).
+            if let Err(e) = self.memory.flush_pending_writes(&ctx, &self.concretizer) {
+                log::warn!(
+                    "flush_and_export_full: pending-write flush failed ({e:?}); \
+                     remaining deferred stores are not reflected in the exported snapshot"
+                );
+            }
         }
         self.export_full()
     }

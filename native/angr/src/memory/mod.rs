@@ -785,7 +785,15 @@ impl SymbolicMemory {
     /// (angr-24pv4.3) shared by the `Multiple` and `Strided` arms of
     /// `flush_pending_writes`. Builds `mem[candidate] = If(pw.addr ==
     /// candidate [&& pw.condition], pw.value, current)` where `current` is
-    /// the existing value (or zero if the cell is unmapped).
+    /// the existing value.
+    ///
+    /// Loads that fail are classified rather than collapsed to a single
+    /// zero default (angr-9ke6b.100): `UnmappedPageInRegion` — the page is
+    /// unmapped *in Rust* but declared lazy, so Python still holds its
+    /// backer data — propagates to the caller, because zero-filling
+    /// `current` would bake `If(addr == candidate, value, 0)` over bytes
+    /// the binary actually initialized. Any other load failure means there
+    /// is no prior value to preserve, so `current` is zero.
     fn materialize_pending_ite(
         &mut self,
         candidate: u64,
@@ -801,6 +809,16 @@ impl SymbolicMemory {
         };
         let current = match self.load_concrete_lazy_inner(Address(candidate), pw.size, ctx) {
             Ok(v) => v,
+            // Surface the fetch-me signal instead of inventing zeros — same
+            // contract as the `store_concrete_lazy` below, which fails the
+            // identical page range anyway. When the pending-writes queue is
+            // activated the caller must fetch `page_addr` from Python and
+            // re-run the flush.
+            Err(e @ MemoryError::UnmappedPageInRegion { .. }) => return Err(e),
+            // SILENT(cat-a): a never-mapped page or a permission denial means
+            // there is no prior value to preserve, so zero is the correct
+            // `current` for a fresh cell. `store_concrete_lazy` re-checks the
+            // mapping below, so nothing lands on absent memory.
             Err(_) => RustBV::concrete(0, pw.size * 8),
         };
         let ite_val = effective_cond.ite(&pw.value, &current, ctx);
