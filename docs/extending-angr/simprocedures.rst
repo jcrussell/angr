@@ -552,12 +552,21 @@ dispatcher chooses between the native and Python implementations using
 this ordered chain (first rule wins; native and Python are **never**
 both invoked except when native fails):
 
-1. **In-binary hooks always run Python.** If the hook PC falls inside
-   a loaded binary region (i.e. ``proj.hook(addr, MyProc())`` placed
-   somewhere in the program text), native is skipped entirely. This
-   honors the user's intent to override a specific instruction. See
-   ``native/angr/src/exploration/run_loop.rs`` (~line 226) and
-   ``stepping.rs`` (~line 586).
+1. **Main-object hooks always run Python.** If the hook PC falls inside
+   the main object's code span (i.e. ``proj.hook(addr, MyProc())``
+   placed somewhere in the program text), native is skipped entirely.
+   This honors the user's intent to override a specific instruction.
+   Hooks *outside* every loaded object — the extern-object PLT stubs
+   angr synthesizes for statically-known symbols — always prefer
+   native. Hooks inside a **non-main** loaded object (libc &c.,
+   installed by ``use_sim_procedures=True`` on a dynamically-linked
+   binary) prefer native only when ``prefer_native_library_hooks`` is
+   on, which is the default; the
+   ``prefer_native_library_hooks=False`` constructor kwarg (or
+   ``ANGR_RUST_PREFER_NATIVE_LIBRARY_HOOKS=0``) sends them to Python
+   instead. The gate is
+   ``prefer_native_dispatch`` in
+   ``native/angr/src/exploration/execution_env.rs``.
 2. **Per-name Python override skips native.**
    ``set_python_override("strlen")`` makes ``registry.get("strlen")``
    return ``None`` so dispatch falls through to the Python

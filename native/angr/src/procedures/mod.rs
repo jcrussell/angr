@@ -26,14 +26,19 @@
 //! dispatcher does NOT chain native then Python in sequence except when
 //! native execution returns a fallback error.
 //!
-//! 1. **User-placed in-binary hooks always go to Python.** If the
-//!    hook PC falls inside a loaded binary region
-//!    (`environment.binary_regions`), the native registry is skipped
+//! 1. **Main-object hooks always go to Python.** If the hook PC falls
+//!    inside the main object's code span
+//!    (`environment.main_object_range`), the native registry is skipped
 //!    entirely and the Python SimProcedure fires. This matches the
 //!    `proj.hook(addr, MyProc())` workflow: the user explicitly
 //!    overrode a binary instruction, so we honor their Python
-//!    implementation regardless of name. See `run_loop.rs` ~line 226
-//!    and `stepping.rs` ~line 586 (`if !is_in_binary {`).
+//!    implementation regardless of name. Hooks *outside* every loaded
+//!    object (the extern-object PLT stubs angr synthesizes) always
+//!    prefer native; hooks inside a **non-main** loaded object (libc &c.
+//!    from `use_sim_procedures=True`) prefer native only when
+//!    `prefer_native_library_hooks` is on — which it is by default. The
+//!    gate is `execution_env::prefer_native_dispatch`, called from
+//!    `run_loop_single.rs` and `core_outcome_handlers.rs`.
 //!
 //! 2. **Per-name Python override skips native.** If
 //!    [`NativeProcedureRegistry::set_python_override`] has been called

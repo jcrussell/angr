@@ -45,9 +45,6 @@ memory/tests/symbolic.rs	/// load.rs:74 returns `symbolic_objects[addr]` entire 
 memory/tests/symbolic.rs	/// overwritten offset hits the span fast path at load.rs:95 and
 memory/tests/symbolic.rs	/// store.rs:154 removes the wider sym entirely (and the spans),
 memory/tests/symbolic.rs	/// the per-byte concat fallback (~lines 642-680 of memory.rs).
-procedures/mod.rs	//!    and `stepping.rs` ~line 586 (`if !is_in_binary {`).
-procedures/mod.rs	//!    implementation regardless of name. See `run_loop.rs` ~line 226
-procedures/sprintf.rs	/// targets. Python masks each concretized arg to `size*8` bits (line 96) before
 procedures/sprintf_tests.rs	// format_parser.py masks each concretized int arg to `size*8` bits (line 96)
 stash.rs	//! **Invariant I6 (cross-mixin, mirror of rust_manager.py:74):** the
 state/mod.rs	//! `angr/exploration/rust_manager.py:10-100`. Most of those concerns are
