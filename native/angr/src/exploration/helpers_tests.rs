@@ -733,3 +733,155 @@ fn fold_scheduler_dispatch_stats_folds_avoided_split() {
         "worker-avoided terminals must reach avoided_count for worker-count invariance",
     );
 }
+
+// ---------------------------------------------------------------------------
+// record_migration_sample — the modelled work-stealing scheduler (angr-panhl.1,
+// angr-9ke6b.79). Counters only, so the whole model is exercised directly:
+// push N-1 states onto the active stash, seed sticky homes in
+// `parallel_worker_of`, and hand the Nth id in as the just-dispatched state.
+// ---------------------------------------------------------------------------
+
+/// Build a manager plus `n` fresh amd64 states, pushing all but the LAST onto
+/// the active stash. Returns the manager and every state id in push order —
+/// the final id is the caller's `stepped` argument (already popped from the
+/// stash by the time the real call site samples).
+fn migration_fixture(workers: usize, n: usize) -> (RustExplorationManager, Vec<u64>) {
+    Python::initialize();
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    mgr.parallel_num_workers = workers;
+    let mut ids = Vec::with_capacity(n);
+    for i in 0..n {
+        let state = RustSimState::new("amd64").expect("state");
+        ids.push(state.state_id());
+        if i + 1 < n {
+            mgr.sm.push(STASH_ACTIVE, state);
+        }
+    }
+    (mgr, ids)
+}
+
+/// A steal needs BOTH halves of the condition: the dispatched state's home
+/// worker still holds a backlog (>=2 queued, including this task) AND some
+/// other worker is idle. Two states co-homed on worker 0 of two satisfy both.
+#[test]
+fn migration_sample_counts_steal_when_home_backlogged_and_peer_idle() {
+    let (mut mgr, ids) = migration_fixture(2, 2);
+    let (other, stepped) = (ids[0], ids[1]);
+    mgr.parallel_worker_of.insert(other, 0);
+    mgr.parallel_worker_of.insert(stepped, 0);
+
+    mgr.record_migration_sample(stepped);
+
+    assert_eq!(mgr.parallel_migrations, 1, "backlogged home + idle peer");
+    assert_eq!(mgr.parallel_tasks, 1, "one dispatch == one task");
+    assert_eq!(mgr.parallel_max_active_width, 2, "stepped counts in width");
+    assert_eq!(
+        mgr.parallel_width_hist,
+        [0, 1, 0, 0, 0],
+        "width 2 lands in the ==2 bucket",
+    );
+}
+
+/// Boundary: `load[home] == 1` is NOT a steal even when an idle worker exists —
+/// there is no backlog to hand off. Same shape as the test above but with the
+/// two states split across workers of a three-worker pool, so worker 2 is idle.
+#[test]
+fn migration_sample_no_steal_at_load_one_boundary() {
+    let (mut mgr, ids) = migration_fixture(3, 2);
+    let (other, stepped) = (ids[0], ids[1]);
+    mgr.parallel_worker_of.insert(other, 1);
+    mgr.parallel_worker_of.insert(stepped, 0);
+
+    mgr.record_migration_sample(stepped);
+
+    assert_eq!(
+        mgr.parallel_migrations, 0,
+        "load[home]==1 has nothing to steal, idle peer notwithstanding",
+    );
+}
+
+/// The `>=2` side of the same boundary: add a third state co-homed with the
+/// dispatched one so `load[home] == 2`, holding the idle worker fixed.
+#[test]
+fn migration_sample_counts_steal_at_load_two_boundary() {
+    let (mut mgr, ids) = migration_fixture(3, 3);
+    let (a, b, stepped) = (ids[0], ids[1], ids[2]);
+    mgr.parallel_worker_of.insert(a, 1);
+    mgr.parallel_worker_of.insert(b, 0);
+    mgr.parallel_worker_of.insert(stepped, 0);
+
+    mgr.record_migration_sample(stepped);
+
+    assert_eq!(mgr.parallel_migrations, 1, "load[home]==2 crosses the sill");
+}
+
+/// Homes are sticky across steps for states that are still schedulable, and a
+/// state with no home is placed on the least-loaded worker (ties go to the
+/// lowest index). Here a/b/stepped pile onto worker 0, leaving load [3, 0, 0],
+/// so the homeless `fresh` must land on worker 1.
+#[test]
+fn migration_sample_keeps_sticky_homes_and_places_new_state_least_loaded() {
+    let (mut mgr, ids) = migration_fixture(3, 4);
+    let (a, b, fresh, stepped) = (ids[0], ids[1], ids[2], ids[3]);
+    mgr.parallel_worker_of.insert(a, 0);
+    mgr.parallel_worker_of.insert(b, 0);
+    mgr.parallel_worker_of.insert(stepped, 0);
+
+    mgr.record_migration_sample(stepped);
+
+    assert_eq!(mgr.parallel_worker_of.get(&a), Some(&0), "sticky");
+    assert_eq!(mgr.parallel_worker_of.get(&b), Some(&0), "sticky");
+    assert_eq!(mgr.parallel_worker_of.get(&stepped), Some(&0), "sticky");
+    assert_eq!(
+        mgr.parallel_worker_of.get(&fresh),
+        Some(&1),
+        "homeless state goes to the least-loaded worker, not worker 0",
+    );
+    assert_eq!(mgr.parallel_migrations, 1, "load[0]==3 with worker 2 idle");
+}
+
+/// A home recorded against a worker index that no longer exists (the modelled
+/// pool shrank) is dropped rather than indexing past `load`, and the state is
+/// re-placed by the least-loaded rule.
+#[test]
+fn migration_sample_drops_home_beyond_worker_count() {
+    let (mut mgr, ids) = migration_fixture(2, 2);
+    let (stale, stepped) = (ids[0], ids[1]);
+    mgr.parallel_worker_of.insert(stale, 7);
+    mgr.parallel_worker_of.insert(stepped, 1);
+
+    mgr.record_migration_sample(stepped);
+
+    assert_eq!(
+        mgr.parallel_worker_of.get(&stale),
+        Some(&0),
+        "out-of-range home re-placed on the idle worker",
+    );
+    assert_eq!(mgr.parallel_worker_of.get(&stepped), Some(&1), "sticky");
+    assert_eq!(
+        mgr.parallel_migrations, 0,
+        "one task per worker, no backlog"
+    );
+}
+
+/// The width histogram is bucketed BEFORE the `<2 schedulable states` early
+/// return, so a narrow single-state step is still visible in the series (that
+/// ordering is the whole point of the width audit distinguishing width-1 steps).
+#[test]
+fn migration_sample_buckets_width_before_early_return() {
+    let (mut mgr, ids) = migration_fixture(4, 1);
+
+    mgr.record_migration_sample(ids[0]);
+
+    assert_eq!(
+        mgr.parallel_width_hist,
+        [1, 0, 0, 0, 0],
+        "width-1 step still counted despite the early return",
+    );
+    assert_eq!(mgr.parallel_tasks, 1);
+    assert_eq!(mgr.parallel_migrations, 0);
+    assert!(
+        mgr.parallel_worker_of.is_empty(),
+        "early return leaves the home map untouched",
+    );
+}
