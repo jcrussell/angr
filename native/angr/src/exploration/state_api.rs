@@ -647,15 +647,16 @@ impl RustExplorationManager {
             // Sentinel: never escapes this closure — the match below turns it
             // back into the `Ok(None)` this method's contract promises.
             let unreadable = || PyValueError::new_err("unreadable chunk");
-            let res = super::helpers::load_concrete_bytes_chunked(addr, size, |a, n| {
-                let bv = state.memory_load(a, n).map_err(|_| unreadable())?;
-                if let Some(val) = bv.as_u128() {
-                    return Ok(super::helpers::u128_to_le_bytes(val, n as usize));
-                }
-                // Symbolic: concretize to any satisfying witness.
-                let val = state.eval(&bv).ok_or_else(unreadable)?;
-                Ok(super::helpers::u128_to_le_bytes(val, n as usize))
-            });
+            let res: PyResult<Vec<u8>> =
+                crate::symbolic::load_concrete_bytes_chunked(addr, size, |a, n| {
+                    let bv = state.memory_load(a, n).map_err(|_| unreadable())?;
+                    if let Some(val) = bv.as_u128() {
+                        return Ok(crate::symbolic::u128_to_le_bytes(val, n as usize));
+                    }
+                    // Symbolic: concretize to any satisfying witness.
+                    let val = state.eval(&bv).ok_or_else(unreadable)?;
+                    Ok(crate::symbolic::u128_to_le_bytes(val, n as usize))
+                });
             match res {
                 Ok(bytes) => Ok(Some(bytes)),
                 Err(_) => Ok(None),
@@ -719,7 +720,7 @@ impl RustExplorationManager {
         // data.len() range — corrupting memory wholesale. Mirrors the safe
         // pattern in RustSimState::apply_changes (state.rs).
         self.with_state_mut(state_id, |state| {
-            super::helpers::store_concrete_bytes_chunked(addr, data, |chunk_addr, bv| {
+            crate::symbolic::store_concrete_bytes_chunked(addr, data, |chunk_addr, bv| {
                 state
                     .memory_store(chunk_addr, bv)
                     .map_err(|e| PyValueError::new_err(e.to_string()))
@@ -743,7 +744,7 @@ impl RustExplorationManager {
     ) -> PyResult<()> {
         self.with_state_mut(state_id, |state| {
             state.add_memory_lazy_region(addr, (data.len() as u64).max(1));
-            super::helpers::store_concrete_bytes_chunked(addr, data, |chunk_addr, bv| {
+            crate::symbolic::store_concrete_bytes_chunked(addr, data, |chunk_addr, bv| {
                 state
                     .memory_store(chunk_addr, bv)
                     .map_err(|e| PyValueError::new_err(e.to_string()))

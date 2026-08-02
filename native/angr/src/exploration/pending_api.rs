@@ -310,7 +310,7 @@ impl RustExplorationManager {
         size: u32,
     ) -> PyResult<Vec<u8>> {
         self.with_pending(state_id, |pending| {
-            super::helpers::load_concrete_bytes_chunked(addr, size, |a, n| {
+            crate::symbolic::load_concrete_bytes_chunked(addr, size, |a, n| {
                 let bv = pending
                     .state
                     .memory_load(a, n)
@@ -321,7 +321,7 @@ impl RustExplorationManager {
                         "pending memory at 0x{a:x} is symbolic; cannot convert to concrete bytes"
                     ))
                 })?;
-                Ok(super::helpers::u128_to_le_bytes(value, n as usize))
+                Ok(crate::symbolic::u128_to_le_bytes(value, n as usize))
             })
         })
     }
@@ -631,13 +631,13 @@ impl RustExplorationManager {
             // One solver borrow for the whole range, not one per 16-byte chunk.
             let solver_ref = pending.state.solver();
             let ctx = solver_ref.borrow();
-            super::helpers::load_concrete_bytes_chunked(addr, size, |a, n| {
+            crate::symbolic::load_concrete_bytes_chunked(addr, size, |a, n| {
                 match pending.state.memory().load_concrete(a, n, &ctx) {
                     Ok(bv) => {
                         if let Some(val) = bv.as_u128() {
-                            Ok(super::helpers::u128_to_le_bytes(val, n as usize))
+                            Ok(crate::symbolic::u128_to_le_bytes(val, n as usize))
                         } else if let Some(val) = ctx.eval(&bv) {
-                            Ok(super::helpers::u128_to_le_bytes(val, n as usize))
+                            Ok(crate::symbolic::u128_to_le_bytes(val, n as usize))
                         } else {
                             Err(PyValueError::new_err(format!(
                                 "pending memory load at 0x{a:x} is symbolic \

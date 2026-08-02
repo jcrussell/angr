@@ -7,6 +7,7 @@
 //! - `RustSymbolTable`: Registry mapping handles to RustBV values
 //! - `SymbolicIdentityRegistry`: Preserves symbolic identity across Python<->Rust
 
+mod bv_chunk;
 #[cfg(feature = "vex-engine-z3")]
 mod bv_codec;
 mod bv_concrete;
@@ -66,6 +67,9 @@ mod value_z3;
 #[cfg(feature = "vex-engine-z3")]
 mod z3_ast_ptr;
 
+pub use bv_chunk::{
+    MAX_CONCRETE_CHUNK, load_concrete_bytes_chunked, store_concrete_bytes_chunked, u128_to_le_bytes,
+};
 pub use context::{DEFAULT_SOLVER_TIMEOUT_MS, SymContext, SymContextSnapshot};
 pub use handle::RustBVHandle;
 #[cfg(test)]

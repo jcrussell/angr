@@ -8,7 +8,9 @@
 //! need PyO3's `multiple-pymethods` feature.
 use super::*;
 use crate::memory::Permission;
-use crate::symbolic::RustBV;
+use crate::symbolic::{
+    RustBV, load_concrete_bytes_chunked, store_concrete_bytes_chunked, u128_to_le_bytes,
+};
 use pyo3::exceptions::PyValueError;
 use pyo3::types::{PyAny, PyDict};
 use std::sync::Arc;
@@ -542,29 +544,22 @@ impl PyRustSimState {
     /// angr-ph300.53: split into 16-byte sub-loads mirroring `memory_store`.
     /// `RustBV::Concrete` is u128-backed so `as_u128()` caps at 16 bytes; a
     /// single load of a wider (but fully concrete) region would otherwise error
-    /// as "symbolic" even though every byte is concrete. Loading in 16-byte
-    /// chunks keeps each `as_u128()` within range and reassembles the bytes.
+    /// as "symbolic" even though every byte is concrete. The chunk walk itself
+    /// lives in `symbolic::load_concrete_bytes_chunked`, shared with the
+    /// `exploration` memory-get entry points (angr-9ke6b.230).
     pub fn memory_load(&self, addr: u64, size: u32) -> PyResult<Vec<u8>> {
-        let mut bytes = Vec::with_capacity(size as usize);
-        let mut offset = 0u32;
-        while offset < size {
-            let chunk_size = (size - offset).min(16);
+        load_concrete_bytes_chunked(addr, size, |chunk_addr, chunk_size| {
             let bv = self
                 .inner
-                .memory_load(addr + offset as u64, chunk_size)
+                .memory_load(chunk_addr, chunk_size)
                 .map_err(|e| PyValueError::new_err(e.to_string()))?;
             let value = bv.as_u128().ok_or_else(|| {
                 PyValueError::new_err(format!(
-                    "memory_load at 0x{:x} returned a symbolic value; cannot convert to concrete bytes",
-                    addr + offset as u64
+                    "memory_load at 0x{chunk_addr:x} returned a symbolic value; cannot convert to concrete bytes",
                 ))
             })?;
-            for i in 0..chunk_size as usize {
-                bytes.push((value >> (i * 8)) as u8);
-            }
-            offset += chunk_size;
-        }
-        Ok(bytes)
+            Ok(u128_to_le_bytes(value, chunk_size as usize))
+        })
     }
 
     /// Store to memory.
@@ -572,25 +567,15 @@ impl PyRustSimState {
     /// angr-5aj8: split into 16-byte chunks because RustBV::Concrete is
     /// backed by a u128. Packing >16 bytes into a single concrete BV would
     /// shift-overflow during construction and then make store_concrete emit
-    /// a 16-byte-cycle pattern over the full claimed width.
+    /// a 16-byte-cycle pattern over the full claimed width. The chunk walk
+    /// lives in `symbolic::store_concrete_bytes_chunked`, shared with the
+    /// `exploration` memory-set entry points (angr-9ke6b.230).
     pub fn memory_store(&mut self, addr: u64, data: &[u8]) -> PyResult<()> {
-        let mut offset = 0usize;
-        while offset < data.len() {
-            let remaining = data.len() - offset;
-            let chunk_size = remaining.min(16);
-            let chunk = &data[offset..offset + chunk_size];
-            let width = (chunk_size * 8) as u32;
-            let mut value: u128 = 0;
-            for (i, &b) in chunk.iter().enumerate() {
-                value |= (b as u128) << (i * 8);
-            }
-            let bv = RustBV::concrete(value, width);
+        store_concrete_bytes_chunked(addr, data, |chunk_addr, bv| {
             self.inner
-                .memory_store(addr + offset as u64, bv)
-                .map_err(|e| PyValueError::new_err(e.to_string()))?;
-            offset += chunk_size;
-        }
-        Ok(())
+                .memory_store(chunk_addr, bv)
+                .map_err(|e| PyValueError::new_err(e.to_string()))
+        })
     }
 
     /// Behavioral probe for AVOID_MULTIVALUED_READS (angr-vkkny).
