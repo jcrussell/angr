@@ -29,6 +29,12 @@ use crate::state::RustSimState;
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::Instant;
 
+/// Manager-side endpoints of the scratch-thread channel pair: send serialized
+/// state bytes, receive either the `from_serialized` elapsed ns or the error
+/// text when the payload was rejected. Stored in
+/// [`RustExplorationManager::shadow_probe_chan`].
+pub(crate) type ShadowProbeChan = (Sender<Vec<u8>>, Receiver<Result<u64, String>>);
+
 impl RustExplorationManager {
     /// Measure the real migration round-trip cost of `state` (detach/serialize
     /// on the main thread + deserialize/reattach in a foreign Z3 context on the
@@ -65,7 +71,22 @@ impl RustExplorationManager {
             return;
         }
         let deser_ns = match rx.recv() {
-            Ok(ns) => ns,
+            Ok(Ok(ns)) => ns,
+            // A failed `from_serialized` costs almost nothing, so folding its
+            // elapsed time into the totals would report a spurious near-free
+            // migration and bias the SI-C overhead gate downward. Count it
+            // separately instead, and warn once so the skew is visible.
+            Ok(Err(err)) => {
+                if self.parallel_shadow_migration_failures == 0 {
+                    log::warn!(
+                        "shadow probe: from_serialized failed on the scratch thread ({err}); \
+                         this sample is excluded from parallel_shadow_migration_ns/_states/_bytes \
+                         (see parallel_shadow_migration_failures)"
+                    );
+                }
+                self.parallel_shadow_migration_failures += 1;
+                return;
+            }
             Err(_) => return,
         };
 
@@ -83,9 +104,13 @@ impl RustExplorationManager {
 /// this thread's stack for its whole life, created and destroyed on the same
 /// thread, so every AST `from_serialized` mints is in a context this thread
 /// alone touches — exactly the cross-context reattach the real scheduler does.
-fn spawn_shadow_probe_thread() -> (Sender<Vec<u8>>, Receiver<u64>) {
+///
+/// Each reply is `Ok(elapsed_ns)` for a successful round-trip or
+/// `Err(<error text>)` when `from_serialized` rejected the payload — the caller
+/// must not treat the latter as a (near-free) migration sample.
+fn spawn_shadow_probe_thread() -> ShadowProbeChan {
     let (tx_bytes, rx_bytes) = std::sync::mpsc::channel::<Vec<u8>>();
-    let (tx_ns, rx_ns) = std::sync::mpsc::channel::<u64>();
+    let (tx_ns, rx_ns) = std::sync::mpsc::channel::<Result<u64, String>>();
     std::thread::spawn(move || {
         let ctx = z3::Context::new(&z3::Config::new());
         z3::Context::set_thread_local(&ctx);
@@ -93,15 +118,22 @@ fn spawn_shadow_probe_thread() -> (Sender<Vec<u8>>, Receiver<u64>) {
         // manager teardown.
         for bytes in rx_bytes {
             let t0 = Instant::now();
-            if let Ok(s) = RustSimState::from_serialized(&bytes) {
-                drop(s);
-            }
-            let ns = t0.elapsed().as_nanos() as u64;
+            let outcome = match RustSimState::from_serialized(&bytes) {
+                Ok(s) => {
+                    drop(s);
+                    Ok(t0.elapsed().as_nanos() as u64)
+                }
+                Err(e) => Err(format!("{e:?}")),
+            };
             // Ignore a send error: the manager-side Receiver is gone (teardown).
-            if tx_ns.send(ns).is_err() {
+            if tx_ns.send(outcome).is_err() {
                 break;
             }
         }
     });
     (tx_bytes, rx_ns)
 }
+
+#[cfg(test)]
+#[path = "shadow_probe_tests.rs"]
+mod tests;

@@ -394,16 +394,22 @@ pub struct RustExplorationManager {
     /// Cumulative serialized-envelope bytes produced by the shadow probe across
     /// all round-tripped states. Denominator for the per-state payload size.
     pub(crate) parallel_shadow_migration_bytes: u64,
+    /// Round-trips whose scratch-thread `from_serialized` returned an error
+    /// (serde / version skew). Those samples are NOT folded into the `_ns` /
+    /// `_states` / `_bytes` totals — a failed deserialize is near-free and would
+    /// otherwise masquerade as a suspiciously cheap migration, skewing the SI-C
+    /// overhead gate downward. Non-zero here means the gate's numbers are
+    /// measured over fewer states than were dispatched. See
+    /// [`RustExplorationManager::shadow_probe_migrate`].
+    pub(crate) parallel_shadow_migration_failures: u64,
     /// Lazily-spawned persistent scratch-thread channel endpoints for the
-    /// shadow probe: `(send serialized bytes, receive deserialize ns)`. `None`
+    /// shadow probe: `(send serialized bytes, receive deserialize ns — or the
+    /// `from_serialized` error text when the round-trip failed)`. `None`
     /// until the first probe step spawns the thread. The thread owns its own
     /// `z3::Context` for its whole life and exits cleanly when this Sender drops
     /// at manager teardown (channel close ends its `recv` loop) — no JoinHandle
     /// or Drop impl is needed.
-    pub(crate) shadow_probe_chan: Option<(
-        std::sync::mpsc::Sender<Vec<u8>>,
-        std::sync::mpsc::Receiver<u64>,
-    )>,
+    pub(crate) shadow_probe_chan: Option<shadow_probe::ShadowProbeChan>,
     /// angr-vh834 Phase 5 (M3): bounce states a parallel wave discovered but
     /// could not dispatch yet, because an earlier bounce in the same wave already
     /// surfaced its Python `need_callback` event (only one callback is surfaced

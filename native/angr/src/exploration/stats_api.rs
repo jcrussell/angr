@@ -269,6 +269,14 @@ impl RustExplorationManager {
             "parallel_shadow_migration_bytes",
             self.parallel_shadow_migration_bytes,
         )?;
+        // Round-trips the scratch thread could not deserialize. Excluded from
+        // the three totals above (a failed deserialize is near-free and would
+        // read as a suspiciously cheap migration); non-zero means the gate saw
+        // fewer samples than dispatches.
+        dict.set_item(
+            "parallel_shadow_migration_failures",
+            self.parallel_shadow_migration_failures,
+        )?;
         // angr-t3l5o Phase 0b: per-phase migration attribution (env-gated by
         // ANGR_MIGRATE_PHASE_TIMERS). Process-global accumulators, all zero
         // unless the env var is set. emit/parse/serde/leaf_rebuild are ns;
