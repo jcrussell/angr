@@ -1,12 +1,38 @@
 //! Bookkeeping helpers hung off `RustExplorationManager` (extension-impl
-//! pattern, mirroring `stepping.rs` / `run_loop.rs`): scheduler-accounting
-//! folds, stash pushes, and the veritesting waiter-merge grouping.
+//! pattern, mirroring `stepping.rs` / `run_loop.rs` / `state_api.rs`). Nothing
+//! here is pyclass-exposed: these are the internal seams the stepping and
+//! run-loop modules call into, grouped by concern:
+//!
+//! - **Scheduler accounting folds** — [`RustExplorationManager::fold_scheduler_dispatch_stats`]
+//!   absorbs a real parallel run's per-worker dispatch counts / frontier-width
+//!   histogram / dead-path terminals; [`RustExplorationManager::record_reconvergence_sample`]
+//!   and [`RustExplorationManager::record_migration_sample`] maintain the
+//!   *modelled* (single-threaded) equivalents so the same counters stay
+//!   populated when no scheduler ran.
+//! - **State lookup and borrow adapters** — `with_state{,_mut}` /
+//!   `with_pending{,_mut}` close over a `StateId` and hand out a checked
+//!   borrow; [`RustExplorationManager::find_state`],
+//!   [`RustExplorationManager::index_state`] and
+//!   [`RustExplorationManager::rebuild_state_index`] back them with the
+//!   id → stash index.
+//! - **Stash routing and caps** — [`RustExplorationManager::route_successor`]
+//!   is the single decision point for where a successor lands;
+//!   `push_to_active_or_drop` / `push_found_capped` / `push_or_drop_terminal`
+//!   enforce the per-stash limits it depends on.
+//! - **Uniqueness filtering** — [`RustExplorationManager::compute_register_tuple_hash`]
+//!   plus [`RustExplorationManager::apply_uniqueness_filter`], the active-stash
+//!   dedup pass.
+//! - **Callback argument extraction** — `extract_procedure_args` /
+//!   `extract_syscall_args` / `get_return_addr` marshal a state's ABI registers
+//!   into the values a Python callback receives.
+//! - **Callback solver setup** — the free fn [`prepare_shared_callback_solver`],
+//!   the shared pre-callback-snapshot + shared-solver-context preamble.
 //!
 //! **Panic policy / enforcement (angr-qwyti.11, angr-9ke6b.212):** this module
-//! carries `#![deny(clippy::unwrap_used, clippy::expect_used)]`. The one
-//! surviving `expect` in [`RustExplorationManager::merge_waiters_by_callstack`]
-//! is a same-function map invariant, not an input check — see its `#[allow]`
-//! reason.
+//! carries `#![deny(clippy::unwrap_used, clippy::expect_used)]` and has no
+//! production `#[allow]` opt-out — the only one is on the `mod tests` include
+//! at the bottom of the file, which re-permits them for test code because the
+//! module-level `deny` overrides `lib.rs`'s crate-wide `cfg_attr(test, allow(..))`.
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use super::*;
