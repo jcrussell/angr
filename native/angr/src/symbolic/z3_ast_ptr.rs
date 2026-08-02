@@ -104,13 +104,36 @@ impl Z3AstPtr {
     }
 
     /// Whether the wrapped AST is Bool-sorted.
+    ///
+    /// The BV counterpart is [`Z3AstPtr::bv_width`] — every caller that
+    /// wants "is this a BV?" also needs the width to wrap it, so there is
+    /// deliberately no separate `is_bv()`.
     pub fn is_bool(&self) -> bool {
         self.sort_kind() == z3_sys::SortKind::Bool
     }
 
-    /// Whether the wrapped AST is bit-vector-sorted.
-    pub fn is_bv(&self) -> bool {
-        self.sort_kind() == z3_sys::SortKind::BV
+    /// Bit width of the wrapped AST, or `None` if it is not BV-sorted.
+    ///
+    /// This is the authoritative width for a raw Z3 AST reaching us from
+    /// claripy's backend: it comes from the Z3 sort itself, so it cannot
+    /// disagree with the node we are about to `BV::wrap`. Callers used to
+    /// read claripy's `.length` attribute instead (angr-9ke6b.202), which
+    /// both duplicated the wrap's precondition and had no correct answer
+    /// when the attribute was missing.
+    pub fn bv_width(&self) -> Option<u32> {
+        let raw_ctx = self.ctx.get_z3_context();
+        // SAFETY: `self.ptr` is a live `Z3_ast` in `self.ctx` (we hold a ref
+        // taken in `from_borrowed_raw`/`clone_ref`). `Z3_get_sort` on a live
+        // AST yields a live `Z3_sort` in the same context, and
+        // `Z3_get_bv_sort_size` is a pure metadata read that is only valid
+        // on a BV sort — which the `SortKind::BV` match guarantees.
+        unsafe {
+            let sort = z3_sys::Z3_get_sort(raw_ctx, self.ptr)?;
+            if z3_sys::Z3_get_sort_kind(raw_ctx, sort) != z3_sys::SortKind::BV {
+                return None;
+            }
+            Some(z3_sys::Z3_get_bv_sort_size(raw_ctx, sort))
+        }
     }
 
     /// Duplicate the handle by taking another reference. Cheaper than

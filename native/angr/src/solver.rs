@@ -447,7 +447,7 @@ impl RustSolverContext {
         #[cfg(feature = "vex-engine-z3")]
         {
             if let Ok(z3_ast) = extract_z3_ast_ptr(py, ast) {
-                return self.eval_z3_ast_ptr(py, z3_ast, ast);
+                return self.eval_z3_ast_ptr(py, z3_ast);
             }
         }
         Ok(None)
@@ -500,12 +500,6 @@ impl RustSolverContext {
             return Ok(result_list.into());
         }
 
-        let width: u32 = ast
-            .getattr("length")
-            .and_then(|l| l.extract())
-            .unwrap_or(64);
-        let is_wide = width > 128;
-
         let ctx = self.i().ctx();
         let bv = match claripy_to_rustbv(py, ast, &ctx) {
             Ok(bv) => bv,
@@ -537,11 +531,11 @@ impl RustSolverContext {
                                     name: Arc::from(""),
                                 }
                             }
-                        } else if z3_ast.is_bv() {
+                        } else if let Some(width) = z3_ast.bv_width() {
                             // SAFETY: `z3_ast` is a live BV-sorted Z3_ast
-                            // (verified via `is_bv()`); width comes from
-                            // claripy and matches the BV sort. `BV::wrap`
-                            // takes its own ref.
+                            // (`bv_width()` returned `Some`); `width` came
+                            // from that same sort. `BV::wrap` takes its own
+                            // ref.
                             let z3_bv = unsafe {
                                 let z3_ctx = z3::Context::thread_local();
                                 z3::ast::BV::wrap(&z3_ctx, z3_ast.as_z3_ast())
@@ -569,7 +563,10 @@ impl RustSolverContext {
             }
         };
 
-        if is_wide {
+        // The wide/narrow split follows the width of the BV we actually built
+        // (claripy import, Bool→1-bit lowering, or Z3 sort), not a separately
+        // read claripy `.length` that could disagree with it (angr-9ke6b.202).
+        if bv.width() > 128 {
             // Wide values: use eval_upto_wide to get full-precision bytes
             let results = ctx.eval_upto_wide(&bv, n);
             let int_class = py.get_type::<pyo3::types::PyInt>();
@@ -1361,13 +1358,13 @@ impl RustSolverContext {
         {
             use z3::ast::Ast;
             let z3_ast = extract_z3_ast_ptr(py, ast).ok()?;
-            if !z3_ast.is_bv() {
-                return None;
-            }
-            let width: u32 = ast.getattr("length").ok()?.extract().ok()?;
-            // SAFETY: `z3_ast` is a live BV-sorted `Z3_ast` (checked via
-            // `is_bv()`; Z3AstPtr holds an active ref) and `width` is claripy's
-            // matching length. `BV::wrap` takes its own ref.
+            // SILENT(cat-a): a non-BV-sorted AST is an expected miss on this
+            // path — the caller (`eval_batch`) falls back to Python.
+            let width = z3_ast.bv_width()?;
+            // SAFETY: `z3_ast` is a live BV-sorted `Z3_ast` (a non-BV sort
+            // makes `bv_width()` return `None` above; Z3AstPtr holds an active
+            // ref) and `width` came from that same sort. `BV::wrap` takes its
+            // own ref.
             let z3_bv = unsafe {
                 let z3_ctx = z3::Context::thread_local();
                 z3::ast::BV::wrap(&z3_ctx, z3_ast.as_z3_ast())
@@ -1391,12 +1388,7 @@ impl RustSolverContext {
     /// bridgeable type (it owns a Z3 refcount and cannot be reconstructed
     /// from a Python value).
     #[cfg(feature = "vex-engine-z3")]
-    fn eval_z3_ast_ptr(
-        &self,
-        py: Python<'_>,
-        z3_ast: Z3AstPtr,
-        ast: &Bound<'_, PyAny>,
-    ) -> PyResult<Option<Py<PyAny>>> {
+    fn eval_z3_ast_ptr(&self, py: Python<'_>, z3_ast: Z3AstPtr) -> PyResult<Option<Py<PyAny>>> {
         use z3::ast::Ast;
         let ctx = self.i().ctx();
 
@@ -1426,24 +1418,19 @@ impl RustSolverContext {
                 None => Ok(None),
             };
         }
-        if !z3_ast.is_bv() {
+        // Width comes from the Z3 sort, not claripy's `.length` — the sort is
+        // what `BV::wrap` below is constrained by, and `bv_width()` returning
+        // `Some` is exactly the precondition that makes the wrap sound.
+        let Some(width) = z3_ast.bv_width() else {
             return Err(PyRuntimeError::new_err(format!(
                 "eval: Z3 AST has unsupported sort kind {:?} (expected BV or Bool)",
                 z3_ast.sort_kind()
             )));
-        }
-
-        // Get the bit width from claripy
-        let width: u32 = match ast.getattr("length") {
-            Ok(l) => l.extract().unwrap_or(64),
-            Err(_) => 64,
         };
 
-        // SAFETY: `z3_ast` is a live BV-sorted `Z3_ast` (verified via
-        // `is_bv()` above; Z3AstPtr holds an active ref). The width came from
-        // claripy's `length` attribute, which matches the BV-sortedness of
-        // the underlying AST in claripy's z3 backend. `BV::wrap` takes its
-        // own ref.
+        // SAFETY: `z3_ast` is a live BV-sorted `Z3_ast` (`bv_width()` returned
+        // `Some` above; Z3AstPtr holds an active ref) and `width` came from
+        // that same sort. `BV::wrap` takes its own ref.
         let z3_bv = unsafe {
             let z3_ctx = z3::Context::thread_local();
             z3::ast::BV::wrap(&z3_ctx, z3_ast.as_z3_ast())
