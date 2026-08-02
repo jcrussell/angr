@@ -750,8 +750,17 @@ pub fn handle_ccall_with_ctx(
                 ldt_val == 0
             };
             if table_empty {
+                // The flat-addressing sum is 32-bit in Python's
+                // `x86g_use_seg_selector` (`(seg_selector << 16) + virtual_addr`
+                // over 32-bit BVs, then `.zero_extend(32)`), so it wraps mod
+                // 2^32. Masking here is load-bearing, not cosmetic: without it a
+                // carry out of bit 31 lands on bit 32, which this ccall's ABI
+                // reserves for the error flag. Reachable with any negative
+                // displacement off a segment register (`mov %gs:-0x4, %eax` →
+                // va = 0xFFFFFFFC), which would otherwise report a bogus
+                // bad-selector error. See test_use_seg_selector_gdt_empty_wraps_mod_2_32.
                 let linear = ((ss_val & 0xFFFF) << 16).wrapping_add(va_val & 0xFFFFFFFF);
-                return Some(RustBV::concrete(linear as u128, ret_bits));
+                return Some(RustBV::concrete((linear & 0xFFFF_FFFF) as u128, ret_bits));
             }
         }
         return None;

@@ -1068,3 +1068,123 @@ fn diff_fuzz_arm64_sym_flags() {
         }
     }
 }
+
+// ============================================================
+// x86g_use_seg_selector — segmented-address linearization.
+//
+// Args: [ldt, gdt, seg_selector, virtual_addr]; returns a 64-bit value whose
+// low 32 bits are the linear address and whose bit 32 is the error flag.
+// Only the concrete fast paths are implemented natively (bad selector, plus
+// the empty-descriptor-table flat-addressing case that covers Linux glibc
+// TLS/stack-canary reads); everything else returns None so the caller falls
+// back to Python's `x86g_use_seg_selector` in engines/vex/claripy/ccall.py.
+// ============================================================
+
+/// Convenience: drive the ccall with four concrete 32-bit args.
+fn seg_selector_call(ldt: u64, gdt: u64, ss: u64, va: u64) -> Option<u64> {
+    let args = vec![
+        RustBV::concrete(ldt as u128, 64),
+        RustBV::concrete(gdt as u128, 64),
+        RustBV::concrete(ss as u128, 32),
+        RustBV::concrete(va as u128, 32),
+    ];
+    handle_ccall("x86g_use_seg_selector", &args, 64).and_then(|r| r.as_u64())
+}
+
+#[test]
+fn test_use_seg_selector_arity_guard() {
+    // Fewer than four args must not panic on indexing — it defers to Python.
+    for n in 0..4 {
+        let args: Vec<RustBV> = (0..n).map(|_| RustBV::concrete(0, 32)).collect();
+        assert!(
+            handle_ccall("x86g_use_seg_selector", &args, 64).is_none(),
+            "arity {n} should defer"
+        );
+    }
+}
+
+#[test]
+fn test_use_seg_selector_bad_selector_sets_error_flag() {
+    // Any bit above 15 set in the selector is Python's `bad()` case. The
+    // native return is the ABI-correct error flag (bit 32); note Python's own
+    // `bad()` builds `BVV(1 << 32, 32)`, which claripy truncates to 0 before
+    // the zero_extend — an upstream quirk we deliberately do not mirror.
+    assert_eq!(seg_selector_call(0, 0, 0x1_0000, 0x14), Some(1 << 32));
+    assert_eq!(seg_selector_call(0, 0, 0xFFFF_0063, 0x14), Some(1 << 32));
+    // The bad-selector test precedes the table lookup, so a populated table
+    // does not change the answer.
+    assert_eq!(
+        seg_selector_call(0xDEAD, 0xBEEF, 0x1_0000, 0),
+        Some(1 << 32)
+    );
+}
+
+#[test]
+fn test_use_seg_selector_gdt_empty_flat_addressing() {
+    // tiBit (bit 2 of the selector) == 0 selects the GDT; an all-zero GDT
+    // means flat addressing: linear = (selector << 16) + virtual_addr.
+    // 0x63 is the usual Linux x86 %gs, and 0x14 the glibc stack-canary slot.
+    assert_eq!(seg_selector_call(0, 0, 0x63, 0x14), Some(0x0063_0014));
+    assert_eq!(seg_selector_call(0, 0, 0, 0x1000), Some(0x1000));
+    // A populated LDT is irrelevant when tiBit picks the GDT.
+    assert_eq!(
+        seg_selector_call(0xDEAD_BEEF, 0, 0x63, 0x14),
+        Some(0x0063_0014)
+    );
+}
+
+#[test]
+fn test_use_seg_selector_ldt_empty_flat_addressing() {
+    // tiBit == 1 selects the LDT. 0x67 == 0x63 | 0b100 flips just that bit.
+    assert_eq!(seg_selector_call(0, 0, 0x67, 0x14), Some(0x0067_0014));
+    // ...and a populated GDT is irrelevant on the LDT side.
+    assert_eq!(
+        seg_selector_call(0, 0xDEAD_BEEF, 0x67, 0x14),
+        Some(0x0067_0014)
+    );
+}
+
+#[test]
+fn test_use_seg_selector_populated_table_defers_to_python() {
+    // Walking a real descriptor table needs a memory load, which the native
+    // path does not do — both table sides must return None, not a guess.
+    assert_eq!(seg_selector_call(0, 0x1000_0000_0000, 0x63, 0x14), None); // GDT
+    assert_eq!(seg_selector_call(0x1000_0000_0000, 0, 0x67, 0x14), None); // LDT
+}
+
+#[test]
+fn test_use_seg_selector_symbolic_args_defer_to_python() {
+    let ctx = crate::symbolic::SymContext::new_mock();
+    let sym = RustBV::symbolic(&ctx, "seg_sym", 32);
+    for pos in 0..4 {
+        let mut args = vec![
+            RustBV::concrete(0, 64),
+            RustBV::concrete(0, 64),
+            RustBV::concrete(0x63, 32),
+            RustBV::concrete(0x14, 32),
+        ];
+        args[pos] = sym.clone();
+        assert!(
+            handle_ccall_with_ctx("x86g_use_seg_selector", &args, 64, Some(&ctx)).is_none(),
+            "symbolic arg {pos} should defer to Python"
+        );
+    }
+}
+
+#[test]
+fn test_use_seg_selector_gdt_empty_wraps_mod_2_32() {
+    // Python computes `(seg_selector << 16) + virtual_addr` over 32-bit BVs,
+    // so the sum wraps mod 2^32. Bit 32 of the result is the error flag, so an
+    // unwrapped u64 add would report a bogus error for any negative
+    // displacement off a segment register (`mov %gs:-0x4, %eax`).
+    assert_eq!(
+        seg_selector_call(0, 0, 0x63, 0xFFFF_FFFC),
+        Some(0x0062_FFFC)
+    );
+    assert_eq!(
+        seg_selector_call(0, 0, 0x67, 0xFFFF_FFFC),
+        Some(0x0066_FFFC)
+    );
+    // Exact-wrap-to-zero boundary: 0xFFFF0000 + 0x00010000 == 2^32.
+    assert_eq!(seg_selector_call(0, 0, 0xFFFF, 0x0001_0000), Some(0));
+}
