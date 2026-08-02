@@ -397,3 +397,28 @@ fn dup3_handler_ignores_flags_and_matches_dup2() {
         _ => panic!("dup3(0,0,0) expected Continue"),
     }
 }
+
+/// A *symbolic* `flags` must not abort the native dispatch: the value
+/// is never read, so forcing concretization would cost a needless
+/// Python round-trip for an outcome identical to the concrete case.
+/// Mirrors the `let _ = args.get(2)` tolerance in `fcntl_dispatch` /
+/// `NativeIoctlSyscall`. Regression guard for bd angr-9ke6b.155.
+#[test]
+fn dup3_tolerates_symbolic_flags_without_python_fallback() {
+    let mut state = RustSimState::new("amd64").expect("state");
+    let sym_flags = {
+        let ctx = state.solver().borrow();
+        RustBV::symbolic(&ctx, "dup3_flags_sym", 64)
+    };
+    let outcome = NativeDup3Syscall
+        .call(
+            &mut state,
+            &[RustBV::concrete(0, 64), RustBV::concrete(7, 64), sym_flags],
+        )
+        .expect("symbolic dup3 flags must not force a Python fallback");
+    match outcome {
+        SyscallOutcome::Continue { ret } => assert_eq!(ret, 7),
+        other => panic!("dup3(0,7,<sym>) expected Continue, got {other:?}"),
+    }
+    assert!(state.file_system_ref().is_open(7));
+}

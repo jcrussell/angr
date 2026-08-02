@@ -331,7 +331,8 @@ impl NativeSyscall for NativeDup2Syscall {
 
 /// `dup3(oldfd, newfd, flags) → newfd` — like `dup2`, with a `flags`
 /// argument (only `O_CLOEXEC = 0x80000` defined). We do not model
-/// close-on-exec, so the flag is accepted and ignored.
+/// close-on-exec, so the flag is accepted and ignored — including a
+/// symbolic one, which never forces a Python fallback.
 pub(crate) struct NativeDup3Syscall;
 
 impl NativeSyscall for NativeDup3Syscall {
@@ -350,8 +351,10 @@ impl NativeSyscall for NativeDup3Syscall {
     ) -> Result<SyscallOutcome, SyscallError> {
         let oldfd = extract_concrete_arg(&args[0], "oldfd")?;
         let newfd = extract_concrete_arg(&args[1], "newfd")?;
-        // args[2] = flags — O_CLOEXEC modeling is out of scope; ignore.
-        let _flags = extract_concrete_arg(&args[2], "flags")?;
+        // args[2] = flags — O_CLOEXEC modeling is out of scope, so the
+        // value is never read; accept any value (including symbolic)
+        // without forcing concretization, same as fcntl_dispatch/ioctl.
+        let _ = args.get(2);
         // Parity with Python `dup3` (no EINVAL for oldfd==newfd — see dup2_body).
         let ret = dup2_body(state, oldfd, newfd);
         Ok(SyscallOutcome::Continue { ret })
