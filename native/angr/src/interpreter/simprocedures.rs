@@ -2,22 +2,22 @@
 use super::*;
 
 /// Information about a registered SimProcedure.
+///
+/// Deliberately carries no `no_return` flag (angr-9ke6b.218 item 2). Python's
+/// registration tuple has one, but it is consumed one layer up — the run loop
+/// reads it out of `StepContext::simprocedures` when it dispatches natively
+/// (`run_loop_single`'s hook block). The interpreter only needs enough to
+/// build `RunResult::SimProcedure`, which has no `no_return` member either:
+/// terminal handling happens at the dispatch site, where the serial and core
+/// paths deliberately disagree on the source of the flag (see
+/// `dispatch_native_proc`'s doc comment). Re-adding it here and threading it
+/// into `RunResult` would silently pick one of those two answers.
 #[derive(Clone, Debug)]
 pub(crate) struct SimProcedureInfo {
     /// Name of the SimProcedure (e.g., "strlen", "malloc").
     pub name: String,
     /// Number of arguments to extract.
     pub num_args: usize,
-    /// Whether this is a no-return procedure (e.g., "exit", "abort").
-    ///
-    /// **Write-only** (angr-9ke6b.214): Python threads it in through
-    /// `RustExplorationManager::register_simprocedure` ->
-    /// `StepContext::simprocedures` -> here, but nothing reads it back.
-    /// Terminal detection runs off `NativeSimProcedure::no_return()` instead.
-    /// Dropping it would change the Python-facing 4-tuple signature, so the
-    /// dead pipeline is flagged rather than removed.
-    #[allow(dead_code)]
-    pub no_return: bool,
 }
 
 impl<'a> VEXInterpreter<'a> {
@@ -25,22 +25,10 @@ impl<'a> VEXInterpreter<'a> {
     ///
     /// This allows the interpreter to pre-extract arguments when the hook is hit,
     /// reducing Python callback overhead.
-    pub(crate) fn register_simprocedure(
-        &mut self,
-        addr: u64,
-        name: String,
-        num_args: usize,
-        no_return: bool,
-    ) {
+    pub(crate) fn register_simprocedure(&mut self, addr: u64, name: String, num_args: usize) {
         Arc::make_mut(&mut self.hook_addrs).insert(addr);
-        Arc::make_mut(&mut self.simprocedure_registry).insert(
-            addr,
-            SimProcedureInfo {
-                name,
-                num_args,
-                no_return,
-            },
-        );
+        Arc::make_mut(&mut self.simprocedure_registry)
+            .insert(addr, SimProcedureInfo { name, num_args });
     }
 
     /// Get the return address for a function call.

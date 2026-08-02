@@ -248,10 +248,13 @@ pub(crate) fn run_interpreter_step_core(
         }
     }
 
-    // Register SimProcedures, also skipping the one we just processed
-    for (addr, (name, num_args, no_return)) in &ctx.simprocedures {
+    // Register SimProcedures, also skipping the one we just processed.
+    // The tuple's `no_return` stays behind on purpose: it is read at dispatch
+    // time out of `ctx.simprocedures`, not through the interpreter (see
+    // `SimProcedureInfo`).
+    for (addr, (name, num_args, _no_return)) in &ctx.simprocedures {
         if Some(*addr) != skip_addr {
-            interp.register_simprocedure(*addr, name.clone(), *num_args, *no_return);
+            interp.register_simprocedure(*addr, name.clone(), *num_args);
         }
     }
 
@@ -264,7 +267,6 @@ pub(crate) fn run_interpreter_step_core(
         resume_sentinel,
         crate::procedures::NATIVE_RESUME_SENTINEL_NAME.to_string(),
         0,
-        false,
     );
 
     // Add find/avoid addresses as hooks so the interpreter stops there
