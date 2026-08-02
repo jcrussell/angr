@@ -122,7 +122,8 @@ pub(crate) fn apply_interpreter_step_result(
     // `state.pc` u64 still points to the concretized address so the next
     // block lift drives from there, but the IP register reads as the
     // unpinned symbolic expression — matching Python's
-    // `split_state.regs.ip = target` at engines/successors.py:328.
+    // `split_state.regs.ip = target` in the `KEEP_IP_SYMBOLIC` branch of
+    // `SimSuccessors._categorize_successor` (`angr/engines/successors.py`).
     if let Some(sym_ip) = symbolic_ip_at_exit {
         state.set_ip(sym_ip);
     }
@@ -998,7 +999,8 @@ impl RustExplorationManager {
     /// Fire a `state.inspect.fork` BP for the given forked state id.
     /// Bit-gated on `InspectEvent::Fork` (bit 4) — single atomic load in
     /// the common no-BP case. Dispatches `when='after'` with no attrs,
-    /// matching Python `engines/successors.py:203` where the BP fires
+    /// matching Python `SimSuccessors._preprocess_successor`
+    /// (`angr/engines/successors.py`), where the BP fires
     /// on the newly-added successor after constraints + ip are applied
     /// but before satisfiability is checked downstream. Errors from the
     /// user's BP action are swallowed (logged at debug) — same MVP

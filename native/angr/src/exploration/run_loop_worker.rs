@@ -131,7 +131,8 @@ impl ParallelShared {
 /// summaries.
 ///
 /// How it replicates `step_one`:
-/// * Pre-step address-based find/avoid (`step_one` ~296-361): PC in `avoid_addrs`
+/// * Pre-step address-based find/avoid (the `avoid_addrs` / `find_addrs` checks
+///   at the top of `step_one` in `run_loop_single.rs`): PC in `avoid_addrs`
 ///   → an `Avoided` summary; PC in `find_addrs` + satisfiable → a materialized
 ///   `Found` (bumping the worker-side `worker_found_hint`, requesting cancel at
 ///   `num_find` — a best-effort early trip; coordinator-routed finds rely on the

@@ -11,8 +11,6 @@ claripy_bridge/mod.rs	//!   downstream VEX ops. The check at the use site (line 
 concretize.rs	/// `address_concretization_mixin.py:327-329`.
 concretize.rs	/// branch at line 272 (`return self._default_value(...)`).
 exploration/run_loop.rs	//! rust_manager.py:98):** the run loop must terminate on EITHER (a)
-exploration/stepping.rs	// `split_state.regs.ip = target` at engines/successors.py:328.
-exploration/stepping.rs	/// matching Python `engines/successors.py:203` where the BP fires
 interpreter/execution.rs	// mirror Python callstack.py:386/419 (BEFORE
 interpreter/execution.rs	// mirror Python callstack.py:430/432.
 interpreter/execution.rs	/// Mirrors Python `callstack.py:386` / `:419`.
