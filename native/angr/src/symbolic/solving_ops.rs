@@ -57,6 +57,25 @@ fn u128_to_be_bytes_width(value: u128, width: u32) -> Vec<u8> {
     }
 }
 
+/// Largest unsigned value representable in `width` bits, saturating at
+/// `u128::MAX`.
+///
+/// The saturation matters: `1u128 << 128` overflows (panic under debug,
+/// wrap under release), and callers that binary-search in a `u128` cannot
+/// represent anything above `u128::MAX` anyway — the `width > 128` guard in
+/// `min` / `max` bails out before the search rather than returning a
+/// truncated extremum (angr-cxw7). Shared by `lex_min_witness`,
+/// `eval_upto_ascending`, both arms of `min` and `max`, and `range_seeded`
+/// so a future width-boundary fix lands in one place (angr-9ke6b.141).
+#[cfg(feature = "vex-engine-z3")]
+fn max_val_for_width(width: u32) -> u128 {
+    if width >= 128 {
+        u128::MAX
+    } else {
+        (1u128 << width) - 1
+    }
+}
+
 /// Read every bv in `bvs` off a single Z3 model. All-or-nothing: `None` when
 /// any part fails to evaluate, so a caller never sees a half-model. Shared by
 /// `eval_many`'s cached-model and fresh-model paths (angr-ue4ro).
@@ -731,11 +750,7 @@ impl SymContext {
                         return None;
                     }
                 }
-                let max_val = if *width >= 128 {
-                    u128::MAX
-                } else {
-                    (1u128 << width) - 1
-                };
+                let max_val = max_val_for_width(*width);
                 let value = match bsearch_min(solver, ast, *width, 0, max_val, |a, m| a.bvule(m)) {
                     Some(v) => v,
                     // Mid-bisection Z3 timeout (angr-ph300.43): no canonical
@@ -800,11 +815,7 @@ impl SymContext {
     fn eval_upto_ascending(&self, bv: &RustBV, n: usize) -> Vec<u128> {
         let width = bv.width();
         let ast = bv.to_z3_ast();
-        let max_val = if width >= 128 {
-            u128::MAX
-        } else {
-            (1u128 << width) - 1
-        };
+        let max_val = max_val_for_width(width);
         let _class =
             query_class::scope(|| query_class::classify_eval(bv, &self.get_assumed_constraints()));
 
@@ -937,11 +948,7 @@ impl SymContext {
 
             let (lo, hi): (u128, u128) = if signed {
                 let sign_bit = 1u128 << (width - 1);
-                let max_val = if width >= 128 {
-                    u128::MAX
-                } else {
-                    (1u128 << width) - 1
-                };
+                let max_val = max_val_for_width(width);
                 let max_positive = sign_bit - 1;
 
                 // Witness's signed interpretation: negative iff sign bit set.
@@ -994,11 +1001,7 @@ impl SymContext {
                     (0, hi_seed)
                 }
             } else {
-                let max_val = if width >= 128 {
-                    u128::MAX
-                } else {
-                    (1u128 << width) - 1
-                };
+                let max_val = max_val_for_width(width);
                 let hi_seed = witness.map(|v| v.min(max_val)).unwrap_or(max_val);
                 (0, hi_seed)
             };
@@ -1070,11 +1073,7 @@ impl SymContext {
 
             let (lo, hi): (u128, u128) = if signed {
                 let sign_bit = 1u128 << (width - 1);
-                let max_val = if width >= 128 {
-                    u128::MAX
-                } else {
-                    (1u128 << width) - 1
-                };
+                let max_val = max_val_for_width(width);
                 let max_positive = sign_bit - 1;
 
                 // Witness's signed interpretation: non-negative iff sign bit clear.
@@ -1126,11 +1125,7 @@ impl SymContext {
                     (lo_seed, max_val)
                 }
             } else {
-                let max_val = if width >= 128 {
-                    u128::MAX
-                } else {
-                    (1u128 << width) - 1
-                };
+                let max_val = max_val_for_width(width);
                 let lo_seed = witness.map(|v| v.min(max_val)).unwrap_or(0);
                 (lo_seed, max_val)
             };
@@ -1186,11 +1181,7 @@ impl SymContext {
         let _class = query_class::scope(|| {
             query_class::classify_extrema(bv, &self.get_assumed_constraints())
         });
-        let max_val: u128 = if width >= 128 {
-            u128::MAX
-        } else {
-            (1u128 << width) - 1
-        };
+        let max_val: u128 = max_val_for_width(width);
 
         // Clamp seeds to the bitvector range. Seeds must already be valid
         // solutions, so smallest_known ≤ true_max and largest_known ≥ true_min.
@@ -1370,3 +1361,7 @@ impl SymContext {
         bv.as_u128().map(|v| vec![v]).unwrap_or_default()
     }
 }
+
+#[cfg(all(test, feature = "vex-engine-z3"))]
+#[path = "solving_ops_tests.rs"]
+mod solving_ops_tests;
