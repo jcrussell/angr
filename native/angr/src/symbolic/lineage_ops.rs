@@ -39,10 +39,12 @@ impl SymContext {
 
     /// Clone of this context's lineage Arc, if any (angr-v5a5 spike).
     ///
-    /// Returns `None` until the v5a5 integration starts creating
-    /// [`SharedLineageSolver`](super::lineage::SharedLineageSolver) on
-    /// fork. Currently a fork only propagates an Arc the parent already
-    /// had, so all states observed via the public API see `None`.
+    /// `None` unless some ancestor opted into the shared-lineage feature
+    /// via `set_use_shared_lineage_solver` — the default-off case, where
+    /// [`fork`](SymContext::fork) only propagates an Arc the parent
+    /// already had (i.e. `None`). Under an opt-in, `fork` mints a
+    /// [`SharedLineageSolver`](super::lineage::SharedLineageSolver) and
+    /// every descendant returns a clone of that Arc.
     #[cfg(feature = "vex-engine-z3")]
     pub fn lineage_arc(&self) -> Option<Arc<Mutex<super::lineage::SharedLineageSolver>>> {
         self.lineage.lock().as_ref().map(Arc::clone)
@@ -50,9 +52,9 @@ impl SymContext {
 
     /// Current per-state scope-path depth (angr-v5a5 spike).
     ///
-    /// Always 0 in this slice — frames are minted by the next slice when
-    /// `assume_*` routes through the lineage solver. Exposed now so the
-    /// integration can have a consistent telemetry surface.
+    /// Always 0 while `lineage` is `None` (the default-off case) — frames
+    /// are minted only when `assume_*` routes through the lineage solver.
+    /// Exposed as a telemetry surface for both modes.
     #[cfg(feature = "vex-engine-z3")]
     pub fn scope_path_len(&self) -> usize {
         self.scope_path.lock().len()
@@ -61,8 +63,9 @@ impl SymContext {
     /// Current size of this context's scope-savepoint stack (angr-v5a5
     /// slice 4b).
     ///
-    /// Always 0 in production until slice 4c lights up lineage
-    /// materialization. Exposed for telemetry and test assertions.
+    /// Always 0 while `lineage` is `None` (the default-off case): that
+    /// branch uses the per-context Z3 solver's native `push()/pop()`
+    /// instead. Exposed for telemetry and test assertions.
     #[cfg(feature = "vex-engine-z3")]
     pub fn scope_savepoint_depth(&self) -> usize {
         self.scope_savepoints.lock().len()
@@ -78,9 +81,9 @@ impl SymContext {
     /// that branch records on `scope_savepoints` rather than touching
     /// the Z3 stack directly.
     ///
-    /// Exposed for telemetry and for the slice-1c fork-time
-    /// materialization gate: the gate will refuse to mint a fresh
-    /// `SharedLineageSolver` frame at fork time when the parent's
+    /// Exposed for telemetry and read by the fork-time materialization
+    /// gate in [`fork`](SymContext::fork), which refuses to mint a fresh
+    /// `SharedLineageSolver` frame when the parent's
     /// `bare_z3_push_depth` is non-zero.
     #[cfg(feature = "vex-engine-z3")]
     pub fn bare_z3_push_depth(&self) -> usize {
@@ -98,13 +101,11 @@ impl SymContext {
     /// Whether fork-time `SharedLineageSolver` materialization is opted
     /// in for this context (angr-3ms1 step 1b).
     ///
-    /// Returns `false` by default. When `true`, the slice-1c fork-time
-    /// gate will mint a fresh `SharedLineageSolver` on every fork
-    /// (subject to the `bare_z3_push_depth == 0` correctness gate from
-    /// step 1a). Inherited from parent to child in [`fork`](Self::fork).
-    ///
-    /// Inert in this slice — the materialization gate (step 1c) will
-    /// be the first consumer.
+    /// Returns `false` by default. When `true`, the fork-time gate in
+    /// [`fork`](SymContext::fork) mints a fresh `SharedLineageSolver` on
+    /// every fork (subject to the `bare_z3_push_depth == 0` correctness
+    /// gate from step 1a and the lineage-dismantle detector). Inherited
+    /// from parent to child by `fork`.
     #[cfg(feature = "vex-engine-z3")]
     pub fn use_shared_lineage_solver(&self) -> bool {
         self.use_shared_lineage_solver.load(Ordering::Relaxed)

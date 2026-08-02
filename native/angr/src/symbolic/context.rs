@@ -433,17 +433,17 @@ pub struct SymContext {
     #[cfg(feature = "vex-engine-z3")]
     pub(super) deterministic: AtomicBool,
 
-    /// Shared-lineage Z3 solver (angr-v5a5 spike, integration in progress).
+    /// Shared-lineage Z3 solver (angr-v5a5 / angr-3ms1) — working, default-off.
     ///
-    /// `None` for seed states and any state whose lineage has not yet been
-    /// established. Set via [`fork()`](Self::fork) once integration is wired
-    /// (next slice). When `Some`, every state descended from a common fork
-    /// shares the same Arc; the inner Mutex serializes solver access across
-    /// sibling states.
-    ///
-    /// This slice (angr-v5a5 fields-only) introduces the field but does not
-    /// yet route queries through it — [`solver()`](Self::solver) still uses
-    /// the lazy-materialize path. The next slice replaces that.
+    /// `None` for seed states and for every state in a lineage that never
+    /// opted in, which is the production default. Minted by
+    /// [`fork()`](Self::fork) when `use_shared_lineage_solver` is set (see
+    /// that field for the three-gate materialization rule); otherwise `fork`
+    /// propagates whatever Arc the parent already had. When `Some`, every
+    /// state descended from that fork shares the same Arc; the inner Mutex
+    /// serializes solver access across sibling states, and constraint
+    /// installs route through `ScopeFrame` + `SharedLineageSolver::switch_to`
+    /// (see `constraint_ops.rs`) instead of the per-context Z3 solver.
     ///
     /// **Mutex shape is load-bearing** (`bd recall invariant-v5a5-lineage-mutex-shape`):
     /// the outer `Mutex<Option<...>>` lets [`fork`](Self::fork) install a
@@ -464,8 +464,10 @@ pub struct SymContext {
     /// scope paths can share a prefix without RustBV-identity tricks
     /// (see memory `v5a5-frame-id-design`).
     ///
-    /// Inert in this slice — the next slice wires `assume_*` to mint
-    /// frames here and routes queries through `SharedLineageSolver::switch_to`.
+    /// Stays empty whenever `lineage` is `None` — which is the production
+    /// default, since the shared-lineage feature is opt-in. Once a lineage
+    /// is installed, `assume_*` mints a frame here per constraint and routes
+    /// the query through `SharedLineageSolver::switch_to`.
     #[cfg(feature = "vex-engine-z3")]
     pub(super) scope_path: Mutex<super::lineage::ScopePath>,
 
@@ -477,16 +479,12 @@ pub struct SymContext {
     ///
     /// Only consulted on the `Some` (shared-lineage) dispatch branch —
     /// the `None` branch keeps using the per-context Z3 solver's native
-    /// `push()/pop()`, so `scope_savepoints` stays empty in production.
-    /// When slice 4c lights up lineage materialization, this stack
-    /// becomes the per-state savepoint mechanism that lets the
-    /// transactional plumbing (push/pop and transaction_*) coexist with
-    /// the shared Z3 stack — bare Z3 push/pop on the shared solver
+    /// `push()/pop()`, so `scope_savepoints` stays empty unless a lineage
+    /// is installed (the default, since the feature is opt-in). Under a
+    /// lineage this stack is the per-state savepoint mechanism that lets
+    /// the transactional plumbing (push/pop and transaction_*) coexist
+    /// with the shared Z3 stack — bare Z3 push/pop on the shared solver
     /// would corrupt sibling state.
-    ///
-    /// Inert in this slice for the same reason `scope_path` is inert:
-    /// production never installs a lineage today. Tests using
-    /// `set_lineage_for_testing` exercise the dispatch.
     #[cfg(feature = "vex-engine-z3")]
     pub(super) scope_savepoints: Mutex<Vec<usize>>,
 
@@ -497,14 +495,14 @@ pub struct SymContext {
     /// that took the **None** dispatch branch — i.e. those that issued
     /// `solver.push()` directly on the per-context Z3 solver and have not
     /// yet been balanced by a matching pop. The **Some** branch records
-    /// on `scope_savepoints` instead and leaves this counter alone, so in
-    /// production today (no lineage ever installed) the counter mirrors
-    /// the per-context solver's push depth exactly.
+    /// on `scope_savepoints` instead and leaves this counter alone, so
+    /// with no lineage installed (the production default) the counter
+    /// mirrors the per-context solver's push depth exactly.
     ///
-    /// Inert in this slice — exposed via
-    /// [`bare_z3_push_depth`](Self::bare_z3_push_depth) for telemetry and
-    /// for the slice-1c fork-time materialization gate. That gate will
-    /// refuse to mint a fresh `SharedLineageSolver` frame when this
+    /// Exposed via [`bare_z3_push_depth`](Self::bare_z3_push_depth) for
+    /// telemetry and read by the fork-time materialization gate in
+    /// [`fork`](Self::fork), which refuses to mint a fresh
+    /// `SharedLineageSolver` frame when this
     /// counter is non-zero: the child's lineage would otherwise steal
     /// ownership of the Z3 stack and the parent's unbalanced bare pushes
     /// would leak into the child's base (see the
@@ -514,20 +512,20 @@ pub struct SymContext {
     pub(super) bare_z3_push_depth: AtomicUsize,
 
     /// Opt-in flag for fork-time `SharedLineageSolver` materialization
-    /// (angr-3ms1 step 1b).
+    /// (angr-3ms1 step 1b) — the master switch for the whole feature.
     ///
-    /// When `true`, the slice-1c fork-time gate will mint a fresh
-    /// `SharedLineageSolver` on every fork (subject to the
-    /// `bare_z3_push_depth == 0` correctness gate from step 1a). When
-    /// `false` (the default), `fork()` keeps the existing behavior of
-    /// propagating the parent's lineage Arc unchanged — None in
-    /// production today, so no lineage is ever installed.
+    /// When `true`, [`fork`](Self::fork) mints a fresh
+    /// `SharedLineageSolver` on every fork, subject to two further gates:
+    /// `bare_z3_push_depth == 0` (step 1a's correctness gate) and the
+    /// lineage-dismantle detector not having fired. When `false` (the
+    /// default), `fork()` propagates the parent's lineage Arc unchanged —
+    /// `None` unless something opted in upstream, so no lineage is
+    /// installed and the per-context solver path is used throughout.
     ///
     /// Set per-state via [`set_use_shared_lineage_solver`](Self::set_use_shared_lineage_solver)
     /// and inherited from parent to child in [`fork`](Self::fork) so a
     /// lineage opt-in on a seed state propagates to every descendant
-    /// without per-fork plumbing on the Python side. Inert in this slice
-    /// — the materialization gate (step 1c) will read it.
+    /// without per-fork plumbing on the Python side.
     ///
     /// Kept default-off because the v5a5 spike's
     /// `v5a5-slice-4c.3-retry-failed-bfs-thrash-fundamental` finding
