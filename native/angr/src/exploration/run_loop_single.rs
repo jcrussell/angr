@@ -601,11 +601,7 @@ impl RustExplorationManager {
                 state_id,
             } => {
                 self.errors.push((pc, message, state_id));
-                self.sm
-                    .stashes_mut()
-                    .entry(STASH_ERRORED.to_string())
-                    .or_default()
-                    .push_back(state);
+                self.push_errored(state);
             }
             TerminalStep::Unconstrained { state, forks } => {
                 // State has too many symbolic jump targets - move to unconstrained stash

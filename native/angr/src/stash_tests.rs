@@ -58,6 +58,33 @@ fn test_push_or_drop_terminal_counters_track_stash_constants() {
     }
 }
 
+/// angr-9ke6b.231: `push_errored` counts and indexes the state, and — unlike
+/// `push_or_drop_terminal` — keeps it even under `drop_terminal_states`.
+///
+/// The serial run loop used to open-code the errored push, which skipped both
+/// the counter and the index while the parallel loop folded
+/// `stats.summarized_errored` into the same field.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_push_errored_counts_indexes_and_never_drops() {
+    for drop_terminal in [false, true] {
+        let mut mgr = StashManager::new();
+        mgr.set_drop_terminal_states(drop_terminal);
+        let state = RustSimState::new("amd64").unwrap();
+        let id = state.state_id();
+
+        mgr.push_errored(state);
+
+        assert_eq!(mgr.errored_count, 1, "drop_terminal_states={drop_terminal}");
+        assert_eq!(
+            mgr.count(STASH_ERRORED),
+            1,
+            "errored states must survive drop_terminal_states={drop_terminal}"
+        );
+        assert_eq!(mgr.stash_of(id), Some(STASH_ERRORED));
+    }
+}
+
 /// Round-trip a non-empty StashManager via the per-state codec.
 ///
 /// Pushes two states into `active` and one into `found`, then dumps via

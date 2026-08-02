@@ -336,11 +336,7 @@ impl RustExplorationManager {
         let state = self.materialize_terminal_deferred_forks(pending);
 
         // Move to errored stash
-        self.sm
-            .stashes_mut()
-            .entry(STASH_ERRORED.to_string())
-            .or_default()
-            .push_back(state);
+        self.push_errored(state);
 
         Ok(())
     }

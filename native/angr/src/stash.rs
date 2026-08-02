@@ -310,6 +310,23 @@ impl StashManager {
         }
     }
 
+    /// Push a state onto `STASH_ERRORED`, incrementing `errored_count`.
+    ///
+    /// Errored states are the one terminal disposition that is **never**
+    /// dropped (`drop_terminal_states` does not apply — an error is a
+    /// diagnostic the caller always needs), so they cannot go through
+    /// `push_or_drop_terminal`. Before angr-9ke6b.231 the serial sites open-coded
+    /// `stashes_mut().entry(STASH_ERRORED).push_back(...)`, which skipped both
+    /// the counter and the index: a serial run's `StashSnapshot` reported
+    /// `errored_count == 0` while the parallel loop folded
+    /// `stats.summarized_errored` into the same field. This method is the
+    /// errored-only counterpart of `push_or_drop_terminal`; route every errored
+    /// push through it.
+    pub fn push_errored(&mut self, state: RustSimState) {
+        self.errored_count += 1;
+        self.push(STASH_ERRORED, state);
+    }
+
     /// Clear all states from a stash, removing index and root entries.
     pub fn clear(&mut self, stash: &str) {
         if let Some(s) = self.stashes.get_mut(stash) {

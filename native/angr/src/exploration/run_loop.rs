@@ -128,8 +128,9 @@ pub(crate) enum StepOutcome {
 pub(crate) enum TerminalStep {
     /// `push_or_drop_terminal(STASH_DEADENDED, state)`.
     Deadended(RustSimState),
-    /// `errors.push((pc, message, state_id))` then a direct `push_back` into
-    /// `STASH_ERRORED` (errored states are never dropped — not push_or_drop).
+    /// `errors.push((pc, message, state_id))` then `push_errored(state)`
+    /// (errored states are never dropped — hence their own chokepoint rather
+    /// than `push_or_drop_terminal`).
     Errored {
         state: RustSimState,
         pc: u64,

@@ -523,11 +523,23 @@ impl RustExplorationManager {
     /// Every terminal routing site should go through this wrapper rather than
     /// calling `self.sm.push_or_drop_terminal` directly (angr-9ke6b.56), so
     /// manager-level bookkeeping added here cannot be silently bypassed. The
-    /// one deliberate exception is `STASH_ERRORED`, which is pushed straight
-    /// onto the stash because errored states are never dropped — see the
-    /// module docs on `apply_terminal` in `run_loop.rs`.
+    /// one exception is `STASH_ERRORED`, which never drops and therefore has
+    /// its own chokepoint, `push_errored` below — see the module docs on
+    /// `apply_terminal` in `run_loop.rs`.
     pub(crate) fn push_or_drop_terminal(&mut self, stash_name: &str, state: RustSimState) {
         self.sm.push_or_drop_terminal(stash_name, state);
+    }
+
+    /// Push a state onto the errored stash, incrementing `errored_count`.
+    ///
+    /// The errored counterpart of `push_or_drop_terminal` (angr-9ke6b.231):
+    /// errored states are never dropped, but they must still be counted, or a
+    /// serial run reports `errored_count == 0` where the parallel loop folds
+    /// `stats.summarized_errored` (see `fold_parallel_stats` above). Callers
+    /// still own recording the `(pc, message, state_id)` triple in
+    /// `self.errors` — that is per-site data this wrapper cannot reconstruct.
+    pub(crate) fn push_errored(&mut self, state: RustSimState) {
+        self.sm.push_errored(state);
     }
 
     /// Extract procedure arguments from state registers (and stack, when
