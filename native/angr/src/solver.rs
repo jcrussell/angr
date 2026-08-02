@@ -331,16 +331,30 @@ impl RustSolverContext {
     /// claripy z3 backend (the same fast path used by `add_constraint_ast`),
     /// dispatch through `SymContext::add_constraints_raw_batch` so the whole
     /// batch shares one `local_constraints` lock, one `solver()` guard, and
-    /// one model invalidation pass. Any AST that fails the raw extraction
-    /// flips the call back to the per-constraint slow path so behavior stays
-    /// identical to the unbatched loop.
+    /// one model invalidation pass.
+    ///
+    /// An AST that fails the raw extraction does *not* discard the work
+    /// already done for its predecessors (angr-9ke6b.206): the successfully
+    /// converted prefix is flushed as one raw batch, and only the failing
+    /// AST and everything after it drops to the per-constraint slow path.
+    /// Constraint order is unchanged, so behavior stays identical to the
+    /// unbatched loop.
     pub fn add_constraints(&self, py: Python<'_>, asts: &Bound<'_, PyList>) -> PyResult<()> {
+        // Index of the first AST not yet asserted. The raw fast path below
+        // advances it past every AST it manages to batch; the remainder goes
+        // through `add_constraint_ast` one at a time.
+        let resume_from: usize;
+
+        #[cfg(not(feature = "vex-engine-z3"))]
+        {
+            resume_from = 0;
+        }
+
         #[cfg(feature = "vex-engine-z3")]
         {
             let ctx = self.i().ctx();
             let n = asts.len();
             let mut entries: Vec<(Z3AstPtr, RustBV, bool)> = Vec::with_capacity(n);
-            let mut all_raw = true;
             for ast in asts.iter() {
                 let ptr = match extract_z3_ast_ptr(py, &ast) {
                     Ok(p) if p.is_bool() => p,
@@ -348,28 +362,25 @@ impl RustSolverContext {
                     // batch (add_constraints_raw_batch Bool-wraps by
                     // contract); drop to the per-constraint slow path which
                     // lowers it correctly.
-                    Ok(_) | Err(_) => {
-                        all_raw = false;
-                        break;
-                    }
+                    Ok(_) | Err(_) => break,
                 };
                 let bv = match claripy_to_rustbv(py, &ast, &ctx) {
                     Ok(b) => b,
-                    Err(_) => {
-                        all_raw = false;
-                        break;
-                    }
+                    Err(_) => break,
                 };
                 entries.push((ptr, bv, true));
             }
-            if all_raw {
-                ctx.add_constraints_raw_batch(entries);
+            resume_from = entries.len();
+            // No-op when the very first AST failed; otherwise the prefix
+            // still gets the single-lock / single-invalidation batch.
+            ctx.add_constraints_raw_batch(entries);
+            if resume_from == n {
                 return Ok(());
             }
         }
-        // Slow path: any AST that resisted the raw extraction sends the
-        // whole batch through the per-constraint route to preserve semantics.
-        for ast in asts.iter() {
+        // Slow path: the first AST that resisted the raw extraction, plus
+        // everything after it, goes through the per-constraint route.
+        for ast in asts.iter().skip(resume_from) {
             self.add_constraint_ast(py, &ast)?;
         }
         Ok(())

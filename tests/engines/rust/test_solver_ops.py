@@ -224,6 +224,63 @@ class TestSolverOperations:
         assert ctx.satisfiable() is True
         assert ctx.unsat_core() == []
 
+    def test_add_constraints_mixed_batch_applies_every_entry(self):
+        """add_constraints() with a non-Bool AST in the middle of the batch
+        still applies every constraint, in order.
+
+        angr-9ke6b.206: the raw fast path used to abandon the whole batch
+        the moment one AST failed extraction, re-doing the conversion work
+        for the already-succeeded prefix through the per-constraint route.
+        Now the prefix is flushed as one raw batch and only the failing AST
+        onward falls back. This test pins the *behaviour* that split must
+        preserve: entry 0 (Bool, batched), entry 1 (raw BV -> lowered to
+        `!= 0` by the slow path) and entry 2 (Bool, after the failure) all
+        have to reach the solver.
+        """
+        import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
+
+        x = claripy.BVS("x", 8)
+        y = claripy.BVS("y", 8)
+
+        # All three hold together: x < 10, y != 0, y < 3.
+        ctx = RustSolverContext()
+        ctx.add_constraints([x < 10, y, y < 3])
+        assert ctx.satisfiable() is True
+        assert set(ctx.eval_upto(y, 5)) == {1, 2}, "y != 0 AND y < 3 not both applied"
+        assert max(ctx.eval_upto(x, 20)) < 10, "the batched prefix constraint was lost"
+
+        # The post-failure entry really is asserted: contradict it.
+        ctx2 = RustSolverContext()
+        ctx2.add_constraints([x < 10, y, y < 3])
+        ctx2.add_constraint_ast(y == 5)
+        assert ctx2.satisfiable() is False
+
+        # ...and so is the pre-failure (batched) prefix.
+        ctx3 = RustSolverContext()
+        ctx3.add_constraints([x < 10, y, y < 3])
+        ctx3.add_constraint_ast(x == 200)
+        assert ctx3.satisfiable() is False
+
+    def test_add_constraints_leading_failure_still_applies_rest(self):
+        """add_constraints() whose *first* entry fails the raw fast path
+        applies an empty prefix batch and routes everything through the
+        slow path -- no constraint is dropped.
+
+        angr-9ke6b.206 edge case: `entries` is empty, so
+        `add_constraints_raw_batch` must be a no-op and `resume_from` must
+        be 0 (not 1).
+        """
+        import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
+
+        x = claripy.BVS("x", 8)
+
+        ctx = RustSolverContext()
+        ctx.add_constraints([x, x < 10])
+        assert ctx.satisfiable() is True
+        assert set(ctx.eval_upto(x, 20)) == set(range(1, 10))
+
     def test_solver_fork_independence(self):
         """Forked solver contexts are independent."""
         import claripy
