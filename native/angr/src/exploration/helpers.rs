@@ -516,8 +516,16 @@ impl RustExplorationManager {
         // else dropped states are simply discarded
     }
 
-    /// Push a state to a terminal stash (avoid/pruned/deadended), or drop it
-    /// if `drop_terminal_states` is enabled. Increments the appropriate counter.
+    /// Push a state to a terminal stash (avoid/pruned/deadended/unconstrained),
+    /// or drop it if `drop_terminal_states` is enabled. Increments the
+    /// appropriate counter.
+    ///
+    /// Every terminal routing site should go through this wrapper rather than
+    /// calling `self.sm.push_or_drop_terminal` directly (angr-9ke6b.56), so
+    /// manager-level bookkeeping added here cannot be silently bypassed. The
+    /// one deliberate exception is `STASH_ERRORED`, which is pushed straight
+    /// onto the stash because errored states are never dropped — see the
+    /// module docs on `apply_terminal` in `run_loop.rs`.
     pub(crate) fn push_or_drop_terminal(&mut self, stash_name: &str, state: RustSimState) {
         self.sm.push_or_drop_terminal(stash_name, state);
     }

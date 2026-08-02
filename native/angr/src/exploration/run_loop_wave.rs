@@ -481,7 +481,7 @@ impl RustExplorationManager {
             }
             Some(MatKind::Unconstrained) => {
                 self.sm.set_root(id, root);
-                self.sm.push_or_drop_terminal(STASH_UNCONSTRAINED, state);
+                self.push_or_drop_terminal(STASH_UNCONSTRAINED, state);
             }
             Some(MatKind::Bounce(kind)) => {
                 // Bug C1: a bounce whose target is a find/avoid ADDRESS

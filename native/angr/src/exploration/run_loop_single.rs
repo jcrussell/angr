@@ -610,7 +610,7 @@ impl RustExplorationManager {
             TerminalStep::Unconstrained { state, forks } => {
                 // State has too many symbolic jump targets - move to unconstrained stash
                 log::debug!("State {} moved to unconstrained stash", state.state_id());
-                self.sm.push_or_drop_terminal(STASH_UNCONSTRAINED, state);
+                self.push_or_drop_terminal(STASH_UNCONSTRAINED, state);
                 // angr-027h: loop-exit deferred forks materialized in eager
                 // mode at the unconstrained jump. Route them to active (or
                 // found/avoid) exactly like normal successors so a
