@@ -877,16 +877,39 @@ impl IROp {
 
             // Vector ops
             IROp::VAnd(t) | IROp::VOr(t) | IROp::VXor(t) | IROp::VNot(t) => Some(*t),
-            IROp::VAdd { .. }
-            | IROp::VSub { .. }
-            | IROp::VMul { .. }
-            | IROp::VMull { .. }
-            | IROp::VQDMull { .. }
-            | IROp::VShlN { .. }
-            | IROp::VShrN { .. }
-            | IROp::VSarN { .. }
-            | IROp::VCmpEQ { .. }
-            | IROp::VCmpGT { .. } => Some(IRType::V128),
+            // Width-preserving packed lane ops: total = elem * count. The
+            // mapped shapes span D-reg (64), Q-reg/SSE (128) and — for
+            // VAdd/VSub — AVX2 (256, e.g. Iop_Add8x32), so this must be
+            // computed rather than hardcoded to V128 (angr-9ke6b.163).
+            // Packed compares are included: they yield a full-width lane mask.
+            IROp::VAdd { elem, count }
+            | IROp::VSub { elem, count }
+            | IROp::VMul { elem, count }
+            | IROp::VShlN { elem, count }
+            | IROp::VShrN { elem, count }
+            | IROp::VSarN { elem, count }
+            | IROp::VCmpEQ { elem, count }
+            | IROp::VCmpGT { elem, count, .. } => {
+                Self::width_total_to_type(elem.bits() * (*count as u32))
+            }
+
+            // Widening multiplies. `VMull` with `even=false` (Iop_Mull{N}{S,U}x{M})
+            // doubles each lane width: total = 2 * elem * count. `even=true`
+            // (Iop_MullEven*) halves the lane count while doubling the width, so
+            // total = elem * count. `VQDMull` is always full-lane widening.
+            IROp::VMull {
+                elem, count, even, ..
+            } => {
+                let lanes = if *even {
+                    *count as u32 / 2
+                } else {
+                    *count as u32
+                };
+                Self::width_total_to_type(elem.bits() * 2 * lanes)
+            }
+            IROp::VQDMull { elem, count } => {
+                Self::width_total_to_type(elem.bits() * 2 * (*count as u32))
+            }
 
             // Vector shift by vector (Iop_Shl/Shr/Sar/Sal{N}x{M}): width
             // preserved — total = elem * count, either 64 or 128 bits.
