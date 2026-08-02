@@ -138,6 +138,30 @@ fn test_memmove_overlapping() {
     assert_eq!(val.as_u64(), Some(b'd' as u64));
 }
 
+#[test]
+fn test_memmove_overlap_check_wraps_at_u64_max() {
+    // The overlap check used to compute `src + size` without wrapping: a debug
+    // panic, and in release a silent wrap that misclassified the copy direction
+    // for a buffer near the top of the address space.
+
+    // src region [u64::MAX - 3, u64::MAX - 3 + 8) wraps past the end of the
+    // address space; dst sits 3 bytes into it, so the copy must go backwards.
+    let src = u64::MAX - 3;
+    assert!(memmove_copies_backward(src.wrapping_add(3), src, 8));
+    // dst one byte past the (wrapped) end of the source region: no overlap.
+    assert!(!memmove_copies_backward(src.wrapping_add(8), src, 8));
+    // dst *before* src in wrapping order is the forward-copy case even when the
+    // source region wraps.
+    assert!(!memmove_copies_backward(src.wrapping_sub(1), src, 8));
+
+    // Ordinary (non-wrapping) classifications are unchanged.
+    assert!(memmove_copies_backward(0x1002, 0x1000, 6));
+    assert!(!memmove_copies_backward(0x1000, 0x1002, 6));
+    assert!(!memmove_copies_backward(0x1000, 0x1000, 6)); // dst == src
+    assert!(!memmove_copies_backward(0x1006, 0x1000, 6)); // exactly adjacent
+    assert!(!memmove_copies_backward(0x1002, 0x1000, 0)); // zero size
+}
+
 #[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_memcpy_symbolic_size_pinned() {

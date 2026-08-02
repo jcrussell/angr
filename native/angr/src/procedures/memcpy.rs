@@ -32,6 +32,24 @@ use std::collections::HashMap;
 /// Maximum copy size before falling back to Python.
 const MAX_COPY_SIZE: usize = 1024 * 1024; // 1MB
 
+/// True when a `memmove` of `size` bytes from `src` to `dst` must copy
+/// *backwards* — i.e. `dst` lies strictly inside the source region
+/// `[src, src + size)`, so a forward copy would clobber source bytes it has not
+/// read yet.
+///
+/// The distance is computed with `wrapping_sub` so the classification stays
+/// correct when the source region wraps past `u64::MAX`. `dst.wrapping_sub(src)`
+/// is exactly the number of bytes from `src` forward (modulo 2^64) to `dst`, so
+/// `0 < delta < size` is the wrap-safe spelling of `dst > src && dst < src +
+/// size`. Every address computation in this file wraps (see the
+/// `wrapping_add` calls in `copy_forward` and `NativeMemmove::call`); a plain
+/// `src + size` here would panic in debug builds and silently misclassify the
+/// overlap — picking the wrong copy direction — in release.
+fn memmove_copies_backward(dst: u64, src: u64, size: u64) -> bool {
+    let delta = dst.wrapping_sub(src);
+    delta != 0 && delta < size
+}
+
 /// Copy `size` bytes from a SYMBOLIC `src` and/or `dst` address.
 ///
 /// Both pointers may be symbolic. Each is resolved to its (bounded) set of
@@ -251,7 +269,7 @@ crate::declare_proc! {
 
         // For overlapping regions, we need to copy to a temporary buffer
         // or copy in reverse order if dst > src
-        if dst > src && dst < src + size as u64 {
+        if memmove_copies_backward(dst, src, size as u64) {
             // Overlapping: copy backwards
             for i in (0..size).rev() {
                 let src_addr = src.wrapping_add(i as u64);
