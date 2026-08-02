@@ -76,7 +76,12 @@ crate::declare_proc! {
 crate::declare_proc! {
     /// Native realloc: `void *realloc(void *ptr, size_t size)`.
     ///
-    /// Simplified: just allocates new block and copies (no real freeing).
+    /// Simplified: allocates a new block and copies. The bump allocator never
+    /// reclaims memory, so "freeing" the old block is metadata-only
+    /// (`RustSimState::heap_free`) — but it happens for *every* non-NULL `ptr`,
+    /// including `realloc(ptr, 0)`, which POSIX/glibc treat as a free of the
+    /// original allocation. Gating the free on `size > 0` would leave `ptr`
+    /// marked live in `HeapMetadata` forever.
     name = "realloc",
     struct = NativeRealloc,
     args = [ptr: concrete, size: concrete],
@@ -91,10 +96,14 @@ crate::declare_proc! {
         let old_size = state.heap_metadata().alloc_size(ptr);
         let new_addr = state.heap_alloc(size);
 
-        // Copy old data if ptr != NULL
-        if ptr != 0 && size > 0 {
-            // Free the old allocation (metadata only, bump allocator doesn't reclaim)
+        // Free the old allocation (metadata only, bump allocator doesn't
+        // reclaim). Unconditional on ptr != 0: realloc(ptr, 0) frees too.
+        if ptr != 0 {
             state.heap_free(ptr);
+        }
+
+        // Copy old data if ptr != NULL and the new block can hold anything
+        if ptr != 0 && size > 0 {
             // Copy min(size, old_size) bytes
             let copy_len = old_size.map_or(size, |os| size.min(os));
             let mut offset = 0u64;

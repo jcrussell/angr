@@ -164,6 +164,37 @@ fn test_realloc_tracks_metadata() {
 }
 
 #[test]
+fn test_realloc_zero_size_frees_original() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory(0xC000_0000, 0x10000, Permission::RWX);
+
+    let r1 = NativeMalloc
+        .call(&mut state, &[RustBV::concrete(16, 64)])
+        .unwrap();
+    let old_addr = r1.unwrap().as_u64().unwrap();
+    assert!(state.heap_metadata().is_allocated(old_addr));
+
+    // realloc(ptr, 0) frees the original per POSIX/glibc, even though the
+    // copy loop is skipped (nothing fits in a zero-size block).
+    let r2 = NativeRealloc
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(old_addr as u128, 64),
+                RustBV::concrete(0, 64),
+            ],
+        )
+        .unwrap();
+    let new_addr = r2.unwrap().as_u64().unwrap();
+
+    assert!(!state.heap_metadata().is_allocated(old_addr));
+    assert_eq!(state.heap_metadata().free_count(), 1);
+    // The zero-size allocation itself is still handed out and tracked.
+    assert_ne!(new_addr, old_addr);
+    assert_eq!(state.heap_metadata().alloc_size(new_addr), Some(0));
+}
+
+#[test]
 fn test_heap_metadata_cloned_on_fork() {
     let mut state = RustSimState::new("amd64").unwrap();
     NativeMalloc
