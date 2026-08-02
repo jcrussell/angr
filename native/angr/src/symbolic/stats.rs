@@ -234,6 +234,18 @@ pub(crate) static BRANCH_COND_SIMPLIFY_REDUCED_COUNT: AtomicU64 = AtomicU64::new
 /// during a profiling spike); see `simplify_sample_stride()` below.
 #[cfg(feature = "vex-engine-z3")]
 pub(crate) const SIMPLIFY_SAMPLE_STRIDE_DEFAULT: u64 = 64;
+/// DELIBERATELY NOT EMITTED by `get_solver_stats()` — the only declared-and-reset
+/// counter in this file without a matching `stats.insert(...)`, pinned by
+/// `test_simplify_sample_ticker_is_not_emitted` in `stats_tests.rs`.
+///
+/// It is round-robin *sampling phase*, not an event count: `sample_simplify_skip`
+/// bumps it on every call and samples when `tick % stride == 0`, so its value is
+/// an artifact of the stride, not a measurement. The population it ticks over is
+/// already emitted as `Z3_ASSUME_SYMBOLIC_COUNT + ADD_CONSTRAINT_RAW_TOTAL_COUNT`
+/// (see the group comment above), and the sampled subset as
+/// `BRANCH_COND_SIMPLIFY_SAMPLED_COUNT` — exporting the ticker too would add a
+/// third, redundant denominator that a `bench_diff` capture would rank as a large
+/// mover on every run. It IS reset below so a sampling window starts at phase 0.
 pub(crate) static SIMPLIFY_SAMPLE_TICKER: AtomicU64 = AtomicU64::new(0);
 // (c) full-list assertion-dedup: how often the incoming Z3_ast ptr ALREADY
 // appears in shared+local `z3_assertions` (angr-sfp9). Always-on via the
@@ -793,6 +805,7 @@ pub fn reset_solver_stats() {
     ADD_CONSTRAINT_RAW_TOTAL_COUNT.store(0, Ordering::Relaxed);
     BRANCH_COND_SIMPLIFY_SAMPLED_COUNT.store(0, Ordering::Relaxed);
     BRANCH_COND_SIMPLIFY_REDUCED_COUNT.store(0, Ordering::Relaxed);
+    // Reset-but-never-emitted by design; see the doc comment on the static.
     SIMPLIFY_SAMPLE_TICKER.store(0, Ordering::Relaxed);
     // angr-0xyq2 Phase 2: bounded symbolic file content serving.
     SYMFILE_READS_NATIVE.store(0, Ordering::Relaxed);

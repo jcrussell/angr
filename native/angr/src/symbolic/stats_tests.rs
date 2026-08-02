@@ -315,6 +315,40 @@ fn test_reset_measurement_counters_zeroes_every_entry() {
     }
 }
 
+/// `SIMPLIFY_SAMPLE_TICKER` is the one declared-and-reset counter in `stats.rs`
+/// with no `stats.insert(...)`, because it is sampling *phase* rather than a
+/// measurement — see its doc comment. Pins that so the asymmetry cannot be
+/// "fixed" by someone auditing declared-vs-emitted counters, and pins the two
+/// keys the doc points at instead as the real denominator/numerator.
+///
+/// Marker-bump: bump the ticker far beyond anything a sibling test produces and
+/// assert no emitted value carries it, so a new key under any spelling fails.
+#[test]
+fn test_simplify_sample_ticker_is_not_emitted() {
+    let _serial = marker_guard();
+    SIMPLIFY_SAMPLE_TICKER.fetch_add(MARK, Ordering::Relaxed);
+    let stats = get_solver_stats();
+    undo_bump(&SIMPLIFY_SAMPLE_TICKER);
+
+    // Nanosecond keys are excluded: they are wall-clock sums, and a long enough
+    // suite run could legitimately exceed MARK (~18 min) without any leak.
+    let leaked: Vec<&String> = stats
+        .iter()
+        .filter(|(k, v)| **v >= MARK && !k.contains("time") && !k.ends_with("_ns"))
+        .map(|(k, _)| k)
+        .collect();
+    assert!(
+        leaked.is_empty(),
+        "SIMPLIFY_SAMPLE_TICKER must stay unemitted, but it reached {leaked:?}"
+    );
+    for key in ["add_constraint_raw_total", "branch_cond_simplify_sampled"] {
+        assert!(
+            stats.contains_key(key),
+            "{key} is the emitted stand-in the ticker's doc comment defers to"
+        );
+    }
+}
+
 // NOTE: this file deliberately does NOT call `reset_solver_stats()`. Sibling
 // tests (`context_tests/constraints.rs`, `syscalls/fd_io_tests.rs`,
 // `memory/tests/symbolic.rs`, `context_tests/solver.rs`, ...) delta-assert
