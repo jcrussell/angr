@@ -669,11 +669,48 @@ where
 ///
 /// `size` must be `<= 16`; for `i >= 16` the `val >> (i * 8)` shift wraps mod
 /// 128 and would repeat earlier bytes (callers that need wider reads chunk
-/// first — see `_get_state_memory`). This is the read-side counterpart of the
-/// pack loop in `store_concrete_bytes_chunked`, hand-copied across the eval /
-/// memory-get paths in `state_api`/`pending_api` before consolidation.
+/// first — see `load_concrete_bytes_chunked`). This is the read-side
+/// counterpart of the pack loop in `store_concrete_bytes_chunked`, hand-copied
+/// across the eval / memory-get paths in `state_api`/`pending_api` before
+/// consolidation.
 pub(crate) fn u128_to_le_bytes(val: u128, size: usize) -> Vec<u8> {
     (0..size).map(|i| (val >> (i * 8)) as u8).collect()
+}
+
+/// Read `size` bytes at `addr` in `<= 16`-byte chunks via the caller-supplied
+/// source, concatenating the results.
+///
+/// Read-side mirror of `store_concrete_bytes_chunked`, and the reason both
+/// exist is the same: `RustBV::Concrete` is `u128`-backed, so `as_u128()` /
+/// `u128_to_le_bytes` only round-trip 16 bytes. A single wider load either
+/// truncates the tail or wraps mod 128 into a repeating 16-byte pattern
+/// (angr-ph300.19). The source closure abstracts the only divergence between
+/// call sites: which memory API to read through and how to map its failure
+/// into a `PyErr`. It is called once per chunk with `(chunk_addr, chunk_size)`
+/// and must return exactly `chunk_size` bytes; the first error propagates and
+/// the partial prefix is dropped.
+///
+/// Callers do their state / pending lookup **once** around this call and read
+/// inside that single borrow. The hand-copies this replaced
+/// (`_get_state_memory`, `_get_pending_memory`, `_pending_memory_load`) each
+/// recursed into themselves per chunk, redoing the `with_state` / `with_pending`
+/// lookup — and, for the pending pair, re-borrowing the solver — every 16 bytes
+/// (angr-9ke6b.82).
+///
+/// `size == 0` yields an empty vector without invoking the source at all,
+/// matching `store_concrete_bytes_chunked`'s empty-slice behavior.
+pub(crate) fn load_concrete_bytes_chunked<F>(addr: u64, size: u32, mut load: F) -> PyResult<Vec<u8>>
+where
+    F: FnMut(u64, u32) -> PyResult<Vec<u8>>,
+{
+    let mut out = Vec::with_capacity(size as usize);
+    let mut offset = 0u32;
+    while offset < size {
+        let chunk_size = (size - offset).min(16);
+        out.extend_from_slice(&load(addr + offset as u64, chunk_size)?);
+        offset += chunk_size;
+    }
+    Ok(out)
 }
 
 /// Prepare the per-callback solver context for a Python round-trip.

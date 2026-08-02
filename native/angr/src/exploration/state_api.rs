@@ -625,39 +625,41 @@ impl RustExplorationManager {
         })
     }
 
+    /// Concrete bytes for `size` bytes of memory at `addr` on `state_id`.
+    ///
+    /// Returns `Ok(None)` when *any* chunk of the range is unreadable — the
+    /// load errored (unmapped) or the value is symbolic with no SAT witness —
+    /// rather than fabricating a short or zero-filled buffer. A missing
+    /// `state_id` is still an `Err` from `with_state`: the state lookup happens
+    /// once, outside the chunk loop, so the only error the loop itself can
+    /// raise is the unreadable-chunk sentinel below.
+    ///
+    /// Unlike `_get_pending_memory`, this falls back to `state.eval()` for a
+    /// symbolic-but-satisfiable load (angr-04tw3.2 deliberately keeps the
+    /// pending path eval-free).
     pub(crate) fn _get_state_memory(
         &self,
         state_id: u64,
         addr: u64,
         size: u32,
     ) -> PyResult<Option<Vec<u8>>> {
-        // The u128 reconstruction below round-trips at most 16 bytes; a wider
-        // request would truncate (`val >> (i*8)` wraps mod 128 for i >= 16).
-        // Read in <=16-byte chunks and concatenate so any size is exact.
-        if size > 16 {
-            let mut out = Vec::with_capacity(size as usize);
-            let mut off = 0u32;
-            while off < size {
-                let chunk = (size - off).min(16);
-                match self._get_state_memory(state_id, addr + off as u64, chunk)? {
-                    Some(bytes) => out.extend_from_slice(&bytes),
-                    None => return Ok(None),
-                }
-                off += chunk;
-            }
-            return Ok(Some(out));
-        }
-        self.with_state(state_id, |state| match state.memory_load(addr, size) {
-            Ok(bv) => {
+        self.with_state(state_id, |state| {
+            // Sentinel: never escapes this closure — the match below turns it
+            // back into the `Ok(None)` this method's contract promises.
+            let unreadable = || PyValueError::new_err("unreadable chunk");
+            let res = super::helpers::load_concrete_bytes_chunked(addr, size, |a, n| {
+                let bv = state.memory_load(a, n).map_err(|_| unreadable())?;
                 if let Some(val) = bv.as_u128() {
-                    return Ok(Some(super::helpers::u128_to_le_bytes(val, size as usize)));
+                    return Ok(super::helpers::u128_to_le_bytes(val, n as usize));
                 }
-                if let Some(val) = state.eval(&bv) {
-                    return Ok(Some(super::helpers::u128_to_le_bytes(val, size as usize)));
-                }
-                Ok(None)
+                // Symbolic: concretize to any satisfying witness.
+                let val = state.eval(&bv).ok_or_else(unreadable)?;
+                Ok(super::helpers::u128_to_le_bytes(val, n as usize))
+            });
+            match res {
+                Ok(bytes) => Ok(Some(bytes)),
+                Err(_) => Ok(None),
             }
-            Err(_) => Ok(None),
         })
     }
 

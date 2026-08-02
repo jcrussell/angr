@@ -298,42 +298,31 @@ impl RustExplorationManager {
     // Pending memory get/set (high-level API, used by Python init)
     // -------------------------------------------------------------------------
 
+    /// Concrete bytes for `size` bytes of memory on a pending callback state.
+    ///
+    /// Errors (rather than concretizing) when any chunk of the range is
+    /// symbolic — angr-04tw3.2 deliberately keeps this path eval-free, which is
+    /// the one behavioral difference from `_get_state_memory`.
     pub(crate) fn _get_pending_memory(
         &self,
         state_id: u64,
         addr: u64,
         size: u32,
     ) -> PyResult<Vec<u8>> {
-        // u128_to_le_bytes only round-trips 16 bytes; wider concrete loads
-        // wrapped mod 128 (repeating pattern) and the 'is symbolic' error was
-        // misleading for wide concrete buffers. Chunk to <=16 bytes
-        // (angr-ph300.19).
-        if size > 16 {
-            let mut out = Vec::with_capacity(size as usize);
-            let mut off = 0u32;
-            while off < size {
-                let chunk = (size - off).min(16);
-                out.extend_from_slice(&self._get_pending_memory(
-                    state_id,
-                    addr + off as u64,
-                    chunk,
-                )?);
-                off += chunk;
-            }
-            return Ok(out);
-        }
         self.with_pending(state_id, |pending| {
-            let bv = pending
-                .state
-                .memory_load(addr, size)
-                .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            super::helpers::load_concrete_bytes_chunked(addr, size, |a, n| {
+                let bv = pending
+                    .state
+                    .memory_load(a, n)
+                    .map_err(|e| PyValueError::new_err(e.to_string()))?;
 
-            let value = bv.as_u128().ok_or_else(|| {
-                PyValueError::new_err(format!(
-                    "pending memory at 0x{addr:x} is symbolic; cannot convert to concrete bytes"
-                ))
-            })?;
-            Ok(super::helpers::u128_to_le_bytes(value, size as usize))
+                let value = bv.as_u128().ok_or_else(|| {
+                    PyValueError::new_err(format!(
+                        "pending memory at 0x{a:x} is symbolic; cannot convert to concrete bytes"
+                    ))
+                })?;
+                Ok(super::helpers::u128_to_le_bytes(value, n as usize))
+            })
         })
     }
 
@@ -624,60 +613,43 @@ impl RustExplorationManager {
         })
     }
 
+    /// Concrete bytes for a pending callback state's memory, evaluating
+    /// symbolic bytes against the state's live solver.
+    ///
+    /// Unlike `_get_pending_memory` (which is eval-free per angr-04tw3.2) this
+    /// concretizes a symbolic load to any SAT witness; it errors only when the
+    /// load fails outright or no witness exists. Both refusals are errors
+    /// rather than a zero fill: callbacks consume the result by length and
+    /// mistook full-size zeros for real data (angr-ph300.19).
     pub(crate) fn _pending_memory_load(
         &self,
         state_id: u64,
         addr: u64,
         size: u32,
     ) -> PyResult<Vec<u8>> {
-        // The u128 reconstruction below round-trips at most 16 bytes; a wider
-        // request truncated to 16 (`.min(16)`), silently dropping the tail.
-        // Read in <=16-byte chunks and concatenate so any size is exact
-        // (mirrors state_api::_get_state_memory, angr-ph300.19).
-        if size > 16 {
-            let mut out = Vec::with_capacity(size as usize);
-            let mut off = 0u32;
-            while off < size {
-                let chunk = (size - off).min(16);
-                out.extend_from_slice(&self._pending_memory_load(
-                    state_id,
-                    addr + off as u64,
-                    chunk,
-                )?);
-                off += chunk;
-            }
-            return Ok(out);
-        }
         self.with_pending(state_id, |pending| {
+            // One solver borrow for the whole range, not one per 16-byte chunk.
             let solver_ref = pending.state.solver();
             let ctx = solver_ref.borrow();
-            match pending.state.memory().load_concrete(addr, size, &ctx) {
-                Ok(bv) => {
-                    if let Some(val) = bv.as_u128() {
-                        Ok(super::helpers::u128_to_le_bytes(val, size as usize))
-                    } else if let Some(val) = ctx.eval(&bv) {
-                        Ok(super::helpers::u128_to_le_bytes(val, size as usize))
-                    } else {
-                        // Symbolic and not concretizable (eval found no SAT
-                        // witness). Mirror _get_state_memory's refusal to
-                        // fabricate data rather than the old swallow-to-zero:
-                        // returning full-size zeros here let callbacks
-                        // consuming by length mistake them for real bytes
-                        // (the same bug the Err arm below was fixed for,
-                        // angr-ph300.19). Propagate an error so the caller
-                        // skips the slot instead.
-                        Err(PyValueError::new_err(format!(
-                            "pending memory load at 0x{addr:x} is symbolic \
-                             and not concretizable"
-                        )))
+            super::helpers::load_concrete_bytes_chunked(addr, size, |a, n| {
+                match pending.state.memory().load_concrete(a, n, &ctx) {
+                    Ok(bv) => {
+                        if let Some(val) = bv.as_u128() {
+                            Ok(super::helpers::u128_to_le_bytes(val, n as usize))
+                        } else if let Some(val) = ctx.eval(&bv) {
+                            Ok(super::helpers::u128_to_le_bytes(val, n as usize))
+                        } else {
+                            Err(PyValueError::new_err(format!(
+                                "pending memory load at 0x{a:x} is symbolic \
+                                 and not concretizable"
+                            )))
+                        }
                     }
+                    Err(e) => Err(PyValueError::new_err(format!(
+                        "pending memory load at 0x{a:x} failed: {e}"
+                    ))),
                 }
-                // Previously swallowed the error and returned full-size zeros,
-                // which callbacks consuming by length mistook for real data.
-                Err(e) => Err(PyValueError::new_err(format!(
-                    "pending memory load at 0x{addr:x} failed: {e}"
-                ))),
-            }
+            })
         })
     }
 
