@@ -31,7 +31,7 @@
 //!     states it must terminate its key with the *front index* `i` so ties are
 //!     broken by insertion order (`Fifo`/`Lifo` are trivially positional;
 //!     `CoverageGuided`/`FindDirected`/`LoopHeadRoundRobin` front-scan;
-//!     `DirectedCfgDistance` sorts by `(distance, i)`; `RandomState` draws from
+//!     `DirectedCfgDistance` ranks by `(distance, i)`; `RandomState` draws from
 //!     a seeded SplitMix64). No policy may leave a tie unresolved.
 //!   * **The fork-insertion chokepoint** — `policy.on_fork` is the only place
 //!     forks enter `active` (`helpers.rs::push_to_active_or_drop` →
@@ -555,9 +555,20 @@ impl SelectionPolicy for DirectedCfgDistance {
         let dists: Vec<u64> = active.iter().map(|st| self.distance(st)).collect();
         // The beam = the `beam_width` closest states by distance (front index
         // breaks distance ties so beam membership is deterministic).
+        //
+        // Partial selection, not a full sort (angr-9ke6b.60): only *which*
+        // `beam_len` indices land in the beam matters — the pick below is a
+        // `min_by_key` over the whole beam, and its key ends in the front index
+        // `i`, so it is a total order and the winner is independent of the
+        // beam's internal order. `select_nth_unstable_by_key` partitions in
+        // O(n) instead of sorting all `n` in O(n log n), which matters on the
+        // wide active frontier this beam design targets.
+        let beam_len = self.beam_width.min(len);
         let mut ranked: Vec<usize> = (0..len).collect();
-        ranked.sort_by_key(|&i| (dists[i], i));
-        let beam = &ranked[..self.beam_width.min(len)];
+        if beam_len < len {
+            ranked.select_nth_unstable_by_key(beam_len, |&i| (dists[i], i));
+        }
+        let beam = &ranked[..beam_len];
 
         // Held across the beam's min-by-key scan and the post-remove count
         // bump — the scan reads `dispatched` per beam member, so it cannot be
@@ -1129,6 +1140,86 @@ mod tests {
         let mut want = ids.clone();
         want.sort_unstable();
         assert_eq!(order, want, "drain is a permutation: no drops or dupes");
+    }
+
+    /// Reference beam pick built on a **full sort** — the pre-angr-9ke6b.60
+    /// implementation of `DirectedCfgDistance::select`, kept here as the oracle
+    /// the partial `select_nth_unstable_by_key` selection must agree with.
+    /// Returns the dispatch order as *insertion indices* into `pcs`.
+    ///
+    /// The real `select`'s `Reverse(history.len())` tiebreak is omitted: every
+    /// `state_at` state has an empty history, so that term is constant across
+    /// the beam and cannot change the pick.
+    fn directed_drain_full_sort_oracle(
+        dist: &HashMap<u64, u64>,
+        pcs: &[u64],
+        beam_width: usize,
+    ) -> Vec<usize> {
+        let mut active: Vec<(usize, u64)> = pcs.iter().copied().enumerate().collect();
+        let mut dispatched: HashMap<u64, u64> = HashMap::new();
+        let mut order = Vec::new();
+        while !active.is_empty() {
+            let len = active.len();
+            let dists: Vec<u64> = active
+                .iter()
+                .map(|&(_, pc)| dist.get(&pc).copied().unwrap_or(u64::MAX))
+                .collect();
+            let mut ranked: Vec<usize> = (0..len).collect();
+            ranked.sort_by_key(|&i| (dists[i], i));
+            let beam = &ranked[..beam_width.max(1).min(len)];
+            let pick = *beam
+                .iter()
+                .min_by_key(|&&i| {
+                    let count = dispatched.get(&active[i].1).copied().unwrap_or(0);
+                    (count, dists[i], i)
+                })
+                .unwrap();
+            let (id, pc) = active.remove(pick);
+            *dispatched.entry(pc).or_insert(0) += 1;
+            order.push(id);
+        }
+        order
+    }
+
+    #[test]
+    fn test_directed_wide_frontier_matches_full_sort() {
+        // angr-9ke6b.60: `select` partitions with `select_nth_unstable_by_key`
+        // instead of sorting the whole ranked vec. Partial selection fixes only
+        // *which* indices are in the beam, not their internal order — so this
+        // drives a wide frontier (200 states, heavy distance ties, a slice of
+        // unmapped/`u64::MAX` states) through the real policy and asserts the
+        // dispatch order is identical to the full-sort oracle above.
+        let _ctx = Context::thread_local();
+        // 40 distinct pcs, 5 states each => every distance value is a 5+-way
+        // tie, which is exactly where an unstable partition could disagree with
+        // a stable sort if beam membership were not uniquely determined.
+        let pcs: Vec<u64> = (0..200u64).map(|i| 0x1000 + (i * 7 % 40) * 0x10).collect();
+        // Map only 30 of the 40 pcs; the other 10 fall through to u64::MAX.
+        let dist: HashMap<u64, u64> = (0..30u64).map(|j| (0x1000 + j * 0x10, j % 6)).collect();
+
+        for beam_width in [1usize, 2, 5, 200, 500] {
+            let policy = DirectedCfgDistance::new(dist.clone(), beam_width);
+            let mut active: VecDeque<RustSimState> = VecDeque::new();
+            let ids: Vec<u64> = pcs
+                .iter()
+                .map(|&pc| {
+                    let st = state_at(pc);
+                    let id = st.state_id();
+                    active.push_back(st);
+                    id
+                })
+                .collect();
+            let mut got = Vec::new();
+            while let Some(st) = policy.select(&mut active) {
+                let id = st.state_id();
+                got.push(ids.iter().position(|&x| x == id).expect("dispatched id"));
+            }
+            assert_eq!(
+                got,
+                directed_drain_full_sort_oracle(&dist, &pcs, beam_width),
+                "partial beam selection diverged from the full-sort oracle at beam_width={beam_width}",
+            );
+        }
     }
 
     #[test]
