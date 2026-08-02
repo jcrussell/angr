@@ -355,6 +355,11 @@ fn do_scanf(
 /// ```c
 /// int scanf(const char *format, ...);
 /// ```
+///
+/// Aliased to `__isoc99_scanf`, the name modern glibc emits for a `scanf`
+/// call: the two differ only in how glibc handles legacy `%a` allocation
+/// semantics, which `do_scanf` does not implement either way, so one impl
+/// serves both dispatch names (DRY — same mechanism as printf/vprintf).
 pub(crate) struct NativeScanf;
 
 impl NativeSimProcedure for NativeScanf {
@@ -362,32 +367,12 @@ impl NativeSimProcedure for NativeScanf {
         "scanf"
     }
 
+    fn aliases(&self) -> &'static [&'static str] {
+        &["__isoc99_scanf"]
+    }
+
     fn num_args(&self) -> usize {
         7 // format + up to 6 pointer args
-    }
-
-    fn call(
-        &self,
-        state: &mut RustSimState,
-        args: &[RustBV],
-    ) -> Result<Option<RustBV>, ProcedureError> {
-        let fmt_addr = extract_concrete_arg(&args[0], "format")?;
-        do_scanf(state, fmt_addr, &args[1..], "stdin", true)
-    }
-}
-
-/// Native __isoc99_scanf implementation (alias for scanf).
-///
-/// Many binaries compiled with newer glibc use __isoc99_scanf instead of scanf.
-pub(crate) struct NativeIsoc99Scanf;
-
-impl NativeSimProcedure for NativeIsoc99Scanf {
-    fn name(&self) -> &'static str {
-        "__isoc99_scanf"
-    }
-
-    fn num_args(&self) -> usize {
-        7
     }
 
     fn call(
@@ -477,6 +462,10 @@ fn do_fscanf(
 /// ```c
 /// int fscanf(FILE *stream, const char *format, ...);
 /// ```
+///
+/// Aliased to `__isoc99_fscanf` for the same reason [`NativeScanf`] aliases
+/// `__isoc99_scanf`: modern glibc emits the `__isoc99_` name, and the two
+/// differ only in legacy `%a` handling that `do_scanf` does not implement.
 pub(crate) struct NativeFscanf;
 
 impl NativeSimProcedure for NativeFscanf {
@@ -484,33 +473,12 @@ impl NativeSimProcedure for NativeFscanf {
         "fscanf"
     }
 
+    fn aliases(&self) -> &'static [&'static str] {
+        &["__isoc99_fscanf"]
+    }
+
     fn num_args(&self) -> usize {
         8 // stream + format + up to 6 pointer args
-    }
-
-    fn call(
-        &self,
-        state: &mut RustSimState,
-        args: &[RustBV],
-    ) -> Result<Option<RustBV>, ProcedureError> {
-        let file_ptr = extract_concrete_arg(&args[0], "stream")?;
-        let fmt_addr = extract_concrete_arg(&args[1], "format")?;
-        do_fscanf(state, file_ptr, fmt_addr, &args[2..])
-    }
-}
-
-/// Native __isoc99_fscanf implementation (alias for fscanf).
-///
-/// Many binaries compiled with newer glibc use __isoc99_fscanf instead of fscanf.
-pub(crate) struct NativeIsoc99Fscanf;
-
-impl NativeSimProcedure for NativeIsoc99Fscanf {
-    fn name(&self) -> &'static str {
-        "__isoc99_fscanf"
-    }
-
-    fn num_args(&self) -> usize {
-        8
     }
 
     fn call(

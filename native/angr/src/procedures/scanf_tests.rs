@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::memory::Permission;
+use crate::procedures::NativeProcedureRegistry;
 
 fn setup_state() -> RustSimState {
     crate::procedures::test_util::amd64_state_with_regions(&[(0x2000, 0x1000)])
@@ -345,7 +346,15 @@ fn test_isoc99_scanf() {
     let mut state = setup_state();
     state.map_memory_data(0x1000, b"%d\x00", Permission::RWX);
 
-    let result = NativeIsoc99Scanf
+    // __isoc99_scanf is an alias of NativeScanf, so go through the registry:
+    // calling NativeScanf directly would prove nothing about the alias being
+    // reachable under its own dispatch name.
+    let registry = NativeProcedureRegistry::new();
+    let proc = registry
+        .get("__isoc99_scanf")
+        .expect("__isoc99_scanf must dispatch natively");
+
+    let result = proc
         .call(
             &mut state,
             &[
@@ -580,7 +589,13 @@ fn test_isoc99_fscanf_basic() {
     let file_ptr = 0x10000u64;
     setup_file_struct(&mut state, file_ptr, 4);
 
-    let result = NativeIsoc99Fscanf
+    // Alias of NativeFscanf — resolve by dispatch name (see test_isoc99_scanf).
+    let registry = NativeProcedureRegistry::new();
+    let proc = registry
+        .get("__isoc99_fscanf")
+        .expect("__isoc99_fscanf must dispatch natively");
+
+    let result = proc
         .call(
             &mut state,
             &[

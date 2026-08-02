@@ -507,13 +507,13 @@ impl NativeProcedureRegistry {
         // String search
         registry.register(Arc::new(strstr::NativeStrstr));
         // Input parsing (scanf family)
+        // NativeScanf/NativeFscanf also serve the __isoc99_ dispatch names
+        // modern glibc emits, via their `aliases()` (angr-9ke6b.112).
         registry.register(Arc::new(scanf::NativeScanf));
-        registry.register(Arc::new(scanf::NativeIsoc99Scanf));
         registry.register(Arc::new(scanf::NativeSscanf));
         // fscanf/__isoc99_fscanf: resolve FILE._fileno → route through the
         // shared scanf core (stream variant, mirrors fprintf↔printf).
         registry.register(Arc::new(scanf::NativeFscanf));
-        registry.register(Arc::new(scanf::NativeIsoc99Fscanf));
         // Environment variable access
         registry.register(Arc::new(getenv::NativeGetenv));
         registry.register(Arc::new(getopt::NativeGetopt));
