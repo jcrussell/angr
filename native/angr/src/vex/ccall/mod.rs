@@ -313,8 +313,12 @@ fn compute_flags_from_category(
     }
 }
 
-/// Evaluate a condition based on flags
-fn eval_condition(cond: u64, flags: &Flags) -> u64 {
+/// Evaluate a condition based on flags.
+///
+/// Returns `None` for unknown condition codes, mirroring
+/// `x86_symbolic::eval_sym_condition`; callers fall through to Python rather
+/// than reporting a definite (and wrong) "condition false".
+fn eval_condition(cond: u64, flags: &Flags) -> Option<u64> {
     use cond_type::*;
 
     let inv = (cond & 1) as u8;
@@ -328,14 +332,16 @@ fn eval_condition(cond: u64, flags: &Flags) -> u64 {
         COND_P | COND_NP => inv ^ flags.pf,
         COND_L | COND_NL => inv ^ (flags.sf ^ flags.of),
         COND_LE | COND_NLE => inv ^ ((flags.sf ^ flags.of) | flags.zf),
-        _ => 0, // Unknown condition
+        // SILENT(cat-a): unrecognized cond -> defer to the Python ccall
+        // implementation, same as the symbolic path.
+        _ => return None,
     };
 
-    (result & 1) as u64
+    Some((result & 1) as u64)
 }
 
 /// Evaluate condition from COPY operation (flags in cc_dep1)
-fn eval_condition_from_copy(cond: u64, cc_dep1: u64) -> u64 {
+fn eval_condition_from_copy(cond: u64, cc_dep1: u64) -> Option<u64> {
     let cf = ((cc_dep1 >> flag_shift::G_CC_SHIFT_C) & 1) as u8;
     let pf = ((cc_dep1 >> flag_shift::G_CC_SHIFT_P) & 1) as u8;
     let zf = ((cc_dep1 >> flag_shift::G_CC_SHIFT_Z) & 1) as u8;
@@ -385,10 +391,10 @@ fn calculate_condition(
 ) -> Option<u64> {
     let info = cc_op_info(arch, cc_op)?;
     if info.category == OpCategory::Copy {
-        return Some(eval_condition_from_copy(cond, cc_dep1));
+        return eval_condition_from_copy(cond, cc_dep1);
     }
     let flags = compute_flags_from_category(info.category, info.nbits, cc_dep1, cc_dep2, cc_ndep);
-    Some(eval_condition(cond, &flags))
+    eval_condition(cond, &flags)
 }
 
 /// Calculate the carry flag (CF) for the given cc_op.

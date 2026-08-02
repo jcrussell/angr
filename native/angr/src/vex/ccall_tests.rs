@@ -683,6 +683,63 @@ fn rflags_c_inc_dec_symbolic_dep_preserves_carry() {
     }
 }
 
+/// An out-of-range condition code must defer to Python (`None`) rather than
+/// silently answering "condition false", matching `eval_sym_condition`.
+/// Covers both `calculate_condition` arms: the COPY shortcut and the
+/// compute-flags path, on both x86 and AMD64.
+#[test]
+fn unknown_cond_defers_to_python() {
+    let f = Flags {
+        cf: 1,
+        pf: 1,
+        zf: 1,
+        sf: 1,
+        of: 1,
+    };
+    let ctx = crate::symbolic::SymContext::new_mock();
+    let sym_f = SymFlags {
+        cf: RustBV::concrete(1, 1),
+        pf: RustBV::concrete(1, 1),
+        zf: RustBV::concrete(1, 1),
+        sf: RustBV::concrete(1, 1),
+        of: RustBV::concrete(1, 1),
+    };
+    // 16 is the first value past the 4-bit VEX condition range.
+    for cond in [16u64, 17, 42, u64::MAX] {
+        assert_eq!(eval_condition(cond, &f), None, "cond={cond}");
+        assert!(
+            eval_sym_condition(cond, &sym_f, &ctx).is_none(),
+            "cond={cond}"
+        );
+        // COPY path (flags live in cc_dep1) and the compute-flags path.
+        assert_eq!(
+            amd64g_calculate_condition(cond, amd64_cc_op::G_CC_OP_COPY, 0, 0, 0),
+            None,
+            "cond={cond}"
+        );
+        assert_eq!(
+            amd64g_calculate_condition(cond, amd64_cc_op::G_CC_OP_SUBL, 1, 1, 0),
+            None,
+            "cond={cond}"
+        );
+        assert_eq!(
+            x86g_calculate_condition(cond, x86_cc_op::G_CC_OP_COPY, 0, 0, 0),
+            None,
+            "cond={cond}"
+        );
+        assert_eq!(
+            x86g_calculate_condition(cond, x86_cc_op::G_CC_OP_SUBL, 1, 1, 0),
+            None,
+            "cond={cond}"
+        );
+    }
+    // Sanity: a legitimate cond still yields an answer on the same inputs.
+    assert!(eval_condition(cond_type::COND_Z, &f).is_some());
+    assert!(
+        amd64g_calculate_condition(cond_type::COND_Z, amd64_cc_op::G_CC_OP_COPY, 0, 0, 0).is_some()
+    );
+}
+
 /// Diff-fuzz the full eval_sym_condition path against eval_condition.
 #[test]
 fn diff_fuzz_eval_sym_condition() {
@@ -708,7 +765,7 @@ fn diff_fuzz_eval_sym_condition() {
             of: RustBV::concrete(of as u128, 1),
         };
         for &cond in &conds {
-            let conc = eval_condition(cond, &f);
+            let conc = eval_condition(cond, &f).expect("standard cond");
             let sym = eval_sym_condition(cond, &sym_f, &ctx)
                 .expect("standard cond")
                 .as_u64()
