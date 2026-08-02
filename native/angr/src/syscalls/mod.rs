@@ -548,9 +548,10 @@ impl NativeSyscallRegistry {
                 (91, munmap::NativeMunmapSyscall),
                 // Legacy 106/107/108 (old 32-bit struct stat) have no
                 // Rust writer — modern 32-bit glibc emits the LFS `*64`
-                // variants below (struct stat64, `write_i386_stat`).
-                // angr's i386 syscall map has no 106/107 entry either, so
-                // they fall back to Python (angr-11djq.5.1).
+                // variants below (struct stat64, `write_i386_stat`), whose
+                // field offsets differ from the pre-LFS layout. angr's i386
+                // map does define all three, so they fall back to Python
+                // rather than getting a wrong-offset struct (angr-11djq.5.1).
                 (125, mprotect::NativeMprotectSyscall),
                 (133, directory::NativeFchdirSyscall),
                 (144, memory_extras::NativeMsyncSyscall),
@@ -661,7 +662,13 @@ impl NativeSyscallRegistry {
                 (85, file_path::NativeReadlinkSyscall),
                 (90, mmap::NativeOldMmapSyscall),
                 (91, munmap::NativeMunmapSyscall),
-                (107, file_path::NativeLstatSyscall),
+                // Legacy 106/107/108 (old 32-bit struct stat) have no Rust
+                // writer — `write_arm_stat` emits the LFS `struct stat64`
+                // layout used by 195/196/197, whose field offsets differ
+                // (st_size at 0x30, 64-bit st_ino at 0x0C). angr's "arm" map
+                // does define all three, so they fall back to Python rather
+                // than getting a wrong-offset struct (angr-9ke6b.226); same
+                // policy as i386 106/107/108 and MIPS32 4106/4107/4108.
                 (125, mprotect::NativeMprotectSyscall),
                 (133, directory::NativeFchdirSyscall),
                 (144, memory_extras::NativeMsyncSyscall),

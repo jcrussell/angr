@@ -854,9 +854,9 @@ impl NativeSyscall for NativeStatSyscall {
 /// Unknown / empty path returns `-1` with no buffer write. Arch
 /// coverage: AMD64 + X86 + ARM + MIPS32 (the latter three via their
 /// LFS `lstat64` number); ARM64's asm-generic ABI dropped legacy
-/// `lstat` entirely. NOTE: ARM additionally registers the *legacy*
-/// number 107, whose pre-LFS `struct stat` layout does not match what
-/// `write_arm_stat` emits — tracked separately, see angr-9ke6b.226.
+/// `lstat` entirely. The legacy numbers (i386/ARM 107, MIPS32 4107)
+/// are deliberately left to Python — their pre-LFS `struct stat`
+/// layout does not match what the `*64` writers emit (angr-9ke6b.226).
 /// Unsupported
 /// arch returns `Other` BEFORE touching the path, mirroring the `stat`
 /// policy.

@@ -741,11 +741,12 @@ fn file_path_stubs_registered_on_all_arches() {
     //   * AArch64 asm-generic ABI dropped legacy `lstat` and `readlink`
     //     (only *at variants exist).
     //   * 32-bit Linux i386 / ARM EABI use the LFS `lstat64` (196) and
-    //     `fstatat64` (327) numbers — angr's i386/arm maps have no legacy
-    //     106/107 entry — both wired to the lstat / newfstatat handlers
-    //     (angr-11djq.5.1 / .5.2). MIPS32 O32 also uses the LFS `lstat64`
-    //     (4214) and `fstatat64` (4293, wired to the newfstatat handler)
-    //     numbers (angr-11djq.5.3) — legacy `lstat` (4107) stays on Python.
+    //     `fstatat64` (327) numbers, both wired to the lstat / newfstatat
+    //     handlers (angr-11djq.5.1 / .5.2). MIPS32 O32 also uses the LFS
+    //     `lstat64` (4214) and `fstatat64` (4293, wired to the newfstatat
+    //     handler) numbers (angr-11djq.5.3). The legacy `lstat` numbers
+    //     (i386/ARM 107, MIPS32 4107) stay on Python — the Rust writers
+    //     emit the `*64` layout only (angr-9ke6b.226).
     let r = NativeSyscallRegistry::new();
 
     // (arch, lstat-or-None, newfstatat-or-None, readlink-or-None,
@@ -802,6 +803,24 @@ fn file_path_stubs_registered_on_all_arches() {
                 .unwrap_or_else(|| panic!("{arch} readlink ({n}) missing"));
             assert_eq!(h.name(), "readlink");
             assert_eq!(h.num_args(), 3);
+        }
+    }
+
+    // angr-9ke6b.226 regression: the pre-LFS stat-family numbers must
+    // stay unregistered on the 32-bit arches. ARM used to register 107
+    // to the lstat handler, which writes the `struct stat64` layout
+    // (`write_arm_stat`) — a wrong-offset buffer instead of a clean
+    // fall-through to Python's proc.
+    for &(arch, legacy) in &[
+        ("X86", [106u64, 107, 108]),
+        ("ARM", [106, 107, 108]),
+        ("MIPS32", [4106, 4107, 4108]),
+    ] {
+        for n in legacy {
+            assert!(
+                r.get(arch, n).is_none(),
+                "{arch} legacy stat-family ({n}) must fall back to Python"
+            );
         }
     }
 }
