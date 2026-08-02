@@ -234,12 +234,16 @@ define_execution_stats! {
     stmt_count: sum,
     /// Number of deferred forks PRESENTED to the exploration loop's
     /// post-block processing (input length of the `deferred_forks` Vec,
-    /// summed across all processing sites). NOT every entry produces a
-    /// solver clone: if a stored/reconstructed condition is unavailable
-    /// the entry is silently skipped in the run_loop callback-resume path
-    /// (run_loop.rs ~line 477), or routed through a no-condition
-    /// conservative `state.fork()` in the stepping paths (which DOES clone
-    /// the solver but is not tallied below). This counter is therefore
+    /// summed across all four processing sites:
+    /// `fork_materialize::materialize_deferred_forks` and its parallel
+    /// mirror `core_outcome_handlers::materialize_deferred_forks_core`,
+    /// plus `SimulationLoop::process_deferred_forks_into` and its mirror
+    /// `core_outcome_handlers::process_deferred_forks_into_core`). NOT every
+    /// entry produces a *tallied* solver clone: an entry whose condition is
+    /// neither stored nor reconstructible is routed through a no-condition
+    /// conservative `state.fork()` (which DOES clone the solver but is not
+    /// tallied below), and neither `process_deferred_forks_into` variant
+    /// tallies solver forks on either branch. This counter is therefore
     /// NOT directly comparable to `solver_fork_count` — they measure
     /// orthogonal but overlapping concepts. See angr-95up.2.
     deferred_fork_count: sum,
@@ -248,18 +252,23 @@ define_execution_stats! {
     /// Time spent in solver fork/clone operations (nanoseconds).
     solver_fork_time_ns: sum,
     /// Number of solver fork operations whose Z3-clone cost is timed by
-    /// `solver_fork_time_ns`. Tallied at three sites: (1) pre-callback
-    /// state-snapshot fork in the SimProcedure path (stepping.rs ~line
-    /// 151, NOT a deferred fork); (2) per-deferred-fork creation in
-    /// `handle_block_end_or_max_blocks` when a condition is available
-    /// (stepping.rs ~line 493); (3) per-deferred-fork creation in the
-    /// callback-resume path when a condition is available (run_loop.rs
-    /// ~line 513). NOT incremented by the no-condition conservative-fork
-    /// fallback in `process_deferred_forks_into` (stepping.rs ~line 1200)
-    /// or the main stepping fallback (stepping.rs ~line 531). Because of
-    /// (1), this counter generally exceeds the deferred-fork-with-
-    /// condition subset of `deferred_fork_count`; because of the
-    /// fallbacks, the relationship is not a simple sum. See angr-95up.2.
+    /// `solver_fork_time_ns`. Tallied at three sites: (1) the pre-callback
+    /// state-snapshot fork taken in `SimulationLoop::dispatch_bounce`'s
+    /// `BounceKind::Hook` arm before bouncing to a Python SimProcedure (NOT
+    /// a deferred fork); (2) per-deferred-fork creation in
+    /// `fork_materialize::materialize_deferred_forks` when a condition is
+    /// available — either stored or reconstructed by
+    /// `reconstruct_deferred_fork_condition`; (3) the parallel-scheduler
+    /// mirror of (2) in
+    /// `core_outcome_handlers::materialize_deferred_forks_core` (stored
+    /// conditions only). NOT incremented by the no-condition
+    /// conservative-fork fallback in either materializer, nor anywhere in
+    /// `SimulationLoop::process_deferred_forks_into` /
+    /// `core_outcome_handlers::process_deferred_forks_into_core`, which
+    /// build their forks untimed on both branches. Because of (1), this
+    /// counter generally exceeds the deferred-fork-with-condition subset of
+    /// `deferred_fork_count`; because of the untallied paths, the
+    /// relationship is not a simple sum. See angr-95up.2.
     solver_fork_count: sum,
     /// Number of active states at end of run.
     active_states_count: snapshot,
@@ -268,10 +277,18 @@ define_execution_stats! {
     /// Number of dirty-helper invocations that fell back to the Python
     /// `call_dirty_call` callback (no native handler matched).
     python_dirty_call_count: sum,
-    /// Number of VEX op evaluations (Unop/Binop/Triop/Qop) that hit the
-    /// silent symbolic-synthesis fallback because `VEXOps::*` returned an
-    /// `OpError`. These never invoke Python; the value is replaced with a
-    /// fresh symbolic (when any input was symbolic) or zero.
+    /// Number of VEX op evaluations (Unop/Binop/Triop/Qop) that reached
+    /// `VEXInterpreter::vex_op_fallback` because `VEXOps::*` returned an
+    /// `OpError` other than the explicitly-surfaced `UnsupportedNeon` /
+    /// `UnsupportedVexOp` variants. By default the op is NOT evaluated
+    /// natively at all: with a symbolic operand it returns
+    /// `CbExecutionError::NeedPythonFallback` (the block IS re-run in
+    /// Python), and with all-concrete operands it returns the typed
+    /// `CbExecutionError::Op`, which routes the state to the errored
+    /// stash. The silent fresh-symbolic synthesis this counter used to
+    /// describe is now opt-in only, behind
+    /// `ANGR_RUST_FABRICATE_UNSUPPORTED_IROP` (off by default since
+    /// angr-oyzvj) — see `vex_bypass_fabricate_count` for that subset.
     python_vex_op_fallback_count: sum,
     /// Subset of `python_vex_op_fallback_count` that came from `Unop`.
     python_vex_unop_fallback_count: sum,

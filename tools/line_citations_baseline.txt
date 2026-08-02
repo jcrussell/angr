@@ -24,15 +24,10 @@ interpreter/exits.rs	// engines/successors.py:327-328, which skips
 interpreter/expressions.rs	/// `solver.py:432-439`'s BP_AFTER signature.
 interpreter/expressions.rs	/// `when="before"`). Mirrors `address_concretization_mixin.py:156-180`'s
 interpreter/mod.rs	// BVS minting. Mirrors Python's `solver.py:432-439` BP_AFTER
-interpreter/mod.rs	/// (run_loop.rs ~line 477), or routed through a no-condition
-interpreter/mod.rs	/// (stepping.rs ~line 493); (3) per-deferred-fork creation in the
 interpreter/mod.rs	/// NO_IP_CONCRETIZATION option (engines/successors.py:292-296).
 interpreter/mod.rs	/// NO_SYMBOLIC_JUMP_RESOLUTION option (engines/successors.py:234-239).
 interpreter/mod.rs	/// `split_state.regs.ip = target` at engines/successors.py:328). Also
 interpreter/mod.rs	/// `split_state.regs.ip = target` write at engines/successors.py:328.
-interpreter/mod.rs	/// fallback in `process_deferred_forks_into` (stepping.rs ~line 1200)
-interpreter/mod.rs	/// or the main stepping fallback (stepping.rs ~line 531). Because of
-interpreter/mod.rs	/// ~line 513). NOT incremented by the no-condition conservative-fork
 interpreter/statements_store.rs	// Mirrors `address_concretization_mixin.py:327-329`.
 memory/mod.rs	/// (angr/engines/vex/heavy/heavy.py:115-124). Default false.
 memory/store.rs	// early `return` at `address_concretization_mixin.py:327-329`.
