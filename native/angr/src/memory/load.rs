@@ -164,11 +164,11 @@ impl SymbolicMemory {
             }
         };
 
-        let result = self.load_concrete(Address(concrete_addr), size, ctx);
-        if let Err(MemoryError::UnmappedPageInRegion { .. }) = &result {
-            record_mem_lazy_page_fault();
-        }
-        result
+        // angr-9ke6b.228: the lazy-page-fault bump lives on the producers
+        // (`unmapped_page_error`, `assemble_load_with_multi`), not here — a
+        // wrapper-level bump would double-count the Multi-cell path and miss
+        // every production caller, which enters below this entry point.
+        self.load_concrete(Address(concrete_addr), size, ctx)
     }
 
     /// Load from a concrete address.
@@ -447,8 +447,13 @@ impl SymbolicMemory {
     /// and retry; every other case (and every eager `load_concrete`) keeps the
     /// caller-supplied hard `Unmapped` error, whose shape differs between the
     /// single-page fast path (whole page) and the cross-page walk (one byte).
+    ///
+    /// Bumps `record_mem_lazy_page_fault` on the lazy classification
+    /// (angr-9ke6b.228) — this is one of the counter's two load-side
+    /// producers, the other being `assemble_load_with_multi`.
     fn unmapped_page_error(&self, page_num: u64, lazy: bool, fallback: MemoryError) -> MemoryError {
         if lazy && self.is_in_lazy_region(page_num) {
+            record_mem_lazy_page_fault();
             MemoryError::UnmappedPageInRegion {
                 page_addr: page_num << 12,
             }
@@ -794,6 +799,9 @@ impl SymbolicMemory {
                 Some(p) => p,
                 None => {
                     if self.is_in_lazy_region(page_num) {
+                        // Second load-side producer of the counter
+                        // (angr-9ke6b.228); see `unmapped_page_error`.
+                        record_mem_lazy_page_fault();
                         return Err(MemoryError::UnmappedPageInRegion {
                             page_addr: page_num << 12,
                         });

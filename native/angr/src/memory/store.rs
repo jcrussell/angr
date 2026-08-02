@@ -117,11 +117,12 @@ impl SymbolicMemory {
             },
         };
 
-        let result = self.store_concrete(Address(concrete_addr), value);
-        if let Err(MemoryError::UnmappedPageInRegion { .. }) = &result {
-            record_mem_lazy_page_fault();
-        }
-        result
+        // angr-9ke6b.228: no lazy-page-fault bump here. `store_concrete` has no
+        // lazy classification at all (it only ever yields `Unmapped`), so the
+        // branch that used to live here was dead. The counter is bumped by the
+        // producers instead — `check_pages_mapped_lazy` and
+        // `install_multi_for_candidates_safe` on this side.
+        self.store_concrete(Address(concrete_addr), value)
     }
 
     /// Store to a concrete address.
@@ -675,6 +676,9 @@ impl SymbolicMemory {
             for page_num in start_page..=end_page {
                 if !self.pages.contains_key(&page_num) {
                     if self.is_in_lazy_region(page_num) {
+                        // Second store-side producer of the counter
+                        // (angr-9ke6b.228); see `check_pages_mapped_lazy`.
+                        record_mem_lazy_page_fault();
                         return Err(MemoryError::UnmappedPageInRegion {
                             page_addr: page_num << 12,
                         });
@@ -854,11 +858,16 @@ impl SymbolicMemory {
     /// `store_concrete_automap`. NOT used by `store_concrete` (no lazy
     /// detection, inclusive range) or `store_concrete_automap_internal`
     /// (auto-maps lazy pages instead of erroring) — their semantics differ.
+    ///
+    /// Bumps `record_mem_lazy_page_fault` on the lazy classification
+    /// (angr-9ke6b.228) — this is one of the counter's two store-side
+    /// producers, the other being `install_multi_for_candidates_safe`.
     fn check_pages_mapped_lazy(&self, start_page: u64, end_page: u64) -> Result<(), MemoryError> {
         for page_num in start_page..end_page {
             if !self.pages.contains_key(&page_num) {
                 let page_addr = page_num << 12;
                 return Err(if self.is_in_lazy_region(page_num) {
+                    record_mem_lazy_page_fault();
                     MemoryError::UnmappedPageInRegion { page_addr }
                 } else {
                     MemoryError::Unmapped {

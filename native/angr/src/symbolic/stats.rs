@@ -147,7 +147,16 @@ pub(crate) static MEM_STORE_BYTES: AtomicU64 = AtomicU64::new(0);
 pub(crate) static MEM_LOAD_SYMBOLIC_ADDR: AtomicU64 = AtomicU64::new(0);
 pub(crate) static MEM_STORE_SYMBOLIC_ADDR: AtomicU64 = AtomicU64::new(0);
 /// `UnmappedPageInRegion` faults — lazy region had no backing page, caller
-/// must materialize. Bumped in load/store before the error is propagated.
+/// must materialize. angr-9ke6b.228: bumped by the four *producers* of that
+/// error, not by the public `SymbolicMemory::{load,store}` wrappers (which no
+/// production path calls, and whose store-side bump was dead because
+/// `store_concrete` has no lazy classification). Producers are
+/// `SymbolicMemory::unmapped_page_error` and `assemble_load_with_multi` on the
+/// load side, `SymbolicMemory::check_pages_mapped_lazy` and
+/// `install_multi_for_candidates_safe` on the store side. Counts faults
+/// *raised*, including ones a caller then swallows (e.g. the ITE-leaf filler
+/// `load_concrete_or_unconstrained`), not just ones that reach the interpreter's
+/// page-fetch retry.
 pub(crate) static MEM_LAZY_PAGE_FAULT_COUNT: AtomicU64 = AtomicU64::new(0);
 
 // Concretization fanout — count + cumulative K + max K observed per call.

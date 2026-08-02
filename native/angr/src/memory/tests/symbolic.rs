@@ -1612,3 +1612,71 @@ fn test_narrower_sym_overwrite_at_base_truncates_wider_sym() {
         "head must read back the narrow value that overwrote the wide one"
     );
 }
+
+/// angr-9ke6b.228: `mem_lazy_page_fault_count` must tick on **both** the load
+/// and the store side. It used to be bumped only in the public
+/// `SymbolicMemory::{load,store}` wrappers — which no production path calls —
+/// and the store-side branch there was outright dead, because `store_concrete`
+/// has no lazy classification and never yields `UnmappedPageInRegion`. The
+/// bumps now live on the producers, so the lazy entry points the interpreter
+/// actually uses are covered.
+///
+/// Counters are process-global and tests run in parallel, so this asserts
+/// strict growth against a baseline read just before the faulting op rather
+/// than an exact delta.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_lazy_page_fault_counter_ticks_on_both_sides() {
+    use crate::symbolic::get_solver_stats;
+
+    let fault_count = || {
+        get_solver_stats()
+            .get("mem_lazy_page_fault_count")
+            .copied()
+            .unwrap_or(0)
+    };
+
+    let ctx = SymContext::new_mock();
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    // Page 0x2000 is unmapped but declared lazy: Python still holds its backer.
+    mem.add_lazy_region(0x2000, 0x1000);
+
+    let base_store = fault_count();
+    let err = mem
+        .store_concrete_lazy(0x2000, RustBV::concrete(0xAA, 8))
+        .expect_err("lazy-region store must report the fetch-me signal");
+    assert!(
+        matches!(err, MemoryError::UnmappedPageInRegion { page_addr } if page_addr == 0x2000),
+        "expected UnmappedPageInRegion at 0x2000, got {err:?}"
+    );
+    assert!(
+        fault_count() > base_store,
+        "store-side lazy fault must bump mem_lazy_page_fault_count"
+    );
+
+    let base_load = fault_count();
+    let err = mem
+        .load_concrete_lazy(0x2000, 1, &ctx)
+        .expect_err("lazy-region load must report the fetch-me signal");
+    assert!(
+        matches!(err, MemoryError::UnmappedPageInRegion { page_addr } if page_addr == 0x2000),
+        "expected UnmappedPageInRegion at 0x2000, got {err:?}"
+    );
+    assert!(
+        fault_count() > base_load,
+        "load-side lazy fault must bump mem_lazy_page_fault_count"
+    );
+
+    // A hard (non-lazy) miss must classify as plain `Unmapped`, which is the
+    // branch that leaves the counter alone. (Asserted on the error shape, not
+    // on the counter staying equal: it is process-global and a concurrently
+    // running test may bump it.)
+    assert!(matches!(
+        mem.load_concrete_lazy(0x9000, 1, &ctx),
+        Err(MemoryError::Unmapped { .. })
+    ));
+    assert!(matches!(
+        mem.store_concrete_lazy(0x9000, RustBV::concrete(1, 8)),
+        Err(MemoryError::Unmapped { .. })
+    ));
+}
