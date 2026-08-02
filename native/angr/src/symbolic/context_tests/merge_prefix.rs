@@ -222,6 +222,40 @@ fn test_merge_flags_or_across_arms() {
     );
 }
 
+/// angr-9ke6b.140: the solver timeout is reconciled across every merge arm,
+/// not inherited from `self`. Before the fix `merge` passed
+/// `self.timeout_ms` straight to `with_timeout`, so the result depended on
+/// which arm the caller happened to make the receiver and a tightened budget
+/// on any other arm was silently dropped.
+#[test]
+fn test_merge_reconciles_timeout_across_arms() {
+    let ctx_a = SymContext::with_timeout(9_000);
+    let ctx_b = SymContext::with_timeout(1_500);
+    let ctx_c = SymContext::with_timeout(4_000);
+
+    let conds = |ctx: &SymContext, tag: &str| {
+        (0..3)
+            .map(|i| RustBV::symbolic(ctx, format!("to_{tag}_{i}"), 1))
+            .collect::<Vec<_>>()
+    };
+
+    // Receiver has the loosest budget: the strictest arm must still win.
+    let merged = ctx_a.merge(&[&ctx_b, &ctx_c], &conds(&ctx_a, "a"));
+    assert_eq!(
+        merged.timeout_ms(),
+        1_500,
+        "merged context must adopt the strictest arm's solver timeout"
+    );
+
+    // Order-independence: the same arms in a different order agree.
+    let merged_rev = ctx_c.merge(&[&ctx_a, &ctx_b], &conds(&ctx_c, "c"));
+    assert_eq!(
+        merged_rev.timeout_ms(),
+        merged.timeout_ms(),
+        "merge timeout reconciliation must not depend on arm order"
+    );
+}
+
 /// angr-ph300.46: the per-lineage flags round-trip through a snapshot. A
 /// restored deterministic context must stay deterministic.
 #[test]

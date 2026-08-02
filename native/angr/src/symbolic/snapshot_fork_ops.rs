@@ -982,8 +982,21 @@ impl SymContext {
             "merge_conditions must have one entry per context (self + others)"
         );
 
-        // Start with a fresh context
-        let mut merged = Self::with_timeout(self.timeout_ms.load(Ordering::SeqCst));
+        // Start with a fresh context. The solver timeout is reconciled across
+        // *all* arms, not inherited from `self`: adopting only the first arm's
+        // value makes the result order-dependent (`a.merge([b])` and
+        // `b.merge([a])` would disagree) and silently drops a tightened budget
+        // set on any other arm. Take the minimum — a timeout is an upper bound
+        // on per-query solver work, so the merged lineage must respect the
+        // strictest bound any arm was given rather than loosening it. Same
+        // reconciliation principle as the `deterministic` /
+        // `use_shared_lineage_solver` OR at the end of this function.
+        let merged_timeout_ms = others
+            .iter()
+            .fold(self.timeout_ms.load(Ordering::SeqCst), |acc, ctx| {
+                acc.min(ctx.timeout_ms.load(Ordering::SeqCst))
+            });
+        let mut merged = Self::with_timeout(merged_timeout_ms);
 
         // Merge symbol tables — merged is freshly constructed (Arc count == 1),
         // so Arc::make_mut returns a unique mutable reference without cloning.
