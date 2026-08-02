@@ -112,6 +112,12 @@ const ALIASES: &[RegEntry] = &[
     // (24, 4)), so a `set_register("sp", ...)` must not truncate to 2 bytes.
     ("sp", offsets::ESP, 4),
     ("bp", offsets::EBP, 4),
+    // The architecture-independent instruction-pointer spelling, matching the
+    // ARM/ARM64/MIPS tables (angr-9ke6b.217). Deliberately no "ip" alias — see
+    // the angr-itm3u note in arch/arm.rs: no arch table defines "ip", and
+    // RustStateProxy._canonical_name rewrites it to the canonical name via
+    // archinfo before it reaches Rust.
+    ("pc", offsets::EIP, 4),
     // 16-bit
     ("ax", offsets::EAX, 2),
     ("cx", offsets::ECX, 2),

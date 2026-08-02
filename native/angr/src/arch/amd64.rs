@@ -151,6 +151,12 @@ const ALIASES: &[RegEntry] = &[
     // Architecture-independent full-width aliases (match archinfo).
     ("sp", offsets::RSP, 8),
     ("bp", offsets::RBP, 8),
+    // The architecture-independent instruction-pointer spelling, matching the
+    // ARM/ARM64/MIPS tables (angr-9ke6b.217). Deliberately no "ip" alias — see
+    // the angr-itm3u note in arch/arm.rs: no arch table defines "ip", and
+    // RustStateProxy._canonical_name rewrites it to the canonical name via
+    // archinfo before it reaches Rust.
+    ("pc", offsets::RIP, 8),
     // 32-bit sub-registers (low 32 of RAX etc.)
     ("eax", offsets::RAX, 4),
     ("ecx", offsets::RCX, 4),

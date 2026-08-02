@@ -124,23 +124,6 @@ struct ArchExpect {
     ip_name: &'static str,
 }
 
-/// Architectures whose register table lacks the architecture-independent
-/// `"pc"` spelling and offers only [`ArchExpect::ip_name`].
-///
-/// This is a real gap, filed as **angr-9ke6b.217**: archinfo defines `pc` (and
-/// `ip`) on all six arches, so `register_offset("pc")` resolving on four of six
-/// is an inconsistency of the same class as angr-6qzik (which added the
-/// architecture-independent full-width `sp`/`bp` names). It is invisible to
-/// `tests/engines/rust/test_arch_offset_parity.py`, whose harness skips any
-/// archinfo register name Rust does not know — a *missing* name can only be
-/// caught here.
-///
-/// Same self-cleaning contract as that module's `KNOWN_DRIFT`: the sweep
-/// asserts these arches *still* fail to resolve `"pc"`, so fixing the bead
-/// reddens this test and forces the entry's removal rather than letting the
-/// table rot into a permanent allowlist.
-const KNOWN_MISSING_PC_ALIAS: &[&str] = &["X86", "AMD64"];
-
 const ARCH_EXPECTATIONS: &[ArchExpect] = &[
     ArchExpect {
         name: "X86",
@@ -149,7 +132,13 @@ const ARCH_EXPECTATIONS: &[ArchExpect] = &[
         ip_offset: 68,
         sp_offset: 24,
         bp_offset: Some(28),
-        aliases: &[("sp", 24, 4), ("bp", 28, 4), ("ax", 8, 2), ("di", 36, 2)],
+        aliases: &[
+            ("sp", 24, 4),
+            ("bp", 28, 4),
+            ("pc", 68, 4),
+            ("ax", 8, 2),
+            ("di", 36, 2),
+        ],
         ip_name: "eip",
     },
     ArchExpect {
@@ -159,7 +148,13 @@ const ARCH_EXPECTATIONS: &[ArchExpect] = &[
         ip_offset: 184,
         sp_offset: 48,
         bp_offset: Some(56),
-        aliases: &[("sp", 48, 8), ("bp", 56, 8), ("ax", 16, 2), ("si", 64, 2)],
+        aliases: &[
+            ("sp", 48, 8),
+            ("bp", 56, 8),
+            ("pc", 184, 8),
+            ("ax", 16, 2),
+            ("si", 64, 2),
+        ],
         ip_name: "rip",
     },
     ArchExpect {
@@ -278,19 +273,15 @@ fn test_all_arches_report_expected_special_register_offsets() {
             "{name}: register_offset({:?}) disagrees with ip_offset",
             expect.ip_name,
         );
-        if KNOWN_MISSING_PC_ALIAS.contains(&name) {
-            assert_eq!(
-                arch.register_offset("pc"),
-                None,
-                "{name} now resolves \"pc\" — angr-9ke6b.217 is fixed; drop its KNOWN_MISSING_PC_ALIAS entry",
-            );
-        } else {
-            assert_eq!(
-                arch.register_offset("pc"),
-                Some(expect.ip_offset),
-                "{name}: register_offset(\"pc\") disagrees with ip_offset",
-            );
-        }
+        // Every arch must also answer to the architecture-independent `"pc"`
+        // spelling (angr-9ke6b.217 closed the X86/AMD64 gap); archinfo defines
+        // it on all six, and a direct Rust-level `set_register("pc", ...)`
+        // never passes through `RustStateProxy._canonical_name`.
+        assert_eq!(
+            arch.register_offset("pc"),
+            Some(expect.ip_offset),
+            "{name}: register_offset(\"pc\") disagrees with ip_offset",
+        );
         assert_eq!(
             arch.register_offset("sp"),
             Some(expect.sp_offset),
