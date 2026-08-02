@@ -173,6 +173,10 @@ impl<'a> std::ops::Deref for SolverCtxGuard<'a> {
 /// With z3-rs 0.19+, we don't need to manage a separate Z3 context -
 /// it's automatically handled via thread-local storage.
 #[pyclass(unsendable)]
+#[allow(
+    unreachable_pub,
+    reason = "pyo3 `#[pymethods]`/`#[pyclass]` surface: these items are reached from Python, not from Rust. See the `unreachable_pub` note in lib.rs (angr-9ke6b.50)."
+)]
 pub struct RustSolverContext {
     // Inner context (same structure whether Z3 is enabled or not).
     //
@@ -260,6 +264,10 @@ type SymbolTableBinOp = fn(&RustSymbolTable, u64, u64, &SymContext) -> BinOpResu
 /// What every [`SymbolTableBinOp`] returns.
 type BinOpResult = Result<RustBVHandle, BinaryOpError>;
 
+#[allow(
+    unreachable_pub,
+    reason = "pyo3 `#[pymethods]`/`#[pyclass]` surface: these items are reached from Python, not from Rust. See the `unreachable_pub` note in lib.rs (angr-9ke6b.50)."
+)]
 #[pymethods]
 impl RustSolverContext {
     /// Create a new Rust solver context.
@@ -1254,9 +1262,11 @@ impl RustSolverContext {
     /// so all of that lives here once and the wrappers do nothing but name
     /// their op. They stay individually hand-written because PyO3 rejects
     /// `macro_rules!` invocations in a `#[pymethods]` impl body ("macros
-    /// cannot be used as items in `#[pymethods]` impl blocks"), and this crate
-    /// does not enable PyO3's `multiple-pymethods` feature, so the ops cannot
-    /// be moved into a macro-generated second impl block either.
+    /// cannot be used as items in `#[pymethods]` impl blocks"). PyO3's
+    /// `multiple-pymethods` feature is enabled (angr-9ke6b.50), so a
+    /// macro-generated *second* impl block is now possible — but the macro
+    /// would still have to live outside any `#[pymethods]` body, so the
+    /// hand-written wrappers stay until someone shows that pays for itself.
     ///
     /// Ops whose `RustSymbolTable` method returns `Option` rather than
     /// `Result` (`op_neg`, `op_not`, `op_concat`, the width-changing

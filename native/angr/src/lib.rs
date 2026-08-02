@@ -79,6 +79,14 @@
 // is `pub(crate) mod`. Narrowing the items inside those modules is what lets
 // `dead_code` see them at all; this warn keeps a new over-broad `pub` from
 // silently re-opening the hole.
+//
+// Caveat (angr-9ke6b.50): pyo3's non-`multiple-pymethods` codegen *masked* this
+// lint on every `#[pymethods]` method and on the `#[pyclass]` structs those
+// blocks belong to. Turning `multiple-pymethods` on unmasks 391 such sites
+// crate-wide. Those items are reached from Python, not from Rust, so their Rust
+// visibility is decorative — each affected `#[pymethods]`/`#[pyclass]` carries a
+// scoped `#[allow(unreachable_pub, reason = ...)]` that restores exactly the
+// pre-feature coverage rather than silencing the lint crate-wide.
 #![warn(unreachable_pub)]
 
 // Dev-only public surface for the cargo-fuzz targets under `fuzz/`

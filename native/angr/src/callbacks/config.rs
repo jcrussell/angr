@@ -12,6 +12,10 @@ use pyo3::prelude::*;
 /// branches and schedule them for execution.
 #[pyclass]
 #[derive(Debug, Clone)]
+#[allow(
+    unreachable_pub,
+    reason = "pyo3 `#[pymethods]`/`#[pyclass]` surface: these items are reached from Python, not from Rust. See the `unreachable_pub` note in lib.rs (angr-9ke6b.50)."
+)]
 pub struct DeferredFork {
     /// Address where the branch occurred.
     #[pyo3(get)]
@@ -37,6 +41,10 @@ pub struct DeferredFork {
     pub condition_ast: Option<Py<PyAny>>,
 }
 
+#[allow(
+    unreachable_pub,
+    reason = "pyo3 `#[pymethods]`/`#[pyclass]` surface: these items are reached from Python, not from Rust. See the `unreachable_pub` note in lib.rs (angr-9ke6b.50)."
+)]
 #[pymethods]
 impl DeferredFork {
     /// Create a new deferred fork.
@@ -90,6 +98,10 @@ impl DeferredFork {
 #[non_exhaustive]
 #[pyclass]
 #[derive(Debug, Clone)]
+#[allow(
+    unreachable_pub,
+    reason = "pyo3 `#[pymethods]`/`#[pyclass]` surface: these items are reached from Python, not from Rust. See the `unreachable_pub` note in lib.rs (angr-9ke6b.50)."
+)]
 pub struct ExecutionConfig {
     /// Maximum deferred forks before returning to Python.
     /// When this limit is reached, execution returns to Python even if
@@ -116,6 +128,10 @@ pub struct ExecutionConfig {
     pub max_symbolic_ip_targets: usize,
 }
 
+#[allow(
+    unreachable_pub,
+    reason = "pyo3 `#[pymethods]`/`#[pyclass]` surface: these items are reached from Python, not from Rust. See the `unreachable_pub` note in lib.rs (angr-9ke6b.50)."
+)]
 #[pymethods]
 impl ExecutionConfig {
     /// Create a new execution config.

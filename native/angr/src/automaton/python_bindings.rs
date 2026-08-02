@@ -25,6 +25,10 @@ pub struct PyState {
     value: Py<PyAny>,
 }
 
+#[allow(
+    unreachable_pub,
+    reason = "pyo3 `#[pymethods]`/`#[pyclass]` surface: these items are reached from Python, not from Rust. See the `unreachable_pub` note in lib.rs (angr-9ke6b.50)."
+)]
 #[pymethods]
 impl PyState {
     #[new]
@@ -68,6 +72,10 @@ pub struct PySymbol {
     value: Py<PyAny>,
 }
 
+#[allow(
+    unreachable_pub,
+    reason = "pyo3 `#[pymethods]`/`#[pyclass]` surface: these items are reached from Python, not from Rust. See the `unreachable_pub` note in lib.rs (angr-9ke6b.50)."
+)]
 #[pymethods]
 impl PySymbol {
     #[new]
@@ -108,6 +116,10 @@ impl PySymbol {
 #[derive(Clone)]
 pub struct PyEpsilon;
 
+#[allow(
+    unreachable_pub,
+    reason = "pyo3 `#[pymethods]`/`#[pyclass]` surface: these items are reached from Python, not from Rust. See the `unreachable_pub` note in lib.rs (angr-9ke6b.50)."
+)]
 #[pymethods]
 impl PyEpsilon {
     #[new]
@@ -248,6 +260,10 @@ impl ObjectMapper {
 
 /// An Epsilon Non-deterministic Finite Automaton.
 #[pyclass(name = "EpsilonNFA", module = "angr.rustylib.automaton")]
+#[allow(
+    unreachable_pub,
+    reason = "pyo3 `#[pymethods]`/`#[pyclass]` surface: these items are reached from Python, not from Rust. See the `unreachable_pub` note in lib.rs (angr-9ke6b.50)."
+)]
 pub struct PyEpsilonNFA {
     /// The underlying Rust NFA
     nfa: RustEpsilonNFA,
@@ -255,6 +271,10 @@ pub struct PyEpsilonNFA {
     mapper: ObjectMapper,
 }
 
+#[allow(
+    unreachable_pub,
+    reason = "pyo3 `#[pymethods]`/`#[pyclass]` surface: these items are reached from Python, not from Rust. See the `unreachable_pub` note in lib.rs (angr-9ke6b.50)."
+)]
 #[pymethods]
 impl PyEpsilonNFA {
     #[new]
@@ -335,6 +355,10 @@ impl PyEpsilonNFA {
     name = "DeterministicFiniteAutomaton",
     module = "angr.rustylib.automaton"
 )]
+#[allow(
+    unreachable_pub,
+    reason = "pyo3 `#[pymethods]`/`#[pyclass]` surface: these items are reached from Python, not from Rust. See the `unreachable_pub` note in lib.rs (angr-9ke6b.50)."
+)]
 pub struct PyDFA {
     /// The underlying Rust DFA
     dfa: DFA,
@@ -342,6 +366,10 @@ pub struct PyDFA {
     mapper: ObjectMapper,
 }
 
+#[allow(
+    unreachable_pub,
+    reason = "pyo3 `#[pymethods]`/`#[pyclass]` surface: these items are reached from Python, not from Rust. See the `unreachable_pub` note in lib.rs (angr-9ke6b.50)."
+)]
 #[pymethods]
 impl PyDFA {
     /// Get the start state as an integer index.

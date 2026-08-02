@@ -31,11 +31,12 @@
 //! lands the seam.
 //!
 //! The pyclass-facing `run` thin wrapper lives in `mod.rs` and just calls
-//! `self.run_loop(py, n)`. PyO3 0.27.2 without `multiple-pymethods` only
-//! permits a single `#[pymethods]` impl per class, so the body is extracted
-//! here as `pub(crate)` methods on `RustExplorationManager`, mirroring the
-//! `helpers.rs` / `stepping.rs` extension-impl pattern used elsewhere in
-//! `exploration/`.
+//! `self.run_loop(py, n)`; the body is extracted here as `pub(crate)` methods
+//! on `RustExplorationManager`, mirroring the `helpers.rs` / `stepping.rs`
+//! extension-impl pattern used elsewhere in `exploration/`. That split
+//! predates PyO3's `multiple-pymethods` feature, which is now enabled
+//! (angr-9ke6b.50, see `invariant-pyo3-multiple-pymethods-enabled`) — it is
+//! kept as a style choice, not a constraint.
 //!
 //! **Invariant I8 (cross-mixin termination, mirror of
 //! rust_manager.py:98):** the run loop must terminate on EITHER (a)

@@ -43,7 +43,16 @@ libvex-ffi = ["dep:bindgen"]
 backtrace = "0.3.76"
 parking_lot = "0.12"
 postcard = { version = "1.1.3", default-features = false, features = ["use-std"] }
-pyo3 = { version = "0.27.2", features = ["py-clone", "abi3-py310"] }
+# `multiple-pymethods` lets the ~228-method `RustExplorationManager` surface be
+# split across several `#[pymethods]` blocks in sibling files (angr-9ke6b.50)
+# instead of one 2.5k-line module. It pulls in `inventory`, which registers the
+# blocks via linker sections at startup — supported on every platform we build
+# for (Linux/macOS/Windows), and compatible with `abi3-py310`.
+pyo3 = { version = "0.27.2", features = [
+    "py-clone",
+    "abi3-py310",
+    "multiple-pymethods",
+] }
 rangemap = "1.7.1"
 rustc-hash = "2.1"
 send_wrapper = "0.6.0"

@@ -122,6 +122,10 @@ pub(crate) use self::native_technique::NativeTechnique;
 ///
 /// Manages states entirely in Rust with O(1) forking.
 /// Returns to Python only for SimProcedures, syscalls, and predicates.
+#[allow(
+    unreachable_pub,
+    reason = "pyo3 `#[pymethods]`/`#[pyclass]` surface: these items are reached from Python, not from Rust. See the `unreachable_pub` note in lib.rs (angr-9ke6b.50)."
+)]
 #[pyclass(unsendable)]
 pub struct RustExplorationManager {
     /// Per-binary execution environment: arch metadata, calling convention,
@@ -465,11 +469,29 @@ pub struct RustExplorationManager {
     pub(crate) parallel_steady_budget_yields: u64,
 }
 
-/// The manager's entire `#[pymethods]` surface lives in this child module
+/// The manager's `#[pymethods]` surface lives in these child modules
 /// (angr-nbim4.1) to keep `mod.rs` focused on the struct definition and
-/// module wiring. See the module doc for the PyO3 single-block constraint.
+/// module wiring. PyO3's `multiple-pymethods` feature (angr-9ke6b.50) lets it
+/// span several blocks, one per former section banner; see the
+/// `manager_methods` module doc.
 #[path = "manager_methods.rs"]
 mod manager_methods;
+#[path = "manager_methods_constraints.rs"]
+mod manager_methods_constraints;
+#[path = "manager_methods_export.rs"]
+mod manager_methods_export;
+#[path = "manager_methods_hooks.rs"]
+mod manager_methods_hooks;
+#[path = "manager_methods_procedures.rs"]
+mod manager_methods_procedures;
+#[path = "manager_methods_run.rs"]
+mod manager_methods_run;
+#[path = "manager_methods_state.rs"]
+mod manager_methods_state;
+#[path = "manager_methods_stats.rs"]
+mod manager_methods_stats;
+#[path = "manager_methods_techniques.rs"]
+mod manager_methods_techniques;
 
 /// Steady-state Drop safety (angr-nkoct). `PersistentPool::drop` broadcasts
 /// `Shutdown` and JOINS the workers; with a live steady session a worker may be

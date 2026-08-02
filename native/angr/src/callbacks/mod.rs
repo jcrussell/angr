@@ -168,6 +168,10 @@ macro_rules! with_callback_fields {
 ///   the Rust copy.
 #[pyclass]
 #[derive(Clone)]
+#[allow(
+    unreachable_pub,
+    reason = "pyo3 `#[pymethods]`/`#[pyclass]` surface: these items are reached from Python, not from Rust. See the `unreachable_pub` note in lib.rs (angr-9ke6b.50)."
+)]
 pub struct PythonCallbacks {
     /// Callback for memory loads: fn(addr: u64, size: u32) -> (bytes, is_symbolic, symbolic_ast?)
     pub memory_load: Option<Py<PyAny>>,
@@ -422,6 +426,10 @@ pub struct PythonCallbacks {
         std::sync::Arc<std::sync::RwLock<Option<std::collections::HashSet<u64>>>>,
 }
 
+#[allow(
+    unreachable_pub,
+    reason = "pyo3 `#[pymethods]`/`#[pyclass]` surface: these items are reached from Python, not from Rust. See the `unreachable_pub` note in lib.rs (angr-9ke6b.50)."
+)]
 #[pymethods]
 impl PythonCallbacks {
     /// Create a new empty callback holder.

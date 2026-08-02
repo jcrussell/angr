@@ -21,6 +21,10 @@ use pyo3::prelude::*;
 /// outside this crate must go through the `ExplorationEvent::*`
 /// helpers below rather than struct-literal syntax.
 #[non_exhaustive]
+#[allow(
+    unreachable_pub,
+    reason = "pyo3 `#[pymethods]`/`#[pyclass]` surface: these items are reached from Python, not from Rust. See the `unreachable_pub` note in lib.rs (angr-9ke6b.50)."
+)]
 #[pyclass]
 #[derive(Debug, Clone)]
 pub struct ExplorationEvent {

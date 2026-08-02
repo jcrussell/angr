@@ -3,9 +3,11 @@
 //! Thin delegation layer: each method forwards to an inner `RustSimState`
 //! accessor (defined across the sibling `state/*.rs` impl files). Peeled out
 //! of `mod.rs` to keep that file focused on the struct definitions and the
-//! core `RustSimState` mechanics (angr-0mqkc.5). This is the single
-//! `#[pymethods]` block for `PyRustSimState`; keep it that way so we don't
-//! need PyO3's `multiple-pymethods` feature.
+//! core `RustSimState` mechanics (angr-0mqkc.5). This is currently the only
+//! `#[pymethods]` block for `PyRustSimState`, but that is no longer required:
+//! PyO3's `multiple-pymethods` feature is enabled (angr-9ke6b.50), so a
+//! cohesive group may be peeled into its own file + block the way
+//! `exploration/manager_methods_*.rs` does.
 use super::*;
 use crate::memory::Permission;
 use crate::symbolic::{

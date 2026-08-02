@@ -6,6 +6,10 @@ use rangemap::RangeMap;
 
 #[pyclass(module = "angr.rustylib.segmentlist", from_py_object)]
 #[derive(Clone, Debug)]
+#[allow(
+    unreachable_pub,
+    reason = "pyo3 `#[pymethods]`/`#[pyclass]` surface: these items are reached from Python, not from Rust. See the `unreachable_pub` note in lib.rs (angr-9ke6b.50)."
+)]
 pub struct Segment {
     #[pyo3(get)]
     start: u64,
@@ -15,6 +19,10 @@ pub struct Segment {
     sort: Option<String>,
 }
 
+#[allow(
+    unreachable_pub,
+    reason = "pyo3 `#[pymethods]`/`#[pyclass]` surface: these items are reached from Python, not from Rust. See the `unreachable_pub` note in lib.rs (angr-9ke6b.50)."
+)]
 #[pymethods]
 impl Segment {
     #[new]
@@ -48,6 +56,10 @@ impl Segment {
 /// Should be called a SegmentMap!
 #[derive(Clone, Default)]
 #[pyclass(module = "angr.rustylib.segmentlist", from_py_object)]
+#[allow(
+    unreachable_pub,
+    reason = "pyo3 `#[pymethods]`/`#[pyclass]` surface: these items are reached from Python, not from Rust. See the `unreachable_pub` note in lib.rs (angr-9ke6b.50)."
+)]
 pub struct SegmentList {
     map: RangeMap<u64, Option<String>>,
     bytes_occupied: u64,
@@ -63,6 +75,10 @@ impl SegmentList {
     }
 }
 
+#[allow(
+    unreachable_pub,
+    reason = "pyo3 `#[pymethods]`/`#[pyclass]` surface: these items are reached from Python, not from Rust. See the `unreachable_pub` note in lib.rs (angr-9ke6b.50)."
+)]
 #[pymethods]
 impl SegmentList {
     #[new]
@@ -265,6 +281,10 @@ impl SegmentList {
 }
 
 #[pyclass]
+#[allow(
+    unreachable_pub,
+    reason = "pyo3 `#[pymethods]`/`#[pyclass]` surface: these items are reached from Python, not from Rust. See the `unreachable_pub` note in lib.rs (angr-9ke6b.50)."
+)]
 pub struct SegmentListIter {
     segments: Vec<(u64, u64, Option<String>)>,
     idx: usize,
@@ -285,6 +305,10 @@ impl SegmentListIter {
     }
 }
 
+#[allow(
+    unreachable_pub,
+    reason = "pyo3 `#[pymethods]`/`#[pyclass]` surface: these items are reached from Python, not from Rust. See the `unreachable_pub` note in lib.rs (angr-9ke6b.50)."
+)]
 #[pymethods]
 impl SegmentListIter {
     fn __iter__(self_: Bound<'_, Self>) -> Bound<'_, Self> {
