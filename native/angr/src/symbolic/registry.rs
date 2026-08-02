@@ -381,11 +381,20 @@ impl SymbolicIdentityRegistry {
         self.rust_id_to_py.read().contains_key(&rust_id)
     }
 
-    /// Phase 4 Fix: Update hash mapping for an existing symbol.
+    /// Map an additional Python hash onto an already-registered symbol.
     ///
-    /// This is used when we find an existing symbol by name+width lookup
-    /// but want to also register it under a new hash (e.g., when Python's
-    /// hash changes but the symbol is still the same).
+    /// Used when a name+width lookup finds an existing symbol and we want a
+    /// *second* claripy AST object to resolve to the same `rust_id`. Two
+    /// distinct ASTs denoting the same symbol legitimately hash differently
+    /// (annotations, `explicit_name` suffixes); a single AST's hash does
+    /// **not** change over its lifetime — claripy's `__hash__` is
+    /// content-addressed and stable across CPython garbage collection, which
+    /// is exactly why `AST_CACHE` in `claripy_bridge::cache` is keyed by it
+    /// rather than by `id(ast)`. See angr-9ke6b.34: an earlier
+    /// `get_stable_ast_id` helper claimed the opposite and was removed.
+    ///
+    /// Currently has no callers; `symbolic` is a `pub mod` so `dead_code`
+    /// cannot flag it (see the `lib.rs` header).
     ///
     /// # Arguments
     /// * `py_hash` - The new Python hash to map
