@@ -210,7 +210,7 @@ impl<'a> VEXInterpreter<'a> {
     /// dispatch instead of open-coding it twice. Returns `None` (falls through to
     /// the concrete buffer) when an exact key is present but narrower than the
     /// load — matching the original if / else-if structure.
-    fn symbolic_store_load(
+    pub(super) fn symbolic_store_load(
         &self,
         map: &FxHashMap<u64, RustBV>,
         addr: u64,
