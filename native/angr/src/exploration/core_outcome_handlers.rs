@@ -854,6 +854,7 @@ pub(super) fn handle_syscall_core(
     };
     let native_handler = num.and_then(|n| native_syscalls.get(dispatch_key, n));
     if let Some(handler) = native_handler {
+        let handler_name = handler.name();
         let n_args = handler.num_args();
         let args = if n_args == 0 {
             Ok(Vec::new())
@@ -867,7 +868,10 @@ pub(super) fn handle_syscall_core(
                 // the native CC cannot extract is bounced to the Python
                 // syscall implementation, which is authoritative. Logged at
                 // debug and counted in `syscall_python_fallback_by_num`.
-                log::debug!("Skipping native syscall (arg extraction failed): {err:?}");
+                log::debug!(
+                    "Skipping native syscall {handler_name} (num={num:?}) \
+                     (arg extraction failed): {err:?}"
+                );
                 counters.syscall_python_fallback_count += 1;
                 *counters
                     .syscall_python_fallback_by_num
@@ -927,8 +931,18 @@ pub(super) fn handle_syscall_core(
                     true,
                 );
             }
-            Err(_) => {
-                // Fall through to Python callback path below.
+            Err(err) => {
+                // SILENT(cat-a): expected control flow — a native handler that
+                // declines (unsupported fd, symbolic size, ...) falls through
+                // to the Python syscall implementation below, which is
+                // authoritative. Logged here rather than at the bounce so the
+                // handler label distinguishes "registered handler declined"
+                // from "no native handler for this (arch, num)"; counted in
+                // `syscall_python_fallback_by_num`.
+                log::debug!(
+                    "Native syscall {handler_name} (num={num:?}) declined: \
+                     {err:?}; falling back to Python"
+                );
             }
         }
     }
