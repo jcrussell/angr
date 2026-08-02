@@ -1283,3 +1283,46 @@ fn record_summaries_splits_every_disposition_including_avoided() {
         "the per-disposition split must reconstruct the total — no silently dropped arm",
     );
 }
+
+/// angr-9ke6b.67: `record_dispatch` folds worker ids >= `MAX_TRACKED_WORKERS`
+/// into the last per-worker slot. That fold is acceptable (real pools are
+/// <= num_cpus) but it must not be *silent* — a run with
+/// `RUST_PARALLEL_WORKERS > MAX_TRACKED_WORKERS` produces a load-balance column
+/// whose tail is merged, and consumers (the S7 find-all gate) need a way to tell.
+/// `folded_worker_dispatches` counts exactly the folded dispatches, and stays 0
+/// for every in-range id.
+#[test]
+fn record_dispatch_reports_folded_worker_ids() {
+    let counters = super::SchedulerCounters::default();
+    for id in 0..MAX_TRACKED_WORKERS {
+        counters.record_dispatch(id, 1);
+    }
+    let stats = super::snapshot_stats(0, &counters);
+    assert_eq!(
+        stats.folded_worker_dispatches, 0,
+        "in-range worker ids must not be reported as degraded data",
+    );
+    assert!(
+        stats.worker_dispatches.iter().all(|&c| c == 1),
+        "each in-range id owns its own slot: {:?}",
+        stats.worker_dispatches,
+    );
+
+    counters.record_dispatch(MAX_TRACKED_WORKERS, 1);
+    counters.record_dispatch(MAX_TRACKED_WORKERS + 7, 1);
+    let stats = super::snapshot_stats(0, &counters);
+    assert_eq!(
+        stats.folded_worker_dispatches, 2,
+        "both out-of-range dispatches must be flagged as folded",
+    );
+    assert_eq!(
+        stats.worker_dispatches[MAX_TRACKED_WORKERS - 1],
+        3,
+        "the folded dispatches still land in the last slot (no lost dispatch)",
+    );
+    assert_eq!(
+        stats.worker_dispatches.iter().sum::<usize>(),
+        MAX_TRACKED_WORKERS + 2,
+        "folding must not drop a dispatch from the per-worker total",
+    );
+}

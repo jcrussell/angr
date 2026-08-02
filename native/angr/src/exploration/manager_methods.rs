@@ -95,6 +95,7 @@ impl RustExplorationManager {
             parallel_max_active_width: 0,
             parallel_width_hist: [0; 5],
             parallel_worker_dispatch: Vec::new(),
+            parallel_worker_dispatch_folded: 0,
             parallel_worker_of: HashMap::new(),
             shadow_probe: std::env::var("RUST_PARALLEL_SHADOW_PROBE")
                 .ok()

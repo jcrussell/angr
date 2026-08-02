@@ -364,6 +364,12 @@ pub struct RustExplorationManager {
     /// under the parallel loops its max/min is the load-balance column the S7
     /// find-all gate reports.
     pub(crate) parallel_worker_dispatch: Vec<u64>,
+    /// angr-9ke6b.67: dispatches whose worker id exceeded
+    /// `scheduler::MAX_TRACKED_WORKERS` and were folded into the last
+    /// `parallel_worker_dispatch` slot. 0 on every realistic run; non-zero is
+    /// the explicit signal that `parallel_worker_dispatch` is degraded (tail
+    /// workers merged) so its max/min load-balance ratio must not be trusted.
+    pub(crate) parallel_worker_dispatch_folded: u64,
     /// Sticky home-worker assignment per active state id, rebuilt each sample
     /// from the surviving frontier (bounds memory to the active width).
     pub(crate) parallel_worker_of: HashMap<u64, usize>,

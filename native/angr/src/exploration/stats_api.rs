@@ -242,6 +242,15 @@ impl RustExplorationManager {
             "parallel_worker_dispatch",
             self.parallel_worker_dispatch.clone(),
         )?;
+        // angr-9ke6b.67: degraded-data marker for the vector above. Non-zero =
+        // this run used more workers than `scheduler::MAX_TRACKED_WORKERS`, so
+        // the tail workers are merged into the final slot and the gate's max/min
+        // balance column is not trustworthy. A one-time `log::warn!` fires on the
+        // Rust side the first time it happens.
+        dict.set_item(
+            "parallel_worker_dispatch_folded",
+            self.parallel_worker_dispatch_folded,
+        )?;
         // SI-B (angr-1ilq.3 increment 2b'): real state-migration serde tax,
         // measured by the opt-in shadow probe (RUST_PARALLEL_SHADOW_PROBE). All
         // zero unless the probe is on; feeds the 2b' overhead GO/NO-GO gate.

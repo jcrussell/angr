@@ -71,6 +71,11 @@ impl RustExplorationManager {
         for (i, count) in stats.worker_dispatches.iter().take(workers).enumerate() {
             self.parallel_worker_dispatch[i] += *count as u64;
         }
+        // angr-9ke6b.67: carry the degraded-data marker through. Non-zero means
+        // `RUST_PARALLEL_WORKERS > MAX_TRACKED_WORKERS`, so the tail workers all
+        // merged into the last slot above and the vector's max/min balance ratio
+        // is not trustworthy.
+        self.parallel_worker_dispatch_folded += stats.folded_worker_dispatches as u64;
 
         // Dead-path terminal accounting (angr-op0dn.13.15). Workers drop the
         // summarized states in their own context — their full symbolic content is

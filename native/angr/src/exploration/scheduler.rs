@@ -348,8 +348,17 @@ pub(crate) struct SchedulerCounters {
     /// Dispatches per worker id (angr-op0dn.13.9): the load-balance column the
     /// S7 find-all gate needs (`max/min dispatched per worker`). Indexed by
     /// `worker_id`; ids >= [`MAX_TRACKED_WORKERS`] fold into the last slot
-    /// (documented lossiness — real runs use <= num_cpus workers).
+    /// (documented lossiness — real runs use <= num_cpus workers). When that
+    /// fold does happen it is reported by [`Self::folded_worker_dispatches`]
+    /// rather than left silent (angr-9ke6b.67).
     worker_dispatches: [AtomicUsize; MAX_TRACKED_WORKERS],
+    /// Dispatches that landed on a worker id >= [`MAX_TRACKED_WORKERS`] and were
+    /// therefore folded into the last [`Self::worker_dispatches`] slot
+    /// (angr-9ke6b.67). Non-zero means the per-worker load-balance column is
+    /// degraded — the tail workers are merged into one bucket, so its max/min
+    /// ratio is not trustworthy. Also drives a one-time `log::warn!` on the
+    /// first fold so a run producing degraded data says so on stderr.
+    folded_worker_dispatches: AtomicUsize,
     /// Step-weighted schedulable-frontier width, bucketed as
     /// `[==1, ==2, 3-4, 5-8, >=9]` — the parallel-path analogue of the serial
     /// model's `parallel_width_hist` (`record_migration_sample` in helpers.rs).
@@ -393,6 +402,23 @@ impl SchedulerCounters {
     /// Buckets match the serial model's `record_migration_sample` (helpers.rs)
     /// so the two width histograms are directly comparable.
     pub(crate) fn record_dispatch(&self, worker_id: usize, width: usize) {
+        if worker_id >= MAX_TRACKED_WORKERS {
+            // SILENT(cat-b): the per-worker column loses its tail resolution here,
+            // but the fold is counted and warned about exactly once, so consumers
+            // (the S7 find-all gate) can see the data is degraded instead of
+            // reading a merged bucket as a real worker's load.
+            if self
+                .folded_worker_dispatches
+                .fetch_add(1, Ordering::Relaxed)
+                == 0
+            {
+                log::warn!(
+                    "worker id {worker_id} exceeds MAX_TRACKED_WORKERS={MAX_TRACKED_WORKERS}; \
+                     per-worker dispatch stats fold ids >= {MAX_TRACKED_WORKERS} into the last \
+                     slot — the load-balance max/min column is degraded for this run",
+                );
+            }
+        }
         self.worker_dispatches[worker_id.min(MAX_TRACKED_WORKERS - 1)]
             .fetch_add(1, Ordering::Relaxed);
         let bucket = match width {
@@ -492,6 +518,10 @@ pub(crate) struct SchedulerStats {
     /// [`MAX_TRACKED_WORKERS`]; the run loop trims it to the configured worker
     /// count before exporting. See [`SchedulerCounters::worker_dispatches`].
     pub worker_dispatches: Vec<usize>,
+    /// Dispatches folded into the last [`Self::worker_dispatches`] slot because
+    /// their worker id was >= [`MAX_TRACKED_WORKERS`] (angr-9ke6b.67). Non-zero
+    /// marks [`Self::worker_dispatches`] as degraded data.
+    pub folded_worker_dispatches: usize,
     /// Step-weighted frontier-width histogram `[==1, ==2, 3-4, 5-8, >=9]`.
     pub width_hist: [usize; 5],
     /// Peak schedulable-frontier width observed at dispatch.
@@ -551,6 +581,7 @@ fn snapshot_stats(seeds: usize, counters: &SchedulerCounters) -> SchedulerStats 
             .iter()
             .map(|c| c.load(Ordering::SeqCst))
             .collect(),
+        folded_worker_dispatches: counters.folded_worker_dispatches.load(Ordering::SeqCst),
         width_hist: std::array::from_fn(|i| counters.width_hist[i].load(Ordering::SeqCst)),
         max_width: counters.max_width.load(Ordering::SeqCst),
     }
