@@ -7,7 +7,6 @@
 use crate::arch::RegisterFile;
 use crate::memory::SymbolicMemory;
 use crate::symbolic::{RustBV, SymContext};
-use crate::vex::Endness;
 
 // Every ABI register table below is expressed as named VEX guest-state
 // constants rather than bare integers. The per-arch `offsets` modules carry
@@ -100,11 +99,14 @@ pub(crate) trait CallingConvention: Send + Sync {
 
     /// Get the register offsets used for floating-point arguments.
     ///
-    /// No caller yet — argument extraction is integer-only. Retained (rather
-    /// than deleted) because each impl encodes non-obvious ABI provenance
-    /// (AAPCS-VFP `D0-D7`, AArch64 `V0-V7`, MIPS' deliberately-empty table)
-    /// that FP-argument support will need verbatim (angr-9ke6b.214).
-    #[allow(dead_code)]
+    /// No production caller yet — argument extraction is integer-only.
+    /// Retained (rather than deleted) because each impl encodes non-obvious
+    /// ABI provenance (AAPCS-VFP `D0-D7`, AArch64 `V0-V7`, MIPS'
+    /// deliberately-empty table) that FP-argument support will need verbatim
+    /// (angr-9ke6b.214). `calling_conventions_tests::fp_arg_registers_*` pins
+    /// every table so the provenance cannot rot silently before that support
+    /// lands, which is what makes keeping it defensible (angr-9ke6b.218 item 7).
+    #[cfg_attr(not(test), allow(dead_code))]
     fn fp_arg_registers(&self) -> &[u32];
 
     /// Get the size of a pointer in bytes.
@@ -112,14 +114,6 @@ pub(crate) trait CallingConvention: Send + Sync {
 
     /// Get the stack offset where arguments start (after return address).
     fn stack_arg_offset(&self) -> u64;
-
-    /// Get the endianness for memory access.
-    ///
-    /// No caller: `extract_args` reads through `SymbolicMemory`, which carries
-    /// its own endness, and every other consumer goes through
-    /// `vex::ir::arch::ArchInfo::endness` (angr-9ke6b.214).
-    #[allow(dead_code)]
-    fn endness(&self) -> Endness;
 
     /// Get the return value register offset.
     fn return_register(&self) -> u32;
@@ -356,10 +350,6 @@ impl CallingConvention for SystemVAMD64 {
         8
     }
 
-    fn endness(&self) -> Endness {
-        Endness::Little
-    }
-
     fn return_register(&self) -> u32 {
         amd64_off::RAX
     }
@@ -414,10 +404,6 @@ impl CallingConvention for Cdecl {
     fn stack_arg_offset(&self) -> u64 {
         // After call: [esp] = return address, args start at [esp + 4]
         4
-    }
-
-    fn endness(&self) -> Endness {
-        Endness::Little
     }
 
     fn return_register(&self) -> u32 {
@@ -489,10 +475,6 @@ impl CallingConvention for ARMEABI {
         0
     }
 
-    fn endness(&self) -> Endness {
-        Endness::Little
-    }
-
     fn return_register(&self) -> u32 {
         arm_off::R0
     }
@@ -558,10 +540,6 @@ impl CallingConvention for AArch64CC {
         0
     }
 
-    fn endness(&self) -> Endness {
-        Endness::Little
-    }
-
     fn return_register(&self) -> u32 {
         arm64_off::X0
     }
@@ -611,9 +589,14 @@ impl CallingConvention for MipsO32 {
         // but which of $f12/$f14 vs $a0-$a3 a given argument lands in depends
         // on the float/int position rules and on whether the binary is
         // soft-float (`-msoft-float` puts everything in the integer window).
-        // We do not model that dispatch, and `mips32_off::F12`/`F14` have no
-        // canonical `register_name` entry, so reporting them here would imply
-        // a mapping we cannot honor.
+        // We do not model that dispatch, so an extractor handed these offsets
+        // would read the wrong slot rather than no slot at all. That
+        // positional ambiguity is the whole reason; the offsets themselves
+        // exist (`mips32_off::F12`/`F14`, reachable via `register_offset`).
+        // angr-9ke6b.218 item 7 removed an older clause here claiming they
+        // have "no canonical `register_name` entry" — true, but it does not
+        // distinguish MIPS: ARM's `d0`-`d7` and AArch64's `q0`-`q7` are
+        // alias-only too, and those tables are populated.
         &[]
     }
 
@@ -632,14 +615,6 @@ impl CallingConvention for MipsO32 {
         // [sp + 16]. Enables native dispatch of 6-arg syscalls (futex 4238,
         // epoll_pwait 4313, mmap2 4210) when SP is concrete.
         Some(16)
-    }
-
-    fn endness(&self) -> Endness {
-        // MIPS may be either-endian; default to little. `Arch::is_little_endian`
-        // is NOT authoritative (every impl hardcodes little) -- the real
-        // per-state byte order is `RustSimState::is_little_endian`, seeded from
-        // the `little_endian` override in `with_solver_endian`.
-        Endness::Little
     }
 
     fn return_register(&self) -> u32 {
@@ -696,8 +671,7 @@ impl CallingConvention for MipsN64 {
     fn fp_arg_registers(&self) -> &[u32] {
         // Deliberately empty, same reasoning as `MipsO32::fp_arg_registers`:
         // N64 passes floats in $f12-$f19, but the int/float slot assignment
-        // and the soft-float variant are not modelled, and those offsets have
-        // no canonical `register_name` entry in `CANONICAL_MIPS64`.
+        // and the soft-float variant are not modelled.
         &[]
     }
 
@@ -709,14 +683,6 @@ impl CallingConvention for MipsN64 {
         // N64 does not reserve a save area for register args
         // (unlike O32's 16-byte window). Stack-passed args start at [sp].
         0
-    }
-
-    fn endness(&self) -> Endness {
-        // MIPS may be either-endian; default to little. `Arch::is_little_endian`
-        // is NOT authoritative (every impl hardcodes little) -- the real
-        // per-state byte order is `RustSimState::is_little_endian`, seeded from
-        // the `little_endian` override in `with_solver_endian`.
-        Endness::Little
     }
 
     fn return_register(&self) -> u32 {

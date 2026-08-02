@@ -3,7 +3,7 @@
 //! Extracted from `calling_conventions.rs` (see bd `rust-mod-tests-sibling-extraction`).
 
 use super::*;
-use crate::arch::{ALL_ARCHES, AMD64};
+use crate::arch::{ALL_ARCHES, AMD64, Arch, MIPS32, MIPS64};
 
 #[test]
 fn test_systemv_amd64_args() {
@@ -454,4 +454,136 @@ fn test_extract_args_register_only_path_ignores_missing_memory() {
         .extract_args(&regs, None, &ctx, 6)
         .expect("6 args fit in registers; memory unused");
     assert_eq!(args.len(), 6);
+}
+
+// --- fp_arg_registers provenance pins (angr-9ke6b.218 item 7) ---------------
+//
+// `fp_arg_registers` has no production caller: argument extraction is
+// integer-only. It is kept because each table encodes ABI provenance that
+// FP-argument support will need verbatim, and these tests are what makes
+// keeping it defensible — without them the tables could rot silently in the
+// years before the first real consumer arrives.
+
+#[test]
+fn fp_arg_registers_amd64_is_xmm0_through_xmm7() {
+    let cc = SystemVAMD64;
+    assert_eq!(
+        cc.fp_arg_registers(),
+        &[
+            amd64_off::XMM0,
+            amd64_off::XMM1,
+            amd64_off::XMM2,
+            amd64_off::XMM3,
+            amd64_off::XMM4,
+            amd64_off::XMM5,
+            amd64_off::XMM6,
+            amd64_off::XMM7,
+        ][..],
+        "SysV AMD64 passes the first 8 FP args in XMM0-XMM7",
+    );
+    assert_eq!(
+        cc.fp_arg_registers().first().copied(),
+        cc.fp_return_register(),
+        "XMM0 is both the first FP arg slot and the scalar-double return slot",
+    );
+}
+
+#[test]
+fn fp_arg_registers_x86_cdecl_is_empty() {
+    // cdecl passes every float on the stack; there is no FP register window.
+    assert!(Cdecl.fp_arg_registers().is_empty());
+}
+
+#[test]
+fn fp_arg_registers_arm_is_d0_through_d7() {
+    // AAPCS-VFP (hard-float). Soft-float ARM EABI uses the integer pairs
+    // instead, which this table deliberately does not model.
+    assert_eq!(
+        ARMEABI.fp_arg_registers(),
+        &[
+            arm_off::D0,
+            arm_off::D1,
+            arm_off::D2,
+            arm_off::D3,
+            arm_off::D4,
+            arm_off::D5,
+            arm_off::D6,
+            arm_off::D7,
+        ][..],
+    );
+}
+
+#[test]
+fn fp_arg_registers_arm64_is_v0_through_v7() {
+    let cc = AArch64CC;
+    assert_eq!(
+        cc.fp_arg_registers(),
+        &[
+            arm64_off::Q0,
+            arm64_off::Q1,
+            arm64_off::Q2,
+            arm64_off::Q3,
+            arm64_off::Q4,
+            arm64_off::Q5,
+            arm64_off::Q6,
+            arm64_off::Q7,
+        ][..],
+        "AAPCS64 passes the first 8 FP args in V0-V7, the low halves of Q0-Q7",
+    );
+    assert_eq!(
+        cc.fp_arg_registers().first().copied(),
+        cc.fp_return_register(),
+        "V0 is both the first FP arg slot and the scalar-double return slot",
+    );
+}
+
+#[test]
+fn fp_arg_registers_mips_is_empty_by_design() {
+    // Both MIPS tables are empty ON PURPOSE: O32 passes doubles in $f12/$f14
+    // and N64 in $f12-$f19, but which of those vs the integer window a given
+    // argument lands in depends on the float/int position rules and on whether
+    // the binary is soft-float. We do not model that dispatch, so an extractor
+    // handed these offsets would read the wrong slot rather than no slot.
+    assert!(MipsO32.fp_arg_registers().is_empty());
+    assert!(MipsN64.fp_arg_registers().is_empty());
+    // The f-registers exist in the register file, so emptiness is a modelling
+    // decision, not a missing-offset one.
+    assert_eq!(MIPS32.register_offset("f12"), Some(mips32_off::F12));
+    assert_eq!(MIPS64.register_offset("f12"), Some(mips64_off::F12));
+}
+
+#[test]
+fn fp_arg_register_offsets_are_distinct_and_evenly_strided() {
+    // What a future FP-argument extractor actually needs from these tables:
+    // N distinct slots, ascending, one register width apart, so `regs[i]` is
+    // the i-th FP argument. (Deliberately NOT asserted: that `register_name`
+    // resolves them. It does not — ARM's `d0`-`d7` and AArch64's `q0`-`q7`
+    // live in each arch's ALIASES table, and `register_name` searches only
+    // CANONICAL. That is the same position MIPS' `$f12`/`$f14` are in, so
+    // naming is not what separates the populated tables from the empty ones.)
+    let cases: [(&dyn CallingConvention, &str, u32); 3] = [
+        // 32, not 16: VEX lays amd64 out as 256-bit YMM slots and XMMn is
+        // the low half of YMMn.
+        (&SystemVAMD64, "amd64", 32),
+        (&ARMEABI, "arm", 8),
+        (&AArch64CC, "arm64", 16),
+    ];
+    for (cc, label, stride) in cases {
+        let regs = cc.fp_arg_registers();
+        assert_eq!(regs.len(), 8, "{label} FP arg window is 8 registers wide");
+        let unique: std::collections::HashSet<u32> = regs.iter().copied().collect();
+        assert_eq!(
+            unique.len(),
+            regs.len(),
+            "{label} FP arg offsets must be distinct"
+        );
+        for (i, w) in regs.windows(2).enumerate() {
+            assert_eq!(
+                w[1] - w[0],
+                stride,
+                "{label} FP arg slots {i} and {} are not one register apart",
+                i + 1
+            );
+        }
+    }
 }
