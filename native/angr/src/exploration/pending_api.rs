@@ -402,15 +402,13 @@ impl RustExplorationManager {
 
     /// Look up the parent id of an arbitrary state the manager still holds.
     ///
-    /// Only two places hold states: `pending_callbacks` (checked first, it is a
-    /// direct hash lookup) and the stashes. A state that is in neither has been
-    /// consumed by a fork or dropped, so its parent link is unrecoverable —
-    /// hence the best-effort walk in `_get_pending_ancestry`.
+    /// Only two places hold states: `pending_callbacks` and the stashes, and
+    /// `find_state` already searches both (pending first, as a direct hash
+    /// lookup). A state that is in neither has been consumed by a fork or
+    /// dropped, so its parent link is unrecoverable — hence the best-effort
+    /// walk in `_get_pending_ancestry`.
     fn _parent_of(&self, state_id: u64) -> Option<u64> {
-        if let Some(pending) = self.pending_callbacks.get(&StateId::new(state_id)) {
-            return pending.state.parent_id();
-        }
-        self.sm.find_state(state_id).and_then(|s| s.parent_id())
+        self.find_state(state_id).and_then(RustSimState::parent_id)
     }
 
     /// Depth cap for the ancestry walk. Fork chains this deep do not occur in
