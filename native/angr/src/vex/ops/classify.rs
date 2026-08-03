@@ -47,7 +47,16 @@ pub fn iropclass(op: &IROp) -> VexOpFamily {
         | IROp::CmpLTU(_)
         | IROp::CmpLEU(_) => VexOpFamily::Cmp,
 
-        // Width adjustment, bit-count, reinterpret, concat/extract
+        // Width adjustment, bit-count, reinterpret, concat/extract.
+        //
+        // `Concat` is classified `Ext` here (it is a width adjustment) even
+        // though the `binop()` router *dispatches* it to `binop_vec_int`
+        // (`ops/mod.rs`), where its two-narrow-inputs/one-wide-output shape
+        // matches the vector-int helpers. The mismatch is deliberate
+        // (angr-9ke6b.168): dispatch grouping tracks code shape, family
+        // grouping tracks semantics. `test_vec_int_binops_iropclass_is_vec`
+        // in `ops/tests_vec_dispatch.rs` pins `Concat` to `Ext` so the two
+        // groupings can drift apart only on purpose.
         IROp::SignExtend { .. }
         | IROp::ZeroExtend { .. }
         | IROp::Truncate { .. }

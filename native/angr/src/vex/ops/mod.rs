@@ -570,6 +570,17 @@ impl VEXOps {
             IROp::VXor(ty) => width_binop!(left, right, ty, xor_into, ctx),
 
             // Concatenate (scalar; ty is the result width).
+            //
+            // Deliberate grouping mismatch (angr-9ke6b.168): `Concat` is
+            // *dispatched* here because its "two narrow inputs -> one wide
+            // output" shape matches the vector-int helpers, but `iropclass`
+            // (`ops/classify.rs`) *classifies* it as `VexOpFamily::Ext`
+            // alongside Extract/SignExtend, because conceptually it is a
+            // width adjustment, not a SIMD op. Dispatch grouping tracks the
+            // code shape; family grouping tracks the semantics — they are
+            // allowed to differ. When adding an op, pick the "nearest
+            // example" in each grouping independently rather than assuming
+            // one implies the other.
             IROp::Concat { ty } => {
                 let result = left.concat_into(right, ctx);
                 debug_assert_eq!(result.width(), ty.bits());
