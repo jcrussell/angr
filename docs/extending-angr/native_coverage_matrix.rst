@@ -410,7 +410,7 @@ Per-arch matrix
      - ✓
      - ✓
      - ✓
-     - ✓
+     - ✓ (only ``faccessat``)
      - ✓
      - ✓
    * - ``readlink`` / ``readlinkat``
@@ -639,11 +639,20 @@ Stubbed / incomplete
   records the fallback under ``syscall_python_fallback_by_num`` key
   ``-1`` and hands the state to Python. The counter is at zero on the
   current bench corpus.
-* **``readlink`` / ``readlinkat`` / ``lstat`` / ``newfstatat`` /
-  ``faccessat``** — currently route through angr's stub-symbolic
-  Python handler. The audit lives at ``angr-6009`` (P2). When the
-  audit lands, these may be promoted to native handlers with explicit
-  symbolic-input contracts.
+* **``lstat`` / ``newfstatat`` / ``faccessat`` flag args** — the
+  ``angr-6009`` audit landed: all five names it covered (``readlink``,
+  ``readlinkat``, ``lstat``, ``newfstatat``, ``faccessat``) are real
+  native handlers in ``syscalls/file_path.rs``, registered per the
+  matrix above, and no longer route through the stub-symbolic Python
+  handler. Three deliberate gaps remain. ``newfstatat`` ignores its
+  ``flag`` argument — ``AT_EMPTY_PATH`` (0x1000) would have to
+  re-dispatch to ``NativeFstatSyscall(dirfd)``, and
+  ``AT_SYMLINK_NOFOLLOW`` is a no-op while ``lstat`` and ``stat``
+  agree. ``lstat`` queries only ``FileSystem::is_path_known`` /
+  ``content_size_for_path``, not the symlink table ``readlink`` reads
+  (``FileSystem::readlink_target``), so a path registered *only* as a
+  symlink stats as unknown (``-1``). ``faccessat`` ignores ``mode``,
+  matching angr's Python ``access``.
 
 .. _native-documented-divergences:
 
