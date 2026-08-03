@@ -56,6 +56,20 @@ fn extract_data_tuple(tuple: &Bound<'_, pyo3::types::PyTuple>) -> PyResult<Batch
     Ok((data, is_symbolic, symbolic_ast))
 }
 
+/// Decode a `(page_data, permissions, is_mapped)` tuple returned by a Python
+/// page-fetch callback.
+///
+/// Shared by `call_fetch_page` and the batch loop in `call_batch_fetch_pages`
+/// so the single-page and batched paths cannot drift apart on element order or
+/// element types.
+fn extract_page_tuple(tuple: &Bound<'_, pyo3::types::PyTuple>) -> PyResult<(Vec<u8>, u8, bool)> {
+    let data: Vec<u8> = tuple.get_item(0)?.extract()?;
+    let permissions: u8 = tuple.get_item(1)?.extract()?;
+    let is_mapped: bool = tuple.get_item(2)?.extract()?;
+
+    Ok((data, permissions, is_mapped))
+}
+
 impl PythonCallbacks {
     /// Call the memory load callback.
     ///
@@ -339,12 +353,7 @@ impl PythonCallbacks {
 
             let result = cb.call1(py, (page_addr,))?;
             let tuple = result.cast_bound::<pyo3::types::PyTuple>(py)?;
-
-            let data: Vec<u8> = tuple.get_item(0)?.extract()?;
-            let permissions: u8 = tuple.get_item(1)?.extract()?;
-            let is_mapped: bool = tuple.get_item(2)?.extract()?;
-
-            Ok((data, permissions, is_mapped))
+            extract_page_tuple(tuple)
         })
     }
 
@@ -373,10 +382,7 @@ impl PythonCallbacks {
 
                 for item in result_list.iter() {
                     let tuple = item.cast::<pyo3::types::PyTuple>()?;
-                    let data: Vec<u8> = tuple.get_item(0)?.extract()?;
-                    let permissions: u8 = tuple.get_item(1)?.extract()?;
-                    let is_mapped: bool = tuple.get_item(2)?.extract()?;
-                    results.push((data, permissions, is_mapped));
+                    results.push(extract_page_tuple(tuple)?);
                 }
 
                 return Ok(results);
