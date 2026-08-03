@@ -957,67 +957,55 @@ fn parse_vreverse(op_str: &str) -> Option<IROp> {
 /// emits for ARM/AArch64 NEON and that this engine currently has no handler
 /// for. Opcodes already handled by `parse_vector` (e.g. `Iop_Add8x8` ->
 /// `VAdd`) are deliberately excluded so we do not regress existing coverage.
+///
+/// # Historical coverage
+///
+/// This function currently claims nothing — every NEON family that once
+/// routed here has graduated to a real handler, the last being
+/// `Iop_PwAdd32Fx2` -> `IROp::VFPwAdd` in angr-cudgw.6. The record below maps
+/// each family to the bead that implemented it and the parse fn it now routes
+/// through, so a future NEON gap can be checked against what was already
+/// covered:
+///
+/// - `Iop_GetElem*` / `Iop_SetElem*` (lane extract/insert) — angr-bkcs.2, via
+///   `parse_vector` to `IROp::VGetElem` / `VSetElem`.
+/// - `Iop_Dup*` / `Iop_Widen*` / `Iop_Narrow{Bin,Un}*` / `Iop_QNarrow{Bin,Un}*`
+///   — angr-hzs0, via `parse_vector` to `IROp::VDup` / `VWiden` /
+///   `VNarrow{Un,Bin}` / `VQNarrow{Un,Bin}`.
+/// - FP `RecipEst` / `RecipStep` / `RSqrtEst` / `RSqrtStep` (`{32,64}{F0,Fx}*`)
+///   — angr-iyon, via `parse_float` to `IROp::VFRecipEst{,S}` / `VFRecipStep` /
+///   `VFRSqrtEst{,S}` / `VFRSqrtStep`.
+/// - `Iop_RecipEst32Ux{2,4}` (URECPE) and `Iop_RSqrtEst32Ux{2,4}` (URSQRTE) —
+///   angr-tukg.5, via `parse_vector` to `IROp::VIRecipEst` / `VIRSqrtEst`
+///   (fresh-symbolic per lane).
+/// - `Iop_QAdd{N}{S/U}x{M}` / `Iop_QSub{N}{S/U}x{M}` (saturating integer
+///   add/sub) — angr-tukg.1, via `parse_vector` to `IROp::VQAdd` / `VQSub`.
+/// - `Iop_Avg{N}{S/U}x{M}` (rounding halving add) — angr-tukg.3, via
+///   `parse_vector` to `IROp::VAvg`.
+/// - `Iop_Reverse{N}sIn{M}_x{K}` (byte/halfword/word/bit reversal within lane)
+///   — angr-tukg.4, via `parse_vreverse` to `IROp::VReverse`.
+/// - Integer `Iop_PwAdd{N}x{M}`, `Iop_PwAddL{N}{S/U}x{M}`,
+///   `Iop_PwMin{N}{S/U}x{M}`, `Iop_PwMax{N}{S/U}x{M}` — angr-tukg.2, via
+///   `parse_vector` to `IROp::VPwAdd` / `VPwAddL` / `VPwMin` / `VPwMax`; the FP
+///   pairwise `Iop_PwAdd32Fx2` — angr-cudgw.6, via `parse_float` to
+///   `IROp::VFPwAdd`. No `Pw*` op remains unimplemented.
+/// - `Iop_PolynomialMul8x{8,16}` / `Iop_PolynomialMull8x8` (GF(2) carry-less
+///   multiply) — angr-tukg.6, via `parse_vector` to `IROp::VPolynomialMul`.
+/// - `Iop_Cnt8x{8,16}` (per-byte popcount), `Iop_Clz{N}x{M}` and
+///   `Iop_Cls{N}x{M}` (per-lane count-leading-zeros / count-leading-sign-bits)
+///   — angr-tukg.6, via `parse_vector` to `IROp::VCnt` / `VClz` / `VCls`.
+/// - Vector shift by *vector* (`Shl`/`Shr`/`Sar`/`Sal{N}x{M}`) — angr-tukg.7,
+///   via `parse_vector` to `IROp::VShl` / `VShr` / `VSar` (`Sal` -> `VShl`).
+/// - `Iop_QShl{N}x{M}` / `Iop_QSal{N}x{M}` (saturating shift-left by vector) —
+///   angr-tukg.8, via `parse_vector` to `IROp::VQShlSat`. `QShlN`
+///   (shift-by-immediate) is still unimplemented.
 fn parse_neon_unimplemented(op_str: &str) -> Option<IROp> {
-    // No NEON op currently routes here: every op listed in the NOTEs below is
-    // fully implemented (the last scaffold, Iop_PwAdd32Fx2, became IROp::VFPwAdd
-    // in angr-cudgw.6). The `NeonUnimplemented` sentinel and this fn are kept as
-    // the scaffold point for the next NEON op — add
-    // `"Iop_Foo" => return Some(IROp::NeonUnimplemented("Iop_Foo")),` to a match
-    // on `op_str` here, alongside a NOTE once it graduates to a real handler.
+    // The `NeonUnimplemented` sentinel and this fn are kept as the scaffold
+    // point for the next NEON op — add a match on `op_str` here returning
+    // `Some(IROp::NeonUnimplemented("Iop_Foo"))`, and move it to the historical
+    // coverage list above once it graduates to a real handler.
     let _ = op_str;
     None
-    // Historical coverage notes (op family -> implementing bead/route):
-    /* match op_str {
-        // NOTE: Iop_GetElem* / Iop_SetElem* (lane extract/insert) implemented
-        // in angr-bkcs.2 — routed through parse_vector to IROp::VGetElem /
-        // IROp::VSetElem above. Iop_Dup* / Iop_Widen* / Iop_Narrow{Bin,Un}* /
-        // Iop_QNarrow{Bin,Un}* implemented in angr-hzs0 — routed through
-        // parse_vector to IROp::VDup / IROp::VWiden / IROp::VNarrow{Un,Bin} /
-        // IROp::VQNarrow{Un,Bin}.
-
-        // NOTE: FP RecipEst / RecipStep / RSqrtEst / RSqrtStep ({32,64}{F0,Fx}*)
-        // implemented in angr-iyon — routed through parse_float to
-        // IROp::VFRecipEst{,S} / VFRecipStep / VFRSqrtEst{,S} / VFRSqrtStep.
-
-        // NOTE: Iop_RecipEst32Ux{2,4} (URECPE) and Iop_RSqrtEst32Ux{2,4}
-        // (URSQRTE) implemented in angr-tukg.5 — routed through parse_vector
-        // to IROp::VIRecipEst / IROp::VIRSqrtEst (fresh-symbolic per lane).
-
-        // NOTE: Iop_QAdd{N}{S/U}x{M} / Iop_QSub{N}{S/U}x{M} (NEON saturating
-        // integer add/sub) implemented in angr-tukg.1 — routed through
-        // parse_vector to IROp::VQAdd / IROp::VQSub.
-
-        // NOTE: Iop_Avg{N}{S/U}x{M} (rounding halving add) implemented in
-        // angr-tukg.3 — routed through parse_vector to IROp::VAvg.
-
-        // NOTE: Iop_Reverse{N}sIn{M}_x{K} (byte/halfword/word/bit reversal
-        // within lane) implemented in angr-tukg.4 — routed through
-        // parse_vreverse to IROp::VReverse.
-
-        // NOTE: integer Iop_PwAdd{N}x{M}, Iop_PwAddL{N}{S/U}x{M},
-        // Iop_PwMin{N}{S/U}x{M}, Iop_PwMax{N}{S/U}x{M} implemented in
-        // angr-tukg.2 — routed through parse_vector to IROp::VPwAdd /
-        // VPwAddL / VPwMin / VPwMax. The FP pairwise Iop_PwAdd32Fx2 is
-        // implemented in angr-cudgw.6 — routed through parse_float to
-        // IROp::VFPwAdd. No Pw* op remains unimplemented.
-
-        // NOTE: Iop_PolynomialMul8x{8,16} / Iop_PolynomialMull8x8 (NEON GF(2)
-        // carry-less multiply) implemented in angr-tukg.6 — routed through
-        // parse_vector to IROp::VPolynomialMul.
-
-        // NOTE: Iop_Cnt8x{8,16} (per-byte popcount), Iop_Clz{N}x{M} and
-        // Iop_Cls{N}x{M} (per-lane count-leading-zeros / count-leading-sign-
-        // bits) implemented in angr-tukg.6 — routed through parse_vector to
-        // IROp::VCnt / VClz / VCls.
-
-        // Vector shift by *vector* (Shl/Shr/Sar/Sal{N}x{M}) routed to
-        // parse_vector → IROp::VShl / VShr / VSar (Sal → VShl) in angr-tukg.7.
-
-        // NOTE: Iop_QShl{N}x{M} / Iop_QSal{N}x{M} (NEON saturating shift-left
-        // by vector) implemented in angr-tukg.8 — routed through parse_vector
-        // to IROp::VQShlSat. QShlN (shift-by-immediate) is still unimplemented.
-        _ => return None,
-    }; */
 }
 
 /// Parse special and x86-specific operations
