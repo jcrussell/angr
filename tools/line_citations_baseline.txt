@@ -6,7 +6,6 @@ callbacks/mod.rs	/// Matches Python's callstack.py:430/432 semantics.
 callbacks/mod.rs	/// pushed). Matches Python's callstack.py:386/419 semantics.
 concretize.rs	/// `address_concretization_mixin.py:327-329`.
 concretize.rs	/// branch at line 272 (`return self._default_value(...)`).
-exploration/run_loop.rs	//! rust_manager.py:98):** the run loop must terminate on EITHER (a)
 interpreter/execution.rs	// mirror Python callstack.py:386/419 (BEFORE
 interpreter/execution.rs	// mirror Python callstack.py:430/432.
 interpreter/execution.rs	/// Mirrors Python `callstack.py:386` / `:419`.
@@ -35,8 +34,6 @@ memory/tests/symbolic.rs	/// overwritten offset hits the span fast path at load.
 memory/tests/symbolic.rs	/// store.rs:154 removes the wider sym entirely (and the spans),
 memory/tests/symbolic.rs	/// the per-byte concat fallback (~lines 642-680 of memory.rs).
 procedures/sprintf_tests.rs	// format_parser.py masks each concretized int arg to `size*8` bits (line 96)
-stash.rs	//! **Invariant I6 (cross-mixin, mirror of rust_manager.py:74):** the
-state/mod.rs	//! `angr/exploration/rust_manager.py:10-100`. Most of those concerns are
 state/mod.rs	/// before enumeration is attempted. See engines/successors.py:234-239.
 state/mod.rs	/// the next block lift. See engines/successors.py:297-307,326-331.
 state/mod.rs	/// unconstrained stash without warning. See engines/successors.py:292-296.

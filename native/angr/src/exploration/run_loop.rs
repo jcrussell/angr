@@ -38,8 +38,10 @@
 //! (angr-9ke6b.50, see `invariant-pyo3-multiple-pymethods-enabled`) — it is
 //! kept as a style choice, not a constraint.
 //!
-//! **Invariant I8 (cross-mixin termination, mirror of
-//! rust_manager.py:98):** the run loop must terminate on EITHER (a)
+//! **Invariant I8 (cross-mixin termination, mirror of the
+//! `I8. Exploration-loop termination conditions` entry in the
+//! `angr/exploration/rust_manager.py` module docstring):** the run loop
+//! must terminate on EITHER (a)
 //! `found_count() >= num_find` (checked at the top of every iteration),
 //! OR (b) the active stash exhausting itself (`pop_*` returns `None`,
 //! emitting an `active_empty` event). `found_count()` covers both

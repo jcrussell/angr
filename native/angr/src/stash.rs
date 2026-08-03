@@ -6,7 +6,9 @@
 //! - State root tracking for fork lineage
 //! - Terminal state counters
 //!
-//! **Invariant I6 (cross-mixin, mirror of rust_manager.py:74):** the
+//! **Invariant I6 (cross-mixin, mirror of the `I6. State-cache pinning +
+//! manager-vs-mixin override` entry in the
+//! `angr/exploration/rust_manager.py` module docstring):** the
 //! Python-side `_cleanup_state_cache` orchestrates eviction with pinning
 //! over `_state_roots ∪ {_current_callback_state_id,
 //! _current_stepping_state_id}`. The Rust counterpart here owns the

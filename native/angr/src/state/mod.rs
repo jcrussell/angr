@@ -11,8 +11,9 @@
 //! The Python `RustExplorationManager` composes several mixins
 //! (RustStateCacheMixin, RustStateExportMixin, RustStateSyncMixin,
 //! RustCallbackDispatchMixin); the cross-mixin invariants are documented as
-//! the source-of-truth header in
-//! `angr/exploration/rust_manager.py:10-100`. Most of those concerns are
+//! the source-of-truth header in the `Cross-mixin invariants` section of
+//! the `angr/exploration/rust_manager.py` module docstring. Most of those
+//! concerns are
 //! Python-orchestration only, but the ones that cross the FFI boundary
 //! manifest on the Rust side. The list below mirrors I1–I8 with the Rust
 //! enforcement site (or "Python-only" when no Rust code participates).
