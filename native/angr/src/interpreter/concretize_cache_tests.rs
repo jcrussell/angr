@@ -144,6 +144,66 @@ fn concretize_cached_write_keeps_toolarge_when_fallback_disabled() {
     }
 }
 
+#[test]
+fn concretize_cached_jump_short_circuits_concrete_addr() {
+    let ctx = SymContext::new_mock();
+    let mut interp = new_interp(&ctx);
+    let addr = RustBV::concrete(0x401000, 64);
+    match &*interp.concretize_cached_jump(&addr) {
+        ConcretizationResult::Single(a) => assert_eq!(*a, 0x401000),
+        other => panic!("expected Single(0x401000), got {other:?}"),
+    }
+}
+
+/// angr-9ke6b.92: the jump variant has no fallback of its own, so a cached
+/// `TooLarge` must come back unchanged even when the read/write fallback flags
+/// are on — `eval_next_addr` turns any non-`Single` into an `Unsupported`
+/// deferral to Python rather than pinning an arbitrary target.
+#[test]
+fn concretize_cached_jump_keeps_toolarge_verbatim_on_cache_hit() {
+    let ctx = SymContext::new_mock();
+    let mut interp = new_interp(&ctx);
+    interp.set_concretizer(concretizer_with_fallbacks(true, true));
+
+    let addr = RustBV::symbolic(&ctx, "jump_target", 64);
+    let key = VEXInterpreter::bv_cache_key(&addr);
+    interp.concretize_cache.insert(
+        key,
+        Arc::new(ConcretizationResult::TooLarge {
+            min: 0,
+            max: u64::MAX,
+            limit: 1024,
+        }),
+    );
+
+    match &*interp.concretize_cached_jump(&addr) {
+        ConcretizationResult::TooLarge { min, max, limit } => {
+            assert_eq!((*min, *max, *limit), (0, u64::MAX, 1024));
+        }
+        other => panic!("expected TooLarge unchanged, got {other:?}"),
+    }
+}
+
+/// The cache is shared with the read/write variants: a `Single` seeded by an
+/// earlier store in the same block is reused for a later jump target with the
+/// same key, so the block pays one solver query rather than one per exit.
+#[test]
+fn concretize_cached_jump_reuses_shared_cache_entry() {
+    let ctx = SymContext::new_mock();
+    let mut interp = new_interp(&ctx);
+
+    let addr = RustBV::symbolic(&ctx, "shared_target", 64);
+    let key = VEXInterpreter::bv_cache_key(&addr);
+    interp
+        .concretize_cache
+        .insert(key, Arc::new(ConcretizationResult::Single(0x4141)));
+
+    match &*interp.concretize_cached_jump(&addr) {
+        ConcretizationResult::Single(a) => assert_eq!(*a, 0x4141),
+        other => panic!("expected the cached Single(0x4141), got {other:?}"),
+    }
+}
+
 /// angr-owr37: two addresses whose differing leaf symbol sits >= 2 levels deep
 /// — `Add(And(x,0xf),c)` vs `Add(And(y,0xf),c)` — must NOT share a cache key.
 /// The original 1-level `bv_cache_key` hashed only `(discriminant, width)` for a

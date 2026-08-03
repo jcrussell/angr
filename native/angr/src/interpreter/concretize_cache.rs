@@ -107,6 +107,46 @@ impl<'a> VEXInterpreter<'a> {
         result
     }
 
+    /// Concretize a **jump target** with per-block caching.
+    ///
+    /// Backs `exits.rs::eval_next_addr`, which needs the plain
+    /// `AddressConcretizer::concretize` chain — `Range(read_range_limit)` with
+    /// *no* fallback, since a jump target that does not resolve to exactly one
+    /// address is surfaced as `Unsupported` and deferred to Python rather than
+    /// pinned to an arbitrary solution.
+    ///
+    /// Shares the one `concretize_cache` with `concretize_cached_read` /
+    /// `concretize_cached_write` rather than keeping a private map. That is
+    /// sound because every `Single` those two can store is either a genuinely
+    /// unique solution or a fallback value that `concretize::pin_fallback_addr`
+    /// has already asserted into the solver — so a fresh `concretize` on the
+    /// same expression would return that same `Single` anyway. Every non-`Single`
+    /// shape (`Multiple` / `Strided` / `TooLarge`) maps to the same
+    /// `Unsupported` deferral here regardless of which range limit produced it.
+    ///
+    /// Returns an `Arc<ConcretizationResult>` (see `concretize_cached_read`).
+    pub(super) fn concretize_cached_jump(&mut self, addr: &RustBV) -> Arc<ConcretizationResult> {
+        if let Some(concrete_addr) = addr.as_u64() {
+            return Arc::new(ConcretizationResult::Single(concrete_addr));
+        }
+
+        let cache_key = Self::bv_cache_key(addr);
+        if let Some(cached) = self.concretize_cache.get(&cache_key) {
+            // No jump-side fallback to re-apply, unlike the read/write variants.
+            return Arc::clone(cached);
+        }
+
+        let conc_start = std::time::Instant::now();
+        let result = Arc::new(self.concretizer.concretize(addr, self.ctx));
+        let conc_elapsed = conc_start.elapsed();
+        if self.profiling_enabled {
+            self.stats.concretize_count += 1;
+            self.stats.concretize_time_ns += conc_elapsed.as_nanos() as u64;
+        }
+        self.concretize_cache.insert(cache_key, Arc::clone(&result));
+        result
+    }
+
     /// Compute a cache key for a RustBV value.
     /// Uses the symbolic id for Symbolic/Constrained, and a hash of the FULL op
     /// tree for Expression.

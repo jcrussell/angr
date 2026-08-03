@@ -12,9 +12,13 @@ impl<'a> VEXInterpreter<'a> {
         let next_val = self.eval_expr_with_callbacks(callbacks, &irsb.next, &irsb.tyenv)?;
         // Check for symbolic addresses FIRST - Constrained BV has concrete value but is still symbolic
         if next_val.is_symbolic() {
-            // Try to concretize to a single value
-            match self.concretizer.concretize(&next_val, self.ctx) {
-                ConcretizationResult::Single(addr) => {
+            // Try to concretize to a single value. Routed through the shared
+            // per-block cache (`concretize_cache.rs::concretize_cached_jump`)
+            // so a block that re-enters this path — every symbolic `Ist_Exit`
+            // evaluates the same `irsb.next` fallthrough — pays one solver
+            // query, not one per exit.
+            match &*self.concretize_cached_jump(&next_val) {
+                &ConcretizationResult::Single(addr) => {
                     // Add constraint that target == addr
                     let concrete = RustBV::concrete(addr as u128, next_val.width());
                     let constraint = next_val.eq(&concrete, self.ctx);
