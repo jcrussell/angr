@@ -124,9 +124,9 @@ impl PythonCallbacks {
 
             // Try batch callback first
             if let Some(cb) = &self.memory_load_batch {
-                // Convert loads to Python list of tuples
-                let py_loads: Vec<(u64, u32)> = loads.to_vec();
-                let result = cb.call1(py, (py_loads,))?;
+                // Converted to a Python list of tuples by PyO3's `IntoPyObject for &[T]`,
+                // so the slice goes straight across without an intermediate `Vec` copy.
+                let result = cb.call1(py, (loads,))?;
 
                 // Parse the result list
                 let result_list = result.cast_bound::<pyo3::types::PyList>(py)?;
@@ -246,10 +246,8 @@ impl PythonCallbacks {
                 pyo3::exceptions::PyRuntimeError::new_err("dirty_call callback not set")
             })?;
 
-            // Convert args to Python list
-            let args_list: Vec<u64> = args.to_vec();
-
-            let result = cb.call1(py, (name, args_list, ret_ty_bits))?;
+            // `args` becomes a Python list via `IntoPyObject for &[T]` — no copy needed.
+            let result = cb.call1(py, (name, args, ret_ty_bits))?;
             let tuple = result.cast_bound::<pyo3::types::PyTuple>(py)?;
             extract_data_tuple(tuple)
         })
@@ -339,8 +337,8 @@ impl PythonCallbacks {
 
             // Try batch callback first
             if let Some(cb) = &self.batch_fetch_pages {
-                let addrs_list: Vec<u64> = page_addrs.to_vec();
-                let result = cb.call1(py, (addrs_list,))?;
+                // `IntoPyObject for &[T]` builds the Python list directly from the slice.
+                let result = cb.call1(py, (page_addrs,))?;
 
                 let result_list = result.cast_bound::<pyo3::types::PyList>(py)?;
                 let mut results = Vec::with_capacity(page_addrs.len());
