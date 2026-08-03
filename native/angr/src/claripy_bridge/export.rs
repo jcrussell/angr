@@ -35,7 +35,7 @@ fn ensure_claripy_ast(
     // Check if it's already a claripy AST by checking for 'op' attribute
     match bound.hasattr("op") {
         Ok(true) => {
-            return Ok(obj.clone());
+            return Ok(obj.clone_ref(py));
         }
         Ok(false) => {
             let type_name = bound
@@ -104,7 +104,7 @@ fn ensure_claripy_ast(
 
     // Otherwise return as-is and hope for the best
     log::warn!("ensure_claripy_ast: unknown type {type_name}, returning as-is");
-    Ok(obj.clone())
+    Ok(obj.clone_ref(py))
 }
 
 /// Materialize one `(guard, is_assumed_true)` entry from a `SymContext`'s
@@ -517,8 +517,14 @@ fn rustbv_to_claripy_memo(
                 })
                 .collect::<Result<Vec<_>, _>>()?;
 
-            // For binary ops, ensure operand widths match (resize if needed)
-            let args = if args.len() == 2 && !matches!(op, BVOp::Extract(_, _) | BVOp::Concat) {
+            // For binary ops, ensure operand widths match (resize if needed).
+            // `Concat` is the one two-operand op whose operands are *meant* to
+            // differ in width, so it opts out. `Extract` needs no exclusion here
+            // despite also rejecting a width match: it is always built as a
+            // one-operand node (`RustBV::expr_node(_, BVOp::Extract(..), [inner])`
+            // in `value_ops.rs`), so `args.len() == 2` is unreachable for it
+            // (angr-9ke6b.41).
+            let args = if args.len() == 2 && !matches!(op, BVOp::Concat) {
                 let a0 = args[0].bind(py);
                 let a1 = args[1].bind(py);
                 let w0: Option<u32> = a0.getattr("length").ok().and_then(|l| l.extract().ok());
@@ -533,18 +539,18 @@ fn rustbv_to_claripy_memo(
                     Ok(bool_to_bv1(claripy_mod, arg.bind(py))?.unbind())
                 };
                 let (args, w0, w1) = match (w0, w1) {
-                    (None, Some(w)) => (vec![to_bv1(&args[0])?, args[1].clone()], 1u32, w),
-                    (Some(w), None) => (vec![args[0].clone(), to_bv1(&args[1])?], w, 1u32),
+                    (None, Some(w)) => (vec![to_bv1(&args[0])?, args[1].clone_ref(py)], 1u32, w),
+                    (Some(w), None) => (vec![args[0].clone_ref(py), to_bv1(&args[1])?], w, 1u32),
                     (None, None) => (vec![to_bv1(&args[0])?, to_bv1(&args[1])?], 1u32, 1u32),
                     (Some(a), Some(b)) => (args, a, b),
                 };
                 if w0 != w1 {
                     if w0 < w1 {
                         let extended = claripy_mod.call_method1("ZeroExt", (w1 - w0, &args[0]))?;
-                        vec![extended.unbind(), args[1].clone()]
+                        vec![extended.unbind(), args[1].clone_ref(py)]
                     } else {
                         let extended = claripy_mod.call_method1("ZeroExt", (w0 - w1, &args[1]))?;
-                        vec![args[0].clone(), extended.unbind()]
+                        vec![args[0].clone_ref(py), extended.unbind()]
                     }
                 } else {
                     args
