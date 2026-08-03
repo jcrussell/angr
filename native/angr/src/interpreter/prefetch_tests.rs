@@ -109,3 +109,32 @@ fn get_eager_prefetch_list_falls_back_to_main_page_without_rust_memory() {
     let pages = interp.get_eager_prefetch_list(0x22000);
     assert_eq!(pages, vec![0x22000]);
 }
+
+/// angr-9ke6b.30: both fetch paths must decline identically when no
+/// `fetch_page` callback is registered. `fetch_page` has always returned
+/// `Ok(false)`; `fetch_pages_batch` used to fall through to
+/// `call_batch_fetch_pages`, whose unset-batch fallback hard-errors with
+/// "fetch_page callback not set". That asymmetry is the one unguarded path to
+/// a mandatory-callback error outside the three slots
+/// `PythonCallbacks::is_ready` checks — keep them in step, or `is_ready`'s
+/// doc comment stops being true.
+#[test]
+fn fetch_paths_decline_without_a_fetch_page_callback() {
+    pyo3::Python::initialize();
+    let callbacks = PythonCallbacks::new();
+    let ctx = SymContext::new_mock();
+    let mut interp = new_interp(&ctx);
+    interp.set_rust_memory(SymbolicMemory::new(Endness::Little));
+
+    assert!(
+        matches!(interp.fetch_page(&callbacks, 0x1000), Ok(false)),
+        "single-page fetch must decline, not error",
+    );
+    assert!(
+        matches!(
+            interp.fetch_pages_batch(&callbacks, &[0x1000, 0x2000]),
+            Ok(0)
+        ),
+        "batch fetch must decline, not error",
+    );
+}

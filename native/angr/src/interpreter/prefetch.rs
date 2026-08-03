@@ -75,6 +75,16 @@ impl<'a> VEXInterpreter<'a> {
             return Ok(0);
         }
 
+        // Same presence guard as the single-page `fetch_page` above: with no
+        // `fetch_page` callback there is nothing to fetch, so decline every
+        // page instead of falling into `call_batch_fetch_pages`' unset-batch
+        // fallback and hard-erroring on `fetch_page callback not set`. Keeping
+        // this in step with `fetch_page` is what lets `PythonCallbacks::is_ready`
+        // leave `fetch_page` out of its check — see its doc comment.
+        if !callbacks.has_fetch_page() {
+            return Ok(0);
+        }
+
         // angr-gorvf.4.6: drop the pages Python told us at setup it cannot
         // serve. When nothing is left there is no crossing at all — this is
         // what takes the run-loop `batch_fetch_pages` GIL to a literal zero on

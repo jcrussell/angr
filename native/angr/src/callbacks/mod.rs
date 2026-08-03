@@ -977,7 +977,31 @@ impl PythonCallbacks {
         self.call_inspect_fork(state_id, when)
     }
 
-    /// Check if all required callbacks are set.
+    /// Whether the three *unconditionally invoked* callbacks are set:
+    /// `memory_load`, `memory_store`, `lift_block`.
+    ///
+    /// This is the run loop's entry gate (`run_loop_single`, `run_loop_wave`,
+    /// `run_loop_steady` all reject a holder that is not ready), and it is
+    /// deliberately narrower than "every callback `dispatch.rs` hard-errors
+    /// on" — nine slots have an unset arm that returns
+    /// `Err("<name> callback not set")`, not three. The other six
+    /// (`fetch_page`, `dirty_call`, `resolve_function`,
+    /// `memory_store_symbolic_value`, `memory_store_symbolic_full`,
+    /// `memory_load_symbolic_full`) are reachable only through a call site
+    /// that first asks the matching `has_*` accessor and takes a native /
+    /// degraded path when the answer is no, so an engine without them still
+    /// runs; their `Err` arms are defenses against a *future* unguarded
+    /// caller, per module invariant 1 (`avoid-silent-no-op-callback-fallbacks`).
+    /// Requiring them here would reject configurations that work today.
+    ///
+    /// The `has_*` guard convention is what makes that true, and nothing
+    /// enforces it mechanically: **a new unguarded call site must either add
+    /// the guard or add its slot to this check.** The three checked here are
+    /// exactly the slots for which no `has_*` accessor exists, because the
+    /// interpreter has no fallback for a missing block lift or memory access.
+    ///
+    /// Note that "ready" is about *presence*, not correctness — a holder can
+    /// pass and still fail mid-run on a callback that raises.
     pub fn is_ready(&self) -> bool {
         self.memory_load.is_some() && self.memory_store.is_some() && self.lift_block.is_some()
     }
