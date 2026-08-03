@@ -143,6 +143,10 @@ impl PyInMemoryCorpus {
     from_py_object
 )]
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(
+    unreachable_pub,
+    reason = "pyo3 `#[pymethods]`/`#[pyclass]` surface: these items are reached from Python, not from Rust. See the `unreachable_pub` note in lib.rs (angr-9ke6b.50)."
+)]
 pub struct PyOnDiskCorpus {
     pub(crate) inner: OnDiskCorpus<BytesInput>,
 }

@@ -90,6 +90,10 @@ impl Mutator<BytesInput, S> for DynMutator {
 /// Python-exposed configuration for the standard Havoc mutator.
 #[pyclass(module = "angr.rustylib.fuzzer", name = "HavocMutator", from_py_object)]
 #[derive(Clone, Debug)]
+#[allow(
+    unreachable_pub,
+    reason = "pyo3 `#[pymethods]`/`#[pyclass]` surface: these items are reached from Python, not from Rust. See the `unreachable_pub` note in lib.rs (angr-9ke6b.50)."
+)]
 pub struct PyHavocMutator {
     pub max_stack_pow: Option<usize>,
 }
@@ -119,6 +123,10 @@ impl PyHavocMutator {
     from_py_object
 )]
 #[derive(Clone, Debug)]
+#[allow(
+    unreachable_pub,
+    reason = "pyo3 `#[pymethods]`/`#[pyclass]` surface: these items are reached from Python, not from Rust. See the `unreachable_pub` note in lib.rs (angr-9ke6b.50)."
+)]
 pub struct PyDeterministicMutator {
     pub values: Vec<Vec<u8>>,
 }

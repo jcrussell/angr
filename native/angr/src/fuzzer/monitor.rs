@@ -7,10 +7,18 @@ use pyo3::{exceptions::PyTypeError, prelude::*};
 
 /// Python view into libafl client statistics
 #[pyclass(module = "angr.rustylib.fuzzer")]
+#[allow(
+    unreachable_pub,
+    reason = "pyo3 `#[pymethods]`/`#[pyclass]` surface: these items are reached from Python, not from Rust. See the `unreachable_pub` note in lib.rs (angr-9ke6b.50)."
+)]
 pub struct ClientStats {
     inner: libafl::monitors::stats::ClientStats,
 }
 
+#[allow(
+    unreachable_pub,
+    reason = "pyo3 `#[pymethods]`/`#[pyclass]` surface: these items are reached from Python, not from Rust. See the `unreachable_pub` note in lib.rs (angr-9ke6b.50)."
+)]
 #[pymethods]
 impl ClientStats {
     #[getter]
