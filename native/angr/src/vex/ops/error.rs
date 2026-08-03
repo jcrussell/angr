@@ -44,7 +44,7 @@ pub enum OpError {
     /// missing NEON coverage surfaces as a typed `RustUnsupportedVexOpError`
     /// (test path) or a stringified errored-stash record (live exploration)
     /// instead of producing wrong results that are hard to attribute.
-    /// See `invariant-neon-scaffolding-panic-not-fallback` (bd memories).
+    /// Scaffolding must surface as this error, never as a silent fallback.
     #[error("NEON op {name} not yet implemented")]
     UnsupportedNeon { name: &'static str },
     /// Opcode string with no entry in `parse_opcode` (angr-tkbr.2).

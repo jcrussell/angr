@@ -9,7 +9,7 @@
 //! cross-cutting rules are documented in bd memories; the most load-bearing
 //! ones for any future edit in this module are mirrored here so they live
 //! next to their enforcement sites (mirroring pattern documented in bd
-//! memory `invariant-doc-mirror-pattern-2026-06-01`).
+//! memory `invariant-mirror-pattern`).
 //!
 //! 1. **`avoid-silent-no-op-callback-fallbacks`** — every *dispatch*
 //!    `call_*` method on [`PythonCallbacks`] MUST hard-error when the hook
@@ -58,7 +58,7 @@
 //!    (`pending_store.rs`, prefetch invalidation) need to consider the
 //!    Python replay sequencing.
 //!
-//! 4. **`invariant-callstack-sync-export-pipeline`** — any per-state
+//! 4. **Per-state sync helpers must reach all four export paths** — any
 //!    sync helper added to the Rust manager (memory, registers,
 //!    callstack, mmap_base, posix_brk) must be wired into all four
 //!    Python export paths in `_materialize_single_state`

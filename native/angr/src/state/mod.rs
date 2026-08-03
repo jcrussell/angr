@@ -528,8 +528,9 @@ pub struct RustSimState {
     /// this, resumed forks continue in deferred mode, re-dive the symbolic
     /// loop nest, re-overflow, and recursively diverge (iter63). Eager
     /// resumption lets them BFS cleanly to a find target. Cloned on fork so
-    /// the whole resumed subtree stays eager. See bd memory
-    /// `benchmark-cadet-eager-reaches-egg`.
+    /// the whole resumed subtree stays eager. Measured on CADET_00001: with
+    /// this set, the easter-egg target is reachable; without it the resumed
+    /// subtree diverges instead.
     force_eager_forks: bool,
     /// CGC `state.cgc.allocation_base` — high-water bump pointer for the
     /// CGC `allocate(2)` syscall. Pages grow downward from this address.

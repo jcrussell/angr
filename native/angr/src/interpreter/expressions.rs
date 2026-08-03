@@ -461,8 +461,9 @@ impl<'a> VEXInterpreter<'a> {
         let arg_is_sym = arg_val.is_symbolic();
         match VEXOps::unop(op, arg_val, self.ctx) {
             Ok(v) => Ok(v),
-            // NEON scaffolding: surface explicitly. See
-            // `invariant-neon-scaffolding-panic-not-fallback`.
+            // NEON scaffolding: surface explicitly rather than letting the
+            // fresh-symbolic fallback below swallow it. See the rustdoc on
+            // `OpError::UnsupportedNeon` (vex/ops/error.rs).
             Err(e @ OpError::UnsupportedNeon { .. }) => Err(CbExecutionError::Op(e)),
             // angr-tkbr.2: unmapped pyvex opcode — propagate past
             // the silent fresh-symbolic fallback so the failure carries
@@ -496,8 +497,9 @@ impl<'a> VEXInterpreter<'a> {
         let any_sym = left_val.is_symbolic() || right_val.is_symbolic();
         match VEXOps::binop(op, left_val, right_val, self.ctx) {
             Ok(v) => Ok(v),
-            // NEON scaffolding: surface explicitly. See
-            // `invariant-neon-scaffolding-panic-not-fallback`.
+            // NEON scaffolding: surface explicitly rather than letting the
+            // fresh-symbolic fallback below swallow it. See the rustdoc on
+            // `OpError::UnsupportedNeon` (vex/ops/error.rs).
             Err(e @ OpError::UnsupportedNeon { .. }) => Err(CbExecutionError::Op(e)),
             // angr-tkbr.2: unmapped pyvex opcode — propagate past
             // the silent fresh-symbolic fallback so the failure carries
@@ -634,8 +636,9 @@ impl<'a> VEXInterpreter<'a> {
         let width = op.result_type().map(|t| t.bits()).unwrap_or(64);
         match VEXOps::binop_with_rm(op, rm, v2, v3, self.ctx) {
             Ok(v) => Ok(v),
-            // NEON scaffolding: surface explicitly. See
-            // `invariant-neon-scaffolding-panic-not-fallback`.
+            // NEON scaffolding: surface explicitly rather than letting the
+            // fresh-symbolic fallback below swallow it. See the rustdoc on
+            // `OpError::UnsupportedNeon` (vex/ops/error.rs).
             Err(e @ OpError::UnsupportedNeon { .. }) => Err(CbExecutionError::Op(e)),
             // angr-tkbr.2: unmapped pyvex opcode — propagate past
             // the silent fresh-symbolic fallback so the failure carries
@@ -669,8 +672,9 @@ impl<'a> VEXInterpreter<'a> {
         let width = op.result_type().map(|t| t.bits()).unwrap_or(64);
         match VEXOps::qop(op, v2, v3, v4, self.ctx) {
             Ok(v) => Ok(v),
-            // NEON scaffolding: surface explicitly. See
-            // `invariant-neon-scaffolding-panic-not-fallback`.
+            // NEON scaffolding: surface explicitly rather than letting the
+            // fresh-symbolic fallback below swallow it. See the rustdoc on
+            // `OpError::UnsupportedNeon` (vex/ops/error.rs).
             Err(e @ OpError::UnsupportedNeon { .. }) => Err(CbExecutionError::Op(e)),
             // angr-tkbr.2: unmapped pyvex opcode — propagate past
             // the silent fresh-symbolic fallback so the failure carries

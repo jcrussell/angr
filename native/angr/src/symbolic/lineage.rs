@@ -1,7 +1,7 @@
 //! Shared-lineage Z3 solver with push/pop scope tracking (angr-v5a5 spike).
 //!
 //! Implements the data structures and core mechanics for Option A from the
-//! angr-hk7k research spike (see memory `invariant-hk7k-design-options`).
+//! angr-hk7k research spike.
 //! The plan: all states descended from a common ancestor share one Z3
 //! [`z3::Solver`] wrapped in an `Arc<Mutex<SharedLineageSolver>>`. The
 //! shared solver carries the lineage's base assertions at scope 0; each
@@ -38,27 +38,32 @@
 //!   ids — the cheap, side-effect-free prefix comparison the design hinges
 //!   on.
 //!
-//! ## Cross-cutting design memories
+//! ## Cross-cutting design rules
 //!
-//! Recall via `bd recall <key>`:
+//! Entries carrying a key have long-form rationale in a bd memory; recall
+//! via `bd recall <key>`. The rest are stated in full here.
 //!
-//! - `invariant-hk7k-design-options` — why Option A (shared-lineage push/pop
-//!   tracking) was picked over solver-translate / fork-boundary push/pop /
+//! - **Why Option A** (angr-hk7k) — shared-lineage push/pop tracking was
+//!   picked over solver-translate, fork-boundary push/pop, and
 //!   per-state-context strategies.
 //! - `v5a5-frame-id-design` — why prefix matching uses a monotonic
 //!   [`FrameId`] minted at constraint-add time, not `Arc::ptr_eq` on the
 //!   underlying RustBV. Identity stays stable across fork boundaries.
-//! - `invariant-v5a5-lineage-mutex-shape` — why `SymContext.lineage` is
-//!   typed `Mutex<Option<Arc<Mutex<SharedLineageSolver>>>>` (the outer
-//!   Mutex makes `fork(&self)` legal).
+//! - **`SymContext.lineage` mutex shape** — typed
+//!   `Mutex<Option<Arc<Mutex<SharedLineageSolver>>>>`; the outer `Mutex`
+//!   is what makes `fork(&self)` legal (it installs a lineage through a
+//!   shared reference). See the field rustdoc on `SymContext::lineage`.
 //! - `avoid-z3-parallel-enable` — `parallel.enable=true` is
 //!   correctness-breaking; do NOT set it in `build_solver_params`.
-//! - `avoid-full-lineage-teardown` — the angr-0dgq teardown variant is a
-//!   net loss vs the v5ht "simple" dismantle (which only suppresses
-//!   future mints). Do NOT retry without first making per-context solver
-//!   rebuild incremental.
-//! - `avoid-dfs-coupling-for-shared-lineage` — do NOT default this on for
-//!   `strategy='dfs'`. Workload shape, not strategy, predicts the win.
+//! - **No full lineage teardown** — the angr-0dgq teardown variant (walk
+//!   all stashes, drop each state's lineage Arc, invalidate per-context
+//!   solvers) is a net loss vs the v5ht "simple" dismantle, which only
+//!   suppresses future mints. Do NOT retry without first making
+//!   per-context solver rebuild incremental.
+//! - **No DFS-only opt-in** — do NOT default `use_shared_lineage_solver`
+//!   on for `strategy='dfs'`. Workload shape, not strategy, predicts the
+//!   win; see the rule stated in full on
+//!   [`SymContext::set_use_shared_lineage_solver`](crate::symbolic::SymContext::set_use_shared_lineage_solver).
 //! - `v5ht-sampler-tick-bottleneck` — the sampler hook MUST be at the TOP
 //!   of `run_loop` (before any callback-path early-return) so
 //!   callback-heavy workloads still tick. See the comment at the call

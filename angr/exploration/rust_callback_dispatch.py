@@ -2108,8 +2108,8 @@ class RustCallbackDispatchMixin:
         per-state sync helpers invoked here (memory, registers,
         callstack) MUST be mirrored across the four export paths in
         ``rust_state_export.py::_materialize_single_state`` per
-        ``invariant-callstack-sync-export-pipeline`` — callbacks.rs
-        module invariant 4. Any new per-state sync added during forking
+        ``callbacks.rs`` module invariant 4 ("Per-state sync helpers must
+        reach all four export paths"). Any new per-state sync during forking
         needs the matching export-path wiring.
         """
         _sb_total_start = time.perf_counter_ns()

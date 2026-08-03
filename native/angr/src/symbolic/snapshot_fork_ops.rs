@@ -609,7 +609,7 @@ impl SymContext {
     /// - `fork-freeze-self-invariant`: freeze only fires when
     ///   `push_level == 0` (`in_transaction == false`). Inside a transaction,
     ///   draining local would leak rolled-back constraints into shared.
-    /// - `invariant-v5a5-slice-1c-mint-semantics`: the three-gate check
+    /// - **Three-gate mint semantics**: the three-gate check
     ///   (`use_shared_lineage_solver` opt-in, zero bare pushes, not
     ///   dismantled) is load-bearing. Each gate guards a different failure
     ///   mode — see inline comments below.
@@ -709,8 +709,8 @@ impl SymContext {
         {
             // angr-a2br.1.1: debug-assert the gate is consistent at the
             // moment of mint. Tautological with the `if` condition but
-            // documents the `invariant-v5a5-slice-1c-mint-semantics`
-            // contract for readers tracing this branch. Kept debug-only
+            // documents the three-gate mint contract (see this fn's
+            // rustdoc) for readers tracing this branch. Kept debug-only
             // (angr-9ke6b.220): both re-read the exact values the enclosing
             // `if` just tested, so they can only fire on a compiler bug.
             debug_assert!(

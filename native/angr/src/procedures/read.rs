@@ -31,8 +31,7 @@
 //! Rust's `FileSystem` uses a monotonic fd counter, Python's `state.posix.fd`
 //! uses lowest-free. They are NOT kept in sync. The native handlers cover
 //! only fds in Rust's table; everything else falls back so the Python
-//! symbolic-file model can take over. See bd memory
-//! `invariant-rust-filesystem-no-python-sync`.
+//! symbolic-file model can take over.
 
 use super::stdin_common::mint_stdin_bytes;
 use super::strings::{write_bv_bytes, write_concrete_bytes};

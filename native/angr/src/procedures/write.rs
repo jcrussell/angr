@@ -12,8 +12,8 @@
 //! `state.posix.fd` uses lowest-free. The two tables are NOT kept in sync.
 //! The native handlers cover only fds that exist in Rust's table; symbolic
 //! fds, fds created on the Python side, or fds backed by symbolic content
-//! all fall back to Python. See bd memory
-//! `invariant-rust-filesystem-no-python-sync`.
+//! all fall back to Python (same rule as the "Fd-table sync invariant"
+//! section of the `procedures::read` module doc).
 
 use super::ProcedureError;
 use crate::symbolic::RustBV;

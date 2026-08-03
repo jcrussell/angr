@@ -10,10 +10,11 @@
 //! The shared-lineage Z3 solver path (angr-v5a5 / angr-3ms1 / angr-v5ht)
 //! introduces several cross-cutting invariants that future refactors must
 //! preserve when splitting this module (see angr-a2br for the planned
-//! split). Each invariant cites the bd memory key carrying the long-form
-//! rationale; recall via `bd recall <key>`.
+//! split). Invariants that have a bd memory carrying the long-form
+//! rationale cite its key (recall via `bd recall <key>`); the rest are
+//! stated in full here.
 //!
-//! - **`lineage` mutex shape** (`invariant-v5a5-lineage-mutex-shape`):
+//! - **`lineage` mutex shape**:
 //!   `Mutex<Option<Arc<Mutex<SharedLineageSolver>>>>`. The outer `Mutex` is
 //!   load-bearing — [`fork`](SymContext::fork) takes `&self`, not `&mut
 //!   self`, and must be able to install a fresh lineage. Collapsing to a
@@ -25,8 +26,8 @@
 //!   buys [`SharedLineageSolver::switch_to`](super::lineage::SharedLineageSolver::switch_to)
 //!   a cheap by-id prefix comparison while staying robust across fork
 //!   boundaries where RustBV identity can split.
-//! - **Three-gate materialization** (`invariant-v5a5-slice-1c-mint-semantics`,
-//!   `invariant-bare-z3-push-depth`, `invariant-v5ht-dismantle-child-none`):
+//! - **Three-gate materialization** (`invariant-bare-z3-push-depth`,
+//!   `invariant-v5ht-dismantle-child-none`):
 //!   [`fork`](SymContext::fork) only mints a fresh `SharedLineageSolver`
 //!   when (a) the parent opted in via
 //!   [`set_use_shared_lineage_solver`](SymContext::set_use_shared_lineage_solver),
@@ -53,12 +54,12 @@
 //!   `parallel.enable=true` on solver params is correctness-breaking on
 //!   this codebase (downstream consumers do not handle Z3 `Unknown`
 //!   results). Do NOT re-enable in [`build_solver_params`].
-//! - **No full lineage teardown** (`avoid-full-lineage-teardown`): the
+//! - **No full lineage teardown**: the
 //!   angr-0dgq teardown variant (walk all stashes, drop each state's
 //!   lineage Arc, invalidate per-context solvers) is a net loss vs the
 //!   v5ht simple variant. [`super::lineage::set_lineage_dismantled`] only
 //!   suppresses future mints; in-flight lineages keep working.
-//! - **No DFS-only opt-in** (`avoid-dfs-coupling-for-shared-lineage`): do
+//! - **No DFS-only opt-in**: do
 //!   NOT default `use_shared_lineage_solver` on for `strategy='dfs'`. Both
 //!   the canonical WIN (ais3_crackme) and LOSE (defcon2016quals_baby-re)
 //!   canaries run BFS — strategy is not the discriminator.
@@ -462,7 +463,7 @@ pub struct SymContext {
     /// installs route through `ScopeFrame` + `SharedLineageSolver::switch_to`
     /// (see `constraint_ops.rs`) instead of the per-context Z3 solver.
     ///
-    /// **Mutex shape is load-bearing** (`bd recall invariant-v5a5-lineage-mutex-shape`):
+    /// **Mutex shape is load-bearing:**
     /// the outer `Mutex<Option<...>>` lets [`fork`](Self::fork) install a
     /// lineage through `&self` (fork's signature). The inner
     /// `Mutex<SharedLineageSolver>` serializes sibling-state queries

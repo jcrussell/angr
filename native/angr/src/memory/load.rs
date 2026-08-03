@@ -904,7 +904,7 @@ impl SymbolicMemory {
     /// angr-uwtj: find a wider symbolic object that fully contains
     /// `[addr, addr+size)`. Consults the O(1) `symbolic_spans` reverse
     /// index first; falls back to a linear scan over `symbolic_objects`
-    /// when spans is stale or missing (see `invariant-symbolic-spans-staleness`).
+    /// when spans is stale or missing.
     pub(super) fn containing_wider_sym(
         &self,
         addr: Address,

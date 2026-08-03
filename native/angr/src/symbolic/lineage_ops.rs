@@ -126,8 +126,7 @@ impl SymContext {
     /// each seed state's solver context so descendants inherit the
     /// opt-in through `fork()`.
     ///
-    /// **Do NOT default this on for any single exploration strategy**
-    /// (`bd recall avoid-dfs-coupling-for-shared-lineage`). The
+    /// **Do NOT default this on for any single exploration strategy.** The
     /// angr-ua1i proposal — flip default-on for `strategy='dfs'` — is
     /// the wrong direction: both the canonical WIN canary (ais3_crackme
     /// 1.24x) and LOSE canary (defcon2016quals_baby-re 6.79x slower) run

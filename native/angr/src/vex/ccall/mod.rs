@@ -213,9 +213,8 @@ impl CcArch {
 ///
 /// `widths: [(bits, suffix-token-list)...]` groups widths under a category;
 /// e.g. amd64 uses `[(8, B), (16, W), (32, L), (64, Q)]` while x86 omits Q.
-/// Constants are still named explicitly per family
-/// (`avoid-arithmetic-cc-op-decoder`: no cc_op-value arithmetic — explicit
-/// names survive any VEX enum reordering).
+/// Constants are still named explicitly per family — no cc_op-value
+/// arithmetic; explicit names survive any VEX enum reordering.
 macro_rules! cc_op_match {
     (
         $cc_op:expr;

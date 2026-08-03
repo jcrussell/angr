@@ -593,9 +593,9 @@ class RustStateExportMixin:
         Always finishes with ``rust_fully_synced = True``, stdin content
         restore, and a posix weakref fix.
 
-        INVARIANT (``invariant-callstack-sync-export-pipeline``; mirrored
-        in ``callbacks.rs`` module invariant 4): every per-state sync
-        helper — memory, registers, callstack, mmap_base, posix_brk —
+        INVARIANT (mirrored in ``callbacks.rs`` module invariant 4,
+        "Per-state sync helpers must reach all four export paths"): every
+        per-state sync helper — memory, registers, callstack, mmap_base, posix_brk —
         MUST be wired into ALL FOUR paths below. Path 1 routes through
         ``_sync_cached_state``; paths 2 and 3 call the individual
         ``_sync_rust_*`` helpers explicitly; path 4 calls them after the
