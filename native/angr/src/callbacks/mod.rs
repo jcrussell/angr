@@ -48,15 +48,17 @@
 //!    states without this rule.
 //!
 //! 3. **`invariant-3tek2-replay-ordering`** — the Python-side
-//!    `_create_state_for_callback` replays Rust-recorded dirty-page
+//!    `_create_state_for_callback` replays Rust-recorded modified-page
 //!    mutations in a strict order around `_install_rust_memory_proxy`
 //!    and `_restore_symbolic_pages`. Rust signals the change set through
-//!    the dirty-page bookkeeping but does NOT enforce ordering;
+//!    the modified-page bookkeeping but does NOT enforce ordering;
 //!    re-ordering the Python helper without updating both ends will
 //!    clobber NativeRead/NativeWrite symbolic bytes with concrete
-//!    pointer-slot copies. Future changes to dirty-page tracking
+//!    pointer-slot copies. Future changes to modified-page tracking
 //!    (`pending_store.rs`, prefetch invalidation) need to consider the
-//!    Python replay sequencing.
+//!    Python replay sequencing. ("Modified-page" here is the
+//!    written-memory sense; it is unrelated to the VEX *dirty helper*
+//!    calls that [`PythonCallbacks::dirty_call`] dispatches.)
 //!
 //! 4. **Per-state sync helpers must reach all four export paths** — any
 //!    sync helper added to the Rust manager (memory, registers,
