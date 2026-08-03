@@ -79,7 +79,32 @@ pub trait Arch: Send + Sync {
     /// Get the size of a register by name (in bytes).
     fn register_size(&self, name: &str) -> Option<u32>;
 
-    /// Get the name of a register by offset.
+    /// Get the name of a register by offset — the reverse of
+    /// `register_offset`, resolved against `CANONICAL` only (never `ALIASES`).
+    ///
+    /// **Deliberately has no non-test caller** (bead angr-9ke6b.8). Every
+    /// production path into the register file is name-keyed
+    /// (`register_offset` / `register_size` / `register_names`), so nothing in
+    /// the engine ever needs to go offset -> name. What this method exists for
+    /// is to be the assertion primitive of the arch-table integrity sweeps,
+    /// which is a load-bearing role, not dead weight — deleting it deletes
+    /// these gates:
+    ///
+    /// - `mod_tests::register_names_all_resolve_and_fit_in_u128`
+    /// - `mod_tests::exported_register_names_reverse_resolve` (angr-9ke6b.9:
+    ///   catches an exported name that was left in `ALIASES`)
+    /// - `mod_tests::vex_bookkeeping_fields_resolve_on_every_arch`
+    /// - `calling_conventions_tests::test_cc_arg_registers_resolve_to_expected_register_names`
+    ///   and `..::test_link_register_set_on_link_register_abis`, which turn a
+    ///   raw CC offset back into a name to compare against the ABI tables
+    ///
+    /// Note that rustc's `dead_code` lint does not flag it (trait methods on a
+    /// used trait are exempt), so the "unused" reading has to be re-derived by
+    /// hand each audit — hence this note. Contrast
+    /// `CallingConvention::endness`, which angr-9ke6b.218 item 7 *deleted*
+    /// rather than kept: that one returned a hardcoded answer that would be
+    /// wrong for its first real caller, whereas this one is a correct lookup
+    /// with real callers that happen to all be tests.
     fn register_name(&self, offset: u32) -> Option<&'static str>;
 
     /// Get all register names that cross the Python boundary.
