@@ -22,7 +22,7 @@ impl SymbolicMemory {
     ///
     /// # Returns
     /// List of addresses whose pages are mapped.
-    pub fn prepare_addresses_for_ite(&mut self, addrs: &[u64], _size: u32) -> Vec<u64> {
+    pub fn prepare_addresses_for_ite(&self, addrs: &[u64], _size: u32) -> Vec<u64> {
         // Keep only addresses whose page is already mapped. Unmapped pages are
         // intentionally dropped rather than auto-mapped as zeros: Python may
         // have actual backer data (file contents, initialized data) for them,
