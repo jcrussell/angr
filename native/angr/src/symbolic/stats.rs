@@ -1,12 +1,32 @@
-//! Global Z3 solver / engine profiling counters.
+//! Process-global engine profiling counters.
 //!
-//! Extracted from `context.rs` (angr-ugc2, first slice of the angr-a2br.2
-//! split). This block is self-contained: every counter is a module-level
-//! atomic with no `SymContext` or `self.` reference. The aggregation
-//! (`get_solver_stats`), reset (`reset_solver_stats`), and per-event
-//! `record_*` helpers live here; the solving code in `context.rs`
-//! (`timed_check`, `sample_simplify_skip`, the `add_constraint` /
-//! `assume_*` / extrema paths) reads and bumps these via `use super::stats::*`.
+//! Despite the `*_solver_stats` function names (kept for the Python-visible
+//! API), this is the engine-wide instrumentation module, not a solver-only
+//! one. Counters declared here cover, in file order: Z3 solving (check
+//! counts/times, assume/branch/extrema model hits, AST-build and memo
+//! caches), symbolic-memory ITE depth, VEX op dispatch by family, memory
+//! load/store call+byte volume and lazy page faults, address-concretization
+//! fanout and disjunction hoisting, `Reverse`/`Concat`/`Extract` emissions,
+//! claripy-export soundness (`Clz`/FP fallbacks), constraint-dedup and
+//! simplify-sampling measurements, and bounded-symbolic-file serving.
+//!
+//! Every counter is a module-level atomic — no `SymContext` or `self.`
+//! reference — so the `record_*` helpers can be called from anywhere in the
+//! crate without threading state through. Call sites live in `symbolic/`
+//! itself (`context.rs`, `solving_ops.rs`, `constraint_ops.rs`,
+//! `solver_build.rs`, `value_ops.rs`, `value_z3.rs` — mostly via
+//! `use super::stats::*`) and, through the re-exports in `symbolic/mod.rs`,
+//! in `interpreter/`, `memory/`, `concretize.rs`, `claripy_bridge/`,
+//! `vex/ops/classify.rs`, `procedures/`, `syscalls/`, and
+//! `state/filesystem/symbolic.rs`.
+//!
+//! [`get_solver_stats`] is the union of this file's counters and ones owned
+//! elsewhere — it folds in `super::query_class` (per-query-class check
+//! counts) and `super::lineage` (shared-lineage telemetry, thrash detector,
+//! tree census). [`reset_solver_stats`] zeroes the same union. Both reach
+//! Python as `RustExplorationManager.get_solver_stats()` /
+//! `RustSolverContext.get_solver_stats()`, which is what
+//! `run_single.py --dump-counters` / `--counters-json` render.
 //!
 //! Zero-cost when not read: an atomic `fetch_add` is ~1ns on x86.
 
