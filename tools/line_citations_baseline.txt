@@ -2,8 +2,6 @@
 # One key per known citation: <relpath-under-native/angr/src>\t<stripped-comment>.
 # Regenerate with: tools/check_line_citations.py --update-baseline
 # Shrinking this file (by citing a symbol name instead of a line number) is the goal.
-arch/mod.rs	/// arch/mod.rs:638). `data` is right-padded / truncated to the rebuilt
-arch/mod_tests.rs	/// at arch/mod.rs:638), so a corrupted snapshot still loads into a
 callbacks/mod.rs	/// Matches Python's callstack.py:430/432 semantics.
 callbacks/mod.rs	/// pushed). Matches Python's callstack.py:386/419 semantics.
 concretize.rs	/// `address_concretization_mixin.py:327-329`.

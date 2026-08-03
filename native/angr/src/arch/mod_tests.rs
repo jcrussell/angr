@@ -571,8 +571,8 @@ fn serde_roundtrip_register_file_symbolic() {
     assert_eq!(sym_name, "rdi_sym");
 }
 
-/// Unknown arch names fall back to AMD64 (matches `Box<dyn Arch>::clone`
-/// at arch/mod.rs:638), so a corrupted snapshot still loads into a
+/// Unknown arch names fall back to AMD64 (matches `impl Clone for
+/// Box<dyn Arch>` in `arch/mod.rs`), so a corrupted snapshot still loads into a
 /// usable register file. Tests the fallback path explicitly.
 #[test]
 fn serde_unknown_arch_name_falls_back_to_amd64() {

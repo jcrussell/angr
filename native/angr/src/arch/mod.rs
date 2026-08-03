@@ -225,8 +225,8 @@ pub struct RegisterFile {
 ///
 /// The architecture is represented by its `name()` string. Unknown
 /// architecture names round-trip through [`arch_from_name`]'s AMD64
-/// fallback (matches the existing `Box<dyn Arch>` Clone behavior at
-/// arch/mod.rs:638). `data` is right-padded / truncated to the rebuilt
+/// fallback (matches the existing `impl Clone for Box<dyn Arch>`
+/// behavior in this module). `data` is right-padded / truncated to the rebuilt
 /// architecture's `state_size()` so a snapshot taken at one arch is
 /// structurally usable even if reloaded under a different one.
 #[derive(Debug, Clone, Serialize, Deserialize)]

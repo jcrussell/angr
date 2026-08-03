@@ -71,7 +71,11 @@ pub(crate) mod offsets {
 
     // FPU state (per archinfo)
     pub(crate) const FTOP: u32 = 896;
-    pub(crate) const FPREG: u32 = 904; // 8 x 80-bit FP registers
+    // VEX stores the x87 stack as `guest_FPREG[8]` of `ULong`, i.e. 8 x 8-byte
+    // slots (64 bytes total, ending where FPTAG starts) -- MMX-style 64-bit
+    // storage, not true 80-bit x87 extended precision. Per-index offset is
+    // therefore `FPREG + n * 8`.
+    pub(crate) const FPREG: u32 = 904;
     pub(crate) const FPTAG: u32 = 968;
     pub(crate) const FPROUND: u32 = 976;
     pub(crate) const FC3210: u32 = 984;
