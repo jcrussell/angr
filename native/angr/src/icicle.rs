@@ -5,7 +5,7 @@
 ///
 /// This module is adapted from the `icicle-python` project, which can be found at:
 /// https://github.com/icicle-emu/icicle-python
-use std::{collections::HashMap, path::PathBuf, pin::Pin};
+use std::{collections::HashMap, path::PathBuf};
 
 use icicle_fuzzing::coverage::register_afl_hit_counts_all;
 use icicle_vm::{
@@ -193,17 +193,26 @@ impl From<icicle_vm::cpu::ExceptionCode> for ExceptionCode {
     }
 }
 
+/// AFL-style edge-hit-count buffer whose address is handed to the icicle VM.
+///
+/// `Icicle::new` passes `as_mut_ptr()` to `register_afl_hit_counts_all`, which
+/// stores the raw pointer inside the VM's instrumentation and writes through it
+/// on every executed edge. The buffer must therefore stay at a fixed address,
+/// and stay alive, for as long as the VM can run.
+///
+/// A plain `Box<[u8]>` satisfies both: the heap allocation never moves when the
+/// `Hitmap` (or the enclosing `Icicle`) is moved, and `Icicle` declares `vm`
+/// before `edge_count_hitmap`, so the VM is dropped first. No pinning is
+/// required — this type holds no self-referential pointer, and `[u8]` is
+/// `Unpin`, so a `Pin` wrapper here would be vacuous.
 struct Hitmap {
-    inner: Pin<Box<[u8]>>,
-    _pin: std::marker::PhantomPinned,
+    inner: Box<[u8]>,
 }
 
 impl Hitmap {
     pub(crate) fn new(size: usize) -> Self {
-        let hitmap = Pin::from(vec![0u8; size].into_boxed_slice());
         Hitmap {
-            inner: hitmap,
-            _pin: std::marker::PhantomPinned,
+            inner: vec![0u8; size].into_boxed_slice(),
         }
     }
 
