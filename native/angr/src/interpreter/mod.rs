@@ -10,9 +10,17 @@
 //! returns a `CbExecutionError` instead. There are no `unwrap`/`expect` sites
 //! left in this file: the block-cache capacity is validated at compile time by
 //! [`BLOCK_CACHE_CAPACITY_NZ`].
+//!
+//! **Layout (angr-9ke6b.91):** this root holds the [`VEXInterpreter`] struct
+//! and its core methods. Three concerns that used to live here have their own
+//! files, all re-exported below so `crate::interpreter::X` paths are unchanged:
+//! [`ExecutionStats`] in [`execution_stats`], the
+//! [`CbExecutionError`]/[`FallbackStrategy`] taxonomy plus its reason markers
+//! in [`execution_error`], and the [`BlockResult`]/`StmtResult`/
+//! `ConcretizedJump` control-flow results in [`block_result`].
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -23,7 +31,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use crate::arch::{
     RegisterFile, arch_from_vex, calling_conventions::CallingConvention, default_cc_for_arch,
 };
-use crate::callbacks::{DeferredFork, ExecutionConfig, PythonCallbacks, RunErrorKind, RunResult};
+use crate::callbacks::{DeferredFork, ExecutionConfig, PythonCallbacks, RunResult};
 use crate::claripy_bridge::{claripy_to_rustbv, is_claripy_ast, try_handle_to_rustbv};
 use crate::concretize::{AddressConcretizer, ConcretizationResult};
 use crate::memory::{MemoryError, Permission, SymbolicMemory};
@@ -85,11 +93,14 @@ macro_rules! profile_add {
     };
 }
 
+mod block_result;
 mod bv_utils;
 mod code_invalidation;
 mod concrete_memory;
 mod concretize_cache;
 mod execution;
+mod execution_error;
+mod execution_stats;
 mod exits;
 mod expressions;
 mod fork_state;
@@ -101,10 +112,17 @@ mod statements_cas;
 mod statements_inspect;
 mod statements_store;
 
+use block_result::{ConcretizedJump, StmtResult};
 use bv_utils::bytes_to_bv;
 use pending_store::PendingStoreBuffer;
 
+pub(crate) use block_result::BlockResult;
 pub(crate) use concrete_memory::ConcreteMemoryRegion;
+pub(crate) use execution_error::{
+    CbExecutionError, DCAS_UNSUPPORTED_REASON, DISPATCH_FABRICATE_REASON, FallbackStrategy,
+    VECRET_GSPTR_REASON,
+};
+pub(crate) use execution_stats::ExecutionStats;
 pub(crate) use simprocedures::SimProcedureInfo;
 
 /// Full state snapshot at a symbolic branch point.
@@ -114,450 +132,6 @@ pub struct BranchSnapshot {
     pub solver: SymContext,
     pub registers: RegisterFile,
     pub memory: Option<SymbolicMemory>,
-}
-
-/// Generates `ExecutionStats` plus its `to_hashmap` / `merge` impls from a
-/// single field list. `: sum` accumulates on merge; `: snapshot` overwrites.
-/// Adding a stat means editing only the invocation below.
-macro_rules! define_execution_stats {
-    (
-        $(
-            $(#[$attr:meta])*
-            $field:ident: $mode:ident,
-        )*
-    ) => {
-        /// Execution statistics for profiling.
-        ///
-        /// Tracks timing and counts for various operations during VEX execution.
-        /// Times are in nanoseconds for precision.
-        #[derive(Debug, Clone, Default)]
-        pub(crate) struct ExecutionStats {
-            $(
-                $(#[$attr])*
-                pub $field: u64,
-            )*
-        }
-
-        impl ExecutionStats {
-            /// Convert stats to a HashMap for Python exposure.
-            pub(crate) fn to_hashmap(&self) -> HashMap<String, u64> {
-                let mut map = HashMap::new();
-                $(
-                    map.insert(stringify!($field).to_string(), self.$field);
-                )*
-                map
-            }
-
-            /// Reset all statistics to zero.
-            pub(crate) fn reset(&mut self) {
-                *self = Self::default();
-            }
-
-            /// Merge another stats instance into this one.
-            pub(crate) fn merge(&mut self, other: &ExecutionStats) {
-                $(
-                    define_execution_stats!(@merge_field self.$field, other.$field, $mode);
-                )*
-            }
-        }
-    };
-    (@merge_field $self_field:expr, $other_field:expr, sum) => {
-        $self_field += $other_field;
-    };
-    (@merge_field $self_field:expr, $other_field:expr, snapshot) => {
-        $self_field = $other_field;
-    };
-}
-
-define_execution_stats! {
-    /// Number of load statements executed.
-    load_stmt_count: sum,
-    /// Time spent in load statements (nanoseconds).
-    load_stmt_time_ns: sum,
-    /// Number of store statements executed.
-    store_stmt_count: sum,
-    /// Time spent in store statements (nanoseconds).
-    store_stmt_time_ns: sum,
-    /// Number of exit statements executed.
-    exit_stmt_count: sum,
-    /// Time spent in exit statements (nanoseconds).
-    exit_stmt_time_ns: sum,
-    /// Number of Python callback invocations.
-    python_callback_count: sum,
-    /// Time spent in Python callbacks (nanoseconds).
-    python_callback_time_ns: sum,
-    /// Number of address concretizations performed.
-    concretize_count: sum,
-    /// Time spent in address concretization (nanoseconds).
-    concretize_time_ns: sum,
-    /// Number of IRSB cache hits.
-    cache_hit_count: sum,
-    /// Number of IRSB cache misses (lifts needed).
-    cache_miss_count: sum,
-    /// Number of IRSB cache evictions (capacity reached, LRU entry dropped).
-    /// Tallied at every `block_cache.put()` site whose return value is `Some`
-    /// AND the key was not already present (an overwrite, not an eviction).
-    /// Together with `cache_hit_count`/`cache_miss_count` this gives the data
-    /// needed to tune `BLOCK_CACHE_CAPACITY`: a high eviction-to-miss ratio
-    /// indicates capacity pressure (working set exceeds cache); near-zero
-    /// evictions on a benchmark mean the cache is oversized for that workload.
-    cache_eviction_count: sum,
-    /// Time spent lifting blocks (nanoseconds).
-    lift_time_ns: sum,
-    /// Number of Rust memory loads (vs callback fallback).
-    rust_memory_load_count: sum,
-    /// Number of Python fallback memory loads.
-    fallback_memory_load_count: sum,
-    /// Number of Rust memory stores.
-    rust_memory_store_count: sum,
-    /// Number of Python fallback memory stores.
-    fallback_memory_store_count: sum,
-    /// Number of expression evaluations.
-    expr_eval_count: sum,
-    /// Time spent evaluating expressions (nanoseconds).
-    expr_eval_time_ns: sum,
-    /// Number of blocks executed.
-    blocks_executed: sum,
-    /// Total execution time (nanoseconds).
-    total_time_ns: sum,
-    /// Time spent setting up interpreter per step (nanoseconds).
-    step_setup_time_ns: sum,
-    /// Number of exploration steps executed.
-    step_count: sum,
-    /// Number of solver satisfiability checks.
-    solver_sat_count: sum,
-    /// Time spent in solver satisfiability checks (nanoseconds).
-    solver_sat_time_ns: sum,
-    /// Time spent executing blocks (nanoseconds) — the inner VEX execution.
-    block_exec_time_ns: sum,
-    /// Number of statements executed.
-    stmt_count: sum,
-    /// Number of deferred forks PRESENTED to the exploration loop's
-    /// post-block processing (input length of the `deferred_forks` Vec,
-    /// summed across all four processing sites:
-    /// `fork_materialize::materialize_deferred_forks` and its parallel
-    /// mirror `core_outcome_handlers::materialize_deferred_forks_core`,
-    /// plus `SimulationLoop::process_deferred_forks_into` and its mirror
-    /// `core_outcome_handlers::process_deferred_forks_into_core`). NOT every
-    /// entry produces a *tallied* solver clone: an entry whose condition is
-    /// neither stored nor reconstructible is routed through a no-condition
-    /// conservative `state.fork()` (which DOES clone the solver but is not
-    /// tallied below), and neither `process_deferred_forks_into` variant
-    /// tallies solver forks on either branch. This counter is therefore
-    /// NOT directly comparable to `solver_fork_count` — they measure
-    /// orthogonal but overlapping concepts. See angr-95up.2.
-    deferred_fork_count: sum,
-    /// Time spent processing deferred forks (nanoseconds).
-    deferred_fork_time_ns: sum,
-    /// Time spent in solver fork/clone operations (nanoseconds).
-    solver_fork_time_ns: sum,
-    /// Number of solver fork operations whose Z3-clone cost is timed by
-    /// `solver_fork_time_ns`. Tallied at three sites: (1) the pre-callback
-    /// state-snapshot fork taken in `SimulationLoop::dispatch_bounce`'s
-    /// `BounceKind::Hook` arm before bouncing to a Python SimProcedure (NOT
-    /// a deferred fork); (2) per-deferred-fork creation in
-    /// `fork_materialize::materialize_deferred_forks` when a condition is
-    /// available — either stored or reconstructed by
-    /// `reconstruct_deferred_fork_condition`; (3) the parallel-scheduler
-    /// mirror of (2) in
-    /// `core_outcome_handlers::materialize_deferred_forks_core` (stored
-    /// conditions only). NOT incremented by the no-condition
-    /// conservative-fork fallback in either materializer, nor anywhere in
-    /// `SimulationLoop::process_deferred_forks_into` /
-    /// `core_outcome_handlers::process_deferred_forks_into_core`, which
-    /// build their forks untimed on both branches. Because of (1), this
-    /// counter generally exceeds the deferred-fork-with-condition subset of
-    /// `deferred_fork_count`; because of the untallied paths, the
-    /// relationship is not a simple sum. See angr-95up.2.
-    solver_fork_count: sum,
-    /// Number of active states at end of run.
-    active_states_count: snapshot,
-    /// Time spent in the main run() loop overhead (nanoseconds).
-    run_loop_time_ns: sum,
-    /// Number of dirty-helper invocations that fell back to the Python
-    /// `call_dirty_call` callback (no native handler matched).
-    python_dirty_call_count: sum,
-    /// Number of VEX op evaluations (Unop/Binop/Triop/Qop) that reached
-    /// `VEXInterpreter::vex_op_fallback` because `VEXOps::*` returned an
-    /// `OpError` other than the explicitly-surfaced `UnsupportedNeon` /
-    /// `UnsupportedVexOp` variants. By default the op is NOT evaluated
-    /// natively at all: with a symbolic operand it returns
-    /// `CbExecutionError::NeedPythonFallback` (the block IS re-run in
-    /// Python), and with all-concrete operands it returns the typed
-    /// `CbExecutionError::Op`, which routes the state to the errored
-    /// stash. The silent fresh-symbolic synthesis this counter used to
-    /// describe is now opt-in only, behind
-    /// `ANGR_RUST_FABRICATE_UNSUPPORTED_IROP` (off by default since
-    /// angr-oyzvj) — see `vex_bypass_fabricate_count` for that subset.
-    /// Also counts the three dispatch-fabricate families (VPerm/Pclmul*/
-    /// Crc32C, angr-s6miz), which route to Python for concrete args too
-    /// (angr-9ke6b.85).
-    python_vex_op_fallback_count: sum,
-    /// Subset of `python_vex_op_fallback_count` that came from `Unop`.
-    python_vex_unop_fallback_count: sum,
-    /// Subset of `python_vex_op_fallback_count` that came from `Binop`,
-    /// including the dispatch-fabricate families (angr-9ke6b.85).
-    python_vex_binop_fallback_count: sum,
-    /// Subset of `python_vex_op_fallback_count` that came from `Triop`.
-    python_vex_triop_fallback_count: sum,
-    /// Subset of `python_vex_op_fallback_count` that came from `Qop`.
-    python_vex_qop_fallback_count: sum,
-    /// Number of Unop/Binop evaluations that took the *fabricate-fresh-symbolic*
-    /// BYPASS (the `any_sym` arm of `eval_unop`/`eval_binop`): the op returned an
-    /// `OpError`, an input was symbolic, so a fresh unconstrained symbolic stood
-    /// in for the real value. For those op arms it is a strict subset of
-    /// `python_vex_op_fallback_count` (excludes the concrete-arg arm, which
-    /// propagates a typed error). It ALSO counts the condition-flag arm of
-    /// `eval_ccall` (angr-9ke6b.88), which fabricates under the same opt-in
-    /// gate but does not bump `python_vex_op_fallback_count` — so the subset
-    /// relation holds per-arm, not in aggregate. Since
-    /// angr-oyzvj this BYPASS is OPT-IN — it fires only when
-    /// `ANGR_RUST_FABRICATE_UNSUPPORTED_IROP` is set; by default the symbolic arm
-    /// routes to Python (`NeedPythonFallback`), so this counter stays 0 unless
-    /// the escape hatch is enabled. The three dispatch-fabricate families
-    /// (VPerm/Pclmul*/Crc32C, angr-s6miz) are routed to Python fallback *before*
-    /// this point, so they do NOT increment this counter. See the
-    /// "Parse-succeeds / dispatch-fabricates (silent BYPASS)" section of
-    /// `docs/extending-angr/rust_vex_ops.rst`.
-    vex_bypass_fabricate_count: sum,
-    /// Number of cold-block lifts served natively via the `libvex-ffi`
-    /// `NativeLibVEXLifter` (feature-gated, off by default). Each hit is a
-    /// Python `lift_block` callback + JSON round-trip that did NOT happen.
-    native_lift_count: sum,
-    /// Number of native-lift *attempts* that fell back to the Python callback
-    /// (feature off / disabled paths do not count — only a live attempt that
-    /// could not complete: missing-or-symbolic block bytes, unsupported arch,
-    /// or a libVEX lift error). A high fallback:hit ratio means the native
-    /// path is not paying off for that workload.
-    native_lift_fallback_count: sum,
-    /// Subset of `native_lift_fallback_count`: misses at an address that lies
-    /// outside every loaded binary region, so no lifter — native or pyvex — can
-    /// produce a block. The Python callback returns the `"{}"` sentinel and the
-    /// state deadends; nothing was lost by falling back. Subtract this from
-    /// `native_lift_fallback_count` to get the misses that are genuinely lost
-    /// native-lift wins. Measured on `cow_fork_scaling` (angr-op0dn.2.3), all
-    /// 256 apparent fallbacks were return-to-0x0 deadend probes of exactly this
-    /// kind — the native path was in fact serving 21 of 21 real blocks.
-    native_lift_deadend_probe_count: sum,
-}
-
-/// Reason string used by the CAS handler when it sees a double-CAS (cmpxchg16b).
-/// Shared with `exploration::mod` so the manager can identify DCAS in
-/// `PythonVEXFallback` events and bump a dedicated visibility counter.
-pub(crate) const DCAS_UNSUPPORTED_REASON: &str = "double compare-and-swap";
-
-/// Reason marker used by the VECRET/GSPTR fallback site
-/// (`expressions.rs::eval_expr_with_callbacks`). The manager scans for this
-/// substring in `PythonVEXFallback` reasons and bumps
-/// `vecret_gsptr_fallback_count` so we can measure how often the corpus
-/// actually exercises these vector-call/global-state pointer holders.
-/// See bd `angr-2iow` — prevalence drives whether to implement natively or
-/// document as a corpus-absent limitation.
-pub(crate) const VECRET_GSPTR_REASON: &str = "VECRET/GSPTR";
-
-/// Reason marker for the three dispatch-fabricate binop families
-/// (`Iop_Perm8x*` => `VPerm`, `Iop_Pclmul*`, `Iop_Crc32C`). These parse to a
-/// concrete IROp but have no native dispatch arm, so `VEXOps::binop` returns
-/// `OpError::NotBinary`. Rather than fabricate a wrong fresh symbolic
-/// (`eval_binop`'s BYPASS arm), `eval_binop` routes them to Python's VEX engine
-/// — deterministic ops Python models exactly. See bd `angr-s6miz` and the
-/// "Parse-succeeds / dispatch-fabricates (silent BYPASS)" section of
-/// `docs/extending-angr/rust_vex_ops.rst`.
-pub(crate) const DISPATCH_FABRICATE_REASON: &str = "dispatch-fabricate bypass";
-
-/// How an error variant should be handled by the top-level interpreter loop.
-///
-/// Every [`CbExecutionError`] variant maps to one of these via
-/// [`CbExecutionError::strategy`]. Adding a new variant requires an explicit
-/// strategy decision — there is no default.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum FallbackStrategy {
-    /// Hand the failing block to Python's VEX engine and resume from there.
-    /// Used for VEX features the Rust interpreter doesn't model
-    /// (e.g. unsupported CCalls, VECRET/GSPTR, oversized symbolic addresses).
-    PythonCallback,
-    /// Surface the error to the caller as `RunResult::Error`. The state
-    /// moves to the errored stash; no recovery is attempted. Used for
-    /// genuine bugs (TypeMismatch, UnknownTemp, InvalidIR, lifter errors,
-    /// callback-side failures).
-    ///
-    /// NOTE: `Op` / `TypeMismatch` / `InvalidIR` are exactly the failures
-    /// that Python's `HeavyResilienceMixin` would catch and substitute a
-    /// default for when `BYPASS_ERRORED_IROP` / `_IRCCALL` / `_IRSTMT` is
-    /// set. Because Rust terminates here instead of handing the block to
-    /// Python, those bypasses cannot fire — a silent divergence. Rather
-    /// than diverge silently, the Python wrapper raises `NotImplementedError`
-    /// at manager construction if any `BYPASS_ERRORED_*` option is set (see
-    /// `_RAISE_OPTION_NAMES` in `angr/exploration/rust_manager.py`). Wiring a
-    /// real bypass would mean routing these variants through `PythonCallback`
-    /// (and re-classifying them as recoverable) so the resilience mixin can
-    /// act; until then the raise is the contract.
-    Panic,
-}
-
-/// Errors during callback-based VEX execution.
-///
-/// Each variant has a documented [`FallbackStrategy`]. The dispatcher in
-/// `execution.rs::run` consults [`Self::strategy`] to decide whether the
-/// error becomes `RunResult::NeedPythonVEX` (recoverable) or
-/// `RunResult::Error` (terminal).
-#[derive(Debug, Clone, thiserror::Error)]
-pub(crate) enum CbExecutionError {
-    /// Memory error from callback. Strategy: [`FallbackStrategy::Panic`].
-    /// These come from underlying memory-model failures (unmapped, perms,
-    /// solver timeout) that the interpreter can't paper over.
-    #[error("memory error: {0}")]
-    Memory(#[from] MemoryError),
-    /// Operation error. Strategy: [`FallbackStrategy::Panic`].
-    /// VEX op execution failed in a non-recoverable way; lifting to Python
-    /// would just rerun the same op.
-    #[error("operation error: {0}")]
-    Op(#[from] OpError),
-    /// Invalid VEX IR. Strategy: [`FallbackStrategy::Panic`].
-    #[error("invalid VEX IR: {0}")]
-    InvalidIR(String),
-    /// Unsupported feature. Strategy: [`FallbackStrategy::PythonCallback`].
-    /// Triggered when the Rust interpreter encounters VEX it doesn't model
-    /// (e.g. complex symbolic memory operations, certain DirtyHelpers,
-    /// symbolic exit targets mid-block).
-    #[error("unsupported: {0}")]
-    Unsupported(String),
-    /// Unknown temporary variable. Strategy: [`FallbackStrategy::Panic`].
-    #[error("unknown temporary t{0}")]
-    UnknownTemp(u32),
-    /// Python callback error. Strategy: [`FallbackStrategy::Panic`].
-    /// The Python side already had its chance and raised; rerunning the
-    /// block via the VEX engine would not help.
-    #[error("callback error: {0}")]
-    Callback(String),
-    /// Block lifting error. Strategy: [`FallbackStrategy::Panic`].
-    #[error("lift error: {0}")]
-    LiftError(String),
-    /// Needs Python fallback for special expressions.
-    /// Strategy: [`FallbackStrategy::PythonCallback`]. Distinct from
-    /// `Unsupported` so call sites can request fallback explicitly without
-    /// having to invent a "feature missing" message (e.g. VECRET/GSPTR,
-    /// non-eflags CCalls).
-    #[error("need Python fallback: {0}")]
-    NeedPythonFallback(String),
-}
-
-impl CbExecutionError {
-    /// Map this error to its declared [`FallbackStrategy`]. The match is
-    /// exhaustive so adding a variant forces an explicit strategy choice.
-    pub(crate) fn strategy(&self) -> FallbackStrategy {
-        match self {
-            CbExecutionError::Unsupported(_) | CbExecutionError::NeedPythonFallback(_) => {
-                FallbackStrategy::PythonCallback
-            }
-            CbExecutionError::Memory(_)
-            | CbExecutionError::Op(_)
-            | CbExecutionError::InvalidIR(_)
-            | CbExecutionError::UnknownTemp(_)
-            | CbExecutionError::Callback(_)
-            | CbExecutionError::LiftError(_) => FallbackStrategy::Panic,
-        }
-    }
-
-    /// Classify this error for the exploration stepping loop (angr-zzju9).
-    ///
-    /// `LiftError` is the designed signal that a block could not be lifted —
-    /// the Python lift callback returned the empty-IRSB sentinel (e.g. on
-    /// `SimEngineError: No bytes in memory`) or the callback itself failed.
-    /// Such states gracefully deadend, matching the vanilla Python engine.
-    /// Every other `Panic`-strategy variant — including `InvalidIR`, which a
-    /// genuinely malformed IRSB now maps to — is a real error that moves the
-    /// state to the errored stash.
-    pub(crate) fn run_error_kind(&self) -> RunErrorKind {
-        match self {
-            CbExecutionError::LiftError(_) => RunErrorKind::Deadend,
-            _ => RunErrorKind::Fatal,
-        }
-    }
-}
-
-/// Result of concretizing a symbolic jump target.
-enum ConcretizedJump {
-    /// Single concrete address (common case for deterministic jumps).
-    Single(u64),
-    /// Multiple concrete addresses (for symbolic ret/call/jmp).
-    /// Contains the list of targets and the original symbolic expression.
-    Multiple { targets: Vec<u64>, expr: RustBV },
-    /// Too many targets - exceeds max_symbolic_ip_targets limit.
-    /// State should be marked as unconstrained.
-    TooMany { min: u64, max: u64, limit: usize },
-}
-
-/// Result of executing a single statement.
-enum StmtResult {
-    /// Continue to next statement.
-    Continue,
-    /// Exit the block early.
-    Exit { target: u64, jumpkind: JumpKind },
-    /// Symbolic branch detected - need to fork.
-    SymbolicBranch {
-        condition: RustBV,
-        true_target: u64,
-        false_target: u64,
-    },
-}
-
-/// Result of executing a single block.
-#[derive(Debug)]
-pub(crate) enum BlockResult {
-    /// Syscall encountered. `num` is `None` when the syscall-number register
-    /// is symbolic (angr-gffd); callers must route those cases to Python so
-    /// `engines/successors.py::_resolve_syscall` can enumerate or honor
-    /// `NO_SYMBOLIC_SYSCALL_RESOLUTION` instead of silently dispatching to
-    /// `read` (amd64 syscall 0).
-    Syscall { num: Option<u64> },
-    /// Symbolic branch - need to fork.
-    SymbolicBranch {
-        condition_id: u64,
-        true_target: u64,
-        false_target: u64,
-    },
-    /// Hook address hit.
-    Hook { addr: u64 },
-    /// Normal block end with jumpkind.
-    BlockEnd { next_addr: u64, jumpkind: JumpKind },
-    /// Symbolic jump target with multiple concrete targets after concretization.
-    /// The exploration manager should fork states for each target.
-    SymbolicJumpTarget {
-        /// Concrete target addresses after concretization.
-        targets: Vec<u64>,
-        /// ID for the stored symbolic expression (for constraint addition).
-        ///
-        /// The expression itself is NOT carried on this variant: producers
-        /// (`interpreter::exits::handle_default_exit`) park it in the
-        /// interpreter's pending-condition store under this id, and every
-        /// consumer re-reads it from there (angr-9ke6b.218 item 8).
-        condition_id: u64,
-        /// Jump kind (Ijk_Ret, Ijk_Call, etc.).
-        jumpkind: JumpKind,
-    },
-    /// Unconstrained jump - too many targets, exceeds limit.
-    /// The state should be moved to the "unconstrained" stash.
-    UnconstrainedJump {
-        /// Minimum possible target address.
-        min_target: u64,
-        /// Maximum possible target address.
-        max_target: u64,
-        /// The configured limit that was exceeded.
-        limit: usize,
-        /// Jump kind.
-        jumpkind: JumpKind,
-    },
-    /// Unmodeled function call - target is not hooked but is a CALL.
-    /// Need Python to check if a SimProcedure can be resolved.
-    UnmodeledCall {
-        /// Address of the unmodeled function.
-        addr: u64,
-        /// Return address (from stack).
-        return_addr: u64,
-        /// Symbol name if available.
-        symbol_name: Option<String>,
-    },
 }
 
 /// Callback-aware VEX IR interpreter.

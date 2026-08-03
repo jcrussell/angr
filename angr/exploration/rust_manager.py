@@ -363,7 +363,7 @@ _REJECTED_OPTION_NAMES = frozenset(
 # tell Python's HeavyResilienceMixin (engines/vex/heavy/resilience.py) to
 # catch SimError / SimOperationError raised during op / ccall / stmt
 # evaluation and substitute a default symbol or zero. Rust's interpreter
-# routes its own errors via FallbackStrategy (interpreter/mod.rs:268-278):
+# routes its own errors via FallbackStrategy (interpreter/execution_error.rs):
 # UnsupportedFeature falls back to Python so the BYPASS_UNSUPPORTED_*
 # bypass fires, but Op / TypeMismatch / InvalidIR are Panic-strategy and
 # move the state to the errored stash without ever giving Python a chance
@@ -924,7 +924,7 @@ class RustErrorRecord:
                            (e.g. 'unsupported', 'memory', 'lift', 'callback').
                            Derived from the message prefix; matches the
                            CbExecutionError variants in
-                           native/angr/src/interpreter/mod.rs.
+                           native/angr/src/interpreter/execution_error.rs.
         constraint_count:  Number of solver constraints on the state at error
                            time. 0 if state is None or the count cannot be read.
         registers:         dict mapping register name -> int (concrete) or str
@@ -936,7 +936,7 @@ class RustErrorRecord:
     """
 
     # Stable error-class taxonomy. Prefixes match the Display impls of
-    # CbExecutionError variants in native/angr/src/interpreter/mod.rs and
+    # CbExecutionError variants in native/angr/src/interpreter/execution_error.rs and
     # the formatted error strings in native/angr/src/exploration/stepping.rs.
     _ERROR_CLASS_PREFIXES = (
         ("memory error", "memory"),

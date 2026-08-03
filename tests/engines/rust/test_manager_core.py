@@ -110,7 +110,7 @@ class TestRustExplorationManagerUnit:
         """angr-2iow: VECRET/GSPTR Python-fallback counter is wired through
         stats() and get_fallback_stats(). Starts at zero on a fresh manager
         and the reason marker is the shared `VECRET_GSPTR_REASON` constant
-        in `native/angr/src/interpreter/mod.rs`.
+        in `native/angr/src/interpreter/execution_error.rs`.
         """
         mgr = _RustExplorationManager("amd64")
 
@@ -1824,7 +1824,7 @@ class TestRustExplorationPython:
         measure distinct, non-summable concepts.
 
         Semantics (mirrored from counter docstrings in
-        `native/angr/src/interpreter/mod.rs`):
+        `native/angr/src/interpreter/execution_stats.rs`):
 
         - `deferred_fork_count` counts deferred forks PRESENTED to
           post-block processing (input length of the `deferred_forks`

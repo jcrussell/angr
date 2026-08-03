@@ -2111,8 +2111,8 @@ vs. Python.
        symbol/zero on unsupported ops/dirty helpers/ccalls/syscalls.
      - (a) honored transparently. Rust's interpreter routes unsupported
        VEX features through ``FallbackStrategy::PythonCallback``
-       (``native/angr/src/interpreter/mod.rs:277-287``, variant at
-       ``:281``); Python re-runs
+       (the ``FallbackStrategy`` enum in
+       ``native/angr/src/interpreter/execution_error.rs``); Python re-runs
        the block, sees the option, and substitutes. Syscalls fall back
        to Python's syscall engine via ``_handle_syscall_callback``,
        which also honors ``BYPASS_UNSUPPORTED_SYSCALL``.

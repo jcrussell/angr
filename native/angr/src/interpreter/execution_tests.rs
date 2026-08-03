@@ -1,6 +1,7 @@
 // Unit tests for interpreter/execution.rs (VEXInterpreter block exec / memory / cache).
 // Split out per rust-mod-tests-sibling-extraction; included via #[cfg(test)] #[path].
 use super::*;
+use crate::callbacks::RunErrorKind;
 
 fn new_interp(ctx: &SymContext) -> VEXInterpreter<'_> {
     VEXInterpreter::new(VexArch::AMD64, ctx)

@@ -743,7 +743,7 @@ interpreter routes both to a Python VEX fallback via
 native handlers
 (``native/angr/src/interpreter/expressions.rs::eval_expr_with_callbacks``).
 The error reason carries the shared ``VECRET_GSPTR_REASON`` marker
-from ``native/angr/src/interpreter/mod.rs``; the manager scans
+from ``native/angr/src/interpreter/execution_error.rs``; the manager scans
 fallback reasons in ``exploration::run_loop`` and bumps
 ``vecret_gsptr_fallback_count`` so future regressions are
 visible via ``mgr.stats()`` / ``mgr.get_fallback_stats()``.

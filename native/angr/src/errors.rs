@@ -56,7 +56,7 @@
 //! 2. **Internal functions return `Result<T, DomainError>` with a
 //!    subsystem-local, `thiserror`-derived enum.** Each subsystem owns its
 //!    error type and composes upward via `#[from]`. The canonical set:
-//!    `CbExecutionError` (`interpreter/mod.rs`), `StepError` /
+//!    `CbExecutionError` (`interpreter/execution_error.rs`), `StepError` /
 //!    `SubcallSetupError` (`exploration/stepping.rs`), `MemoryError`
 //!    (`memory/mod.rs`), `OpError` (`vex/ops/error.rs`), `ProcedureError`
 //!    (`procedures/mod.rs`), `SyscallError` (`syscalls/mod.rs`),

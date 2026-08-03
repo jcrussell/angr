@@ -637,7 +637,7 @@ class TestEdgeCases:
         UNSUPPORTED_BYPASS_ZERO_DEFAULT / UNSUPPORTED_FORCE_CONCRETIZE)
         must NOT raise and NOT warn at manager construction. Rust routes
         unsupported VEX features through FallbackStrategy::PythonCallback
-        (interpreter/mod.rs:268-278), which re-runs the failing block
+        (interpreter/execution_error.rs), which re-runs the failing block
         through Python's HeavyResilienceMixin — so these options are
         honored transparently and need neither raise nor warn entries.
         BYPASS_UNSUPPORTED_IREXPR and BYPASS_UNSUPPORTED_IRSTMT are
