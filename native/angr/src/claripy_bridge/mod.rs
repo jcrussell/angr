@@ -96,7 +96,8 @@
 
 use pyo3::prelude::*;
 
-#[macro_use]
+// `tl_cache!` is scoped to `cache` (and its `cache_tests` child) now that
+// `AST_CACHE` is private behind wrappers (angr-9ke6b.44), so no `#[macro_use]`.
 mod cache;
 mod export;
 mod import;

@@ -13,7 +13,8 @@ use pyo3::types::PyTuple;
 use crate::symbolic::{RustBV, RustBVHandle, RustSymbolTable, SymContext, SymbolKind};
 
 use super::cache::{
-    AST_CACHE, lookup_symbol_by_hash, lookup_symbol_by_name_and_width, lookup_symbol_name_by_id,
+    evict_bv_by_ast_hash, get_bv_by_ast_hash, lookup_symbol_by_hash,
+    lookup_symbol_by_name_and_width, lookup_symbol_name_by_id, store_bv_by_ast_hash,
     store_claripy_ast_with_info, store_expression_ast_by_operands,
 };
 use super::{BridgeError, extract_int_value};
@@ -170,7 +171,7 @@ fn claripy_to_rustbv_depth(
 
     // Check LRU cache for previously converted AST
     if use_cache {
-        let cached = tl_cache!(AST_CACHE, get(&ast_hash).cloned());
+        let cached = get_bv_by_ast_hash(ast_hash);
         if let Some(cached_bv) = cached {
             // Defensive width check — claripy hashes are content-addressed and
             // already include length, so collisions are exceedingly rare, but
@@ -187,7 +188,7 @@ fn claripy_to_rustbv_depth(
             }
             // Width mismatch: evict the stale entry and fall through to
             // reconvert. The recomputed BV will be re-cached below.
-            tl_cache!(AST_CACHE, pop(&ast_hash));
+            evict_bv_by_ast_hash(ast_hash);
             crate::symbolic::record_claripy_ast_cache(false);
         } else {
             crate::symbolic::record_claripy_ast_cache(false);
@@ -475,7 +476,7 @@ fn claripy_to_rustbv_depth(
     // appear in multiple constraints.
     if use_cache && let Ok(ref bv) = result {
         // Forward cache: claripy hash → RustBV
-        tl_cache!(AST_CACHE, put(ast_hash, bv.clone()));
+        store_bv_by_ast_hash(ast_hash, bv.clone());
 
         // Reverse cache: for Expression results, key the original claripy
         // AST by the operands Arc pointer so `rustbv_to_claripy_memo` can

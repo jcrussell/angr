@@ -33,11 +33,18 @@ const AST_CACHE_SIZE_NZ: NonZeroUsize = match NonZeroUsize::new(AST_CACHE_SIZE) 
     None => panic!("AST_CACHE_SIZE must be non-zero"),
 };
 
-/// Capacity of `EXPRESSION_BY_OPERANDS_PTR`, pre-validated like
-/// [`AST_CACHE_SIZE_NZ`].
-const EXPRESSION_CACHE_SIZE_NZ: NonZeroUsize = match NonZeroUsize::new(10000) {
+/// Maximum number of imported `Expression` ASTs to cache by operands pointer.
+///
+/// Independently tunable from [`AST_CACHE_SIZE`] — the two caches hold
+/// different things (claripy hash → `RustBV` vs operands pointer →
+/// `(RustBV, Py<PyAny>)`) and are sized separately even though they currently
+/// agree (angr-9ke6b.42).
+const EXPRESSION_CACHE_SIZE: usize = 10000;
+
+/// [`EXPRESSION_CACHE_SIZE`] pre-validated like [`AST_CACHE_SIZE_NZ`].
+const EXPRESSION_CACHE_SIZE_NZ: NonZeroUsize = match NonZeroUsize::new(EXPRESSION_CACHE_SIZE) {
     Some(n) => n,
-    None => panic!("expression-by-ptr cache capacity must be non-zero"),
+    None => panic!("EXPRESSION_CACHE_SIZE must be non-zero"),
 };
 
 // Thread-local LRU mapping `claripy_ast.__hash__() → RustBV`.
@@ -69,7 +76,7 @@ const EXPRESSION_CACHE_SIZE_NZ: NonZeroUsize = match NonZeroUsize::new(10000) {
 // registered via `store_claripy_ast_with_info`, so the inverse
 // mapping (rust_id → original AST) lives in the `SymbolicIdentityRegistry`.
 thread_local! {
-    pub(super) static AST_CACHE: RefCell<LruCache<i64, RustBV>> =
+    static AST_CACHE: RefCell<LruCache<i64, RustBV>> =
         RefCell::new(LruCache::new(AST_CACHE_SIZE_NZ));
 }
 
@@ -110,7 +117,7 @@ macro_rules! tl_cache {
 // returned on hit.
 //
 // Invalidation: cleared by `clear_ast_cache` and `reset_for_new_exploration`
-// (C3). Capacity-bounded LRU eviction (10000) beyond that. On
+// (C3). Capacity-bounded LRU eviction (`EXPRESSION_CACHE_SIZE`) beyond that. On
 // eviction, the held `RustBV` drops its refcount, allowing the
 // operands `Arc` to be freed — safe because the evicted entry is no
 // longer reachable via this cache. This is the sole Rust→claripy
@@ -195,6 +202,28 @@ pub(crate) fn lookup_symbol_by_name_and_width(
     kind: SymbolKind,
 ) -> Option<crate::symbolic::SymbolInfo> {
     global_registry().lookup_by_name_and_width(name, width, kind)
+}
+
+/// Retrieve the `RustBV` previously converted from the claripy AST with this
+/// hash. Returns `None` on miss.
+///
+/// The caller MUST re-check the returned BV's width against the AST's — see
+/// cross-cache invariant C5 — and drop a mismatching entry with
+/// [`evict_bv_by_ast_hash`].
+pub(super) fn get_bv_by_ast_hash(ast_hash: i64) -> Option<RustBV> {
+    tl_cache!(AST_CACHE, get(&ast_hash).cloned())
+}
+
+/// Drop a stale claripy-hash → `RustBV` entry, so the caller can reconvert and
+/// re-store. Used by the C5 width-mismatch guard on the import path.
+pub(super) fn evict_bv_by_ast_hash(ast_hash: i64) {
+    tl_cache!(AST_CACHE, pop(&ast_hash));
+}
+
+/// Store the `RustBV` converted from a claripy AST, keyed by claripy's stable
+/// hash.
+pub(super) fn store_bv_by_ast_hash(ast_hash: i64, bv: RustBV) {
+    tl_cache!(AST_CACHE, put(ast_hash, bv));
 }
 
 /// Store the original claripy AST keyed by an imported Expression's
