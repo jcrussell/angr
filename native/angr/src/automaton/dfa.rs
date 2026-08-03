@@ -1,4 +1,6 @@
-//! Deterministic Finite Automaton (DFA) implementation with Hopcroft minimization.
+//! Deterministic Finite Automaton (DFA) implementation with Hopcroft-style
+//! partition-refinement minimization (see `DFA::minimize` for how it diverges
+//! from textbook Hopcroft).
 
 use crate::automaton::reachability::reachable_from;
 use crate::automaton::state::{StateId, StateSet};
@@ -80,7 +82,7 @@ impl DFA {
     /// Re-adding a transition for an existing `(source, symbol)` pair overwrites
     /// the previous destination; the stale `reverse_transitions` entry for the
     /// old destination is retired so `find_predecessors` (and therefore
-    /// `minimize`'s Hopcroft refinement) never sees an edge that no longer exists.
+    /// `minimize`'s partition refinement) never sees an edge that no longer exists.
     pub fn add_transition(&mut self, source: StateId, symbol: SymbolId, destination: StateId) {
         self.ensure_state(source);
         self.ensure_state(destination);
@@ -149,8 +151,27 @@ impl DFA {
             .map(|(&(src, sym), &dst)| (src, sym, dst))
     }
 
-    /// Minimize the DFA using Hopcroft's algorithm.
+    /// Minimize the DFA by Hopcroft-*style* partition refinement.
     /// Returns a new minimized DFA.
+    ///
+    /// This is not textbook Hopcroft and does not carry its
+    /// `O(n · |Σ| · log n)` bound. Three deliberate divergences:
+    ///
+    /// 1. The initial worklist is seeded with *both* the final and non-final
+    ///    partitions for every symbol; textbook Hopcroft seeds only the smaller
+    ///    of the two.
+    /// 2. There is no "is this partition currently in the worklist" tracking, so
+    ///    an already-pending `(partition, symbol)` pair can be enqueued again.
+    /// 3. Each popped splitter rescans *every* partition for a split rather than
+    ///    only those that intersect the predecessor set.
+    ///
+    /// The smaller-half rule *is* applied at split time (the larger half keeps
+    /// the old index, only the smaller is enqueued) — see the worklist comment
+    /// below for why that index reuse is still sound. The result is a correct
+    /// minimal DFA, verified against an independent Moore-reference
+    /// implementation in `dfa_tests.rs::test_minimize_matches_moore_reference`;
+    /// only the asymptotic guarantee differs. Fix the three points above if a
+    /// caller ever needs the `O(n log n)` bound.
     pub fn minimize(&self) -> DFA {
         if self.start_state.is_none() || self.num_states == 0 {
             return DFA::new();
@@ -164,7 +185,8 @@ impl DFA {
             return DFA::new();
         }
 
-        // Hopcroft's partition refinement algorithm
+        // Hopcroft-style partition refinement (see the doc comment for the
+        // divergences from the textbook algorithm).
         // Initial partition: final states and non-final states
         let final_reachable = self.final_states.intersection(&reachable);
         let non_final_reachable = reachable.difference(&self.final_states);
@@ -215,12 +237,18 @@ impl DFA {
 
         // Main refinement loop
         while let Some((splitter_idx, symbol)) = worklist.pop_front() {
+            // Every enqueued index is either from the initial seeding
+            // (`0..partitions.len()`) or `partitions.len()` captured immediately
+            // before the matching `partitions.push`, and `partitions` only ever
+            // grows -- so a dequeued index is always in range.
+            debug_assert!(
+                splitter_idx < partitions.len(),
+                "worklist index {splitter_idx} >= partitions.len() {}",
+                partitions.len()
+            );
+
             // Get states that can reach the splitter partition on this symbol
-            let splitter = if splitter_idx < partitions.len() {
-                partitions[splitter_idx].clone()
-            } else {
-                continue;
-            };
+            let splitter = partitions[splitter_idx].clone();
 
             let predecessors = self.find_predecessors(&splitter, symbol);
 
