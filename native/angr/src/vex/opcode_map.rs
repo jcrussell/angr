@@ -268,6 +268,15 @@ fn parse_arithmetic(op_str: &str) -> Option<IROp> {
 }
 
 /// Parse bitwise operations: And, Or, Xor, Not
+///
+/// The `"1" => I1` arms on And/Or/Xor are unreachable on the VEX version this
+/// crate is pinned to: the `IROp` enum in `vendor/pyvex_ffi.h` defines `Iop_Not1`
+/// but no `Iop_And1` / `Iop_Or1` / `Iop_Xor1`, and `libpyvex.so` carries no such
+/// name strings either, so no lift can emit them. They are kept as
+/// forward-compatible placeholders: `tuple_arms!` matches the suffix exactly, so
+/// an arm for an opcode that does not exist costs one failed compare and cannot
+/// misfire onto a real opcode. Drop or confirm them when the pyvex/VEX pin is
+/// next bumped.
 fn parse_bitwise(op_str: &str) -> Option<IROp> {
     tuple_arms!(op_str; "Iop_And" => And  { "1" => I1, "8" => I8, "16" => I16, "32" => I32, "64" => I64 });
     tuple_arms!(op_str; "Iop_And" => VAnd { "V128" => V128, "V256" => V256 });
@@ -399,6 +408,17 @@ fn parse_conversion(op_str: &str) -> Option<IROp> {
             // through to `None` (deferred to Python) rather than being
             // silently mistaken for `Iop_Clz32`. Same "unmapped for now"
             // situation as the `Iop_CmpORD*` gap in `parse_comparison`.
+            //
+            // The `Iop_PopCount*` arms are the mirror image: *no* scalar
+            // popcount opcode exists at any width on this pin — `IROp` in
+            // `vendor/pyvex_ffi.h` has zero `PopCount` entries and `libpyvex.so`
+            // no `PopCount` name string (x86 POPCNT lifts to the `gen_POPCOUNT`
+            // dirty helper, not an IROp). They are kept as forward-compatible
+            // placeholders because `IROp::PopCount`'s evaluator (`popcount_into`,
+            // dispatched in `VEXOps::unop`) and its unit tests are already
+            // written and correct; deleting only the parse arms would strand a
+            // working implementation with no route in. Same exact-suffix
+            // reasoning as the And1/Or1/Xor1 placeholders in `parse_bitwise`.
             tuple_arms!(op_str; "Iop_Clz"      => Clz      { "32" => I32, "64" => I64 });
             tuple_arms!(op_str; "Iop_Ctz"      => Ctz      { "32" => I32, "64" => I64 });
             tuple_arms!(op_str; "Iop_PopCount" => PopCount { "8" => I8, "16" => I16, "32" => I32, "64" => I64 });
