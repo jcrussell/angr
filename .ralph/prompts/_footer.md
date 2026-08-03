@@ -10,11 +10,18 @@ Otherwise, for each task follow this loop:
  2. `bd show <id>` — read the description carefully
  3. `bd memories` — check for relevant invariants/pitfalls before coding
  4. Implement the change (edit Rust and/or Python files as described)
- 5. Build + lint: `cargo clippy --manifest-path native/angr/Cargo.toml --all-targets -- -D warnings`
-    (clippy compiles, so this IS the type-check; it matches CI's gate and the
-    Stop hook. Both CI clippy and CI fmt are hard gates — committing warnings
-    re-reddens them. If you touch Python, the edit hook auto-runs ruff, but a
-    manual `ruff check --fix <file> && ruff format <file>` before commit is the
+ 5. Build + lint: `cargo clippy --manifest-path native/angr/Cargo.toml --all-targets --all-features -- -D warnings`
+    (clippy compiles, so this IS the type-check; `--all-features` is what makes
+    it match CI's `rust_check` gate and the Stop hook byte-for-byte. Dropping
+    `--all-features` skips the `fuzzer`/`fuzzing`/`libvex-ffi` feature-gated
+    code, so a red introduced under `src/fuzzer/` is invisible locally —
+    exactly how angr-9ke6b.50 landed 17 `unreachable_pub` errors that sat red
+    for a day. Cost: the *first* run on a cold `target/` also compiles the
+    `icicle-emu` + `libafl` git dependency trees (several minutes); every run
+    after that is incremental and effectively free. Both CI clippy and CI fmt
+    are hard gates — committing warnings re-reddens them. If you touch Python,
+    the edit hook auto-runs ruff, but a manual
+    `ruff check --fix <file> && ruff format <file>` before commit is the
     belt-and-suspenders.)
  6. If Rust changed: `pip install -e . --no-build-isolation --no-deps`
  7. Test: `python -m pytest tests/engines/rust/ -v --tb=short`
