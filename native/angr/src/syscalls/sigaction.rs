@@ -52,4 +52,4 @@ impl NativeSyscall for NativeRtSigactionSyscall {
 
 #[cfg(test)]
 #[path = "sigaction_tests.rs"]
-mod tests;
+mod sigaction_tests;

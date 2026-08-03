@@ -83,4 +83,4 @@ stub_syscall!(NativeSetgidSyscall, "setgid", "syscall_stub_setgid", 1);
 
 #[cfg(test)]
 #[path = "identity_tests.rs"]
-mod tests;
+mod identity_tests;

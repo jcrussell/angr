@@ -125,4 +125,4 @@ stub_syscall!(
 
 #[cfg(all(test, feature = "vex-engine-z3"))]
 #[path = "concurrency_tests.rs"]
-mod tests;
+mod concurrency_tests;

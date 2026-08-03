@@ -51,4 +51,4 @@ stub_syscall!(
 
 #[cfg(test)]
 #[path = "memory_extras_tests.rs"]
-mod tests;
+mod memory_extras_tests;
