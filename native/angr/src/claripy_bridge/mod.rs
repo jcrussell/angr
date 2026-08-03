@@ -82,17 +82,22 @@
 //!
 //! The Python `RustExplorationManager` maintains an orthogonal set of
 //! caches (in-memory `_init_cache`, disk init cache, `_mem_cache`,
-//! `_state_cache`, `_state_metadata`). Those are NOT documented here;
-//! see `state.rs` module rustdoc invariants **I3**, **I4**, **I5**,
-//! **I6** for the cross-FFI rules and the bd memories
-//! `invariant-init-cache-options-allowlist`,
-//! `invariant-init-cache-options-mirror`,
-//! `invariant-init-cache-user-symbolic`,
-//! `invariant-init-cache-lazy-regions-order`,
+//! `_state_cache`). Per-state metadata is NOT among them — it lives on
+//! the Rust `RustSimState` and is freed when Rust drops the state (see
+//! `RustStateCacheMixin::_cleanup_symbolic_pages_cache`). None of these
+//! are documented here; see the `state` module rustdoc invariants
+//! **I3**, **I4**, **I5**, **I6** for the cross-FFI rules and the bd
+//! memories
+//! `invariant-init-cache-plugin-coverage` (what the init cache does and
+//! does not carry; the option allow-list is a *mirror*, not additive),
+//! `invariant-apply-state-metadata-option-allowlist` (value-changing
+//! SimOptions must be on that list),
+//! `invariant-init-cache-concrete-input-digest` (argv/env in the key),
+//! `disk-init-cache-symbolic-reg-invariant` (the user-symbolic
+//! cache-disable gate), `disk-cache-register-filter`,
 //! `invariant-memcache-only-on-entry`,
-//! `disk-cache-register-filter`,
-//! `disk-init-cache-symbolic-reg-invariant`,
-//! `invariant-state-metadata-dataclass` for the full rationale.
+//! `invariant-state-cache-mirror-id`, and
+//! `invariant-lazy-region-auto-map` for the full rationale.
 
 use pyo3::prelude::*;
 
