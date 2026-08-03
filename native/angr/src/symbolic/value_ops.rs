@@ -1243,8 +1243,20 @@ fn try_zext_const_cmp_fold(
         _ => return None,
     };
     // ZeroExt(0, x) → x; the wrapping caller hands us a normal width
-    // comparison and we shouldn't bother. `extend_bits == 0` is unusual but
-    // safe to skip — falling through builds the same Cmp expression as before.
+    // comparison and we shouldn't bother. This is unreachable from any live
+    // path: `zero_extend_into` is the sole constructor of `BVOp::ZeroExt`, and
+    // it early-returns `self` when `to_width == self.width()`, so `k > 0` for
+    // every node that can reach here — including the Python-facing entries
+    // (`op_zero_extend`, the bridge's "ZeroExt" import), which both funnel
+    // through it. Kept as a guard rather than an `unreachable!()` so that a
+    // future constructor emitting a zero-width extend degrades to "no fold"
+    // (the fall-through builds the same Cmp expression as before) instead of
+    // panicking in release; the debug_assert makes it loud under test.
+    // SILENT(cat-a): expected control flow — "not this pattern, don't fold".
+    debug_assert!(
+        extend_bits > 0,
+        "BVOp::ZeroExt(0) should be unconstructible"
+    );
     if extend_bits == 0 {
         return None;
     }
