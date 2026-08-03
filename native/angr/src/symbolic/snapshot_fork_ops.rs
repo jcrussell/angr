@@ -778,10 +778,9 @@ impl SymContext {
     /// the shared solver to this context's `scope_path` before invoking
     /// `f`.
     ///
-    /// The dispatcher exists in this slice so subsequent slices can migrate
-    /// individual solver call sites (`is_sat`, `eval`, `min`, `max`, …)
-    /// one at a time without each migration also having to inline the
-    /// dispatch logic.
+    /// The dispatcher exists so solver call sites (`is_sat`, `eval`, `min`,
+    /// `max`, …) share one copy of the lineage-vs-per-context branch instead
+    /// of each inlining it.
     ///
     /// # Locking
     ///
@@ -796,87 +795,21 @@ impl SymContext {
     /// any SymContext method that would re-acquire the same lock — the
     /// existing direct `self.solver()` callers have the same invariant.
     ///
-    /// Slice 3c migrated the first caller (`debug_solver_string`);
-    /// slice 3d migrated `add_constraint`, the assume_true/assume_false/
-    /// add_bv_constraint hot path; slice 3e migrated `add_constraint_raw`
-    /// (the unsafe Python-side raw-Z3-AST bridge); slice 3f migrated
-    /// `add_constraint_tracked_indexed` (the unsat-core-tracked variant);
-    /// slice 3g migrated `is_sat` (first migration with a return value
-    /// and an in-closure side effect — the post-check `get_model()` that
-    /// populates `model_cache` runs inside the closure so it shares the
-    /// solver lock with the `check()` call); slice 3h migrated `eval`
-    /// (three Z3 operations under one lock — `check()`, `get_model()`,
-    /// and `model.eval(ast, true)` — with `?`-propagation on the inner
-    /// `Option<u128>` so a None model or extraction returns from the
-    /// closure cleanly while still letting `sat_cache.set(Some(true))`
-    /// have fired); slice 3i migrated `eval_wide` (same three Z3 ops as
-    /// `eval` but returning `Option<Vec<u8>>` via `extract_bv_value_wide`;
-    /// no `model_cache`/`sat_cache` writes since the original didn't have
-    /// them); slice 3j migrated `check_branch_feasibility` (first
-    /// migration with balanced `push`/`pop` pairs inside the closure and
-    /// a three-armed match on the model-cache prediction — the predicted
-    /// `Option<bool>` is computed inside the closure so the `model_cache`
-    /// borrow and the solver lock are acquired in the same order as the
-    /// pre-slice code, and the early `return (false, true)` in the None
-    /// arm returns from the closure cleanly since the closure return
-    /// type matches the function return type); slice 3k batch-migrated
-    /// the four remaining flat (no-scope-stack) callers in one commit:
-    /// `add_constraints_raw_batch` (assert N constraints under one lock),
-    /// `unsat_core` (read `solver.get_unsat_core()` and stringify before
-    /// taking the `constraint_trackers` lock — keeps the two locks from
-    /// nesting), `get_all_constraints_str`, and `z3_assertion_count`
-    /// (one-line reads of `solver.get_assertions()`). Bundled into one
-    /// commit because each migration is the same one-line wrap pattern
-    /// as slice 3c/d/e and individually noise-level. With 3k the entire
-    /// "no scope-stack" subset of direct-solver callers is migrated —
-    /// every remaining `self.solver()` call site manipulates Z3's scope
-    /// stack across multiple operations. Slice 4a.1 begins the scope-
-    /// stack-caller migration with `eval_upto`: the outer push/pop is
-    /// balanced inside the closure (same pattern slice 3j proved with
-    /// `check_branch_feasibility`), so the Z3 scope stack returns to
-    /// its pre-closure depth before `f` returns. Slice 4a.2 extends the
-    /// same wrap to `eval_upto_wide` (the byte-array sibling of
-    /// `eval_upto`). Slice 4a.3 extends it to `min`: the outer push/pop
-    /// brackets a binary-search loop with nested per-iteration push/
-    /// check/pop pairs (and, in the signed case, an additional
-    /// has_negative pre-check that also push/pops). All push/pop pairs
-    /// remain balanced when the closure returns. Slice 4a.4 extends
-    /// the same wrap to `max` (the dual of `min`: bvsge/bvuge binary
-    /// search with a has_non_negative pre-check, same nested-push/pop
-    /// shape). Slice 4a.5 extends the same wrap to `range_seeded`:
-    /// outer push/pop brackets two binary-search loops (seeded min in
-    /// [0, hi_seed] and seeded max in [lo_seed, max_val]) each with
-    /// nested per-iteration push/check/pop pairs. All push/pop pairs
-    /// remain balanced when the closure returns. Slice 4a.6 extends
-    /// the same wrap to `solution`: a single push/assert/check/pop
-    /// inside the closure (the simplest of the slice-4a migrations).
-    /// With 4a.6 the balanced-in-one-call subset of scope-stack
-    /// callers is complete; the remaining spans-multiple-calls
-    /// subset (push/pop, transaction_*) is queued for slice 4b and
-    /// likely needs a separate scope_path API to migrate. Slice 4b.1
-    /// lands the scope-savepoint infrastructure:
-    /// `scope_savepoint_push` and
-    /// `scope_savepoint_pop` dispatch on
-    /// lineage (None → bare per-context Z3 push/pop; Some → record/
-    /// restore `scope_path.len()` on the new `scope_savepoints`
-    /// stack). No public-API callers migrated yet — those come in
-    /// slice 4b.2 (push) and 4b.3 (pop). Slice 4c.2b migrates
-    /// `add_constraint_tracked_indexed` off the `with_z3_solver`
-    /// dispatcher onto its own lineage-aware inline match — same shape
-    /// as 4c.1/4c.2. The None branch keeps full unsat-core fidelity
-    /// (`assert_and_track` on the per-context solver); the Some branch
-    /// mints a `ScopeFrame` carrying the bare constraint and routes
-    /// through `switch_to`, intentionally deferring unsat-core fidelity
-    /// (`switch_to` uses plain `assert`, so the tracker is not
-    /// re-registered on lineage reloads). Slice 4c.2c migrates
-    /// `add_constraints_raw_batch` off the `with_z3_solver` dispatcher
-    /// onto its own lineage-aware inline match — same shape as 4c.1/
-    /// 4c.2/4c.2b but with N constraints per call. The None branch
-    /// holds the per-context solver guard once and asserts all N
-    /// constraints inside the guard. The Some branch mints N
-    /// `ScopeFrame`s under one `scope_path.lock()` acquisition, then
-    /// makes a single `switch_to` call whose tail walks the divergent
-    /// suffix and asserts each new frame on the shared solver.
+    /// # Not for constraint-adding callers
+    ///
+    /// This dispatcher *reads* `scope_path`; it never extends it. Anything
+    /// that asserts a new constraint must instead mint a `ScopeFrame` and
+    /// route through `switch_to` so the lineage solver can replay the
+    /// constraint on a later reload — see `install_constraint` (the shared
+    /// helper behind `add_constraint`, `add_constraint_raw`, and
+    /// `add_constraint_tracked_indexed`) and `add_constraints_raw_batch`
+    /// (the N-at-once variant), both in `constraint_ops.rs`. Wrapping an
+    /// `assert` in `with_z3_solver` instead would land it on the shared
+    /// solver without a frame recording it, and it would silently vanish
+    /// the next time `switch_to` rewound past that point.
+    ///
+    /// The per-call-site migration history that used to live here (angr-v5a5
+    /// slices 3c–4c.2c) is in `git log`; do not re-add it.
     #[cfg(feature = "vex-engine-z3")]
     pub(crate) fn with_z3_solver<R>(&self, f: impl FnOnce(&z3::Solver) -> R) -> R {
         let lineage = self.lineage.lock().as_ref().map(Arc::clone);
