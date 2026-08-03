@@ -11,18 +11,30 @@
 //! next to their enforcement sites (mirroring pattern documented in bd
 //! memory `invariant-doc-mirror-pattern-2026-06-01`).
 //!
-//! 1. **`avoid-silent-no-op-callback-fallbacks`** — every `call_*` method
-//!    on [`PythonCallbacks`] MUST hard-error when the hook is `None`.
+//! 1. **`avoid-silent-no-op-callback-fallbacks`** — every *dispatch*
+//!    `call_*` method on [`PythonCallbacks`] MUST hard-error when the hook
+//!    is `None`.
 //!    The exemplar is [`PythonCallbacks::call_lift_block`]: it `ok_or_else`'s
 //!    into `PyRuntimeError::new_err("lift_block callback not set")`, and
 //!    `dispatch_tests::unset_dispatch_callbacks_hard_error` pins that shape
-//!    for every `call_*` on the struct. Silent
+//!    for the dispatch `call_*`s on the struct. Silent
 //!    `Ok(())` fallbacks (the removed `call_memory_store_symbolic_ast`)
 //!    mask wiring bugs by making the engine appear to run while stores
 //!    are silently dropped, which produces divergent Rust↔Python memory
 //!    that is painful to debug. When adding a new `call_*`, copy the
 //!    `ok_or_else` idiom — do NOT return `Ok(())` or default values when
 //!    the hook is unset.
+//!
+//!    **Exception: the `call_inspect_*` family** (18 methods in
+//!    `inspect.rs`, all routed through
+//!    `PythonCallbacks::with_inspect_cb`). `state.inspect` breakpoints are
+//!    *optional by design* — a state with no breakpoint registered for an
+//!    event is the common case, not a wiring bug — so an unset slot
+//!    returns the `absent` value (`Ok(())` / `Ok(None)`) instead of
+//!    erroring. These are additionally gated on
+//!    `inspect_event_enabled(N)`, so the engine normally never reaches the
+//!    slot check at all. Do NOT extend this exception to any callback the
+//!    engine's correctness depends on; the test above is the boundary.
 //!
 //! 2. **`drop-terminal-vs-predicates`** — when callable `find` /
 //!    `avoid` predicates are active, the Python-side
@@ -321,8 +333,10 @@ pub struct PythonCallbacks {
     /// `when='after'` for each forked state created by the deferred-fork
     /// processing in `exploration/stepping.rs` (both `handle_block_end`
     /// and `process_deferred_forks_into`). The dispatch fires on the
-    /// FORKED state's id (matching Python `engines/successors.py:203`
-    /// where `state` is the newly-added successor), not the original
+    /// FORKED state's id (matching the `state._inspect("fork", BP_AFTER)`
+    /// in Python `SimSuccessors::_preprocess_successor`
+    /// (`angr/engines/successors.py`), where `state` is the newly-added
+    /// successor), not the original
     /// state being forked from. UNSAT-pruned forks still fire the BP
     /// before the satisfiability check so the user sees every fork
     /// attempt — same intent as Python's pre-discard fire. The `fork`
