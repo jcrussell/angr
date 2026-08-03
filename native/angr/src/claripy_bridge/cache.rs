@@ -269,7 +269,7 @@ pub(crate) fn clear_ast_cache() {
 /// sibling workers depend on). See cross-cache invariant C3 in the parent
 /// module rustdoc.
 ///
-/// The `worker_thread` teardown call in `exploration/scheduler.rs` is eager
+/// The `worker_thread` teardown call in `exploration/scheduler_pool.rs` is eager
 /// resource release, **not** a use-after-free guard: cached `RustBV` ASTs each
 /// own an `Rc`-cloned `Context`, so the underlying `Z3_context` outlives them
 /// regardless of drop order, and the shipped build is `panic = "abort"` so no

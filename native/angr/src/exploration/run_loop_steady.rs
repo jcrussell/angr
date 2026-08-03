@@ -34,7 +34,7 @@ use super::run_loop_worker::{MatKind, ParallelShared};
 
 // NOTE (angr-nkoct steady-state Phase B): the duplex-protocol types this file
 // used to scaffold (`WorkerCtl` / `WorkerUp` / `RunSession`, with their
-// Send/Sync compile-time proof) now live in `scheduler.rs`, implemented and
+// Send/Sync compile-time proof) now live in `scheduler_pool.rs`, implemented and
 // unit-tested — the scheduler owns the transport; this file owns routing.
 
 /// The coordinator-side handle to a live steady-state parallel session

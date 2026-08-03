@@ -1265,7 +1265,7 @@ fn record_summaries_splits_every_disposition_including_avoided() {
         summary(5, TerminalDisposition::Avoided),
     ]);
 
-    let stats = super::snapshot_stats(0, &counters);
+    let stats = super::stats::snapshot_stats(0, &counters);
     assert_eq!(stats.summarized_terminals, 5);
     assert_eq!(stats.summarized_deadended, 1);
     assert_eq!(stats.summarized_errored, 1);
@@ -1297,7 +1297,7 @@ fn record_dispatch_reports_folded_worker_ids() {
     for id in 0..MAX_TRACKED_WORKERS {
         counters.record_dispatch(id, 1);
     }
-    let stats = super::snapshot_stats(0, &counters);
+    let stats = super::stats::snapshot_stats(0, &counters);
     assert_eq!(
         stats.folded_worker_dispatches, 0,
         "in-range worker ids must not be reported as degraded data",
@@ -1310,7 +1310,7 @@ fn record_dispatch_reports_folded_worker_ids() {
 
     counters.record_dispatch(MAX_TRACKED_WORKERS, 1);
     counters.record_dispatch(MAX_TRACKED_WORKERS + 7, 1);
-    let stats = super::snapshot_stats(0, &counters);
+    let stats = super::stats::snapshot_stats(0, &counters);
     assert_eq!(
         stats.folded_worker_dispatches, 2,
         "both out-of-range dispatches must be flagged as folded",

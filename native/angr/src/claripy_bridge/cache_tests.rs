@@ -65,7 +65,7 @@ fn test_worker_local_clear_preserves_global_registry() {
 
 // The worker-teardown clear must EMPTY the thread's `AST_CACHE`, so no `RustBV`
 // (whose z3 ASTs are bound to the worker's soon-to-drop `z3ctx`) survives into
-// the `thread_local!` destructor phase. `worker_thread` in scheduler.rs calls
+// the `thread_local!` destructor phase. `worker_thread` in scheduler_pool.rs calls
 // `clear_worker_local_caches()` before returning for exactly this reason; this
 // pins the invariant it relies on — that the clear leaves the cache empty.
 //
@@ -73,7 +73,7 @@ fn test_worker_local_clear_preserves_global_registry() {
 // UAF prevention as angr-bjk8 / angr-1yge9.9 originally claimed: a cached AST
 // owns an `Rc`-cloned `Context`, so `Z3_del_context` cannot run while it lives,
 // and `panic = "abort"` means no unwind can skip the clear. See angr-9ke6b.39
-// and the corrected comment at the scheduler.rs call site.
+// and the corrected comment at the scheduler_pool.rs call site.
 #[test]
 fn test_worker_local_clear_empties_ast_cache() {
     // Start from a clean slate on this (possibly test-runner-reused) thread.

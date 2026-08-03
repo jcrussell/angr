@@ -100,7 +100,7 @@ impl RustExplorationManager {
 /// in its OWN Z3 context. Returns `(send bytes, receive deserialize-ns)`.
 ///
 /// The thread creates a fresh `z3::Context` and installs it as the thread-local
-/// (mirroring the work-stealing worker in `scheduler.rs`): the context lives on
+/// (mirroring `worker_thread` in `exploration/scheduler_pool.rs`): the context lives on
 /// this thread's stack for its whole life, created and destroyed on the same
 /// thread, so every AST `from_serialized` mints is in a context this thread
 /// alone touches — exactly the cross-context reattach the real scheduler does.

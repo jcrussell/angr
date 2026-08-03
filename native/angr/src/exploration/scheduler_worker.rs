@@ -28,7 +28,7 @@ use std::time::Instant;
 /// process it, push live successors locally, shed surplus on imbalance, and
 /// collect terminals. Reads all per-wave state from `job`; `ctx` is the worker's
 /// persistent Z3 context, `block_cache` its warm per-worker IRSB cache, and
-/// `local` its persistent live frontier — all owned by [`worker_thread`] and
+/// `local` its persistent live frontier — all owned by [`worker_thread`](super::pool::worker_thread) and
 /// reused across waves (angr-nkoct increment 1).
 ///
 /// `local` is empty at entry in every reachable case — a wave either runs to
@@ -164,7 +164,7 @@ pub(super) fn worker_loop(
 /// work does not end the session:
 ///
 /// * **Quiescence** (empty local + empty injector + `pending == 0`): send
-///   `Quiesced` and return — the caller ([`worker_thread`]) parks on its
+///   `Quiesced` and return — the caller ([`worker_thread`](super::pool::worker_thread)) parks on its
 ///   control channel, and a `WorkerCtl::Run` wake ping re-enters this loop
 ///   against the same session after the coordinator injects more work.
 /// * **Cancel** (the session's finalize/num_find/budget signal): DRAIN the

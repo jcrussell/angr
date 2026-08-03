@@ -157,7 +157,7 @@ use pyo3::prelude::*;
 /// The engine's core shared types (`RustBV`, Z3 AST handles, `FileDescriptor`)
 /// are `!Send` by design, and that is what makes the suppression sound — NOT
 /// single-threadedness. The engine does step states on real OS worker threads
-/// (`scheduler::worker_thread`, spawned as `angr-worker-N`); what keeps these
+/// (`scheduler::pool::worker_thread`, spawned as `angr-worker-N`); what keeps these
 /// `Arc`s confined to one thread is that the only cross-thread transport for a
 /// state is `StateMigrationPayload` (`state/migration.rs`), which is
 /// `Send`-by-construction and guarded at compile time by an `assert_send::<..>()`

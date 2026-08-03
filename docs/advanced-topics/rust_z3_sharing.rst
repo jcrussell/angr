@@ -85,7 +85,7 @@ and a constraint:
   found/matched terminal) is detached into a ``Send`` payload and
   ``reattach``-ed into the destination's own context with every AST
   minted locally, so no context is ever read cross-thread. See
-  ``native/angr/src/exploration/scheduler.rs`` for the mechanism and
+  ``native/angr/src/exploration/scheduler_pool.rs`` for the mechanism and
   :doc:`rust_parallel_design` for the design rationale.
 * **``Send``/``Sync`` audit.** ``RustSolverContext`` is
   ``#[pyclass(unsendable)]`` precisely so PyO3 refuses to ship it to

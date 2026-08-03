@@ -401,7 +401,8 @@ If Option A is chosen, a staged rollout:
    (``py.allow_threads``) only around the Rust-pure inner work and
    re-acquiring it for callbacks — Phase 4 is the load-bearing half, not a
    coda. The first ``angr-1ilq.3`` increment landed the work-stealing pool
-   machinery (``exploration/scheduler.rs``: per-worker Z3 context,
+   machinery (``exploration/scheduler.rs`` and its ``scheduler_{stats,
+   transport,pool,worker}.rs`` siblings: per-worker Z3 context,
    ``crossbeam-deque`` over ``StateMigrationPayload``, task-boundary
    cancellation) **proven in isolation**; wiring it into ``run_loop`` behind
    the GIL boundary is the deferred follow-up.
@@ -635,7 +636,7 @@ If Option A is chosen, a staged rollout:
       * A **persistent worker pool** (commit ``fa441e13a``): N long-lived
         threads each own a Z3 context for the pool's life, fed one wave at a
         time over ``mpsc`` channels (``PersistentPool`` / ``WaveJob`` /
-        ``worker_thread`` in ``exploration/scheduler.rs``). Kills the per-wave
+        ``worker_thread`` in ``exploration/scheduler_pool.rs``). Kills the per-wave
         ``thread::scope`` + ``Context::new`` churn.
       * A **warm per-worker block cache** (commit ``ec0a0b07d``): each worker's
         ``LruCache<u64, Arc<IRSB>>`` persists across dispatches and waves;
@@ -738,7 +739,7 @@ If Option A is chosen, a staged rollout:
 
       The deferred steady-state loop above is now implemented behind the
       ``RUST_PARALLEL_STEADY`` env flag (default off). One long-lived
-      ``RunSession`` (``exploration/scheduler.rs``) spans many ``run()`` calls:
+      ``RunSession`` (``exploration/scheduler_pool.rs``) spans many ``run()`` calls:
       workers keep their frontiers **resident** across the Python-callback
       boundary, streaming materialized terminals up an mpsc channel instead of
       synchronizing at a per-wave barrier, so a bounce costs one materialize +
