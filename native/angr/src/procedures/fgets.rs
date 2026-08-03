@@ -6,9 +6,9 @@
 //! **Panic policy / enforcement (angr-qwyti.11, angr-9ke6b.212):** this module
 //! carries `#![deny(clippy::unwrap_used, clippy::expect_used)]` — the FILE\*
 //! and buffer arguments are guest-supplied and every failure to resolve them
-//! already returns a `ProcedureError` that falls back to Python. The two
-//! statement-level `#[allow]`s below are the `mint_stdin_bytes` one-name
-//! contract, not input checks.
+//! already returns a `ProcedureError` that falls back to Python. The single
+//! statement-level `#[allow]` below (in [`read_stdin_char`]) is the
+//! `mint_stdin_bytes` one-name contract, not an input check.
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 //!
 //! # Behavior
@@ -261,6 +261,48 @@ crate::declare_proc! {
     }
 }
 
+/// Read one symbolic byte from stdin and widen it to a C `int` return value,
+/// applying the SHORT_READS EOF model.
+///
+/// Shared body of `fgetc` and `getchar`: Python defines `getchar` as
+/// `fgetc(stdin)`, so the two must not diverge — a change to the eof-bit
+/// naming or the -1 sentinel has to land in exactly one place.
+///
+/// `tag` selects the per-procedure [`symbol_counter`] and names the fresh
+/// symbols (`stdin_<tag>_<id>` for the byte, `<tag>_eof_<id>` for the eof
+/// bit), so the two callers keep distinct symbol namespaces.
+///
+/// Returns `zero_extend(byte, 32)` by default. Under the SHORT_READS
+/// SimOption, returns `If(eof, -1, byte)` for a fresh symbolic eof bit, which
+/// soundly over-approximates `simfd.eof()` (the solver may pick `eof=true` to
+/// justify a zero-length read) — mirroring Python `fgetc`'s
+/// `If(real_length == 0, -1, byte)` and the fgets short-read path above
+/// (angr-qx81x).
+fn read_stdin_char(state: &mut RustSimState, tag: &'static str) -> RustBV {
+    let read_id = symbol_counter(tag);
+    let name = format!("stdin_{tag}_{read_id}");
+    let short_reads = state.has_option("SHORT_READS");
+    // Mints the leaf, binds it to a harness-seeded fd-0 byte if there is one,
+    // and records it for posix.dumps(0) export when there is not.
+    #[allow(
+        clippy::expect_used,
+        reason = "`mint_stdin_bytes` returns exactly one `RustBV` per requested name (its own doc contract, and it builds the vec by mapping over `names`), and the call passes a single-element slice via `slice::from_ref`, so the vec always holds one element"
+    )]
+    let sym_byte = mint_stdin_bytes(state, std::slice::from_ref(&name))
+        .pop()
+        .expect("mint_stdin_bytes returns one BV per name");
+    let ctx = state.solver().borrow();
+    // Zero-extend to int (32-bit, matching C int type)
+    let byte_ze = sym_byte.zero_extend(32, &ctx);
+    if short_reads {
+        let eof = RustBV::symbolic(&ctx, format!("{tag}_eof_{read_id}"), 1);
+        let neg_one = RustBV::concrete((-1i64 as u64) as u128, 32);
+        eof.ite(&neg_one, &byte_ze, &ctx)
+    } else {
+        byte_ze
+    }
+}
+
 crate::declare_proc! {
     /// Native fgetc implementation.
     ///
@@ -268,11 +310,10 @@ crate::declare_proc! {
     /// int fgetc(FILE *stream);
     /// ```
     ///
-    /// Returns one symbolic byte zero-extended to int size. With the SHORT_READS
-    /// SimOption set, instead returns `If(eof, -1, byte)` for a fresh symbolic
-    /// eof bit, modelling the EOF (-1) return of Python `fgetc`
-    /// (`If(real_length == 0, -1, byte)`). Default (SHORT_READS off) never
-    /// returns the EOF sentinel from the symbolic-stdin path.
+    /// Returns one symbolic byte zero-extended to int size, or `If(eof, -1, byte)`
+    /// under the SHORT_READS SimOption — see [`read_stdin_char`], the body shared
+    /// with `getchar`. Default (SHORT_READS off) never returns the EOF sentinel
+    /// from the symbolic-stdin path.
     ///
     /// Resolves the backing fd via [`resolve_stream_fd`]: only stdin (fd 0) is
     /// served natively. A non-stdin stream falls back to Python, an invalid fd
@@ -293,33 +334,7 @@ crate::declare_proc! {
                 "fgetc from fd={fd} (non-stdin) falls back to Python"
             )));
         }
-        let read_id = symbol_counter("fgetc");
-        let name = format!("stdin_fgetc_{read_id}");
-        let short_reads = state.has_option("SHORT_READS");
-        // Mints the leaf, binds it to a harness-seeded fd-0 byte if there is one,
-        // and records it for posix.dumps(0) export when there is not.
-        #[allow(clippy::expect_used, reason = "`mint_stdin_bytes` returns exactly one `RustBV` per requested name (its own doc contract, and it builds the vec by mapping over `names`), and the call passes a single-element slice via `slice::from_ref`, so the vec always holds one element")]
-        let sym_byte = mint_stdin_bytes(state, std::slice::from_ref(&name))
-            .pop()
-            .expect("mint_stdin_bytes returns one BV per name");
-        let result = {
-            let ctx = state.solver().borrow();
-            // Zero-extend to int (32-bit, matching C int type)
-            let byte_ze = sym_byte.zero_extend(32, &ctx);
-            if short_reads {
-                // SHORT_READS: model the EOF return. Python fgetc returns
-                // If(real_length == 0, -1, byte) — a fresh symbolic eof bit
-                // soundly over-approximates simfd.eof() (the solver may pick
-                // eof=true to justify a zero-length read). Matches the eof
-                // handling in the fgets short-read path above (angr-qx81x).
-                let eof = RustBV::symbolic(&ctx, format!("fgetc_eof_{read_id}"), 1);
-                let neg_one = RustBV::concrete((-1i64 as u64) as u128, 32);
-                eof.ite(&neg_one, &byte_ze, &ctx)
-            } else {
-                byte_ze
-            }
-        };
-        Ok(Some(result))
+        Ok(Some(read_stdin_char(state, "fgetc")))
     }
 }
 
@@ -330,38 +345,16 @@ crate::declare_proc! {
     /// int getchar(void);
     /// ```
     ///
-    /// Equivalent to fgetc(stdin). Returns one symbolic byte zero-extended to int,
-    /// or `If(eof, -1, byte)` under the SHORT_READS SimOption (see fgetc).
+    /// Equivalent to fgetc(stdin), and shares [`read_stdin_char`] with it so the
+    /// two cannot drift: returns one symbolic byte zero-extended to int, or
+    /// `If(eof, -1, byte)` under the SHORT_READS SimOption. Unlike `fgetc` there
+    /// is no FILE\* to resolve — `getchar` always reads fd 0.
     name = "getchar",
     struct = NativeGetchar,
     args = [],
     aliases = ["getchar_unlocked"],
     call |state| {
-        let read_id = symbol_counter("getchar");
-        let name = format!("stdin_getchar_{read_id}");
-        let short_reads = state.has_option("SHORT_READS");
-        // Mints the leaf, binds it to a harness-seeded fd-0 byte if there is one,
-        // and records it for posix.dumps(0) export when there is not.
-        #[allow(clippy::expect_used, reason = "`mint_stdin_bytes` returns exactly one `RustBV` per requested name (its own doc contract, and it builds the vec by mapping over `names`), and the call passes a single-element slice via `slice::from_ref`, so the vec always holds one element")]
-        let sym_byte = mint_stdin_bytes(state, std::slice::from_ref(&name))
-            .pop()
-            .expect("mint_stdin_bytes returns one BV per name");
-        let result = {
-            let ctx = state.solver().borrow();
-            // Zero-extend to int (32-bit, matching C int type)
-            let byte_ze = sym_byte.zero_extend(32, &ctx);
-            if short_reads {
-                // SHORT_READS: model the EOF return, like fgetc above. Python
-                // getchar == fgetc(stdin) returns If(real_length == 0, -1, byte);
-                // a fresh symbolic eof bit over-approximates simfd.eof().
-                let eof = RustBV::symbolic(&ctx, format!("getchar_eof_{read_id}"), 1);
-                let neg_one = RustBV::concrete((-1i64 as u64) as u128, 32);
-                eof.ite(&neg_one, &byte_ze, &ctx)
-            } else {
-                byte_ze
-            }
-        };
-        Ok(Some(result))
+        Ok(Some(read_stdin_char(state, "getchar")))
     }
 }
 
