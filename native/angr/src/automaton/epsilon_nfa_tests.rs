@@ -45,7 +45,9 @@ fn test_move_on_symbol() {
     nfa.add_epsilon_transition(1, 3);
 
     let start = StateSet::singleton(0, 4);
-    let reached = nfa.move_on_symbol(&start, 0);
+    let reached = nfa
+        .move_on_symbol(&start, 0)
+        .expect("symbol 0 is not the epsilon marker");
 
     assert!(reached.contains(1));
     assert!(reached.contains(2));
@@ -64,4 +66,15 @@ fn test_empty_nfa() {
     // Add transition
     nfa.add_transition(0, 0, 1);
     assert!(!nfa.is_empty());
+}
+
+/// angr-9ke6b.191: `move_on_symbol` reports the epsilon marker as an error
+/// instead of panicking, so the PyO3 layer can raise a clean `ValueError`.
+#[test]
+fn test_move_on_symbol_rejects_epsilon() {
+    let mut nfa = EpsilonNFA::new();
+    nfa.add_epsilon_transition(0, 1);
+
+    let start = StateSet::singleton(0, 2);
+    assert_eq!(nfa.move_on_symbol(&start, EPSILON), Err(EpsilonSymbolError));
 }

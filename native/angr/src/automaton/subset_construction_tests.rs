@@ -11,7 +11,7 @@ fn test_subset_construction_basic() {
     nfa.add_start_state(0);
     nfa.add_final_state(3);
 
-    let dfa = subset_construction(&nfa);
+    let dfa = subset_construction(&nfa).expect("alphabet excludes epsilon");
 
     assert!(dfa.start_state().is_some());
     assert!(!dfa.final_states().is_empty());
@@ -26,7 +26,7 @@ fn test_subset_construction_with_epsilon() {
     nfa.add_start_state(0);
     nfa.add_final_state(2);
 
-    let dfa = subset_construction(&nfa);
+    let dfa = subset_construction(&nfa).expect("alphabet excludes epsilon");
 
     // DFA should recognize "a"
     let start = dfa
@@ -50,6 +50,6 @@ fn test_subset_construction_with_epsilon() {
 #[test]
 fn test_empty_nfa() {
     let nfa = EpsilonNFA::new();
-    let dfa = subset_construction(&nfa);
+    let dfa = subset_construction(&nfa).expect("alphabet excludes epsilon");
     assert!(dfa.start_state().is_none());
 }

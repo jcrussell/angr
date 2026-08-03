@@ -10,6 +10,18 @@
 
 use super::*;
 
+/// Unwrap an [`IdLookup`] that is expected to have found an object.
+///
+/// Test-local rather than a method on `IdLookup`: production code must keep
+/// handling `Reserved` and `Unassigned` separately (angr-9ke6b.190).
+fn expect_found<'a>(lookup: IdLookup<'a>) -> &'a Py<PyAny> {
+    match lookup {
+        IdLookup::Found(obj) => obj,
+        IdLookup::Reserved => panic!("expected an interned object, got the reserved sentinel"),
+        IdLookup::Unassigned => panic!("expected an interned object, got an unassigned id"),
+    }
+}
+
 /// Run `src` and return the named locals as Python objects.
 fn eval_locals<'py>(py: Python<'py>, src: &str, names: &[&str]) -> Vec<Py<PyAny>> {
     let locals = pyo3::types::PyDict::new(py);
@@ -92,16 +104,12 @@ fn test_hash_repr_collision_keeps_symbols_distinct() {
         assert_eq!(mapper.symbols.interned.len(), 2);
         // Each ID still round-trips back to its own object, not the other's.
         assert!(
-            mapper
-                .get_symbol_by_id(id_a)
-                .unwrap()
+            expect_found(mapper.lookup_symbol(id_a))
                 .bind(py)
                 .is(objs[0].bind(py))
         );
         assert!(
-            mapper
-                .get_symbol_by_id(id_b)
-                .unwrap()
+            expect_found(mapper.lookup_symbol(id_b))
                 .bind(py)
                 .is(objs[1].bind(py))
         );
@@ -431,5 +439,27 @@ fn test_to_networkx_emits_every_node_and_labels_edges_with_python_symbols() {
             // The label is the original Python payload, not the internal id.
             assert_eq!(label, "x");
         }
+    });
+}
+
+/// angr-9ke6b.190: the reserved EPSILON marker and a never-assigned id are two
+/// different bugs, and `lookup_symbol` must not collapse them into one "None".
+#[test]
+fn test_lookup_symbol_distinguishes_reserved_from_unassigned() {
+    Python::initialize();
+    Python::attach(|py| {
+        let mut mapper = ObjectMapper::new();
+        let obj = eval_locals(py, "a = object()", &["a"]).remove(0);
+        let id = mapper
+            .get_or_create_symbol_id(py, &PySymbol::new(obj.clone()))
+            .unwrap();
+
+        assert!(
+            expect_found(mapper.lookup_symbol(id))
+                .bind(py)
+                .is(obj.bind(py))
+        );
+        assert!(matches!(mapper.lookup_symbol(EPSILON), IdLookup::Reserved));
+        assert!(matches!(mapper.lookup_symbol(id + 1), IdLookup::Unassigned));
     });
 }

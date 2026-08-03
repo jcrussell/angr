@@ -7,17 +7,24 @@
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use crate::automaton::dfa::DFA;
-use crate::automaton::epsilon_nfa::EpsilonNFA;
+use crate::automaton::epsilon_nfa::{EpsilonNFA, EpsilonSymbolError};
 use crate::automaton::state::{StateId, StateSet};
 use indexmap::IndexMap;
 use std::collections::HashMap;
 
 /// Convert an epsilon-NFA to a DFA using the powerset construction algorithm.
+///
+/// # Errors
+///
+/// Propagates [`EpsilonSymbolError`] if `nfa.alphabet()` ever yields the
+/// epsilon marker. `EpsilonNFA::add_transition` keeps epsilon out of the
+/// alphabet, so this cannot happen today; it is forwarded rather than asserted
+/// so `PyEpsilonNFA::minimize` can raise a clean `ValueError` (angr-9ke6b.191).
 #[allow(
     clippy::expect_used,
     reason = "worklist invariant: `worklist.push(set)` happens only where the same `set` was just inserted into `state_mapping` (the initial-set seed and the new-DFA-state branch), so a popped entry always has a mapping. Nothing here reads guest data"
 )]
-pub(super) fn subset_construction(nfa: &EpsilonNFA) -> DFA {
+pub(super) fn subset_construction(nfa: &EpsilonNFA) -> Result<DFA, EpsilonSymbolError> {
     // Each DFA state corresponds to a set of NFA states
     // We map sets of NFA states to DFA state IDs
     let mut state_mapping: IndexMap<Vec<StateId>, StateId> = IndexMap::new();
@@ -31,7 +38,7 @@ pub(super) fn subset_construction(nfa: &EpsilonNFA) -> DFA {
 
     if initial_set.is_empty() {
         // No reachable states - return empty DFA
-        return dfa;
+        return Ok(dfa);
     }
 
     let initial_vec = initial_set.to_vec();
@@ -59,7 +66,7 @@ pub(super) fn subset_construction(nfa: &EpsilonNFA) -> DFA {
         // For each symbol in the alphabet
         for &symbol in nfa.alphabet() {
             // Compute the set of NFA states reachable on this symbol
-            let next_nfa_set = nfa.move_on_symbol(&current_nfa_set, symbol);
+            let next_nfa_set = nfa.move_on_symbol(&current_nfa_set, symbol)?;
 
             if next_nfa_set.is_empty() {
                 // No transition on this symbol - skip (DFA will have no transition)
@@ -97,7 +104,7 @@ pub(super) fn subset_construction(nfa: &EpsilonNFA) -> DFA {
         .collect();
     dfa.set_state_mapping(inverse_mapping);
 
-    dfa
+    Ok(dfa)
 }
 
 #[cfg(test)]

@@ -4,6 +4,26 @@ use crate::automaton::reachability::reachable_from;
 use crate::automaton::state::{StateId, StateSet};
 use crate::automaton::symbol::{EPSILON, SymbolId, is_epsilon};
 use std::collections::{HashMap, HashSet};
+use std::fmt;
+
+/// [`EpsilonNFA::move_on_symbol`] was handed the [`EPSILON`] marker.
+///
+/// Epsilon moves are the job of [`EpsilonNFA::epsilon_closure`]; treating the
+/// marker as an ordinary symbol would return the raw epsilon successors without
+/// taking their closure, i.e. a wrong answer. This is an internal-invariant
+/// violation rather than user input (see `move_on_symbol`'s docs), but it is
+/// reported rather than asserted so the PyO3 layer can surface a clean
+/// `ValueError` instead of an opaque `PanicException` (angr-9ke6b.191).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EpsilonSymbolError;
+
+impl fmt::Display for EpsilonSymbolError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("epsilon is not a move symbol; use epsilon_closure for epsilon moves")
+    }
+}
+
+impl std::error::Error for EpsilonSymbolError {}
 
 /// An Epsilon Non-deterministic Finite Automaton.
 #[derive(Debug, Clone)]
@@ -173,8 +193,24 @@ impl EpsilonNFA {
 
     /// Get the states reachable from a set of states on a given symbol.
     /// Returns the epsilon closure of the reached states.
-    pub fn move_on_symbol(&self, states: &StateSet, symbol: SymbolId) -> StateSet {
-        assert!(!is_epsilon(symbol), "Use epsilon_closure for epsilon moves");
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EpsilonSymbolError`] if `symbol` is the [`EPSILON`] marker.
+    /// Callers are expected to draw symbols from [`Self::alphabet`], which
+    /// excludes epsilon by construction (see `add_transition`), so this is an
+    /// invariant check, not an input check — but it is a `Result` rather than
+    /// an `assert!` because the only caller chain reaches here from PyO3
+    /// (`PyEpsilonNFA::minimize` -> `subset_construction`), where a panic would
+    /// surface to Python as an opaque `PanicException`.
+    pub fn move_on_symbol(
+        &self,
+        states: &StateSet,
+        symbol: SymbolId,
+    ) -> Result<StateSet, EpsilonSymbolError> {
+        if is_epsilon(symbol) {
+            return Err(EpsilonSymbolError);
+        }
 
         let mut reached = StateSet::with_capacity(self.num_states as usize);
 
@@ -184,7 +220,7 @@ impl EpsilonNFA {
             }
         }
 
-        self.epsilon_closure(&reached)
+        Ok(self.epsilon_closure(&reached))
     }
 
     /// Check if the NFA accepts any string (i.e., if the language is non-empty).

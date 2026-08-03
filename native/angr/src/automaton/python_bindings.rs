@@ -218,14 +218,35 @@ impl IdInterner {
         Ok(id)
     }
 
-    /// Map an ID back to its Python object; the reserved sentinel has none.
-    fn get(&self, id: u32) -> Option<&Py<PyAny>> {
+    /// Map an ID back to its Python object.
+    ///
+    /// The two "no object" outcomes stay distinguishable: the reserved sentinel
+    /// (`EPSILON`) is never handed out at all, whereas an out-of-range ID means
+    /// the caller mixed in an ID this interner never assigned. Both are bugs
+    /// rather than expected control flow, and they have different causes, so
+    /// callers get a three-way answer instead of a bare `Option` that collapses
+    /// them (angr-9ke6b.190).
+    fn lookup(&self, id: u32) -> IdLookup<'_> {
         if Some(id) == self.reserved {
-            None
+            IdLookup::Reserved
         } else {
-            self.interned.get(id as usize)
+            match self.interned.get(id as usize) {
+                Some(obj) => IdLookup::Found(obj),
+                None => IdLookup::Unassigned,
+            }
         }
     }
+}
+
+/// Outcome of [`IdInterner::lookup`].
+enum IdLookup<'a> {
+    /// The ID maps to this interned Python object.
+    Found(&'a Py<PyAny>),
+    /// The ID is the reserved sentinel (`EPSILON` for symbols), which is never
+    /// handed out and therefore has no Python object behind it.
+    Reserved,
+    /// The ID was never assigned by this interner.
+    Unassigned,
 }
 
 /// Helper struct for tracking Python object to ID mappings.
@@ -253,8 +274,8 @@ impl ObjectMapper {
         self.symbols.get_or_create(py, symbol.value.bind(py))
     }
 
-    fn get_symbol_by_id(&self, id: SymbolId) -> Option<&Py<PyAny>> {
-        self.symbols.get(id)
+    fn lookup_symbol(&self, id: SymbolId) -> IdLookup<'_> {
+        self.symbols.lookup(id)
     }
 }
 
@@ -337,8 +358,12 @@ impl PyEpsilonNFA {
         // Compute epsilon closures for efficiency
         self.nfa.compute_epsilon_closures();
 
-        // Convert to DFA via subset construction
-        let dfa = subset_construction(&self.nfa);
+        // Convert to DFA via subset construction. The epsilon-marker error is
+        // unreachable while the alphabet excludes epsilon, but mapping it here
+        // keeps a future invariant break a clean ValueError rather than a
+        // PanicException (angr-9ke6b.191).
+        let dfa =
+            subset_construction(&self.nfa).map_err(|err| PyValueError::new_err(err.to_string()))?;
 
         // Minimize the DFA
         let minimized = dfa.minimize();
@@ -407,13 +432,30 @@ impl PyDFA {
         // Add edges with labels
         for (src, sym, dst) in self.dfa.transitions() {
             // Get the original Python symbol for the label
-            let label: Bound<'py, PyAny> =
-                if let Some(py_symbol) = self.mapper.get_symbol_by_id(sym) {
-                    py_symbol.bind(py).clone()
-                } else {
-                    // Fallback to symbol ID if no mapping
+            let label: Bound<'py, PyAny> = match self.mapper.lookup_symbol(sym) {
+                IdLookup::Found(py_symbol) => py_symbol.bind(py).clone(),
+                // SILENT(cat-b): both remaining arms fall back to the raw
+                // numeric ID as the edge label. Neither is reachable for a DFA
+                // built by `subset_construction` — it only iterates
+                // `nfa.alphabet()`, which excludes EPSILON, and every symbol in
+                // it came from `get_or_create_symbol_id` — so they are logged
+                // separately rather than collapsed, and the loss is cosmetic
+                // (a debug/visualisation label), not a wrong automaton.
+                IdLookup::Reserved => {
+                    log::warn!(
+                        "to_networkx: DFA transition {src}->{dst} carries the EPSILON marker as a \
+                         symbol; labelling it with the raw id"
+                    );
                     sym.into_pyobject(py)?.into_any()
-                };
+                }
+                IdLookup::Unassigned => {
+                    log::warn!(
+                        "to_networkx: DFA transition {src}->{dst} uses symbol id {sym}, which was \
+                         never interned; labelling it with the raw id"
+                    );
+                    sym.into_pyobject(py)?.into_any()
+                }
+            };
 
             // Create kwargs dict with label
             let kwargs = pyo3::types::PyDict::new(py);
