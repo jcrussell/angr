@@ -205,7 +205,7 @@ impl RustExplorationManager {
         // Check find/avoid before stepping
         let pc = state.pc();
 
-        // P7 fix: Check if callable avoid predicate needs Python evaluation
+        // Check if callable avoid predicate needs Python evaluation.
         // When avoid is a callable (lambda/function), we must return to Python
         // to evaluate it for each state, not just check addresses.
         // Skip if this state was just checked (resume_avoid_predicate(false)
@@ -233,7 +233,7 @@ impl RustExplorationManager {
             return Ok(StepOutcome::Routed);
         }
 
-        // P2 fix: Check if callable find predicate needs Python evaluation
+        // Check if callable find predicate needs Python evaluation.
         // When find is a callable (lambda/function), we must return to Python
         // to evaluate it for each state, not just check addresses.
         // Skip if this state was just checked (resume_find_predicate(false)

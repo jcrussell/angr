@@ -422,7 +422,7 @@ impl RustExplorationManager {
         self._move_states(from_stash, to_stash, filter_fn)
     }
 
-    /// P8 fix: Move a single state by ID between stashes.
+    /// Move a single state by ID between stashes.
     /// See `state_lifecycle::_move_state` for the body.
     pub fn move_state(
         &mut self,
@@ -433,7 +433,7 @@ impl RustExplorationManager {
         self._move_state(state_id, from_stash, to_stash)
     }
 
-    /// P8 fix: Clear all states from a stash.
+    /// Clear all states from a stash.
     pub fn clear_stash(&mut self, stash: &str) {
         self.sm.clear(stash);
     }

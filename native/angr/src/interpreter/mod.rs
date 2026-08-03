@@ -433,7 +433,7 @@ pub(crate) enum CbExecutionError {
     /// Block lifting error. Strategy: [`FallbackStrategy::Panic`].
     #[error("lift error: {0}")]
     LiftError(String),
-    /// Needs Python fallback for special expressions (P7 fix).
+    /// Needs Python fallback for special expressions.
     /// Strategy: [`FallbackStrategy::PythonCallback`]. Distinct from
     /// `Unsupported` so call sites can request fallback explicitly without
     /// having to invent a "feature missing" message (e.g. VECRET/GSPTR,

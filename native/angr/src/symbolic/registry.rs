@@ -256,7 +256,7 @@ impl SymbolicIdentityRegistry {
             id_to_py.insert(rust_id, py_ast);
             id_to_py.len()
         };
-        // D2 Fix: Include width in the name key to prevent collisions
+        // Include width in the name key to prevent collisions
         // when symbols have the same name but different widths.
         // E.g., "x" with width 32 vs "x" with width 64 should not collide.
         // The sort tag additionally separates BVS(name, 1) from BoolS(name),
@@ -340,7 +340,7 @@ impl SymbolicIdentityRegistry {
     ///
     /// Returns the `SymbolInfo` if a symbol with this exact name, width and
     /// [`SymbolKind`] was registered. All three are part of the key: width
-    /// separates `BVS("x", 32)` from `BVS("x", 64)` (the D2 fix), and the sort
+    /// separates `BVS("x", 32)` from `BVS("x", 64)`, and the sort
     /// separates `BVS("x", 1)` from `BoolS("x")` (angr-9ke6b.38).
     pub fn lookup_by_name_and_width(
         &self,

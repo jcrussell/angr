@@ -194,7 +194,7 @@ pub(crate) fn lookup_symbol_name_by_id(rust_id: u64) -> Option<String> {
 /// Look up symbol info by name, width and claripy sort.
 ///
 /// The key is name+width+sort: width separates same-name symbols of different
-/// widths (D2 fix), and the sort keeps `BVS(name, 1)` and `BoolS(name)` from
+/// widths, and the sort keeps `BVS(name, 1)` and `BoolS(name)` from
 /// aliasing to one id (angr-9ke6b.38).
 pub(crate) fn lookup_symbol_by_name_and_width(
     name: &str,

@@ -45,6 +45,13 @@ retroactively, only stops the class from growing. Regenerate the baseline
 with `--update-baseline` after intentionally adding one (rare — e.g. citing
 an external, non-repo line number that can't drift).
 
+**Provenance-tag convention:** a comment that records *why* a change was made
+cites the bd bead id (`angr-xxxxx`, optionally `angr-xxxxx Phase N` for a
+multi-phase bead) and nothing else. The pre-bd review-round labels (`P5 fix`,
+`D2 Fix`, bare `Phase 2 Fix`) that came in with the v2 port resolved to
+nothing a reader could look up and were stripped in angr-9ke6b.46 — do not
+reintroduce a second numbering scheme.
+
 ### Silent-fallback tagging (Rust)
 
 Sites in `native/angr/src/` that discard an error/absent value and continue

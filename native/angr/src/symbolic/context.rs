@@ -364,7 +364,7 @@ pub struct SymContext {
     /// Pairs push↔pop exactly like `scope_savepoints`.
     #[cfg(feature = "vex-engine-z3")]
     pub(super) bare_local_savepoints: Mutex<Vec<(usize, usize, usize)>>,
-    /// Phase 2 Fix: Track assumed RustBV constraints for export to Python.
+    /// Track assumed RustBV constraints for export to Python.
     /// Each entry is (constraint, is_assumed_true). The shared prefix is an
     /// Arc<Vec<...>> for O(1) clone on fork; local additions live alongside
     /// `z3_assertions` in `local_constraints` so the hot path only takes one
@@ -778,7 +778,7 @@ impl SymContext {
     }
 
     // =========================================================================
-    // Constraint Export (Phase 2 Fix)
+    // Constraint Export
     // =========================================================================
 
     /// Get the assumed constraints as (RustBV, is_assumed_true) pairs.

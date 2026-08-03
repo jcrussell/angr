@@ -325,7 +325,7 @@ fn claripy_to_rustbv_depth(
             let val = claripy_to_rustbv_depth(py, &args_list[2], ctx, depth + 1)?;
             let val_width = val.width();
 
-            // P5 fix: Validate Extract bounds to prevent runtime errors
+            // Validate Extract bounds to prevent runtime errors.
             if high >= val_width {
                 return Err(BridgeError::InvalidArgs(format!(
                     "Extract high={high} >= width={val_width}"

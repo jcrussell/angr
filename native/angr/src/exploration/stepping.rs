@@ -498,7 +498,7 @@ impl RustExplorationManager {
         match kind {
             BounceKind::Hook { addr } => {
                 state.set_pc(addr);
-                // P1 Fix: history BEFORE callback so Python can read recent_bbl_addrs[-1].
+                // History BEFORE callback so Python can read recent_bbl_addrs[-1].
                 state.add_to_history(addr);
                 let hook_fork_start = if self.profiling.profiling_enabled {
                     Some(std::time::Instant::now())
@@ -817,7 +817,7 @@ impl RustExplorationManager {
 
         // Unhooked CALL target - try to resolve via Python callback
         state.set_pc(addr);
-        // P1 Fix: Add to history BEFORE callback so Python can access recent_bbl_addrs[-1]
+        // Add to history BEFORE callback so Python can access recent_bbl_addrs[-1]
         state.add_to_history(addr);
 
         // Try to resolve the function via callback

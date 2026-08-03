@@ -269,14 +269,14 @@ impl RustExplorationManager {
         false
     }
 
-    /// P9 fix: Set state selection to LIFO (DFS - depth-first search).
+    /// Set state selection to LIFO (DFS - depth-first search).
     pub fn set_state_selection_lifo(&mut self) {
         self.steady_config_guard();
         self.policy = Arc::new(selection_policy::Lifo);
         log::debug!("State selection set to LIFO (DFS)");
     }
 
-    /// P9 fix: Set state selection to FIFO (BFS - breadth-first search).
+    /// Set state selection to FIFO (BFS - breadth-first search).
     pub fn set_state_selection_fifo(&mut self) {
         self.steady_config_guard();
         self.policy = Arc::new(selection_policy::Fifo);

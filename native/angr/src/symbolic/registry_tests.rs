@@ -15,7 +15,7 @@ fn test_registry_basic() {
 
         // Lookup should succeed
         assert_eq!(registry.lookup_by_hash(12345), Some(1));
-        // D2 Fix: lookup_by_name_and_width uses width-qualified names
+        // `lookup_by_name_and_width` uses width-qualified names
         assert!(
             registry
                 .lookup_by_name_and_width("x", 32, SymbolKind::BitVector)
