@@ -43,8 +43,6 @@ use crate::memory::page::PAGE_MASK;
 pub struct Address(pub u64);
 
 impl Address {
-    pub const ZERO: Address = Address(0);
-
     #[inline]
     pub const fn new(addr: u64) -> Self {
         Address(addr)
@@ -66,12 +64,6 @@ impl Address {
     #[inline]
     pub const fn page_offset(self) -> u16 {
         (self.0 & PAGE_MASK) as u16
-    }
-
-    /// New address `self + delta` (wrapping).
-    #[inline]
-    pub const fn offset(self, delta: u64) -> Self {
-        Address(self.0.wrapping_add(delta))
     }
 }
 
