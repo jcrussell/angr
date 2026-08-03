@@ -572,16 +572,14 @@ impl RustExplorationManager {
     /// Blocks at this address will be lifted with the specified opt_level.
     pub fn set_vex_opt_level_override(&mut self, addr: u64, level: i32) {
         self.steady_config_guard();
-        self.memory_config
-            .vex_opt_level_overrides
-            .insert(addr, level);
+        Arc::make_mut(&mut self.memory_config.vex_opt_level_overrides).insert(addr, level);
         // Remove this address from block cache since opt_level changed
         self.environment.block_cache.pop(&addr);
     }
 
     /// Remove a per-address VEX optimization level override.
     pub fn remove_vex_opt_level_override(&mut self, addr: u64) {
-        self.memory_config.vex_opt_level_overrides.remove(&addr);
+        Arc::make_mut(&mut self.memory_config.vex_opt_level_overrides).remove(&addr);
         self.environment.block_cache.pop(&addr);
     }
 
@@ -593,7 +591,7 @@ impl RustExplorationManager {
             .keys()
             .copied()
             .collect();
-        self.memory_config.vex_opt_level_overrides.clear();
+        Arc::make_mut(&mut self.memory_config.vex_opt_level_overrides).clear();
         for addr in addrs {
             self.environment.block_cache.pop(&addr);
         }

@@ -13,6 +13,8 @@
 //! a thin delegation. Do NOT add helper methods as a separate cleanup; the
 //! parent angr-4j5u was deferred multiple times for cosmetic gains.
 
+use std::sync::Arc;
+
 use rustc_hash::FxHashMap;
 
 /// Memory and VEX-lifting knobs propagated from the manager to each state
@@ -28,7 +30,14 @@ pub(crate) struct MemoryConfiguration {
     /// VEX optimization level (0-3). None = use pyvex default (typically 1).
     pub(crate) vex_opt_level: Option<i32>,
     /// Per-address VEX optimization level overrides.
-    pub(crate) vex_opt_level_overrides: FxHashMap<u64, i32>,
+    ///
+    /// `Arc`-wrapped so the per-step `StepContext` snapshot and the
+    /// `VEXInterpreter` (whose own field is already
+    /// `Arc<FxHashMap<u64, i32>>`) share one allocation instead of deep-cloning
+    /// the map twice per step. The setters mutate through `Arc::make_mut`, so a
+    /// config change while snapshots are outstanding copies once and leaves
+    /// in-flight interpreters on their original map.
+    pub(crate) vex_opt_level_overrides: Arc<FxHashMap<u64, i32>>,
     /// Enable native (in-process) libVEX cold-block lifting on each
     /// interpreter. Only meaningful on a `libvex-ffi` build — the default
     /// build's `VEXInterpreter::set_native_lift_enabled` is a no-op stub.

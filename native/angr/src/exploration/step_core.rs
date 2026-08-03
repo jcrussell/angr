@@ -69,8 +69,10 @@ pub(crate) struct StepContext {
     pub(crate) concretizer_config: AddressConcretizer,
     /// Global VEX optimization level (None = pyvex default).
     pub(crate) vex_opt_level: Option<i32>,
-    /// Per-address VEX optimization level overrides.
-    pub(crate) vex_opt_level_overrides: FxHashMap<u64, i32>,
+    /// Per-address VEX optimization level overrides. Shared with the manager's
+    /// `MemoryConfiguration` and handed straight to the interpreter, so the
+    /// snapshot is an `Arc` bump rather than two map clones per step.
+    pub(crate) vex_opt_level_overrides: Arc<FxHashMap<u64, i32>>,
     /// Enable native (in-process) libVEX cold-block lifting (z087y Stage-2).
     /// Applied via `interp.set_native_lift_enabled`; a no-op on the default
     /// (non-`libvex-ffi`) build.
@@ -134,7 +136,7 @@ impl RustExplorationManager {
             profiling_enabled: self.profiling.profiling_enabled,
             concretizer_config: self.memory_config.concretizer_config.clone(),
             vex_opt_level: self.memory_config.vex_opt_level,
-            vex_opt_level_overrides: self.memory_config.vex_opt_level_overrides.clone(),
+            vex_opt_level_overrides: Arc::clone(&self.memory_config.vex_opt_level_overrides),
             native_lift_enabled: self.memory_config.native_lift_enabled,
             hooks: self.hooks.clone(),
             simprocedures: self.simprocedures.clone(),
@@ -224,9 +226,10 @@ pub(crate) fn run_interpreter_step_core(
     interp.vex_opt_level = ctx.vex_opt_level;
     // z087y Stage-2: opt-in native cold-block lifting (no-op on default build).
     interp.set_native_lift_enabled(ctx.native_lift_enabled);
-    // Take a fresh Arc snapshot of the manager's overrides; interp will
-    // share until a setter mutates (none do during step execution).
-    interp.vex_opt_level_overrides = Arc::new(ctx.vex_opt_level_overrides.clone());
+    // Share the manager's override map; the setters go through `Arc::make_mut`,
+    // so a config change while this interpreter holds the Arc copies once
+    // instead of mutating it underneath (none do during step execution anyway).
+    interp.vex_opt_level_overrides = Arc::clone(&ctx.vex_opt_level_overrides);
 
     // Copy state registers to interpreter (including symbolic values)
     interp.registers = state.registers().fork();
