@@ -66,6 +66,22 @@ fn futex_symbolic_op_returns_error() {
     assert!(matches!(err, SyscallError::SymbolicArgument(_)));
 }
 
+/// The guard threshold must match the declared `num_args()` (6), not the
+/// weaker `< 2` it used to check — a short arg list is a caller bug, and
+/// the error message has always claimed 6.
+#[test]
+fn futex_rejects_short_arg_list() {
+    let h = NativeFutexSyscall;
+    let mut state = fresh_state();
+    let bits = state.arch().bits();
+    let args: Vec<RustBV> = (0..5).map(|_| RustBV::concrete(0, bits)).collect();
+    let err = h.call(&mut state, &args).expect_err("must error");
+    match err {
+        SyscallError::Other(msg) => assert!(msg.contains("expected 6 args, got 5"), "{msg}"),
+        other => panic!("expected Other, got {other:?}"),
+    }
+}
+
 // ---- stub family -------------------------------------------------
 
 /// All seven stub handlers return a fresh symbolic of width

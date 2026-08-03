@@ -54,7 +54,10 @@ impl NativeSyscall for NativeFutexSyscall {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<SyscallOutcome, SyscallError> {
-        if args.len() < 2 {
+        // Threshold matches `num_args()` and the message, as every other
+        // handler in this directory does. The dispatcher always extracts
+        // exactly `num_args()` args, so this only fires on a direct call.
+        if args.len() < 6 {
             return Err(SyscallError::Other(format!(
                 "futex expected 6 args, got {}",
                 args.len()
