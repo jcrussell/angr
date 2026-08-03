@@ -168,9 +168,14 @@ impl SegmentList {
         !self.map.is_empty()
     }
 
-    /// Checks which segment that the address `addr` should belong to,
-    /// and returns the offset of that segment.
-    /// Note that the address may not actually belong to the block.
+    /// Checks which segment the address `addr` should belong to, and returns
+    /// that segment's **index** — its ordinal position in the segment list, to
+    /// be fed back to `__getitem__`. It is *not* a byte offset.
+    ///
+    /// Concretely: the index of the first segment whose `end` exceeds `addr`,
+    /// or `None` when `addr` is past every segment. Note that `addr` may not
+    /// actually fall inside the segment at that index — it can land in the gap
+    /// before it.
     pub fn search(&self, addr: u64) -> Option<usize> {
         self.map
             .iter()
