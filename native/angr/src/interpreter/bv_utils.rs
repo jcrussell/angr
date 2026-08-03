@@ -123,7 +123,7 @@ pub(super) fn build_balanced_ite(
 }
 
 #[cfg(test)]
-#[path = "helpers_tests.rs"]
+#[path = "bv_utils_tests.rs"]
 #[allow(
     clippy::unwrap_used,
     clippy::expect_used,

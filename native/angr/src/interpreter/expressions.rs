@@ -1,4 +1,4 @@
-use super::helpers::{build_balanced_ite, bytes_to_bv};
+use super::bv_utils::{build_balanced_ite, bytes_to_bv};
 use super::*;
 use crate::vex::ir::{IRCallee, IRRegArray};
 use rustc_hash::FxHashMap;

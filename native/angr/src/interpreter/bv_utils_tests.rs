@@ -1,3 +1,6 @@
+//! Unit tests for [`super::bv_utils`] — the RustBV <-> byte conversions and
+//! the structural ITE-target extractor.
+
 use super::*;
 
 #[test]
@@ -12,13 +15,6 @@ fn test_bv_to_bytes() {
     let bv = RustBV::concrete(0x12345678, 32);
     let bytes = bv_to_bytes(&bv);
     assert_eq!(bytes, vec![0x78, 0x56, 0x34, 0x12]);
-}
-
-#[test]
-fn test_interpreter_creation() {
-    let ctx = SymContext::new_mock();
-    let interp = VEXInterpreter::new(VexArch::AMD64, &ctx);
-    assert_eq!(interp.get_pc(), 0);
 }
 
 // --- extract_ite_targets coverage (angr-szg45.5) ---
@@ -99,17 +95,4 @@ fn test_extract_ite_targets_exceeds_max() {
     let i2 = ite_bv(RustBV::concrete(0x2, 64), i1);
     let bv = ite_bv(RustBV::concrete(0x1, 64), i2);
     assert_eq!(extract_ite_targets(&bv, 2), None);
-}
-
-#[test]
-fn test_hook_management() {
-    let ctx = SymContext::new_mock();
-    let mut interp = VEXInterpreter::new(VexArch::AMD64, &ctx);
-
-    interp.add_hook(0x1000);
-    assert!(interp.is_hooked(0x1000));
-    assert!(!interp.is_hooked(0x2000));
-
-    interp.remove_hook(0x1000);
-    assert!(!interp.is_hooked(0x1000));
 }

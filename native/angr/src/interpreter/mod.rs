@@ -85,6 +85,7 @@ macro_rules! profile_add {
     };
 }
 
+mod bv_utils;
 mod code_invalidation;
 mod concrete_memory;
 mod concretize_cache;
@@ -92,7 +93,6 @@ mod execution;
 mod exits;
 mod expressions;
 mod fork_state;
-mod helpers;
 mod pending_store;
 mod prefetch;
 mod simprocedures;
@@ -101,7 +101,7 @@ mod statements_cas;
 mod statements_inspect;
 mod statements_store;
 
-use helpers::bytes_to_bv;
+use bv_utils::bytes_to_bv;
 use pending_store::PendingStoreBuffer;
 
 pub(crate) use concrete_memory::ConcreteMemoryRegion;
@@ -1155,7 +1155,7 @@ impl<'a> VEXInterpreter<'a> {
     }
 
     /// Remove a hook address.
-    /// Production never un-hooks mid-run (hook sets are rebuilt per step); only `helpers_tests` removes one (angr-9ke6b.214).
+    /// Production never un-hooks mid-run (hook sets are rebuilt per step); only `interpreter_tests` removes one (angr-9ke6b.214).
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn remove_hook(&mut self, addr: u64) {
         Arc::make_mut(&mut self.hook_addrs).remove(&addr);
@@ -1302,6 +1302,15 @@ impl<'a> VEXInterpreter<'a> {
         self.rust_memory.take()
     }
 }
+
+#[cfg(test)]
+#[path = "interpreter_tests.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+)]
+mod interpreter_tests;
 
 #[cfg(test)]
 #[path = "smc_tests.rs"]

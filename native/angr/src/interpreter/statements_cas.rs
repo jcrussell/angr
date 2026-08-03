@@ -9,7 +9,7 @@
 //! needs no second unwrap.
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
-use super::helpers::{bv_to_bytes, reject_symbolic_byte_store};
+use super::bv_utils::{bv_to_bytes, reject_symbolic_byte_store};
 use super::*;
 
 /// DCAS-only state bundled together so the single-CAS path can pass `None`

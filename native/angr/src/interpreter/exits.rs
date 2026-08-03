@@ -1,4 +1,4 @@
-use super::helpers::extract_ite_targets;
+use super::bv_utils::extract_ite_targets;
 use super::*;
 
 impl<'a> VEXInterpreter<'a> {

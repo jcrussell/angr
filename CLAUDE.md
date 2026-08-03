@@ -434,7 +434,7 @@ Caveats:
   `solver/handle_api.rs` the handle-based claripy-bypass `op_*` API —
   angr-9ke6b.205)
 - **Claripy bridge**: `native/angr/src/claripy_bridge/` (entry point `mod.rs` + cache.rs, import.rs, export.rs submodules)
-- **VEX interpreter**: `native/angr/src/interpreter/` (mod.rs, execution.rs, expressions.rs, statements.rs, exits.rs, helpers.rs, pending_store.rs, prefetch.rs), `native/angr/src/vex/` — contributor guide for adding a new VEX op in [`docs/extending-angr/rust_vex_ops.rst`](docs/extending-angr/rust_vex_ops.rst)
+- **VEX interpreter**: `native/angr/src/interpreter/` (mod.rs, execution.rs, expressions.rs, statements.rs, exits.rs, bv_utils.rs, pending_store.rs, prefetch.rs), `native/angr/src/vex/` — contributor guide for adding a new VEX op in [`docs/extending-angr/rust_vex_ops.rst`](docs/extending-angr/rust_vex_ops.rst)
 - **Native SimProcedures**: `native/angr/src/procedures/` (strlen, memcpy, strcmp, malloc, free, etc.) — contributor guide in [`docs/extending-angr/simprocedures.rst`](docs/extending-angr/simprocedures.rst) ("Native (Rust) SimProcedures" section)
 - **State proxy**: `angr/exploration/rust_state_proxy.py`
 - **State export**: `angr/exploration/rust_state_export.py`
