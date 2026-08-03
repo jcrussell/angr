@@ -9,7 +9,8 @@ use rustc_hash::FxHashMap;
 /// VEX engine models them exactly — so `eval_binop` routes them to Python
 /// fallback rather than fabricating a wrong fresh symbolic. Keep this in lockstep
 /// with `opcode_map.rs` if a new must-fallback family is added.
-/// See bd `angr-s6miz` / `vex-dispatch-bypass-inventory`.
+/// See bd `angr-s6miz` and the "Parse-succeeds / dispatch-fabricates (silent
+/// BYPASS)" section of `docs/extending-angr/rust_vex_ops.rst`.
 fn is_dispatch_fabricate_family(op: &IROp) -> bool {
     matches!(
         op,

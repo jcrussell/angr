@@ -730,7 +730,7 @@ crypto/shuffle code is rare in the CTF corpus and usually hooked at the
 Python layer), which is why the BYPASS stayed inert long enough to be
 closed pre-emptively rather than under a regression. The Python-fallback
 route and ``vex_bypass_fabricate_count`` counter both landed in
-angr-s6miz; see bd ``vex-dispatch-bypass-inventory``.
+angr-s6miz.
 
 Special expressions: VECRET / GSPTR
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

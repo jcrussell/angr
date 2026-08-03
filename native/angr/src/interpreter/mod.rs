@@ -316,8 +316,9 @@ define_execution_stats! {
     /// routes to Python (`NeedPythonFallback`), so this counter stays 0 unless
     /// the escape hatch is enabled. The three dispatch-fabricate families
     /// (VPerm/Pclmul*/Crc32C, angr-s6miz) are routed to Python fallback *before*
-    /// this point, so they do NOT increment this counter. See bd
-    /// `vex-dispatch-bypass-inventory`.
+    /// this point, so they do NOT increment this counter. See the
+    /// "Parse-succeeds / dispatch-fabricates (silent BYPASS)" section of
+    /// `docs/extending-angr/rust_vex_ops.rst`.
     vex_bypass_fabricate_count: sum,
     /// Number of cold-block lifts served natively via the `libvex-ffi`
     /// `NativeLibVEXLifter` (feature-gated, off by default). Each hit is a
@@ -359,8 +360,9 @@ pub(crate) const VECRET_GSPTR_REASON: &str = "VECRET/GSPTR";
 /// concrete IROp but have no native dispatch arm, so `VEXOps::binop` returns
 /// `OpError::NotBinary`. Rather than fabricate a wrong fresh symbolic
 /// (`eval_binop`'s BYPASS arm), `eval_binop` routes them to Python's VEX engine
-/// — deterministic ops Python models exactly. See bd `angr-s6miz` /
-/// `vex-dispatch-bypass-inventory`.
+/// — deterministic ops Python models exactly. See bd `angr-s6miz` and the
+/// "Parse-succeeds / dispatch-fabricates (silent BYPASS)" section of
+/// `docs/extending-angr/rust_vex_ops.rst`.
 pub(crate) const DISPATCH_FABRICATE_REASON: &str = "dispatch-fabricate bypass";
 
 /// How an error variant should be handled by the top-level interpreter loop.
