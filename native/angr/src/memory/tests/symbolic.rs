@@ -1571,6 +1571,9 @@ fn test_concrete_overwrite_at_base_truncates_wider_sym_crosses_page() {
 /// out-of-range extract and hard-failed with `SymbolicAddress`, so a readable
 /// byte became an error. Mirrors the concrete branch's angr-7qon semantics:
 /// the tail reclassifies as concrete.
+// Reads a symbolic span back as a concrete value, which needs a real solver
+// (angr-9ke6b.236, bd memory `vex-engine-z3-test-gate-invariant`).
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_narrower_sym_overwrite_at_base_truncates_wider_sym() {
     let ctx = SymContext::new_mock();

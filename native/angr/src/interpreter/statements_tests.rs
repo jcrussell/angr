@@ -782,6 +782,10 @@ fn loadg_sees_rust_memory_store_from_same_block() {
 /// solution takes `resolve_loadg_load`'s `ConcretizationResult::Single` branch,
 /// which must go through the same layered read (`load_layered_at`) rather than
 /// straight to the Python callback.
+// Needs a real solver: the `Single` branch is only taken when concretization
+// finds exactly one solution, which the no-Z3 mock context never does
+// (angr-9ke6b.236, bd memory `vex-engine-z3-test-gate-invariant`).
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn loadg_single_concretization_sees_rust_memory_store() {
     let ctx = SymContext::new_mock();

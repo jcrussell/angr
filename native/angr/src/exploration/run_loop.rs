@@ -175,6 +175,14 @@ impl RustExplorationManager {
         let _ = py;
         self.run_loop_single_threaded(n)
     }
+
+    /// No-Z3 stub for the steady-session config guard the `set_*` /
+    /// `register_*` pymethods call unconditionally. The real implementation
+    /// lives on `run_loop_steady.rs`, but that whole module is Z3-gated, so a
+    /// `#[cfg(not(...))]` twin inside it is unreachable — it has to live here,
+    /// in an ungated module (angr-9ke6b.236).
+    #[cfg(not(feature = "vex-engine-z3"))]
+    pub(crate) fn steady_config_guard(&mut self) {}
 }
 
 /// Dispatcher predicates for the parallel/steady coordinator paths, which only

@@ -118,6 +118,7 @@ impl RustExplorationManager {
             parallel_shadow_migration_states: 0,
             parallel_shadow_migration_bytes: 0,
             parallel_shadow_migration_failures: 0,
+            #[cfg(feature = "vex-engine-z3")]
             shadow_probe_chan: None,
             pending_parallel_bounces: Vec::new(),
             #[cfg(feature = "vex-engine-z3")]

@@ -759,9 +759,10 @@ impl RustExplorationManager {
 
     /// Finalize a live steady session if a config mutation is about to
     /// invalidate its snapshotted `StepContext` (find/avoid addrs, hooks,
-    /// solver/memory config) or touch the active stash. GIL-free build stub is
-    /// a no-op. Called from the guarded `set_*` / `register_*` pymethods.
-    #[cfg(feature = "vex-engine-z3")]
+    /// solver/memory config) or touch the active stash. Called from the guarded
+    /// `set_*` / `register_*` pymethods. The no-Z3 build has no steady session
+    /// at all; its no-op stub lives in `run_loop.rs`, because this whole module
+    /// is Z3-gated (angr-9ke6b.236).
     pub(crate) fn steady_config_guard(&mut self) {
         if self.parallel_session.is_some() {
             // A pymethod may be called without a Python token in hand, but we
@@ -770,9 +771,6 @@ impl RustExplorationManager {
             let _ = Python::attach(|py| self.finalize_steady_session(py));
         }
     }
-
-    #[cfg(not(feature = "vex-engine-z3"))]
-    pub(crate) fn steady_config_guard(&mut self) {}
 }
 
 #[cfg(all(test, feature = "vex-engine-z3"))]

@@ -80,6 +80,13 @@ rebuild-fast:  ## Inner-loop rebuild via [profile.release-fast] (~3s warm vs ~36
 check:  ## cargo check (release) — fast type/borrow check, no link.
 	$(CARGO) check --manifest-path $(MANIFEST) --release
 
+.PHONY: check-no-z3
+check-no-z3:  ## cargo check the four --no-default-features combos CI gates (angr-9ke6b.236).
+	@for f in "" "vex-engine" "vex-engine,vex-engine-z3" "automaton"; do \
+		echo "--- --no-default-features --features \"$$f\""; \
+		$(CARGO) check --manifest-path $(MANIFEST) --no-default-features --features "$$f" || exit 1; \
+	done
+
 .PHONY: clean
 clean:  ## Remove built .so files and setuptools build/ dir.
 	rm -fv $(REPO_ROOT)/angr/rustylib*.so

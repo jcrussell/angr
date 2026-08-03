@@ -595,6 +595,8 @@ fn test_bvs_width1_and_bools_same_name_do_not_alias() {
 /// assertions below pin both halves: the exported claripy name is the Rust name,
 /// and a leaf re-minted from that name denotes the same Z3 constant despite
 /// carrying a different `rust_id`.
+// `to_z3_ast` only exists with the Z3-backed engine (angr-9ke6b.236).
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_rust_minted_leaf_exports_under_its_rust_name() {
     pyo3::Python::initialize();

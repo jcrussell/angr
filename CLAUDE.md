@@ -118,6 +118,7 @@ for the full list. Most-used targets:
 | `make rebuild-cargo` | Cargo-direct rebuild (broken-venv fallback). |
 | `make rebuild-fast` | Inner-loop rebuild via `[profile.release-fast]` (~3s warm vs ~36s). NOT for bench gates. |
 | `make check` | `cargo check --release` — fast type/borrow check. Default features only, so it does **not** cover `fuzzer`/`fuzzing`/`libvex-ffi` code; it is not the CI gate. Reproduce that with `cargo clippy --manifest-path native/angr/Cargo.toml --all-targets --all-features -- -D warnings`. |
+| `make check-no-z3` | `cargo check` over the four `--no-default-features` combos CI's `rust_feature_flags` gates. Neither `make check` nor clippy `--all-features` compiles the `#[cfg(not(feature = "vex-engine-z3"))]` arms — this is the only local way to type-check them. |
 | `make test` (`test-quick`) | Run `tests/engines/rust/` (~1-2 min). |
 | `make test-libvex` | libVEX-FFI unit + corpus parity tests (`--features libvex-ffi`, default-off in cargo). |
 | `make test-fuzzer` | icicle/libafl fuzzer unit tests (`--features fuzzer`, default-off in cargo; nightly lane `fuzzer_feature_tests`). |

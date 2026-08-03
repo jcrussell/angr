@@ -606,6 +606,9 @@ fn diff_fuzz_sym_flags_smul() {
 /// The diff-fuzz tests above feed concrete BVs, which constant-fold before Z3
 /// ever sees the wide sort, so drive it once with a genuinely symbolic operand
 /// and check the solver still agrees with the concrete reference.
+// Symbolic solving: `add_bv_constraint` / `eval` only exist with the Z3-backed
+// engine (angr-9ke6b.236, see bd memory `vex-engine-z3-test-gate-invariant`).
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn sym_flags_wide_mul_roundtrips_through_z3() {
     for (i, (d1, d2)) in [

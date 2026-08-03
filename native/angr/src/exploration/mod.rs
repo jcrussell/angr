@@ -413,6 +413,9 @@ pub struct RustExplorationManager {
     /// `z3::Context` for its whole life and exits cleanly when this Sender drops
     /// at manager teardown (channel close ends its `recv` loop) — no JoinHandle
     /// or Drop impl is needed.
+    /// Z3-gated for the same reason as [`shadow_probe`](self::shadow_probe):
+    /// the scratch thread owns its own `z3::Context`.
+    #[cfg(feature = "vex-engine-z3")]
     pub(crate) shadow_probe_chan: Option<shadow_probe::ShadowProbeChan>,
     /// angr-vh834 Phase 5 (M3): bounce states a parallel wave discovered but
     /// could not dispatch yet, because an earlier bounce in the same wave already
