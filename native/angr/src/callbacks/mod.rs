@@ -536,7 +536,10 @@ impl PythonCallbacks {
         self.batch_fetch_pages = Some(cb);
     }
 
-    /// Set the symbolic value store callback.
+    /// Set the symbolic **value** store callback — concrete address, data
+    /// carried as an AST (`_value` names the symbolic side). The
+    /// symbolic-*address* variant is `set_memory_store_symbolic_full`; the
+    /// `dispatch` module docs table them side by side.
     ///
     /// The callback should have signature:
     /// `fn(addr: int, ast: claripy.AST) -> None`
@@ -549,8 +552,13 @@ impl PythonCallbacks {
         self.memory_store_symbolic_value = Some(cb);
     }
 
-    /// Set the callback for storing symbolic data at a symbolic address.
+    /// Set the callback for storing at a **symbolic address** — "full" because
+    /// both sides cross as ASTs, so the data may be symbolic or concrete.
     /// Used when the address cannot be concretized (too many possibilities).
+    ///
+    /// The callback should have signature:
+    /// `fn(addr: claripy.AST, data: claripy.AST) -> None` — note `addr` is an
+    /// AST here, versus the `int` taken by `set_memory_store_symbolic_value`.
     pub fn set_memory_store_symbolic_full(&mut self, cb: Py<PyAny>) {
         self.memory_store_symbolic_full = Some(cb);
     }

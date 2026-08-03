@@ -2,6 +2,30 @@
 //!
 //! Split out of `callbacks.rs` (god-module decomposition, angr-zel8z.2).
 //! Inherent-impl block only; the single `#[pymethods]` block stays in `mod.rs`.
+//!
+//! # Picking a symbolic-store variant
+//!
+//! `call_memory_store_symbolic`, `..._symbolic_value` and `..._symbolic_full`
+//! are told apart by *which side* — address or data — is symbolic, and the
+//! names do not say which (angr-9ke6b.29). The rule, shortest first:
+//!
+//! - **concrete address, value worth keeping as an AST** →
+//!   [`PythonCallbacks::call_memory_store_symbolic_value`]. Takes `addr: u64`.
+//!   Symbolic *data* is what the `_value` refers to; a concrete value is
+//!   accepted too and degrades to the byte-level `memory_store` when the
+//!   callback is unwired.
+//! - **symbolic address** → [`PythonCallbacks::call_memory_store_symbolic_full`].
+//!   Takes `addr_val: &RustBV`. "Full" = both sides cross as claripy ASTs, so
+//!   the data may be symbolic *or* concrete; Python's memory model builds the
+//!   conditional stores over every concretization.
+//! - **symbolic address the interpreter already concretized to a small
+//!   candidate set** → [`PythonCallbacks::call_memory_store_symbolic`]. This is
+//!   not a third mode: it forwards to `_full` (passing the address AST, not the
+//!   candidates) and hard-errors when `_full` is unwired, because storing to
+//!   `addrs[0]` alone silently drops `addrs[1..]` (angr-ph300.64).
+//!
+//! Only `_value` and `_full` are real Python callback slots; each has a
+//! matching `has_*` accessor that every production call site checks first.
 
 use super::*;
 
@@ -150,10 +174,14 @@ impl PythonCallbacks {
         })
     }
 
-    /// Call the symbolic memory store callback.
+    /// Store over a **symbolic address that already concretized** to the
+    /// `addrs` candidate set (data: either mode).
     ///
-    /// This is called when the address is symbolic and concretizes to multiple values.
-    /// The callback should perform conditional stores to each possible address.
+    /// Despite the bare name this is not a store mode of its own — see the
+    /// variant table in the module docs. It exists so the interpreter can hand
+    /// over both the concretization it computed and the original address AST;
+    /// the store itself is delegated to `call_memory_store_symbolic_full`,
+    /// which performs the conditional stores to each possible address.
     pub(crate) fn call_memory_store_symbolic(
         &self,
         addrs: &[u64],
@@ -364,7 +392,10 @@ impl PythonCallbacks {
         })
     }
 
-    /// Store a symbolic value to memory with full expression tree preservation.
+    /// Store to a **concrete address** a value whose expression tree is worth
+    /// preserving (the `_value` in the name = the *data* side is the symbolic
+    /// one). Contrast `call_memory_store_symbolic_full`, which is the
+    /// symbolic-*address* variant; see the module docs for the full table.
     ///
     /// This method converts the RustBV expression tree to a claripy AST and
     /// calls Python to store it. This preserves symbolic expressions like
@@ -436,8 +467,15 @@ impl PythonCallbacks {
             .load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// Call the full symbolic store callback (symbolic address + symbolic value).
-    /// Used when the address cannot be concretized to a single value or small set.
+    /// Store to a **symbolic address**, with both sides crossing to Python as
+    /// claripy ASTs ("full" = full expression trees for address *and* data, so
+    /// the data may be symbolic or concrete). Contrast
+    /// `call_memory_store_symbolic_value`, which is the concrete-address /
+    /// symbolic-data variant; see the module docs for the full table.
+    ///
+    /// Used when the address cannot be concretized to a single value, and (via
+    /// `call_memory_store_symbolic`) when it concretized to a small set —
+    /// Python's memory model turns the address AST into conditional stores.
     pub(crate) fn call_memory_store_symbolic_full(
         &self,
         addr_val: &RustBV,
