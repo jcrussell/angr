@@ -570,6 +570,18 @@ impl RustBV {
     /// Byte-reverse a bitvector, consuming the argument.
     #[inline]
     pub fn reverse_into(self, _ctx: &SymContext) -> Self {
+        self.reverse_owned()
+    }
+
+    /// The single implementation of Reverse: concrete byte-swap fold plus the
+    /// `Reverse(Reverse(x)) → x` involution, else a `Reverse` expression node.
+    ///
+    /// Split out from `reverse_into` so the ctx-free `RustBVExtractTarget` can
+    /// reach it without fabricating a `SymContext` (angr-9ke6b.237); the public
+    /// entry points keep their `&SymContext` parameter for signature parity
+    /// with `extract`/`concat`.
+    #[inline]
+    fn reverse_owned(self) -> Self {
         let w = self.width();
         debug_assert!(w.is_multiple_of(8), "reverse requires byte-aligned width");
         if w <= 8 {
@@ -967,23 +979,35 @@ impl RustBV {
         }
     }
 
+    /// The single implementation of Extract: run the rules 1-5 canonicalization
+    /// through the generic [`drive_extract`] driver against the RustBV-rebuilding
+    /// [`RustBVExtractTarget`].
+    ///
+    /// That driver is shared with the Z3 emitter (`emit_extract_z3_cached`) —
+    /// the RustBV target reconstructs Extract/Concat/Reverse/Zero nodes, the Z3
+    /// target emits z3 AST. It used to be ~90 LOC duplicated line-for-line in
+    /// two places (angr-ph300.81).
+    ///
+    /// All three public entry points (`extract`, `extract_into`,
+    /// `extract_no_ctx`) route through here, so none of them can hand back a
+    /// non-canonical Extract shape (angr-9ke6b.237). The driver only borrows its
+    /// input, so the consuming entry point gains nothing from owning it.
+    #[inline]
+    fn extract_ref(&self, high: u32, low: u32) -> Self {
+        let mut target = RustBVExtractTarget;
+        drive_extract(&mut target, self, high, low)
+    }
+
     /// Extract bits \[high:low\] (inclusive).
     #[inline]
-    pub fn extract(&self, high: u32, low: u32, ctx: &SymContext) -> Self {
-        self.clone().extract_into(high, low, ctx)
+    pub fn extract(&self, high: u32, low: u32, _ctx: &SymContext) -> Self {
+        self.extract_ref(high, low)
     }
 
     /// Extract bits \[high:low\] (inclusive), consuming the argument.
     #[inline]
-    pub fn extract_into(self, high: u32, low: u32, ctx: &SymContext) -> Self {
-        // Rules 1-5 canonicalization is shared with the Z3 emitter
-        // (`emit_extract_z3_cached`) via the generic `drive_extract` driver —
-        // see the `ExtractTarget` trait below. The RustBV target reconstructs
-        // Extract/Concat/Reverse/Zero nodes; the Z3 target emits z3 AST. This
-        // used to be ~90 LOC duplicated line-for-line in two places
-        // (angr-ph300.81).
-        let mut target = RustBVExtractTarget { ctx };
-        drive_extract(&mut target, &self, high, low)
+    pub fn extract_into(self, high: u32, low: u32, _ctx: &SymContext) -> Self {
+        self.extract_ref(high, low)
     }
 
     /// Concatenate two bitvectors (self becomes high bits).
@@ -1029,26 +1053,16 @@ impl RustBV {
         self.concat_owned(other)
     }
 
-    /// Extract bits without requiring a SymContext (same logic, ctx unused).
+    /// Extract bits without requiring a SymContext — identical canonicalization
+    /// to `extract_into`, which needs no context either.
+    ///
+    /// This used to hand-roll a strict subset of the rules (concrete fold,
+    /// full-width identity, bare `Extract`), so the same operand produced a
+    /// different shape depending on which entry point a caller reached for
+    /// (angr-9ke6b.237).
     #[inline]
     pub fn extract_no_ctx(&self, high: u32, low: u32) -> Self {
-        debug_assert!(high >= low);
-        debug_assert!(high < self.width());
-        let result_width = high - low + 1;
-
-        if let Some(v) = self.as_u128() {
-            // Fold shared with extract_into and the Z3 emitter — see
-            // bv_codec::concrete_extract_u128.
-            let extracted = super::bv_concrete::concrete_extract_u128(v, low, result_width);
-            return Self::concrete(extracted, result_width);
-        }
-
-        if high == self.width() - 1 && low == 0 {
-            return self.clone();
-        }
-
-        record_bvop_extract();
-        Self::expr_node(result_width, BVOp::Extract(high, low), [self.clone()])
+        self.extract_ref(high, low)
     }
 
     /// Build a balanced Concat tree from `parts`, ordered HIGH bits first
@@ -1532,14 +1546,15 @@ pub(super) fn drive_extract<T: ExtractTarget>(
     target.default_extract(inner, high, low)
 }
 
-/// [`ExtractTarget`] that rebuilds `RustBV` nodes (used by `extract_into`).
-pub(super) struct RustBVExtractTarget<'a> {
-    /// Threaded through to the reconstruction helpers (currently unused by them,
-    /// but kept for signature parity with the public `extract`/`concat`/`reverse`).
-    pub(super) ctx: &'a SymContext,
-}
+/// [`ExtractTarget`] that rebuilds `RustBV` nodes (used by `RustBV::extract_ref`,
+/// the single implementation behind every public Extract entry point).
+///
+/// Stateless: the reconstruction helpers it calls (`concat_owned`,
+/// `reverse_owned`) need no `SymContext`, which is what lets the ctx-free
+/// `extract_no_ctx` share this exact path (angr-9ke6b.237).
+pub(super) struct RustBVExtractTarget;
 
-impl ExtractTarget for RustBVExtractTarget<'_> {
+impl ExtractTarget for RustBVExtractTarget {
     type Output = RustBV;
 
     fn recurse(&mut self, inner: &RustBV, high: u32, low: u32) -> RustBV {
@@ -1555,7 +1570,7 @@ impl ExtractTarget for RustBVExtractTarget<'_> {
     }
 
     fn concat(&mut self, hi: RustBV, lo: RustBV) -> RustBV {
-        hi.concat_into(lo, self.ctx)
+        hi.concat_owned(lo)
     }
 
     fn zero(&mut self, width: u32) -> RustBV {
@@ -1563,7 +1578,7 @@ impl ExtractTarget for RustBVExtractTarget<'_> {
     }
 
     fn reverse_bytes(&mut self, inner: RustBV, _inner_width: u32) -> RustBV {
-        inner.reverse(self.ctx)
+        inner.reverse_owned()
     }
 
     fn default_extract(&mut self, inner: &RustBV, high: u32, low: u32) -> RustBV {

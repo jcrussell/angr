@@ -323,8 +323,8 @@ impl RustBV {
     /// canonicalization rules from `extract_into` at Z3-emission time.
     ///
     /// `extract_into` only fires at construction time. Extract nodes built via
-    /// `truncate_into` or `extract_no_ctx` bypass those rules, and so do Extract
-    /// nodes whose inner shape was rewritten *after* the Extract was created.
+    /// `truncate_into` bypass those rules, and so do Extract nodes whose inner
+    /// shape was rewritten *after* the Extract was created.
     /// This walks the inner operand and distributes the Extract through
     /// Concat/Reverse/ZeroExt/SignExt/Extract patterns before handing anything
     /// to Z3, which avoids emitting intermediate Z3 ASTs that Z3's bv_rewriter

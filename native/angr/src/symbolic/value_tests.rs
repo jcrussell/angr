@@ -83,6 +83,59 @@ fn test_extract_no_ctx_high_bits_of_wide_concrete_are_zero() {
     assert_eq!(full_lo.as_u128(), Some(u128::MAX));
 }
 
+/// Recursive structural rendering of a `RustBV` tree.
+///
+/// `RustBV::PartialEq` is value-based (always false once either side is
+/// symbolic) and its `Debug` stops at the operand *count*, so shape assertions
+/// need their own walker.
+fn bv_shape(bv: &RustBV) -> String {
+    match bv {
+        RustBV::Expression {
+            op,
+            width,
+            operands,
+            ..
+        } => {
+            let inner: Vec<String> = operands.iter().map(bv_shape).collect();
+            format!("Expr({op:?}, {width}, [{}])", inner.join(", "))
+        }
+        other => format!("{other:?}"),
+    }
+}
+
+#[test]
+fn test_extract_no_ctx_canonicalizes_like_extract_into() {
+    // extract_no_ctx used to hand-roll a strict subset of the rules-1-5 pass,
+    // so a symbolic operand got a different shape depending on which entry
+    // point the caller reached for (angr-9ke6b.237). Both now route through
+    // drive_extract.
+    let ctx = SymContext::new_mock();
+    let a = RustBV::symbolic(&ctx, "a", 8);
+    let b = RustBV::symbolic(&ctx, "b", 8);
+    let cat = a.concat(&b, &ctx);
+
+    // Rule 2: Extract entirely within one Concat part collapses to that part.
+    assert_eq!(bv_shape(&cat.extract_no_ctx(7, 0)), bv_shape(&b));
+    assert_eq!(bv_shape(&cat.extract_no_ctx(15, 8)), bv_shape(&a));
+    assert_eq!(
+        bv_shape(&cat.extract_no_ctx(7, 0)),
+        bv_shape(&cat.extract(7, 0, &ctx))
+    );
+
+    // Rule 1: Extract-of-Extract folds into a single Extract of the base.
+    let wide = RustBV::symbolic(&ctx, "w", 32);
+    let folded = wide.extract_no_ctx(23, 8).extract_no_ctx(7, 0);
+    assert_eq!(bv_shape(&folded), bv_shape(&wide.extract(15, 8, &ctx)));
+    assert_eq!(
+        bv_shape(&folded),
+        "Expr(Extract(15, 8), 8, [Symbolic(w, 32)])"
+    );
+
+    // Rule 4: Extract above a ZeroExt's original width is the zero constant.
+    let top = b.zero_extend(32, &ctx).extract_no_ctx(31, 24);
+    assert_eq!(top, RustBV::zero(8));
+}
+
 #[test]
 fn test_concat() {
     let ctx = SymContext::new_mock();
@@ -583,8 +636,8 @@ fn test_reverse_z3_emission_concat_of_bytes() {
 
 /// Helper: build a raw Extract Expression node without going through
 /// `extract_into`. This simulates Extract nodes that bypass the
-/// construction-time rewrite (e.g., via `truncate_into` or
-/// `extract_no_ctx`), so we can verify the Z3-emission pass picks them up.
+/// construction-time rewrite (e.g., via `truncate_into`), so we can verify the
+/// Z3-emission pass picks them up.
 #[cfg(feature = "vex-engine-z3")]
 fn raw_extract_node(inner: RustBV, high: u32, low: u32) -> RustBV {
     let result_width = high - low + 1;
@@ -606,7 +659,7 @@ fn test_pre_z3_extract_over_reverse_byte_aligned() {
     let x = RustBV::symbolic(&ctx, "x", 32);
     let rev = x.reverse(&ctx);
     // Bypass extract_into via the raw-node helper: pretend this Extract was
-    // built by truncate_into or extract_no_ctx after the Reverse existed.
+    // built by truncate_into after the Reverse existed.
     // Reverse(x) byte 0 ([7:0]) is byte 3 ([31:24]) of x.
     let lo_byte = raw_extract_node(rev, 7, 0);
     let pinned = x.eq(&RustBV::concrete(0x11223344, 32), &ctx);
