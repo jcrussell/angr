@@ -1,0 +1,409 @@
+//! Handle-based solver API — the claripy bypass.
+//!
+//! These `#[pymethods]` let Python create, combine and evaluate bitvectors by
+//! integer handle into the context's [`RustSymbolTable`], without ever
+//! building a claripy AST. That avoids the per-operation AST traversal the
+//! claripy-AST API in the parent `solver` module pays, and is the path the
+//! interpreter's callback returns use.
+//!
+//! Split out of `solver.rs` (angr-9ke6b.205): the ~35 wrappers here are one
+//! self-contained concern, and the parent module keeps the claripy-AST API
+//! plus the Python-boundary error mapping they share via
+//! [`invalid_handle_id`](super::invalid_handle_id).
+
+use pyo3::exceptions::PyValueError;
+use pyo3::prelude::*;
+
+use crate::claripy_bridge::claripy_to_rustbv;
+use crate::symbolic::{BinaryOpError, RustBV, RustBVHandle, RustSymbolTable, SymContext};
+
+use super::{RustSolverContext, invalid_handle_id};
+
+/// A handle-based binary op on the symbol table, as taken by
+/// [`RustSolverContext::binop`].
+type SymbolTableBinOp = fn(&RustSymbolTable, u64, u64, &SymContext) -> BinOpResult;
+
+/// What every [`SymbolTableBinOp`] returns.
+type BinOpResult = Result<RustBVHandle, BinaryOpError>;
+#[allow(
+    unreachable_pub,
+    reason = "pyo3 `#[pymethods]`/`#[pyclass]` surface: these items are reached from Python, not from Rust. See the `unreachable_pub` note in lib.rs (angr-9ke6b.50)."
+)]
+#[pymethods]
+impl RustSolverContext {
+    /// Create a new symbolic bitvector and return a handle.
+    ///
+    /// This bypasses claripy.BVS() for native Rust symbolic value creation.
+    pub fn create_symbolic(&self, name: &str, width: u32) -> RustBVHandle {
+        let ctx = self.i().ctx();
+        self.i().symbol_table.create_symbolic(&ctx, name, width)
+    }
+
+    /// Create a new concrete bitvector and return a handle.
+    ///
+    /// This bypasses claripy.BVV() for native Rust concrete value creation.
+    pub fn create_concrete(&self, value: u128, width: u32) -> RustBVHandle {
+        self.i().symbol_table.create_concrete(value, width)
+    }
+
+    /// Evaluate a handle to get a concrete value.
+    ///
+    /// Returns None if unsatisfiable or the value cannot be evaluated.
+    pub fn eval_handle(&self, handle_id: u64) -> Option<u128> {
+        let bv = self.i().symbol_table.get(handle_id)?;
+        self.i().ctx().eval(&bv)
+    }
+
+    /// Get the minimum value for a handle.
+    #[pyo3(signature = (handle_id, signed=false))]
+    pub fn min_handle(&self, handle_id: u64, signed: bool) -> Option<u128> {
+        let bv = self.i().symbol_table.get(handle_id)?;
+        self.i().ctx().min(&bv, signed)
+    }
+
+    /// Get the maximum value for a handle.
+    #[pyo3(signature = (handle_id, signed=false))]
+    pub fn max_handle(&self, handle_id: u64, signed: bool) -> Option<u128> {
+        let bv = self.i().symbol_table.get(handle_id)?;
+        self.i().ctx().max(&bv, signed)
+    }
+
+    /// Evaluate a handle and return up to n solutions.
+    pub fn eval_upto_handle(&self, handle_id: u64, n: usize) -> Vec<u128> {
+        if let Some(bv) = self.i().symbol_table.get(handle_id) {
+            self.i().ctx().eval_upto(&bv, n)
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Add a constraint from a handle (must be 1-bit).
+    pub fn add_constraint_handle(&self, handle_id: u64) -> PyResult<()> {
+        let bv = self
+            .i()
+            .symbol_table
+            .get(handle_id)
+            .ok_or_else(|| invalid_handle_id(&[handle_id]))?;
+
+        #[cfg(feature = "vex-engine-z3")]
+        {
+            let ctx = self.i().ctx();
+            if bv.width() == 1 {
+                ctx.assume_true(&bv);
+            } else {
+                let zero = RustBV::concrete(0, bv.width());
+                let neq = bv.ne(&zero, &ctx);
+                ctx.assume_true(&neq);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Check if a specific value is a valid solution for a handle.
+    pub fn solution_handle(&self, handle_id: u64, value: u128) -> bool {
+        if let Some(bv) = self.i().symbol_table.get(handle_id) {
+            self.i().ctx().solution(&bv, value)
+        } else {
+            false
+        }
+    }
+
+    /// Get the number of handles in the symbol table.
+    pub fn handle_count(&self) -> usize {
+        self.i().symbol_table.len()
+    }
+
+    /// Convert a claripy AST to a handle.
+    ///
+    /// This performs a one-time conversion of a claripy AST to a RustBV,
+    /// storing it in the symbol table and returning a handle. Subsequent
+    /// operations can use the handle directly, avoiding repeated AST traversal.
+    ///
+    /// This is the key optimization for the callback return path: instead of
+    /// returning a claripy AST that must be traversed on every use, we convert
+    /// once and return a handle for O(1) lookups.
+    pub fn claripy_ast_to_handle(
+        &self,
+        py: Python<'_>,
+        ast: &Bound<'_, PyAny>,
+    ) -> PyResult<RustBVHandle> {
+        let ctx = self.i().ctx();
+        let bv = claripy_to_rustbv(py, ast, &ctx)?;
+        Ok(self.i().symbol_table.insert(bv))
+    }
+
+    // =========================================================================
+    // Handle-based Arithmetic Operations
+    // =========================================================================
+
+    /// Add two handles and return a new handle.
+    pub fn op_add(&self, a_id: u64, b_id: u64) -> PyResult<RustBVHandle> {
+        self.binop(a_id, b_id, RustSymbolTable::op_add)
+    }
+
+    /// Subtract two handles and return a new handle.
+    pub fn op_sub(&self, a_id: u64, b_id: u64) -> PyResult<RustBVHandle> {
+        self.binop(a_id, b_id, RustSymbolTable::op_sub)
+    }
+
+    /// Multiply two handles and return a new handle.
+    pub fn op_mul(&self, a_id: u64, b_id: u64) -> PyResult<RustBVHandle> {
+        self.binop(a_id, b_id, RustSymbolTable::op_mul)
+    }
+
+    /// Unsigned division of two handles.
+    pub fn op_udiv(&self, a_id: u64, b_id: u64) -> PyResult<RustBVHandle> {
+        self.binop(a_id, b_id, RustSymbolTable::op_udiv)
+    }
+
+    /// Signed division of two handles.
+    pub fn op_sdiv(&self, a_id: u64, b_id: u64) -> PyResult<RustBVHandle> {
+        self.binop(a_id, b_id, RustSymbolTable::op_sdiv)
+    }
+
+    /// Unsigned remainder of two handles.
+    pub fn op_urem(&self, a_id: u64, b_id: u64) -> PyResult<RustBVHandle> {
+        self.binop(a_id, b_id, RustSymbolTable::op_urem)
+    }
+
+    /// Signed remainder of two handles.
+    pub fn op_srem(&self, a_id: u64, b_id: u64) -> PyResult<RustBVHandle> {
+        self.binop(a_id, b_id, RustSymbolTable::op_srem)
+    }
+
+    /// Negation of a handle.
+    pub fn op_neg(&self, a_id: u64) -> PyResult<RustBVHandle> {
+        let ctx = self.i().ctx();
+        self.i()
+            .symbol_table
+            .op_neg(a_id, &ctx)
+            .ok_or_else(|| invalid_handle_id(&[a_id]))
+    }
+
+    // =========================================================================
+    // Handle-based Bitwise Operations
+    // =========================================================================
+
+    /// Bitwise AND of two handles.
+    pub fn op_and(&self, a_id: u64, b_id: u64) -> PyResult<RustBVHandle> {
+        self.binop(a_id, b_id, RustSymbolTable::op_and)
+    }
+
+    /// Bitwise OR of two handles.
+    pub fn op_or(&self, a_id: u64, b_id: u64) -> PyResult<RustBVHandle> {
+        self.binop(a_id, b_id, RustSymbolTable::op_or)
+    }
+
+    /// Bitwise XOR of two handles.
+    pub fn op_xor(&self, a_id: u64, b_id: u64) -> PyResult<RustBVHandle> {
+        self.binop(a_id, b_id, RustSymbolTable::op_xor)
+    }
+
+    /// Bitwise NOT of a handle.
+    pub fn op_not(&self, a_id: u64) -> PyResult<RustBVHandle> {
+        let ctx = self.i().ctx();
+        self.i()
+            .symbol_table
+            .op_not(a_id, &ctx)
+            .ok_or_else(|| invalid_handle_id(&[a_id]))
+    }
+
+    // =========================================================================
+    // Handle-based Shift Operations
+    // =========================================================================
+
+    /// Left shift.
+    pub fn op_shl(&self, a_id: u64, b_id: u64) -> PyResult<RustBVHandle> {
+        self.binop(a_id, b_id, RustSymbolTable::op_shl)
+    }
+
+    /// Logical right shift.
+    pub fn op_lshr(&self, a_id: u64, b_id: u64) -> PyResult<RustBVHandle> {
+        self.binop(a_id, b_id, RustSymbolTable::op_lshr)
+    }
+
+    /// Arithmetic right shift.
+    pub fn op_ashr(&self, a_id: u64, b_id: u64) -> PyResult<RustBVHandle> {
+        self.binop(a_id, b_id, RustSymbolTable::op_ashr)
+    }
+
+    /// Rotate left.
+    pub fn op_rotl(&self, a_id: u64, b_id: u64) -> PyResult<RustBVHandle> {
+        self.binop(a_id, b_id, RustSymbolTable::op_rotl)
+    }
+
+    /// Rotate right.
+    pub fn op_rotr(&self, a_id: u64, b_id: u64) -> PyResult<RustBVHandle> {
+        self.binop(a_id, b_id, RustSymbolTable::op_rotr)
+    }
+
+    // =========================================================================
+    // Handle-based Comparison Operations
+    // =========================================================================
+
+    /// Equality comparison (returns 1-bit handle).
+    pub fn op_eq(&self, a_id: u64, b_id: u64) -> PyResult<RustBVHandle> {
+        self.binop(a_id, b_id, RustSymbolTable::op_eq)
+    }
+
+    /// Inequality comparison (returns 1-bit handle).
+    pub fn op_ne(&self, a_id: u64, b_id: u64) -> PyResult<RustBVHandle> {
+        self.binop(a_id, b_id, RustSymbolTable::op_ne)
+    }
+
+    /// Unsigned less than.
+    pub fn op_ult(&self, a_id: u64, b_id: u64) -> PyResult<RustBVHandle> {
+        self.binop(a_id, b_id, RustSymbolTable::op_ult)
+    }
+
+    /// Unsigned less than or equal.
+    pub fn op_ule(&self, a_id: u64, b_id: u64) -> PyResult<RustBVHandle> {
+        self.binop(a_id, b_id, RustSymbolTable::op_ule)
+    }
+
+    /// Unsigned greater than.
+    pub fn op_ugt(&self, a_id: u64, b_id: u64) -> PyResult<RustBVHandle> {
+        self.binop(a_id, b_id, RustSymbolTable::op_ugt)
+    }
+
+    /// Unsigned greater than or equal.
+    pub fn op_uge(&self, a_id: u64, b_id: u64) -> PyResult<RustBVHandle> {
+        self.binop(a_id, b_id, RustSymbolTable::op_uge)
+    }
+
+    /// Signed less than.
+    pub fn op_slt(&self, a_id: u64, b_id: u64) -> PyResult<RustBVHandle> {
+        self.binop(a_id, b_id, RustSymbolTable::op_slt)
+    }
+
+    /// Signed less than or equal.
+    pub fn op_sle(&self, a_id: u64, b_id: u64) -> PyResult<RustBVHandle> {
+        self.binop(a_id, b_id, RustSymbolTable::op_sle)
+    }
+
+    /// Signed greater than.
+    pub fn op_sgt(&self, a_id: u64, b_id: u64) -> PyResult<RustBVHandle> {
+        self.binop(a_id, b_id, RustSymbolTable::op_sgt)
+    }
+
+    /// Signed greater than or equal.
+    pub fn op_sge(&self, a_id: u64, b_id: u64) -> PyResult<RustBVHandle> {
+        self.binop(a_id, b_id, RustSymbolTable::op_sge)
+    }
+
+    // =========================================================================
+    // Handle-based Conversion Operations
+    // =========================================================================
+
+    /// Zero-extend to a wider width.
+    pub fn op_zero_extend(&self, a_id: u64, to_width: u32) -> PyResult<RustBVHandle> {
+        self.reject_extend_narrowing("op_zero_extend", a_id, to_width)?;
+        let ctx = self.i().ctx();
+        self.i()
+            .symbol_table
+            .op_zero_extend(a_id, to_width, &ctx)
+            .ok_or_else(|| invalid_handle_id(&[a_id]))
+    }
+
+    /// Sign-extend to a wider width.
+    pub fn op_sign_extend(&self, a_id: u64, to_width: u32) -> PyResult<RustBVHandle> {
+        self.reject_extend_narrowing("op_sign_extend", a_id, to_width)?;
+        let ctx = self.i().ctx();
+        self.i()
+            .symbol_table
+            .op_sign_extend(a_id, to_width, &ctx)
+            .ok_or_else(|| invalid_handle_id(&[a_id]))
+    }
+
+    /// Truncate to a narrower width.
+    pub fn op_truncate(&self, a_id: u64, to_width: u32) -> PyResult<RustBVHandle> {
+        let ctx = self.i().ctx();
+        self.i()
+            .symbol_table
+            .op_truncate(a_id, to_width, &ctx)
+            .ok_or_else(|| invalid_handle_id(&[a_id]))
+    }
+
+    /// Extract bits \[high:low\] (inclusive).
+    pub fn op_extract(&self, a_id: u64, high: u32, low: u32) -> PyResult<RustBVHandle> {
+        let ctx = self.i().ctx();
+        self.i()
+            .symbol_table
+            .op_extract(a_id, high, low, &ctx)
+            .ok_or_else(|| invalid_handle_id(&[a_id]))
+    }
+
+    /// Concatenate two values (a becomes high bits).
+    pub fn op_concat(&self, a_id: u64, b_id: u64) -> PyResult<RustBVHandle> {
+        let ctx = self.i().ctx();
+        self.i()
+            .symbol_table
+            .op_concat(a_id, b_id, &ctx)
+            .ok_or_else(|| invalid_handle_id(&[a_id, b_id]))
+    }
+
+    /// If-then-else: if cond then then_val else else_val.
+    pub fn op_ite(&self, cond_id: u64, then_id: u64, else_id: u64) -> PyResult<RustBVHandle> {
+        let ctx = self.i().ctx();
+        self.i()
+            .symbol_table
+            .op_ite(cond_id, then_id, else_id, &ctx)
+            .ok_or_else(|| invalid_handle_id(&[cond_id, then_id, else_id]))
+    }
+}
+
+impl RustSolverContext {
+    /// Shared body for the ~25 handle-based binary-op `#[pymethods]` wrappers.
+    ///
+    /// Each of them (`op_add`, `op_ult`, `op_xor`, ...) is the same three
+    /// steps -- take the Z3 context, dispatch to the identically-named
+    /// [`RustSymbolTable`] method, convert `BinaryOpError` into a `PyErr` --
+    /// so all of that lives here once and the wrappers do nothing but name
+    /// their op. They stay individually hand-written because PyO3 rejects
+    /// `macro_rules!` invocations in a `#[pymethods]` impl body ("macros
+    /// cannot be used as items in `#[pymethods]` impl blocks"). PyO3's
+    /// `multiple-pymethods` feature is enabled (angr-9ke6b.50), so a
+    /// macro-generated *second* impl block is now possible — but the macro
+    /// would still have to live outside any `#[pymethods]` body, so the
+    /// hand-written wrappers stay until someone shows that pays for itself.
+    ///
+    /// Ops whose `RustSymbolTable` method returns `Option` rather than
+    /// `Result` (`op_neg`, `op_not`, `op_concat`, the width-changing
+    /// conversions, `op_ite`) keep their own bodies: each needs an
+    /// `invalid_handle_id` fallback naming its own operand set.
+    pub(super) fn binop(
+        &self,
+        a_id: u64,
+        b_id: u64,
+        op: SymbolTableBinOp,
+    ) -> PyResult<RustBVHandle> {
+        let inner = self.i();
+        let ctx = inner.ctx();
+        op(&inner.symbol_table, a_id, b_id, &ctx).map_err(PyErr::from)
+    }
+
+    /// Reject a narrowing width passed to an extend op at the Python boundary.
+    ///
+    /// `op_zero_extend`/`op_sign_extend` with `to_width < source_width` would
+    /// otherwise return a handle wider than the caller asked for, which only
+    /// surfaces much later as a Z3 sort error (abort under `panic=abort`) or a
+    /// silent `eq_into`-False — far from the misuse site (angr-ph300.38). A
+    /// missing handle is left to the op's own `invalid_handle_id` path.
+    pub(super) fn reject_extend_narrowing(
+        &self,
+        op: &str,
+        a_id: u64,
+        to_width: u32,
+    ) -> PyResult<()> {
+        if let Some(width) = self.i().symbol_table.with_value(a_id, |bv| bv.width())
+            && to_width < width
+        {
+            return Err(PyValueError::new_err(format!(
+                "{op}: to_width {to_width} < source width {width}; \
+                 use op_truncate/op_extract to narrow"
+            )));
+        }
+        Ok(())
+    }
+}
