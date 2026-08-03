@@ -6,6 +6,70 @@
 //! - `RustBVHandle`: Python-facing opaque handle for bypassing claripy
 //! - `RustSymbolTable`: Registry mapping handles to RustBV values
 //! - `SymbolicIdentityRegistry`: Preserves symbolic identity across Python<->Rust
+//!
+//! # File index
+//!
+//! The file count here is much larger than the concept count: two types
+//! (`RustBV` and `SymContext`) dominate the directory, and each is split across
+//! several files purely to keep every file under the <2000-line cap the
+//! `angr-a2br.2` / `angr-7hwz` splits adopted. Those splits are *mechanical* —
+//! one file per `impl` block or per slice of one — so a filename does not
+//! reliably tell you which concept lives inside. Use this table instead of
+//! guessing. Files marked **(z3)** are `#[cfg(feature = "vex-engine-z3")]` and
+//! vanish from a `--no-default-features` build.
+//!
+//! ## `RustBV` — the bitvector value
+//!
+//! | File | Holds |
+//! |------|-------|
+//! | `value.rs` | The `RustBV` enum itself (`Concrete` / `Symbolic` / `Expression`) plus `BVOp`, `BitWidth`, `FloatPrec`, `FloatOpKind`, and the constructor / accessor `impl` block. |
+//! | `value_ops.rs` | Slice .2: arithmetic, bitwise, shift/rotate, comparison and structural (`extract` / `concat` / `reverse` / extend) ops, and the construction-time canonicalization rules they run. |
+//! | `value_z3.rs` | Slice .2: Z3 AST construction — `to_z3_ast*` / `to_z3_bool*`, the memoized integer builder, and the FP builders. **(z3)** |
+//! | `bv_concrete.rs` | Z3-independent concrete folds over raw `u128`. Deliberately Z3-free so concrete paths still build with no z3. |
+//! | `bv_codec.rs` | Codec between concrete values and Z3 BV constants (`context.rs` slice 5). **(z3)** |
+//! | `bv_chunk.rs` | The `<= 16`-byte chunking loop every memory entry point needs to move a `&[u8]` through `RustBV::Concrete`. |
+//!
+//! ## `SymContext` — the solver context
+//!
+//! `context.rs` keeps only the struct and its construction; each `&self` `impl`
+//! block became its own slice file.
+//!
+//! | File | Holds |
+//! |------|-------|
+//! | `context.rs` | The `SymContext` struct and `SymContextSnapshot`, `new` / `Default`, `DEFAULT_SOLVER_TIMEOUT_MS`, and the `#[path]` wiring for `context_tests/`. |
+//! | `bv_id_ops.rs` | Slice 8: unique-id allocation (`next_id`), the symbolic-BV factories, `num_constraints`, and the `SymbolIdRebase` watermark helpers. |
+//! | `constraint_ops.rs` | Slice 9: constraint mutation — `add_constraint*`, `add_bv_constraint`, `assume_true`. **(z3)** |
+//! | `solving_ops.rs` | Slice 7: the read path — `is_sat`, branch feasibility, `eval*` / `eval_upto*`, extrema queries. |
+//! | `transaction_ops.rs` | Slice 10: solver scoping (`push` / `pop` / `try_pop`), timeout accessors, SAT-cache primer. |
+//! | `snapshot_fork_ops.rs` | Slice 11: lifecycle — `fork`, `merge`, `to_snapshot` / `restore_from_snapshot`. |
+//! | `lineage_ops.rs` | Slice 6: the accessors over the shared-lineage cells (`lineage`, `scope_path`, savepoints). |
+//! | `solver_build.rs` | Slice 2: Z3 `Solver` construction and the per-check timing / sampling wrappers. Free functions, no `&self`. **(z3)** |
+//! | `parse.rs` | Slice 4: parsers turning Z3's hex / binary / decimal numeral strings into concrete values. **(z3)** |
+//! | `lineage.rs` | The shared-lineage solver itself (`SharedLineageSolver`) — one `z3::Solver` shared by a descendant set, with push/pop scope tracking. **(z3)** |
+//!
+//! ## Python-facing handles and identity
+//!
+//! | File | Holds |
+//! |------|-------|
+//! | `handle.rs` | `RustBVHandle` — the opaque id Python holds instead of round-tripping a claripy AST. |
+//! | `table.rs` | `RustSymbolTable` — the handle-id to `RustBV` store behind those handles, plus `BinaryOpError`. |
+//! | `registry.rs` | `SymbolicIdentityRegistry` — maps symbols back to their originating Python objects so a claripy -> RustBV -> claripy round trip returns the same AST. |
+//! | `z3_ast_ptr.rs` | `Z3AstPtr` — typed, refcounted wrapper over a raw `Z3_ast` at the claripy FFI boundary. **(z3)** |
+//!
+//! ## Instrumentation and analysis
+//!
+//! | File | Holds |
+//! |------|-------|
+//! | `stats.rs` | The process-global counters behind `get_solver_stats()`. Engine-wide despite the name, not solver-only. |
+//! | `query_class.rs` | Structural classification of the checks that actually reach Z3, for the cheap-pre-solver-tier spike. **(z3)** |
+//! | `sharing.rs` | `ConstraintSharingWalk` — measures `Arc` sharing across a population of constraint DAGs. |
+//!
+//! ## Tests
+//!
+//! Test files are not declared in this file. Each `*_tests.rs` sibling is pulled
+//! in by its own parent via `#[path]` (so it can reach the parent's private
+//! items), and `SymContext`'s tests live in the `context_tests/` subdirectory,
+//! themed one file per area and wired from `context.rs`.
 
 mod bv_chunk;
 #[cfg(feature = "vex-engine-z3")]
