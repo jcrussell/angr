@@ -6,11 +6,13 @@ fn test_id_generation() {
     // Ids come from the process-global allocator, so this asserts the contract
     // that matters — strictly increasing, and never reissued to a *second*
     // context (angr-op0dn.13.16) — rather than a fixed starting value, which
-    // depends on what other tests in this process minted first.
+    // depends on what other tests in this process minted first. Adjacency
+    // (`b == a + 1`) is NOT part of the contract either: another test running
+    // in parallel can mint an id between these two draws (angr-lzywj).
     let ctx = SymContext::new_mock();
     let a = ctx.next_id();
     let b = ctx.next_id();
-    assert_eq!(b, a + 1);
+    assert!(b > a, "ids must be strictly increasing (a={a}, b={b})");
 
     let other = SymContext::new_mock();
     assert!(
@@ -42,8 +44,15 @@ fn test_fork() {
     let forked = ctx.fork();
     let id2 = forked.next_id();
 
-    // Forked context should continue from same ID
-    assert_eq!(id2, id1 + 1);
+    // A forked context keeps drawing from the same process-global allocator
+    // rather than restarting its own counter, so its next id must be strictly
+    // greater than the parent's. Not `id1 + 1`: SymContext::next_id bumps a
+    // process-global atomic, so a test running in parallel can take the id in
+    // between and the adjacency assertion flakes (angr-lzywj).
+    assert!(
+        id2 > id1,
+        "fork must continue the global id sequence (id1={id1}, id2={id2})"
+    );
 }
 
 /// angr-v5a5 spike: fresh contexts have no lineage attached and an
