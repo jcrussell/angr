@@ -739,7 +739,7 @@ impl PyRustSimState {
 
     /// Get the current maximum history length (0 = unlimited).
     pub fn get_max_history(&self) -> usize {
-        self.inner.max_history
+        self.inner.max_history()
     }
 
     /// Get the detailed execution history as `(addr, jumpkind, jump_target)` tuples.

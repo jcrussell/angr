@@ -710,6 +710,16 @@ impl RustSimState {
             }
         }
     }
+
+    /// Current maximum history length (`0` = unlimited).
+    ///
+    /// Read counterpart to `set_max_history`. Exists so the Python-facing
+    /// `PyRustSimState::get_max_history` reads the cap through an accessor
+    /// like every other field it exposes, rather than reaching into the
+    /// private `max_history` field directly (angr-9ke6b.124).
+    pub fn max_history(&self) -> usize {
+        self.max_history
+    }
 }
 
 /// Python-facing wrapper for RustSimState.
