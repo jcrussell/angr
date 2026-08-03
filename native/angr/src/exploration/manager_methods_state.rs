@@ -136,7 +136,7 @@ impl RustExplorationManager {
 
     /// Check if there are any active states (O(1), no allocation).
     pub fn has_active_states(&self) -> bool {
-        self.sm.get(STASH_ACTIVE).is_some_and(|s| !s.is_empty())
+        self.sm.has_active()
     }
 
     /// Get the number of states in a stash (O(1), no allocation).

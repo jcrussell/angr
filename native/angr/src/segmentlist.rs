@@ -176,6 +176,14 @@ impl SegmentList {
     /// or `None` when `addr` is past every segment. Note that `addr` may not
     /// actually fall inside the segment at that index — it can land in the gap
     /// before it.
+    ///
+    /// Retained as public Python API for API compatibility with the historical
+    /// pure-Python `SegmentList` this class replaced: nothing inside angr calls
+    /// it any more (`cfg_fast.py::_nodecode_bytes_ratio` switched to
+    /// `iter_backward_from` because per-step `__getitem__` indexing is
+    /// quadratic), but out-of-tree analyses may. Its behaviour is pinned by
+    /// `tests/utils/test_segment_list.py` and `segmentlist_tests.rs`. Do not
+    /// treat it as dead code — `dead_code` cannot see `#[pymethods]` callers.
     pub fn search(&self, addr: u64) -> Option<usize> {
         self.map
             .iter()
