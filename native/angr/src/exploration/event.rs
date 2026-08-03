@@ -28,7 +28,8 @@ use pyo3::prelude::*;
 #[pyclass]
 #[derive(Debug, Clone)]
 pub struct ExplorationEvent {
-    /// Type: "found", "deadended", "need_callback", "step_complete", "errored", "active_empty"
+    /// Type: "found", "need_callback", "step_complete", "errored",
+    /// "active_empty" — the complete set the constructors below emit.
     #[pyo3(get)]
     pub event_type: String,
     /// Number of states in found stash.

@@ -8,6 +8,11 @@
 //!   filter and the find/avoid predicate skip sets that prevent infinite
 //!   loops after `resume_*_predicate(false)`.
 //!
+//! It also holds the two cfg-gated free functions that are the single seam for
+//! the strict-deterministic flag — `apply_state_deterministic` and
+//! `state_is_deterministic` — both inert on a non-`vex-engine-z3` build, plus
+//! the claripy constraint-import helper.
+//!
 //! Same pattern as `ProfilingCollector`: `pub(crate)` direct field access by
 //! design — callers read/write the inner fields through a thin delegation.
 

@@ -22,7 +22,8 @@ use super::*;
 #[derive(Debug, Clone)]
 pub(crate) enum NativeTechnique {
     /// Limits path length by block count. States exceeding `max_length` blocks
-    /// are moved to "cut" (or "_DROP" if `drop` is true).
+    /// are moved to the "cut" stash, or — when `drop` is true — discarded
+    /// in place (there is no stash for them).
     LengthLimiter { max_length: usize, drop: bool },
     /// Wall-clock timeout. Exploration stops after `timeout_secs` seconds.
     Timeout {
@@ -30,7 +31,11 @@ pub(crate) enum NativeTechnique {
         start_time: Option<std::time::Instant>,
     },
     /// Basic loop bounding: limits how many times a single address can appear
-    /// in a state's history. States exceeding the bound are moved to `discard_stash`.
+    /// in a state's history. States exceeding the bound are moved to
+    /// `discard_stash` — but only when `StashManager::drop_terminal_states()`
+    /// is false; with it set, they are discarded in place and `discard_stash`
+    /// stays empty (same conditionality `LengthLimiter` spells out via its own
+    /// `drop` field).
     LoopBound { bound: usize, discard_stash: String },
     /// Native `ManualMergepoint` parity (angr-op0dn.11.5). States whose pc
     /// reaches `address` are parked in `wait_stash`; once the active stash

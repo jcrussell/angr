@@ -4,7 +4,7 @@
 //! consumes into a self-contained [`StepContext`] bundle, plus a free function
 //! [`run_interpreter_step_core`] parameterized over it. The existing
 //! single-threaded path
-//! (`RustExplorationManager::run_interpreter_step` in `stepping.rs`) becomes a
+//! (`RustExplorationManager::step_state_inner` in `stepping.rs`) becomes a
 //! thin wrapper that builds a `StepContext` from `&self` and calls this
 //! function, so the run-loop behavior is unchanged.
 //!
@@ -15,8 +15,8 @@
 //! path, where each worker must own (or `Arc`-share) the config rather than
 //! reach back into the manager.
 //!
-//! Scope note: this carries only the fields `run_interpreter_step` actually
-//! reads (see the inventory in the bead). The post-interpreter handlers
+//! Scope note: this carries only the fields `run_interpreter_step_core`
+//! actually reads (see the inventory in the bead). The post-interpreter handlers
 //! (`handle_block_end`, simproc / syscall / symbolic-jump dispatch) and the
 //! native registries / `PythonCallbacks` they consume are intentionally NOT
 //! bundled yet — that is sub-increment 2b-ii. `PythonCallbacks` stays an
