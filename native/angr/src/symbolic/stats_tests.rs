@@ -332,19 +332,36 @@ fn test_reset_measurement_counters_zeroes_every_entry() {
 ///
 /// Marker-bump: bump the ticker far beyond anything a sibling test produces and
 /// assert no emitted value carries it, so a new key under any spelling fails.
+///
+/// Measured as a *delta* across the bump window rather than an absolute
+/// `>= MARK` scan (angr-c0wlh). The absolute form asked "is any emitted value
+/// huge?", which conflates our marker with anything else that happens to be
+/// large, and needed a name-based `contains("time") || ends_with("_ns")` carve-out
+/// for wall-clock sums that can legitimately pass `MARK` (~18 min) on a long
+/// run. That carve-out is a heuristic — a duration counter spelled any other way
+/// slips through it — and it was the standing suspect for this test's one
+/// observed flake. A delta answers the question the test actually asks ("did
+/// *our* bump reach an emitted key?"), so no key needs excusing: nothing, not
+/// even a `_time_ns` sum, grows by 2^40 between two adjacent
+/// `get_solver_stats()` calls.
 #[test]
 fn test_simplify_sample_ticker_is_not_emitted() {
     let _serial = marker_guard();
+    let before = get_solver_stats();
     SIMPLIFY_SAMPLE_TICKER.fetch_add(MARK, Ordering::Relaxed);
     let stats = get_solver_stats();
     undo_bump(&SIMPLIFY_SAMPLE_TICKER);
 
-    // Nanosecond keys are excluded: they are wall-clock sums, and a long enough
-    // suite run could legitimately exceed MARK (~18 min) without any leak.
-    let leaked: Vec<&String> = stats
+    // `saturating_sub`: a sibling's `reset_solver_stats()` landing inside the
+    // window lowers a counter, which must read as "no growth", not as a wrap to
+    // ~u64::MAX. It also makes the check fail *safe* — a reset can only hide a
+    // real leak, never invent one.
+    let leaked: Vec<String> = stats
         .iter()
-        .filter(|(k, v)| **v >= MARK && !k.contains("time") && !k.ends_with("_ns"))
-        .map(|(k, _)| k)
+        .filter_map(|(k, v)| {
+            let prev = before.get(k).copied().unwrap_or(0);
+            (v.saturating_sub(prev) >= MARK).then(|| format!("{k} ({prev} -> {v})"))
+        })
         .collect();
     assert!(
         leaked.is_empty(),
