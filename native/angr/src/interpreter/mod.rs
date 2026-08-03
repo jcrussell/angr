@@ -973,6 +973,12 @@ impl<'a> VEXInterpreter<'a> {
 
     /// Load from memory via Python callback.
     /// This handles the common case of loading from a concrete address.
+    ///
+    /// Bottom rung of the load-resolution ladder: every caller arrives here
+    /// through `load_concrete_addr` in `expressions.rs`, which has already
+    /// missed the pending/flushed store buffers and the prefetch and
+    /// concrete-memory caches. `synthesize_unservable_load` above gets the
+    /// last word before the GIL crossing.
     fn load_from_callback(
         &self,
         callbacks: &PythonCallbacks,

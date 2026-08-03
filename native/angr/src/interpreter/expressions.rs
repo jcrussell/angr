@@ -284,6 +284,12 @@ impl<'a> VEXInterpreter<'a> {
 
     /// Concrete-address load path: walk pending/flushed store buffers, prefetch
     /// and concrete-memory caches before falling back to the Python callback.
+    ///
+    /// This is the *upper* half of the load-resolution ladder; the lower half
+    /// lives in `mod.rs`, where the `load_from_callback` fallback below first
+    /// tries `synthesize_unservable_load` (native filler for a page neither
+    /// side has) and only then crosses the GIL. Read the two together — no
+    /// rung between `load_layered` and the Python callback lives anywhere else.
     fn load_concrete_addr(
         &self,
         callbacks: &PythonCallbacks,
