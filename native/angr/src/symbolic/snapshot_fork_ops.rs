@@ -909,7 +909,15 @@ impl SymContext {
         };
 
         SymContext {
-            constraint_count: AtomicUsize::new(0),
+            // angr-9ke6b.144: seed from the parent's live count, mirroring the
+            // Z3 `fork()` above (angr-ph300.47). Today this is provably a
+            // no-op — the only `constraint_count.fetch_add` lives in
+            // `install_constraint` (constraint_ops.rs), and that whole module
+            // is `#[cfg(feature = "vex-engine-z3")]`, so in a no-z3 build the
+            // field is dead weight that stays 0 for every context's lifetime.
+            // Seeding anyway keeps the two `fork()` bodies from diverging if a
+            // non-Z3 write site ever appears.
+            constraint_count: AtomicUsize::new(self.num_constraints()),
             symbol_table: Arc::clone(&self.symbol_table),
             push_level: AtomicUsize::new(0),
             assumed_constraints_shared: Mutex::new(frozen_assumed),
