@@ -344,6 +344,9 @@ Coverage shorthand:
 * ✓ — registered on this arch.
 * — — Linux ABI omits the syscall on this arch (asm-generic dropped
   legacy variants on AArch64; ``arch_prctl`` is amd64-only; etc.).
+* ✗ — the ABI *does* have the syscall, but it is deliberately left
+  unregistered so it falls through to Python (registering it would only
+  add a dispatch hop before the same fallback).
 * ⚠ — handler exists but is currently stubbed or known-incomplete
   (see *Stubbed / incomplete* below).
 
@@ -384,25 +387,25 @@ Per-arch matrix
      - ✓
    * - ``stat`` / ``fstat``
      - ✓
-     - —
-     - —
-     - ✓ (``fstat``)
-     - —
-     - ✓ (``fstat`` via ``lstat`` slot at 5006)
+     - ✓ (LFS ``stat64`` 195 / ``fstat64`` 197)
+     - ✓ (LFS ``stat64`` 195 / ``fstat64`` 197)
+     - ✓ (``fstat`` only — asm-generic dropped ``stat``)
+     - ✓ (LFS ``stat64`` 4213 / ``fstat64`` 4215)
+     - ✗ (no MIPS64 ``struct stat`` writer)
    * - ``lstat``
      - ✓
-     - ✓
-     - ✓
+     - ✓ (LFS ``lstat64`` 196)
+     - ✓ (LFS ``lstat64`` 196)
      - —
-     - ✓
-     - ✓
+     - ✓ (LFS ``lstat64`` 4214)
+     - ✗ (no MIPS64 ``struct stat`` writer)
    * - ``newfstatat``
      - ✓
-     - —
-     - —
+     - ✓ (``fstatat64`` 327)
+     - ✓ (``fstatat64`` 327)
      - ✓
-     - —
-     - ✓
+     - ✓ (``fstatat64`` 4293)
+     - ✗ (no MIPS64 ``struct stat`` writer)
    * - ``access`` / ``faccessat``
      - ✓
      - ✓

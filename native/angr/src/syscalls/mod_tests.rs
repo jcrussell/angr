@@ -321,11 +321,15 @@ fn mips64_syscall_numbers_route_to_handlers() {
         r.get("MIPS64", 5009).is_some(),
         "MIPS64 mmap (5009) should be registered"
     );
-    // N64 has newfstatat (unlike MIPS32 O32 which uses fstatat64).
-    assert!(
-        r.get("MIPS64", 5252).is_some(),
-        "MIPS64 newfstatat (5252) should be registered"
-    );
+    // angr-9ke6b.154: the stat family stays unregistered on N64 —
+    // `write_stat_for_arch` has no MIPS64 writer, so a registration
+    // would only add a dispatch hop before falling back to Python.
+    for n in [5004u64, 5005, 5006, 5252] {
+        assert!(
+            r.get("MIPS64", n).is_none(),
+            "MIPS64 stat-family ({n}) must fall back to Python"
+        );
+    }
     // N64 is already 64-bit so it has no separate fcntl64.
     assert!(
         r.get("MIPS64", 5070).is_some(),
@@ -747,6 +751,8 @@ fn file_path_stubs_registered_on_all_arches() {
     //     handler) numbers (angr-11djq.5.3). The legacy `lstat` numbers
     //     (i386/ARM 107, MIPS32 4107) stay on Python — the Rust writers
     //     emit the `*64` layout only (angr-9ke6b.226).
+    //   * MIPS64 N64 has no `struct stat` writer in `write_stat_for_arch`,
+    //     so its whole stat family stays on Python (angr-9ke6b.154).
     let r = NativeSyscallRegistry::new();
 
     // (arch, lstat-or-None, newfstatat-or-None, readlink-or-None,
@@ -766,8 +772,10 @@ fn file_path_stubs_registered_on_all_arches() {
         ("ARM", Some(196), Some(327), Some(85), 332, 334),
         ("ARM64", None, Some(79), None, 78, 48),
         ("MIPS32", Some(4214), Some(4293), Some(4085), 4298, 4300),
-        // N64 keeps lstat (5006) and adds newfstatat (5252).
-        ("MIPS64", Some(5006), Some(5252), Some(5087), 5257, 5259),
+        // N64 has both lstat (5006) and newfstatat (5252) in its table,
+        // but neither is registered: `write_stat_for_arch` has no MIPS64
+        // `struct stat` writer, so both stay on Python (angr-9ke6b.154).
+        ("MIPS64", None, None, Some(5087), 5257, 5259),
     ];
 
     for &(arch, lstat_n, nfstatat_n, readlink_n, readlinkat_n, faccessat_n) in table {

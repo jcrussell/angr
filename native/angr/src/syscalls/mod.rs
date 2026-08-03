@@ -949,8 +949,11 @@ impl NativeSyscallRegistry {
         // directly — no `old_mmap` / `mmap2` needed. N64 omits the legacy
         // 32-bit `time` syscall (use `gettimeofday` 5094) and lacks a
         // distinct `fcntl64` since it is already 64-bit (`fcntl` 5070
-        // covers it). `newfstatat` (5252) exists here unlike MIPS32 O32
-        // which uses `fstatat64`.
+        // covers it). The whole stat family (`stat` 5004, `fstat` 5005,
+        // `lstat` 5006, `newfstatat` 5252) is deliberately unregistered:
+        // `write_stat_for_arch` (file_path.rs) has no MIPS64 `struct stat`
+        // writer, so registering them would only add a native dispatch hop
+        // before the same fall-through to Python (angr-9ke6b.154).
         register_syscalls!(
             r,
             "MIPS64",
@@ -959,7 +962,6 @@ impl NativeSyscallRegistry {
                 (5001, write::NativeWriteSyscall),
                 (5002, file_path::NativeOpenSyscall),
                 (5003, file_path::NativeCloseSyscall),
-                (5006, file_path::NativeLstatSyscall),
                 (5009, mmap::NativeMmapSyscall),
                 (5010, mprotect::NativeMprotectSyscall),
                 (5011, munmap::NativeMunmapSyscall),
@@ -1012,7 +1014,6 @@ impl NativeSyscallRegistry {
                 (5225, signals::NativeTgkillSyscall),
                 (5247, file_path::NativeOpenatSyscall),
                 (5248, directory::NativeMkdiratSyscall),
-                (5252, file_path::NativeNewfstatatSyscall),
                 (5253, directory::NativeUnlinkatSyscall),
                 (5254, directory::NativeRenameatSyscall),
                 (5257, file_path::NativeReadlinkatSyscall),
