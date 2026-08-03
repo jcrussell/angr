@@ -660,3 +660,88 @@ fn x87_control_registers_round_trip_through_register_names() {
         }
     }
 }
+
+/// `RegisterFile::merge` with symbolic values of *different* widths at the
+/// same offset — one path wrote `eax` (32-bit), the other `rax` (64-bit).
+/// The merge used to keep `self`'s value and silently drop `other`'s, so the
+/// merged state behaved as if only one path could reach the register
+/// (angr-9ke6b.13). Both sides must be widened to the larger width and
+/// ITE-merged instead.
+#[test]
+fn merge_width_mismatch_ite_merges_both_paths() {
+    let ctx = SymContext::new_mock();
+    let rax_off = AMD64.register_offset("rax").unwrap();
+
+    let mut a = RegisterFile::new(Box::new(AMD64));
+    a.put(rax_off, RustBV::symbolic(&ctx, "narrow", 32));
+    let mut b = RegisterFile::new(Box::new(AMD64));
+    b.put(rax_off, RustBV::symbolic(&ctx, "wide", 64));
+
+    let cond = RustBV::symbolic(&ctx, "merge_cond", 1);
+    assert!(
+        a.merge(&b, &cond, &ctx),
+        "width mismatch must count as merged"
+    );
+
+    let got = a.get(rax_off, 8, &ctx);
+    assert_eq!(got.width(), 64, "merged rax must be the wider of the two");
+    assert!(got.is_symbolic());
+
+    // Both branches survive: the merged expression tree mentions both symbols.
+    let mut names: Vec<String> = Vec::new();
+    let mut stack = vec![got.clone()];
+    while let Some(node) = stack.pop() {
+        if let RustBV::Symbolic { name, .. } = &node {
+            names.push(name.to_string());
+        }
+        if let Some(ops) = node.operands() {
+            stack.extend(ops.iter().cloned());
+        }
+    }
+    assert!(
+        names.iter().any(|n| n == "narrow"),
+        "self's value was dropped by the merge: {names:?}"
+    );
+    assert!(
+        names.iter().any(|n| n == "wide"),
+        "other's value was dropped by the merge: {names:?}"
+    );
+}
+
+/// Semantic twin of `merge_width_mismatch_ite_merges_both_paths`: prove with
+/// the solver that the widened ITE selects each path's value under the
+/// matching merge condition. `self`'s 32-bit value composes with its own
+/// (zero) high bytes, so the `cond == 0` leg must equal `zero_extend(narrow)`.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn merge_width_mismatch_selects_each_path_under_solver() {
+    let ctx = SymContext::new();
+    let rax_off = AMD64.register_offset("rax").unwrap();
+
+    let narrow = RustBV::symbolic(&ctx, "narrow", 32);
+    let wide = RustBV::symbolic(&ctx, "wide", 64);
+
+    let mut a = RegisterFile::new(Box::new(AMD64));
+    a.put(rax_off, narrow.clone());
+    let mut b = RegisterFile::new(Box::new(AMD64));
+    b.put(rax_off, wide.clone());
+
+    let cond = RustBV::symbolic(&ctx, "merge_cond", 1);
+    assert!(a.merge(&b, &cond, &ctx));
+    let got = a.get(rax_off, 8, &ctx).to_z3_ast();
+
+    // cond == 1 selects other's 64-bit value.
+    ctx.push();
+    ctx.add_constraint(cond.to_z3_ast().eq(z3::ast::BV::from_u64(1, 1)));
+    ctx.add_constraint(got.eq(wide.to_z3_ast()).not());
+    assert!(!ctx.is_sat(), "cond=1 must select other's `wide` value");
+    ctx.pop();
+
+    // cond == 0 selects self's 32-bit value zero-extended over its own
+    // concrete (zero) high half.
+    ctx.push();
+    ctx.add_constraint(cond.to_z3_ast().eq(z3::ast::BV::from_u64(0, 1)));
+    ctx.add_constraint(got.eq(narrow.to_z3_ast().zero_ext(32)).not());
+    assert!(!ctx.is_sat(), "cond=0 must select self's `narrow` value");
+    ctx.pop();
+}

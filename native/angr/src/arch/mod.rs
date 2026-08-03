@@ -657,6 +657,14 @@ impl RegisterFile {
     ///
     /// `merge_cond_other` is the 1-bit condition for `other`'s path being active.
     ///
+    /// When the two paths hold symbolic values of *different* widths at the same
+    /// offset — one wrote `eax` (32-bit) where the other wrote `rax` (64-bit) —
+    /// both sides are first widened to the larger width via [`Self::get`], which
+    /// composes each file's own overlay with its concrete backing bytes, and the
+    /// ITE is built at that common width (angr-9ke6b.13). Dropping `other`'s
+    /// value instead, as this used to, made the merged state behave as if only
+    /// `self`'s path could reach the register: an unsound merge.
+    ///
     /// Returns true if any register was actually merged (values differed).
     pub(crate) fn merge(
         &mut self,
@@ -673,6 +681,16 @@ impl RegisterFile {
             self.symbolic.keys().copied().collect();
         all_offsets.extend(other.symbolic.keys());
 
+        // Merged values are staged here and applied only after the loop: the
+        // width-mismatch arm reads `self` through `get`, which composes
+        // neighbouring overlays, so mutating `self.symbolic` mid-loop would make
+        // the result depend on `all_offsets`' (unordered) iteration order.
+        let mut updates: Vec<(u32, RustBV)> = Vec::new();
+        // Spans (offset, byte width) that a widening merge now covers whole;
+        // overlays strictly inside them are subsumed and must be dropped, the
+        // same cleanup `put` does when a wide symbolic write lands.
+        let mut widened: Vec<(u32, u32)> = Vec::new();
+
         // Merge symbolic registers
         for &offset in &all_offsets {
             let self_val = self.symbolic.get(&offset);
@@ -682,15 +700,47 @@ impl RegisterFile {
                 (Some(sv), Some(ov)) => {
                     if sv.width() == ov.width() {
                         // Both symbolic at same width — ITE merge
-                        let ite_val = merge_cond_other.ite(ov, sv, ctx);
-                        self.symbolic.insert(offset, ite_val);
-                        merged = true;
+                        updates.push((offset, merge_cond_other.ite(ov, sv, ctx)));
+                    } else {
+                        // Width mismatch — widen both sides, then ITE. `get` at
+                        // the wider size returns the narrower side composed with
+                        // that file's own concrete high bytes, so neither path's
+                        // reachable value is lost.
+                        let width = sv.width().max(ov.width());
+                        let size = width / 8;
+                        let end = offset as usize + size as usize;
+                        if width % 8 == 0
+                            && size > 0
+                            && end <= self.data.len()
+                            && end <= other.data.len()
+                        {
+                            let self_full = self.get(offset, size, ctx);
+                            let other_full = other.get(offset, size, ctx);
+                            updates
+                                .push((offset, merge_cond_other.ite(&other_full, &self_full, ctx)));
+                            widened.push((offset, size));
+                        } else {
+                            // SILENT(cat-c): the wider value runs past the guest
+                            // state buffer (or is not byte-sized), so there is no
+                            // common width to ITE at; `self`'s value is kept and
+                            // `other`'s branch is lost. Unreachable for any real
+                            // VEX guest-state offset — a register never straddles
+                            // the end of the buffer — hence loud rather than fixed.
+                            log::warn!(
+                                "RegisterFile::merge: cannot widen offset {offset} ({} vs {} bits, \
+                                 self_len={}, other_len={}); keeping self's value and dropping \
+                                 other's — merged state may be unsound",
+                                sv.width(),
+                                ov.width(),
+                                self.data.len(),
+                                other.data.len()
+                            );
+                        }
                     }
-                    // Width mismatch: keep self's value (edge case)
                 }
-                (Some(_sv), None) => {
+                (Some(sv), None) => {
                     // self is symbolic, other is concrete — read other's concrete
-                    let size = _sv.width() / 8;
+                    let size = sv.width() / 8;
                     let start = offset as usize;
                     let end = start + size as usize;
                     if end <= other.data.len() {
@@ -698,10 +748,8 @@ impl RegisterFile {
                         for (i, &byte) in other.data[start..end].iter().enumerate() {
                             v |= (byte as u128) << (i * 8);
                         }
-                        let other_concrete = RustBV::concrete(v, _sv.width());
-                        let ite_val = merge_cond_other.ite(&other_concrete, _sv, ctx);
-                        self.symbolic.insert(offset, ite_val);
-                        merged = true;
+                        let other_concrete = RustBV::concrete(v, sv.width());
+                        updates.push((offset, merge_cond_other.ite(&other_concrete, sv, ctx)));
                     }
                 }
                 (None, Some(ov)) => {
@@ -715,15 +763,22 @@ impl RegisterFile {
                             v |= (byte as u128) << (i * 8);
                         }
                         let self_concrete = RustBV::concrete(v, ov.width());
-                        let ite_val = merge_cond_other.ite(ov, &self_concrete, ctx);
-                        self.symbolic.insert(offset, ite_val);
-                        merged = true;
+                        updates.push((offset, merge_cond_other.ite(ov, &self_concrete, ctx)));
                     }
                 }
                 (None, None) => {
                     // Both concrete — handled below in data comparison
                 }
             }
+        }
+
+        for (offset, val) in updates {
+            self.symbolic.insert(offset, val);
+            merged = true;
+        }
+        for (offset, size) in widened {
+            self.symbolic
+                .retain(|&k, _| !(k > offset && k < offset + size));
         }
 
         // Check concrete data for differences at non-symbolic offsets.
