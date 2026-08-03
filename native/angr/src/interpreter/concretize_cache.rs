@@ -147,9 +147,16 @@ impl<'a> VEXInterpreter<'a> {
         result
     }
 
-    /// Compute a cache key for a RustBV value.
-    /// Uses the symbolic id for Symbolic/Constrained, and a hash of the FULL op
-    /// tree for Expression.
+    /// Compute a cache key for a RustBV value: a hash of the FULL op tree,
+    /// variant-tagged at every node by `hash_bv`.
+    ///
+    /// Every variant goes through `hash_bv` rather than shortcutting leaves to
+    /// their raw `id` / `value`. An untagged leaf key would let a
+    /// `Concrete { value: 5 }` and a `Symbolic { id: 5 }` share a cache slot —
+    /// harmless today, since all three call sites early-return on
+    /// `addr.as_u64()` (`Some` for both `Concrete` and `Constrained`) and so
+    /// only ever reach here with a `Symbolic` or `Expression`, but a foot-gun
+    /// for any future caller that skips that filter.
     ///
     /// The Expression case recurses over the entire operand tree (angr-owr37):
     /// a nested `Expression` operand carries the `RustBV::EXPRESSION_ID`
@@ -162,16 +169,9 @@ impl<'a> VEXInterpreter<'a> {
     fn bv_cache_key(bv: &RustBV) -> u64 {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::Hasher;
-        match bv {
-            RustBV::Concrete { value, .. } => *value as u64,
-            RustBV::Symbolic { id, .. } => *id,
-            RustBV::Constrained { id, .. } => *id,
-            RustBV::Expression { .. } => {
-                let mut hasher = DefaultHasher::new();
-                Self::hash_bv(bv, &mut hasher);
-                hasher.finish()
-            }
-        }
+        let mut hasher = DefaultHasher::new();
+        Self::hash_bv(bv, &mut hasher);
+        hasher.finish()
     }
 
     /// Feed the full structure of `bv` into `hasher`, recursing into nested

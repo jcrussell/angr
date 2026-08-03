@@ -252,3 +252,39 @@ fn bv_cache_key_distinguishes_op_payload() {
         "Extract ops reading disjoint bit ranges must produce distinct cache keys"
     );
 }
+
+/// angr-9ke6b.89: leaf keys must be variant-tagged. `bv_cache_key` used to
+/// shortcut `Concrete` to its raw `value` and `Symbolic`/`Constrained` to their
+/// raw `id`, so a `Concrete { value: N }` and a `Symbolic { id: N }` collided on
+/// the same key. The three production call sites all early-return on
+/// `as_u64()` and never hand a `Concrete`/`Constrained` to `bv_cache_key`, so
+/// this was latent — but a future caller that skips that filter would silently
+/// cross-wire a concrete address with an unrelated symbol.
+#[test]
+fn bv_cache_key_distinguishes_leaf_variants_with_equal_scalars() {
+    let ctx = SymContext::new_mock();
+    let sym = RustBV::symbolic(&ctx, "x", 64);
+    let RustBV::Symbolic { id, width, .. } = &sym else {
+        panic!("RustBV::symbolic must produce a Symbolic leaf");
+    };
+    let (id, width) = (*id, *width);
+
+    let concrete = RustBV::concrete(id as u128, width);
+    let constrained = RustBV::Constrained {
+        id,
+        value: id as u128,
+        width,
+    };
+
+    let keys = [
+        VEXInterpreter::bv_cache_key(&sym),
+        VEXInterpreter::bv_cache_key(&concrete),
+        VEXInterpreter::bv_cache_key(&constrained),
+    ];
+    assert_ne!(keys[0], keys[1], "Symbolic{{id:N}} vs Concrete{{value:N}}");
+    assert_ne!(keys[0], keys[2], "Symbolic{{id:N}} vs Constrained{{id:N}}");
+    assert_ne!(
+        keys[1], keys[2],
+        "Concrete{{value:N}} vs Constrained{{id:N}}"
+    );
+}
