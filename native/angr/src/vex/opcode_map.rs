@@ -386,7 +386,19 @@ fn parse_conversion(op_str: &str) -> Option<IROp> {
         "Iop_8HLto16" => Some(IROp::Concat { ty: IRType::I16 }),
 
         _ => {
-            // Bit manipulation
+            // Bit manipulation.
+            //
+            // Only the plain `Iop_Clz{32,64}` / `Iop_Ctz{32,64}` (undefined
+            // result on a zero input) are mapped. libVEX now prefers the
+            // zero-input-safe `Iop_ClzNat{32,64}` / `Iop_CtzNat{32,64}`
+            // variants, but those are not defined in the VEX version this
+            // crate is pinned to — `vendor/pyvex_ffi.h` has zero `ClzNat` /
+            // `CtzNat` hits, so no lift can currently emit them and the gap is
+            // unreachable. Map them when the pyvex/VEX pin is next bumped; the
+            // `tuple_arms!` suffix match is exact, so `Iop_ClzNat32` falls
+            // through to `None` (deferred to Python) rather than being
+            // silently mistaken for `Iop_Clz32`. Same "unmapped for now"
+            // situation as the `Iop_CmpORD*` gap in `parse_comparison`.
             tuple_arms!(op_str; "Iop_Clz"      => Clz      { "32" => I32, "64" => I64 });
             tuple_arms!(op_str; "Iop_Ctz"      => Ctz      { "32" => I32, "64" => I64 });
             tuple_arms!(op_str; "Iop_PopCount" => PopCount { "8" => I8, "16" => I16, "32" => I32, "64" => I64 });
