@@ -644,15 +644,21 @@ Stubbed / incomplete
   ``readlinkat``, ``lstat``, ``newfstatat``, ``faccessat``) are real
   native handlers in ``syscalls/file_path.rs``, registered per the
   matrix above, and no longer route through the stub-symbolic Python
-  handler. Three deliberate gaps remain. ``newfstatat`` ignores its
+  handler. Two deliberate gaps remain. ``newfstatat`` ignores its
   ``flag`` argument — ``AT_EMPTY_PATH`` (0x1000) would have to
   re-dispatch to ``NativeFstatSyscall(dirfd)``, and
-  ``AT_SYMLINK_NOFOLLOW`` is a no-op while ``lstat`` and ``stat``
-  agree. ``lstat`` queries only ``FileSystem::is_path_known`` /
-  ``content_size_for_path``, not the symlink table ``readlink`` reads
-  (``FileSystem::readlink_target``), so a path registered *only* as a
-  symlink stats as unknown (``-1``). ``faccessat`` ignores ``mode``,
-  matching angr's Python ``access``.
+  ``AT_SYMLINK_NOFOLLOW`` (0x100) would have to route through
+  ``stat_lookup_nofollow`` instead of the following
+  ``stat_lookup_follow`` it shares with ``stat``. ``faccessat``
+  ignores ``mode``, matching angr's Python ``access``.
+  (The third gap — ``lstat``/``stat`` ignoring the symlink table that
+  ``readlink`` reads — was closed by ``angr-9ke6b.235``: ``lstat`` now
+  reports a registered symlink as ``S_IFLNK | 0777`` sized to its raw
+  target bytes, and ``stat``/``newfstatat`` walk the link to its target,
+  up to ``MAX_SYMLINK_HOPS``, returning ``-1`` on a dangling link or a
+  cycle. MIPS32 is a partial exception: its ``struct stat64`` writer
+  emits no ``st_mode`` field at all, so there the link shows up only in
+  ``st_size``.)
 
 .. _native-documented-divergences:
 

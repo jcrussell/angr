@@ -637,7 +637,7 @@ fn readlink_unknown_path_returns_minus_one() {
 #[test]
 fn readlink_known_path_still_returns_minus_one() {
     // Even for paths the FileSystem knows about, readlink must return
-    // -1 (EINVAL — not a symlink). The FileSystem has no symlinks.
+    // -1 (EINVAL — not a symlink): the symlink table is empty here.
     let mut state = state_with_path(b"/tmp/known");
     state
         .file_system()
@@ -1719,10 +1719,11 @@ fn stat_uses_largest_content_len_across_fds_for_same_path() {
 
 // ===== lstat (angr-poao) =====
 //
-// lstat is a stat() clone in our model (no symlinks in FileSystem),
-// so most of these mirror the stat tests above. The unsupported-arch
-// case differs slightly (lstat dropped on ARM64 — newfstatat is the
-// only stat-shaped syscall there).
+// lstat is a stat() clone for every path that is NOT a registered
+// symlink, so most of these mirror the stat tests above; the
+// symlink-specific behavior lives in the angr-9ke6b.235 block at the
+// end of this file. The unsupported-arch case differs slightly (lstat
+// dropped on ARM64 — newfstatat is the only stat-shaped syscall there).
 
 #[test]
 fn lstat_unknown_path_returns_minus_one() {
@@ -2147,4 +2148,191 @@ fn open_close_round_trip_sweeps_supported_arches() {
         }
         assert!(!state.file_system_ref().is_open(fd as u32), "{arch}");
     }
+}
+
+// ===== symlink-aware stat / lstat (angr-9ke6b.235) =====
+//
+// Before .235, `stat`/`lstat`/`newfstatat` all gated on
+// `FileSystem::is_path_known` while `readlink` resolved through the
+// separate symlink table — a path registered ONLY as a symlink stat'd
+// as unknown. Now `lstat` reports it as `S_IFLNK` (via
+// `stat_lookup_nofollow`) and `stat`/`newfstatat` follow the link
+// (via `stat_lookup_follow`).
+
+#[test]
+fn lstat_symlink_reports_iflnk_and_target_len() {
+    let target = b"/real/destination";
+    let mut state = state_with_path(b"/link");
+    state
+        .file_system()
+        .add_symlink("/link".to_string(), target.to_vec());
+    state.map_memory(0x4000, 0x1000, Permission::RW);
+
+    let out = NativeLstatSyscall
+        .call(
+            &mut state,
+            &[RustBV::concrete(0x2000, 64), RustBV::concrete(0x4000, 64)],
+        )
+        .expect("lstat ok");
+    assert_eq!(expect_continue(out), 0);
+    // amd64 layout: st_mode at 0x18 (u32), st_size at 0x30 (u64).
+    assert_eq!(read_u32_le(&state, 0x4000 + 0x18), S_IFLNK_0777 as u32);
+    assert_eq!(read_u64_le(&state, 0x4000 + 0x30), target.len() as u64);
+}
+
+#[test]
+fn lstat_symlink_does_not_need_the_path_registered() {
+    // The symlink table alone is enough — `is_path_known` is false here.
+    let mut state = state_with_path(b"/link");
+    state
+        .file_system()
+        .add_symlink("/link".to_string(), b"/t".to_vec());
+    assert!(!state.file_system_ref().is_path_known("/link"));
+    state.map_memory(0x4000, 0x1000, Permission::RW);
+
+    let out = NativeLstatSyscall
+        .call(
+            &mut state,
+            &[RustBV::concrete(0x2000, 64), RustBV::concrete(0x4000, 64)],
+        )
+        .expect("lstat ok");
+    assert_eq!(expect_continue(out), 0);
+}
+
+#[test]
+fn stat_follows_symlink_to_its_target() {
+    let mut state = state_with_path(b"/link");
+    state
+        .file_system()
+        .add_symlink("/link".to_string(), b"/tmp/target".to_vec());
+    let _fd = state.file_system().open_with_content(
+        "/tmp/target".into(),
+        FdFlags::ReadOnly,
+        vec![0u8; 11],
+    );
+    state.map_memory(0x4000, 0x1000, Permission::RW);
+
+    let out = NativeStatSyscall
+        .call(
+            &mut state,
+            &[RustBV::concrete(0x2000, 64), RustBV::concrete(0x4000, 64)],
+        )
+        .expect("stat ok");
+    assert_eq!(expect_continue(out), 0);
+    // Regular-file mode + the TARGET's size, not the link's.
+    assert_eq!(read_u32_le(&state, 0x4000 + 0x18), S_IFREG_0755 as u32);
+    assert_eq!(read_u64_le(&state, 0x4000 + 0x30), 11);
+}
+
+#[test]
+fn stat_dangling_symlink_returns_minus_one() {
+    // Link registered, target never registered → ENOENT.
+    let mut state = state_with_path(b"/link");
+    state
+        .file_system()
+        .add_symlink("/link".to_string(), b"/tmp/missing".to_vec());
+    state.map_memory(0x4000, 0x1000, Permission::RW);
+
+    let out = NativeStatSyscall
+        .call(
+            &mut state,
+            &[RustBV::concrete(0x2000, 64), RustBV::concrete(0x4000, 64)],
+        )
+        .expect("stat ok");
+    assert_eq!(expect_continue(out), NEG_ONE);
+    assert_eq!(read_u64_le(&state, 0x4000), 0);
+}
+
+#[test]
+fn stat_symlink_cycle_returns_minus_one() {
+    // /link → /other → /link: `MAX_SYMLINK_HOPS` bounds the walk (ELOOP)
+    // rather than spinning forever.
+    let mut state = state_with_path(b"/link");
+    state
+        .file_system()
+        .add_symlink("/link".to_string(), b"/other".to_vec());
+    state
+        .file_system()
+        .add_symlink("/other".to_string(), b"/link".to_vec());
+    state.map_memory(0x4000, 0x1000, Permission::RW);
+
+    let out = NativeStatSyscall
+        .call(
+            &mut state,
+            &[RustBV::concrete(0x2000, 64), RustBV::concrete(0x4000, 64)],
+        )
+        .expect("stat ok");
+    assert_eq!(expect_continue(out), NEG_ONE);
+}
+
+#[test]
+fn stat_follows_a_two_hop_symlink_chain() {
+    let mut state = state_with_path(b"/a");
+    state
+        .file_system()
+        .add_symlink("/a".to_string(), b"/b".to_vec());
+    state
+        .file_system()
+        .add_symlink("/b".to_string(), b"/tmp/real".to_vec());
+    let _fd =
+        state
+            .file_system()
+            .open_with_content("/tmp/real".into(), FdFlags::ReadOnly, vec![0u8; 5]);
+    state.map_memory(0x4000, 0x1000, Permission::RW);
+
+    let out = NativeStatSyscall
+        .call(
+            &mut state,
+            &[RustBV::concrete(0x2000, 64), RustBV::concrete(0x4000, 64)],
+        )
+        .expect("stat ok");
+    assert_eq!(expect_continue(out), 0);
+    assert_eq!(read_u64_le(&state, 0x4000 + 0x30), 5);
+}
+
+#[test]
+fn stat_non_utf8_symlink_target_returns_minus_one() {
+    // Targets are raw bytes; a non-UTF-8 one can never name a key in the
+    // String-keyed known-path set, so it dangles rather than panicking.
+    let mut state = state_with_path(b"/link");
+    state
+        .file_system()
+        .add_symlink("/link".to_string(), vec![0xff, 0xfe]);
+    state.map_memory(0x4000, 0x1000, Permission::RW);
+
+    let out = NativeStatSyscall
+        .call(
+            &mut state,
+            &[RustBV::concrete(0x2000, 64), RustBV::concrete(0x4000, 64)],
+        )
+        .expect("stat ok");
+    assert_eq!(expect_continue(out), NEG_ONE);
+}
+
+#[test]
+fn newfstatat_follows_symlink_like_stat() {
+    let mut state = state_with_path(b"/link");
+    state
+        .file_system()
+        .add_symlink("/link".to_string(), b"/tmp/nf".to_vec());
+    let _fd =
+        state
+            .file_system()
+            .open_with_content("/tmp/nf".into(), FdFlags::ReadOnly, vec![0u8; 9]);
+    state.map_memory(0x4000, 0x1000, Permission::RW);
+
+    let out = NativeNewfstatatSyscall
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(AT_FDCWD_UNSIGNED.into(), 64),
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(0x4000, 64),
+                RustBV::concrete(0, 64),
+            ],
+        )
+        .expect("newfstatat ok");
+    assert_eq!(expect_continue(out), 0);
+    assert_eq!(read_u32_le(&state, 0x4000 + 0x18), S_IFREG_0755 as u32);
+    assert_eq!(read_u64_le(&state, 0x4000 + 0x30), 9);
 }

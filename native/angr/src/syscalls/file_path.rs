@@ -78,11 +78,12 @@
 //! delegates to `state.posix.fstat_with_result`. The Rust handler
 //! diverges in two intentional ways:
 //!
-//! * `st_mode` is written as the concrete constant `S_IFREG | 0o755`
-//!   instead of a fresh symbolic BVS (Python's
+//! * `st_mode` is written as a concrete constant — `S_IFREG | 0o755`
+//!   for every fd/regular-file path, `S_IFLNK | 0777` for a symlink
+//!   under `lstat` — instead of a fresh symbolic BVS (Python's
 //!   `fstat_with_result` mints `BVS("st_mode", 32)`). The concrete
-//!   value matches a regular file's permissions and avoids spawning
-//!   a symbolic the binary will likely just compare against
+//!   value matches the file type's real permissions and avoids
+//!   spawning a symbolic the binary will likely just compare against
 //!   `S_IFREG`. Anything that depends on a symbolic mode must use
 //!   the Python proc.
 //! * `st_size` comes from `content_len` (whatever was last written
@@ -108,6 +109,7 @@
 //!
 //! `stat(pathname, statbuf) → 0 | -1` resolves `pathname` via
 //! `read_path`, returns `-1` for empty / unknown paths (via
+//! `stat_lookup_follow`, which walks the symlink table then checks
 //! `FileSystem::is_path_known`), and otherwise writes a per-arch
 //! `struct stat` via the same `write_stat_for_arch` dispatch used by
 //! `fstat`. The size field is sourced from
@@ -136,11 +138,20 @@
 //! `newfstatat(dirfd, pathname, statbuf, flag) → 0 | -1` clone the
 //! `stat` semantics with two adjustments:
 //!
-//! * `lstat` would normally diverge on symbolic links — but the
-//!   `FileSystem` model has no symlinks (open / openat never produce
-//!   one — the `readlink` symlink table above is a separate, read-only
-//!   registry), so it collapses to the same write as `stat`. Same arch
-//!   coverage as `stat`: AMD64 + X86 + ARM + MIPS32.
+//! * `lstat` does not follow symlinks: a path in the `FileSystem`
+//!   symlink table (`add_symlink`, the same registry `readlink` reads)
+//!   gets `st_mode = S_IFLNK | 0777` and `st_size = target.len()`,
+//!   while `stat` / `newfstatat` walk the link to its target (up to
+//!   `MAX_SYMLINK_HOPS`) and stat that. Both share
+//!   `stat_lookup_nofollow` / `stat_lookup_follow` (angr-9ke6b.235;
+//!   before that, both consulted `is_path_known` only, so a
+//!   symlink-only path stat'd as unknown even though `readlink`
+//!   resolved it). A dangling link or an over-long chain is `-1`
+//!   (`ENOENT` / `ELOOP`). Same arch coverage as `stat`:
+//!   AMD64 + X86 + ARM + MIPS32. Caveat: MIPS32's `struct stat64`
+//!   layout writes no `st_mode` field at all (see
+//!   `write_mips32_stat`), so there `lstat` on a symlink is
+//!   distinguishable from a regular file only by `st_size`.
 //! * `newfstatat` adds `openat`-style dirfd handling: absolute paths
 //!   and `AT_FDCWD` resolve via `FileSystem`; relative paths with any
 //!   other dirfd return `-1` (we do not model directory fds). The
@@ -507,11 +518,64 @@ fn write_symlink_target(
 /// Concrete defaults for the `struct stat` fields. `fstat_with_result`
 /// in Python returns a symbolic `st_mode` and `st_size` plus a
 /// `st_blksize` of `0x400`; the Rust handler swaps `st_mode` for
-/// `S_IFREG | 0o755` (regular file, rwxr-xr-x) and `st_size` for the
+/// `S_IFREG | 0o755` (regular file, rwxr-xr-x — the `mode` every
+/// stat-family handler passes to `write_stat_for_arch` except `lstat`
+/// on a symlink, which passes `S_IFLNK_0777`) and `st_size` for the
 /// concrete length of the fd's backing buffer (`content_len`). Other
 /// fields stay zero, matching the Python defaults.
 const S_IFREG_0755: u64 = 0o100_755;
 const ST_BLKSIZE: u64 = 0x400;
+
+/// `st_mode` for a symlink: `S_IFLNK | 0777`. Real Linux always reports
+/// `0777` permission bits on a symlink, so there is no `0755` analogue
+/// here. Written by `NativeLstatSyscall` when the path is registered in
+/// `FileSystem`'s symlink table (`FileSystem::readlink_target`).
+const S_IFLNK_0777: u64 = 0o120_777;
+
+/// Maximum symlink hops `stat_lookup_follow` will traverse before giving
+/// up. Linux's own limit is 40 (`ELOOP`); 8 is plenty for the tiny
+/// hand-registered link tables the Rust `FileSystem` models, and bounds
+/// the walk on a cyclic registration (`/a → /b`, `/b → /a`).
+const MAX_SYMLINK_HOPS: usize = 8;
+
+/// Resolve `path` for the link-*following* stat-family handlers (`stat`,
+/// `newfstatat` without `AT_SYMLINK_NOFOLLOW`). Walks the symlink table
+/// up to `MAX_SYMLINK_HOPS` times, then requires the final path to be a
+/// known regular file. Returns `(st_size, st_mode)`, or `None` when the
+/// path is unknown, the link dangles, or the chain exceeds the hop limit
+/// (all three are `-1` at the syscall boundary, matching `ENOENT` /
+/// `ELOOP`).
+fn stat_lookup_follow(fs: &crate::state::FileSystem, path: &str) -> Option<(u64, u32)> {
+    let mut cur = path.to_string();
+    for _ in 0..MAX_SYMLINK_HOPS {
+        let Some(target) = fs.readlink_target(&cur) else {
+            // Not a symlink — it must be a known regular file.
+            return stat_lookup_nofollow(fs, &cur);
+        };
+        // Symlink targets are raw bytes; a non-UTF-8 target cannot name
+        // a path in the `String`-keyed known-path set, so it dangles.
+        cur = String::from_utf8(target.to_vec()).ok()?;
+    }
+    None
+}
+
+/// Resolve `path` for the link-*preserving* handler (`lstat`). A
+/// registered symlink reports `S_IFLNK | 0777` sized to its raw target
+/// bytes (what `readlink` would return); otherwise the path must be a
+/// known regular file. Returns `(st_size, st_mode)`, or `None` for an
+/// unknown path (`-1` / `ENOENT`).
+fn stat_lookup_nofollow(fs: &crate::state::FileSystem, path: &str) -> Option<(u64, u32)> {
+    if let Some(target) = fs.readlink_target(path) {
+        return Some((target.len() as u64, S_IFLNK_0777 as u32));
+    }
+    if !fs.is_path_known(path) {
+        return None;
+    }
+    Some((
+        fs.content_size_for_path(path).unwrap_or(0) as u64,
+        S_IFREG_0755 as u32,
+    ))
+}
 
 /// Shared `struct stat` field writers used by every per-arch layout below.
 /// Each takes the destination `buf` base plus the field `off`, so the arch
@@ -550,11 +614,16 @@ fn store_stat_zero96(state: &mut RustSimState, buf: u64, off: u64) -> Result<(),
 /// `gid` u32, pad u32, `rdev` u64, `size` u64, `blksize` u64,
 /// `blocks` u64, `atime+nsec` u64×2, `mtime+nsec` u64×2,
 /// `ctime+nsec` u64×2, pad u64×3.
-fn write_amd64_stat(state: &mut RustSimState, buf: u64, size: u64) -> Result<(), SyscallError> {
+fn write_amd64_stat(
+    state: &mut RustSimState,
+    buf: u64,
+    size: u64,
+    mode: u32,
+) -> Result<(), SyscallError> {
     store_stat_u64(state, buf, 0x00, 0)?; // st_dev
     store_stat_u64(state, buf, 0x08, 0)?; // st_ino
     store_stat_u64(state, buf, 0x10, 0)?; // st_nlink
-    store_stat_u32(state, buf, 0x18, S_IFREG_0755 as u32)?; // st_mode
+    store_stat_u32(state, buf, 0x18, mode)?; // st_mode
     store_stat_u32(state, buf, 0x1C, 0)?; // st_uid
     store_stat_u32(state, buf, 0x20, 0)?; // st_gid
     store_stat_u32(state, buf, 0x24, 0)?; // pad
@@ -577,10 +646,15 @@ fn write_amd64_stat(state: &mut RustSimState, buf: u64, size: u64) -> Result<(),
 /// AArch64 `struct stat` layout — total 0x80 bytes. Mirrors
 /// `_store_aarch64` (note: `nlink` is u32 here, `blksize` is u32, and
 /// the field order around mode/nlink/uid/gid differs from AMD64).
-fn write_aarch64_stat(state: &mut RustSimState, buf: u64, size: u64) -> Result<(), SyscallError> {
+fn write_aarch64_stat(
+    state: &mut RustSimState,
+    buf: u64,
+    size: u64,
+    mode: u32,
+) -> Result<(), SyscallError> {
     store_stat_u64(state, buf, 0x00, 0)?; // st_dev
     store_stat_u64(state, buf, 0x08, 0)?; // st_ino
-    store_stat_u32(state, buf, 0x10, S_IFREG_0755 as u32)?; // st_mode
+    store_stat_u32(state, buf, 0x10, mode)?; // st_mode
     store_stat_u32(state, buf, 0x14, 0)?; // st_nlink
     store_stat_u32(state, buf, 0x18, 0)?; // st_uid
     store_stat_u32(state, buf, 0x1C, 0)?; // st_gid
@@ -612,11 +686,17 @@ fn write_aarch64_stat(state: &mut RustSimState, buf: u64, size: u64) -> Result<(
 /// reproduces its byte output. All fields but `st_mode` (concrete
 /// `S_IFREG | 0o755`), `st_size` and `st_blksize` are zero — matching the
 /// AMD64/AArch64 Rust handlers (Python mints a symbolic `st_mode`; the
-/// Rust path uses a concrete constant — see `write_amd64_stat`).
-fn write_i386_stat(state: &mut RustSimState, buf: u64, size: u64) -> Result<(), SyscallError> {
+/// Rust path uses the caller-supplied concrete `mode` — see
+/// `write_amd64_stat`).
+fn write_i386_stat(
+    state: &mut RustSimState,
+    buf: u64,
+    size: u64,
+    mode: u32,
+) -> Result<(), SyscallError> {
     store_stat_u64(state, buf, 0x00, 0)?; // st_dev
     store_stat_u64(state, buf, 0x0C, 0)?; // st_ino (64-bit; low half overlaps st_mode, both zero)
-    store_stat_u32(state, buf, 0x10, S_IFREG_0755 as u32)?; // st_mode
+    store_stat_u32(state, buf, 0x10, mode)?; // st_mode
     store_stat_u64(state, buf, 0x14, 0)?; // st_nlink (64-bit; overlaps st_uid, both zero)
     store_stat_u32(state, buf, 0x18, 0)?; // st_uid
     store_stat_u32(state, buf, 0x1C, 0)?; // st_gid
@@ -650,11 +730,17 @@ fn write_i386_stat(state: &mut RustSimState, buf: u64, size: u64) -> Result<(), 
 /// (0x60 vs i386's 0x5C). All fields but `st_mode` (concrete
 /// `S_IFREG | 0o755`), `st_size` and `st_blksize` are zero — matching
 /// the other Rust handlers (Python mints a symbolic `st_mode`; the Rust
-/// path uses a concrete constant — see `write_amd64_stat`).
-fn write_arm_stat(state: &mut RustSimState, buf: u64, size: u64) -> Result<(), SyscallError> {
+/// path uses the caller-supplied concrete `mode` — see
+/// `write_amd64_stat`).
+fn write_arm_stat(
+    state: &mut RustSimState,
+    buf: u64,
+    size: u64,
+    mode: u32,
+) -> Result<(), SyscallError> {
     store_stat_u64(state, buf, 0x00, 0)?; // st_dev
     store_stat_u64(state, buf, 0x0C, 0)?; // st_ino (64-bit; low half overlaps st_mode, both zero)
-    store_stat_u32(state, buf, 0x10, S_IFREG_0755 as u32)?; // st_mode
+    store_stat_u32(state, buf, 0x10, mode)?; // st_mode
     store_stat_u64(state, buf, 0x14, 0)?; // st_nlink (64-bit; overlaps st_uid, both zero)
     store_stat_u32(state, buf, 0x18, 0)?; // st_uid
     store_stat_u32(state, buf, 0x1C, 0)?; // st_gid
@@ -683,8 +769,8 @@ fn write_arm_stat(state: &mut RustSimState, buf: u64, size: u64) -> Result<(), S
 ///      so plain concrete stores reproduce Python's byte order on both.
 ///   2. The MIPS layout writes NO `st_mode` and NO `st_nlink` field — angr's
 ///      `_store_mips32` simply omits them (the struct is flagged "NOT CORRECT"
-///      upstream). So unlike the other Rust writers there is no concrete
-///      `S_IFREG | 0o755` substitution; every field but `st_size` (0x30) and
+///      upstream). So unlike the other Rust writers the `mode` argument is
+///      ignored (hence `_mode`) — every field but `st_size` (0x30) and
 ///      `st_blksize` (0x50) is zero. The 96-bit zero stores at 0x04/0x24 plus
 ///      the overlapping field stores fully cover bytes 0x00..0x5F with no gap,
 ///      so no stale memory leaks where `st_mode` would sit.
@@ -694,7 +780,12 @@ fn write_arm_stat(state: &mut RustSimState, buf: u64, size: u64) -> Result<(), S
 /// `st_size`/`st_blksize`/`st_blocks`/times are 64-bit; `st_uid`/`st_gid`
 /// are 32-bit), NOT the packed struct widths — replaying Python's exact
 /// store order reproduces its byte output.
-fn write_mips32_stat(state: &mut RustSimState, buf: u64, size: u64) -> Result<(), SyscallError> {
+fn write_mips32_stat(
+    state: &mut RustSimState,
+    buf: u64,
+    size: u64,
+    _mode: u32,
+) -> Result<(), SyscallError> {
     store_stat_u64(state, buf, 0x00, 0)?; // st_dev
     store_stat_zero96(state, buf, 0x04)?; // 96-bit zero pad (overlaps st_dev upper)
     store_stat_u64(state, buf, 0x10, 0)?; // st_ino
@@ -724,13 +815,14 @@ fn write_stat_for_arch(
     arch_name: &str,
     buf: u64,
     size: u64,
+    mode: u32,
 ) -> Result<(), SyscallError> {
     match arch_name {
-        "AMD64" => write_amd64_stat(state, buf, size),
-        "ARM64" => write_aarch64_stat(state, buf, size),
-        "X86" => write_i386_stat(state, buf, size),
-        "ARM" => write_arm_stat(state, buf, size),
-        "MIPS32" => write_mips32_stat(state, buf, size),
+        "AMD64" => write_amd64_stat(state, buf, size, mode),
+        "ARM64" => write_aarch64_stat(state, buf, size, mode),
+        "X86" => write_i386_stat(state, buf, size, mode),
+        "ARM" => write_arm_stat(state, buf, size, mode),
+        "MIPS32" => write_mips32_stat(state, buf, size, mode),
         other => Err(SyscallError::Other(format!(
             "stat: no struct-stat writer for arch {other}"
         ))),
@@ -783,16 +875,19 @@ impl NativeSyscall for NativeFstatSyscall {
             return Ok(SyscallOutcome::Continue { ret: NEG_ONE });
         };
 
-        write_stat_for_arch(state, arch_name, buf, size as u64)?;
+        write_stat_for_arch(state, arch_name, buf, size as u64, S_IFREG_0755 as u32)?;
         Ok(SyscallOutcome::Continue { ret: 0 })
     }
 }
 
-/// `stat(pathname, statbuf) → 0 | -1` — resolve `pathname`, look up
-/// its content length via `FileSystem::content_size_for_path`, write a
-/// per-arch `struct stat` using the existing `write_amd64_stat` /
-/// `write_i386_stat` / `write_arm_stat` helpers, return `0`. Unknown /
-/// empty path returns `-1` with no buffer write. Arch coverage:
+/// `stat(pathname, statbuf) → 0 | -1` — resolve `pathname`, look it up
+/// via `stat_lookup_follow` (walks the `FileSystem` symlink table, then
+/// takes the target's content length from
+/// `FileSystem::content_size_for_path`), write a per-arch `struct stat`
+/// using the existing `write_amd64_stat` / `write_i386_stat` /
+/// `write_arm_stat` helpers, return `0`. Unknown / empty path, dangling
+/// link or over-long link chain returns `-1` with no buffer write. Arch
+/// coverage:
 /// AMD64 + X86 + ARM + MIPS32 (the latter three via their LFS `stat64`
 /// number; ARM64's asm-generic ABI dropped legacy `stat` — only
 /// `newfstatat` remains).
@@ -834,24 +929,22 @@ impl NativeSyscall for NativeStatSyscall {
             return Ok(SyscallOutcome::Continue { ret: NEG_ONE });
         }
 
-        let fs = state.file_system_ref();
-        if !fs.is_path_known(&path) {
+        let Some((size, mode)) = stat_lookup_follow(state.file_system_ref(), &path) else {
             return Ok(SyscallOutcome::Continue { ret: NEG_ONE });
-        }
-        let size = fs.content_size_for_path(&path).unwrap_or(0) as u64;
+        };
 
-        write_stat_for_arch(state, arch_name, buf, size)?;
+        write_stat_for_arch(state, arch_name, buf, size, mode)?;
         Ok(SyscallOutcome::Continue { ret: 0 })
     }
 }
 
-/// `lstat(pathname, statbuf) → 0 | -1` — `stat`-shaped clone that
-/// would normally diverge on symbolic links. The Rust `FileSystem`
-/// model has no symlinks (open / openat never create one), so
-/// `lstat` collapses to `stat` semantics: resolve `pathname`, look up
-/// its content length via `FileSystem::content_size_for_path`, write
-/// the per-arch `struct stat` via `write_stat_for_arch`, return `0`.
-/// Unknown / empty path returns `-1` with no buffer write. Arch
+/// `lstat(pathname, statbuf) → 0 | -1` — `stat`-shaped clone that does
+/// NOT follow symlinks: resolve `pathname`, look it up via
+/// `stat_lookup_nofollow` (registered symlink → `S_IFLNK | 0777` sized
+/// to the raw target bytes; otherwise a known regular file →
+/// `S_IFREG | 0755` sized by `FileSystem::content_size_for_path`),
+/// write the per-arch `struct stat` via `write_stat_for_arch`, return
+/// `0`. Unknown / empty path returns `-1` with no buffer write. Arch
 /// coverage: AMD64 + X86 + ARM + MIPS32 (the latter three via their
 /// LFS `lstat64` number); ARM64's asm-generic ABI dropped legacy
 /// `lstat` entirely. The legacy numbers (i386/ARM 107, MIPS32 4107)
@@ -892,13 +985,11 @@ impl NativeSyscall for NativeLstatSyscall {
             return Ok(SyscallOutcome::Continue { ret: NEG_ONE });
         }
 
-        let fs = state.file_system_ref();
-        if !fs.is_path_known(&path) {
+        let Some((size, mode)) = stat_lookup_nofollow(state.file_system_ref(), &path) else {
             return Ok(SyscallOutcome::Continue { ret: NEG_ONE });
-        }
-        let size = fs.content_size_for_path(&path).unwrap_or(0) as u64;
+        };
 
-        write_stat_for_arch(state, arch_name, buf, size)?;
+        write_stat_for_arch(state, arch_name, buf, size, mode)?;
         Ok(SyscallOutcome::Continue { ret: 0 })
     }
 }
@@ -908,10 +999,13 @@ impl NativeSyscall for NativeLstatSyscall {
 /// layout. Mirrors `NativeStatSyscall`, plus the dirfd policy from
 /// `NativeOpenatSyscall`: absolute paths and `AT_FDCWD` resolve via
 /// `FileSystem`; relative paths with any other dirfd return `-1` (we
-/// do not model directory fds). The `flag` arg (incl. `AT_EMPTY_PATH`
-/// 0x1000) is ignored — `AT_EMPTY_PATH`'s "stat the dirfd directly"
-/// semantics would require dispatching to `NativeFstatSyscall(dirfd)`
-/// and is deferred. Arch coverage: AMD64 + ARM64 + X86 + ARM (AMD64/
+/// do not model directory fds). Like `stat`, it resolves through
+/// `stat_lookup_follow` (symlinks are walked to their target). The
+/// `flag` arg (incl. `AT_EMPTY_PATH` 0x1000 and `AT_SYMLINK_NOFOLLOW`
+/// 0x100) is ignored — `AT_EMPTY_PATH`'s "stat the dirfd directly"
+/// semantics would require dispatching to `NativeFstatSyscall(dirfd)`,
+/// and `AT_SYMLINK_NOFOLLOW` would route to `stat_lookup_nofollow`;
+/// both are deferred. Arch coverage: AMD64 + ARM64 + X86 + ARM (AMD64/
 /// ARM64 use the 64-bit `struct stat`; X86/ARM use the LFS `struct
 /// stat64` via `fstatat64`, mirroring `fstat64.py`). MIPS32 also uses the
 /// LFS `struct stat64` via `fstatat64` (4293). Unsupported arch returns
@@ -960,13 +1054,11 @@ impl NativeSyscall for NativeNewfstatatSyscall {
             return Ok(SyscallOutcome::Continue { ret: NEG_ONE });
         }
 
-        let fs = state.file_system_ref();
-        if !fs.is_path_known(&path) {
+        let Some((size, mode)) = stat_lookup_follow(state.file_system_ref(), &path) else {
             return Ok(SyscallOutcome::Continue { ret: NEG_ONE });
-        }
-        let size = fs.content_size_for_path(&path).unwrap_or(0) as u64;
+        };
 
-        write_stat_for_arch(state, arch_name, buf, size)?;
+        write_stat_for_arch(state, arch_name, buf, size, mode)?;
         Ok(SyscallOutcome::Continue { ret: 0 })
     }
 }
