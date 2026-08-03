@@ -611,7 +611,7 @@ fn test_fork_skips_mint_when_flag_off() {
 /// unbalanced pushes are still live, leaking the parent's pushed-only
 /// constraints into the new lineage base — the failure mode that
 /// `test_fork_inside_push_isolation` exposed in earlier slice 4c.3
-/// attempts (see `v5a5-bare-z3-push-depth-counter-design`).
+/// attempts (see bd memory `invariant-bare-z3-push-depth`).
 #[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_fork_skips_mint_when_bare_push_outstanding() {

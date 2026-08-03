@@ -207,7 +207,6 @@ fn parse_scanf_format(fmt: &[u8], arch_bits: u32) -> Result<Vec<ScanfSpec>, Proc
                 // memory) path, and treats it as a numeric read in the SimPackets
                 // (stdin/file) path. A native write of the count would diverge
                 // from both. The fallback reproduces Python exactly for free.
-                // See bd memory `format-n-no-native-parity`.
                 return Err(ProcedureError::Other(
                     "scanf %n not supported natively".to_string(),
                 ));
@@ -216,8 +215,7 @@ fn parse_scanf_format(fmt: &[u8], arch_bits: u32) -> Result<Vec<ScanfSpec>, Proc
                 // Unknown specifier — fall back to Python. Includes the float
                 // specifiers %f/%e/%g: Python's format_parser.py::FormatString
                 // .interpret raises SimProcedureError on them, so a native
-                // symbolic-float read would diverge. Faithful behavior is to
-                // defer. See bd memory `format-float-no-native-parity`.
+                // symbolic-float read would diverge. Faithful behavior is to defer.
                 return Err(ProcedureError::Other(format!(
                     "scanf: unsupported specifier '%{}'",
                     spec as char

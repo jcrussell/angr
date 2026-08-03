@@ -479,8 +479,8 @@ type ExprMemo = ();
 /// - `Arc<str>` / `Arc<[RustBV]>` collapse to owned `String` / `Vec`
 ///   on the wire and rebuild Arc handles on load.
 ///
-/// This is the snapshot/serialization format from the angr-x04s spike
-/// (see `snapshot-serialization-design` bd memory). Intermediate cache
+/// This is the snapshot/serialization format from the angr-x04s spike.
+/// Intermediate cache
 /// fields (`EXPRESSION_BY_OPERANDS_PTR`, content hashes) are not part of
 /// the wire format; they rewarm naturally as the loaded ops are touched.
 #[derive(Debug, Clone, Serialize, Deserialize)]

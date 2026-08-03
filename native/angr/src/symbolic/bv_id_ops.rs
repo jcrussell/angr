@@ -11,8 +11,8 @@
 //! module can reach them. `new_bv` routes construction through
 //! `RustBV::symbolic`. None of these touch the constraint-mutation/transaction
 //! path (`local_constraints` / `solver` / `push_level` / lineage), which the
-//! design defers to a separate, higher-coupling slice 9. See bd memory
-//! `a2br2-context-split-impl-block-plan` for the slice plan.
+//! design defers to a separate, higher-coupling slice 9. See bead angr-a2br.2.4
+//! for the slice plan.
 //!
 //! Lives as a second `impl SymContext` block in a child module of `symbolic`;
 //! `pub(super)` (== `pub(in crate::symbolic)`) keeps the promoted atomics

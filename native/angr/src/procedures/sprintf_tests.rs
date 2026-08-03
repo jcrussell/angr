@@ -323,7 +323,7 @@ fn test_sprintf_pointer_falls_back() {
     // %p must defer to Python (Err): native emitted "0xdeadbeef" (with a 0x
     // prefix) while format_parser.py emits bare hex "deadbeef", and Python
     // sign-folds bit-63-set pointers. A native "success" diverges from the
-    // engine we mirror. See `format-p-no-native-parity` (angr-3i88a).
+    // engine we mirror (angr-3i88a).
     let mut state = setup_state();
     state.map_memory_data(0x1000, b"%p\x00", Permission::RWX);
 
@@ -347,8 +347,8 @@ fn test_sprintf_pointer_falls_back() {
 fn test_sprintf_unsigned_high_bit_falls_back() {
     // %u/%x/%o with the high bit set diverge: Python's buggy signed sign-folds
     // the value; native renders it C-correct unsigned. Defer for parity.
-    // Low-bit values (test_sprintf_percent_x with 255) still format natively.
-    // See `format-unsigned-highbit-no-native-parity` (angr-3i88a).
+    // Low-bit values (test_sprintf_percent_x with 255) still format natively
+    // (angr-3i88a).
     for spec in [b"%x\x00", b"%u\x00", b"%o\x00"] {
         let mut state = setup_state();
         state.map_memory_data(0x1000, spec, Permission::RWX);
@@ -377,8 +377,8 @@ fn test_sprintf_unsigned_high_bit_falls_back() {
 fn test_sprintf_digit_precision_falls_back() {
     // "%.3d" / "%.3s": Python's _match_spec mis-slices the '.', drops the
     // conversion letter, and FormatString.replace raises SimProcedureError
-    // (state errored). Native previously continued — defer for parity.
-    // See `format-digit-precision-no-native-parity` (angr-3i88a).
+    // (state errored). Native previously continued — defer for parity
+    // (angr-3i88a).
     for spec in [b"%.3d\x00".as_slice(), b"%.3s\x00".as_slice()] {
         let mut state = setup_state();
         state.map_memory_data(0x1000, spec, Permission::RWX);
@@ -408,7 +408,7 @@ fn test_sprintf_digit_precision_falls_back() {
 fn test_sprintf_star_width_falls_back() {
     // "%*d": Python's extract_components swallows '%*' without consuming a
     // width arg, shifting later variadic args. Native can't reproduce that
-    // shift; defer for parity. See `format-star-width-no-native-parity`.
+    // shift; defer for parity.
     let mut state = setup_state();
     state.map_memory_data(0x1000, b"%*d\x00", Permission::RWX);
 
@@ -569,7 +569,7 @@ fn test_sprintf_percent_n_falls_back() {
     // %n must defer to Python (Err), NOT write the char count natively.
     // Python's format_parser.py::FormatString.replace raises SimProcedureError
     // on %n; a native count-write would diverge. Pins the faithful fallback so a
-    // future iter doesn't naively "implement" it. See `format-n-no-native-parity`.
+    // future iter doesn't naively "implement" it.
     let mut state = setup_state();
     state.map_memory_data(0x1000, b"abc%n\x00", Permission::RWX);
 
@@ -597,7 +597,7 @@ fn test_sprintf_float_specifiers_fall_back() {
     // spec outside {s,d,i,u,c,x,o,p}. A native float formatter would succeed
     // where Python errors, diverging from the engine we mirror — same wall as
     // %n. Pins the faithful fallback so a future iter doesn't naively
-    // "implement" it. See bd memory `format-float-no-native-parity`.
+    // "implement" it.
     for spec in [b"%f\x00", b"%e\x00", b"%g\x00"] {
         let mut state = setup_state();
         state.map_memory_data(0x1000, spec, Permission::RWX);

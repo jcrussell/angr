@@ -171,7 +171,7 @@ impl<'a> VEXInterpreter<'a> {
 
     /// Compute the address of the DCAS high half: `addr + sizeof(half_ty)`.
     /// Synthesised as a fresh `IRExpr::Binop(Add)` rather than mutating the
-    /// per-IRSB tyenv — see the `dcas-irexpr-binop-addr-hi` invariant.
+    /// per-IRSB tyenv, which is shared across the whole block.
     pub(super) fn cas_compute_addr_hi(
         addr: &IRExpr,
         half_ty: IRType,

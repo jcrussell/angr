@@ -13,8 +13,8 @@
 //! promoted to `pub(super)` so this sibling module can reach them. The
 //! solver/lineage/timeout mutators (`set_timeout` / `timeout_ms` /
 //! `set_sat_cache`) stay in `context.rs`: they write `solver`/`timeout_ms`
-//! directly and are not part of the read path. See bd memory
-//! `a2br2-context-split-impl-block-plan` for the slice plan.
+//! directly and are not part of the read path. See bead angr-a2br.2.4
+//! for the slice plan.
 //!
 //! **Panic policy / enforcement (angr-qwyti.11, angr-9ke6b.212):** this module
 //! carries `#![deny(clippy::unwrap_used, clippy::expect_used)]`. Every query

@@ -49,8 +49,7 @@ pub enum SnapshotError {
 
 /// Snapshot of a [`RustSimState`]'s persistable state (angr-x04s.1.3).
 ///
-/// Covers all bucket A/B/C fields per the `rustsimstate-field-buckets` bd
-/// memory:
+/// Covers all bucket A/B/C fields:
 ///
 /// * **Bucket A (trivials)** — pc, state_id, parent_id, history,
 ///   detailed_history, max_history, heap_brk, posix_brk, mmap_base,

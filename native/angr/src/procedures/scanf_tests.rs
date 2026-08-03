@@ -758,7 +758,7 @@ fn test_scanf_percent_n_falls_back() {
     // format_parser.py::FormatString.interpret raises SimProcedureError on %n in
     // the addr-based (sscanf) path and does a numeric read in the SimPackets path;
     // a single native behavior would diverge from one of them. Pins the faithful
-    // fallback. See bd memory `format-n-no-native-parity`.
+    // fallback.
     let mut state = setup_state();
     state.map_memory_data(0x1000, b"%n\x00", Permission::RWX);
 
@@ -783,7 +783,7 @@ fn test_scanf_float_specifiers_fall_back() {
     // Python's format_parser.py::FormatString.interpret only handles
     // {d,i,u,o,x,p,s,c} and raises SimProcedureError on anything else; a native
     // float read would diverge from the engine we mirror — same wall as %n.
-    // Pins the faithful fallback. See bd memory `format-float-no-native-parity`.
+    // Pins the faithful fallback.
     for spec in [b"%f\x00", b"%e\x00", b"%g\x00"] {
         let mut state = setup_state();
         state.map_memory_data(0x1000, spec, Permission::RWX);

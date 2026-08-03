@@ -1166,8 +1166,8 @@ impl SymbolicMemory {
                         // the result a Multi cell, guarding each arm's
                         // alternatives so exactly one arm's chain is live per
                         // model. The page's concrete byte is a don't-care
-                        // default (each arm's `exactly-one-cond-true`
-                        // invariant means the else-leaf is never selected).
+                        // default: exactly one arm's guard is true per
+                        // model, so the else-leaf is never selected.
                         if s_multi && o_multi {
                             let not_cond = merge_cond_other.not(ctx);
                             let sp_pl = self

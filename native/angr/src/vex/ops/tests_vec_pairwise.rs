@@ -261,7 +261,8 @@ fn test_vpwmax_8ux8_concrete() {
 
 /// Symbolic universality (spec-replay): Iop_PwAdd16x4 must produce the same
 /// bits as a hand-built reference for any 64-bit input pair. Claripy has no
-/// `_op_generic_PwAdd`, so we reference-build inline per `z3-spec-replay-test-template`.
+/// `_op_generic_PwAdd`, so we reference-build inline per bd memory
+/// `z3-universality-parity-test-template`.
 #[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_vpwadd_16x4_matches_spec_replay() {
@@ -612,7 +613,7 @@ fn test_vavg_8sx8_concrete() {
 /// Symbolic universality (spec-replay): Iop_Avg16Ux4 must equal the
 /// reference `((zext(a)+zext(b)+1) >> 1)[15:0]` per lane for all 64-bit
 /// inputs. Claripy has no `_op_generic_Avg`; the test uses the
-/// `z3-spec-replay-test-template` pattern.
+/// `z3-universality-parity-test-template` pattern.
 #[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_vavg_16ux4_symbolic_universal_unsigned() {

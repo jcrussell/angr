@@ -1503,8 +1503,7 @@ class RustExplorationManager(
         # SharedLineageSolver materialization. Stashed here so
         # _add_rust_state can push the value onto every seed state's
         # solver context. Default off keeps slice-1c's gate inert (and
-        # the v5a5-slice-4c.3-retry-failed-bfs-thrash-fundamental
-        # baby-re regression out of CI).
+        # the v5a5-spike baby-re BFS-thrash regression out of CI).
         self._use_shared_lineage_solver = bool(use_shared_lineage_solver)
 
         # angr-4scu step 3: gate for installing RustMemoryProxy as

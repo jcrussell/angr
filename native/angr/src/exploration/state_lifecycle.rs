@@ -17,11 +17,14 @@
 //!
 //! # Cross-cutting invariants enforced here
 //!
+//! Each bullet is stated in full here; the backticked labels are anchors
+//! for cross-referencing within the Rust tree, not bd memory keys.
+//!
 //! - **`state-id-never-reused`** — every state added or merged into a stash
 //!   gets a fresh monotonic ID from `next_state_id()` (allocated inside
 //!   `RustSimState::fork`/`new`/`merge`). This is what makes it safe for
 //!   `_cleanup_state_cache` (Python) to drop shadow mappings keyed by
-//!   `state_id` against `any_stash` membership. See `state.rs`
+//!   `state_id` against `any_stash` membership. See the `state/mod.rs`
 //!   module-level header.
 //! - **`state-lifecycle-stats-api`** — the bodies for `create_state` /
 //!   `add_state` / `merge_states` / `move_states` / `move_state` /

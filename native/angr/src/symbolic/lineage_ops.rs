@@ -6,7 +6,7 @@
 //! `scope_savepoints`, `use_shared_lineage_solver`, `bare_z3_push_depth`) —
 //! promoted to `pub(super)` so this sibling module can reach them — plus the
 //! `solver()` accessor (also `pub(super)`) on the savepoint push/pop path.
-//! See bd memory `a2br2-context-split-impl-block-plan` for the slice plan and
+//! See bead angr-a2br.2.4 for the slice plan and
 //! `rust_z3_sharing.rst` for the fork/merge atomic-snapshot invariant that
 //! gates which methods stay in `context.rs`.
 //!

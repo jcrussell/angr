@@ -24,8 +24,8 @@
 //! `pub(super)` (== `pub(in crate::symbolic)`) so this sibling module can reach
 //! them without a public API leak. The caches `sat_cache`/`model_cache` and the
 //! `constraint_count`/`local_constraints`/`constraint_trackers` fields were
-//! already `pub(super)` from earlier slices. See bd memory
-//! `a2br2-context-split-impl-block-plan` for the slice plan.
+//! already `pub(super)` from earlier slices. See bead angr-a2br.2.4
+//! for the slice plan.
 
 use super::SymContext;
 

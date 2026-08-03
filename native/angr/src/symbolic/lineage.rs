@@ -46,7 +46,7 @@
 //! - **Why Option A** (angr-hk7k) — shared-lineage push/pop tracking was
 //!   picked over solver-translate, fork-boundary push/pop, and
 //!   per-state-context strategies.
-//! - `v5a5-frame-id-design` — why prefix matching uses a monotonic
+//! - **FrameId, not pointer identity** — prefix matching uses a monotonic
 //!   [`FrameId`] minted at constraint-add time, not `Arc::ptr_eq` on the
 //!   underlying RustBV. Identity stays stable across fork boundaries.
 //! - **`SymContext.lineage` mutex shape** — typed
@@ -68,7 +68,7 @@
 //!   of `run_loop` (before any callback-path early-return) so
 //!   callback-heavy workloads still tick. See the comment at the call
 //!   site in `crate::exploration::run_loop`.
-//! - `v5ht-threshold-justification-2026-05-25` — 35% hot threshold is
+//! - **Hot-threshold calibration** — the 35% hot threshold is
 //!   calibrated on N=4 workloads; widen the dataset before changing it.
 
 #![cfg(feature = "vex-engine-z3")]

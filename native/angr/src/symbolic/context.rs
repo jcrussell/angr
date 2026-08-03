@@ -20,7 +20,7 @@
 //!   self`, and must be able to install a fresh lineage. Collapsing to a
 //!   plain `Option<Arc<…>>` or to `OnceLock` would force the fork
 //!   signature to change.
-//! - **FrameId minting** (`v5a5-frame-id-design`): per-state scope-path
+//! - **FrameId minting**: per-state scope-path
 //!   identity uses a globally-monotonic [`FrameId`](super::lineage::FrameId)
 //!   minted at constraint-add time, NOT `Arc::ptr_eq` on the RustBV. This
 //!   buys [`SharedLineageSolver::switch_to`](super::lineage::SharedLineageSolver::switch_to)
@@ -38,7 +38,7 @@
 //!   `Arc::clone` would give the child a stale base. Regression guard:
 //!   `tests/engines/rust/ :: test_lineage_minted_only_when_opted_in`
 //!   and `test_lineage_not_minted_under_bare_push`.
-//! - **fork-freeze under push** (`fork-freeze-self-invariant`):
+//! - **fork-freeze under push**:
 //!   [`fork`](SymContext::fork) only drains local→shared in place when
 //!   `push_level == 0`. Inside an open scope a `pop()` truncates `local`
 //!   back to its pre-push length; draining would leak popped constraints
@@ -132,7 +132,7 @@ use super::solver_build::*;
 /// on restore, which would let a later [`fork`](SymContext::fork) mint a
 /// `SharedLineageSolver` frame in exactly the situation that counter's gate
 /// exists to prevent (the parent's unbalanced bare pushes leaking into the
-/// child's base — see the `v5a5-bare-z3-push-depth-counter-design` memo).
+/// child's base — see bd memory `invariant-bare-z3-push-depth`).
 /// `to_snapshot` / `restore_from_snapshot` carry a `debug_assert!` for this.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SymContextSnapshot {
@@ -479,8 +479,8 @@ pub struct SymContext {
     ///
     /// Mirrors the `local_constraints.z3_assertions` Vec in shape but
     /// stamps each entry with a globally-unique `FrameId` so sibling
-    /// scope paths can share a prefix without RustBV-identity tricks
-    /// (see memory `v5a5-frame-id-design`).
+    /// scope paths can share a prefix without RustBV-identity tricks (see
+    /// the "FrameId, not pointer identity" rule on [`super::lineage`]).
     ///
     /// Stays empty whenever `lineage` is `None` — which is the production
     /// default, since the shared-lineage feature is opt-in. Once a lineage
@@ -523,9 +523,9 @@ pub struct SymContext {
     /// `SharedLineageSolver` frame when this
     /// counter is non-zero: the child's lineage would otherwise steal
     /// ownership of the Z3 stack and the parent's unbalanced bare pushes
-    /// would leak into the child's base (see the
-    /// `v5a5-bare-z3-push-depth-counter-design` memo for the failure
-    /// mode this gates against).
+    /// would leak into the child's base (see bd memory
+    /// `invariant-bare-z3-push-depth` for the failure mode this gates
+    /// against).
     #[cfg(feature = "vex-engine-z3")]
     pub(super) bare_z3_push_depth: AtomicUsize,
 
@@ -545,9 +545,8 @@ pub struct SymContext {
     /// lineage opt-in on a seed state propagates to every descendant
     /// without per-fork plumbing on the Python side.
     ///
-    /// Kept default-off because the v5a5 spike's
-    /// `v5a5-slice-4c.3-retry-failed-bfs-thrash-fundamental` finding
-    /// showed unconditional fork-time materialization regresses
+    /// Kept default-off because the v5a5 spike found that
+    /// unconditional fork-time materialization regresses
     /// defcon2016quals_baby-re ~10x under default BFS exploration. The
     /// opt-in lets the slice-2 canary measure the lineage win on
     /// DFS/per-state-batched workloads without touching the default CI

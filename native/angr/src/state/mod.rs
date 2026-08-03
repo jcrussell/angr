@@ -83,9 +83,10 @@
 //! # State metadata + fork invariants
 //!
 //! The invariants below cross the FFI boundary in addition to (or instead
-//! of) I1–I8 above. Each refers to a bd memory key with the full rationale
-//! and history; enforcement-site comments below cross-reference back to
-//! this header rather than duplicating the prose.
+//! of) I1–I8 above. Each bullet is stated in full here and its backticked
+//! label is an anchor for this file only — not a bd memory key — except
+//! where the bullet says otherwise. Enforcement-site comments below
+//! cross-reference back to this header rather than duplicating the prose.
 //!
 //! - **`state-id-never-reused`** — `NEXT_STATE_ID` is a monotonic atomic
 //!   counter. Once a state ID is absent from every Rust stash
@@ -127,7 +128,8 @@
 //!   `hooks` / `environment` / `fs.fds`, `for x in &self.field` becomes
 //!   `for x in self.field.iter()`. Compiler errors are obvious (E0277
 //!   "is not an iterator") but easy to miss in review.
-//! - **`apply-state-metadata-strips-options`** — `RustExplorationManager.
+//! - **`invariant-apply-state-metadata-option-allowlist`** (also a live bd
+//!   memory key) — `RustExplorationManager.
 //!   _apply_state_metadata` (Python) copies ONLY `LAZY_SOLVES` and
 //!   `STRICT_PAGE_ACCESS` from the source state to a cached/disk-loaded
 //!   init state. The boolean SimOption mirrors held below
@@ -492,7 +494,7 @@ pub struct RustSimState {
     /// unconstrained stash without warning. See engines/successors.py:292-296.
     /// Cloned on fork.
     ///
-    /// See module-level `apply-state-metadata-strips-options`: this field is
+    /// See module-level `invariant-apply-state-metadata-option-allowlist`: this field is
     /// NOT in the `_apply_state_metadata` allow-list, so it must be set on
     /// the user-supplied state in Python `__init__` BEFORE the init pipeline
     /// hits the disk cache — otherwise the cached-init path will silently
@@ -506,7 +508,7 @@ pub struct RustSimState {
     /// they are separate flags to preserve Python option semantics. Cloned
     /// on fork.
     ///
-    /// See module-level `apply-state-metadata-strips-options` — same caveat
+    /// See module-level `invariant-apply-state-metadata-option-allowlist` — same caveat
     /// as `no_ip_concretization`.
     no_symbolic_jump_resolution: bool,
     /// Mirrors angr's KEEP_IP_SYMBOLIC SimOption. When true, after a symbolic
@@ -517,7 +519,7 @@ pub struct RustSimState {
     /// the next block lift. See engines/successors.py:297-307,326-331.
     /// Cloned on fork.
     ///
-    /// See module-level `apply-state-metadata-strips-options` — same caveat
+    /// See module-level `invariant-apply-state-metadata-option-allowlist` — same caveat
     /// as `no_ip_concretization`.
     keep_ip_symbolic: bool,
     /// angr-027h: per-state override that forces EAGER forking (immediate
@@ -554,7 +556,7 @@ pub struct RustSimState {
     /// configured once at construction in typical workloads, so most forks pay
     /// only an `Arc` refcount bump.
     ///
-    /// See module-level `apply-state-metadata-strips-options`: like the other
+    /// See module-level `invariant-apply-state-metadata-option-allowlist`: like the other
     /// option mirrors, this is NOT in the `_apply_state_metadata` allow-list,
     /// so it must be set on the Rust state during `_add_rust_state` rather than
     /// relying on the cached-init path to preserve it.

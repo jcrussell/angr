@@ -32,8 +32,7 @@ fn read_string(state: &mut RustSimState, addr: u64) -> Result<Vec<u8>, Procedure
 /// matches; with the high bit set Python renders a negative value that native
 /// can't cheaply reproduce (Rust `{:x}` prints two's-complement bits, Python
 /// prints `-<abs hex>`), so those must defer to Python. `masked` is already
-/// masked to `bits`. See `format-unsigned-highbit-no-native-parity`
-/// (angr-3i88a).
+/// masked to `bits` (angr-3i88a).
 fn unsigned_high_bit_set(masked: u64, bits: u32) -> bool {
     masked >> (bits - 1) != 0
 }
@@ -136,7 +135,7 @@ fn format_string(
         // _match_spec has no '*' arm, so extract_components swallows the '%*'
         // without consuming a width arg, shifting every later variadic arg by
         // one. Native can't cheaply reproduce that arg-shift; defer to Python for
-        // faithful parity. See `format-star-width-no-native-parity` (angr-3i88a).
+        // faithful parity (angr-3i88a).
         if i < fmt.len() && fmt[i] == b'*' {
             return Err(ProcedureError::Other(
                 "'*' dynamic width defers to Python".to_string(),
@@ -174,8 +173,7 @@ fn format_string(
                 // letter, so FormatString.replace raises SimProcedureError and
                 // the state errors. Native previously truncated/ignored the
                 // precision and continued — succeeding where Python errors.
-                // Defer for parity. See
-                // `format-digit-precision-no-native-parity` (angr-3i88a).
+                // Defer for parity (angr-3i88a).
                 return Err(ProcedureError::Other(
                     "'.N' digit precision defers to Python".to_string(),
                 ));
@@ -326,8 +324,7 @@ fn format_string(
                 // %p always diverges from Python: native emitted a "0x" prefix
                 // (format!("0x{val:x}")) while format_parser.py emits bare hex
                 // (f"{c_val:x}"), and Python additionally sign-folds bit-63-set
-                // pointers. Defer for parity. See `format-p-no-native-parity`
-                // (angr-3i88a).
+                // pointers. Defer for parity (angr-3i88a).
                 return Err(ProcedureError::Other("%p defers to Python".to_string()));
             }
             b'n' => {
@@ -338,7 +335,7 @@ fn format_string(
                 // `raise SimProcedureError("Unimplemented format specifier 'n'")`.
                 // A native write of the count would succeed where Python errors,
                 // diverging from the engine we mirror. The fallback reproduces
-                // Python exactly for free. See bd memory `format-n-no-native-parity`.
+                // Python exactly for free.
                 return Err(ProcedureError::Other("%n not supported".to_string()));
             }
             _ => {
@@ -346,8 +343,7 @@ fn format_string(
                 // float specifiers %f/%e/%g: Python's format_parser.py::
                 // FormatString.replace raises SimProcedureError on them, so a
                 // native float formatter would diverge (succeed where Python
-                // errors). Faithful behavior is to defer. See bd memory
-                // `format-float-no-native-parity`.
+                // errors). Faithful behavior is to defer.
                 return Err(ProcedureError::Other(format!(
                     "unsupported format specifier '%{}'",
                     spec as char

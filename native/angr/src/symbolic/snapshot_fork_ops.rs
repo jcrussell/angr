@@ -16,8 +16,8 @@
 //! they touch must be reachable from this sibling module. All but two were
 //! already promoted by earlier slices; this slice promotes the last holdouts
 //! (`symbol_table`, `assumed_constraints_shared`) to `pub(super)`
-//! (== `pub(in crate::symbolic)`). See bd memory
-//! `a2br2-context-split-impl-block-plan` for the slice plan.
+//! (== `pub(in crate::symbolic)`). See bead angr-a2br.2.4
+//! for the slice plan.
 
 use super::context::{LocalConstraints, freeze_into_shared};
 use super::{RustBV, SymContext, SymContextSnapshot};
@@ -97,10 +97,10 @@ impl SymContext {
     /// precondition" section on [`SymContextSnapshot`] and the
     /// `debug_assert!` below.
     ///
-    /// See `snapshot-serialization-design` for the broader plan and
-    /// `rustsimstate-field-buckets` for which surrounding state buckets
-    /// are covered (RegisterFile / MemoryPage) versus deferred
-    /// (Python-side `Py<PyAny>` overlays).
+    /// The broader snapshot plan is angr-x04s; the rustdoc on
+    /// [`RustSimStateSnapshot`](crate::state::RustSimStateSnapshot) lists
+    /// which surrounding state buckets are covered (RegisterFile /
+    /// MemoryPage) versus deferred (Python-side `Py<PyAny>` overlays).
     pub fn to_snapshot(&self) -> SymContextSnapshot {
         self.debug_assert_no_open_scope("to_snapshot");
         let assumed_constraints = self.get_assumed_constraints();
@@ -606,7 +606,7 @@ impl SymContext {
     /// **Cross-cutting invariants enforced here** (see module-level
     /// "Lineage + solver invariants" for the full set):
     ///
-    /// - `fork-freeze-self-invariant`: freeze only fires when
+    /// - **fork-freeze under push**: freeze only fires when
     ///   `push_level == 0` (`in_transaction == false`). Inside a transaction,
     ///   draining local would leak rolled-back constraints into shared.
     /// - **Three-gate mint semantics**: the three-gate check
@@ -664,15 +664,14 @@ impl SymContext {
         // is `None` by default in production today.
         //
         // The two-gate check is load-bearing. Condition (a) keeps the
-        // BFS-thrash regression (defcon2016quals_baby-re ~10x;
-        // `v5a5-slice-4c.3-retry-failed-bfs-thrash-fundamental`) out of
-        // the default CI gate by holding minting OFF until a caller
+        // v5a5-spike BFS-thrash regression (defcon2016quals_baby-re ~10x)
+        // out of the default CI gate by holding minting OFF until a caller
         // explicitly opts in via the kwarg on `RustExplorationManager`.
         // Condition (b) protects the per-context solver's bare-push frames
         // from being clobbered by a sibling that takes over Z3 stack
         // ownership through the new lineage (the exact correctness bug
         // that `test_fork_inside_push_isolation` exposes in earlier
-        // attempts; see `v5a5-bare-z3-push-depth-counter-design`).
+        // attempts; see bd memory `invariant-bare-z3-push-depth`).
         //
         // Seeding via `assert_base` puts the parent's frozen constraints
         // at scope 0 of the lineage's solver, so the child's first query

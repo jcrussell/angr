@@ -18,7 +18,7 @@
 //!     count is the TOTAL constraint count (Σ over arms of shared+local),
 //!     even though every arm's `shared` prefix is byte-for-byte identical.
 //!   * The primitive for a divergence-proportional merge ALREADY SHIPS: the
-//!     fork-freeze-self-invariant. `fork()` drains self's local constraints
+//!     fork-freeze invariant. `fork()` drains self's local constraints
 //!     into `z3_assertions_shared` via `freeze_into_shared` and then hands the
 //!     SAME `Arc<Vec<Bool>>` to the child, so two arms forked from one base
 //!     hold a **ptr-equal** frozen prefix Arc all the way to the merge point;

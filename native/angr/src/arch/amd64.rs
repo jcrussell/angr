@@ -44,8 +44,8 @@ pub(crate) mod offsets {
 
     // Segment registers. FS_CONST is the FS base address (archinfo offset 208);
     // GS_CONST is the GS base, which archinfo places at offset 1032 — well past
-    // the XMM/FPU bank. The 216 slot belongs to SSEROUND, not GS_CONST. See
-    // bd memory `amd64-gs-const-offset-bug` for the previous wrong layout.
+    // the XMM/FPU bank. The 216 slot belongs to SSEROUND, not GS_CONST — an
+    // earlier layout wrongly defined GS_CONST there, aliasing the two.
     pub(crate) const FS_CONST: u32 = 208;
 
     // SSE control (per archinfo: 4B uint32_t padded to 8B in archinfo's table)
