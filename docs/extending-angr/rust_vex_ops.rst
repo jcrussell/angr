@@ -10,9 +10,9 @@ hit when you teach the engine a new VEX opcode.
 Most of the engine's perf headroom over the Python engine comes from
 keeping IR execution inside Rust. When pyvex hands the engine an
 ``Iop_*`` string it has never seen, that hot path collapses into a
-``log::warn!("Unmapped VEX operation: {}")`` and an ``IROp::Raw(0)``,
-which downstream code treats as a hard error. Adding a new op closes
-that gap.
+``log::warn!("Unmapped VEX operation: {}")`` and an
+``IROp::Unmapped(name)``, which dispatch turns into a hard
+``RustUnsupportedVexOpError``. Adding a new op closes that gap.
 
 Pipeline overview
 -----------------
@@ -37,8 +37,10 @@ head as you read the worked examples below:
        ``parse_arithmetic`` / ``parse_bitwise`` / ``parse_shift`` /
        ``parse_comparison`` / ``parse_conversion`` / ``parse_float`` /
        ``parse_vector`` / ``parse_vreverse`` / ``parse_special`` /
-       ``parse_neon_unimplemented`` sub-routers. Also has a numeric
-       variant ``parse_opcode_from_u32`` for the native FFI path.
+       ``parse_neon_unimplemented`` sub-routers. Both lifter paths —
+       pyvex strings and the native libVEX FFI — funnel through this
+       one string-based ``parse_opcode``; there is no separate numeric
+       mapping.
    * - ``native/angr/src/vex/ops/mod.rs``
      - Implements the op. ``VEXOps::unop`` / ``binop`` / ``ternop`` /
        ``qop`` dispatch on the ``IROp`` variant and produce a
@@ -126,10 +128,13 @@ otherwise enumerate by hand (``"Iop_Add8" => Some(IROp::Add(IRType::I8))``,
 etc.); use it whenever the new op follows the ``Iop_<base><width>``
 naming convention.
 
-**opcode_map.rs (FFI)** — the numeric mapping. ``parse_opcode_from_u32``
-mirrors the libvex enum order (``Iop_INVALID = 0x1400`` + offset). ``Add``
-sits at ``0x1401`` (I8) through ``0x1404`` (I64). If your new op already
-has an upstream libvex enum value, slot it in here too.
+There is no second, numeric table to keep in sync. The native libVEX
+FFI path converts its ``IROp`` discriminant back to the pyvex name
+first (``vex/libvex_lifter.rs::c_op`` → ``enum_names::irop_name``) and
+then calls the same ``parse_opcode``, so a string arm added once covers
+both lifters. An opcode libVEX knows but ``enum_names`` doesn't is
+routed as ``"Iop_UNKNOWN_<n>"``, which keeps the numeric tag visible in
+the ``Unmapped`` name.
 
 **ops/mod.rs** — the implementation. The dispatch arm inside
 ``VEXOps::binop`` delegates to a ``RustBV`` method via the
@@ -255,8 +260,8 @@ The dispatch site is in
 
 If you're adding a *new* memory-access shape (e.g. a guarded load,
 load-linked, gather), the corresponding ``IRStmt`` / ``IRExpr``
-variant goes into ``ir.rs``, the lifter wiring goes into
-``vex/pyvex_bridge.rs`` (string side) and ``vex/libpyvex_ffi.rs``
+variant goes into ``vex/ir/ast.rs``, the lifter wiring goes into
+``vex/pyvex_bridge.rs`` (string side) and ``vex/libvex_lifter.rs``
 (native side), and the *execution* goes into ``interpreter`` — not
 ``ops/mod.rs``. The split is durable: pure value-to-value transforms are
 in ``ops/mod.rs``; anything that touches memory, registers, temps,
@@ -290,7 +295,7 @@ The dispatch site is in
    }
 
 A new store-shaped statement (CAS, LL/SC, guarded store) goes the same
-way: variant in ``ir.rs``, wiring in the lifter, execution in
+way: variant in ``vex/ir/ast.rs``, wiring in the lifter, execution in
 ``interpreter/statements.rs``. If the op is *also* width-parameterized
 (e.g., the CAS payload is an ``IROp::Add``), the body still calls
 ``VEXOps::binop`` — which is exactly how the two layers compose.
@@ -307,7 +312,7 @@ doesn't know it yet. The end-to-end recipe:
    conceptual sibling, add a new variant.
 
 2. **Add the enum variant (if new).** Append to ``IROp`` in
-   ``ir.rs``. Group it with its semantic neighbors and pick the
+   ``vex/ir/ops_def.rs``. Group it with its semantic neighbors and pick the
    parameterization (``IRType`` for width, or a struct field for
    things like ``Extract { from, to, low_bit }``).
 
@@ -317,10 +322,13 @@ doesn't know it yet. The end-to-end recipe:
    which widths are real, run pyvex against a sample binary and grep
    the lifted IRSB.
 
-4. **Map the numeric opcode (if pyvex emits it).** Add the
-   corresponding numeric arms to ``parse_opcode_from_u32`` using the
-   libvex enum offsets from ``libvex_ir.h``. Stay in numeric order so
-   the table remains scannable.
+4. **Nothing to do for the FFI lifter.** The libVEX FFI path maps its
+   numeric opcode back to the pyvex name before calling
+   ``parse_opcode`` (``vex/libvex_lifter.rs::c_op``), so step 3 already
+   covers it. The discriminant-to-name table
+   (``vex/libvex_ffi.rs::enum_names``) is *generated* by
+   ``build.rs::generate_pyvex_ffi_enum_names`` from the vendored cdef —
+   never hand-edited.
 
 5. **Implement.** Add the dispatch arm to ``VEXOps::unop`` /
    ``binop`` / ``triop`` / ``qop`` in ``ops/mod.rs``. Prefer the
@@ -345,14 +353,15 @@ doesn't know it yet. The end-to-end recipe:
 If at any point the lifter's pyvex bridge is involved (e.g. you're
 adding an op whose pyvex name is *not* a simple
 ``Iop_<name><width>``), look at ``vex/pyvex_bridge.rs`` and
-``vex/libpyvex_ffi.rs`` — the latter is the FFI path used when the
-engine receives an already-lifted ``IRSB`` from C-side libvex.
+``vex/libvex_lifter.rs`` — the latter is the FFI path used when the
+engine receives an already-lifted ``IRSB`` from C-side libVEX (raw
+bindings in ``vex/libvex_ffi.rs``).
 
 What *not* to do
 ----------------
 
 * Don't add a new sub-router to ``parse_opcode`` for a single op. If
-  it doesn't fit any of the nine, the op probably belongs in
+  it doesn't fit any of the ten, the op probably belongs in
   ``parse_special``.
 * Don't reach for ``IROp::Unmapped`` (the "unmapped sentinel") in
   production code paths. ``Unmapped`` exists to surface
@@ -422,9 +431,9 @@ NEON op families
        (angr-tukg.2)
    * - Pairwise FP (``Iop_PwAdd32Fx2``)
      - 1
-     - Placeholder
-     - Last entry in ``parse_neon_unimplemented`` —
-       routes to ``IROp::NeonUnimplemented``
+     - Implemented
+     - ``IROp::VFPwAdd`` via ``parse_float`` (angr-cudgw.6) — the last
+       family to graduate out of ``parse_neon_unimplemented``
    * - Rounding halving add (``Iop_Avg{N}{S/U}x{M}``)
      - ~12
      - Implemented
@@ -482,10 +491,11 @@ NEON op families
        angr-9ke6b.160. libVEX defines no ``Iop_CmpGT64Ux1``, so the
        D-reg 64-bit lane is absent by design.
 
-The remaining placeholders (``Iop_PwAdd32Fx2``, ``Iop_QShlN*``) are
-the residual entries after the NEON campaign (``angr-tukg``) closed.
-Promote them to standalone beads when a benchmark drives a symbolic
-path through them.
+``Iop_QShlN*`` is the sole residual placeholder after the NEON
+campaign (``angr-tukg``) closed; ``parse_neon_unimplemented`` now
+claims nothing at all and is kept only as the scaffold point for the
+next NEON gap. Promote ``QShlN`` to a standalone bead when a benchmark
+drives a symbolic path through it.
 
 x87 transcendental ops
 ^^^^^^^^^^^^^^^^^^^^^^
@@ -664,8 +674,8 @@ These opcodes parse (``opcode_map.rs``) but were unhandled in dispatch
        (``Iop_Perm8x{8,16,32}``)
      - 3
      - **must-fallback**
-     - Parses to ``IROp::VPerm { elem: I8 }`` (``opcode_map.rs``
-       ~line 1047) but not in the ``binop`` vector-int routing list,
+     - Parses to ``IROp::VPerm { elem: I8 }`` (search ``"Iop_Perm8x8"``
+       in ``opcode_map.rs``) but not in the ``binop`` vector-int routing list,
        so ``binop_misc`` returns ``NotBinary``. Deterministic shuffle —
        fabricating drops the data dependency. Add a ``vec_perm`` arm or
        route to Python.
@@ -673,7 +683,8 @@ These opcodes parse (``opcode_map.rs``) but were unhandled in dispatch
        (``Iop_PclmulLQLQ`` / ``HQHQ`` / ``LQHQ`` / ``HQLQ``)
      - 4
      - **must-fallback**
-     - Parse to ``IROp::Pclmul*`` (``opcode_map.rs`` ~1053);
+     - Parse to ``IROp::Pclmul*`` (search ``"Iop_PclmulLQLQ"`` in
+       ``opcode_map.rs``);
        ``iropclass`` files them under ``Arith`` but ``binop``'s Arith
        arm does not list them, so they reach ``binop_misc`` →
        ``NotBinary``. Deterministic GF(2) product — must compute or
@@ -682,7 +693,8 @@ These opcodes parse (``opcode_map.rs``) but were unhandled in dispatch
        (``Iop_Crc32C``)
      - 1
      - **must-fallback**
-     - Parses to ``IROp::Crc32C`` (``opcode_map.rs`` ~1050); same
+     - Parses to ``IROp::Crc32C`` (search ``"Iop_Crc32C"`` in
+       ``opcode_map.rs``); same
        ``Arith``-classified-but-undispatched path as ``Pclmul*``.
        Deterministic checksum.
 
