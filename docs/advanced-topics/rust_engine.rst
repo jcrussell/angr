@@ -1073,7 +1073,7 @@ zero-cost when not read. They reset alongside the Z3 counters via
   * ``vex_op_arith`` / ``vex_op_logic`` / ``vex_op_shift`` /
     ``vex_op_cmp`` / ``vex_op_ext`` / ``vex_op_fp`` / ``vex_op_vec`` /
     ``vex_op_other`` — count per IROp family. Family classification
-    lives in ``vex/ops.rs::iropclass``; ``Vec`` covers every
+    lives in ``vex/ops/mod.rs::iropclass``; ``Vec`` covers every
     ``V*``-prefixed (SIMD/NEON) variant, ``Other`` is the catch-all for
     ``Raw``/``NeonUnimplemented``. Every dispatched op bumps exactly
     one family counter, so ``sum(vex_op_*) == sum(vex_<arity>_total)``.
@@ -5315,7 +5315,7 @@ are:
   Rust→Python error enum.
 - ``BridgeError`` (``native/angr/src/claripy_bridge/mod.rs``)
 - ``SyscallError`` (``native/angr/src/syscalls/mod.rs``)
-- ``OpError`` (``native/angr/src/vex/ops.rs``)
+- ``OpError`` (``native/angr/src/vex/ops/mod.rs``)
 - ``ProcedureError`` (``native/angr/src/procedures/mod.rs``)
 - ``MemoryError`` (``native/angr/src/memory/mod.rs``)
 - ``CallbackReason`` (``native/angr/src/exploration/mod.rs``)

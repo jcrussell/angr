@@ -13,7 +13,7 @@
 //! ```
 //!
 //! See angr-tkbr.3. tkbr.1/tkbr.2 land the remaining panic→typed-error
-//! conversions across syscalls/ and vex/ops.rs.
+//! conversions across syscalls/ and vex/ops/mod.rs.
 //!
 //! The new public types are `#[non_exhaustive]` per angr-irwe so future
 //! variants can land in minor versions without breaking downstream code.
@@ -58,7 +58,7 @@
 //!    error type and composes upward via `#[from]`. The canonical set:
 //!    `CbExecutionError` (`interpreter/mod.rs`), `StepError` /
 //!    `SubcallSetupError` (`exploration/stepping.rs`), `MemoryError`
-//!    (`memory/mod.rs`), `OpError` (`vex/ops.rs`), `ProcedureError`
+//!    (`memory/mod.rs`), `OpError` (`vex/ops/mod.rs`), `ProcedureError`
 //!    (`procedures/mod.rs`), `SyscallError` (`syscalls/mod.rs`),
 //!    `BridgeError` (`claripy_bridge/mod.rs`), `LiftError`
 //!    (`vex/lifter.rs`), and friends. Prefer growing/reusing one of these

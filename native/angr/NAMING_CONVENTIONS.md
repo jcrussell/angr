@@ -37,7 +37,7 @@ qualifier helps a reader understand the role.
 
 ## Local bindings
 
-Within VEX op handlers (`vex/ops.rs`, `vex/ccall.rs`) short local
+Within VEX op handlers (`vex/ops/mod.rs`, `vex/ccall.rs`) short local
 names like `val`, `vec`, `lo`, `hi`, `lhs`, `rhs` are encouraged — the
 function bodies are already small and the math is easier to read with
 short names. Don't carry these short names out to public APIs.

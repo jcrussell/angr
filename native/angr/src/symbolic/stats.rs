@@ -906,7 +906,7 @@ pub(crate) fn record_z3_bool_build(built: u64, reused: u64) {
 // Recorder functions for angr-2j5v counters
 // -----------------------------------------------------------------------------
 
-/// VEX IR op family — passed by the dispatcher in `vex/ops.rs` so the
+/// VEX IR op family — passed by the dispatcher in `vex/ops/mod.rs` so the
 /// classifier lives next to the dispatch and the counter bookkeeping stays in
 /// `symbolic/context.rs` alongside the other instrumentation atomics.
 #[derive(Copy, Clone, PartialEq, Eq)]

@@ -39,7 +39,7 @@ head as you read the worked examples below:
        ``parse_vector`` / ``parse_vreverse`` / ``parse_special`` /
        ``parse_neon_unimplemented`` sub-routers. Also has a numeric
        variant ``parse_opcode_from_u32`` for the native FFI path.
-   * - ``native/angr/src/vex/ops.rs``
+   * - ``native/angr/src/vex/ops/mod.rs``
      - Implements the op. ``VEXOps::unop`` / ``binop`` / ``ternop`` /
        ``qop`` dispatch on the ``IROp`` variant and produce a
        ``RustBV``. Concrete fast paths live next to their Z3 symbolic
@@ -131,7 +131,7 @@ mirrors the libvex enum order (``Iop_INVALID = 0x1400`` + offset). ``Add``
 sits at ``0x1401`` (I8) through ``0x1404`` (I64). If your new op already
 has an upstream libvex enum value, slot it in here too.
 
-**ops.rs** — the implementation. The dispatch arm inside
+**ops/mod.rs** — the implementation. The dispatch arm inside
 ``VEXOps::binop`` delegates to a ``RustBV`` method via the
 ``width_binop!`` macro:
 
@@ -152,7 +152,7 @@ the ``RustBV`` method's responsibility — the dispatch layer doesn't
 care. That's why so many arithmetic arms are one-liners.
 
 **Test.** A representative unit test from the
-``#[cfg(test)] mod tests`` block at the bottom of ``ops.rs``:
+``#[cfg(test)] mod tests`` block at the bottom of ``ops/mod.rs``:
 
 .. code-block:: rust
 
@@ -184,7 +184,7 @@ arithmetic group of ``IROp``.
    // …
    "Iop_MullU64" => Some(IROp::MullU(IRType::I64)),
 
-**ops.rs** — the dispatch arm delegates to a *named helper* instead of
+**ops/mod.rs** — the dispatch arm delegates to a *named helper* instead of
 the macro:
 
 .. code-block:: rust
@@ -213,7 +213,7 @@ Things to take away:
   ops are pure transforms over ``RustBV`` plus the solver context.
 * When the helper needs both a concrete and a symbolic path (typical
   for FP and vector ops, see ``FloatLaneOp`` near the top of
-  ``ops.rs``), use the trait/struct-pair pattern: each implementation
+  ``ops/mod.rs``), use the trait/struct-pair pattern: each implementation
   supplies *both* branches so the compiler stops you from forgetting
   one.
 * The unit test demonstrates both width and overflow behavior:
@@ -235,7 +235,7 @@ Worked example 3 — memory read: ``IRExpr::Load``
 
 ``Load`` is not an ``IROp`` — it's an ``IRExpr`` variant in
 ``vex/ir/ast.rs``, and it lives in the **interpreter** layer rather than
-``ops.rs``. This is a frequent place contributors go looking in the
+``ops/mod.rs``. This is a frequent place contributors go looking in the
 wrong file. The reason is that loads need access to the state's memory
 plane, which ``VEXOps`` deliberately does not have (its inputs are
 ``RustBV`` plus a solver context — nothing more).
@@ -258,8 +258,8 @@ load-linked, gather), the corresponding ``IRStmt`` / ``IRExpr``
 variant goes into ``ir.rs``, the lifter wiring goes into
 ``vex/pyvex_bridge.rs`` (string side) and ``vex/libpyvex_ffi.rs``
 (native side), and the *execution* goes into ``interpreter`` — not
-``ops.rs``. The split is durable: pure value-to-value transforms are
-in ``ops.rs``; anything that touches memory, registers, temps,
+``ops/mod.rs``. The split is durable: pure value-to-value transforms are
+in ``ops/mod.rs``; anything that touches memory, registers, temps,
 constraints, or call frames goes through ``interpreter``.
 
 Worked example 4 — memory write: ``IRStmt::Store``
@@ -323,7 +323,7 @@ doesn't know it yet. The end-to-end recipe:
    the table remains scannable.
 
 5. **Implement.** Add the dispatch arm to ``VEXOps::unop`` /
-   ``binop`` / ``triop`` / ``qop`` in ``ops.rs``. Prefer the
+   ``binop`` / ``triop`` / ``qop`` in ``ops/mod.rs``. Prefer the
    ``width_unop!`` / ``width_binop!`` macros for shapes where the op
    is a one-liner on ``RustBV``; promote to a named helper when the
    logic doesn't fit on a single line. If both a concrete and a
@@ -365,8 +365,8 @@ What *not* to do
   ``IROp::Foo32`` / ``IROp::Foo64`` separately is exactly the
   proliferation libvex pays for; the Rust engine's terseness is
   earned by *not* doing that.
-* Don't put memory or register access in ``ops.rs``. The split between
-  ``ops.rs`` (pure ``RustBV`` transforms) and ``interpreter`` (state
+* Don't put memory or register access in ``ops/mod.rs``. The split between
+  ``ops/mod.rs`` (pure ``RustBV`` transforms) and ``interpreter`` (state
   access) is the engine's most useful internal boundary; preserving it
   keeps the test surface small (``SymContext::new_mock()`` is enough
   to test any pure op).
@@ -376,7 +376,7 @@ Unsupported op coverage matrix
 
 At-a-glance status for op families that have historically been
 placeholders. *Implemented* means a dispatch arm exists in
-``native/angr/src/vex/ops.rs`` and the opcode parses to a concrete
+``native/angr/src/vex/ops/mod.rs`` and the opcode parses to a concrete
 ``IROp`` variant (not ``IROp::NeonUnimplemented`` or
 ``IROp::Unmapped``). *Placeholder* means the opcode parses but
 dispatch returns ``OpError::UnsupportedNeon``, which the engine
@@ -395,7 +395,7 @@ fallback instead of fabricating.
 
 Source of truth: ``native/angr/src/vex/opcode_map.rs``
 (``parse_neon_unimplemented`` is the remaining placeholder list) and
-``native/angr/src/vex/ops.rs`` (the dispatch arms). Refresh this
+``native/angr/src/vex/ops/mod.rs`` (the dispatch arms). Refresh this
 table whenever a campaign child closes — the bead column makes the
 provenance scannable.
 
@@ -620,7 +620,7 @@ concrete ``IROp`` variant, so dispatch surfaces
 ``RustUnsupportedVexOpError`` (loud) or ``IROp::NeonUnimplemented``.
 This subsection covers a categorically different and quieter gap —
 opcodes that **do** parse to a concrete ``IROp`` variant but have **no
-dispatch arm** in ``ops.rs``. They fall through the per-family
+dispatch arm** in ``ops/mod.rs``. They fall through the per-family
 sub-router to its catch-all (``OpError::NotBinary`` /
 ``NotUnary`` / ``NotTernary`` / ``NotQuaternary``), and
 ``interpreter/expressions.rs`` (``eval_unop`` / ``eval_binop``) then
@@ -650,7 +650,7 @@ before the fabricate arm, they do **not** increment
 residual op that fabricates.
 
 These opcodes parse (``opcode_map.rs``) but were unhandled in dispatch
-(``ops.rs``); they are the families the Python-fallback route now covers:
+(``ops/mod.rs``); they are the families the Python-fallback route now covers:
 
 .. list-table::
    :header-rows: 1
@@ -738,7 +738,7 @@ on a new workload:
 
 1. ``grep "Iop_<name>"`` under ``native/angr/src/vex/`` to confirm
    it has no parse arm. (If it does, the missing piece is a dispatch
-   arm in ``ops.rs`` — see the "Pipeline overview" section above.)
+   arm in ``ops/mod.rs`` — see the "Pipeline overview" section above.)
 2. If it has no parse arm, decide which sub-router in ``opcode_map.rs``
    it belongs in (``parse_float`` / ``parse_vector`` / etc.) and add
    it there.
@@ -750,7 +750,7 @@ on a new workload:
    *Last verified against commit* ``00073bebd`` *on 2026-06-19*
    (angr-cudgw.9 — added the BYPASS subsection). When you touch
    ``native/angr/src/vex/opcode_map.rs`` or
-   ``native/angr/src/vex/ops.rs``, re-read the *Pipeline overview*,
+   ``native/angr/src/vex/ops/mod.rs``, re-read the *Pipeline overview*,
    *parse_\* family pattern*, and *Unsupported op coverage matrix*
    sections and bump this footer to the new commit hash.
 
