@@ -623,6 +623,114 @@ fn register_names_all_resolve_and_fit_in_u128() {
     }
 }
 
+/// Expected `(offset, size)` for the five VEX bookkeeping fields, one row per
+/// architecture, joined to [`ALL_ARCHES`] by `name`. Every value here was read
+/// off `archinfo.Arch*.registers` (angr-9ke6b.10).
+const VEX_BOOKKEEPING: &[(&str, [(&str, u32, u32); 5])] = &[
+    (
+        "X86",
+        [
+            ("emnote", 320, 4),
+            ("cmstart", 324, 4),
+            ("cmlen", 328, 4),
+            ("nraddr", 332, 4),
+            ("ip_at_syscall", 340, 4),
+        ],
+    ),
+    (
+        "AMD64",
+        [
+            ("emnote", 992, 4),
+            ("cmstart", 1000, 8),
+            ("cmlen", 1008, 8),
+            ("nraddr", 1016, 8),
+            ("ip_at_syscall", 1040, 8),
+        ],
+    ),
+    (
+        "ARM",
+        [
+            ("emnote", 108, 4),
+            ("cmstart", 112, 4),
+            ("cmlen", 116, 4),
+            ("nraddr", 120, 4),
+            ("ip_at_syscall", 124, 4),
+        ],
+    ),
+    (
+        "ARM64",
+        [
+            ("emnote", 848, 4),
+            ("cmstart", 856, 8),
+            ("cmlen", 864, 8),
+            ("nraddr", 872, 8),
+            ("ip_at_syscall", 880, 8),
+        ],
+    ),
+    (
+        "MIPS32",
+        [
+            ("emnote", 432, 4),
+            ("cmstart", 436, 4),
+            ("cmlen", 440, 4),
+            ("nraddr", 444, 4),
+            ("ip_at_syscall", 492, 4),
+        ],
+    ),
+    (
+        "MIPS64",
+        [
+            ("emnote", 584, 4),
+            ("cmstart", 592, 8),
+            ("cmlen", 600, 8),
+            ("nraddr", 608, 8),
+            ("ip_at_syscall", 616, 8),
+        ],
+    ),
+];
+
+/// `state.regs.ip_at_syscall` (and the emnote/cmstart/cmlen/nraddr siblings)
+/// must resolve on *every* arch, not just the three that happened to name them
+/// first: X86, ARM and ARM64 had consts while AMD64 and MIPS32/64 silently
+/// returned `None`, so the same Python read worked or failed depending on the
+/// target (angr-9ke6b.10). Also pins the guest state wide enough to hold them —
+/// MIPS32/64's `GUEST_STATE_SIZE` used to stop right where this block begins.
+#[test]
+fn vex_bookkeeping_fields_resolve_on_every_arch() {
+    for desc in ALL_ARCHES {
+        let arch = (desc.make_arch)();
+        let (_, fields) = VEX_BOOKKEEPING
+            .iter()
+            .find(|(name, _)| *name == desc.name)
+            .unwrap_or_else(|| {
+                panic!(
+                    "{}: no VEX_BOOKKEEPING row; add one alongside the ALL_ARCHES row",
+                    desc.name
+                )
+            });
+        for &(field, offset, size) in fields {
+            assert_eq!(
+                arch.register_offset(field),
+                Some(offset),
+                "{}: {field} offset",
+                desc.name
+            );
+            assert_eq!(
+                arch.register_size(field),
+                Some(size),
+                "{}: {field} size",
+                desc.name
+            );
+            assert!(
+                offset as usize + size as usize <= arch.state_size(),
+                "{}: {field} runs past the guest state ({} bytes)",
+                desc.name,
+                arch.state_size()
+            );
+        }
+    }
+}
+
 /// The x87 control/status words must round-trip through the named-register
 /// path on both x86 arches — they were absent from `REGISTER_NAMES` while
 /// present in `CANONICAL`, so x87 state silently never reached

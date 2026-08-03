@@ -93,7 +93,19 @@ pub(crate) mod offsets32 {
     pub(crate) const FENR: u32 = 420;
     pub(crate) const FCSR: u32 = 424;
 
-    pub(crate) const GUEST_STATE_SIZE: usize = 432;
+    // Late VEX bookkeeping state (per archinfo): the emulation-note word and
+    // the self-modifying-code / redirect fields. All UInts on MIPS32.
+    // `guest_IP_AT_SYSCALL` sits past the DSP accumulators (cond, dspcontrol,
+    // ac0-ac3, cp0_status occupy 448..492), which have no consts here because
+    // nothing in the engine touches them. Named for parity with X86/ARM/ARM64
+    // (angr-9ke6b.10).
+    pub(crate) const EMNOTE: u32 = 432;
+    pub(crate) const CMSTART: u32 = 436;
+    pub(crate) const CMLEN: u32 = 440;
+    pub(crate) const NRADDR: u32 = 444;
+    pub(crate) const IP_AT_SYSCALL: u32 = 492;
+
+    pub(crate) const GUEST_STATE_SIZE: usize = 496;
 }
 
 // MIPS64 VEX guest state offsets (from VEX/pub/libvex_guest_mips64.h)
@@ -175,7 +187,17 @@ pub(crate) mod offsets64 {
     pub(crate) const FENR: u32 = 564;
     pub(crate) const FCSR: u32 = 568;
 
-    pub(crate) const GUEST_STATE_SIZE: usize = 592;
+    // Late VEX bookkeeping state (per archinfo): `guest_EMNOTE` is a UInt at
+    // 584 followed by the UInt `guest_COND` at 588 (no const -- nothing in the
+    // engine touches it); the rest are ULongs. Named for parity with
+    // X86/ARM/ARM64 (angr-9ke6b.10).
+    pub(crate) const EMNOTE: u32 = 584;
+    pub(crate) const CMSTART: u32 = 592;
+    pub(crate) const CMLEN: u32 = 600;
+    pub(crate) const NRADDR: u32 = 608;
+    pub(crate) const IP_AT_SYSCALL: u32 = 616;
+
+    pub(crate) const GUEST_STATE_SIZE: usize = 624;
 }
 
 // MIPS32 canonical: ABI mnemonics drive register_name reverse lookup.
@@ -357,6 +379,12 @@ const ALIASES_MIPS32: &[RegEntry] = &[
     ("fexr", offsets32::FEXR, 4),
     ("fenr", offsets32::FENR, 4),
     ("fcsr", offsets32::FCSR, 4),
+    // VEX bookkeeping tail (see the offsets32 note above). All UInts.
+    ("emnote", offsets32::EMNOTE, 4),
+    ("cmstart", offsets32::CMSTART, 4),
+    ("cmlen", offsets32::CMLEN, 4),
+    ("nraddr", offsets32::NRADDR, 4),
+    ("ip_at_syscall", offsets32::IP_AT_SYSCALL, 4),
 ];
 
 const REGISTER_NAMES_MIPS32: &[&str] = &[
@@ -555,6 +583,13 @@ const ALIASES_MIPS64: &[RegEntry] = &[
     ("fexr", offsets64::FEXR, 4),
     ("fenr", offsets64::FENR, 4),
     ("fcsr", offsets64::FCSR, 4),
+    // VEX bookkeeping tail (see the offsets64 note above). guest_EMNOTE is a
+    // UInt; the rest are ULongs.
+    ("emnote", offsets64::EMNOTE, 4),
+    ("cmstart", offsets64::CMSTART, 8),
+    ("cmlen", offsets64::CMLEN, 8),
+    ("nraddr", offsets64::NRADDR, 8),
+    ("ip_at_syscall", offsets64::IP_AT_SYSCALL, 8),
 ];
 
 const REGISTER_NAMES_MIPS64: &[&str] = &[

@@ -80,9 +80,17 @@ pub(crate) mod offsets {
     pub(crate) const FPROUND: u32 = 976;
     pub(crate) const FC3210: u32 = 984;
 
-    // Late VEX state (per archinfo): emnote, cmstart/cmlen/nraddr precede the
-    // real GS_CONST slot at offset 1032.
+    // Late VEX state (per archinfo): the emulation-note word and the
+    // self-modifying-code / redirect bookkeeping fields precede the real
+    // GS_CONST slot at offset 1032. `guest_EMNOTE` is a UInt (4 bytes) with
+    // 4 bytes of padding after it; the rest are ULongs. Named for parity with
+    // X86/ARM/ARM64 (angr-9ke6b.10).
+    pub(crate) const EMNOTE: u32 = 992;
+    pub(crate) const CMSTART: u32 = 1000;
+    pub(crate) const CMLEN: u32 = 1008;
+    pub(crate) const NRADDR: u32 = 1016;
     pub(crate) const GS_CONST: u32 = 1032;
+    pub(crate) const IP_AT_SYSCALL: u32 = 1040;
 
     // Total guest state size: archinfo's last register (ss_seg) ends at 1060.
     pub(crate) const GUEST_STATE_SIZE: usize = 1060;
@@ -219,6 +227,13 @@ const ALIASES: &[RegEntry] = &[
     // Segment aliases (the base registers, not the 16-bit selectors)
     ("fs", offsets::FS_CONST, 8),
     ("gs", offsets::GS_CONST, 8),
+    // VEX bookkeeping tail (see the offsets note above). guest_EMNOTE is a
+    // UInt; the rest are ULongs.
+    ("emnote", offsets::EMNOTE, 4),
+    ("cmstart", offsets::CMSTART, 8),
+    ("cmlen", offsets::CMLEN, 8),
+    ("nraddr", offsets::NRADDR, 8),
+    ("ip_at_syscall", offsets::IP_AT_SYSCALL, 8),
 ];
 
 // Registers exported to / imported from Python (see `Arch::register_names`).
