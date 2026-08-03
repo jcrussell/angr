@@ -2,7 +2,7 @@
 //
 // The SIMD integer ops are enumerated in three hand-maintained match lists
 // with no compile-time coupling between them:
-//   1. `iropclass()`            (`ops/mod.rs`) — telemetry family classification
+//   1. `iropclass()`            (`ops/classify.rs`) — telemetry family classification
 //   2. the `binop()` router     (`ops/mod.rs`) — routes to `binop_vec_int`
 //   3. `binop_vec_int()`        (`ops/mod.rs`) — the actual per-op bindings
 //
@@ -23,6 +23,8 @@
 //     ops/tests_vec_permute_mul.rs / ops/tests_vec_saturate.rs / ops/tests_vec_lane.rs.
 
 use super::*;
+use crate::symbolic::VexOpFamily;
+use crate::vex::ir::IRType;
 
 /// Canonical list of the vector-integer binops the `binop()` router forwards to
 /// `binop_vec_int` (`ops/mod.rs`), excluding `Concat` (classified `Ext`, asserted

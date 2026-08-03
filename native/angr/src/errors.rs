@@ -58,7 +58,7 @@
 //!    error type and composes upward via `#[from]`. The canonical set:
 //!    `CbExecutionError` (`interpreter/mod.rs`), `StepError` /
 //!    `SubcallSetupError` (`exploration/stepping.rs`), `MemoryError`
-//!    (`memory/mod.rs`), `OpError` (`vex/ops/mod.rs`), `ProcedureError`
+//!    (`memory/mod.rs`), `OpError` (`vex/ops/error.rs`), `ProcedureError`
 //!    (`procedures/mod.rs`), `SyscallError` (`syscalls/mod.rs`),
 //!    `BridgeError` (`claripy_bridge/mod.rs`), `LiftError`
 //!    (`vex/lifter.rs`), and friends. Prefer growing/reusing one of these

@@ -5,8 +5,9 @@
 //! `ops/mod.rs`), so these `pub(super)` methods stay callable from the binop/unop
 //! dispatch in `ops`, and the shared sibling methods they call
 //! (`Self::concat_le_elements`, `Self::vec_float_lane_op`) stay visible by the
-//! descendant-module rule. `PwOp` (the per-pair combiner kind) and the `FAdd`
-//! `FloatLaneOp` marker both live in `ops` and are reached via `super::`.
+//! descendant-module rule. `PwOp` (the per-pair combiner kind) lives in `ops`
+//! and the `FAdd` `FloatLaneOp` marker in `ops/lane_traits.rs`; both are
+//! reached via `super::`.
 //!
 //! Covers the pairwise widening add (Iop_PwAddL), the integer binary pairwise
 //! family (Iop_PwAdd/PwMin/PwMax), the FP pairwise add (Iop_PwAdd32Fx2), and

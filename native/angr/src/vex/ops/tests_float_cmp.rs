@@ -3,6 +3,7 @@
 use super::test_helpers::*;
 use super::*;
 use crate::vex::ir::FCmpKind;
+use crate::vex::ir::IRType;
 
 /// Symbolic FCmpLT: bracket x with `1.0 < x < 2.0` via two symbolic
 /// FCmpLT comparisons. Solver should accept and produce x in (1.0, 2.0).

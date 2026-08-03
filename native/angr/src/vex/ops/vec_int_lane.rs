@@ -3,9 +3,10 @@
 //! Mirrors `ops/vec_float_lane.rs` for the integer family. Declared as a child
 //! module of `ops` (via a plain `mod` decl in `ops/mod.rs`), so this `pub(super)` method stays
 //! callable from the unop/binop dispatch in `ops`, and the shared siblings it
-//! references (`Self::concat_le_elements`, `Self::low_bit_mask_u128`, the
-//! `IntLaneOp` trait, the `INT_LANE_OP_MAX_ARITY` const — all of which stay in
-//! `ops/mod.rs`) stay visible via the descendant rule.
+//! references (`Self::concat_le_elements` and `Self::low_bit_mask_u128`, which
+//! stay in `ops/mod.rs`; the `IntLaneOp` trait and the
+//! `INT_LANE_OP_MAX_ARITY` const, which live in `ops/lane_traits.rs` and are
+//! re-exported by `ops`) stay visible via the descendant rule.
 
 use super::{INT_LANE_OP_MAX_ARITY, IntLaneOp, OpError, VEXOps};
 use crate::symbolic::{RustBV, SymContext};

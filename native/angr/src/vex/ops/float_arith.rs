@@ -3,14 +3,15 @@
 //! Extracted from the parent `ops` module (angr-cudgw.18) to shrink the
 //! VEXOps god-file. Declared as a child module of `ops` (via a plain `mod` decl in
 //! `ops/mod.rs`), so these `pub(super)` methods stay callable from the unop/binop
-//! dispatch in `ops`, and the shared free fns they call that remain in `ops`
-//! (`build_float_expr`, `float_prec_of`) stay visible by the
-//! descendant-module rule.
+//! dispatch in `ops`, and the shared free fns they call (`build_float_expr`,
+//! `float_prec_of`, which live in `ops/lane_traits.rs` and are re-exported by
+//! `ops`) stay visible by the descendant-module rule.
 //!
 //! Only the *scalar* float arith ops live here. The `FloatLaneOp` trait, the
 //! `FAdd`/`FSub`/… lane structs, the `impl_float_lane_*` macros, and the
-//! `build_float_expr`/`float_prec_of` free fns deliberately stay in `ops`:
-//! they are shared with the packed/vector float paths (`binop_vec_float`,
+//! `build_float_expr`/`float_prec_of` free fns deliberately live in the
+//! sibling `ops/lane_traits.rs`: they are shared with the packed/vector float
+//! paths (`binop_vec_float`,
 //! `vec_float_lane_op`) and the rounding-mode variants.
 
 use super::{OpError, VEXOps, build_float_expr, float_prec_of};

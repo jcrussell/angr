@@ -16,6 +16,7 @@
 //! probabilistically.
 
 use super::*;
+use crate::vex::ir::IRType;
 
 use quickcheck_macros::quickcheck;
 

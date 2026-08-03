@@ -8,6 +8,7 @@
 
 use super::test_helpers::*;
 use super::*;
+use crate::vex::ir::IRType;
 
 // =========================================================================
 // VSub — concrete wrapping lanes (ISub IntLaneOp)

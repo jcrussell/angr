@@ -212,8 +212,8 @@ Things to take away:
   file). Keep them ``#[inline]`` and avoid taking ``&mut`` state — VEX
   ops are pure transforms over ``RustBV`` plus the solver context.
 * When the helper needs both a concrete and a symbolic path (typical
-  for FP and vector ops, see ``FloatLaneOp`` near the top of
-  ``ops/mod.rs``), use the trait/struct-pair pattern: each implementation
+  for FP and vector ops, see ``FloatLaneOp`` in ``ops/lane_traits.rs``),
+  use the trait/struct-pair pattern: each implementation
   supplies *both* branches so the compiler stops you from forgetting
   one.
 * The unit test demonstrates both width and overflow behavior:

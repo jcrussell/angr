@@ -1,6 +1,7 @@
 // angr-9hleg: NEON vector lane get/set/dup/widen/mul tests (mirror of ops/vec_lane.rs).
 
 use super::*;
+use crate::vex::ir::IRType;
 
 // -------------------------------------------------------------------------
 // NEON SIMD (angr-bkcs.2)

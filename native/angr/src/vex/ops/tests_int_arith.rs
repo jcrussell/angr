@@ -1,6 +1,7 @@
 // angr-9hleg: integer widening-mul / divmod / sign-extend tests (mirror of ops/int_arith.rs).
 
 use super::*;
+use crate::vex::ir::IRType;
 
 #[test]
 fn test_mul_widening() {

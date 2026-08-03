@@ -2,6 +2,7 @@
 
 use super::test_helpers::*;
 use super::*;
+use crate::vex::ir::IRType;
 
 // =========================================================================
 // Packed FP add/sub/mul/div/sqrt/abs/min/max tests

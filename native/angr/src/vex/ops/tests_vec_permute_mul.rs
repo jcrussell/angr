@@ -2,6 +2,7 @@
 
 use super::test_helpers::*;
 use super::*;
+use crate::vex::ir::IRType;
 
 // =========================================================================
 // VReverse — byte/halfword/word/bit reversal within lane (angr-tukg.4).

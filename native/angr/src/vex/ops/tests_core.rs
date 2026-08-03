@@ -1,6 +1,7 @@
 // angr-9hleg: core VEXOps dispatch / general binop tests (mirror of `ops/mod.rs`).
 
 use super::*;
+use crate::vex::ir::IRType;
 
 #[test]
 fn test_add_op() {

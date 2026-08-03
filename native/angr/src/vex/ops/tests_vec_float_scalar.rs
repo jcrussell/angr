@@ -2,6 +2,7 @@
 
 use super::test_helpers::*;
 use super::*;
+use crate::vex::ir::IRType;
 
 #[test]
 fn test_vec_float_scalar_add() {

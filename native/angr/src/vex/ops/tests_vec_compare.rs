@@ -12,6 +12,7 @@
 
 use super::test_helpers::*;
 use super::*;
+use crate::vex::ir::IRType;
 
 // =========================================================================
 // InterleaveLO8x16 — PUNPCKLBW reference (concrete)

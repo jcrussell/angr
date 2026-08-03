@@ -1,6 +1,7 @@
 // angr-9hleg: scalar FP arith tests incl. rounding-mode variants (mirror of ops/float_arith.rs).
 
 use super::*;
+use crate::vex::ir::IRType;
 
 #[test]
 fn test_float_add_concrete() {

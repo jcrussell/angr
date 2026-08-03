@@ -1,6 +1,7 @@
 // angr-9hleg: vector per-lane count (cnt/clz/cls) + polynomial-mul tests (mirror of ops/vec_count.rs).
 
 use super::*;
+use crate::vex::ir::IRType;
 
 // =========================================================================
 // angr-tukg.6 — NEON per-lane Cnt / Clz / Cls + GF(2) PolynomialMul.

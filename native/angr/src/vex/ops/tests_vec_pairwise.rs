@@ -2,6 +2,7 @@
 
 use super::test_helpers::*;
 use super::*;
+use crate::vex::ir::IRType;
 
 // =========================================================================
 // angr-tukg.2 — NEON pairwise add/min/max (VPwAdd / VPwAddL / VPwMin / VPwMax).

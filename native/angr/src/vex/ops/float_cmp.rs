@@ -4,14 +4,16 @@
 //! VEXOps god-file. Declared as a child module of `ops` (via a plain `mod` decl in
 //! `ops/mod.rs`), so these `pub(super)` methods stay callable from the binop
 //! dispatch in `ops`, and the shared free fns / sibling methods they call
-//! that remain in `ops` (`build_float_expr`, `float_prec_of`,
-//! `Self::concat_le_elements`) stay visible by the descendant-module rule.
+//! (`build_float_expr`, `float_prec_of` — in `ops/lane_traits.rs`, re-exported
+//! by `ops` — and `Self::concat_le_elements`) stay visible by the
+//! descendant-module rule.
 //!
 //! Covers scalar FP compares (Iop_FCmp{EQ,LT,LE}, Iop_CmpF{32,64}), the
 //! SSE scalar-lane compare (Iop_Cmp*32F0x4/64F0x2), and the packed FP
-//! compare (Iop_Cmp*{32Fx2,32Fx4,64Fx2}). The `FCmpKind` enum and the
-//! `build_float_expr`/`float_prec_of` free fns deliberately stay in `ops`:
-//! they are shared with the scalar/packed FP arith paths.
+//! compare (Iop_Cmp*{32Fx2,32Fx4,64Fx2}). The `FCmpKind` enum deliberately
+//! stays in `ops` and the `build_float_expr`/`float_prec_of` free fns in
+//! `ops/lane_traits.rs`: they are shared with the scalar/packed FP arith
+//! paths.
 
 use super::{OpError, VEXOps, build_float_expr, float_prec_of};
 use crate::symbolic::{FloatOpKind, FloatPrec, RustBV, SymContext};

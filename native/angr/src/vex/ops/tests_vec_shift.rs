@@ -1,6 +1,7 @@
 // angr-9hleg: vector shift (shl/shr/sar/sal) tests (mirror of ops/vec_shift.rs).
 
 use super::*;
+use crate::vex::ir::IRType;
 
 /// Symbolic ShlN16x8: shift count is symbolic; constrain to 4 and verify
 /// each lane is `lane << 4`. Exercises the symbolic-shift fallback that

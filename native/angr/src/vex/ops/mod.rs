@@ -23,334 +23,24 @@
 //! `#![deny(clippy::unwrap_used, clippy::expect_used)]`.
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
-use std::sync::Arc;
+use crate::symbolic::{FloatOpKind, RustBV, SymContext};
 
-use crate::symbolic::{BVOp, FloatOpKind, FloatPrec, RustBV, SymContext, VexOpFamily};
-
-use super::ir::{IROp, IRType};
+use super::ir::IROp;
 use super::transcendentals;
 
-/// Map a VEX float `IRType` to a Z3 FP precision.
-#[inline]
-fn float_prec_of(ty: IRType) -> Option<FloatPrec> {
-    match ty {
-        IRType::F32 => Some(FloatPrec::F32),
-        IRType::F64 => Some(FloatPrec::F64),
-        _ => None,
-    }
-}
+/// Per-lane vector op traits (`FloatLaneOp` / `IntLaneOp`), their marker
+/// types, and the shared float-expression builders — extracted from this file
+/// (angr-9ke6b.170). Declared as a child module so its `pub(super)` items stay
+/// visible to the dispatch below; the `use` that follows re-exports them under
+/// `ops` so the sibling modules' `use super::{FloatLaneOp, float_prec_of, ...}`
+/// imports keep resolving.
+mod lane_traits;
 
-/// Build a symbolic float-op expression. Used by float_* helpers below
-/// when operands are not fully concrete; routes through Z3 FP theory in
-/// `build_fp_z3_ast_cached`.
-fn build_float_expr(kind: FloatOpKind, prec: FloatPrec, operands: Vec<RustBV>) -> RustBV {
-    let width = kind.result_bits(prec);
-    RustBV::Expression {
-        id: RustBV::EXPRESSION_ID,
-        width,
-        op: BVOp::Float { kind, prec },
-        operands: Arc::<[RustBV]>::from(operands),
-        memo: Default::default(),
-    }
-}
-
-/// Maximum arity supported by `FloatLaneOp`. Sized for the current set of
-/// per-lane FP ops (unary Sqrt/Abs and binary Add/Sub/Mul/Div/Min/Max). Sized
-/// to 2 today; bump if a ternary lane op is added (e.g. fused multiply-add).
-const FLOAT_LANE_OP_MAX_ARITY: usize = 2;
-
-/// Per-lane FP op contract used by `VEXOps::vec_float_lane_op`.
-///
-/// Each impl must provide BOTH a concrete fast path (for f32/f64 lanes) and
-/// a symbolic Z3 expression builder, so adding a new op cannot accidentally
-/// drop one of the two branches — the previous duplicated functions
-/// (`vec_float_op`, `vec_float_unop`, `vec_float_minmax`) made the symbolic
-/// fallback easy to forget when extending.
-trait FloatLaneOp {
-    /// Number of operand lanes consumed (1 for unary, 2 for binary).
-    fn arity(&self) -> usize;
-    /// Apply to a single concrete f32 lane. `args.len() == self.arity()`.
-    fn concrete_f32(&self, args: &[f32]) -> f32;
-    /// Apply to a single concrete f64 lane. `args.len() == self.arity()`.
-    fn concrete_f64(&self, args: &[f64]) -> f64;
-    /// Build the symbolic per-lane expression. `args.len() == self.arity()`.
-    fn symbolic(&self, args: Vec<RustBV>, prec: FloatPrec, ctx: &SymContext) -> RustBV;
-}
-
-struct FAdd;
-struct FSub;
-struct FMul;
-struct FDiv;
-struct FSqrt;
-struct FAbs;
-/// FP min: matches Rust `<` semantics (NaN passes through right).
-struct FMin;
-/// FP max: matches Rust `>` semantics (NaN passes through right).
-struct FMax;
-
-/// Generate a `FloatLaneOp` impl for a binary op whose concrete path is an
-/// infix operator and whose symbolic path is a single `FloatOpKind`.
-macro_rules! impl_float_lane_binop {
-    ($name:ident, $op:tt, $kind:expr) => {
-        impl FloatLaneOp for $name {
-            fn arity(&self) -> usize {
-                2
-            }
-            fn concrete_f32(&self, a: &[f32]) -> f32 {
-                a[0] $op a[1]
-            }
-            fn concrete_f64(&self, a: &[f64]) -> f64 {
-                a[0] $op a[1]
-            }
-            fn symbolic(&self, args: Vec<RustBV>, prec: FloatPrec, _ctx: &SymContext) -> RustBV {
-                build_float_expr($kind, prec, args)
-            }
-        }
-    };
-}
-
-/// Generate a `FloatLaneOp` impl for a unary op whose concrete path is a
-/// method call on the lane and whose symbolic path is a single `FloatOpKind`.
-macro_rules! impl_float_lane_unop {
-    ($name:ident, $method:ident, $kind:expr) => {
-        impl FloatLaneOp for $name {
-            fn arity(&self) -> usize {
-                1
-            }
-            fn concrete_f32(&self, a: &[f32]) -> f32 {
-                a[0].$method()
-            }
-            fn concrete_f64(&self, a: &[f64]) -> f64 {
-                a[0].$method()
-            }
-            fn symbolic(&self, args: Vec<RustBV>, prec: FloatPrec, _ctx: &SymContext) -> RustBV {
-                build_float_expr($kind, prec, args)
-            }
-        }
-    };
-}
-
-impl_float_lane_binop!(FAdd, +, FloatOpKind::Add);
-impl_float_lane_binop!(FSub, -, FloatOpKind::Sub);
-impl_float_lane_binop!(FMul, *, FloatOpKind::Mul);
-impl_float_lane_binop!(FDiv, /, FloatOpKind::Div);
-impl_float_lane_unop!(FSqrt, sqrt, FloatOpKind::Sqrt);
-impl_float_lane_unop!(FAbs, abs, FloatOpKind::Abs);
-
-/// Build a symbolic min/max ITE over two operand lanes. `swap_cmp_args=false`
-/// gives `ITE(l < r, l, r)` (min); `true` gives `ITE(r < l, l, r)` (max).
-/// The symbolic path always uses `CmpLt`, swapping operand order rather than
-/// minting a separate `CmpGt` kind.
-#[allow(
-    clippy::expect_used,
-    reason = "arity-2 dispatch invariant: the only route here is `FloatLaneOp::symbolic` from `vec_float_lane_op`, which builds `lane_args` one-for-one from its `args`, and every `FMin`/`FMax` call site passes the array literal `&[left, right]` — see the module Panic policy header"
-)]
-fn float_minmax_symbolic(
-    args: Vec<RustBV>,
-    prec: FloatPrec,
-    ctx: &SymContext,
-    swap_cmp_args: bool,
-) -> RustBV {
-    let mut iter = args.into_iter();
-    let l_lane = iter.next().expect("FMin/FMax arity 2");
-    let r_lane = iter.next().expect("FMin/FMax arity 2");
-    let cmp_args = if swap_cmp_args {
-        vec![r_lane.clone(), l_lane.clone()]
-    } else {
-        vec![l_lane.clone(), r_lane.clone()]
-    };
-    let cond = build_float_expr(FloatOpKind::CmpLt, prec, cmp_args);
-    cond.ite_into(l_lane, r_lane, ctx)
-}
-
-/// Generate a `FloatLaneOp` impl for FP min/max. `$cmp` is the operator that
-/// decides "left wins" on the concrete path (e.g. `<` for FMin, `>` for FMax);
-/// `$swap_cmp_args` adapts that to the always-CmpLt symbolic path.
-macro_rules! impl_float_lane_minmax {
-    ($name:ident, $cmp:tt, $swap_cmp_args:expr) => {
-        impl FloatLaneOp for $name {
-            fn arity(&self) -> usize {
-                2
-            }
-            fn concrete_f32(&self, a: &[f32]) -> f32 {
-                if a[0] $cmp a[1] { a[0] } else { a[1] }
-            }
-            fn concrete_f64(&self, a: &[f64]) -> f64 {
-                if a[0] $cmp a[1] { a[0] } else { a[1] }
-            }
-            fn symbolic(&self, args: Vec<RustBV>, prec: FloatPrec, ctx: &SymContext) -> RustBV {
-                float_minmax_symbolic(args, prec, ctx, $swap_cmp_args)
-            }
-        }
-    };
-}
-
-impl_float_lane_minmax!(FMin, <, false);
-impl_float_lane_minmax!(FMax, >, true);
-
-/// Maximum arity supported by `IntLaneOp`. Sized for the current set of
-/// per-lane integer ops (unary Abs and binary Add/Sub/Mul/CmpEQ/CmpGT/Min/Max).
-const INT_LANE_OP_MAX_ARITY: usize = 2;
-
-/// Per-lane integer op contract used by `VEXOps::vec_int_lane_op`.
-///
-/// Mirrors [`FloatLaneOp`] for the packed-integer family: each impl provides
-/// BOTH a concrete fast path (operating on `u128` lanes already masked to
-/// `elem_width`) and a symbolic Z3 expression builder, so adding a new op
-/// cannot accidentally drop one of the two branches. Replaces the four
-/// near-identical per-lane loops that lived in `vec_binop`, `vec_cmp`,
-/// `vec_int_minmax`, and `vec_int_abs`.
-trait IntLaneOp {
-    /// Number of operand lanes consumed (1 for unary, 2 for binary).
-    fn arity(&self) -> usize;
-    /// Apply to concrete lanes already masked to `elem_width`. The driver
-    /// re-masks the return value, so impls need not mask the low bits again.
-    fn concrete_lane(&self, lanes: &[u128], elem_width: u32) -> u128;
-    /// Build the symbolic per-lane expression. Must be exactly `elem_width`
-    /// bits wide. `lanes.len() == self.arity()`.
-    fn symbolic_lane(&self, lanes: &[RustBV], elem_width: u32, ctx: &SymContext) -> RustBV;
-}
-
-struct IAdd;
-struct ISub;
-struct IMul;
-/// Per-lane equality compare; lane is all-ones on equal, all-zeros otherwise.
-struct ICmpEq;
-/// Per-lane greater-than; lane is all-ones when `l > r`. `signed` picks the
-/// signed (`Iop_CmpGT{N}Sx{M}`) vs unsigned (`Iop_CmpGT{N}Ux{M}`) comparison.
-struct ICmpGt {
-    signed: bool,
-}
-/// Per-lane signed/unsigned integer min or max.
-struct IMinMax {
-    signed: bool,
-    is_max: bool,
-}
-/// Per-lane absolute value (PABS*); INT_MIN stays INT_MIN.
-struct IAbs;
-
-/// Generate an `IntLaneOp` impl for a wrapping arithmetic binop whose concrete
-/// path is a `u128::wrapping_*` and whose symbolic path is a single RustBV
-/// method.
-macro_rules! impl_int_lane_arith {
-    ($name:ident, $wrapping:ident, $method:ident) => {
-        impl IntLaneOp for $name {
-            fn arity(&self) -> usize {
-                2
-            }
-            fn concrete_lane(&self, a: &[u128], _elem_width: u32) -> u128 {
-                a[0].$wrapping(a[1])
-            }
-            fn symbolic_lane(&self, a: &[RustBV], _elem_width: u32, ctx: &SymContext) -> RustBV {
-                a[0].clone().$method(a[1].clone(), ctx)
-            }
-        }
-    };
-}
-
-impl_int_lane_arith!(IAdd, wrapping_add, add_into);
-impl_int_lane_arith!(ISub, wrapping_sub, sub_into);
-impl_int_lane_arith!(IMul, wrapping_mul, mul_into);
-
-impl IntLaneOp for ICmpEq {
-    fn arity(&self) -> usize {
-        2
-    }
-    fn concrete_lane(&self, a: &[u128], elem_width: u32) -> u128 {
-        if a[0] == a[1] {
-            VEXOps::low_bit_mask_u128(elem_width)
-        } else {
-            0
-        }
-    }
-    fn symbolic_lane(&self, a: &[RustBV], elem_width: u32, ctx: &SymContext) -> RustBV {
-        a[0].clone()
-            .eq_into(a[1].clone(), ctx)
-            .sign_extend_into(elem_width, ctx)
-    }
-}
-
-impl IntLaneOp for ICmpGt {
-    fn arity(&self) -> usize {
-        2
-    }
-    fn concrete_lane(&self, a: &[u128], elem_width: u32) -> u128 {
-        // Lanes arrive zero-extended into u128, so the unsigned compare is the
-        // raw one; only the signed form needs the sign-extend first.
-        let gt = if self.signed {
-            let l = VEXOps::sign_extend_low_to_i128(a[0], elem_width);
-            let r = VEXOps::sign_extend_low_to_i128(a[1], elem_width);
-            l > r
-        } else {
-            a[0] > a[1]
-        };
-        if gt {
-            VEXOps::low_bit_mask_u128(elem_width)
-        } else {
-            0
-        }
-    }
-    fn symbolic_lane(&self, a: &[RustBV], elem_width: u32, ctx: &SymContext) -> RustBV {
-        let cmp = if self.signed {
-            a[0].clone().sgt_into(a[1].clone(), ctx)
-        } else {
-            a[0].clone().ugt_into(a[1].clone(), ctx)
-        };
-        cmp.sign_extend_into(elem_width, ctx)
-    }
-}
-
-impl IntLaneOp for IMinMax {
-    fn arity(&self) -> usize {
-        2
-    }
-    fn concrete_lane(&self, a: &[u128], elem_width: u32) -> u128 {
-        let pick_left = if self.signed {
-            let l = VEXOps::sign_extend_low_to_i128(a[0], elem_width);
-            let r = VEXOps::sign_extend_low_to_i128(a[1], elem_width);
-            if self.is_max { l >= r } else { l <= r }
-        } else if self.is_max {
-            a[0] >= a[1]
-        } else {
-            a[0] <= a[1]
-        };
-        if pick_left { a[0] } else { a[1] }
-    }
-    fn symbolic_lane(&self, a: &[RustBV], _elem_width: u32, ctx: &SymContext) -> RustBV {
-        let l = a[0].clone();
-        let r = a[1].clone();
-        let cond = match (self.signed, self.is_max) {
-            (true, true) => l.clone().sge_into(r.clone(), ctx),
-            (true, false) => l.clone().sle_into(r.clone(), ctx),
-            (false, true) => l.clone().uge_into(r.clone(), ctx),
-            (false, false) => l.clone().ule_into(r.clone(), ctx),
-        };
-        cond.ite_into(l, r, ctx)
-    }
-}
-
-impl IntLaneOp for IAbs {
-    fn arity(&self) -> usize {
-        1
-    }
-    fn concrete_lane(&self, a: &[u128], elem_width: u32) -> u128 {
-        let v = a[0];
-        let sign_bit: u128 = 1u128 << (elem_width - 1);
-        // |x| = (~x + 1) when negative (two's complement), else x.
-        if v & sign_bit != 0 {
-            (!v).wrapping_add(1)
-        } else {
-            v
-        }
-    }
-    fn symbolic_lane(&self, a: &[RustBV], elem_width: u32, ctx: &SymContext) -> RustBV {
-        let elem_val = a[0].clone();
-        let zero = RustBV::concrete(0, elem_width);
-        let neg = elem_val.clone().neg_into(ctx);
-        let is_neg = elem_val.clone().slt_into(zero, ctx);
-        is_neg.ite_into(neg, elem_val, ctx)
-    }
-}
+use lane_traits::{
+    FAbs, FAdd, FDiv, FLOAT_LANE_OP_MAX_ARITY, FMax, FMin, FMul, FSqrt, FSub, FloatLaneOp, IAbs,
+    IAdd, ICmpEq, ICmpGt, IMinMax, IMul, INT_LANE_OP_MAX_ARITY, ISub, IntLaneOp, build_float_expr,
+    float_prec_of,
+};
 
 /// Compress same-width unary arms `assert width(arg) == ty.bits(); arg.$method(ctx)`.
 macro_rules! width_unop {
@@ -412,181 +102,12 @@ enum LaneCountKind {
     Cls,
 }
 
-/// Classify an `IROp` into a coarse-grained family for instrumentation
-/// (angr-2j5v). Counts roll up into `vex_op_<family>` counters via the
-/// `record_vex_*` recorder fns at the entry of the IRExpr dispatch in
-/// `interpreter/expressions.rs`.
-///
-/// `Vec` captures everything prefixed with `V*` (SIMD/NEON). `Fp` captures
-/// scalar FP plus the unprefixed FP conversions. `Other` is the catch-all
-/// for `Raw` opcode escapes, the `NeonUnimplemented` typed-error sentinel,
-/// and the `Unmapped` typed-error sentinel (angr-tkbr.2).
-#[inline]
-pub fn iropclass(op: &IROp) -> VexOpFamily {
-    match op {
-        // Integer arithmetic (incl. widening / divmod / mul-hi / neg)
-        IROp::Add(_)
-        | IROp::Sub(_)
-        | IROp::Mul(_)
-        | IROp::MullS(_)
-        | IROp::MullU(_)
-        | IROp::DivS(_)
-        | IROp::DivU(_)
-        | IROp::ModS(_)
-        | IROp::ModU(_)
-        | IROp::DivModU64to32
-        | IROp::DivModS64to32
-        | IROp::DivModU128to64
-        | IROp::DivModS128to64 => VexOpFamily::Arith,
+/// `IROp` -> `VexOpFamily` instrumentation classifier, extracted from this
+/// file (angr-9ke6b.170). Re-exported so the public path stays
+/// `vex::ops::iropclass`.
+mod classify;
 
-        // Bitwise logic
-        IROp::And(_) | IROp::Or(_) | IROp::Xor(_) | IROp::Not(_) => VexOpFamily::Logic,
-
-        // Shifts
-        IROp::Shl(_) | IROp::Shr(_) | IROp::Sar(_) => VexOpFamily::Shift,
-
-        // Integer comparison
-        IROp::CmpEQ(_)
-        | IROp::CmpNE(_)
-        | IROp::CmpLT(_)
-        | IROp::CmpLE(_)
-        | IROp::CmpLTU(_)
-        | IROp::CmpLEU(_) => VexOpFamily::Cmp,
-
-        // Width adjustment, bit-count, reinterpret, concat/extract
-        IROp::SignExtend { .. }
-        | IROp::ZeroExtend { .. }
-        | IROp::Truncate { .. }
-        | IROp::Clz(_)
-        | IROp::Ctz(_)
-        | IROp::PopCount(_)
-        | IROp::Reinterpret { .. }
-        | IROp::Concat { .. }
-        | IROp::Extract { .. } => VexOpFamily::Ext,
-
-        // Scalar FP (arith + cmp + conversions + rounding)
-        IROp::FAdd(_)
-        | IROp::FSub(_)
-        | IROp::FMul(_)
-        | IROp::FDiv(_)
-        | IROp::FNeg(_)
-        | IROp::FAbs(_)
-        | IROp::FSqrt(_)
-        | IROp::FMAdd(_)
-        | IROp::FMSub(_)
-        | IROp::FCmpEQ(_)
-        | IROp::FCmpLT(_)
-        | IROp::FCmpLE(_)
-        | IROp::FCmpScalarLane { .. }
-        | IROp::FCmpVecPacked { .. }
-        | IROp::FComCC(_)
-        | IROp::F32toF64
-        | IROp::F64toF32
-        | IROp::I32StoF32
-        | IROp::I32StoF64
-        | IROp::I64StoF32
-        | IROp::I64StoF64
-        | IROp::I32UtoF32
-        | IROp::I32UtoF64
-        | IROp::I64UtoF32
-        | IROp::I64UtoF64
-        | IROp::F32toI32S
-        | IROp::F64toI32S
-        | IROp::F32toI64S
-        | IROp::F64toI64S
-        | IROp::F32toI32U
-        | IROp::F64toI32U
-        | IROp::F32toI64U
-        | IROp::F64toI64U
-        | IROp::RoundF32toInt
-        | IROp::RoundF64toInt => VexOpFamily::Fp,
-
-        // SIMD/NEON — every V*-prefixed variant plus the V128 setters.
-        IROp::VFAddS { .. }
-        | IROp::VFSubS { .. }
-        | IROp::VFMulS { .. }
-        | IROp::VFDivS { .. }
-        | IROp::VFSqrtS { .. }
-        | IROp::VFMaxS { .. }
-        | IROp::VFMinS { .. }
-        | IROp::SetV128lo32
-        | IROp::SetV128lo64
-        | IROp::VAdd { .. }
-        | IROp::VSub { .. }
-        | IROp::VMul { .. }
-        | IROp::VMull { .. }
-        | IROp::VQDMull { .. }
-        | IROp::VAnd(_)
-        | IROp::VOr(_)
-        | IROp::VXor(_)
-        | IROp::VNot(_)
-        | IROp::VShlN { .. }
-        | IROp::VShrN { .. }
-        | IROp::VSarN { .. }
-        | IROp::VShl { .. }
-        | IROp::VShr { .. }
-        | IROp::VSar { .. }
-        | IROp::VCmpEQ { .. }
-        | IROp::VCmpGT { .. }
-        | IROp::VInterleaveLO { .. }
-        | IROp::VInterleaveHI { .. }
-        | IROp::VPerm { .. }
-        | IROp::VGetElem { .. }
-        | IROp::VSetElem { .. }
-        | IROp::VDup { .. }
-        | IROp::VWiden { .. }
-        | IROp::VNarrowUn { .. }
-        | IROp::VNarrowBin { .. }
-        | IROp::VQNarrowUn { .. }
-        | IROp::VQNarrowBin { .. }
-        | IROp::VReverse { .. }
-        | IROp::VQAdd { .. }
-        | IROp::VQSub { .. }
-        | IROp::VQShlSat { .. }
-        | IROp::VPwAdd { .. }
-        | IROp::VPwAddL { .. }
-        | IROp::VPwMin { .. }
-        | IROp::VPwMax { .. }
-        | IROp::VAvg { .. }
-        | IROp::VCnt { .. }
-        | IROp::VGetMSBs { .. }
-        | IROp::VClz { .. }
-        | IROp::VCls { .. }
-        | IROp::VPolynomialMul { .. }
-        | IROp::VMin { .. }
-        | IROp::VMax { .. }
-        | IROp::VAbs { .. }
-        | IROp::VFAdd { .. }
-        | IROp::VFSub { .. }
-        | IROp::VFMul { .. }
-        | IROp::VFDiv { .. }
-        | IROp::VFSqrt { .. }
-        | IROp::VFAbs { .. }
-        | IROp::VFMin { .. }
-        | IROp::VFMax { .. }
-        | IROp::VFPwAdd { .. }
-        | IROp::VFRecipEst { .. }
-        | IROp::VFRecipStep { .. }
-        | IROp::VFRSqrtEst { .. }
-        | IROp::VFRSqrtStep { .. }
-        | IROp::VFRecipEstS { .. }
-        | IROp::VFRSqrtEstS { .. }
-        | IROp::VIRecipEst { .. }
-        | IROp::VIRSqrtEst { .. } => VexOpFamily::Vec,
-
-        // x86-specific carry-less multiply / CRC32 — classified as Arith
-        // (they're integer ops in the polynomial / checksum sense).
-        IROp::PclmulLQLQ
-        | IROp::PclmulHQHQ
-        | IROp::PclmulLQHQ
-        | IROp::PclmulHQLQ
-        | IROp::Crc32C => VexOpFamily::Arith,
-
-        // Raw opcode escape + NEON panic sentinel + unmapped-opcode
-        // typed-error sentinel (angr-tkbr.2): not pre-classified.
-        IROp::NeonUnimplemented(_) | IROp::Unmapped(_) | IROp::Raw(_) => VexOpFamily::Other,
-    }
-}
+pub use classify::iropclass;
 
 impl VEXOps {
     // =========================================================================
@@ -1562,62 +1083,12 @@ impl VEXOps {
     }
 }
 
-/// Errors from VEX operation execution.
-///
-/// `#[non_exhaustive]` per angr-irwe: new variants land in minor
-/// versions as more ops gain explicit failure modes (e.g. additional
-/// NEON scaffold buckets). Match sites must include a wildcard arm.
-#[non_exhaustive]
-#[derive(Debug, Clone, thiserror::Error)]
-pub enum OpError {
-    /// Operation is not a unary operation.
-    #[error("operation {0:?} is not unary")]
-    NotUnary(IROp),
-    /// Operation is not a binary operation.
-    #[error("operation {0:?} is not binary")]
-    NotBinary(IROp),
-    /// Operation is not a quaternary operation.
-    #[error("operation {0:?} is not quaternary")]
-    NotQuaternary(IROp),
-    /// Type mismatch.
-    ///
-    /// Reserved/defensive variant on this public `#[non_exhaustive]` enum:
-    /// currently unconstructed (kept-with-ticket per angr-36vvn.5) for the
-    /// forthcoming type-checked op paths that will validate operand widths.
-    #[error("type mismatch: expected {expected:?}, got {got:?}")]
-    TypeMismatch { expected: IRType, got: IRType },
-    /// Invalid float type.
-    #[error("invalid float type: {0:?}")]
-    InvalidFloatType(IRType),
-    /// Unsupported vector operation.
-    #[error("unsupported vector operation: {0}")]
-    UnsupportedVectorOp(String),
-    /// NEON op that hasn't been implemented yet (angr-bkcs scaffold).
-    ///
-    /// Distinct from [`Self::UnsupportedVectorOp`] because the silent
-    /// fresh-symbolic fallback in `interpreter::expressions` swallows
-    /// generic `OpError`s — this variant is propagated explicitly so
-    /// missing NEON coverage surfaces as a typed `RustUnsupportedVexOpError`
-    /// (test path) or a stringified errored-stash record (live exploration)
-    /// instead of producing wrong results that are hard to attribute.
-    /// See `invariant-neon-scaffolding-panic-not-fallback` (bd memories).
-    #[error("NEON op {name} not yet implemented")]
-    UnsupportedNeon { name: &'static str },
-    /// Opcode string with no entry in `parse_opcode` (angr-tkbr.2).
-    ///
-    /// Routed from `IROp::Unmapped(name)`. Like `UnsupportedNeon`, this
-    /// is propagated explicitly past the silent fresh-symbolic fallback
-    /// in `interpreter::expressions` so callers see the real op name
-    /// (typed `RustUnsupportedVexOpError` on the test path; stringified
-    /// into the errored stash in live exploration — see the taxonomy note
-    /// in `errors.rs`) instead of getting a fresh-symbolic value of the
-    /// wrong width.
-    #[error("unmapped VEX opcode: {op_name}")]
-    UnsupportedVexOp { op_name: String },
-    /// Raw/unimplemented opcode.
-    #[error("raw/unimplemented opcode: {0}")]
-    RawOpcode(u32),
-}
+/// The [`OpError`] enum, extracted from this file (angr-9ke6b.170).
+/// Re-exported so the public path stays `vex::ops::OpError` and every
+/// `use super::OpError` in the sibling modules keeps resolving.
+mod error;
+
+pub use error::OpError;
 
 /// Integer widening-multiply / divmod helpers, split out of this file
 /// (angr-cudgw.18). Declared as a child module so its `pub(super)` methods
@@ -1630,15 +1101,18 @@ mod float_arith;
 /// Float/int conversion ops (int↔float, float↔float, round-to-int, and the
 /// rounding-mode binop variants), split out of this file (angr-cudgw.18).
 /// Declared as a child module so its `pub(super)` methods remain callable from
-/// the unop/binop dispatch above, and `build_float_expr` (shared free fn that
-/// stays in this file) stays visible by the descendant rule.
+/// the unop/binop dispatch above, and `build_float_expr` (shared free fn in the
+/// `lane_traits` sibling, re-exported here) stays visible by the descendant
+/// rule.
 mod conversions;
 
 /// Floating-point comparison ops (scalar FCmp/CmpF, SSE scalar-lane compare,
 /// packed FP compare), split out of this file (angr-cudgw.18). Declared as a
 /// child module so its `pub(super)` methods remain callable from the binop
-/// dispatch above, and the shared free fns / `Self::concat_le_elements` they
-/// reference (which stay in this file) stay visible by the descendant rule.
+/// dispatch above, and the shared items they reference
+/// (`Self::concat_le_elements` in this file; `build_float_expr` /
+/// `float_prec_of` in the `lane_traits` sibling) stay visible by the descendant
+/// rule.
 mod float_cmp;
 
 mod vec_lane;
@@ -1649,9 +1123,9 @@ mod vec_shift;
 /// Iop_PwAdd32Fx2, Iop_Avg), split out of this file (angr-cudgw.18). Declared
 /// as a child module so its `pub(super)` methods remain callable from the
 /// unop/binop dispatch above, and the shared siblings they reference
-/// (`Self::concat_le_elements`, `Self::vec_float_lane_op`, the `PwOp` enum, the
-/// `FAdd` marker — all of which stay in this file) stay visible via super/the
-/// descendant rule.
+/// (`Self::concat_le_elements`, `Self::vec_float_lane_op` and the `PwOp` enum,
+/// which stay in this file; the `FAdd` marker, which lives in the `lane_traits`
+/// sibling) stay visible via super/the descendant rule.
 mod vec_pairwise;
 
 /// NEON/SIMD integer saturation ops (Iop_QNarrowUn/QNarrowBin, Iop_QAdd/QSub,
@@ -1683,9 +1157,9 @@ mod vec_int_arith;
 /// fresh-symbolic-per-lane reciprocal/rsqrt fallbacks, split out of this file
 /// (angr-cudgw.18). Declared as a child module so its `pub(super)` methods
 /// remain callable from the binop/unop dispatch above, and the shared siblings
-/// they reference (`Self::concat_le_elements`, `build_float_expr`,
-/// `float_prec_of`, all of which stay in this file) stay visible via the
-/// descendant rule.
+/// they reference (`Self::concat_le_elements`, which stays in this file;
+/// `build_float_expr` and `float_prec_of`, which live in the `lane_traits`
+/// sibling) stay visible via the descendant rule.
 mod vec_float_scalar;
 
 /// Vector element-wise comparison and low/high interleave ops, split out of
@@ -1710,18 +1184,20 @@ mod vec_set_lo;
 /// Generic per-lane packed FP dispatcher (`vec_float_lane_op`), extracted from
 /// this file (angr-cudgw.18). Declared as a child module so its `pub(super)`
 /// method remains callable from the binop/unop dispatch above, and the shared
-/// siblings it references (`Self::concat_le_elements`, the `float_prec_of` free
-/// fn, the `FloatLaneOp` trait, `FLOAT_LANE_OP_MAX_ARITY`, all of which stay in
-/// this file) stay visible via the descendant rule.
+/// siblings it references (`Self::concat_le_elements`, which stays in this file;
+/// the `float_prec_of` free fn, the `FloatLaneOp` trait and
+/// `FLOAT_LANE_OP_MAX_ARITY`, which live in the `lane_traits` sibling) stay
+/// visible via the descendant rule.
 mod vec_float_lane;
 
 /// Generic per-lane packed-integer dispatcher (`vec_int_lane_op`), mirroring
 /// `vec_float_lane` for the integer family (add/sub/mul, eq/gt compare,
 /// signed/unsigned min/max, abs). Declared as a child module so its
 /// `pub(super)` method remains callable from the binop/unop dispatch above,
-/// and the shared siblings it references (`Self::concat_le_elements`,
-/// `Self::low_bit_mask_u128`, the `IntLaneOp` trait, `INT_LANE_OP_MAX_ARITY`,
-/// all of which stay in this file) stay visible via the descendant rule.
+/// and the shared siblings it references (`Self::concat_le_elements` and
+/// `Self::low_bit_mask_u128`, which stay in this file; the `IntLaneOp` trait
+/// and `INT_LANE_OP_MAX_ARITY`, which live in the `lane_traits` sibling) stay
+/// visible via the descendant rule.
 mod vec_int_lane;
 
 // angr-9hleg: the former monolithic ops_tests.rs (5288 lines) was split by
