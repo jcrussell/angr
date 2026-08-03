@@ -594,9 +594,13 @@ fn get_reg_varnode(vm: &icicle_vm::Vm, name: &str) -> PyResult<pcode::VarNode> {
 }
 
 /// Converts a permission byte to an icicle permission byte.
+///
+/// The input follows the cle/angr convention — bit 0 read, bit 1 write, bit 2
+/// exec — so the three literals below are written at a uniform 3-bit width to
+/// keep the bit positions countable at a glance.
 fn perms_to_icicle(perm: u8) -> u8 {
     let mut icicle_perm = perm::INIT; // Always mark as initialized
-    if perm & 0b1 != 0 {
+    if perm & 0b001 != 0 {
         icicle_perm |= perm::READ;
     }
     if perm & 0b010 != 0 {
