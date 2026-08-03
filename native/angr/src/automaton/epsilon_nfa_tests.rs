@@ -78,3 +78,40 @@ fn test_move_on_symbol_rejects_epsilon() {
     let start = StateSet::singleton(0, 2);
     assert_eq!(nfa.move_on_symbol(&start, EPSILON), Err(EpsilonSymbolError));
 }
+
+/// The cached closure path must agree with the on-the-fly DFS path.
+#[test]
+fn test_epsilon_closure_cached_matches_uncached() {
+    let mut nfa = EpsilonNFA::new();
+    // 0 -ε-> 1 -ε-> 2, 3 -a-> 0 (3 has no epsilon successors)
+    nfa.add_epsilon_transition(0, 1);
+    nfa.add_epsilon_transition(1, 2);
+    nfa.add_transition(3, 0, 0);
+
+    let states: Vec<StateSet> = (0..nfa.num_states())
+        .map(|s| StateSet::singleton(s, nfa.num_states() as usize))
+        .collect();
+    let uncached: Vec<StateSet> = states.iter().map(|s| nfa.epsilon_closure(s)).collect();
+
+    nfa.compute_epsilon_closures();
+    for (state, expected) in states.iter().zip(&uncached) {
+        assert_eq!(nfa.epsilon_closure(state), *expected);
+    }
+}
+
+/// angr-9ke6b.193: a state id past the end of the closure cache means a stale
+/// cache (or a bogus caller id) and must panic rather than be skipped, which
+/// would silently drop states from the closure.
+#[test]
+#[should_panic(expected = "the epsilon-closure cache is stale")]
+fn test_epsilon_closure_panics_on_stale_cache() {
+    let mut nfa = EpsilonNFA::new();
+    nfa.add_epsilon_transition(0, 1);
+    nfa.compute_epsilon_closures();
+
+    // Simulate the cache-invalidation bug the panic guards against: grow the
+    // NFA without clearing `epsilon_closures` (no public API can do this).
+    nfa.num_states = 4;
+
+    let _ = nfa.epsilon_closure(&StateSet::singleton(3, 4));
+}

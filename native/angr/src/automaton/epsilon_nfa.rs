@@ -158,15 +158,34 @@ impl EpsilonNFA {
     }
 
     /// Get the epsilon closure of a set of states.
+    ///
+    /// # Panics
+    ///
+    /// Every id in `states` must be a state of this NFA (`< num_states`), which
+    /// holds by construction for the in-tree callers — they draw their state
+    /// sets from `start_states` or from `transitions` destinations. A violation
+    /// therefore means either a caller-supplied bogus id or, once
+    /// `compute_epsilon_closures` has run, a mutation that grew the NFA without
+    /// clearing the cache (`ensure_state` and `add_transition` both clear it).
+    /// Both are bugs and both panic rather than skip the offending state:
+    /// skipping drops states from the closure, which surfaces later as a
+    /// silently wrong automaton instead of a debuggable failure (angr-9ke6b.193).
     pub fn epsilon_closure(&self, states: &StateSet) -> StateSet {
         let mut closure = StateSet::with_capacity(self.num_states as usize);
 
         if let Some(cached) = &self.epsilon_closures {
             // Use cached closures
             for state in states.iter() {
-                if (state as usize) < cached.len() {
-                    closure.union_with(&cached[state as usize]);
-                }
+                let Some(state_closure) = cached.get(state as usize) else {
+                    panic!(
+                        "epsilon_closure: state {state} is outside the {} cached \
+                         closures (num_states={}); the epsilon-closure cache is \
+                         stale or the state id is not a state of this NFA",
+                        cached.len(),
+                        self.num_states
+                    );
+                };
+                closure.union_with(state_closure);
             }
         } else {
             // Compute on-the-fly using DFS
