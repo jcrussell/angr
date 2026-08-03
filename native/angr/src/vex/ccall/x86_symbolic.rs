@@ -522,7 +522,3 @@ pub(super) fn symbolic_eflags_logic(
 ) -> RustBV {
     sym_pack_eflags(&sym_flags_logic(nbits, dep1, ctx), ret_bits, ctx)
 }
-
-// ============================================================
-// Concrete flag computation
-// ============================================================
