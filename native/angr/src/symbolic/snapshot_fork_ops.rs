@@ -35,6 +35,37 @@ use std::cell::{Cell, RefCell};
 use std::sync::atomic::AtomicU32;
 
 impl SymContext {
+    /// Debug-only guard for the snapshot quiescence precondition
+    /// (angr-9ke6b.135): no push/pop scope may be open across a
+    /// [`to_snapshot`](Self::to_snapshot) /
+    /// [`restore_from_snapshot`](Self::restore_from_snapshot), because the
+    /// snapshot carries none of the scope state that a `pop()` needs.
+    ///
+    /// Checks `bare_local_savepoints` rather than `bare_z3_push_depth` +
+    /// `scope_savepoints` separately: `scope_savepoint_push` records on it
+    /// along BOTH dispatch branches (bare-Z3 and shared-lineage), so it is the
+    /// single canonical "a scope is open" indicator and costs one lock.
+    ///
+    /// Debug-only for the same reason as the residual-log bounds check in
+    /// `to_snapshot`: this sits on the fork path, and a lock per snapshot is
+    /// not free.
+    #[inline]
+    fn debug_assert_no_open_scope(&self, who: &str) {
+        #[cfg(all(debug_assertions, feature = "vex-engine-z3"))]
+        {
+            let open = self.bare_local_savepoints.lock().len();
+            debug_assert_eq!(
+                open, 0,
+                "{who} called with {open} open push/pop scope(s) — the snapshot \
+                 drops bare_z3_push_depth / scope_savepoints / scope_path, so \
+                 the restored context would report depth 0 and let a later \
+                 fork() mint a SharedLineageSolver the gate exists to prevent"
+            );
+        }
+        #[cfg(not(all(debug_assertions, feature = "vex-engine-z3")))]
+        let _ = who;
+    }
+
     /// Build a serializable snapshot of this context's path-constraint state
     /// (angr-x04s.1.2).
     ///
@@ -60,11 +91,18 @@ impl SymContext {
     /// it can never hand back an id this process already issued.
     /// See [`SymContextSnapshot::next_id`].
     ///
+    /// The push/pop scope state (`bare_z3_push_depth`, `scope_savepoints`,
+    /// `scope_path`) is deliberately NOT captured, so this must only be called
+    /// at a quiescent point with no open scope — see the "Quiescence
+    /// precondition" section on [`SymContextSnapshot`] and the
+    /// `debug_assert!` below.
+    ///
     /// See `snapshot-serialization-design` for the broader plan and
     /// `rustsimstate-field-buckets` for which surrounding state buckets
     /// are covered (RegisterFile / MemoryPage) versus deferred
     /// (Python-side `Py<PyAny>` overlays).
     pub fn to_snapshot(&self) -> SymContextSnapshot {
+        self.debug_assert_no_open_scope("to_snapshot");
         let assumed_constraints = self.get_assumed_constraints();
         // angr-t3l5o Phase 1: two-class capture. The assume class is carried
         // as `assumed_constraints` IR and rebuilt by re-asserting via
@@ -275,7 +313,13 @@ impl SymContext {
     /// Must run inside an active Z3 thread-local context when the
     /// `vex-engine-z3` feature is enabled (the same rule as `RustBV`
     /// deserialization — see `snapshot-rustbv-shadow-type-pattern`).
+    ///
+    /// Like `to_snapshot`, this must run at a quiescent point — `self` is
+    /// expected to be a freshly-constructed context with no open push/pop
+    /// scope (see the "Quiescence precondition" section on
+    /// [`SymContextSnapshot`]); a `debug_assert!` enforces it.
     pub fn restore_from_snapshot(&self, snap: &SymContextSnapshot) {
+        self.debug_assert_no_open_scope("restore_from_snapshot");
         // angr-op0dn.13.14: raise the global id allocator past every id the
         // restored leaves already own. The `RustBV::Symbolic` leaves
         // deserialized into this context's registers / memory / constraints

@@ -116,6 +116,23 @@ use super::solver_build::*;
 /// Per-Z3-context cache state (solver, model_cache, sat_cache, lineage
 /// scope_path, push stacks) is NOT included — these are runtime caches that
 /// the loader rebuilds on first query against the restored constraints.
+///
+/// # Quiescence precondition (angr-9ke6b.135)
+///
+/// Because the push stacks are dropped, capture and restore are only valid at
+/// a point with **no open push/pop scope**: `bare_z3_push_depth == 0`,
+/// `scope_savepoints` empty, `scope_path` at its base. All real callers
+/// ([`RustSimState::to_snapshot`](crate::state::RustSimState::to_snapshot) and
+/// the stash-manager round-trip) are top-level state-persistence points that
+/// satisfy this, and restore always runs against a freshly-constructed
+/// [`SymContext`] whose depth is 0 by construction.
+///
+/// A snapshot taken mid-scope would silently reset `bare_z3_push_depth` to 0
+/// on restore, which would let a later [`fork`](SymContext::fork) mint a
+/// `SharedLineageSolver` frame in exactly the situation that counter's gate
+/// exists to prevent (the parent's unbalanced bare pushes leaking into the
+/// child's base — see the `v5a5-bare-z3-push-depth-counter-design` memo).
+/// `to_snapshot` / `restore_from_snapshot` carry a `debug_assert!` for this.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SymContextSnapshot {
     /// `(constraint, is_assumed_true)` pairs in insertion order.
