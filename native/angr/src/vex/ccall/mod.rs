@@ -21,144 +21,144 @@ use x86_concrete::*;
 use x86_symbolic::*;
 
 /// CC_OP values for AMD64 (from VEX's libvex_guest_amd64.h)
-pub mod amd64_cc_op {
-    pub const G_CC_OP_COPY: u64 = 0;
-    pub const G_CC_OP_ADDB: u64 = 1;
-    pub const G_CC_OP_ADDW: u64 = 2;
-    pub const G_CC_OP_ADDL: u64 = 3;
-    pub const G_CC_OP_ADDQ: u64 = 4;
-    pub const G_CC_OP_SUBB: u64 = 5;
-    pub const G_CC_OP_SUBW: u64 = 6;
-    pub const G_CC_OP_SUBL: u64 = 7;
-    pub const G_CC_OP_SUBQ: u64 = 8;
-    pub const G_CC_OP_ADCB: u64 = 9;
-    pub const G_CC_OP_ADCW: u64 = 10;
-    pub const G_CC_OP_ADCL: u64 = 11;
-    pub const G_CC_OP_ADCQ: u64 = 12;
-    pub const G_CC_OP_SBBB: u64 = 13;
-    pub const G_CC_OP_SBBW: u64 = 14;
-    pub const G_CC_OP_SBBL: u64 = 15;
-    pub const G_CC_OP_SBBQ: u64 = 16;
-    pub const G_CC_OP_LOGICB: u64 = 17;
-    pub const G_CC_OP_LOGICW: u64 = 18;
-    pub const G_CC_OP_LOGICL: u64 = 19;
-    pub const G_CC_OP_LOGICQ: u64 = 20;
-    pub const G_CC_OP_INCB: u64 = 21;
-    pub const G_CC_OP_INCW: u64 = 22;
-    pub const G_CC_OP_INCL: u64 = 23;
-    pub const G_CC_OP_INCQ: u64 = 24;
-    pub const G_CC_OP_DECB: u64 = 25;
-    pub const G_CC_OP_DECW: u64 = 26;
-    pub const G_CC_OP_DECL: u64 = 27;
-    pub const G_CC_OP_DECQ: u64 = 28;
-    pub const G_CC_OP_SHLB: u64 = 29;
-    pub const G_CC_OP_SHLW: u64 = 30;
-    pub const G_CC_OP_SHLL: u64 = 31;
-    pub const G_CC_OP_SHLQ: u64 = 32;
-    pub const G_CC_OP_SHRB: u64 = 33;
-    pub const G_CC_OP_SHRW: u64 = 34;
-    pub const G_CC_OP_SHRL: u64 = 35;
-    pub const G_CC_OP_SHRQ: u64 = 36;
-    pub const G_CC_OP_ROLB: u64 = 37;
-    pub const G_CC_OP_ROLW: u64 = 38;
-    pub const G_CC_OP_ROLL: u64 = 39;
-    pub const G_CC_OP_ROLQ: u64 = 40;
-    pub const G_CC_OP_RORB: u64 = 41;
-    pub const G_CC_OP_RORW: u64 = 42;
-    pub const G_CC_OP_RORL: u64 = 43;
-    pub const G_CC_OP_RORQ: u64 = 44;
-    pub const G_CC_OP_UMULB: u64 = 45;
-    pub const G_CC_OP_UMULW: u64 = 46;
-    pub const G_CC_OP_UMULL: u64 = 47;
-    pub const G_CC_OP_UMULQ: u64 = 48;
-    pub const G_CC_OP_SMULB: u64 = 49;
-    pub const G_CC_OP_SMULW: u64 = 50;
-    pub const G_CC_OP_SMULL: u64 = 51;
-    pub const G_CC_OP_SMULQ: u64 = 52;
+mod amd64_cc_op {
+    pub(crate) const G_CC_OP_COPY: u64 = 0;
+    pub(crate) const G_CC_OP_ADDB: u64 = 1;
+    pub(crate) const G_CC_OP_ADDW: u64 = 2;
+    pub(crate) const G_CC_OP_ADDL: u64 = 3;
+    pub(crate) const G_CC_OP_ADDQ: u64 = 4;
+    pub(crate) const G_CC_OP_SUBB: u64 = 5;
+    pub(crate) const G_CC_OP_SUBW: u64 = 6;
+    pub(crate) const G_CC_OP_SUBL: u64 = 7;
+    pub(crate) const G_CC_OP_SUBQ: u64 = 8;
+    pub(crate) const G_CC_OP_ADCB: u64 = 9;
+    pub(crate) const G_CC_OP_ADCW: u64 = 10;
+    pub(crate) const G_CC_OP_ADCL: u64 = 11;
+    pub(crate) const G_CC_OP_ADCQ: u64 = 12;
+    pub(crate) const G_CC_OP_SBBB: u64 = 13;
+    pub(crate) const G_CC_OP_SBBW: u64 = 14;
+    pub(crate) const G_CC_OP_SBBL: u64 = 15;
+    pub(crate) const G_CC_OP_SBBQ: u64 = 16;
+    pub(crate) const G_CC_OP_LOGICB: u64 = 17;
+    pub(crate) const G_CC_OP_LOGICW: u64 = 18;
+    pub(crate) const G_CC_OP_LOGICL: u64 = 19;
+    pub(crate) const G_CC_OP_LOGICQ: u64 = 20;
+    pub(crate) const G_CC_OP_INCB: u64 = 21;
+    pub(crate) const G_CC_OP_INCW: u64 = 22;
+    pub(crate) const G_CC_OP_INCL: u64 = 23;
+    pub(crate) const G_CC_OP_INCQ: u64 = 24;
+    pub(crate) const G_CC_OP_DECB: u64 = 25;
+    pub(crate) const G_CC_OP_DECW: u64 = 26;
+    pub(crate) const G_CC_OP_DECL: u64 = 27;
+    pub(crate) const G_CC_OP_DECQ: u64 = 28;
+    pub(crate) const G_CC_OP_SHLB: u64 = 29;
+    pub(crate) const G_CC_OP_SHLW: u64 = 30;
+    pub(crate) const G_CC_OP_SHLL: u64 = 31;
+    pub(crate) const G_CC_OP_SHLQ: u64 = 32;
+    pub(crate) const G_CC_OP_SHRB: u64 = 33;
+    pub(crate) const G_CC_OP_SHRW: u64 = 34;
+    pub(crate) const G_CC_OP_SHRL: u64 = 35;
+    pub(crate) const G_CC_OP_SHRQ: u64 = 36;
+    pub(crate) const G_CC_OP_ROLB: u64 = 37;
+    pub(crate) const G_CC_OP_ROLW: u64 = 38;
+    pub(crate) const G_CC_OP_ROLL: u64 = 39;
+    pub(crate) const G_CC_OP_ROLQ: u64 = 40;
+    pub(crate) const G_CC_OP_RORB: u64 = 41;
+    pub(crate) const G_CC_OP_RORW: u64 = 42;
+    pub(crate) const G_CC_OP_RORL: u64 = 43;
+    pub(crate) const G_CC_OP_RORQ: u64 = 44;
+    pub(crate) const G_CC_OP_UMULB: u64 = 45;
+    pub(crate) const G_CC_OP_UMULW: u64 = 46;
+    pub(crate) const G_CC_OP_UMULL: u64 = 47;
+    pub(crate) const G_CC_OP_UMULQ: u64 = 48;
+    pub(crate) const G_CC_OP_SMULB: u64 = 49;
+    pub(crate) const G_CC_OP_SMULW: u64 = 50;
+    pub(crate) const G_CC_OP_SMULL: u64 = 51;
+    pub(crate) const G_CC_OP_SMULQ: u64 = 52;
 }
 
 /// CC_OP values for X86 (from VEX's libvex_guest_x86.h)
-pub mod x86_cc_op {
-    pub const G_CC_OP_COPY: u64 = 0;
-    pub const G_CC_OP_ADDB: u64 = 1;
-    pub const G_CC_OP_ADDW: u64 = 2;
-    pub const G_CC_OP_ADDL: u64 = 3;
-    pub const G_CC_OP_SUBB: u64 = 4;
-    pub const G_CC_OP_SUBW: u64 = 5;
-    pub const G_CC_OP_SUBL: u64 = 6;
-    pub const G_CC_OP_ADCB: u64 = 7;
-    pub const G_CC_OP_ADCW: u64 = 8;
-    pub const G_CC_OP_ADCL: u64 = 9;
-    pub const G_CC_OP_SBBB: u64 = 10;
-    pub const G_CC_OP_SBBW: u64 = 11;
-    pub const G_CC_OP_SBBL: u64 = 12;
-    pub const G_CC_OP_LOGICB: u64 = 13;
-    pub const G_CC_OP_LOGICW: u64 = 14;
-    pub const G_CC_OP_LOGICL: u64 = 15;
-    pub const G_CC_OP_INCB: u64 = 16;
-    pub const G_CC_OP_INCW: u64 = 17;
-    pub const G_CC_OP_INCL: u64 = 18;
-    pub const G_CC_OP_DECB: u64 = 19;
-    pub const G_CC_OP_DECW: u64 = 20;
-    pub const G_CC_OP_DECL: u64 = 21;
-    pub const G_CC_OP_SHLB: u64 = 22;
-    pub const G_CC_OP_SHLW: u64 = 23;
-    pub const G_CC_OP_SHLL: u64 = 24;
-    pub const G_CC_OP_SHRB: u64 = 25;
-    pub const G_CC_OP_SHRW: u64 = 26;
-    pub const G_CC_OP_SHRL: u64 = 27;
-    pub const G_CC_OP_ROLB: u64 = 28;
-    pub const G_CC_OP_ROLW: u64 = 29;
-    pub const G_CC_OP_ROLL: u64 = 30;
-    pub const G_CC_OP_RORB: u64 = 31;
-    pub const G_CC_OP_RORW: u64 = 32;
-    pub const G_CC_OP_RORL: u64 = 33;
-    pub const G_CC_OP_UMULB: u64 = 34;
-    pub const G_CC_OP_UMULW: u64 = 35;
-    pub const G_CC_OP_UMULL: u64 = 36;
-    pub const G_CC_OP_SMULB: u64 = 37;
-    pub const G_CC_OP_SMULW: u64 = 38;
-    pub const G_CC_OP_SMULL: u64 = 39;
+mod x86_cc_op {
+    pub(crate) const G_CC_OP_COPY: u64 = 0;
+    pub(crate) const G_CC_OP_ADDB: u64 = 1;
+    pub(crate) const G_CC_OP_ADDW: u64 = 2;
+    pub(crate) const G_CC_OP_ADDL: u64 = 3;
+    pub(crate) const G_CC_OP_SUBB: u64 = 4;
+    pub(crate) const G_CC_OP_SUBW: u64 = 5;
+    pub(crate) const G_CC_OP_SUBL: u64 = 6;
+    pub(crate) const G_CC_OP_ADCB: u64 = 7;
+    pub(crate) const G_CC_OP_ADCW: u64 = 8;
+    pub(crate) const G_CC_OP_ADCL: u64 = 9;
+    pub(crate) const G_CC_OP_SBBB: u64 = 10;
+    pub(crate) const G_CC_OP_SBBW: u64 = 11;
+    pub(crate) const G_CC_OP_SBBL: u64 = 12;
+    pub(crate) const G_CC_OP_LOGICB: u64 = 13;
+    pub(crate) const G_CC_OP_LOGICW: u64 = 14;
+    pub(crate) const G_CC_OP_LOGICL: u64 = 15;
+    pub(crate) const G_CC_OP_INCB: u64 = 16;
+    pub(crate) const G_CC_OP_INCW: u64 = 17;
+    pub(crate) const G_CC_OP_INCL: u64 = 18;
+    pub(crate) const G_CC_OP_DECB: u64 = 19;
+    pub(crate) const G_CC_OP_DECW: u64 = 20;
+    pub(crate) const G_CC_OP_DECL: u64 = 21;
+    pub(crate) const G_CC_OP_SHLB: u64 = 22;
+    pub(crate) const G_CC_OP_SHLW: u64 = 23;
+    pub(crate) const G_CC_OP_SHLL: u64 = 24;
+    pub(crate) const G_CC_OP_SHRB: u64 = 25;
+    pub(crate) const G_CC_OP_SHRW: u64 = 26;
+    pub(crate) const G_CC_OP_SHRL: u64 = 27;
+    pub(crate) const G_CC_OP_ROLB: u64 = 28;
+    pub(crate) const G_CC_OP_ROLW: u64 = 29;
+    pub(crate) const G_CC_OP_ROLL: u64 = 30;
+    pub(crate) const G_CC_OP_RORB: u64 = 31;
+    pub(crate) const G_CC_OP_RORW: u64 = 32;
+    pub(crate) const G_CC_OP_RORL: u64 = 33;
+    pub(crate) const G_CC_OP_UMULB: u64 = 34;
+    pub(crate) const G_CC_OP_UMULW: u64 = 35;
+    pub(crate) const G_CC_OP_UMULL: u64 = 36;
+    pub(crate) const G_CC_OP_SMULB: u64 = 37;
+    pub(crate) const G_CC_OP_SMULW: u64 = 38;
+    pub(crate) const G_CC_OP_SMULL: u64 = 39;
 }
 
 /// Condition types (same for x86 and AMD64)
-pub mod cond_type {
-    pub const COND_O: u64 = 0; // Overflow
-    pub const COND_NO: u64 = 1; // Not overflow
-    pub const COND_B: u64 = 2; // Below (CF=1)
-    pub const COND_NB: u64 = 3; // Not below (CF=0)
-    pub const COND_Z: u64 = 4; // Zero (ZF=1)
-    pub const COND_NZ: u64 = 5; // Not zero (ZF=0)
-    pub const COND_BE: u64 = 6; // Below or equal (CF=1 or ZF=1)
-    pub const COND_NBE: u64 = 7; // Not below or equal (CF=0 and ZF=0)
-    pub const COND_S: u64 = 8; // Sign (SF=1)
-    pub const COND_NS: u64 = 9; // Not sign (SF=0)
-    pub const COND_P: u64 = 10; // Parity even (PF=1)
-    pub const COND_NP: u64 = 11; // Parity odd (PF=0)
-    pub const COND_L: u64 = 12; // Less (SF != OF)
-    pub const COND_NL: u64 = 13; // Not less (SF == OF)
-    pub const COND_LE: u64 = 14; // Less or equal (ZF=1 or SF != OF)
-    pub const COND_NLE: u64 = 15; // Not less or equal (ZF=0 and SF == OF)
+mod cond_type {
+    pub(crate) const COND_O: u64 = 0; // Overflow
+    pub(crate) const COND_NO: u64 = 1; // Not overflow
+    pub(crate) const COND_B: u64 = 2; // Below (CF=1)
+    pub(crate) const COND_NB: u64 = 3; // Not below (CF=0)
+    pub(crate) const COND_Z: u64 = 4; // Zero (ZF=1)
+    pub(crate) const COND_NZ: u64 = 5; // Not zero (ZF=0)
+    pub(crate) const COND_BE: u64 = 6; // Below or equal (CF=1 or ZF=1)
+    pub(crate) const COND_NBE: u64 = 7; // Not below or equal (CF=0 and ZF=0)
+    pub(crate) const COND_S: u64 = 8; // Sign (SF=1)
+    pub(crate) const COND_NS: u64 = 9; // Not sign (SF=0)
+    pub(crate) const COND_P: u64 = 10; // Parity even (PF=1)
+    pub(crate) const COND_NP: u64 = 11; // Parity odd (PF=0)
+    pub(crate) const COND_L: u64 = 12; // Less (SF != OF)
+    pub(crate) const COND_NL: u64 = 13; // Not less (SF == OF)
+    pub(crate) const COND_LE: u64 = 14; // Less or equal (ZF=1 or SF != OF)
+    pub(crate) const COND_NLE: u64 = 15; // Not less or equal (ZF=0 and SF == OF)
 }
 
 /// Flag bit offsets in EFLAGS
-pub mod flag_shift {
-    pub const G_CC_SHIFT_O: u32 = 11;
-    pub const G_CC_SHIFT_S: u32 = 7;
-    pub const G_CC_SHIFT_Z: u32 = 6;
-    pub const G_CC_SHIFT_A: u32 = 4;
-    pub const G_CC_SHIFT_C: u32 = 0;
-    pub const G_CC_SHIFT_P: u32 = 2;
+mod flag_shift {
+    pub(crate) const G_CC_SHIFT_O: u32 = 11;
+    pub(crate) const G_CC_SHIFT_S: u32 = 7;
+    pub(crate) const G_CC_SHIFT_Z: u32 = 6;
+    pub(crate) const G_CC_SHIFT_A: u32 = 4;
+    pub(crate) const G_CC_SHIFT_C: u32 = 0;
+    pub(crate) const G_CC_SHIFT_P: u32 = 2;
 }
 
 /// Flag bit masks
-pub mod flag_mask {
-    pub const G_CC_MASK_O: u64 = 1 << super::flag_shift::G_CC_SHIFT_O;
-    pub const G_CC_MASK_S: u64 = 1 << super::flag_shift::G_CC_SHIFT_S;
-    pub const G_CC_MASK_Z: u64 = 1 << super::flag_shift::G_CC_SHIFT_Z;
-    pub const G_CC_MASK_A: u64 = 1 << super::flag_shift::G_CC_SHIFT_A;
-    pub const G_CC_MASK_C: u64 = 1 << super::flag_shift::G_CC_SHIFT_C;
-    pub const G_CC_MASK_P: u64 = 1 << super::flag_shift::G_CC_SHIFT_P;
+mod flag_mask {
+    pub(crate) const G_CC_MASK_O: u64 = 1 << super::flag_shift::G_CC_SHIFT_O;
+    pub(crate) const G_CC_MASK_S: u64 = 1 << super::flag_shift::G_CC_SHIFT_S;
+    pub(crate) const G_CC_MASK_Z: u64 = 1 << super::flag_shift::G_CC_SHIFT_Z;
+    pub(crate) const G_CC_MASK_A: u64 = 1 << super::flag_shift::G_CC_SHIFT_A;
+    pub(crate) const G_CC_MASK_C: u64 = 1 << super::flag_shift::G_CC_SHIFT_C;
+    pub(crate) const G_CC_MASK_P: u64 = 1 << super::flag_shift::G_CC_SHIFT_P;
 }
 
 /// Operation category implied by a CC_OP value.
@@ -469,10 +469,13 @@ fn calculate_eflags_all(
 /// Delegates to [`handle_ccall_with_ctx`] with `ctx = None`. Production code
 /// (the interpreter) calls `handle_ccall_with_ctx` directly with a live
 /// `SymContext`; this wrapper has no production callers and is retained only
-/// for tests that exercise the concrete path (see angr-36vvn.4).
+/// for tests that exercise the concrete path (see angr-36vvn.4), so it is
+/// compiled under `cfg(test)` and scoped to `pub(super)` — the only consumer
+/// is the `ccall_tests` child module.
 ///
 /// Returns Some(result) if the call was handled, None if not supported.
-pub fn handle_ccall(name: &str, args: &[RustBV], ret_bits: u32) -> Option<RustBV> {
+#[cfg(test)]
+pub(super) fn handle_ccall(name: &str, args: &[RustBV], ret_bits: u32) -> Option<RustBV> {
     handle_ccall_with_ctx(name, args, ret_bits, None)
 }
 
