@@ -397,8 +397,8 @@ impl RustExplorationManager {
 
     pub(crate) fn _get_pending_root_state_id(&self, state_id: u64) -> PyResult<Option<u64>> {
         self.with_pending(state_id, |pending| {
-            let state_id = pending.state.state_id();
-            Ok(self.sm.roots().get(&state_id).copied())
+            let self_id = pending.state.state_id();
+            Ok(self.sm.roots().get(&self_id).copied())
         })
     }
 

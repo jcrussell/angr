@@ -601,12 +601,11 @@ impl RustExplorationManager {
         if matches!(kind, Some(MatKind::Bounce(_))) {
             sess.session.count_bounce_roundtrip();
         }
-        let before = bounce_queue.len();
+        // `bounce_queue` may or may not grow here — a bounce routed to a
+        // find/avoid address short-circuits inside the helper (no push); if it
+        // landed in FOUND, the outer num_find check will finalize + cancel,
+        // stopping the workers. So there is nothing to assert about its length.
         self.route_materialized_terminal(state, kind, root, bounce_queue);
-        // A bounce routed to a find/avoid address short-circuits inside the
-        // helper (no push); if it landed in FOUND, the outer num_find check
-        // will finalize + cancel, stopping the workers.
-        let _ = before;
     }
 }
 
