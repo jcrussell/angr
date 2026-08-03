@@ -992,9 +992,18 @@ impl RustBV {
         self.clone().concat_into(other.clone(), ctx)
     }
 
-    /// Concatenate two bitvectors, consuming both arguments.
+    /// The single implementation of Concat: concrete fold plus 128-bit
+    /// overflow guard, else a `Concat` expression node.
+    ///
+    /// Both public entry points (`concat_into`, which takes a `SymContext`
+    /// it does not need, and `concat_no_ctx`, which borrows) route through
+    /// here so the overflow guard cannot be tweaked in only one copy
+    /// (angr-9ke6b.138). Taking owned operands costs the borrowing caller
+    /// nothing: the only fold-eligible variants (`Concrete`, `Constrained`)
+    /// hold no `Arc`, and the expression fallthrough consumes both operands
+    /// anyway.
     #[inline]
-    pub fn concat_into(self, other: Self, _ctx: &SymContext) -> Self {
+    fn concat_owned(self, other: Self) -> Self {
         let result_width = self.width() + other.width();
         match (self.as_u128(), other.as_u128()) {
             // A `Concrete` value is stored in a u128, so it can hold at most
@@ -1012,6 +1021,12 @@ impl RustBV {
                 Self::expr_node(result_width, BVOp::Concat, [self, other])
             }
         }
+    }
+
+    /// Concatenate two bitvectors, consuming both arguments.
+    #[inline]
+    pub fn concat_into(self, other: Self, _ctx: &SymContext) -> Self {
+        self.concat_owned(other)
     }
 
     /// Extract bits without requiring a SymContext (same logic, ctx unused).
@@ -1067,23 +1082,7 @@ impl RustBV {
     /// Concatenate without requiring a SymContext (same logic, ctx unused).
     #[inline]
     pub fn concat_no_ctx(&self, other: &Self) -> Self {
-        let result_width = self.width() + other.width();
-        match (self.as_u128(), other.as_u128()) {
-            // A `Concrete` value is stored in a u128, so it can hold at most
-            // 128 bits. Folding a wider result would overflow the shift
-            // (`hi << other.width()` with `other.width() >= 128` wraps the
-            // shift amount mod 128 in release builds — and panics in debug),
-            // silently corrupting the value. Keep results wider than 128 bits
-            // as a `Concat` expression so they stay exact.
-            (Some(hi), Some(lo)) if result_width <= 128 => {
-                let combined = (hi << other.width()) | lo;
-                Self::concrete(combined, result_width)
-            }
-            _ => {
-                record_bvop_concat();
-                Self::expr_node(result_width, BVOp::Concat, [self.clone(), other.clone()])
-            }
-        }
+        self.clone().concat_owned(other.clone())
     }
 
     // =========================================================================
