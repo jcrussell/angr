@@ -17,6 +17,26 @@ fn test_ir_const_types() {
     assert_eq!(IRConst::U64(42).get_type(), IRType::I64);
 }
 
+/// `Iop_DivMod{U,S}128to64` are typed `:: V128,I64 -> V128` by libVEX, not
+/// `Ity_I128` (angr-9ke6b.169). Only the width is load-bearing for dispatch,
+/// but the tag must still match the surrounding chain — guests build the
+/// dividend with `Iop_64HLtoV128` and split the result with `Iop_V128to64`.
+#[test]
+fn test_divmod_128_to_64_result_is_vector_tagged() {
+    for op_str in ["Iop_DivModU128to64", "Iop_DivModS128to64"] {
+        assert_eq!(
+            parse_opcode(op_str).result_type(),
+            Some(IRType::V128),
+            "{op_str}: result_type must match libVEX's V128 signature"
+        );
+    }
+    // The dividend/result carrier ops agree on the tag.
+    assert_eq!(
+        parse_opcode("Iop_64HLtoV128").result_type(),
+        Some(IRType::V128)
+    );
+}
+
 /// `IROp::result_type()` for the width-preserving packed lane ops must derive
 /// the total width from elem*count, not hardcode V128 (angr-9ke6b.163). The
 /// expectations are cross-checked against `parse_opcode`, so the two sources

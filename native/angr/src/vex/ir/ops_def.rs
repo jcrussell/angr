@@ -37,7 +37,10 @@ pub enum IROp {
     DivModU64to32, // Unsigned
     DivModS64to32, // Signed
 
-    /// DivMod: 128-bit dividend / 64-bit divisor -> 128-bit (low=quotient, high=remainder)
+    /// DivMod: 128-bit dividend / 64-bit divisor -> 128-bit (low=quotient, high=remainder).
+    /// libVEX types these `:: V128,I64 -> V128` (vector tag, not `Ity_I128`), and so do we —
+    /// see `result_type`. The surrounding chain agrees: guests build the dividend with
+    /// `Iop_64HLtoV128` and split the result with `Iop_V128to64` / `Iop_V128HIto64`.
     DivModU128to64, // Unsigned
     DivModS128to64, // Signed
 
@@ -781,8 +784,10 @@ impl IROp {
             // DivMod: 64-bit / 32-bit -> 64-bit
             IROp::DivModU64to32 | IROp::DivModS64to32 => Some(IRType::I64),
 
-            // DivMod: 128-bit / 64-bit -> 128-bit
-            IROp::DivModU128to64 | IROp::DivModS128to64 => Some(IRType::I128),
+            // DivMod: 128-bit / 64-bit -> 128-bit. Vector-tagged (`V128`) to match libVEX's
+            // `:: V128,I64 -> V128` signature; only the width (128) is load-bearing here,
+            // since `divmod_128_to_64` dispatches on `.width()` alone.
+            IROp::DivModU128to64 | IROp::DivModS128to64 => Some(IRType::V128),
 
             // Bitwise ops return same type
             IROp::And(t)
