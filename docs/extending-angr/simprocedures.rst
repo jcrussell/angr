@@ -939,10 +939,17 @@ the string-to-numeric family, env mutation, and extended string ops.
      - 2 / 2
      - ``strtol.rs`` (NativeStrtol, NativeAtoi)
    * - Input (stdin)
-     - ``read``, ``fgets``, ``fgetc``, ``getchar``, ``getc``,
-       ``scanf``, ``__isoc99_scanf``, ``sscanf``
-     - 8 / 8
-     - ``read.rs``, ``fgets.rs``, ``scanf.rs``
+     - ``read`` ✓, ``fgets`` ✓, ``fgetc`` ✓, ``getchar`` ✓,
+       ``getc`` ✓, ``scanf`` ✓, ``__isoc99_scanf`` ✓, ``sscanf`` ✗
+     - 7 / 8
+     - ``read.rs``, ``fgets.rs``, ``scanf.rs``. ``sscanf`` is
+       registered (``scanf.rs::NativeSscanf``) but its ``call`` body
+       unconditionally returns ``ProcedureError::Other``, so every
+       invocation pays the full Python round-trip and it does not
+       count toward the native speed-up. Deliberate: only Python
+       parses the concrete source region and constrains the outputs,
+       and a native free-BVS mint would explore impossible paths
+       (angr-8onrp).
    * - Output (stdout / formatted)
      - ``write``, ``puts``, ``putchar``, ``fputc``, ``putc``,
        ``printf``, ``sprintf``, ``snprintf``
