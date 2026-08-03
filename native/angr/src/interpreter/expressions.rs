@@ -512,6 +512,14 @@ impl<'a> VEXInterpreter<'a> {
             // symbolic and concrete args — strictly better than the old
             // fabricate-on-sym / hard-error-on-concrete split.
             Err(_) if is_dispatch_fabricate_family(&op) => {
+                // angr-9ke6b.85: this IS a Python-VEX-fallback event, so it
+                // bumps the same two counters the ordinary `Err(e)` arm below
+                // does (per-op subset + aggregate). It cannot route through
+                // `vex_op_fallback`: that helper hard-errors on all-concrete
+                // args and honors the fabricate opt-in, both of which this
+                // family deliberately bypasses.
+                self.stats.python_vex_binop_fallback_count += 1;
+                self.stats.python_vex_op_fallback_count += 1;
                 Err(CbExecutionError::NeedPythonFallback(format!(
                     "{} ({:?})",
                     crate::interpreter::DISPATCH_FABRICATE_REASON,

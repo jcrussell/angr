@@ -289,10 +289,14 @@ define_execution_stats! {
     /// describe is now opt-in only, behind
     /// `ANGR_RUST_FABRICATE_UNSUPPORTED_IROP` (off by default since
     /// angr-oyzvj) — see `vex_bypass_fabricate_count` for that subset.
+    /// Also counts the three dispatch-fabricate families (VPerm/Pclmul*/
+    /// Crc32C, angr-s6miz), which route to Python for concrete args too
+    /// (angr-9ke6b.85).
     python_vex_op_fallback_count: sum,
     /// Subset of `python_vex_op_fallback_count` that came from `Unop`.
     python_vex_unop_fallback_count: sum,
-    /// Subset of `python_vex_op_fallback_count` that came from `Binop`.
+    /// Subset of `python_vex_op_fallback_count` that came from `Binop`,
+    /// including the dispatch-fabricate families (angr-9ke6b.85).
     python_vex_binop_fallback_count: sum,
     /// Subset of `python_vex_op_fallback_count` that came from `Triop`.
     python_vex_triop_fallback_count: sum,

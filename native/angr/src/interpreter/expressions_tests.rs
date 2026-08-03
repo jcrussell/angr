@@ -217,6 +217,43 @@ fn eval_binop_symbolic_unsupported_routes_to_python_not_fabricate() {
 }
 
 #[test]
+fn eval_binop_dispatch_fabricate_family_counts_as_python_fallback() {
+    // angr-9ke6b.85: the three dispatch-fabricate families (VPerm/Pclmul*/
+    // Crc32C) route to Python even with all-concrete args, and that IS a
+    // Python-VEX-fallback event — it must bump the same per-op + aggregate
+    // counters the ordinary unsupported-binop arm does, or capacity analysis
+    // built on those counters silently undercounts exactly these three
+    // families. The fabricate BYPASS is a different thing and stays 0.
+    use crate::callbacks::PythonCallbacks;
+    Python::initialize();
+    let callbacks = PythonCallbacks::new();
+    Python::attach(|_py| {
+        let ctx = SymContext::new_mock();
+        let mut interp = new_interp(&ctx);
+        let env = TypeEnv::new();
+        let left = IRExpr::Const(IRConst::U64(0x1));
+        let right = IRExpr::Const(IRConst::U64(0x2));
+        let res = interp.eval_binop(&callbacks, IROp::Crc32C, &left, &right, &env);
+        assert!(
+            matches!(res, Err(CbExecutionError::NeedPythonFallback(_))),
+            "dispatch-fabricate family must route to Python, got {res:?}"
+        );
+        assert_eq!(
+            interp.stats.python_vex_binop_fallback_count, 1,
+            "dispatch-fabricate fallback did not bump the per-op binop counter"
+        );
+        assert_eq!(
+            interp.stats.python_vex_op_fallback_count, 1,
+            "dispatch-fabricate fallback did not bump the aggregate op counter"
+        );
+        assert_eq!(
+            interp.stats.vex_bypass_fabricate_count, 0,
+            "dispatch-fabricate family must not take the fabricate BYPASS"
+        );
+    });
+}
+
+#[test]
 fn eval_ccall_unsupported_cond_routes_to_python_not_fabricate() {
     // angr-9ke6b.88: a condition-flag CCall the native handler cannot compute
     // must route the block to Python, NOT fabricate a fresh unconstrained
