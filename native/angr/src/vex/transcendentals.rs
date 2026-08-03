@@ -1,8 +1,10 @@
 //! Concrete-only fast paths for x87 FPU transcendentals (Iop_SinF64,
 //! Iop_CosF64, Iop_TanF64, Iop_2xm1F64, Iop_AtanF64, Iop_Yl2xF64,
 //! Iop_Yl2xp1F64, Iop_ScaleF64) and ARM AArch64 FRECPX (Iop_RecpExpF64,
-//! Iop_RecpExpF32). VEX exposes no IROp variants for these, so the FFI
-//! lifter passes them through as `IROp::Raw(opcode)`.
+//! Iop_RecpExpF32). We expose no named `IROp` variant for these, so
+//! `opcode_map::parse_transcendental` maps the pyvex name to
+//! `IROp::Raw(<one of the IOP_* consts below>)` and `VEXOps::binop_misc` /
+//! `VEXOps::triop` dispatch that straight here.
 //!
 //! When all value operands are concrete f32/f64, this module computes the
 //! result via Rust's libm bindings. Symbolic operands fall back to
@@ -42,7 +44,10 @@
 //! scope.
 //!
 //! Opcode values: libvex_ir.h Iop_* enum, base 0x1400. Validated against
-//! pyvex.const.enums_to_ints (2026-05-07).
+//! pyvex.const.enums_to_ints (2026-05-07). Since angr-9ke6b.233 the only
+//! producer is the *string* router `parse_transcendental`, so these are
+//! internal tags — they no longer have to track libVEX renumbering, they
+//! only have to stay distinct and agree with that router.
 
 use crate::symbolic::{RustBV, SymContext};
 

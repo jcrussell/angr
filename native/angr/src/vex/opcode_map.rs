@@ -219,6 +219,9 @@ pub fn parse_opcode(op_str: &str) -> IROp {
     if let Some(op) = parse_float(op_str) {
         return op;
     }
+    if let Some(op) = parse_transcendental(op_str) {
+        return op;
+    }
     if let Some(op) = parse_vector(op_str) {
         return op;
     }
@@ -540,6 +543,43 @@ fn parse_float(op_str: &str) -> Option<IROp> {
 
         _ => None,
     }
+}
+
+/// Parse the x87 / AArch64 transcendentals that have no dedicated `IROp`
+/// variant and are evaluated by the libm fast paths in
+/// [`crate::vex::transcendentals`].
+///
+/// These map to `IROp::Raw(tag)`, which is the *only* producer of that
+/// variant — `VEXOps::binop_misc` and `VEXOps::triop` are its only
+/// consumers, and both route straight into `transcendentals`. The tag
+/// values are the libVEX `Iop_*` discriminants, but nothing compares them
+/// against libVEX any more: they are an internal token that only has to
+/// agree with the `IOP_*` consts in `transcendentals.rs`.
+///
+/// Between angr-h0ur (which deleted the native-lift feature, the last
+/// caller of the numeric `parse_opcode_from_u32`) and angr-9ke6b.233,
+/// nothing constructed `IROp::Raw` at all, so every one of these opcodes
+/// fell through to `IROp::Unmapped` and the libm paths were dead outside
+/// their own unit tests.
+fn parse_transcendental(op_str: &str) -> Option<IROp> {
+    use super::transcendentals as tr;
+    let tag = match op_str {
+        // Binop (rm, x) -> F64
+        "Iop_SinF64" => tr::IOP_SIN_F64,
+        "Iop_CosF64" => tr::IOP_COS_F64,
+        "Iop_TanF64" => tr::IOP_TAN_F64,
+        "Iop_2xm1F64" => tr::IOP_2XM1_F64,
+        // Binop (rm, x) -> F32/F64: AArch64 FRECPX, closed-form.
+        "Iop_RecpExpF64" => tr::IOP_RECPEXP_F64,
+        "Iop_RecpExpF32" => tr::IOP_RECPEXP_F32,
+        // Triop (rm, x, y) -> F64
+        "Iop_AtanF64" => tr::IOP_ATAN_F64,
+        "Iop_Yl2xF64" => tr::IOP_YL2X_F64,
+        "Iop_Yl2xp1F64" => tr::IOP_YL2XP1_F64,
+        "Iop_ScaleF64" => tr::IOP_SCALE_F64,
+        _ => return None,
+    };
+    Some(IROp::Raw(tag))
 }
 
 /// Parse vector/SIMD operations

@@ -144,3 +144,32 @@ fn concretize_triop_rm_pins_a_joint_witness_under_deterministic_mode() {
         "pinning both operands must not contradict the path constraint"
     );
 }
+
+/// angr-9ke6b.233 end-to-end: the pyvex opcode *string* must reach the libm
+/// fast paths through the same dispatch the interpreter uses
+/// (`IRExpr::Binop` → `VEXOps::binop`, `IRExpr::Triop` →
+/// `VEXOps::binop_with_rm`). Before .233 nothing constructed `IROp::Raw`,
+/// so `parse_opcode` returned `Unmapped` for every op in this module and
+/// the whole file was unreachable outside the tests above.
+#[test]
+fn parse_opcode_dispatch_reaches_libm_fast_paths() {
+    use crate::vex::opcode_map::parse_opcode;
+    use crate::vex::ops::VEXOps;
+
+    let ctx = crate::symbolic::SymContext::new_mock();
+
+    // Binop form: (rm, x).
+    let r = VEXOps::binop(parse_opcode("Iop_CosF64"), rm(), bv64(0.0), &ctx).unwrap();
+    assert!(approx_eq(extract_f64(r), 1.0, 1e-12));
+
+    // Triop form: (rm, x, y) — log2(8) * 1.0 == 3.0.
+    let r = VEXOps::binop_with_rm(
+        parse_opcode("Iop_Yl2xF64"),
+        rm(),
+        bv64(1.0),
+        bv64(8.0),
+        &ctx,
+    )
+    .unwrap();
+    assert!(approx_eq(extract_f64(r), 3.0, 1e-12));
+}

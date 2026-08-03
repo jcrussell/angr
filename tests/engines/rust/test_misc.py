@@ -870,23 +870,24 @@ class TestRustExecutionErrorHierarchy:
 # angr-uprs: parametrized negative-tests for the RustUnsupported* surface.
 # ---------------------------------------------------------------------------
 
-# Real x87 FPU transcendental opcodes that VEX lifts but the Rust engine has
-# no dispatch arm for in parse_opcode. Symbolic-arg fast path in
-# vex/transcendentals.rs only fires when arriving as IROp::Raw(code) via the
-# FFI lifter — JSON-driven `execute_irsb_for_test` routes through string-form
-# `parse_opcode` and lands in IROp::Unmapped. If any of these get a parse arm,
-# the test fails loudly and the entry should move out of this list.
-_UNMAPPED_X87_TRANSCENDENTALS = [
-    "Iop_SinF64",
-    "Iop_CosF64",
-    "Iop_TanF64",
-    "Iop_2xm1F64",
-    "Iop_AtanF64",
-    "Iop_Yl2xF64",
-    "Iop_Yl2xp1F64",
-    "Iop_ScaleF64",
-    "Iop_RecpExpF64",
-    "Iop_RecpExpF32",
+# x87 FPU / AArch64-FRECPX transcendentals. These used to live in the
+# unmapped list below: IROp::Raw had no producer, so the string router
+# landed them in IROp::Unmapped and the libm fast paths in
+# vex/transcendentals.rs were unreachable (angr-9ke6b.233). Since .233
+# `opcode_map::parse_transcendental` maps them to IROp::Raw(tag), so they
+# execute natively and must NOT raise RustUnsupportedVexOpError. Each entry
+# pairs the opcode with its VEX arity: (rm, x) binop vs (rm, x, y) triop.
+_MAPPED_X87_TRANSCENDENTALS = [
+    ("Iop_SinF64", 2),
+    ("Iop_CosF64", 2),
+    ("Iop_TanF64", 2),
+    ("Iop_2xm1F64", 2),
+    ("Iop_RecpExpF64", 2),
+    ("Iop_RecpExpF32", 2),
+    ("Iop_AtanF64", 3),
+    ("Iop_Yl2xF64", 3),
+    ("Iop_Yl2xp1F64", 3),
+    ("Iop_ScaleF64", 3),
 ]
 
 # Real NEON saturating shift-left by immediate (UQSHL/SQSHL imm). The
@@ -936,12 +937,11 @@ _UNMAPPED_CRYPTO_AND_POLY = [
     "Iop_SHA512",
 ]
 
-# Union of all real-name unmapped VEX ops to parametrize over. Total >=40 so
-# the acceptance target of ">=50 unsupported ops/syscalls" lands once the
-# NEON-unimplemented (1) and syscalls (>=15) are added below.
-_UNMAPPED_VEX_OPS_REAL = (
-    _UNMAPPED_X87_TRANSCENDENTALS + _UNMAPPED_NEON_QSHL_IMM + _UNMAPPED_FP_DECIMAL + _UNMAPPED_CRYPTO_AND_POLY
-)
+# Union of all real-name unmapped VEX ops to parametrize over. Total >=30
+# (was >=40 before angr-9ke6b.233 moved the ten x87 transcendentals to
+# _MAPPED_X87_TRANSCENDENTALS) so the acceptance target of ">=50 unsupported
+# ops/syscalls" still lands once the syscalls (>=20) are added below.
+_UNMAPPED_VEX_OPS_REAL = _UNMAPPED_NEON_QSHL_IMM + _UNMAPPED_FP_DECIMAL + _UNMAPPED_CRYPTO_AND_POLY
 
 # Currently-NeonUnimplemented (routes through OpError::UnsupportedNeon, not
 # UnsupportedVexOp, but both PyErr-map to RustUnsupportedVexOpError). Updated
@@ -1071,6 +1071,48 @@ def _build_binop_irsb_json(op_name, arch):
     )
 
 
+def _build_triop_irsb_json(op_name, arch):
+    """Single-Triop IRSB referencing `op_name`, all three args the same
+    concrete I64 zero. Used for the x87 (rm, x, y) transcendentals."""
+    import json
+
+    offs_ip = 272 if arch.lower() in ("arm64", "aarch64") else 184
+    return json.dumps(
+        {
+            "addr": 4096,
+            "arch": arch,
+            "statements": [
+                {"tag": "Ist_IMark", "addr": 4096, "len": 4, "delta": 0},
+                {
+                    "tag": "Ist_WrTmp",
+                    "tmp": 0,
+                    "data": {
+                        "tag": "Iex_Const",
+                        "con": {"tag": "Ico_U64", "value": 0},
+                    },
+                },
+                {
+                    "tag": "Ist_WrTmp",
+                    "tmp": 1,
+                    "data": {
+                        "tag": "Iex_Triop",
+                        "op": op_name,
+                        "args": [
+                            {"tag": "Iex_RdTmp", "tmp": 0},
+                            {"tag": "Iex_RdTmp", "tmp": 0},
+                            {"tag": "Iex_RdTmp", "tmp": 0},
+                        ],
+                    },
+                },
+            ],
+            "next": {"tag": "Iex_Const", "con": {"tag": "Ico_U64", "value": 4100}},
+            "jumpkind": "Ijk_Boring",
+            "offsIP": offs_ip,
+            "tyenv": {"types": ["Ity_I64", "Ity_I64"]},
+        }
+    )
+
+
 class TestRustUnsupportedErrorParametrized:
     """angr-uprs: parametrized ``pytest.raises`` coverage of the typed
     ``RustUnsupported*`` surface.
@@ -1105,6 +1147,24 @@ class TestRustUnsupportedErrorParametrized:
         msg = str(exc_info.value)
         assert op_name in msg, f"op name missing from message: {msg}"
         assert "amd64" in msg.lower(), f"arch missing from message: {msg}"
+
+    @pytest.mark.parametrize(("op_name", "arity"), _MAPPED_X87_TRANSCENDENTALS)
+    def test_x87_transcendental_is_mapped_not_unsupported(self, op_name, arity):
+        """angr-9ke6b.233: the x87 / FRECPX transcendentals reach the libm
+        fast paths in ``vex/transcendentals.rs`` from the *string* opcode
+        router, so they must execute instead of raising.
+
+        Regression guard for the dead-code window opened by angr-h0ur: with
+        no producer for ``IROp::Raw`` these all fell through to
+        ``IROp::Unmapped`` and every caller silently degraded to the Python
+        fallback.
+        """
+        from angr.rustylib.vex_engine import execute_irsb_for_test
+
+        builder = _build_binop_irsb_json if arity == 2 else _build_triop_irsb_json
+        # Concrete args -> the libm path returns a value; any exception here
+        # (typically RustUnsupportedVexOpError) means the op lost its arm.
+        execute_irsb_for_test(builder(op_name, "AMD64"), "amd64")
 
     @pytest.mark.parametrize("op_name", _NEON_UNIMPLEMENTED)
     def test_neon_unimplemented_raises_unsupported(self, op_name):

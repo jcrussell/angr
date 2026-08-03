@@ -36,7 +36,8 @@ head as you read the worked examples below:
        ``IROp`` variants in ``parse_opcode`` and its
        ``parse_arithmetic`` / ``parse_bitwise`` / ``parse_shift`` /
        ``parse_comparison`` / ``parse_conversion`` / ``parse_float`` /
-       ``parse_vector`` / ``parse_vreverse`` / ``parse_special`` /
+       ``parse_transcendental`` / ``parse_vector`` / ``parse_vreverse`` /
+       ``parse_special`` /
        ``parse_neon_unimplemented`` sub-routers. Both lifter paths —
        pyvex strings and the native libVEX FFI — funnel through this
        one string-based ``parse_opcode``; there is no separate numeric
@@ -71,6 +72,7 @@ The ``parse_*`` family pattern
        if let Some(op) = parse_comparison(op_str)         { return op; }
        if let Some(op) = parse_conversion(op_str)         { return op; }
        if let Some(op) = parse_float(op_str)              { return op; }
+       if let Some(op) = parse_transcendental(op_str)     { return op; }
        if let Some(op) = parse_vector(op_str)             { return op; }
        if let Some(op) = parse_vreverse(op_str)           { return op; }
        if let Some(op) = parse_special(op_str)            { return op; }
@@ -86,7 +88,7 @@ with a useful name instead of returning a fresh-symbolic value.
 
 When you add a new op, the right sub-router is whichever one already
 holds its conceptual siblings. Don't introduce a new sub-router unless
-none of the existing ten fit.
+none of the existing eleven fit.
 
 Worked example 1 — arithmetic: ``Add``
 --------------------------------------
@@ -361,15 +363,16 @@ What *not* to do
 ----------------
 
 * Don't add a new sub-router to ``parse_opcode`` for a single op. If
-  it doesn't fit any of the ten, the op probably belongs in
+  it doesn't fit any of the eleven, the op probably belongs in
   ``parse_special``.
 * Don't reach for ``IROp::Unmapped`` (the "unmapped sentinel") in
   production code paths. ``Unmapped`` exists to surface
   ``RustUnsupportedVexOpError`` when ``parse_opcode`` can't match;
   treating it as an escape hatch hides bugs from contributors who
-  actually want to map the op. The older ``IROp::Raw(u32)`` variant
-  is similarly a fallback for unhandled numeric opcodes — don't lean
-  on it either.
+  actually want to map the op. ``IROp::Raw(u32)`` is not an escape
+  hatch either: it is reserved for the x87 / FRECPX transcendentals
+  routed by ``parse_transcendental``, whose ``u32`` is an internal tag
+  keyed to the ``IOP_*`` consts in ``transcendentals.rs``.
 * Don't bypass the width parameterization just to ship faster.
   ``IROp::Foo32`` / ``IROp::Foo64`` separately is exactly the
   proliferation libvex pays for; the Rust engine's terseness is
@@ -500,15 +503,27 @@ drives a symbolic path through it.
 x87 transcendental ops
 ^^^^^^^^^^^^^^^^^^^^^^
 
-These ops have a **two-path** status. On the FFI lifter path (numeric
-``IROp::Raw(opcode)``), they hit the concrete-only libm fast path in
+These ops have no named ``IROp`` variant. ``parse_transcendental``
+(the sub-router right after ``parse_float``) maps the ten opcode names
+to ``IROp::Raw(tag)``, and ``VEXOps::binop_misc`` / ``VEXOps::triop``
+dispatch that into the concrete-only libm fast path in
 ``native/angr/src/vex/transcendentals.rs`` plus a symbolic
-concretization fallback (sample-pin-replace). On the JSON-string
-opcode path (used in unit tests and any caller that round-trips
-through pyvex's string form) they fall all the way through
-``parse_opcode`` and surface as ``IROp::Unmapped(name)`` →
-``RustUnsupportedVexOpError``. The mismatch is intentional: the JSON
-path can't carry the numeric opcode that drives the libm dispatch.
+concretization fallback (sample-pin-replace). The ``tag`` values are
+the libvex ``Iop_*`` discriminants, but since ``parse_transcendental``
+is the sole producer of ``IROp::Raw`` they are now just internal
+tokens — they only have to agree with the ``IOP_*`` consts in
+``transcendentals.rs``, not with libvex's numbering.
+
+.. note::
+
+   This used to be a **two-path** arrangement: only the numeric FFI
+   lifter path produced ``IROp::Raw``, and the string path fell through
+   to ``IROp::Unmapped``. When ``angr-h0ur`` deleted the native-lift
+   feature it took the last caller of ``parse_opcode_from_u32`` with
+   it, leaving ``IROp::Raw`` with no producer at all — so every one of
+   these ops was ``Unmapped`` and ``transcendentals.rs`` was dead
+   outside its own unit tests. ``angr-9ke6b.233`` re-wired them onto
+   the string router.
 
 Opcode names below are libvex (matches what pyvex's numeric-to-string
 table emits). Verified 2026-06-01 (angr-uprs).
@@ -524,16 +539,16 @@ table emits). Verified 2026-06-01 (angr-uprs).
    * - Trig (``Iop_SinF64``, ``Iop_CosF64``, ``Iop_TanF64``,
        ``Iop_AtanF64``)
      - 4
-     - Concrete via ``Raw`` / Unmapped via string
+     - Concrete + concretize-and-pin via ``Raw``
      - ``transcendentals.rs`` libm path (angr-i5lj.2)
    * - Log / exp (``Iop_Yl2xF64``, ``Iop_Yl2xp1F64``,
        ``Iop_2xm1F64``, ``Iop_ScaleF64``)
      - 4
-     - Concrete via ``Raw`` / Unmapped via string
+     - Concrete + concretize-and-pin via ``Raw``
      - ``transcendentals.rs`` libm path (angr-i5lj.1)
    * - ARM AArch64 FRECPX (``Iop_RecpExpF64``, ``Iop_RecpExpF32``)
      - 2
-     - Concrete via ``Raw`` / Unmapped via string
+     - Concrete via ``Raw`` (closed form, no concretize fallback)
      - ``transcendentals.rs`` exponent-only closed form
 
 The x87 transcendentals only matter on workloads that drive a
@@ -705,8 +720,9 @@ as **Stubbed-symbolic** by deliberate policy (``URECPE`` / ``URSQRTE``
 / FP ``RecipEst`` — fresh-symbolic per lane is the correct model, and
 angr Python does the same). The audit found **no other** concrete
 ``IROp`` variant that lacks a dispatch arm: every remaining variant is
-either dispatched or is a sentinel (``NeonUnimplemented`` /
-``Unmapped`` / ``Raw``). So the BYPASS surface is exactly these three
+either dispatched (``Raw`` included — it routes into
+``transcendentals.rs``) or is a sentinel (``NeonUnimplemented`` /
+``Unmapped``). So the BYPASS surface is exactly these three
 families (8 opcode strings).
 
 No tracked benchmark drives a *symbolic* path through them today (x86

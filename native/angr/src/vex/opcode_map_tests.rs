@@ -395,3 +395,28 @@ fn test_parse_vec_cmp_gt_signed_and_unsigned() {
     }
     assert!(matches!(parse_opcode("Iop_CmpGT64Ux1"), IROp::Unmapped(_)));
 }
+
+/// angr-9ke6b.233: `IROp::Raw` had no producer, so every x87 / FRECPX
+/// transcendental parsed to `Unmapped` and the libm fast paths in
+/// `vex::transcendentals` were dead outside their own unit tests.
+#[test]
+fn test_parse_transcendental() {
+    use crate::vex::transcendentals as tr;
+    let cases: &[(&str, u32)] = &[
+        ("Iop_SinF64", tr::IOP_SIN_F64),
+        ("Iop_CosF64", tr::IOP_COS_F64),
+        ("Iop_TanF64", tr::IOP_TAN_F64),
+        ("Iop_2xm1F64", tr::IOP_2XM1_F64),
+        ("Iop_RecpExpF64", tr::IOP_RECPEXP_F64),
+        ("Iop_RecpExpF32", tr::IOP_RECPEXP_F32),
+        ("Iop_AtanF64", tr::IOP_ATAN_F64),
+        ("Iop_Yl2xF64", tr::IOP_YL2X_F64),
+        ("Iop_Yl2xp1F64", tr::IOP_YL2XP1_F64),
+        ("Iop_ScaleF64", tr::IOP_SCALE_F64),
+    ];
+    for &(op_str, tag) in cases {
+        assert_eq!(parse_opcode(op_str), IROp::Raw(tag), "{op_str}");
+    }
+    // Iop_PRem*F64 is deliberately out of scope — still Unmapped.
+    assert!(matches!(parse_opcode("Iop_PRemF64"), IROp::Unmapped(_)));
+}
