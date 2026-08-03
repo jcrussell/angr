@@ -154,7 +154,7 @@ fn format_string(
         i += advanced;
 
         // Parse precision.
-        let mut _precision: Option<usize> = None;
+        let mut precision: Option<usize> = None;
         if i < fmt.len() && fmt[i] == b'.' {
             i += 1;
             if i < fmt.len() && fmt[i] == b'*' {
@@ -165,7 +165,7 @@ fn format_string(
                     ));
                 }
                 let p = extract_concrete_arg(&args[arg_idx], "precision")?;
-                _precision = Some(p as usize);
+                precision = Some(p as usize);
                 arg_idx += 1;
                 i += 1;
             } else {
@@ -315,7 +315,7 @@ fn format_string(
                 let str_addr = extract_concrete_arg(&args[arg_idx], &format!("arg{arg_idx}"))?;
                 arg_idx += 1;
                 let s = read_string(state, str_addr)?;
-                let s = if let Some(prec) = _precision {
+                let s = if let Some(prec) = precision {
                     if prec < s.len() { &s[..prec] } else { &s }
                 } else {
                     &s
