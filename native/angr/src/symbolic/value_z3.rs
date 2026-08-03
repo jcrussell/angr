@@ -356,7 +356,7 @@ impl RustBV {
     fn build_z3_ast_cached(
         op: &BVOp,
         operands: &[RustBV],
-        _width: u32,
+        width: u32,
         cache: &mut std::collections::HashMap<usize, z3::ast::BV>,
     ) -> z3::ast::BV {
         // Plain binary BVOps differ only in the Z3 bv* method name; the
@@ -528,34 +528,34 @@ impl RustBV {
             BVOp::Clz | BVOp::Ctz => {
                 let ast = operands[0].to_z3_ast_cached(cache);
                 let one = z3::ast::BV::from_u64(1, 1);
-                let mut result = z3::ast::BV::from_u64(_width as u64, _width);
+                let mut result = z3::ast::BV::from_u64(width as u64, width);
                 // Clz: iterate LSB->MSB so the MSB test is outermost.
                 // Ctz: iterate MSB->LSB so the LSB test is outermost.
                 let positions: Vec<u32> = match op {
-                    BVOp::Clz => (0.._width).collect(),
-                    _ => (0.._width).rev().collect(),
+                    BVOp::Clz => (0..width).collect(),
+                    _ => (0..width).rev().collect(),
                 };
                 for pos in positions {
                     let cond = ast.extract(pos, pos).eq(one.clone());
                     let leading_count = match op {
-                        BVOp::Clz => _width - 1 - pos,
+                        BVOp::Clz => width - 1 - pos,
                         _ => pos, // ctz: trailing zeros == index of lowest set bit
                     };
-                    let val = z3::ast::BV::from_u64(leading_count as u64, _width);
+                    let val = z3::ast::BV::from_u64(leading_count as u64, width);
                     result = cond.ite(&val, &result);
                 }
                 result
             }
             BVOp::Popcount => {
-                // Sum of the zero-extended individual bits; fits in `_width`.
+                // Sum of the zero-extended individual bits; fits in `width`.
                 let ast = operands[0].to_z3_ast_cached(cache);
-                let mut acc = if _width > 1 {
-                    ast.extract(0, 0).zero_ext(_width - 1)
+                let mut acc = if width > 1 {
+                    ast.extract(0, 0).zero_ext(width - 1)
                 } else {
                     ast.extract(0, 0)
                 };
-                for pos in 1.._width {
-                    let ext = ast.extract(pos, pos).zero_ext(_width - 1);
+                for pos in 1..width {
+                    let ext = ast.extract(pos, pos).zero_ext(width - 1);
                     acc = acc.bvadd(ext);
                 }
                 acc

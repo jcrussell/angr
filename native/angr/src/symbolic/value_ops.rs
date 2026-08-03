@@ -1508,8 +1508,13 @@ pub(super) fn drive_extract<T: ExtractTarget>(
             // Reverse(x) is x's byte sequence at [B-1-h/8 .. B-1-l/8], reversed.
             // Single-byte (h == l+7): Reverse is a no-op, extract the flipped
             // byte. Multi-byte: extract the range then byte-reverse.
+            //
+            // `high + 1` cannot overflow: `high < inner.width()` is asserted at
+            // the top of `drive_extract`, so `high + 1 <= u32::MAX`.
             BVOp::Reverse
-                if operands[0].width() % 8 == 0 && high % 8 == 7 && low.is_multiple_of(8) =>
+                if operands[0].width().is_multiple_of(8)
+                    && (high + 1).is_multiple_of(8)
+                    && low.is_multiple_of(8) =>
             {
                 let w = operands[0].width();
                 let inner_out = target.recurse(&operands[0], w - 1 - low, w - 1 - high);
