@@ -1,12 +1,12 @@
 //! Snapshot serialization (serde wire format) for `RustSimState`.
 //!
-//! **Panic policy (angr-9ke6b.212):** the *decode* direction takes untrusted
-//! bytes and is fully `Result`-typed ([`SnapshotError`]) — nothing there
-//! panics. The two surviving `expect`s are (a) the encode direction, where
-//! `serde_json::to_vec` over a derived `Serialize` writing into a `Vec` has no
-//! reachable `Err`, and (b) [`RustSimState::bench_decode_snapshot`], a
-//! `#[doc(hidden)]` benchmark hook fed only by bytes this module just produced.
-//! Both are documented at their `#[allow]`s; neither is on the untrusted path.
+//! **Panic policy (angr-9ke6b.212, angr-9ke6b.126):** every function that takes
+//! bytes — [`RustSimState::from_serialized`] and the
+//! [`RustSimState::bench_decode_snapshot`] benchmark hook alike — is
+//! `Result`-typed over [`SnapshotError`]; nothing on that direction panics. The
+//! one surviving `expect` is the encode direction, where `serde_json::to_vec`
+//! over a derived `Serialize` writing into a `Vec` has no reachable `Err`; it is
+//! documented at its `#[allow]`.
 //!
 //! **Enforcement (angr-qwyti.11):** this module carries
 //! `#![deny(clippy::unwrap_used, clippy::expect_used)]`.
@@ -350,15 +350,16 @@ impl RustSimState {
     /// buffer into the [`RustSimStateSnapshot`] struct (no `from_snapshot`
     /// rebuild), isolating the serde-decode cost. Uses the same
     /// `disable_recursion_limit` as [`Self::from_serialized`].
+    ///
+    /// Takes the *body* only — no version byte — unlike
+    /// [`Self::from_serialized`]. Mirrors that sibling's error typing
+    /// (angr-9ke6b.126) so this `pub` entry point cannot panic on malformed
+    /// bytes even though its only in-repo callers are the benches.
     #[doc(hidden)]
-    #[allow(
-        clippy::expect_used,
-        reason = "`#[doc(hidden)]` benchmark hook: the only callers are the in-repo benches, which feed it bytes `to_serialized` just produced. Untrusted bytes go through `from_serialized`, which is `Result`-typed"
-    )]
-    pub fn bench_decode_snapshot(bytes: &[u8]) -> RustSimStateSnapshot {
+    pub fn bench_decode_snapshot(bytes: &[u8]) -> Result<RustSimStateSnapshot, SnapshotError> {
         let mut de = serde_json::Deserializer::from_slice(bytes);
         de.disable_recursion_limit();
-        serde::Deserialize::deserialize(&mut de).expect("snapshot decode")
+        serde::Deserialize::deserialize(&mut de).map_err(|e| SnapshotError::Decode(e.to_string()))
     }
 
     /// angr-t3l5o Phase 0a bench hook: round-trip just the symbolic-memory

@@ -525,7 +525,8 @@ fn bench_migration_phases(c: &mut Criterion) {
             group.bench_function(format!("serde_decode/{tag}"), |b| {
                 b.iter(|| {
                     let snap: RustSimStateSnapshot =
-                        RustSimState::bench_decode_snapshot(&encoded_no_solver);
+                        RustSimState::bench_decode_snapshot(&encoded_no_solver)
+                            .expect("snapshot decode");
                     black_box(snap);
                 })
             });
