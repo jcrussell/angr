@@ -623,10 +623,56 @@ fn register_names_all_resolve_and_fit_in_u128() {
     }
 }
 
+/// Every exported register name must also survive the *reverse* lookup:
+/// `register_name(register_offset(name))` has to name that same register.
+///
+/// `register_name` scans only the per-arch `CANONICAL` table, so a name that
+/// lives in `ALIASES` while being advertised by `register_names()` resolves
+/// one way but not the other. X86 shipped exactly that: `xmm0..7` (and the
+/// x87 control words) were exported but alias-only, so `X86::register_name`
+/// returned `None` for the XMM0 offset while `AMD64::register_name` resolved
+/// it — the same debugger query answered differently per x86 variant
+/// (angr-9ke6b.9).
+///
+/// The assertion compares names, not identity: an arch is free to canonicalize
+/// a different spelling at the same offset (`pc` vs `eip`) as long as *some*
+/// canonical name is there, but a `None` is always a bug.
+#[test]
+fn exported_register_names_reverse_resolve() {
+    for desc in ALL_ARCHES {
+        let arch = (desc.make_arch)();
+        for &name in arch.register_names() {
+            let offset = arch.register_offset(name).unwrap();
+            let back = arch.register_name(offset).unwrap_or_else(|| {
+                panic!(
+                    "{}: register_names() exports {name} at offset {offset}, but \
+                     register_name({offset}) is None — move it from ALIASES to CANONICAL",
+                    desc.name
+                )
+            });
+            let back_offset = arch.register_offset(back).unwrap_or_else(|| {
+                panic!(
+                    "{}: register_name({offset}) -> {back} is unresolvable",
+                    desc.name
+                )
+            });
+            assert_eq!(
+                back_offset, offset,
+                "{}: {name}@{offset} reverse-resolved to {back}, which lives elsewhere",
+                desc.name
+            );
+        }
+    }
+}
+
 /// Expected `(offset, size)` for the five VEX bookkeeping fields, one row per
 /// architecture, joined to [`ALL_ARCHES`] by `name`. Every value here was read
 /// off `archinfo.Arch*.registers` (angr-9ke6b.10).
-const VEX_BOOKKEEPING: &[(&str, [(&str, u32, u32); 5])] = &[
+///
+/// One row: the arch name plus its five `(field, offset, size)` triples.
+type BookkeepingRow = (&'static str, [(&'static str, u32, u32); 5]);
+
+const VEX_BOOKKEEPING: &[BookkeepingRow] = &[
     (
         "X86",
         [

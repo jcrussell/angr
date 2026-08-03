@@ -100,9 +100,29 @@ const CANONICAL: &[RegEntry] = &[
     ("dflag", offsets::DFLAG, 4),
     ("idflag", offsets::IDFLAG, 4),
     ("acflag", offsets::ACFLAG, 4),
+    // SSE control register (4B per archinfo.ArchX86)
+    ("sseround", offsets::SSEROUND, 4),
+    // XMM registers (128-bit). Canonical, not aliased, to match AMD64's split:
+    // they are their own registers, not sub-names of a GPR, and `REGISTER_NAMES`
+    // exports them — so `register_name(offset)` must resolve them (angr-9ke6b.9).
+    ("xmm0", offsets::XMM0, 16),
+    ("xmm1", offsets::XMM1, 16),
+    ("xmm2", offsets::XMM2, 16),
+    ("xmm3", offsets::XMM3, 16),
+    ("xmm4", offsets::XMM4, 16),
+    ("xmm5", offsets::XMM5, 16),
+    ("xmm6", offsets::XMM6, 16),
+    ("xmm7", offsets::XMM7, 16),
+    // FPU
+    ("fpreg", offsets::FPREG, 64),
+    // guest_FPTAG is UChar[8] — one x87 tag byte per FP slot.
+    ("fptag", offsets::FPTAG, 8),
+    ("fpround", offsets::FPROUND, 4),
+    ("fc3210", offsets::FC3210, 4),
+    ("ftop", offsets::FTOP, 4),
 ];
 
-// Aliases: alternate names, sub-registers, segments, and SIMD registers.
+// Aliases: alternate names, sub-registers, and segments.
 // `register_offset` and `register_size` consult these as a fallback;
 // `register_name` does not.
 const ALIASES: &[RegEntry] = &[
@@ -157,23 +177,6 @@ const ALIASES: &[RegEntry] = &[
     // Surfaced for TLS-aware analyses that read state.regs.ldt/gdt.
     ("ldt", offsets::LDT, 8),
     ("gdt", offsets::GDT, 8),
-    // SSE
-    ("sseround", offsets::SSEROUND, 4),
-    ("xmm0", offsets::XMM0, 16),
-    ("xmm1", offsets::XMM1, 16),
-    ("xmm2", offsets::XMM2, 16),
-    ("xmm3", offsets::XMM3, 16),
-    ("xmm4", offsets::XMM4, 16),
-    ("xmm5", offsets::XMM5, 16),
-    ("xmm6", offsets::XMM6, 16),
-    ("xmm7", offsets::XMM7, 16),
-    // FPU
-    ("fpreg", offsets::FPREG, 64),
-    // guest_FPTAG is UChar[8] — one x87 tag byte per FP slot.
-    ("fptag", offsets::FPTAG, 8),
-    ("fpround", offsets::FPROUND, 4),
-    ("fc3210", offsets::FC3210, 4),
-    ("ftop", offsets::FTOP, 4),
 ];
 
 // Registers exported to / imported from Python (see `Arch::register_names`).
