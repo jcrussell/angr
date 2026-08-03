@@ -351,7 +351,7 @@ impl RustBV {
     #[cfg(feature = "vex-engine-z3")]
     #[allow(
         clippy::expect_used,
-        reason = "two closed-world dispatch invariants, neither input-dependent: (1) the comparison arm calls `cmp_bool_for_cached` under a `BVOp::Eq | Ne | Ult | ... | Sge` pattern, which is exactly the op set that helper returns `Some` for (its own leading match returns `None` for everything else); (2) `collect_concat_leaves_cached` pushes at least one leaf on every call and is called twice before the `pop`, so `leaves` holds >= 2 entries — see the module Panic policy header"
+        reason = "two closed-world dispatch invariants, neither input-dependent: (1) the comparison arm calls `cmp_bool_for_cached` under a `BVOp::Eq | Ne | Ult | ... | Sge` pattern, which is exactly the op set that helper returns `Some` for (its own leading match returns `None` for everything else); (2) `collect_concat_leaves` pushes at least one leaf on every call and is called twice before the `split_first`, so `leaves` holds >= 2 entries — see the module Panic policy header"
     )]
     fn build_z3_ast_cached(
         op: &BVOp,
@@ -415,31 +415,18 @@ impl RustBV {
                 Self::emit_extract_z3_cached(&operands[0], *high, *low, cache)
             }
             BVOp::Concat => {
-                fn collect_concat_leaves_cached(
-                    bv: &RustBV,
-                    leaves: &mut Vec<z3::ast::BV>,
-                    cache: &mut std::collections::HashMap<usize, z3::ast::BV>,
-                ) {
-                    if let RustBV::Expression {
-                        op: BVOp::Concat,
-                        operands,
-                        ..
-                    } = bv
-                    {
-                        collect_concat_leaves_cached(&operands[0], leaves, cache);
-                        collect_concat_leaves_cached(&operands[1], leaves, cache);
-                    } else {
-                        leaves.push(bv.to_z3_ast_cached(cache));
-                    }
-                }
                 let mut leaves = Vec::new();
-                collect_concat_leaves_cached(&operands[0], &mut leaves, cache);
-                collect_concat_leaves_cached(&operands[1], &mut leaves, cache);
-                let mut result = leaves
-                    .pop()
+                collect_concat_leaves(&operands[0], &mut leaves);
+                collect_concat_leaves(&operands[1], &mut leaves);
+                let (first, rest) = leaves
+                    .split_first()
                     .expect("Concat operands always produce at least one leaf");
-                while let Some(part) = leaves.pop() {
-                    result = part.concat(&result);
+                // Leaves are most-significant-first, so folding left with
+                // `acc.concat(next)` reassociates the tree without changing
+                // the bit order.
+                let mut result = first.to_z3_ast_cached(cache);
+                for part in rest {
+                    result = result.concat(part.to_z3_ast_cached(cache));
                 }
                 result
             }
@@ -462,21 +449,8 @@ impl RustBV {
                     op: BVOp::Concat, ..
                 } = &operands[0]
                 {
-                    fn collect_concat_parts_cached(bv: &RustBV, parts: &mut Vec<RustBV>) {
-                        if let RustBV::Expression {
-                            op: BVOp::Concat,
-                            operands,
-                            ..
-                        } = bv
-                        {
-                            collect_concat_parts_cached(&operands[0], parts);
-                            collect_concat_parts_cached(&operands[1], parts);
-                        } else {
-                            parts.push(bv.clone());
-                        }
-                    }
                     let mut parts = Vec::new();
-                    collect_concat_parts_cached(&operands[0], &mut parts);
+                    collect_concat_leaves(&operands[0], &mut parts);
                     parts.reverse();
                     let reversed_asts: Vec<z3::ast::BV> = parts
                         .iter()
@@ -487,7 +461,7 @@ impl RustBV {
                             } else {
                                 Self::build_z3_ast_cached(
                                     &BVOp::Reverse,
-                                    std::slice::from_ref(p),
+                                    std::slice::from_ref(*p),
                                     w,
                                     cache,
                                 )
@@ -1096,6 +1070,32 @@ impl RustBV {
         };
 
         float_to_ieee_bv(&z3_ctx, raw_ctx, &result_fp)
+    }
+}
+
+/// Flatten a `BVOp::Concat` tree into its non-Concat leaves, appended to
+/// `out` in most-significant-first order (left child = high bits, right
+/// child = low bits).
+///
+/// Single source of truth for the Concat tree shape, shared by
+/// `build_z3_ast_cached`'s `BVOp::Concat` and `BVOp::Reverse` arms — the two
+/// used to carry their own inline copies of this walk, so a change to the
+/// shape assumption could have been applied to one and missed in the other.
+/// Leaves are borrowed, not cloned; each caller decides what to do with them
+/// (Concat converts each to a Z3 AST, Reverse reverses the order first and
+/// byte-reverses each leaf).
+#[cfg(feature = "vex-engine-z3")]
+fn collect_concat_leaves<'a>(bv: &'a RustBV, out: &mut Vec<&'a RustBV>) {
+    if let RustBV::Expression {
+        op: BVOp::Concat,
+        operands,
+        ..
+    } = bv
+    {
+        collect_concat_leaves(&operands[0], out);
+        collect_concat_leaves(&operands[1], out);
+    } else {
+        out.push(bv);
     }
 }
 
