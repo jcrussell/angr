@@ -78,6 +78,22 @@ fn test_parse_type() {
     assert_eq!(parse_type("Unknown"), None);
 }
 
+/// Decimal/quad float types have no dedicated `IRType` variant; the fallback
+/// arms in `parse_type` must at least preserve the declared bit width. See the
+/// comment on those arms for why an approximation beats `None` here.
+#[test]
+fn test_parse_type_decimal_and_quad_floats_preserve_width() {
+    for (ty_str, bits) in [
+        ("Ity_D32", 32),
+        ("Ity_D64", 64),
+        ("Ity_D128", 128),
+        ("Ity_F128", 128),
+    ] {
+        let ty = parse_type(ty_str).unwrap_or_else(|| panic!("{ty_str} must map to some IRType"));
+        assert_eq!(ty.bits(), bits, "{ty_str} narrowed to {} bits", ty.bits());
+    }
+}
+
 #[test]
 fn test_parse_jumpkind() {
     assert_eq!(

@@ -1071,7 +1071,30 @@ pub fn parse_type(ty_str: &str) -> Option<IRType> {
         "Ity_F16" => Some(IRType::F16),
         "Ity_F32" => Some(IRType::F32),
         "Ity_F64" => Some(IRType::F64),
-        "Ity_F128" | "Ity_D128" => Some(IRType::F80), // Map to closest
+        // Decimal floats (`Ity_D32`/`Ity_D64`/`Ity_D128`) and quad floats
+        // (`Ity_F128`) have no `IRType` variant, so they are mapped to the
+        // same-width variant instead. `IRType` is a *width* tag in this engine
+        // — nothing outside `IRType::bits()`/`bytes()` matches on which variant
+        // it is (`IRType::F80` is not even constructible from any other path),
+        // so preserving the declared width is the only property that matters
+        // for temp/register sizing and the `debug_assert_eq!(width, ty.bits())`
+        // checks in the `ops/` macros. Mapping the 128-bit types to
+        // `IRType::F80` (80 bits) instead, as this arm used to, made
+        // `bytes()` report 10 rather than 16.
+        //
+        // Returning `None` here would be worse, not safer: every `parse_type`
+        // caller in `pyvex_bridge.rs` and `libvex_lifter.rs` finishes with
+        // `.unwrap_or(IRType::I64)`, so an unmapped type silently becomes 64
+        // bits. A real fix needs `IRType::{D32, D64, D128, F128}` variants plus
+        // evaluator support, which is only worth doing alongside PowerPC /
+        // S390X — the only architectures that emit these types, and both listed
+        // as unsupported in docs/advanced-topics/rust_engine.rst. Until then no
+        // lifted architecture can reach this arm. Same "pin the placeholder,
+        // don't pretend it's right" treatment as the Clz/Ctz and `Iop_And1`
+        // notes above.
+        "Ity_D32" => Some(IRType::I32),
+        "Ity_D64" => Some(IRType::I64),
+        "Ity_F128" | "Ity_D128" => Some(IRType::V128),
         "Ity_V128" => Some(IRType::V128),
         "Ity_V256" => Some(IRType::V256),
         _ => None,
