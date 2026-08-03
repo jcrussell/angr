@@ -208,8 +208,6 @@ pub struct SymbolicMemory {
     pages: OrdMap<u64, MemoryPage>,
     /// Symbolic objects (for values that span multiple bytes).
     symbolic_objects: FxHashMap<Address, RustBV>,
-    /// Next symbolic object ID.
-    next_sym_id: u64,
     /// Default permissions for new pages.
     default_permissions: Permission,
     /// Endianness for this memory.
@@ -311,7 +309,6 @@ impl SymbolicMemory {
         SymbolicMemory {
             pages: OrdMap::new(),
             symbolic_objects: FxHashMap::default(),
-            next_sym_id: 0,
             default_permissions: Permission::RWX,
             endness,
             dirty_pages: FxHashSet::default(),
@@ -641,7 +638,6 @@ impl SymbolicMemory {
         SymbolicMemory {
             pages: self.pages.clone(), // OrdMap clones in O(1)
             symbolic_objects: self.symbolic_objects.clone(),
-            next_sym_id: self.next_sym_id,
             default_permissions: self.default_permissions,
             endness: self.endness,
             dirty_pages: FxHashSet::default(), // Fresh dirty tracking for fork
@@ -688,7 +684,6 @@ impl SymbolicMemory {
                 .iter()
                 .map(|(&addr, bv)| (addr, bv.translate_into(target_ctx)))
                 .collect(),
-            next_sym_id: self.next_sym_id,
             default_permissions: self.default_permissions,
             endness: self.endness,
             dirty_pages: FxHashSet::default(),
@@ -1237,7 +1232,6 @@ impl SymbolicMemory {
 
         // Apply collected merge operations
         for (page_num, addr, ite_val) in merge_ops {
-            self.next_sym_id += 1;
             self.symbolic_objects.insert(addr, ite_val);
             self.symbolic_spans.insert(addr, (addr, 8));
             let offset_in_page = addr.page_offset();
@@ -1382,7 +1376,6 @@ impl Clone for SymbolicMemory {
 pub struct SymbolicMemorySnapshot {
     pub pages: std::collections::BTreeMap<u64, MemoryPage>,
     pub symbolic_objects: std::collections::BTreeMap<u64, RustBV>,
-    pub next_sym_id: u64,
     pub default_permissions: Permission,
     pub endness: Endness,
     pub lazy_regions: Vec<(u64, u64)>,
@@ -1420,7 +1413,6 @@ impl SymbolicMemory {
         SymbolicMemorySnapshot {
             pages,
             symbolic_objects,
-            next_sym_id: self.next_sym_id,
             default_permissions: self.default_permissions,
             endness: self.endness,
             lazy_regions: self.lazy_regions.clone(),
@@ -1464,7 +1456,6 @@ impl SymbolicMemory {
         SymbolicMemory {
             pages,
             symbolic_objects,
-            next_sym_id: snap.next_sym_id,
             default_permissions: snap.default_permissions,
             endness: snap.endness,
             dirty_pages: snap.dirty_pages.into_iter().collect(),
