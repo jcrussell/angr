@@ -40,11 +40,19 @@ impl SymContext {
     ///
     /// Captures `assumed_constraints` — the canonical record from which all
     /// per-context Z3 cache state (solver, sat_cache, model_cache, lineage
-    /// scope_path, push stacks) re-derives. Other [`SymContext`] fields are
-    /// runtime-only caches that rebuild on first query.
+    /// scope_path, push stacks) re-derives — plus the four fields below that
+    /// are NOT re-derivable. Every remaining [`SymContext`] field is a
+    /// runtime-only cache that rebuilds on first query.
     ///
-    /// The two runtime counters — `next_id` and `constraint_count` — ARE
-    /// captured and must be: the ids the restored `RustBV` leaves carry were
+    /// Two of the four are per-lineage mode flags that `fork` inherits —
+    /// `deterministic` and `use_shared_lineage_solver` — so a snapshot must
+    /// round-trip them or a restored deterministic state silently reverts to
+    /// arbitrary-model witnesses (angr-ph300.46). A third, `constraint_count`,
+    /// is pinned to the source's live count because the assume-class IR replay
+    /// re-asserts entries the source had ptr-deduped away and would otherwise
+    /// over-count (see bd memory `snapshot-constraint-count-pin`).
+    ///
+    /// The fourth is `next_id`: the ids the restored `RustBV` leaves carry were
     /// minted by the *source process*'s allocator, which this process's
     /// allocator knows nothing about, so a resume would re-mint ids the
     /// restored leaves already own (angr-op0dn.13.14). Restore raises the

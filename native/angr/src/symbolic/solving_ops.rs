@@ -235,8 +235,9 @@ impl SymContext {
     }
 
     /// Check both branch directions in a single solver session.
-    /// Returns (can_be_true, can_be_false). Holds the solver lock once
-    /// for both checks, reducing lock acquisitions from 8 to 2.
+    /// Returns (can_be_true, can_be_false). One `with_z3_solver`
+    /// acquisition covers both directions, rather than one per direction as a
+    /// naive `can_be_true()` + `can_be_false()` pair would take.
     /// When only one direction is feasible, skips the second Z3 check.
     ///
     /// Optimization: if a parent model is cached (from a prior is_sat/eval

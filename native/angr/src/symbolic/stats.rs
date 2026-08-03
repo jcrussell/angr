@@ -30,7 +30,10 @@ pub(crate) static Z3_MATERIALIZE_TIME_NS: AtomicU64 = AtomicU64::new(0);
 pub(crate) static Z3_ASSUME_CONCRETE_COUNT: AtomicU64 = AtomicU64::new(0);
 /// Number of assume_true/assume_false calls that went to Z3.
 pub(crate) static Z3_ASSUME_SYMBOLIC_COUNT: AtomicU64 = AtomicU64::new(0);
-/// Number of check_branch_feasibility calls.
+/// Number of `check_branch_feasibility` calls with a SYMBOLIC condition —
+/// bumped only after the concrete fast path has returned early, so this is
+/// not the call total. Total calls = this + [`Z3_BRANCH_CONCRETE_COUNT`],
+/// the same decomposition `z3_saved_check_total` already relies on.
 pub(crate) static Z3_BRANCH_CHECK_COUNT: AtomicU64 = AtomicU64::new(0);
 /// Number of branch checks where condition was concrete.
 pub(crate) static Z3_BRANCH_CONCRETE_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -242,7 +245,8 @@ pub(crate) static BRANCH_COND_SIMPLIFY_REDUCED_COUNT: AtomicU64 = AtomicU64::new
 /// shared atomic counter across all three assert sites.  N=64 gives ~1.5%
 /// overhead with a single simplify call per sample. Override via
 /// `ANGR_Z3_SIMPLIFY_STRIDE` (e.g. `=1` for full-population sampling
-/// during a profiling spike); see `simplify_sample_stride()` below.
+/// during a profiling spike); see `simplify_sample_stride()` in
+/// `solver_build.rs`, which reads the override.
 #[cfg(feature = "vex-engine-z3")]
 pub(crate) const SIMPLIFY_SAMPLE_STRIDE_DEFAULT: u64 = 64;
 /// DELIBERATELY NOT EMITTED by `get_solver_stats()` — the only declared-and-reset
