@@ -430,11 +430,11 @@ impl RustExplorationManager {
 
         let mut snapshots: HashMap<String, Vec<crate::state::ExplorationStateSnapshot>> =
             HashMap::new();
-        for (bucket, state) in buckets {
+        for (bucket, mut state) in buckets {
             snapshots
                 .entry(bucket)
                 .or_default()
-                .push(state.export_full());
+                .push(state.flush_and_export_full());
             let id = state.state_id();
             self.index_state(id, STASH_STEP_OUT);
             self.sm.ensure_stash(STASH_STEP_OUT).push_back(state);

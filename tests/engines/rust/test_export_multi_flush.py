@@ -81,3 +81,20 @@ class TestExportFlushesMultiCells:
         found = mgr.found_states
         assert len(found) == 1
         _assert_multi_visible(found[0], addr_sym, candidates)
+
+    def test_step_state_sees_multi_cell_data(self, fauxware_project):
+        """``step_state()`` (``_step_state`` on the Rust side) must flush
+        Multi cells on every returned successor too — a fourth export site
+        that the original ``angr-9ke6b.101`` fix missed. Used directly by
+        ``RustSimulationManagerProxy.step_state()`` and, through it, by
+        Veritesting/Tracer/Slicecutor.
+        """
+        mgr, seed_id, addr_sym, candidates = _multi_store_manager(fauxware_project, "multi_step")
+        seed_proxy = mgr.proxy.active[0]
+        assert seed_proxy._state_id == seed_id
+
+        buckets = mgr.proxy.step_state(seed_proxy)
+        successors = buckets[None]
+        assert successors, "expected at least one live successor from stepping the entry block"
+        for succ in successors:
+            _assert_multi_visible(succ, addr_sym, candidates)
