@@ -28,29 +28,65 @@ fn union_overlay<'a, V>(
     }
 }
 
-/// Union an `Arc<HashSet<_>>` config field across every merge branch.
+/// Union an `Arc<HashSet<_>>` config field across every merge branch, then
+/// drop anything any branch explicitly removed since its fork point (that
+/// branch's tombstone companion set — see `RustSimState::removed_hooks` and
+/// its siblings `removed_sim_options` / `removed_env_keys`).
 ///
-/// Shared by `merge`'s `hooks` and `sim_options` unions (angr-9ke6b.121). A
-/// branch whose `Arc` is pointer-equal to `base` contributes nothing, so the
-/// common case (nobody mutated the set after the fork) returns `base`'s `Arc`
-/// unchanged and allocates nothing.
+/// Shared by `merge`'s `hooks` and `sim_options` unions (angr-9ke6b.121, bug
+/// fix follow-up). A plain union of the live sets can't distinguish "never
+/// touched" from "explicitly removed": `Arc::make_mut` makes a removal
+/// diverge the `Arc` exactly like an addition would, so a naive union
+/// resurrects anything a sibling branch still has — e.g. `a.remove_hook(x)`
+/// then `a.merge(&[b])` where `b` never touched `x` would silently bring `x`
+/// back. Subtracting the union of every branch's tombstones fixes that:
+/// "removed on some branch, not re-added by that same branch" wins over
+/// "still present on another branch that never touched it" — any branch's
+/// removal wins, mirroring the union-favors-presence policy this function
+/// already uses for additions.
+///
+/// A branch whose live `Arc` is pointer-equal to `base`'s AND whose
+/// tombstone `Arc` is pointer-equal to `base`'s tombstone contributes
+/// nothing, so the common case (nobody mutated the set after the fork)
+/// returns `base`'s `Arc` unchanged and allocates nothing.
 fn union_arc_set<'a, T>(
     base: &Arc<HashSet<T>>,
-    others: impl IntoIterator<Item = &'a Arc<HashSet<T>>>,
+    base_removed: &Arc<HashSet<T>>,
+    others: impl IntoIterator<Item = (&'a Arc<HashSet<T>>, &'a Arc<HashSet<T>>)>,
 ) -> Arc<HashSet<T>>
 where
     T: Clone + Eq + std::hash::Hash + 'a,
 {
-    let mut merged: Option<HashSet<T>> = None;
-    for other in others {
-        if Arc::ptr_eq(base, other) {
-            continue;
+    let mut merged_live: Option<HashSet<T>> = None;
+    let mut merged_removed: Option<HashSet<T>> = None;
+    for (other, other_removed) in others {
+        if !Arc::ptr_eq(base, other) {
+            merged_live
+                .get_or_insert_with(|| (**base).clone())
+                .extend(other.iter().cloned());
         }
-        merged
-            .get_or_insert_with(|| (**base).clone())
-            .extend(other.iter().cloned());
+        // Tombstone sets start fresh (empty) at every fork (see
+        // `RustSimState::removed_hooks`), so they are essentially never
+        // pointer-equal across siblings even when neither side removed
+        // anything — checking `is_empty()` instead of `Arc::ptr_eq` is both
+        // correct (an empty tombstone contributes nothing to the union
+        // regardless of which allocation it is) and the actually-common fast
+        // path (most forks never call remove_hook/set_option(false)/unsetenv).
+        if !other_removed.is_empty() {
+            merged_removed
+                .get_or_insert_with(|| (**base_removed).clone())
+                .extend(other_removed.iter().cloned());
+        }
     }
-    merged.map_or_else(|| Arc::clone(base), Arc::new)
+    if merged_live.is_none() && merged_removed.is_none() {
+        return Arc::clone(base);
+    }
+    let mut live = merged_live.unwrap_or_else(|| (**base).clone());
+    let removed = merged_removed.unwrap_or_else(|| (**base_removed).clone());
+    if !removed.is_empty() {
+        live.retain(|item| !removed.contains(item));
+    }
+    Arc::new(live)
 }
 
 /// Warn when a per-path config scalar disagrees across merge branches.
@@ -147,6 +183,9 @@ impl RustSimState {
             detailed_history: self.detailed_history.clone(),
             max_history: self.max_history,
             hooks: self.hooks.clone(),
+            // Fresh divergence point: this child hasn't removed anything
+            // relative to itself yet (see `removed_hooks` field doc).
+            removed_hooks: Arc::new(HashSet::new()),
             concretizer: self.concretizer.clone(),
             track_history: self.track_history,
             fs: self.fs.clone(),
@@ -164,6 +203,8 @@ impl RustSimState {
             heap_metadata: self.heap_metadata.clone(),
             inspection: self.inspection.clone(),
             environment: self.environment.clone(),
+            // Fresh divergence point — see `removed_hooks` above.
+            removed_env_keys: Arc::new(HashSet::new()),
             symbolic_pages,
             hook_symbolic_memory,
             addr_to_ast,
@@ -175,6 +216,8 @@ impl RustSimState {
             cgc_allocation_base: self.cgc_allocation_base,
             cgc_sinkholes: self.cgc_sinkholes.clone(),
             sim_options: self.sim_options.clone(),
+            // Fresh divergence point — see `removed_hooks` above.
+            removed_sim_options: Arc::new(HashSet::new()),
         }
     }
 
@@ -244,6 +287,8 @@ impl RustSimState {
             detailed_history: self.detailed_history.clone(),
             max_history: self.max_history,
             hooks: self.hooks.clone(),
+            // Same logical state, different Z3 context — carry over unchanged.
+            removed_hooks: self.removed_hooks.clone(),
             concretizer: self.concretizer.clone(),
             track_history: self.track_history,
             fs: self.fs.translate_into(target_ctx),
@@ -270,6 +315,8 @@ impl RustSimState {
             heap_metadata: self.heap_metadata.clone(),
             inspection: self.inspection.clone(),
             environment: self.environment.clone(),
+            // Same logical state, different Z3 context — carry over unchanged.
+            removed_env_keys: self.removed_env_keys.clone(),
             symbolic_pages,
             hook_symbolic_memory,
             addr_to_ast,
@@ -284,6 +331,8 @@ impl RustSimState {
             cgc_allocation_base: self.cgc_allocation_base,
             cgc_sinkholes: self.cgc_sinkholes.clone(),
             sim_options: self.sim_options.clone(),
+            // Same logical state, different Z3 context — carry over unchanged.
+            removed_sim_options: self.removed_sim_options.clone(),
         }
     }
 
@@ -433,13 +482,22 @@ impl RustSimState {
         // loses a divergent branch's change. Set-like fields union; genuinely
         // per-path or init-time scalars keep `self`'s value but warn, the same
         // contract the `fs` merge above uses when it drops a branch.
-        let merged_hooks = union_arc_set(&self.hooks, others.iter().map(|o| &o.hooks));
+        let merged_hooks = union_arc_set(
+            &self.hooks,
+            &self.removed_hooks,
+            others.iter().map(|o| (&o.hooks, &o.removed_hooks)),
+        );
         // `sim_options` and the four booleans below are two views of the same
         // Python option set, so they merge the same way: union / logical-OR. An
         // option a branch switched on stays on in the merged state rather than
         // being reverted by whichever branch happened to be `self`.
-        let merged_sim_options =
-            union_arc_set(&self.sim_options, others.iter().map(|o| &o.sim_options));
+        let merged_sim_options = union_arc_set(
+            &self.sim_options,
+            &self.removed_sim_options,
+            others
+                .iter()
+                .map(|o| (&o.sim_options, &o.removed_sim_options)),
+        );
         let merged_no_ip_concretization =
             self.no_ip_concretization || others.iter().any(|o| o.no_ip_concretization);
         let merged_no_symbolic_jump_resolution = self.no_symbolic_jump_resolution
@@ -450,7 +508,23 @@ impl RustSimState {
             self.force_eager_forks || others.iter().any(|o| o.force_eager_forks);
         // Environment: union with self-wins on a conflicting *value*, mirroring
         // `union_overlay`'s earlier-state-wins rule. A key only one branch set
-        // (setenv on that path) would otherwise vanish.
+        // (setenv on that path) would otherwise vanish. As with `merged_hooks`
+        // / `merged_sim_options` above, a plain union can't tell "never
+        // touched" from "explicitly unset" — a key any branch removed (and
+        // didn't re-`setenv` on that same branch) is dropped from the merged
+        // map even if another branch never touched it, mirroring
+        // `union_arc_set`'s tombstone policy (angr-9ke6b.121 bug fix follow-up).
+        let merged_removed_env_keys: HashSet<Vec<u8>> = {
+            let mut removed: HashSet<Vec<u8>> = (*self.removed_env_keys).clone();
+            for other in others {
+                // Tombstone sets start fresh at every fork, so `is_empty()`
+                // is the actually-common fast path — see `union_arc_set`.
+                if !other.removed_env_keys.is_empty() {
+                    removed.extend(other.removed_env_keys.iter().cloned());
+                }
+            }
+            removed
+        };
         let merged_environment = {
             let mut merged: Option<HashMap<Vec<u8>, Vec<u8>>> = None;
             for other in others {
@@ -472,7 +546,13 @@ impl RustSimState {
                     }
                 }
             }
-            merged.map_or_else(|| Arc::clone(&self.environment), Arc::new)
+            if merged_removed_env_keys.is_empty() {
+                merged.map_or_else(|| Arc::clone(&self.environment), Arc::new)
+            } else {
+                let mut env = merged.unwrap_or_else(|| (*self.environment).clone());
+                env.retain(|key, _| !merged_removed_env_keys.contains(key));
+                Arc::new(env)
+            }
         };
         // No union exists for these: a getopt cursor is a per-path scan
         // position, and the concretizer / inspection / extern-pointer fields are
@@ -520,6 +600,10 @@ impl RustSimState {
             detailed_history: self.detailed_history.clone(),
             max_history: self.max_history,
             hooks: merged_hooks,
+            // Fresh baseline going forward: `merged_hooks` above already
+            // resolved every branch's removal, so nothing is "removed since"
+            // this new merged state yet — see `removed_hooks` field doc.
+            removed_hooks: Arc::new(HashSet::new()),
             concretizer: self.concretizer.clone(),
             track_history: self.track_history,
             fs: best_fs,
@@ -561,6 +645,8 @@ impl RustSimState {
             },
             inspection: self.inspection.clone(),
             environment: merged_environment,
+            // Fresh baseline going forward — see `removed_hooks` above.
+            removed_env_keys: Arc::new(HashSet::new()),
             symbolic_pages,
             hook_symbolic_memory,
             addr_to_ast,
@@ -597,6 +683,8 @@ impl RustSimState {
                 .filter(|hole| others.iter().all(|o| o.cgc_sinkholes.contains(hole)))
                 .collect(),
             sim_options: merged_sim_options,
+            // Fresh baseline going forward — see `removed_hooks` above.
+            removed_sim_options: Arc::new(HashSet::new()),
         }
     }
 }

@@ -83,18 +83,31 @@ impl RustSimState {
 
     /// Set an environment variable.
     pub fn setenv(&mut self, key: Vec<u8>, value: Vec<u8>) {
+        // No longer "removed since fork" if it was — see `removed_env_keys`.
+        if self.removed_env_keys.contains(&key) {
+            Arc::make_mut(&mut self.removed_env_keys).remove(&key);
+        }
         Arc::make_mut(&mut self.environment).insert(key, value);
     }
 
     /// Remove an environment variable. Returns true if the key was present.
     pub fn unsetenv(&mut self, key: &[u8]) -> bool {
         let env = Arc::make_mut(&mut self.environment);
-        env.remove(key).is_some()
+        if env.remove(key).is_some() {
+            Arc::make_mut(&mut self.removed_env_keys).insert(key.to_vec());
+            true
+        } else {
+            false
+        }
     }
 
     /// Clear all environment variables.
     pub fn clearenv(&mut self) {
-        Arc::make_mut(&mut self.environment).clear();
+        if !self.environment.is_empty() {
+            let cleared: Vec<Vec<u8>> = self.environment.keys().cloned().collect();
+            Arc::make_mut(&mut self.environment).clear();
+            Arc::make_mut(&mut self.removed_env_keys).extend(cleared);
+        }
     }
 
     /// Get the environment map (for export).

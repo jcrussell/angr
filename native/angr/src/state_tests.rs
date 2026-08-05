@@ -2677,6 +2677,154 @@ fn test_merge_config_union_keeps_shared_arcs_when_nothing_diverged() {
     );
 }
 
+/// Regression: a plain set union can't distinguish "never touched" from
+/// "explicitly removed" — `a.remove_hook(X)` followed by `a.merge(&[&b])`
+/// must NOT resurrect `X` just because sibling `b` never touched it. Same
+/// bug class for `set_option(name, false)` and `unsetenv`. This is the
+/// removal-direction counterpart to
+/// `test_merge_unions_config_like_fields_across_branches` above, which only
+/// exercised additions.
+#[test]
+fn test_merge_does_not_resurrect_removed_hook_option_or_env_var() {
+    Python::initialize();
+
+    let mut ancestor = RustSimState::new("amd64").unwrap();
+    ancestor.add_hook(0x400000);
+    ancestor.set_option("SHORT_READS", true);
+    ancestor.setenv(b"PATH".to_vec(), b"/a".to_vec());
+
+    let mut a = ancestor.fork();
+    let b = ancestor.fork();
+
+    // `a` explicitly removes everything; `b` never touches any of it.
+    a.remove_hook(0x400000);
+    a.set_option("SHORT_READS", false);
+    a.unsetenv(b"PATH");
+
+    let (m0, m1) = {
+        let s = a.solver().borrow();
+        (
+            RustBV::symbolic(&s, "resurrect_m0", 1),
+            RustBV::symbolic(&s, "resurrect_m1", 1),
+        )
+    };
+    let merged = a.merge(&[&b], &[m0, m1]);
+
+    assert!(
+        !merged.is_hooked(0x400000),
+        "a's explicit remove_hook must not be undone by b still having the hook"
+    );
+    assert!(
+        !merged.has_option("SHORT_READS"),
+        "a's explicit set_option(false) must not be undone by b still having it on"
+    );
+    assert!(
+        merged.environment().get(b"PATH".as_slice()).is_none(),
+        "a's explicit unsetenv must not be undone by b still having the var"
+    );
+}
+
+/// Removal-then-merge must not regress the addition-direction fix
+/// (`07f1f024e`): a hook/option/env-var added by `b` only, with `a` never
+/// touching it, must still survive the merge.
+#[test]
+fn test_merge_still_unions_additions_alongside_removals() {
+    Python::initialize();
+
+    let mut ancestor = RustSimState::new("amd64").unwrap();
+    ancestor.add_hook(0x400000);
+
+    let mut a = ancestor.fork();
+    let mut b = ancestor.fork();
+
+    // `a` removes the shared hook; `b` independently adds a brand-new one.
+    a.remove_hook(0x400000);
+    b.add_hook(0x500000);
+    b.set_option("OTHER_ONLY", true);
+    b.setenv(b"HOME".to_vec(), b"/root".to_vec());
+
+    let (m0, m1) = {
+        let s = a.solver().borrow();
+        (
+            RustBV::symbolic(&s, "resurrect_add_m0", 1),
+            RustBV::symbolic(&s, "resurrect_add_m1", 1),
+        )
+    };
+    let merged = a.merge(&[&b], &[m0, m1]);
+
+    assert!(
+        !merged.is_hooked(0x400000),
+        "a's removal still wins even when b also contributed an unrelated addition"
+    );
+    assert!(
+        merged.is_hooked(0x500000),
+        "b's brand-new hook must still be unioned in"
+    );
+    assert!(
+        merged.has_option("OTHER_ONLY"),
+        "b's brand-new option must still be unioned in"
+    );
+    assert_eq!(
+        merged
+            .environment()
+            .get(b"HOME".as_slice())
+            .map(|v| v.as_slice()),
+        Some(b"/root".as_slice()),
+        "b's brand-new env var must still be unioned in"
+    );
+}
+
+/// A hook/option/env-var removed and then re-added on the SAME branch before
+/// merge must survive: the tombstone has to clear on re-add, or the merge
+/// would incorrectly treat it as still-removed and drop it out from under a
+/// branch that currently has it live.
+#[test]
+fn test_merge_reinstated_hook_option_env_survives_own_removal_tombstone() {
+    Python::initialize();
+
+    let ancestor = RustSimState::new("amd64").unwrap();
+    let mut a = ancestor.fork();
+    let b = ancestor.fork();
+
+    a.add_hook(0x400000);
+    a.remove_hook(0x400000);
+    a.add_hook(0x400000); // back on before merge — tombstone must clear.
+
+    a.set_option("SHORT_READS", true);
+    a.set_option("SHORT_READS", false);
+    a.set_option("SHORT_READS", true);
+
+    a.setenv(b"PATH".to_vec(), b"/a".to_vec());
+    a.unsetenv(b"PATH");
+    a.setenv(b"PATH".to_vec(), b"/a2".to_vec());
+
+    let (m0, m1) = {
+        let s = a.solver().borrow();
+        (
+            RustBV::symbolic(&s, "reinstate_m0", 1),
+            RustBV::symbolic(&s, "reinstate_m1", 1),
+        )
+    };
+    let merged = a.merge(&[&b], &[m0, m1]);
+
+    assert!(
+        merged.is_hooked(0x400000),
+        "re-adding after remove_hook must clear the tombstone"
+    );
+    assert!(
+        merged.has_option("SHORT_READS"),
+        "re-enabling after set_option(false) must clear the tombstone"
+    );
+    assert_eq!(
+        merged
+            .environment()
+            .get(b"PATH".as_slice())
+            .map(|v| v.as_slice()),
+        Some(b"/a2".as_slice()),
+        "re-setenv after unsetenv must clear the tombstone"
+    );
+}
+
 // =============================================================================
 // export.rs — ExplorationStateSnapshot / RustSimState::export_full coverage
 // (angr-n0irt.17). Before this, state/export.rs — the single choke point every

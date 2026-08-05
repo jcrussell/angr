@@ -87,8 +87,12 @@ impl RustSimState {
         let opts = Arc::make_mut(&mut self.sim_options);
         if enabled {
             opts.insert(name.to_string());
-        } else {
-            opts.remove(name);
+            // No longer "removed since fork" if it was — see `removed_sim_options`.
+            if self.removed_sim_options.contains(name) {
+                Arc::make_mut(&mut self.removed_sim_options).remove(name);
+            }
+        } else if opts.remove(name) {
+            Arc::make_mut(&mut self.removed_sim_options).insert(name.to_string());
         }
     }
 

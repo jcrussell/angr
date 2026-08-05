@@ -383,6 +383,15 @@ pub struct RustSimState {
     /// `self.hooks.iter()`, not `for x in &self.hooks` — `Arc<HashSet>`
     /// does not implement `IntoIterator` for `&Self`).
     hooks: Arc<HashSet<u64>>,
+    /// Hook addresses explicitly removed (via `remove_hook`/`clear_hooks`)
+    /// since this state's last fork point. Lets `merge` (angr-9ke6b.121,
+    /// bug fix follow-up) distinguish "never touched" from "explicitly
+    /// removed" when unioning `hooks` across merge arms — a plain set union
+    /// can't tell the two apart and would silently resurrect a hook this
+    /// branch removed if a sibling branch still has it. Reset to empty by
+    /// `fork_with` (a fresh divergence point); carried over unchanged by
+    /// `translate_state` (same logical state, different Z3 context).
+    removed_hooks: Arc<HashSet<u64>>,
     /// Address concretization config.
     concretizer: AddressConcretizer,
     /// Whether to track detailed history.
@@ -461,6 +470,10 @@ pub struct RustSimState {
     ///
     /// See module-level `arc-make-mut-cow` and `arc-collection-iter`.
     environment: Arc<HashMap<Vec<u8>, Vec<u8>>>,
+    /// Environment keys explicitly removed (`unsetenv`/`clearenv`) since this
+    /// state's last fork point. Same rationale and reset/carry rules as
+    /// [`Self::removed_hooks`].
+    removed_env_keys: Arc<HashSet<Vec<u8>>>,
     /// Per-state symbolic page metadata: `addr -> claripy AST`. Holds whole-page
     /// symbolic ASTs preserved across Python fallback so Rust can re-establish
     /// symbolic memory. Migrated out of Python `_state_metadata` so storage is
@@ -561,6 +574,10 @@ pub struct RustSimState {
     /// so it must be set on the Rust state during `_add_rust_state` rather than
     /// relying on the cached-init path to preserve it.
     sim_options: Arc<HashSet<String>>,
+    /// SimOption names explicitly disabled (`set_option(name, false)`) since
+    /// this state's last fork point. Same rationale and reset/carry rules as
+    /// [`Self::removed_hooks`].
+    removed_sim_options: Arc<HashSet<String>>,
 }
 
 impl RustSimState {

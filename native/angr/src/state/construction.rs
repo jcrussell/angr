@@ -89,6 +89,7 @@ impl RustSimState {
             detailed_history: VecDeque::new(),
             max_history: 1000,
             hooks: Arc::new(HashSet::new()),
+            removed_hooks: Arc::new(HashSet::new()),
             concretizer: AddressConcretizer::default(),
             track_history: true,
             arch,
@@ -107,6 +108,7 @@ impl RustSimState {
             heap_metadata: HeapMetadata::default(),
             inspection: InspectionManager::default(),
             environment: Arc::new(HashMap::new()),
+            removed_env_keys: Arc::new(HashSet::new()),
             symbolic_pages: HashMap::new(),
             hook_symbolic_memory: HashMap::new(),
             addr_to_ast: HashMap::new(),
@@ -118,6 +120,7 @@ impl RustSimState {
             cgc_allocation_base: 0xB800_0000,
             cgc_sinkholes: Vec::new(),
             sim_options: Arc::new(HashSet::new()),
+            removed_sim_options: Arc::new(HashSet::new()),
         })
     }
 }

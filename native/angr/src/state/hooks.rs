@@ -17,11 +17,17 @@ impl RustSimState {
     /// Add a hook address.
     pub fn add_hook(&mut self, addr: u64) {
         Arc::make_mut(&mut self.hooks).insert(addr);
+        // No longer "removed since fork" if it was — see `removed_hooks`.
+        if self.removed_hooks.contains(&addr) {
+            Arc::make_mut(&mut self.removed_hooks).remove(&addr);
+        }
     }
 
     /// Remove a hook address.
     pub fn remove_hook(&mut self, addr: u64) {
-        Arc::make_mut(&mut self.hooks).remove(&addr);
+        if Arc::make_mut(&mut self.hooks).remove(&addr) {
+            Arc::make_mut(&mut self.removed_hooks).insert(addr);
+        }
     }
 
     /// Check if an address is hooked.
@@ -33,7 +39,9 @@ impl RustSimState {
     pub fn clear_hooks(&mut self) {
         // Avoid CoW clone if already empty.
         if !self.hooks.is_empty() {
+            let cleared: Vec<u64> = self.hooks.iter().copied().collect();
             Arc::make_mut(&mut self.hooks).clear();
+            Arc::make_mut(&mut self.removed_hooks).extend(cleared);
         }
     }
 

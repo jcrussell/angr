@@ -83,6 +83,12 @@ pub struct RustSimStateSnapshot {
     pub detailed_history: VecDeque<HistoryEntry>,
     pub max_history: usize,
     pub hooks: Vec<u64>,
+    /// Hook addresses explicitly removed since this state's last fork point
+    /// (angr-9ke6b.121 bug fix follow-up; see `RustSimState::removed_hooks`).
+    /// `#[serde(default)]` keeps pre-this-fix snapshots forward-compatible —
+    /// restoration defaults to an empty tombstone set.
+    #[serde(default)]
+    pub removed_hooks: Vec<u64>,
     pub concretizer: AddressConcretizer,
     pub track_history: bool,
     pub fs: FileSystem,
@@ -111,6 +117,11 @@ pub struct RustSimStateSnapshot {
     /// Not a `BTreeMap<Vec<u8>, Vec<u8>>` because `serde_json` only allows
     /// string-shaped map keys; the angr environment is byte-keyed.
     pub environment: Vec<(Vec<u8>, Vec<u8>)>,
+    /// Environment keys explicitly removed since this state's last fork point
+    /// (angr-9ke6b.121 bug fix follow-up; see `RustSimState::removed_env_keys`).
+    /// `#[serde(default)]` keeps pre-this-fix snapshots forward-compatible.
+    #[serde(default)]
+    pub removed_env_keys: Vec<Vec<u8>>,
     pub no_ip_concretization: bool,
     pub no_symbolic_jump_resolution: bool,
     pub keep_ip_symbolic: bool,
@@ -134,6 +145,11 @@ pub struct RustSimStateSnapshot {
     /// forward-compatible — restoration defaults to an empty option set.
     #[serde(default)]
     pub sim_options: Vec<String>,
+    /// SimOption names explicitly disabled since this state's last fork point
+    /// (angr-9ke6b.121 bug fix follow-up; see `RustSimState::removed_sim_options`).
+    /// `#[serde(default)]` keeps pre-this-fix snapshots forward-compatible.
+    #[serde(default)]
+    pub removed_sim_options: Vec<String>,
 }
 
 fn default_cgc_allocation_base() -> u64 {
@@ -149,14 +165,21 @@ impl RustSimState {
     pub fn to_snapshot(&self) -> RustSimStateSnapshot {
         let mut hooks: Vec<u64> = self.hooks.iter().copied().collect();
         hooks.sort_unstable();
+        let mut removed_hooks: Vec<u64> = self.removed_hooks.iter().copied().collect();
+        removed_hooks.sort_unstable();
         let mut environment: Vec<(Vec<u8>, Vec<u8>)> = self
             .environment
             .iter()
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
         environment.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut removed_env_keys: Vec<Vec<u8>> = self.removed_env_keys.iter().cloned().collect();
+        removed_env_keys.sort();
         let mut sim_options: Vec<String> = self.sim_options.iter().cloned().collect();
         sim_options.sort_unstable();
+        let mut removed_sim_options: Vec<String> =
+            self.removed_sim_options.iter().cloned().collect();
+        removed_sim_options.sort_unstable();
         RustSimStateSnapshot {
             arch_name: self.arch.name().to_string(),
             vex_arch: self.vex_arch,
@@ -170,6 +193,7 @@ impl RustSimState {
             detailed_history: self.detailed_history.clone(),
             max_history: self.max_history,
             hooks,
+            removed_hooks,
             concretizer: self.concretizer.clone(),
             track_history: self.track_history,
             fs: self.fs.clone(),
@@ -187,6 +211,7 @@ impl RustSimState {
             heap_metadata: self.heap_metadata.clone(),
             inspection: self.inspection.clone(),
             environment,
+            removed_env_keys,
             no_ip_concretization: self.no_ip_concretization,
             no_symbolic_jump_resolution: self.no_symbolic_jump_resolution,
             keep_ip_symbolic: self.keep_ip_symbolic,
@@ -194,6 +219,7 @@ impl RustSimState {
             cgc_allocation_base: self.cgc_allocation_base,
             cgc_sinkholes: self.cgc_sinkholes.clone(),
             sim_options,
+            removed_sim_options,
         }
     }
 
@@ -219,6 +245,9 @@ impl RustSimState {
         );
         let environment: HashMap<Vec<u8>, Vec<u8>> = snap.environment.into_iter().collect();
         let hooks: HashSet<u64> = snap.hooks.into_iter().collect();
+        let removed_hooks: HashSet<u64> = snap.removed_hooks.into_iter().collect();
+        let removed_env_keys: HashSet<Vec<u8>> = snap.removed_env_keys.into_iter().collect();
+        let removed_sim_options: HashSet<String> = snap.removed_sim_options.into_iter().collect();
         Ok(RustSimState {
             arch,
             vex_arch: snap.vex_arch,
@@ -232,6 +261,7 @@ impl RustSimState {
             detailed_history: snap.detailed_history,
             max_history: snap.max_history,
             hooks: Arc::new(hooks),
+            removed_hooks: Arc::new(removed_hooks),
             concretizer: snap.concretizer,
             track_history: snap.track_history,
             fs: snap.fs,
@@ -249,6 +279,7 @@ impl RustSimState {
             heap_metadata: snap.heap_metadata,
             inspection: snap.inspection,
             environment: Arc::new(environment),
+            removed_env_keys: Arc::new(removed_env_keys),
             symbolic_pages: HashMap::new(),
             hook_symbolic_memory: HashMap::new(),
             addr_to_ast: HashMap::new(),
@@ -260,6 +291,7 @@ impl RustSimState {
             cgc_allocation_base: snap.cgc_allocation_base,
             cgc_sinkholes: snap.cgc_sinkholes,
             sim_options: Arc::new(snap.sim_options.into_iter().collect()),
+            removed_sim_options: Arc::new(removed_sim_options),
         })
     }
 
