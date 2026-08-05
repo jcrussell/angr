@@ -27,17 +27,35 @@ Otherwise, for each task follow this loop:
  7. Test: `python -m pytest tests/engines/rust/ -v --tb=short`
  8. If tests pass: `git add <changed files> && git commit -m "<description>"`
  9. `bd close <id> --reason="<what was done>"`
-10. **MANDATORY — save what you learned.** Run `bd remember` for each that applies:
+10. **MANDATORY — decide whether to save what you learned.** `bd recall
+    memory-keep-write-time-test` if unfamiliar; in short: `bd prime` injects
+    every kept memory into every future session unconditionally, so only
+    durable, cross-cutting knowledge (an invariant, a gotcha, a workflow
+    rule) belongs in `bd remember` — not a debugging narrative pinned to one
+    file. If the finding's value is really a specific file:line,
+    function/struct name, register/opcode encoding, or other implementation
+    detail that will drift, put it in a code comment at that location
+    instead; do not `bd remember` it.
+
+    This test governs every `bd remember` call in this prompt that records
+    durable knowledge — including the dirty/revert "save the lesson" writes
+    elsewhere in this prompt — not just this task loop. It does NOT apply to
+    `review.md`'s merge-ready note (`review:<branch>:ready`): that's a
+    protocol signal for the orchestrator, not knowledge for a future
+    session.
+
+    If it passes, run `bd remember` for each that applies:
     - Root cause was surprising or non-obvious? `--key <topic>-root-cause`
     - An approach failed before the one that worked? `--key avoid-<thing>`
     - A constraint/invariant future work must respect? `--key invariant-<thing>`
     - Profiling showed bottleneck was NOT where expected? `--key <topic>-bottleneck`
     - A benchmark number changed significantly? `--key benchmark-<topic>`
 
-    Do NOT skip this step. Context dies between sessions; memories are the only
-    bridge. **Anchor references to symbol names (fn/struct/method) instead of
-    raw line numbers** — line refs drift 10-600 lines across refactors while
-    symbol anchors stay resolvable (see `refactor-memory-sweep-rule`).
+    Do NOT skip deciding. Context dies between sessions; memories are the
+    only bridge for durable knowledge. **Anchor references to symbol names
+    (fn/struct/method) instead of raw line numbers** — line refs drift
+    10-600 lines across refactors while symbol anchors stay resolvable (see
+    `refactor-memory-sweep-rule`).
 11. If you discover new work needed: `bd create --title="<title>"
     --description="<desc>" --type=task`
 12. Append a one-paragraph entry to `.ralph/state/session.md` describing what
