@@ -512,6 +512,40 @@ fn test_post_cancel_steps_excludes_self_cancel() {
     );
 }
 
+/// Regression (angr-9ke6b.52 bug fix follow-up): a genuine find/finalize
+/// `cancel()` racing a sibling's `cancel_for_budget()` must never lose —
+/// `preempts_in_flight()` must end up `true` (find semantics) regardless of
+/// which call actually reached the shared `CancelToken` first. The pre-fix
+/// two-`AtomicBool` implementation could observe `flag=true, budget=true`
+/// (budget semantics) when `cancel_for_budget()` raced into the gap between
+/// `cancel()`'s two separate stores; a single `compare_exchange`-guarded
+/// atomic makes that combination unreachable. Runs many rounds with real OS
+/// threads (not just a single-threaded interleaving) since the whole point is
+/// to stress actual scheduling nondeterminism, not to trust one lucky order.
+#[test]
+fn test_cancel_always_beats_a_racing_budget_cancel() {
+    const ROUNDS: usize = 2000;
+    for _ in 0..ROUNDS {
+        let token = super::CancelToken::new();
+        let a = token.clone();
+        let b = token.clone();
+        let t1 = std::thread::spawn(move || a.cancel());
+        let t2 = std::thread::spawn(move || b.cancel_for_budget());
+        t1.join().unwrap();
+        t2.join().unwrap();
+
+        assert!(
+            token.is_cancelled(),
+            "either call must leave the token cancelled"
+        );
+        assert!(
+            token.preempts_in_flight(),
+            "a genuine find/finalize cancel() must never be downgraded to budget \
+             semantics by a racing cancel_for_budget(), regardless of arrival order"
+        );
+    }
+}
+
 // angr-729vn: the home-context fast path pays zero continue-serde. A single
 // worker explores a binary tree that never exceeds the high-water mark and
 // has no idle sibling to offload to, so NOT ONE continue-state is

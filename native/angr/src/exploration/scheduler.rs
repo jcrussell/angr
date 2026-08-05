@@ -172,7 +172,7 @@ use crate::vex::IRSB;
 use crossbeam_deque::{Injector, Steal};
 use lru::LruCache;
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -200,21 +200,33 @@ const LOCAL_HWM: usize = 64;
 /// integration increment (where solve durations actually matter). Wiring it
 /// here would add a cross-thread raw-pointer lifetime hazard for no benefit at
 /// the current granularity.
+///
+/// Backed by a single atomic `state` rather than two independent
+/// `AtomicBool`s (`flag` + `budget`, angr-9ke6b.52 bug fix follow-up): two
+/// atomics can be observed in an inconsistent intermediate combination by a
+/// concurrent reader — e.g. a find cancel's `budget.store(false)` then
+/// `flag.store(true)` are two separate writes, and a `cancel_for_budget()`
+/// racing in the gap between them could see `flag == false`, "win" a
+/// set-budget-true, and leave the pair at `(flag=true, budget=true)` even
+/// though the cancel in flight was a genuine find/finalize. A single atomic
+/// makes every observable state one of exactly the three [`CancelState`]
+/// values below, with no in-between.
 #[derive(Clone, Default)]
 pub(crate) struct CancelToken {
-    flag: Arc<AtomicBool>,
-    /// Set alongside `flag` when the stop was requested by the wave's dispatch
-    /// budget ([`WorkTransport::max_dispatches`], angr-9ke6b.52) rather than by
-    /// a find / finalize. The distinction matters for IN-FLIGHT work only: a
-    /// find cancel wants peers to drop the state they just picked up
-    /// (speculative waste past `num_find`), but a budget cancel must let it
-    /// finish — the dispatch was already charged to the budget, and dropping it
-    /// unstepped livelocks a small `run(n)`: with `n = 1` and W workers, the
-    /// peer that observes the budget spent cancels while the one worker that
-    /// dispatched is still mid-step, so the wave returns having advanced
-    /// nothing and the next `run(1)` repeats it forever.
-    budget: Arc<AtomicBool>,
+    state: Arc<AtomicU8>,
 }
+
+/// `state` values for [`CancelToken`]. See the struct doc for why this is a
+/// single atomic instead of two independent booleans.
+type CancelState = u8;
+const NOT_CANCELLED: CancelState = 0;
+/// A `run(n)` dispatch-budget stop ([`WorkTransport::max_dispatches`]):
+/// already-dispatched states must finish their step (dropping one unstepped
+/// livelocks a small `run(n)` — see [`CancelToken::preempts_in_flight`]).
+const BUDGET_CANCELLED: CancelState = 1;
+/// A find / finalize cancel: peers must drop the state they just picked up
+/// (speculative waste past `num_find`) rather than finish stepping it.
+const FIND_CANCELLED: CancelState = 2;
 
 impl CancelToken {
     pub(crate) fn new() -> Self {
@@ -222,29 +234,42 @@ impl CancelToken {
     }
 
     /// Request that all workers stop at their next task boundary, preempting any
-    /// in-flight step (find / finalize semantics).
+    /// in-flight step (find / finalize semantics). Always wins over a
+    /// concurrent [`Self::cancel_for_budget`] — an unconditional store, not a
+    /// CAS, so a find cancel can never be "lost" to a racing budget stop.
     pub(crate) fn cancel(&self) {
-        // Clear `budget` FIRST: a find cancel always preempts, even if a budget
-        // stop got there first.
-        self.budget.store(false, Ordering::SeqCst);
-        self.flag.store(true, Ordering::SeqCst);
+        self.state.store(FIND_CANCELLED, Ordering::SeqCst);
     }
 
     /// Request that all workers stop at their next task boundary, but let
-    /// already-dispatched states finish their step. See the `budget` field docs.
+    /// already-dispatched states finish their step. See [`BUDGET_CANCELLED`].
+    ///
+    /// Every worker calls this at the top of its loop whenever the wave's
+    /// dispatch budget is exhausted, including on the very next iteration a
+    /// worker takes right after a sibling's genuine find/finalize `cancel()`
+    /// already fired. The CAS only takes effect from `NOT_CANCELLED`, so it
+    /// can never downgrade an in-flight `FIND_CANCELLED` back to
+    /// `BUDGET_CANCELLED` — closing the race described on [`CancelState`]
+    /// that would otherwise silently flip [`Self::preempts_in_flight`] from
+    /// true to false mid-wave, breaking the Bug M1 contract
+    /// (angr-op0dn.13.8) `cancel` exists to guarantee.
     pub(crate) fn cancel_for_budget(&self) {
-        self.budget.store(true, Ordering::SeqCst);
-        self.flag.store(true, Ordering::SeqCst);
+        let _ = self.state.compare_exchange(
+            NOT_CANCELLED,
+            BUDGET_CANCELLED,
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        );
     }
 
     pub(crate) fn is_cancelled(&self) -> bool {
-        self.flag.load(Ordering::SeqCst)
+        self.state.load(Ordering::SeqCst) != NOT_CANCELLED
     }
 
     /// Whether cancellation should preempt a state that is already dispatched.
     /// True for find/finalize cancels, false for a pure budget stop.
     pub(crate) fn preempts_in_flight(&self) -> bool {
-        self.is_cancelled() && !self.budget.load(Ordering::SeqCst)
+        self.state.load(Ordering::SeqCst) == FIND_CANCELLED
     }
 }
 
