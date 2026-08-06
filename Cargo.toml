@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["native/angr"]
+members = ["native/angr", "native/angr-macros"]
 
 [workspace.package]
 description = "angr's native Rust symbolic-execution engine (VEX interpreter, Z3 bridge, PyO3 exploration manager)"

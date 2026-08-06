@@ -20,8 +20,8 @@ impl RustExplorationManager {
     /// After each step in run(), states with duplicate register tuples
     /// are moved to 'not_unique' stash. This replaces the Python
     /// CheckUniqueness technique with zero FFI overhead.
+    #[angr_macros::steady_guarded]
     pub fn register_uniqueness_filter(&mut self, register_names: Vec<String>) {
-        self.steady_config_guard();
         self.constraint_tracker.uniqueness_registers = register_names;
         self.constraint_tracker.uniqueness_set.clear();
         // Ensure not_unique stash exists
@@ -32,8 +32,8 @@ impl RustExplorationManager {
     }
 
     /// Disable the native uniqueness filter.
+    #[angr_macros::steady_guarded]
     pub fn disable_uniqueness_filter(&mut self) {
-        self.steady_config_guard();
         self.constraint_tracker.uniqueness_registers.clear();
         self.constraint_tracker.uniqueness_set.clear();
     }
@@ -56,6 +56,7 @@ impl RustExplorationManager {
     ///
     /// States whose history exceeds `max_length` blocks are moved to "cut"
     /// (or "_DROP" if `drop` is true). Runs entirely in Rust with zero FFI overhead.
+    #[angr_macros::steady_guarded]
     pub fn register_length_limiter(&mut self, max_length: usize, drop: bool) {
         self.native_techniques
             .push(NativeTechnique::LengthLimiter { max_length, drop });
@@ -68,6 +69,7 @@ impl RustExplorationManager {
     ///
     /// Exploration stops after `timeout_secs` seconds. All active states are
     /// moved to "timeout" stash. Timer starts on first call to apply_native_techniques().
+    #[angr_macros::steady_guarded]
     pub fn register_timeout(&mut self, timeout_secs: f64) {
         self.native_techniques.push(NativeTechnique::Timeout {
             timeout_secs,
@@ -85,6 +87,7 @@ impl RustExplorationManager {
     /// their history are moved to `discard_stash`. This is a simplified
     /// version of LoopSeer that doesn't require CFG analysis.
     #[pyo3(signature = (bound, discard_stash="spinning"))]
+    #[angr_macros::steady_guarded]
     pub fn register_loop_bound(&mut self, bound: usize, discard_stash: &str) {
         self.native_techniques.push(NativeTechnique::LoopBound {
             bound,
@@ -105,6 +108,7 @@ impl RustExplorationManager {
     /// ≥2 group is merged in-Rust via `_merge_states`. A lone waiter is
     /// released back to active unmerged (count preserved, no stall).
     #[pyo3(signature = (address, wait_counter=10))]
+    #[angr_macros::steady_guarded]
     pub fn register_merge_point(&mut self, address: u64, wait_counter: usize) {
         let wait_stash = format!("merge_waiting_{address:#x}");
         self.native_techniques.push(NativeTechnique::MergePoint {

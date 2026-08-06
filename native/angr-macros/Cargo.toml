@@ -1,0 +1,21 @@
+[package]
+name = "angr-macros"
+version = "0.1.0"
+edition = "2024"
+description = "Proc macros enforcing repo-specific call-site invariants for the rustylib engine (angr-sqfj8/angr-9ke6b whac-a-mole follow-up)."
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full"] }

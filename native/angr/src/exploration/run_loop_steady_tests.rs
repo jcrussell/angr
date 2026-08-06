@@ -20,10 +20,18 @@ use lru::LruCache;
 /// (the guard runs on the no-session path without panicking or clobbering the
 /// mutation). The end-to-end finalize-a-live-session proof is the Python
 /// `tests/engines/rust/test_parallel_wave.py` steady suite.
+///
+/// angr-sqfj8.28/.29: the native-technique registrars
+/// (`manager_methods_techniques.rs`) and native-procedure mutators
+/// (`manager_methods_procedures.rs`) were missing the guard entirely — fixed
+/// via the `#[angr_macros::steady_guarded]` attribute macro (which injects
+/// `self.steady_config_guard();` as the method's first statement) rather than
+/// a hand-written call, so the same class of omission can't recur silently.
+/// Covered below alongside the pre-existing sites.
 #[test]
 fn config_mutators_apply_and_are_guard_safe_without_session() {
     Python::initialize();
-    Python::attach(|_py| {
+    Python::attach(|py| {
         let mut mgr = RustExplorationManager::new("amd64", None).unwrap();
         assert!(
             !mgr.parallel_session_active(),
@@ -80,6 +88,43 @@ fn config_mutators_apply_and_are_guard_safe_without_session() {
             mgr.get_max_active_states(),
             Some(7),
             "set_max_active_states applied the new cap"
+        );
+
+        // angr-sqfj8.28: native-technique registrars.
+        mgr.register_length_limiter(100, false);
+        mgr.register_timeout(5.0);
+        mgr.register_loop_bound(3, "spinning");
+        mgr.register_merge_point(0x40_5000, 10);
+        assert_eq!(
+            mgr.native_technique_count(),
+            4,
+            "all 4 technique registrars applied their mutation"
+        );
+
+        // angr-sqfj8.29: native-procedure mutators.
+        mgr.disable_native_procedures();
+        assert!(!mgr.native_procedures_enabled(), "disable_all applied");
+        mgr.enable_native_procedures();
+        assert!(mgr.native_procedures_enabled(), "enable_all applied");
+        mgr.disable_native_procedure("strlen");
+        mgr.enable_native_procedure("strlen");
+        mgr.set_python_override("strlen");
+        mgr.remove_python_override("strlen");
+
+        let locals = pyo3::types::PyDict::new(py);
+        py.run(
+            std::ffi::CString::new("f = lambda args: 0")
+                .unwrap()
+                .as_c_str(),
+            None,
+            Some(&locals),
+        )
+        .unwrap();
+        let callable: Py<PyAny> = locals.get_item("f").unwrap().unwrap().unbind();
+        mgr.register_python_procedure("py_proc".to_string(), 1, false, callable);
+        assert!(
+            mgr.has_native_procedure("py_proc"),
+            "register_python_procedure registered the proc"
         );
 
         // The guard ran on the no-session path for every mutator above and

@@ -85,8 +85,8 @@ impl RustExplorationManager {
     /// worker Z3 contexts and is in NO stash, so dumping `self.sm` mid-session
     /// would silently truncate the search — the snapshot would look valid and
     /// resume with a smaller frontier. Finalize-then-capture is the contract.
+    #[angr_macros::steady_guarded]
     pub fn dump_snapshot_bytes<'py>(&mut self, py: Python<'py>) -> Bound<'py, PyBytes> {
-        self.steady_config_guard();
         self.flush_parked_bounces_to_active();
         let bytes = self.sm.dump_snapshot();
         PyBytes::new(py, &bytes)
@@ -109,6 +109,12 @@ impl RustExplorationManager {
     /// first (drains any live session into the soon-to-be-discarded `self.sm`)
     /// and clear all pending single-step / callback / parked-bounce state, so
     /// the restored frontier starts from a clean manager.
+    ///
+    /// Deliberately NOT `#[angr_macros::steady_guarded]` (unlike this
+    /// module's other guarded mutators): the guard must run AFTER the
+    /// fallible parse below, not as the unconditional first statement the
+    /// macro would inject — a malformed envelope should error out without
+    /// finalizing a live session that turns out not to be replaced.
     pub fn load_snapshot_bytes(&mut self, bytes: &[u8]) -> PyResult<()> {
         let restored = StashManager::load_snapshot(bytes)
             .map_err(|e| PyValueError::new_err(format!("snapshot load failed: {e}")))?;

@@ -25,8 +25,8 @@ impl RustExplorationManager {
     /// Add an existing RustSimState to a stash.
     /// See `state_lifecycle::_add_state` for the body.
     #[pyo3(signature = (stash, state))]
+    #[angr_macros::steady_guarded]
     pub fn add_state(&mut self, stash: &str, state: &crate::state::PyRustSimState) {
-        self.steady_config_guard();
         self._add_state(stash, state)
     }
 
@@ -185,10 +185,10 @@ impl RustExplorationManager {
     /// Map memory in active states.
     /// See `pending_api::_active_states_map_memory` for the body.
     #[pyo3(signature = (addr, data, permissions=7))]
+    #[angr_macros::steady_guarded]
     pub fn active_states_map_memory(&mut self, addr: u64, data: &[u8], permissions: u8) {
         // Steady-state: this iterates STASH_ACTIVE, which misses a resident
         // frontier — finalize first so every live state is back in the stash.
-        self.steady_config_guard();
         self._active_states_map_memory(addr, data, permissions)
     }
 
