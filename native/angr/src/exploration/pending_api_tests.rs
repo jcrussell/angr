@@ -170,3 +170,105 @@ fn consume_skip_hook_drops_expired_entries() {
     );
     assert!(mgr.skip_hook_stack.is_empty(), "expired entry pruned");
 }
+
+/// Build a state whose bytes at `0x1000` live in Multi cells: a
+/// symbolic-address store resolving to `Multiple` is routed through
+/// `store_symbolic_unified`, which leaves the value in `multi_objects`
+/// rather than the page's `symbolic_bitmap`. Mirrors
+/// `state_api_tests::state_with_multi_cell_store`.
+#[cfg(feature = "vex-engine-z3")]
+fn pending_state_with_multi_cell_store(value: u32) -> RustSimState {
+    use crate::concretize::AddressConcretizer;
+    use crate::memory::Permission;
+    use crate::symbolic::RustBV;
+
+    let mut state = RustSimState::new("amd64").expect("amd64 state");
+    state.map_memory(0x1000, 0x4000, Permission::RWX);
+
+    let (addr_var, val_bv) = {
+        let ctx = state.solver().borrow();
+        let addr_var = RustBV::symbolic(&ctx, "pending_multi_addr", 64);
+        ctx.assume_true(
+            &addr_var
+                .eq(&RustBV::concrete(0x1000, 64), &ctx)
+                .or(&addr_var.eq(&RustBV::concrete(0x2000, 64), &ctx), &ctx),
+        );
+        (addr_var, RustBV::concrete(value as u128, 32))
+    };
+    let concretizer = AddressConcretizer {
+        symbolic_write_addresses: true,
+        ..AddressConcretizer::new()
+    };
+    let ctx = state.solver().clone();
+    let ctx = ctx.borrow();
+    state
+        .memory_mut()
+        .store_symbolic_unified(addr_var, val_bv, &ctx, &concretizer)
+        .expect("Multi store must succeed");
+    drop(ctx);
+
+    assert_ne!(
+        state.memory().multi_cell_count(),
+        0,
+        "precondition: the store must have installed Multi cells"
+    );
+    state
+}
+
+/// Regression (angr-sqfj8.27): `_export_pending_state` called the unflushed
+/// `export_full` instead of `flush_and_export_full`, unlike the fixed
+/// `_export_state`/`_export_stash` sites (angr-9ke6b.101) — so a
+/// pending-callback state's Multi-cell bytes silently vanished from the
+/// export.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn export_pending_state_flushes_multi_cells() {
+    Python::initialize();
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    let state = pending_state_with_multi_cell_store(0xCAFE_BABE);
+    let state_id = state.state_id();
+    mgr.pending_callbacks
+        .insert(StateId::new(state_id), pending_for(state));
+
+    let snap = mgr
+        ._export_pending_state(state_id)
+        .expect("pending state found");
+    let index = snap
+        .page_addresses()
+        .iter()
+        .position(|&a| a == 0x1000)
+        .expect("page present in snapshot");
+    let symbolic_offsets = snap.get_page(index).expect("page by index").3;
+    assert!(
+        (0..4u16).all(|off| symbolic_offsets.contains(&off)),
+        "unflushed export dropped the Multi-cell bytes: {symbolic_offsets:?}"
+    );
+}
+
+/// Regression (angr-sqfj8.26): `_pending_memory_load_symbolic_page` iterated
+/// `symbolic_objects_iter()` directly without flushing first, so a
+/// Multi-covered byte was silently dropped from every pending-callback sync
+/// (`_create_state_for_callback`'s symbolic-store replay).
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn pending_memory_load_symbolic_page_flushes_multi_cells() {
+    Python::initialize();
+    Python::attach(|py| {
+        if py.import("claripy").is_err() {
+            return; // claripy not importable in this env — skip
+        }
+        let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+        let state = pending_state_with_multi_cell_store(0xCAFE_BABE);
+        let state_id = state.state_id();
+        mgr.pending_callbacks
+            .insert(StateId::new(state_id), pending_for(state));
+
+        let pairs = mgr
+            ._pending_memory_load_symbolic_page(py, state_id, 0x1000)
+            .expect("pending state found");
+        assert!(
+            pairs.iter().any(|&(addr, _)| addr == 0x1000),
+            "unflushed replay dropped the Multi-cell byte at 0x1000"
+        );
+    });
+}

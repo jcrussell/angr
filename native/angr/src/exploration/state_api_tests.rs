@@ -94,6 +94,27 @@ fn export_found_states_flushes_multi_cells() {
     );
 }
 
+/// Regression (angr-sqfj8.52): `_get_state_symbolic_z3_asts` iterated
+/// `symbolic_objects_iter()` directly without flushing first, so a
+/// Multi-covered byte was silently absent from the exported Z3-AST list —
+/// the same shape as the two Multi-flush regressions above.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn get_state_symbolic_z3_asts_flushes_multi_cells() {
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    let state = state_with_multi_cell_store(0xCAFE_BABE);
+    let state_id = state.state_id();
+    mgr.sm.push(STASH_FOUND, state);
+
+    let asts = mgr
+        ._get_state_symbolic_z3_asts(state_id)
+        .expect("state found");
+    assert!(
+        asts.iter().any(|&(addr, _, _)| addr == 0x1000),
+        "unflushed export dropped the Multi-cell byte at 0x1000: {asts:?}"
+    );
+}
+
 /// Same contract for the single-state path behind `mgr.get_state_by_id()`.
 #[cfg(feature = "vex-engine-z3")]
 #[test]

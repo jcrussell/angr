@@ -216,6 +216,18 @@ impl MultiPayload {
     }
 }
 
+/// Compile-time proof that [`SymbolicMemory::flush_multi_cells`] has run.
+///
+/// Only [`SymbolicMemory::flush_multi_cells`] can construct one (the tuple
+/// field is private to this module), so any API that requires a `&MultiFlushed`
+/// argument cannot be called without the caller having flushed first — turning
+/// "a read path forgot to flush Multi cells before looking at
+/// `symbolic_objects`" (the angr-9ke6b.96/.83/.101 and angr-sqfj8.26/.27/.52/.71
+/// bug family) from a discipline lapse into a compile error. See the plan at
+/// `/home/ubuntu/.claude/plans/review-the-last-two-effervescent-starlight.md`.
+#[derive(Debug)]
+pub struct MultiFlushed(());
+
 impl SymbolicMemory {
     /// Install lazy alternatives at a single byte address.
     ///
@@ -347,9 +359,9 @@ impl SymbolicMemory {
         clippy::expect_used,
         reason = "the `coalesce` guard immediately above proves every page in `entries[i..j]` is present (`(i..j).all(|k| self.pages.contains_key(..))`), and this loop re-looks-up exactly those same entries — an index-after-check, not a guest-controlled lookup"
     )]
-    pub fn flush_multi_cells(&mut self, ctx: &crate::symbolic::SymContext) {
+    pub fn flush_multi_cells(&mut self, ctx: &crate::symbolic::SymContext) -> MultiFlushed {
         if self.multi_objects.is_empty() {
-            return;
+            return MultiFlushed(());
         }
 
         let multi = std::mem::take(&mut self.multi_objects);
@@ -466,6 +478,8 @@ impl SymbolicMemory {
             }
             i = j;
         }
+
+        MultiFlushed(())
     }
 }
 

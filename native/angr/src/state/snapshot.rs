@@ -157,12 +157,44 @@ fn default_cgc_allocation_base() -> u64 {
 }
 
 impl RustSimState {
+    /// Flush this state's memory (Multi cells + any queued lazy-write ITEs)
+    /// and return proof of it, for any caller about to build a
+    /// snapshot/export or otherwise read `symbolic_objects`/pages directly
+    /// and that must see fully-materialized memory (angr-sqfj8.71,
+    /// angr-sqfj8.26, angr-sqfj8.52). Mirrors [`Self::flush_and_export_full`]'s
+    /// flush step.
+    pub(crate) fn flush_memory(&mut self) -> crate::memory::MultiFlushed {
+        let ctx = self.solver.borrow();
+        // SILENT(cat-b): same rationale as `flush_and_export_full` — a
+        // lazy-write materialization failure costs the rest of the queue
+        // either way, so log it rather than losing the snapshot outright.
+        // `flush_multi_cells` (the part the proof certifies) runs
+        // unconditionally before any pending-write processing inside
+        // `flush_pending_writes`, so the proof is valid even on this error
+        // path.
+        match self.memory.flush_pending_writes(&ctx, &self.concretizer) {
+            Ok(proof) => proof,
+            Err(e) => {
+                log::warn!(
+                    "flush_memory: pending-write flush failed ({e:?}); \
+                     remaining deferred stores are not reflected in this snapshot"
+                );
+                self.memory.flush_multi_cells(&ctx)
+            }
+        }
+    }
+
     /// Build a serializable snapshot of this state (angr-x04s.1.3).
     ///
     /// Bucket-D `Py<PyAny>` overlays (symbolic_pages, hook_symbolic_memory,
     /// addr_to_ast, last_time) are NOT captured here — see
     /// [`RustSimStateSnapshot`].
-    pub fn to_snapshot(&self) -> RustSimStateSnapshot {
+    ///
+    /// `&mut self`: flushes memory first (angr-sqfj8.71) so Multi-covered
+    /// bytes from the lazy symbolic-address store path are never silently
+    /// absent from the snapshot.
+    pub fn to_snapshot(&mut self) -> RustSimStateSnapshot {
+        let mem_proof = self.flush_memory();
         let mut hooks: Vec<u64> = self.hooks.iter().copied().collect();
         hooks.sort_unstable();
         let mut removed_hooks: Vec<u64> = self.removed_hooks.iter().copied().collect();
@@ -184,7 +216,7 @@ impl RustSimState {
             arch_name: self.arch.name().to_string(),
             vex_arch: self.vex_arch,
             registers: self.registers.clone(),
-            memory: self.memory.to_snapshot(),
+            memory: self.memory.to_snapshot(&mem_proof),
             solver: self.solver.borrow().to_snapshot(),
             pc: self.pc,
             state_id: self.state_id,
@@ -307,7 +339,7 @@ impl RustSimState {
         clippy::expect_used,
         reason = "`serde_json::to_vec` over `RustSimStateSnapshot`, whose derived `Serialize` has no fallible arm and writes into a `Vec` (so no io error). Left as a panic rather than propagated because `to_serialized` returns `Vec<u8>` across the PyO3 surface and the migration payload path; widening it to `Result` would ripple into every caller — out of scope for angr-9ke6b.212"
     )]
-    pub fn to_serialized(&self) -> Vec<u8> {
+    pub fn to_serialized(&mut self) -> Vec<u8> {
         crate::migrate_phase_timers::time_roundtrip_half(|| {
             // angr-t3l5o Phase 0b: arm the migration-serialize guard so the
             // SMT-LIB2 emit timer inside `to_snapshot` fires ONLY for migration
@@ -398,10 +430,13 @@ impl RustSimState {
     /// memory-page copy cost. Returns the rebuilt page count so the result
     /// cannot be optimized away.
     #[doc(hidden)]
-    pub fn bench_memory_snapshot_roundtrip(&self) -> usize {
-        let snap = self.memory.to_snapshot();
-        let rebuilt = crate::memory::SymbolicMemory::from_snapshot(snap);
-        rebuilt.to_snapshot().pages.len()
+    pub fn bench_memory_snapshot_roundtrip(&mut self) -> usize {
+        let ctx = self.solver.borrow();
+        let proof = self.memory.flush_multi_cells(&ctx);
+        let snap = self.memory.to_snapshot(&proof);
+        let mut rebuilt = crate::memory::SymbolicMemory::from_snapshot(snap);
+        let rebuilt_proof = rebuilt.flush_multi_cells(&ctx);
+        rebuilt.to_snapshot(&rebuilt_proof).pages.len()
     }
 }
 

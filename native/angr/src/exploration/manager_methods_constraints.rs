@@ -43,7 +43,7 @@ impl RustExplorationManager {
     /// including all registers, memory pages, and metadata.
     /// See `pending_api::_export_pending_state` for the body.
     pub fn export_pending_state(
-        &self,
+        &mut self,
         state_id: u64,
     ) -> PyResult<crate::state::ExplorationStateSnapshot> {
         self._export_pending_state(state_id)
@@ -363,7 +363,7 @@ impl RustExplorationManager {
     /// base address falls on the given page.
     /// See `pending_api::_pending_memory_load_symbolic_page` for the body.
     pub fn pending_memory_load_symbolic_page<'py>(
-        &self,
+        &mut self,
         py: Python<'py>,
         state_id: u64,
         page_addr: u64,

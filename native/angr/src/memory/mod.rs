@@ -52,7 +52,7 @@ mod symbolic_objects;
 )]
 mod tests;
 pub use address::Address;
-pub use multi::{MultiAlternative, MultiPayload};
+pub use multi::{MultiAlternative, MultiFlushed, MultiPayload};
 pub use page::{BITMAP_WORDS, MemoryPage, PAGE_MASK, PAGE_SIZE, Permission};
 
 /// A deferred symbolic store. Instead of eagerly concretizing symbolic addresses
@@ -738,15 +738,15 @@ impl SymbolicMemory {
         &mut self,
         ctx: &SymContext,
         concretizer: &AddressConcretizer,
-    ) -> Result<(), MemoryError> {
+    ) -> Result<MultiFlushed, MemoryError> {
         // Flush Multi cells regardless of pending_writes status — Phase 2
         // makes Multi cells the default for symbolic-address stores, so
         // export correctness depends on flushing them even when the
         // pending_writes queue (a separate, scaffolded path) is empty.
-        self.flush_multi_cells(ctx);
+        let proof = self.flush_multi_cells(ctx);
 
         if self.pending_writes.is_empty() {
-            return Ok(());
+            return Ok(proof);
         }
 
         let writes = std::mem::take(&mut self.pending_writes);
@@ -781,7 +781,7 @@ impl SymbolicMemory {
                 }
             }
         }
-        Ok(())
+        Ok(proof)
     }
 
     /// Materialize one candidate of a pending symbolic-address write
@@ -1366,12 +1366,13 @@ impl Clone for SymbolicMemory {
 /// from `symbolic_objects` at load time so the reverse index stays
 /// consistent.
 ///
-/// **Deferred to a follow-up snapshot phase:** `multi_objects` and
-/// `pending_writes` carry lazy-store state used by the
-/// symbolic-address optimization path. The fauxware prototype does not
-/// exercise either; for now both restore to empty. Callers that snapshot
-/// a state mid-Multi/Pending must `flush_multi_cells` / drain pending
-/// writes first or accept that the lazy queue is dropped.
+/// `multi_objects` and `pending_writes` carry lazy-store state used by the
+/// symbolic-address optimization path; both restore to empty (their content
+/// is already folded into `pages`/`symbolic_objects` by the time
+/// `to_snapshot` runs). [`SymbolicMemory::to_snapshot`] requires a
+/// [`MultiFlushed`] proof precisely so that folding has always happened by
+/// construction (angr-sqfj8.71) — there is no discipline left for a caller to
+/// get wrong here.
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct SymbolicMemorySnapshot {
     pub pages: std::collections::BTreeMap<u64, MemoryPage>,
@@ -1400,7 +1401,13 @@ pub struct SymbolicMemorySnapshot {
 
 impl SymbolicMemory {
     /// Build a serializable snapshot (angr-x04s.1.3).
-    pub fn to_snapshot(&self) -> SymbolicMemorySnapshot {
+    ///
+    /// Requires proof of a prior [`Self::flush_multi_cells`] call (angr-sqfj8.71):
+    /// without it, Multi-covered bytes installed by the lazy symbolic-address
+    /// store path are silently absent from both `pages` and `symbolic_objects`,
+    /// so a persisted/migrated state would silently lose data. `_proof` is
+    /// unused by value — its existence is the contract.
+    pub fn to_snapshot(&self, _proof: &MultiFlushed) -> SymbolicMemorySnapshot {
         let pages: std::collections::BTreeMap<u64, MemoryPage> =
             self.pages.iter().map(|(k, v)| (*k, v.clone())).collect();
         let symbolic_objects: std::collections::BTreeMap<u64, RustBV> = self

@@ -96,3 +96,57 @@ fn scratch_thread_exits_when_the_reply_receiver_is_dropped() {
         "scratch thread must exit once its reply receiver is gone"
     );
 }
+
+/// Regression: `shadow_probe_migrate` used to take `&mut RustSimState` and
+/// serialize the LIVE, still-stepping state directly — since `to_serialized`
+/// now flushes memory first (angr-sqfj8.71), and `flush_pending_writes`'s
+/// error path silently DISCARDS whatever pending writes it hadn't yet
+/// materialized rather than restoring them, a bad flush during the probe
+/// could permanently drop a still-active state's pending writes. The fix
+/// forks before serializing, so the probe can only ever cost the disposable
+/// fork. This pins that the live state's `multi_cell_count`/pending-write
+/// state survives the probe unchanged regardless of whether the probe itself
+/// succeeds.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn shadow_probe_migrate_does_not_mutate_the_live_state() {
+    Python::initialize();
+    Python::attach(|_py| {
+        let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+        mgr.shadow_probe = true;
+
+        let mut state = RustSimState::new("amd64").expect("amd64 state");
+        state.map_memory(0x1000, 0x4000, crate::memory::Permission::RWX);
+        let (addr_var, val_bv) = {
+            let ctx = state.solver().borrow();
+            let addr_var = RustBV::symbolic(&ctx, "shadow_probe_multi_addr", 64);
+            ctx.assume_true(
+                &addr_var
+                    .eq(&RustBV::concrete(0x1000, 64), &ctx)
+                    .or(&addr_var.eq(&RustBV::concrete(0x2000, 64), &ctx), &ctx),
+            );
+            (addr_var, RustBV::concrete(0xCAFE_BABEu128, 32))
+        };
+        let concretizer = crate::concretize::AddressConcretizer {
+            symbolic_write_addresses: true,
+            ..crate::concretize::AddressConcretizer::new()
+        };
+        let ctx = state.solver().clone();
+        let ctx = ctx.borrow();
+        state
+            .memory_mut()
+            .store_symbolic_unified(addr_var, val_bv, &ctx, &concretizer)
+            .expect("Multi store must succeed");
+        drop(ctx);
+        let multi_before = state.memory().multi_cell_count();
+        assert_ne!(multi_before, 0, "precondition: Multi cells installed");
+
+        mgr.shadow_probe_migrate(&state);
+
+        assert_eq!(
+            state.memory().multi_cell_count(),
+            multi_before,
+            "the probe must not flush/mutate the live state's Multi cells"
+        );
+    });
+}

@@ -140,7 +140,7 @@ fn test_stash_manager_load_snapshot_errors() {
         Ok(_) => panic!("empty envelope must fail"),
     }
 
-    let mgr = StashManager::new();
+    let mut mgr = StashManager::new();
     let mut bytes = mgr.dump_snapshot();
     bytes[0] = STASH_SNAPSHOT_VERSION.wrapping_add(7);
     match StashManager::load_snapshot(&bytes) {

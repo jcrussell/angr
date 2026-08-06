@@ -1279,7 +1279,7 @@ fn assert_state_round_trip(orig: &RustSimState, restored: &RustSimState) {
 #[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_state_snapshot_round_trip_buckets_a_b_c() {
-    let orig = build_populated_state();
+    let mut orig = build_populated_state();
     let snap = orig.to_snapshot();
     let restored = RustSimState::from_snapshot(snap).expect("from_snapshot");
     assert_state_round_trip(&orig, &restored);
@@ -1317,7 +1317,7 @@ fn test_from_snapshot_reserves_foreign_state_id() {
 #[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_state_to_from_serialized_round_trip() {
-    let orig = build_populated_state();
+    let mut orig = build_populated_state();
     let bytes = orig.to_serialized();
     assert_eq!(
         bytes[0], SNAPSHOT_VERSION,
@@ -1340,7 +1340,7 @@ fn test_state_from_serialized_empty_envelope() {
 fn test_state_from_serialized_version_mismatch() {
     // Bump-byte trick: build a real envelope, replace version byte, expect
     // a fast VersionMismatch.
-    let orig = RustSimState::new("amd64").unwrap();
+    let mut orig = RustSimState::new("amd64").unwrap();
     let mut bytes = orig.to_serialized();
     bytes[0] = SNAPSHOT_VERSION.wrapping_add(1);
     match RustSimState::from_serialized(&bytes) {
@@ -1789,6 +1789,66 @@ fn test_migrate_via_snapshot_cross_context() {
         migrated.state_id(),
         sid,
         "migration preserves identity (same state_id)",
+    );
+}
+
+// angr-sqfj8.71: `detach_for_migration` (state/migration.rs) must flush
+// Multi cells before serializing, else bytes installed by the lazy
+// symbolic-address store path (`store_symbolic_unified` resolving to
+// `Multiple`) are silently absent on the stealing worker — the exact
+// "silently losing data on state migration" shape the bug describes.
+// `RustSimState::to_snapshot`/`to_serialized` now flush internally
+// (`flush_memory`), so this is a compiler-enforced invariant
+// (`SymbolicMemory::to_snapshot` requires a `MultiFlushed` proof), not just a
+// call-site convention; this test proves the DATA survives the round trip.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_migrate_carries_multi_cell_bytes() {
+    use z3::{Config, Context};
+
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory(0x1000, 0x4000, crate::memory::Permission::RWX);
+
+    let (addr_var, val_bv) = {
+        let ctx = state.solver().borrow();
+        let addr_var = RustBV::symbolic(&ctx, "sqfj8_71_multi_addr", 64);
+        ctx.assume_true(
+            &addr_var
+                .eq(&RustBV::concrete(0x1000, 64), &ctx)
+                .or(&addr_var.eq(&RustBV::concrete(0x2000, 64), &ctx), &ctx),
+        );
+        (addr_var, RustBV::concrete(0xCAFE_BABEu128, 32))
+    };
+    let concretizer = crate::concretize::AddressConcretizer {
+        symbolic_write_addresses: true,
+        ..crate::concretize::AddressConcretizer::new()
+    };
+    let ctx = state.solver().clone();
+    let ctx = ctx.borrow();
+    state
+        .memory_mut()
+        .store_symbolic_unified(addr_var, val_bv, &ctx, &concretizer)
+        .expect("Multi store must succeed");
+    drop(ctx);
+    assert_ne!(
+        state.memory().multi_cell_count(),
+        0,
+        "precondition: the store must have installed Multi cells"
+    );
+
+    let target = Context::new(&Config::new());
+    let payload = state.detach_for_migration();
+    Context::set_thread_local(&target);
+    let migrated = payload.reattach(&target).expect("reattach");
+
+    let loaded = migrated
+        .memory()
+        .get_symbolic_object(0x1000)
+        .expect("byte 0x1000 must be a symbolic object after migration, not silently dropped");
+    assert_eq!(
+        loaded.width(),
+        32,
+        "migrated Multi-cell byte must round-trip at its stored width"
     );
 }
 

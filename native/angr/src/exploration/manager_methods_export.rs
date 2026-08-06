@@ -75,7 +75,10 @@ impl RustExplorationManager {
     /// This is used to export Rust-computed symbolic expressions (e.g., flag
     /// computations in asisctf) to Python state memory during state export.
     #[cfg(feature = "vex-engine-z3")]
-    pub fn get_state_symbolic_z3_asts(&self, state_id: u64) -> PyResult<Vec<(u64, usize, u32)>> {
+    pub fn get_state_symbolic_z3_asts(
+        &mut self,
+        state_id: u64,
+    ) -> PyResult<Vec<(u64, usize, u32)>> {
         self._get_state_symbolic_z3_asts(state_id)
     }
 

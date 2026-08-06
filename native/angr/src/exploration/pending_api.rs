@@ -388,11 +388,18 @@ impl RustExplorationManager {
         ids
     }
 
+    /// angr-sqfj8.27: uses `flush_and_export_full` (not the unflushed
+    /// `export_full`), matching the fixed `_export_state`/`_export_stash`
+    /// sites (angr-9ke6b.101) — otherwise Multi-covered bytes installed by
+    /// the lazy symbolic-address store path are silently absent from the
+    /// exported pending state.
     pub(crate) fn _export_pending_state(
-        &self,
+        &mut self,
         state_id: u64,
     ) -> PyResult<crate::state::ExplorationStateSnapshot> {
-        self.with_pending(state_id, |pending| Ok(pending.state.export_full()))
+        self.with_pending_mut(state_id, |pending| {
+            Ok(pending.state.flush_and_export_full())
+        })
     }
 
     pub(crate) fn _get_pending_root_state_id(&self, state_id: u64) -> PyResult<Option<u64>> {
@@ -584,13 +591,18 @@ impl RustExplorationManager {
     /// stores that native SimProcedures (NativeRead, etc.) made into the
     /// cached Python SimState after `_install_rust_memory_proxy` has
     /// already written concrete defaults from the SP page.
+    ///
+    /// angr-sqfj8.26: flushes memory before reading `symbolic_objects_iter()`
+    /// — otherwise a byte still living in a Multi cell is silently absent
+    /// from every pending-callback sync.
     pub(crate) fn _pending_memory_load_symbolic_page<'py>(
-        &self,
+        &mut self,
         py: Python<'py>,
         state_id: u64,
         page_addr: u64,
     ) -> PyResult<Vec<(u64, Py<PyAny>)>> {
-        self.with_pending(state_id, |pending| {
+        self.with_pending_mut(state_id, |pending| {
+            pending.state.flush_memory();
             let claripy_mod = py.import("claripy")?;
             let target_page = page_addr >> 12;
             let mut out = Vec::new();

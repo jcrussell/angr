@@ -118,9 +118,10 @@ impl RustExplorationManager {
                     self.record_migration_sample(sid);
                     // SI-B (angr-1ilq.3 increment 2b'): the REAL analog of the
                     // MODEL sample above — measure the migration serde tax on
-                    // this pre-step state and discard the result. No-op (and
-                    // byte-identical behaviour) unless RUST_PARALLEL_SHADOW_PROBE
-                    // is set.
+                    // a fork of this pre-step state and discard the result.
+                    // No-op unless RUST_PARALLEL_SHADOW_PROBE is set; when it
+                    // is, `shadow_probe_migrate` forks `s` internally so the
+                    // live state itself is never mutated (see its doc).
                     #[cfg(feature = "vex-engine-z3")]
                     self.shadow_probe_migrate(&s);
                     s

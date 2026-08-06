@@ -535,7 +535,7 @@ impl StashManager {
         clippy::expect_used,
         reason = "`serde_json::to_vec` over `StashManagerSnapshot`, whose derived `Serialize` has no fallible arm (no non-string map keys, no custom impl) — the only `Err` shape is an io error, which cannot arise writing to a `Vec`. Left as a panic rather than propagated because `dump_snapshot` is the pyclass-facing API returning `Vec<u8>`; giving it a `Result` would ripple through the PyO3 surface and its callers, which is out of scope for angr-9ke6b.212"
     )]
-    pub fn dump_snapshot(&self) -> Vec<u8> {
+    pub fn dump_snapshot(&mut self) -> Vec<u8> {
         let snap = self.to_snapshot();
         let body = serde_json::to_vec(&snap).expect("stash snapshot encode");
         let mut out = Vec::with_capacity(1 + 8 + body.len());
@@ -595,14 +595,14 @@ impl StashManager {
     }
 
     /// Build a [`StashManagerSnapshot`] (in-Rust round-trip shape).
-    pub fn to_snapshot(&self) -> StashManagerSnapshot {
+    pub fn to_snapshot(&mut self) -> StashManagerSnapshot {
         let stashes: std::collections::BTreeMap<String, Vec<crate::state::RustSimStateSnapshot>> =
             self.stashes
-                .iter()
+                .iter_mut()
                 .map(|(k, v)| {
                     (
                         k.clone(),
-                        v.iter()
+                        v.iter_mut()
                             .map(super::state::RustSimState::to_snapshot)
                             .collect(),
                     )

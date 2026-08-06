@@ -480,13 +480,18 @@ impl RustExplorationManager {
         })
     }
 
+    /// angr-sqfj8.52: flushes memory before reading `symbolic_objects_iter()`
+    /// (angr-sqfj8.71-family fix) — otherwise a byte still living in a Multi
+    /// cell (the lazy symbolic-address store default) is silently absent from
+    /// the exported Z3 AST list.
     #[cfg(feature = "vex-engine-z3")]
     pub(crate) fn _get_state_symbolic_z3_asts(
-        &self,
+        &mut self,
         state_id: u64,
     ) -> PyResult<Vec<(u64, usize, u32)>> {
         use z3::ast::Ast;
-        self.with_state(state_id, |state| {
+        self.with_state_mut(state_id, |state| {
+            state.flush_memory();
             let mem = state.memory();
             let mut result = Vec::new();
             for (addr, bv) in mem.symbolic_objects_iter() {

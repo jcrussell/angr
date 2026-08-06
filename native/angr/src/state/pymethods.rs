@@ -781,7 +781,18 @@ impl PyRustSimState {
     }
 
     /// Export the complete state as a snapshot.
-    pub fn export_full(&self) -> ExplorationStateSnapshot {
-        self.inner.export_full()
+    ///
+    /// Flushes memory first (angr-sqfj8.71-family fix): the standalone
+    /// `RustSimState` pyclass's own `export_full` pymethod was the one export
+    /// path the Multi-cell-flush audit series missed — every other export
+    /// surface on `RustExplorationManager` routes through
+    /// `flush_and_export_full`/`flush_memory`. This class's other pymethods
+    /// only support concrete-address stores today, so a Multi cell can't
+    /// currently be created through it directly, but `fork()` is exposed, so
+    /// a future symbolic-address store pymethod would otherwise silently
+    /// reintroduce exactly the bug the rest of the codebase now defends
+    /// against via `MultiFlushed` proof-typing.
+    pub fn export_full(&mut self) -> ExplorationStateSnapshot {
+        self.inner.flush_and_export_full()
     }
 }

@@ -451,7 +451,7 @@ fn bench_migration_roundtrip(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("migration_roundtrip");
     for &n in &[8u64, 64, 256, 1024] {
-        let state = build_migration_state(n, 0, 0.0);
+        let mut state = build_migration_state(n, 0, 0.0);
         // `from_serialized` mints ASTs in the active thread-local context, so
         // swap to a fresh scratch context to model reattach landing the state
         // in a different worker's context (reattach's thread-local precondition).
@@ -501,7 +501,7 @@ fn bench_migration_phases(c: &mut Criterion) {
                 continue;
             }
             let tag = format!("D{depth_d}_r{raw_fraction}");
-            let state = build_migration_state(LEAVES, depth_d, raw_fraction);
+            let mut state = build_migration_state(LEAVES, depth_d, raw_fraction);
 
             // Switch to a scratch context for all phases.
             let cfg = Config::new();
@@ -513,7 +513,7 @@ fn bench_migration_phases(c: &mut Criterion) {
             snap_no_solver.solver.residual_smtlib2 = String::new();
             let encoded_no_solver = serde_json::to_vec(&snap_no_solver).unwrap();
             let smtlib2 = state.solver().borrow().bench_dump_solver_smtlib2();
-            let leaf_state = build_migration_state(LEAVES, 0, 0.0);
+            let mut leaf_state = build_migration_state(LEAVES, 0, 0.0);
             let leaf_bytes = leaf_state.to_serialized();
             RustSimState::from_serialized(&leaf_bytes).expect("leaf rebuild probe");
 

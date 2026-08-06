@@ -42,7 +42,7 @@ impl RustExplorationManager {
     /// probe is off. The rebuilt state is discarded — behaviour is unchanged.
     #[allow(
         clippy::expect_used,
-        reason = "`shadow_probe_chan` is assigned `Some(spawn_shadow_probe_thread())` by the `is_none()` guard at the top of this same function and nothing between there and here clears it; the intervening `state.to_serialized()` borrows `state`, not `self`"
+        reason = "`shadow_probe_chan` is assigned `Some(spawn_shadow_probe_thread())` by the `is_none()` guard at the top of this same function and nothing between there and here clears it; the intervening fork+serialize borrows `state` and the local `probe_state`, not `self`"
     )]
     pub(crate) fn shadow_probe_migrate(&mut self, state: &RustSimState) {
         if !self.shadow_probe {
@@ -53,10 +53,23 @@ impl RustExplorationManager {
             self.shadow_probe_chan = Some(spawn_shadow_probe_thread());
         }
 
-        // Detach/serialize cost, measured on the main thread (read-only borrow:
-        // `to_serialized` is `&self`). Channel transit time is NOT counted.
+        // `to_serialized` flushes memory first (angr-sqfj8.71): a
+        // representation-only normalization (Multi cells -> symbolic_objects)
+        // on the success path, but `flush_pending_writes`'s error path
+        // silently DISCARDS whatever pending writes it hadn't yet materialized
+        // (the SILENT(cat-b) log::warn! at that call site) rather than
+        // restoring them — fine for the existing export-only callers, which
+        // only ever touch a state that's leaving exploration anyway, but not
+        // for this probe, which used to run on the live, still-stepping
+        // state. Serializing a disposable fork instead keeps the "discarded,
+        // byte-identical behaviour" contract this module's doc promises
+        // literally true even on that error path — a bad flush can only cost
+        // the fork, never the real state. The fork happens outside the timed
+        // region so only the real detach/serialize cost is measured; channel
+        // transit time is also NOT counted.
+        let mut probe_state = state.fork();
         let t0 = Instant::now();
-        let bytes = state.to_serialized();
+        let bytes = probe_state.to_serialized();
         let ser_ns = t0.elapsed().as_nanos() as u64;
         let nbytes = bytes.len() as u64;
 

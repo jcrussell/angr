@@ -60,7 +60,7 @@ impl RustSimState {
     /// (source) Z3 context happens here, via [`Self::to_serialized`], never
     /// cross-thread. Consumes `self` so the `Py` overlay handles move out
     /// without a GIL `clone_ref`.
-    pub fn detach_for_migration(self) -> StateMigrationPayload {
+    pub fn detach_for_migration(mut self) -> StateMigrationPayload {
         let state_bytes = self.to_serialized();
         StateMigrationPayload {
             state_bytes,

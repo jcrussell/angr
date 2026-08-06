@@ -469,7 +469,9 @@ fn test_snapshot_preserves_dirty_pages() {
     };
     assert!(!dirty_before.is_empty(), "store must dirty a page");
 
-    let restored = SymbolicMemory::from_snapshot(mem.to_snapshot());
+    let ctx = SymContext::new();
+    let proof = mem.flush_multi_cells(&ctx);
+    let restored = SymbolicMemory::from_snapshot(mem.to_snapshot(&proof));
     let dirty_after = {
         let mut d = restored.get_dirty_pages();
         d.sort_unstable();
