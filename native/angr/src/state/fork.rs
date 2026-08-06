@@ -105,6 +105,20 @@ fn warn_config_divergence(field: &str, diverged: bool) {
     }
 }
 
+/// True when any other branch's suspended native sub-call frame count
+/// differs from `this`'s. `NativeResumeFrame` has no `PartialEq` (its
+/// `saved_args: Vec<RustBV>` would need one, and `RustBV`'s own `PartialEq`
+/// is documented non-reflexive for symbolic values — angr-sqfj8.96), so
+/// depth is the divergence proxy: any length mismatch means some branch
+/// pushed or popped a frame the others didn't. Split out from `merge` (rather
+/// than left as an inline closure) so angr-sqfj8.86's detection logic is
+/// directly unit-testable without going through the process-global logger.
+pub(crate) fn native_resume_stack_diverges(this: &RustSimState, others: &[&RustSimState]) -> bool {
+    others
+        .iter()
+        .any(|o| o.native_resume_stack.len() != this.native_resume_stack.len())
+}
+
 impl RustSimState {
     /// Clone the three Python-AST metadata maps so the parent and the fork hold
     /// independent maps over shared AST handles.
@@ -586,6 +600,35 @@ impl RustSimState {
                 .iter()
                 .any(|o| o.inspection.enabled_mask() != self.inspection.enabled_mask()),
         );
+        // angr-sqfj8.86: no union exists for suspended native sub-call frames
+        // either (a mid-continuation resume position is as per-path as a
+        // getopt cursor), but silently dropping a branch's in-flight frames
+        // with no signal is worse than the scalar configs above — an unwound
+        // continuation on the dropped branch corrupts that path's return
+        // flow with no diagnostic.
+        warn_config_divergence(
+            "native_resume_stack",
+            native_resume_stack_diverges(self, others),
+        );
+
+        // angr-sqfj8.88: `last_time` is the symbolic analogue of the
+        // tsc_counter/heap_brk/mmap_base watermarks above — it must never
+        // read as though time ran backwards relative to any branch. Unlike
+        // those plain `u64`s, `Option<RustBV>` has no `Ord`, so a real
+        // symbolic maximum is built via `uge` + `ite` per branch instead of
+        // `.max()`; whichever branch's own condition is live at eval time
+        // still sees an upper bound over every arm's prior time() result.
+        let merged_last_time =
+            others
+                .iter()
+                .fold(self.last_time.clone(), |acc, o| match (acc, &o.last_time) {
+                    (Some(a), Some(b)) => {
+                        let ge = a.uge(b, &merged_solver);
+                        Some(ge.ite(&a, b, &merged_solver))
+                    }
+                    (None, Some(b)) => Some(b.clone()),
+                    (acc, None) => acc,
+                });
 
         RustSimState {
             arch: self.arch.clone(),
@@ -650,7 +693,7 @@ impl RustSimState {
             symbolic_pages,
             hook_symbolic_memory,
             addr_to_ast,
-            last_time: self.last_time.clone(),
+            last_time: merged_last_time,
             no_ip_concretization: merged_no_ip_concretization,
             no_symbolic_jump_resolution: merged_no_symbolic_jump_resolution,
             keep_ip_symbolic: merged_keep_ip_symbolic,

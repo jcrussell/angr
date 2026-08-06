@@ -347,32 +347,44 @@ pub type SharedPyAst = Arc<Py<PyAny>>;
 /// - Registers are cloned (small, ~700 bytes for AMD64)
 /// - Solver context is cloned with constraint state preserved
 /// - History is optionally shared or copied based on config
+#[derive(angr_macros::MergePolicy)]
 pub struct RustSimState {
     /// Architecture information.
+    #[merge_policy = "self_wins"]
     arch: Box<dyn Arch>,
     /// VEX architecture enum (cached for quick lookup).
+    #[merge_policy = "self_wins"]
     vex_arch: VexArch,
     /// Register file with concrete and symbolic values.
+    #[merge_policy = "delegate"]
     registers: RegisterFile,
     /// Symbolic memory with O(1) CoW forking.
+    #[merge_policy = "delegate"]
     memory: SymbolicMemory,
     /// Shared solver context for constraints.
     /// Using Rc<RefCell<>> to allow mutation during stepping
     /// while maintaining shared ownership for forking.
+    #[merge_policy = "delegate"]
     solver: Rc<RefCell<SymContext>>,
     /// Program counter.
+    #[merge_policy = "self_wins"]
     pc: u64,
     /// Unique state identifier.
+    #[merge_policy = "computed"]
     state_id: u64,
     /// Parent state ID (for tracking fork tree).
+    #[merge_policy = "computed"]
     parent_id: Option<u64>,
     /// Basic block history (addresses visited). `VecDeque` so FIFO
     /// cap eviction (`pop_front`) is O(1) amortized rather than the
     /// O(n) buffer shift a `Vec::remove(0)` incurs per block (angr-ph300.57).
+    #[merge_policy = "self_wins"]
     history: VecDeque<u64>,
     /// Detailed execution history with jumpkind and target info.
+    #[merge_policy = "self_wins"]
     detailed_history: VecDeque<HistoryEntry>,
     /// Maximum history length (0 = unlimited).
+    #[merge_policy = "self_wins"]
     max_history: usize,
     /// Hook addresses. Wrapped in Arc for cheap fork — copy-on-write
     /// via Arc::make_mut on add/remove/clear. Mutated only at config time
@@ -382,6 +394,7 @@ pub struct RustSimState {
     /// in `clear_hooks`) and `arc-collection-iter` (iterate via
     /// `self.hooks.iter()`, not `for x in &self.hooks` — `Arc<HashSet>`
     /// does not implement `IntoIterator` for `&Self`).
+    #[merge_policy = "joint"]
     hooks: Arc<HashSet<u64>>,
     /// Hook addresses explicitly removed (via `remove_hook`/`clear_hooks`)
     /// since this state's last fork point. Lets `merge` (angr-9ke6b.121,
@@ -391,20 +404,26 @@ pub struct RustSimState {
     /// branch removed if a sibling branch still has it. Reset to empty by
     /// `fork_with` (a fresh divergence point); carried over unchanged by
     /// `translate_state` (same logical state, different Z3 context).
+    #[merge_policy = "computed"]
     removed_hooks: Arc<HashSet<u64>>,
     /// Address concretization config.
+    #[merge_policy = "warn_on_diverge"]
     concretizer: AddressConcretizer,
     /// Whether to track detailed history.
+    #[merge_policy = "self_wins"]
     track_history: bool,
     /// File system state: tracks all file descriptors with metadata.
     /// Cloned on fork so each path gets its own file system state.
+    #[merge_policy = "joint"]
     fs: FileSystem,
     /// Heap brk pointer — simple bump allocator for malloc/calloc.
     /// Default: 0xC0000000 (matching angr's DEFAULT_HEAP_LOCATION).
+    #[merge_policy = "max"]
     heap_brk: u64,
     /// POSIX brk pointer — separately tracks `state.posix.brk` from Python
     /// for the brk(2) syscall. Default 0x1B00000 (matches Python default).
     /// Distinct from `heap_brk`, which is the malloc bump allocator.
+    #[merge_policy = "max"]
     posix_brk: u64,
     /// mmap base pointer — mirrors `state.heap.mmap_base` from Python for
     /// the mmap(2) syscall when addr=0 (kernel chooses the mapping). Default
@@ -413,6 +432,7 @@ pub struct RustSimState {
     /// `state.heap.mmap_base` on syscall fallback today; same drift risk as
     /// `posix_brk`. Future cross-engine sync work should address both fields
     /// at the syscall callback boundary.
+    #[merge_policy = "max"]
     mmap_base: u64,
     /// Simulated timestamp counter backing the `RDTSC` dirty helper. Per-state
     /// (was a process-wide `AtomicU64` — angr-9ke6b.173) so the Nth RDTSC along
@@ -421,47 +441,57 @@ pub struct RustSimState {
     /// [`crate::vex::dirty::TSC_STEP`] per RDTSC. Carried across fork +
     /// snapshot; merged as `max` (time is a monotonic watermark, like
     /// `heap_brk`/`mmap_base`).
+    #[merge_policy = "max"]
     tsc_counter: u64,
     /// getopt(3) cursor — index into `argv` (POSIX `optind`). Per-state,
     /// mirrors Python's `state.libc.getopt_optind`. Default 1. Carried across
     /// fork + snapshot so each path resumes option scanning correctly.
     /// Consumed by the native getopt proc (bead angr-bhk0a.3); the
     /// loader-resolved extern-symbol address push is bead angr-bhk0a.2.
+    #[merge_policy = "warn_on_diverge"]
     getopt_optind: u32,
     /// getopt(3) cursor — index into the current `argv` element (POSIX
     /// `optchar`, for bundled short options like `-abc`). Mirrors
     /// `state.libc.getopt_optchar`. Default 0. See `getopt_optind`.
+    #[merge_policy = "warn_on_diverge"]
     getopt_optchar: u32,
     /// Guest-memory addresses of the glibc getopt(3) extern globals
     /// (`optind`/`optarg`/`optopt`), pushed Python-side at init. See
     /// [`GetoptExternAddrs`]. Carried across fork + snapshot. Consumed by the
     /// native getopt proc (bead angr-bhk0a.2).
+    #[merge_policy = "warn_on_diverge"]
     getopt_extern: GetoptExternAddrs,
     /// Suspended native sub-call continuations (LIFO). Empty by default; a
     /// native proc that calls a guest function and resumes pushes a
     /// [`NativeResumeFrame`] here, and the dispatcher pops it on return. Carried
     /// across fork + snapshot so each path resumes its own pending sub-calls.
     /// Foundation slice (bead angr-pn3w8); the dispatcher is S2.
+    #[merge_policy = "warn_on_diverge"]
     native_resume_stack: Vec<NativeResumeFrame>,
     /// Pointers to the three glibc locale ctype lookup tables. Built once by
     /// Python's `__libc_start_main` init pass (mallocs + fills them in shared
     /// memory, see `__ctype_b_loc.py` et al.) and pushed into Rust at
     /// seed-state creation. Native `__ctype_*_loc` procs return these verbatim;
     /// `None` (init pass skipped) falls back to Python.
+    #[merge_policy = "warn_on_diverge"]
     ctype_loc: CtypeLocPtrs,
     /// Symbolic variable names read from stdin (for posix.dumps(0) export).
     /// Each entry is (name, bit_width) for a symbolic BVS created by native
     /// fgets/fgetc/getchar. On export, Python recreates matching claripy BVS
     /// and writes them to the posix stdin plugin.
+    #[merge_policy = "union"]
     stdin_symbols: Vec<(String, u32)>,
     /// Function call stack. Pushed on Ijk_Call, popped on Ijk_Ret.
     /// Cloned on fork so each path has its own call stack.
+    #[merge_policy = "self_wins"]
     call_stack: Vec<CallStackEntry>,
     /// Heap metadata tracking: allocated regions and freed addresses.
     /// Cloned on fork so each path has its own heap state.
+    #[merge_policy = "delegate"]
     heap_metadata: HeapMetadata,
     /// Inspection/breakpoint system for tracking memory and register access.
     /// Only records events when enabled (single bitmask check per operation).
+    #[merge_policy = "warn_on_diverge"]
     inspection: InspectionManager,
     /// Environment variables map for native getenv/setenv.
     /// Keys and values are byte vectors (no NUL terminator in storage).
@@ -469,10 +499,12 @@ pub struct RustSimState {
     /// Most paths only read env vars, so the deep clone is rare.
     ///
     /// See module-level `arc-make-mut-cow` and `arc-collection-iter`.
+    #[merge_policy = "joint"]
     environment: Arc<HashMap<Vec<u8>, Vec<u8>>>,
     /// Environment keys explicitly removed (`unsetenv`/`clearenv`) since this
     /// state's last fork point. Same rationale and reset/carry rules as
     /// [`Self::removed_hooks`].
+    #[merge_policy = "computed"]
     removed_env_keys: Arc<HashSet<Vec<u8>>>,
     /// Per-state symbolic page metadata: `addr -> claripy AST`. Holds whole-page
     /// symbolic ASTs preserved across Python fallback so Rust can re-establish
@@ -483,24 +515,28 @@ pub struct RustSimState {
     ///
     /// See module-level `state-metadata-dataclass`: the Python side keeps a
     /// parallel `StateMetadata` dataclass; Rust drops decrement Py-refcounts.
+    #[merge_policy = "joint"]
     symbolic_pages: HashMap<u64, SharedPyAst>,
     /// Per-state hook symbolic memory: `addr -> (claripy AST, byte size)`.
     /// Tracks symbolic writes performed inside Python hooks so Rust can replay
     /// them on resume. Cloned on fork.
     ///
     /// See module-level `state-metadata-dataclass`.
+    #[merge_policy = "joint"]
     hook_symbolic_memory: HashMap<u64, (SharedPyAst, u32)>,
     /// Per-state addr -> (AST, byte size) recorded by handle registration so
     /// state export can recover the original symbol instead of a fresh BVS.
     /// Cloned on fork.
     ///
     /// See module-level `state-metadata-dataclass`.
+    #[merge_policy = "joint"]
     addr_to_ast: HashMap<u64, (SharedPyAst, u32)>,
     /// Most recent symbolic value returned by the time(2) syscall — mirrors
     /// `state.globals['sys_last_time']` in Python's
     /// `procedures/linux_kernel/time.py`. Used to constrain consecutive calls
     /// to be monotonic (`new >= prev`). Cloned on fork; not synced across the
     /// Python boundary today (same drift class as `posix_brk` / `mmap_base`).
+    #[merge_policy = "max"]
     last_time: Option<RustBV>,
     /// Mirrors angr's NO_IP_CONCRETIZATION SimOption. When true, symbolic
     /// jump targets are NOT enumerated via solver — the state routes to the
@@ -512,6 +548,7 @@ pub struct RustSimState {
     /// the user-supplied state in Python `__init__` BEFORE the init pipeline
     /// hits the disk cache — otherwise the cached-init path will silently
     /// reset it to the default on a cache hit.
+    #[merge_policy = "union"]
     no_ip_concretization: bool,
     /// Mirrors angr's NO_SYMBOLIC_JUMP_RESOLUTION SimOption. When true, any
     /// symbolic jump target routes the state to the unconstrained stash
@@ -523,6 +560,7 @@ pub struct RustSimState {
     ///
     /// See module-level `invariant-apply-state-metadata-option-allowlist` — same caveat
     /// as `no_ip_concretization`.
+    #[merge_policy = "union"]
     no_symbolic_jump_resolution: bool,
     /// Mirrors angr's KEEP_IP_SYMBOLIC SimOption. When true, after a symbolic
     /// jump target is concretized to one-or-more concrete pc values, the IP
@@ -534,6 +572,7 @@ pub struct RustSimState {
     ///
     /// See module-level `invariant-apply-state-metadata-option-allowlist` — same caveat
     /// as `no_ip_concretization`.
+    #[merge_policy = "union"]
     keep_ip_symbolic: bool,
     /// angr-027h: per-state override that forces EAGER forking (immediate
     /// successor materialization) regardless of the manager-level
@@ -546,11 +585,13 @@ pub struct RustSimState {
     /// the whole resumed subtree stays eager. Measured on CADET_00001: with
     /// this set, the easter-egg target is reachable; without it the resumed
     /// subtree diverges instead.
+    #[merge_policy = "union"]
     force_eager_forks: bool,
     /// CGC `state.cgc.allocation_base` — high-water bump pointer for the
     /// CGC `allocate(2)` syscall. Pages grow downward from this address.
     /// Default 0xB800_0000 (matches `state_plugins/cgc.py::allocation_base`).
     /// Inert outside DECREE binaries. Cloned on fork.
+    #[merge_policy = "min"]
     cgc_allocation_base: u64,
     /// CGC `state.cgc.sinkholes` — list of freed (addr, length) regions that
     /// `allocate` re-uses via first-fit before bumping `allocation_base`.
@@ -558,6 +599,7 @@ pub struct RustSimState {
     /// store an ordered `Vec` to match the Python "sorted by address
     /// descending, first fit" semantics in `get_max_sinkhole`).
     /// Cloned on fork.
+    #[merge_policy = "joint"]
     cgc_sinkholes: Vec<(u64, u64)>,
     /// Symex-relevant SimOption names (e.g. `"SHORT_READS"`) mirrored from the
     /// Python SimState option set so native SimProcedures can branch on them
@@ -573,10 +615,12 @@ pub struct RustSimState {
     /// option mirrors, this is NOT in the `_apply_state_metadata` allow-list,
     /// so it must be set on the Rust state during `_add_rust_state` rather than
     /// relying on the cached-init path to preserve it.
+    #[merge_policy = "joint"]
     sim_options: Arc<HashSet<String>>,
     /// SimOption names explicitly disabled (`set_option(name, false)`) since
     /// this state's last fork point. Same rationale and reset/carry rules as
     /// [`Self::removed_hooks`].
+    #[merge_policy = "computed"]
     removed_sim_options: Arc<HashSet<String>>,
 }
 

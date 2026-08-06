@@ -2187,6 +2187,91 @@ fn test_tsc_counter_forks_and_merges_as_watermark() {
     );
 }
 
+// angr-sqfj8.88: `last_time` is `Option<RustBV>`, the symbolic analogue of the
+// `tsc_counter` watermark above — merge must never let it read as though time
+// ran backwards relative to any branch. Since `RustBV` has no `Ord`, this
+// takes a real symbolic maximum (`uge` + `ite`) rather than dropping straight
+// to `self`'s value.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_merge_takes_symbolic_max_of_last_time() {
+    Python::initialize();
+
+    let mut a = RustSimState::new("amd64").unwrap();
+    let mut b = a.fork();
+    a.set_last_time(RustBV::concrete(100, 64));
+    b.set_last_time(RustBV::concrete(250, 64));
+
+    let m0 = {
+        let s = a.solver().borrow();
+        RustBV::symbolic(&s, "sqfj8_88_m0", 1)
+    };
+    let m1 = {
+        let s = a.solver().borrow();
+        RustBV::symbolic(&s, "sqfj8_88_m1", 1)
+    };
+    let merged = a.merge(&[&b], &[m0, m1]);
+
+    let last = merged
+        .last_time()
+        .expect("last_time must survive the merge");
+    let val = merged.solver().borrow().eval(last);
+    assert_eq!(
+        val,
+        Some(250),
+        "merge must take the later branch's time value, not silently keep \
+         self's smaller one"
+    );
+}
+
+/// angr-sqfj8.86: merge must actually detect a `native_resume_stack` length
+/// mismatch across branches — before this fix nothing computed divergence
+/// for this field at all, so `warn_config_divergence` never fired no matter
+/// how far branches drifted. Exercises `native_resume_stack_diverges`
+/// directly (the detection logic `RustSimState::merge` feeds into
+/// `warn_config_divergence`) rather than trying to observe the resulting
+/// `log::warn!` call: `log::set_logger` is a process-global one-shot
+/// singleton, and `engine_tests.rs`'s `set_rust_log_level_accepts_levels_and_specs`
+/// already claims that slot in the same test binary, so a competing logger
+/// installed here would race it non-deterministically.
+#[test]
+fn test_native_resume_stack_diverges_detects_depth_mismatch() {
+    let mut a = RustSimState::new("amd64").unwrap();
+    let b = a.fork();
+    assert!(
+        !fork::native_resume_stack_diverges(&a, &[&b]),
+        "equal-depth (both empty) stacks must not read as diverged"
+    );
+
+    a.push_native_resume_frame(NativeResumeFrame {
+        proc_name: "pthread_once".to_string(),
+        resume_tag: 0,
+        saved_args: vec![RustBV::concrete(0x601000, 64)],
+        caller_return_addr: 0x400600,
+    });
+    assert!(
+        fork::native_resume_stack_diverges(&a, &[&b]),
+        "a length-1 vs length-0 native_resume_stack must be detected as diverged"
+    );
+
+    // The merge itself still self-wins regardless of divergence detection
+    // (see `RustSimState::merge`'s doc) — confirm that carry survives too.
+    let m0 = {
+        let s = a.solver().borrow();
+        RustBV::symbolic(&s, "sqfj8_86_m0", 1)
+    };
+    let m1 = {
+        let s = a.solver().borrow();
+        RustBV::symbolic(&s, "sqfj8_86_m1", 1)
+    };
+    let merged = a.merge(&[&b], &[m0, m1]);
+    assert_eq!(
+        merged.native_resume_stack().len(),
+        1,
+        "merge must keep self's frame (self-wins), not silently b's empty stack"
+    );
+}
+
 // angr-n0irt.2: RustSimState::merge must extend the angr-ph300.51 max-merge fix
 // to the CGC allocator state. cgc_allocation_base grows DOWNWARD, so the anti-
 // alias combinator is min (furthest-advanced base across branches), NOT the max
@@ -2339,6 +2424,31 @@ fn test_heap_metadata_union_from() {
         "freed unioned as a set: {{0x9000, 0x8000}}"
     );
     assert!(a.freed.contains(&0x8000), "other-only free must be present");
+}
+
+// angr-sqfj8.85: `union_from` must not resurrect an address `self` already
+// freed just because `other` never freed it on its branch — the check
+// against `self.freed` has to gate the `or_insert`, not run after.
+#[test]
+fn test_heap_metadata_union_from_does_not_resurrect_freed_allocation() {
+    let mut a = HeapMetadata::default();
+    let mut b = HeapMetadata::default();
+
+    a.record_alloc(0x4000, 0x10);
+    a.record_free(0x4000); // self already freed this address
+    b.record_alloc(0x4000, 0x10); // other's branch never freed it
+
+    a.union_from(&b);
+
+    assert_eq!(
+        a.alloc_size(0x4000),
+        None,
+        "self's free must win — union must not resurrect a freed allocation"
+    );
+    assert!(
+        a.freed.contains(&0x4000),
+        "the address stays recorded as freed"
+    );
 }
 
 // angr-9ke6b.127 (unit): `freed` is a set on the single-path side too — a

@@ -99,9 +99,16 @@ impl HeapMetadata {
     /// rare, and preferring `self` keeps the merge deterministic. `freed`
     /// addresses are unioned as a set so a pointer freed on any branch stays
     /// recorded without double-counting a free both branches inherited.
+    /// angr-sqfj8.85: an address `self` already freed must not be resurrected
+    /// into `self.allocated` just because `other` never freed it on its
+    /// branch — a freed-then-reallocated address on `self`'s path can also
+    /// legitimately reappear in `other.allocated` at a different size, so
+    /// the freed check must run before the `or_insert`, not after.
     pub fn union_from(&mut self, other: &HeapMetadata) {
         for (&addr, &size) in &other.allocated {
-            self.allocated.entry(addr).or_insert(size);
+            if !self.freed.contains(&addr) {
+                self.allocated.entry(addr).or_insert(size);
+            }
         }
         for &addr in &other.freed {
             if !self.freed.contains(&addr) {
