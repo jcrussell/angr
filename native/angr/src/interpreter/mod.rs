@@ -69,6 +69,19 @@ pub(crate) const BLOCK_CACHE_CAPACITY_NZ: std::num::NonZeroUsize =
         None => panic!("BLOCK_CACHE_CAPACITY must be non-zero"),
     };
 
+/// Maximum number of candidate addresses for which a symbolic memory access is
+/// resolved by building an ITE chain in Rust.
+///
+/// A `Multiple`/`Strided` concretization can carry up to `Concretizer::max_solutions`
+/// (256) addresses, and an in-Rust ITE chain costs one Python `memory_load_batch`
+/// entry plus one ITE node per address — an expression the solver then has to
+/// carry through every downstream constraint. Beyond this cap both the load
+/// (`dispatch_multi_load`) and the store (`dispatch_multi_store`) hand the whole
+/// access to Python's memory model, which has purpose-built machinery for
+/// wide symbolic accesses. Keeping one constant for both keeps the two paths from
+/// drifting apart (angr-sqfj8.68).
+pub(crate) const MAX_ITE_ADDRS: usize = 16;
+
 /// Start a profiling timer iff `self.profiling_enabled`. Yields `Option<Instant>`.
 ///
 /// Pair with [`profile_add!`] to fold the elapsed nanoseconds into a `u64`

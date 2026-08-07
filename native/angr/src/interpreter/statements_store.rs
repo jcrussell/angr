@@ -511,8 +511,9 @@ impl<'a> VEXInterpreter<'a> {
     }
 
     /// Shared dispatch for Multiple/Strided concretization results: build an
-    /// in-Rust ITE chain when ≤16 addrs and the symbolic-value callback is
-    /// available, otherwise hand the full address list to Python.
+    /// in-Rust ITE chain when the address count is within [`MAX_ITE_ADDRS`] and
+    /// the symbolic-value callback is available, otherwise hand the full address
+    /// list to Python. The load-side counterpart is `dispatch_multi_load`.
     pub(super) fn dispatch_multi_store(
         &self,
         callbacks: &PythonCallbacks,
@@ -520,7 +521,7 @@ impl<'a> VEXInterpreter<'a> {
         addr_val: &RustBV,
         data_val: &RustBV,
     ) -> Result<(), CbExecutionError> {
-        if addrs.len() <= 16 && callbacks.has_memory_store_symbolic_value() {
+        if addrs.len() <= MAX_ITE_ADDRS && callbacks.has_memory_store_symbolic_value() {
             self.build_ite_store_from_callbacks(callbacks, addrs, addr_val, data_val)
         } else {
             callbacks

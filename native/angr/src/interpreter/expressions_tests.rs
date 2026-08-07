@@ -457,3 +457,111 @@ fn handle_concrete_store_symbolic_data_evicts_overlapping_symbolic_shadow() {
         );
     });
 }
+
+/// angr-sqfj8.68: `dispatch_multi_load` must apply the same [`MAX_ITE_ADDRS`]
+/// cap `dispatch_multi_store` does. A `Multiple`/`Strided` concretization can
+/// carry up to `AddressConcretizer::max_solutions` (256) addresses; before the
+/// cap the load path always built the ITE chain in Rust, one
+/// `memory_load`/`memory_load_batch` round trip and one ITE node per address.
+///
+/// Drives `dispatch_multi_load` directly (rather than through `load_symbolic_addr`)
+/// so the address count is exact instead of whatever the concretizer happens to
+/// enumerate.
+#[test]
+fn dispatch_multi_load_caps_ite_chain_and_defers_to_python() {
+    use crate::callbacks::PythonCallbacks;
+    use pyo3::types::PyDict;
+    Python::initialize();
+    Python::attach(|py| {
+        let globals = PyDict::new(py);
+        py.run(
+            c"loads = []
+fulls = []
+def memory_load(addr, size):
+    loads.append((addr, size))
+    return (b'\\x00' * size, False, None)
+def load_full(addr_ast, size):
+    fulls.append(size)
+    return None
+",
+            Some(&globals),
+            None,
+        )
+        .expect("define test callbacks");
+        let get = |name: &str| {
+            globals
+                .get_item(name)
+                .unwrap()
+                .unwrap_or_else(|| panic!("{name} not defined"))
+        };
+        let recorder_len = |name: &str| get(name).len().expect("recorder is a list");
+
+        let mut cb = PythonCallbacks::new();
+        cb.set_memory_load(get("memory_load").unbind());
+        cb.set_memory_load_symbolic_full(get("load_full").unbind());
+
+        let ctx = SymContext::new_mock();
+        let interp = new_interp(&ctx);
+        let addr_bv = RustBV::symbolic(&ctx, "multi_load_addr", 64);
+
+        // At the cap: resolved in Rust, one Python load per candidate address.
+        let addrs: Vec<u64> = (0..MAX_ITE_ADDRS as u64).map(|i| 0x4000 + i * 8).collect();
+        let val = interp
+            .dispatch_multi_load(&cb, &addrs, &addr_bv, 4)
+            .expect("at-cap load resolves in Rust");
+        assert_eq!(val.width(), 32);
+        assert_eq!(recorder_len("loads"), MAX_ITE_ADDRS);
+        assert_eq!(
+            recorder_len("fulls"),
+            0,
+            "an at-cap load must not reach the full symbolic-load callback"
+        );
+
+        // One over: handed to Python's memory model instead, with no per-address
+        // loads issued from Rust.
+        let addrs: Vec<u64> = (0..=MAX_ITE_ADDRS as u64).map(|i| 0x4000 + i * 8).collect();
+        let val = interp
+            .dispatch_multi_load(&cb, &addrs, &addr_bv, 4)
+            .expect("over-cap load defers to Python");
+        assert_eq!(val.width(), 32);
+        assert_eq!(recorder_len("fulls"), 1);
+        assert_eq!(
+            recorder_len("loads"),
+            MAX_ITE_ADDRS,
+            "the over-cap load must not issue per-address loads from Rust"
+        );
+    });
+}
+
+/// The cap yields when the full symbolic-load callback isn't wired up: the
+/// in-Rust ITE chain is then the only way to resolve the load, and erroring
+/// out would be a regression against the pre-cap behavior.
+#[test]
+fn dispatch_multi_load_over_cap_without_full_callback_still_builds_ite() {
+    use crate::callbacks::PythonCallbacks;
+    use pyo3::types::PyDict;
+    Python::initialize();
+    Python::attach(|py| {
+        let globals = PyDict::new(py);
+        py.run(
+            c"def memory_load(addr, size):
+    return (b'\\x00' * size, False, None)
+",
+            Some(&globals),
+            None,
+        )
+        .expect("define test callbacks");
+        let mut cb = PythonCallbacks::new();
+        cb.set_memory_load(globals.get_item("memory_load").unwrap().unwrap().unbind());
+        assert!(!cb.has_memory_load_symbolic_full());
+
+        let ctx = SymContext::new_mock();
+        let interp = new_interp(&ctx);
+        let addr_bv = RustBV::symbolic(&ctx, "uncapped_addr", 64);
+        let addrs: Vec<u64> = (0..64u64).map(|i| 0x5000 + i * 8).collect();
+        let val = interp
+            .dispatch_multi_load(&cb, &addrs, &addr_bv, 4)
+            .expect("over-cap load without the full callback falls back to the ITE chain");
+        assert_eq!(val.width(), 32);
+    });
+}

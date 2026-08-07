@@ -385,7 +385,7 @@ impl<'a> VEXInterpreter<'a> {
             ConcretizationResult::Multiple(addrs) => {
                 // Build ITE chain in Rust instead of delegating to Python
                 // This avoids FFI overhead and keeps symbolic ops in Rust's Z3 context
-                self.build_ite_load_from_callbacks(callbacks, addrs, addr_val, size)
+                self.dispatch_multi_load(callbacks, addrs, addr_val, size)
             }
             ConcretizationResult::Strided {
                 base,
@@ -394,7 +394,7 @@ impl<'a> VEXInterpreter<'a> {
             } => {
                 // Strided access pattern - generate addresses and build ITE chain in Rust
                 let addrs: Vec<u64> = (0..*count).map(|i| base + i * stride).collect();
-                self.build_ite_load_from_callbacks(callbacks, &addrs, addr_val, size)
+                self.dispatch_multi_load(callbacks, &addrs, addr_val, size)
             }
             ConcretizationResult::TooLarge { min, max, .. } => {
                 let descr = format!("range 0x{min:x}-0x{max:x}");
@@ -797,6 +797,33 @@ impl<'a> VEXInterpreter<'a> {
         });
 
         converted.unwrap_or_else(|| RustBV::symbolic(self.ctx, fallback_name(), width))
+    }
+
+    /// Shared dispatch for Multiple/Strided concretization results on the load
+    /// path, the counterpart to `dispatch_multi_store`.
+    ///
+    /// Builds the ITE chain in Rust when the address count is within
+    /// [`MAX_ITE_ADDRS`]; beyond that it hands the address AST to Python's full
+    /// symbolic-load callback rather than emitting a 256-wide ITE (see the
+    /// constant's doc for the cost argument). The store path can pass its
+    /// already-computed address list to Python (`call_memory_store_symbolic`);
+    /// there is no load-side equivalent taking an address list, so the wide case
+    /// re-concretizes inside Python's memory model.
+    ///
+    /// When the full-load callback isn't wired up, the in-Rust chain is still the
+    /// only way to resolve the load, so the cap yields rather than hard-erroring.
+    pub(super) fn dispatch_multi_load(
+        &self,
+        callbacks: &PythonCallbacks,
+        addrs: &[u64],
+        addr_val: &RustBV,
+        size: usize,
+    ) -> Result<RustBV, CbExecutionError> {
+        if addrs.len() > MAX_ITE_ADDRS && callbacks.has_memory_load_symbolic_full() {
+            let descr = format!("{} candidate addresses", addrs.len());
+            return self.fallback_load_symbolic_full(callbacks, addr_val, size, "Load", &descr);
+        }
+        self.build_ite_load_from_callbacks(callbacks, addrs, addr_val, size)
     }
 
     /// Build an ITE chain for symbolic memory load by loading each candidate address.
