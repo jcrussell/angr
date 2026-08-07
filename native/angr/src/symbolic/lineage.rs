@@ -17,13 +17,32 @@
 //!
 //! ## Status
 //!
-//! This module is **not yet wired into [`crate::symbolic::SymContext`]**.
-//! This is the v5a5 skeleton: structs, switch_to mechanics, telemetry
-//! counters, and unit tests verifying the invariants. The next slice will
-//! teach `SymContext::fork()` to thread a `SharedLineageSolver` through
-//! the lineage and replace the per-state lazy-materialize path. Keeping
-//! the skeleton standalone keeps this iteration's blast radius bounded
-//! (no behavior change in any existing call site).
+//! This module is **live in production**, wired into
+//! [`crate::symbolic::SymContext`] through its `lineage` field:
+//!
+//! - **Minting** —
+//!   [`SymContext::fork`](crate::symbolic::SymContext::fork)
+//!   (`snapshot_fork_ops.rs`) mints a fresh `SharedLineageSolver` for the
+//!   child, seeded by [`SharedLineageSolver::assert_base`] with the
+//!   parent's frozen shared constraints, under a **three-gate check**:
+//!   the `use_shared_lineage_solver` opt-in is on, the parent's
+//!   `bare_z3_push_depth` is zero, and [`is_lineage_dismantled`] is
+//!   false. Fail any gate and the child either inherits the parent's Arc
+//!   or (when dismantled) gets `None`; see that fn's rustdoc for what
+//!   each gate guards.
+//! - **Dispatch** — every solver-touching path branches on
+//!   `self.lineage`: `None` uses the per-context bare Z3 solver, `Some`
+//!   mints a [`ScopeFrame`] and routes through
+//!   [`SharedLineageSolver::switch_to`]. See `install_constraint` /
+//!   `install_constraints_batch` (`constraint_ops.rs`) and
+//!   `SymContext::with_z3_solver` (`snapshot_fork_ops.rs`).
+//! - **Built on top** — the angr-v5ht thrash detector (the dismantle
+//!   path below) and the angr-g1fev per-tree census both consume this
+//!   module's telemetry counters.
+//!
+//! The opt-in defaults **off**; see
+//! [`SymContext::set_use_shared_lineage_solver`](crate::symbolic::SymContext::set_use_shared_lineage_solver)
+//! for when turning it on wins.
 //!
 //! ## Invariants
 //!

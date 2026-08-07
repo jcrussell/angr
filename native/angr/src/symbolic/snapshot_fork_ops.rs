@@ -870,9 +870,10 @@ impl SymContext {
     ///
     /// Lets unit tests verify the fork-propagation invariant — that a
     /// child's `lineage_arc()` returns the same Arc as the parent's —
-    /// without yet wiring up the production lineage-creation path in
-    /// [`fork()`](Self::fork). Removed when integration takes ownership
-    /// of lineage creation.
+    /// without going through the production three-gate mint in
+    /// [`fork()`](Self::fork), which would require flipping the
+    /// `use_shared_lineage_solver` opt-in and staging a parent lineage
+    /// first.
     #[cfg(all(test, feature = "vex-engine-z3"))]
     pub(crate) fn set_lineage_for_testing(
         &self,
