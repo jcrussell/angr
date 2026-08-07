@@ -174,11 +174,7 @@ impl RustSolverContext {
 
     /// Negation of a handle.
     pub fn op_neg(&self, a_id: u64) -> PyResult<RustBVHandle> {
-        let ctx = self.i().ctx();
-        self.i()
-            .symbol_table
-            .op_neg(a_id, &ctx)
-            .ok_or_else(|| invalid_handle_id(&[a_id]))
+        self.opt_op(&[a_id], |table, ctx| table.op_neg(a_id, ctx))
     }
 
     // =========================================================================
@@ -202,11 +198,7 @@ impl RustSolverContext {
 
     /// Bitwise NOT of a handle.
     pub fn op_not(&self, a_id: u64) -> PyResult<RustBVHandle> {
-        let ctx = self.i().ctx();
-        self.i()
-            .symbol_table
-            .op_not(a_id, &ctx)
-            .ok_or_else(|| invalid_handle_id(&[a_id]))
+        self.opt_op(&[a_id], |table, ctx| table.op_not(a_id, ctx))
     }
 
     // =========================================================================
@@ -299,57 +291,39 @@ impl RustSolverContext {
     /// Zero-extend to a wider width.
     pub fn op_zero_extend(&self, a_id: u64, to_width: u32) -> PyResult<RustBVHandle> {
         self.reject_extend_narrowing("op_zero_extend", a_id, to_width)?;
-        let ctx = self.i().ctx();
-        self.i()
-            .symbol_table
-            .op_zero_extend(a_id, to_width, &ctx)
-            .ok_or_else(|| invalid_handle_id(&[a_id]))
+        self.opt_op(&[a_id], |table, ctx| {
+            table.op_zero_extend(a_id, to_width, ctx)
+        })
     }
 
     /// Sign-extend to a wider width.
     pub fn op_sign_extend(&self, a_id: u64, to_width: u32) -> PyResult<RustBVHandle> {
         self.reject_extend_narrowing("op_sign_extend", a_id, to_width)?;
-        let ctx = self.i().ctx();
-        self.i()
-            .symbol_table
-            .op_sign_extend(a_id, to_width, &ctx)
-            .ok_or_else(|| invalid_handle_id(&[a_id]))
+        self.opt_op(&[a_id], |table, ctx| {
+            table.op_sign_extend(a_id, to_width, ctx)
+        })
     }
 
     /// Truncate to a narrower width.
     pub fn op_truncate(&self, a_id: u64, to_width: u32) -> PyResult<RustBVHandle> {
-        let ctx = self.i().ctx();
-        self.i()
-            .symbol_table
-            .op_truncate(a_id, to_width, &ctx)
-            .ok_or_else(|| invalid_handle_id(&[a_id]))
+        self.opt_op(&[a_id], |table, ctx| table.op_truncate(a_id, to_width, ctx))
     }
 
     /// Extract bits \[high:low\] (inclusive).
     pub fn op_extract(&self, a_id: u64, high: u32, low: u32) -> PyResult<RustBVHandle> {
-        let ctx = self.i().ctx();
-        self.i()
-            .symbol_table
-            .op_extract(a_id, high, low, &ctx)
-            .ok_or_else(|| invalid_handle_id(&[a_id]))
+        self.opt_op(&[a_id], |table, ctx| table.op_extract(a_id, high, low, ctx))
     }
 
     /// Concatenate two values (a becomes high bits).
     pub fn op_concat(&self, a_id: u64, b_id: u64) -> PyResult<RustBVHandle> {
-        let ctx = self.i().ctx();
-        self.i()
-            .symbol_table
-            .op_concat(a_id, b_id, &ctx)
-            .ok_or_else(|| invalid_handle_id(&[a_id, b_id]))
+        self.opt_op(&[a_id, b_id], |table, ctx| table.op_concat(a_id, b_id, ctx))
     }
 
     /// If-then-else: if cond then then_val else else_val.
     pub fn op_ite(&self, cond_id: u64, then_id: u64, else_id: u64) -> PyResult<RustBVHandle> {
-        let ctx = self.i().ctx();
-        self.i()
-            .symbol_table
-            .op_ite(cond_id, then_id, else_id, &ctx)
-            .ok_or_else(|| invalid_handle_id(&[cond_id, then_id, else_id]))
+        self.opt_op(&[cond_id, then_id, else_id], |table, ctx| {
+            table.op_ite(cond_id, then_id, else_id, ctx)
+        })
     }
 }
 
@@ -370,8 +344,8 @@ impl RustSolverContext {
     ///
     /// Ops whose `RustSymbolTable` method returns `Option` rather than
     /// `Result` (`op_neg`, `op_not`, `op_concat`, the width-changing
-    /// conversions, `op_ite`) keep their own bodies: each needs an
-    /// `invalid_handle_id` fallback naming its own operand set.
+    /// conversions, `op_ite`) don't fit this signature — their operand lists
+    /// differ — and go through [`opt_op`](Self::opt_op) instead.
     pub(super) fn binop(
         &self,
         a_id: u64,
@@ -381,6 +355,31 @@ impl RustSolverContext {
         let inner = self.i();
         let ctx = inner.ctx();
         op(&inner.symbol_table, a_id, b_id, &ctx).map_err(PyErr::from)
+    }
+
+    /// Shared body for the handle-based `#[pymethods]` wrappers whose
+    /// [`RustSymbolTable`] method returns `Option` instead of `Result`
+    /// (`op_neg`, `op_not`, the width-changing conversions, `op_concat`,
+    /// `op_ite`).
+    ///
+    /// Those can't use [`binop`](Self::binop) — their operand lists are 1, 2
+    /// or 3 handles wide and some carry extra width arguments — but the
+    /// surrounding steps are identical every time: take the Z3 context, call
+    /// the symbol-table method, and turn a `None` (any operand handle absent
+    /// from the table) into the shared `invalid_handle_id` `PyErr`. So the
+    /// caller supplies only the two varying parts: `ids`, the operand handles
+    /// to name in that error, and `op`, a closure invoking the table method.
+    ///
+    /// Keep `ids` in sync with the handles `op` actually looks up — it is
+    /// what the Python-side error message blames, and a `None` gives no clue
+    /// which operand was missing.
+    pub(super) fn opt_op<F>(&self, ids: &[u64], op: F) -> PyResult<RustBVHandle>
+    where
+        F: FnOnce(&RustSymbolTable, &SymContext) -> Option<RustBVHandle>,
+    {
+        let inner = self.i();
+        let ctx = inner.ctx();
+        op(&inner.symbol_table, &ctx).ok_or_else(|| invalid_handle_id(ids))
     }
 
     /// Reject a narrowing width passed to an extend op at the Python boundary.
