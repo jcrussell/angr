@@ -693,9 +693,13 @@ impl VEXOps {
                 dst_signed,
             } => Self::vec_qnarrow_bin(left, right, from, count, src_signed, dst_signed, ctx),
 
-            // Vector interleave.
-            IROp::VInterleaveLO { elem } => Self::vec_interleave_lo(left, right, elem, ctx),
-            IROp::VInterleaveHI { elem } => Self::vec_interleave_hi(left, right, elem, ctx),
+            // Vector interleave. `count` is carried by the IROp for
+            // `result_type()`'s benefit but not threaded through here:
+            // `vec_interleave` (`ops/vec_compare.rs`) derives the lane count
+            // from the operand width, which is authoritative for the actual
+            // BV being built.
+            IROp::VInterleaveLO { elem, .. } => Self::vec_interleave_lo(left, right, elem, ctx),
+            IROp::VInterleaveHI { elem, .. } => Self::vec_interleave_hi(left, right, elem, ctx),
 
             // Vector shifts by immediate.
             IROp::VShlN { elem, count } => Self::vec_shl_n(left, right, elem, count, ctx),

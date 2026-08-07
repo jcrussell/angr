@@ -44,7 +44,10 @@ fn test_vec_interleave_lo_8x16_concrete() {
     let lv = pack_lanes_uint(&l, 8);
     let rv = pack_lanes_uint(&r, 8);
     let result = VEXOps::binop(
-        IROp::VInterleaveLO { elem: IRType::I8 },
+        IROp::VInterleaveLO {
+            elem: IRType::I8,
+            count: 16,
+        },
         RustBV::concrete(lv, 128),
         RustBV::concrete(rv, 128),
         &ctx,
@@ -82,7 +85,10 @@ fn test_vec_interleave_hi_8x16_concrete() {
     let lv = pack_lanes_uint(&l, 8);
     let rv = pack_lanes_uint(&r, 8);
     let result = VEXOps::binop(
-        IROp::VInterleaveHI { elem: IRType::I8 },
+        IROp::VInterleaveHI {
+            elem: IRType::I8,
+            count: 16,
+        },
         RustBV::concrete(lv, 128),
         RustBV::concrete(rv, 128),
         &ctx,
@@ -110,7 +116,10 @@ fn test_vec_interleave_lo_64x2_concrete() {
     let lv = pack_lanes_uint(&l, 64);
     let rv = pack_lanes_uint(&r, 64);
     let result = VEXOps::binop(
-        IROp::VInterleaveLO { elem: IRType::I64 },
+        IROp::VInterleaveLO {
+            elem: IRType::I64,
+            count: 2,
+        },
         RustBV::concrete(lv, 128),
         RustBV::concrete(rv, 128),
         &ctx,
@@ -151,10 +160,76 @@ fn test_vec_interleave_lo_16x8_symbolic() {
     );
     let r = RustBV::concrete(pack_lanes_uint(&r_lanes, 16), 128);
 
-    let result = VEXOps::binop(IROp::VInterleaveLO { elem: IRType::I16 }, l, r, &ctx).unwrap();
+    let result = VEXOps::binop(
+        IROp::VInterleaveLO {
+            elem: IRType::I16,
+            count: 8,
+        },
+        l,
+        r,
+        &ctx,
+    )
+    .unwrap();
     assert_eq!(result.width(), 128);
     assert!(ctx.is_sat(), "expected SAT after pinning left operand");
 
     let model = ctx.eval(&result).expect("eval(result) returned None");
     assert_int_lanes_eq(model, &exp, 16);
+}
+
+// =========================================================================
+// InterleaveLO/HI8x8 — 64-bit D-reg NEON shape (concrete)
+// =========================================================================
+
+/// The D-reg NEON shapes (`Iop_Interleave{LO,HI}8x8` and friends) total 64
+/// bits, not 128. `vec_interleave` derives the lane count from the operand
+/// width rather than from `IROp::count`, so this pins that the narrower
+/// operands produce a 64-bit result over 4 source lanes per operand — the
+/// evaluator half of the angr-sqfj8.142 width bug, whose `result_type()` half
+/// is pinned by `test_packed_lane_result_type_tracks_mapped_width`
+/// (`vex/ir_tests.rs`).
+#[test]
+fn test_vec_interleave_8x8_concrete_is_64_bit() {
+    let ctx = SymContext::new_mock();
+
+    let l: [u128; 8] = [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07];
+    let r: [u128; 8] = [0xF0, 0xF1, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7];
+    let lv = RustBV::concrete(pack_lanes_uint(&l, 8), 64);
+    let rv = RustBV::concrete(pack_lanes_uint(&r, 8), 64);
+
+    // Low half (lanes 0..3): r[0],l[0],...,r[3],l[3].
+    let lo = VEXOps::binop(
+        IROp::VInterleaveLO {
+            elem: IRType::I8,
+            count: 8,
+        },
+        lv.clone(),
+        rv.clone(),
+        &ctx,
+    )
+    .unwrap();
+    assert_eq!(lo.width(), 64, "InterleaveLO8x8 must stay 64 bits wide");
+    assert_int_lanes_eq(
+        lo.as_u128().unwrap(),
+        &[0xF0, 0x00, 0xF1, 0x01, 0xF2, 0x02, 0xF3, 0x03],
+        8,
+    );
+
+    // High half (lanes 4..7): r[4],l[4],...,r[7],l[7].
+    let hi = VEXOps::binop(
+        IROp::VInterleaveHI {
+            elem: IRType::I8,
+            count: 8,
+        },
+        lv,
+        rv,
+        &ctx,
+    )
+    .unwrap();
+    assert_eq!(hi.width(), 64, "InterleaveHI8x8 must stay 64 bits wide");
+    assert_int_lanes_eq(
+        hi.as_u128().unwrap(),
+        &[0xF4, 0x04, 0xF5, 0x05, 0xF6, 0x06, 0xF7, 0x07],
+        8,
+    );
 }

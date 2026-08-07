@@ -308,12 +308,19 @@ pub enum IROp {
         count: u8,
         signed: bool,
     },
-    /// Interleave high
+    /// Interleave (unpack) the low halves of two vectors
+    /// (`Iop_InterleaveLO{N}x{M}`). `count` is the lane count, so the result
+    /// width is `elem * count` — 64 for the D-reg NEON shapes
+    /// (`8x8`/`16x4`/`32x2`), 128 for the Q-reg/SSE ones. `elem` alone cannot
+    /// tell them apart (angr-sqfj8.142).
     VInterleaveLO {
         elem: IRType,
+        count: u8,
     },
+    /// Interleave (unpack) the high halves — see `VInterleaveLO`.
     VInterleaveHI {
         elem: IRType,
+        count: u8,
     },
     /// Permute/shuffle (`Iop_Perm{N}x{M}`): (table, control) -> vec.
     /// `count` is the lane count, so the result width is `elem * count`
@@ -920,7 +927,13 @@ impl IROp {
             | IROp::VSar { elem, count } => {
                 Self::width_total_to_type(elem.bits() * (*count as u32))
             }
-            IROp::VInterleaveLO { .. } | IROp::VInterleaveHI { .. } => Some(IRType::V128),
+            // Interleave preserves the vector width: total = elem * count,
+            // which is 64 for the D-reg NEON shapes (Iop_InterleaveLO8x8 and
+            // friends) — the old hardcoded V128 was wrong by 2x for those
+            // (angr-sqfj8.142).
+            IROp::VInterleaveLO { elem, count } | IROp::VInterleaveHI { elem, count } => {
+                Self::width_total_to_type(elem.bits() * (*count as u32))
+            }
 
             // Perm preserves the vector width: total = elem * count, which is
             // 64 for Iop_Perm8x8 and 256 for Iop_Perm32x8 — neither of which

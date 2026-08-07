@@ -115,8 +115,14 @@ fn vec_int_binops() -> Vec<IROp> {
             src_signed: true,
             dst_signed: true,
         },
-        IROp::VInterleaveLO { elem: I8 },
-        IROp::VInterleaveHI { elem: I8 },
+        IROp::VInterleaveLO {
+            elem: I8,
+            count: 16,
+        },
+        IROp::VInterleaveHI {
+            elem: I8,
+            count: 16,
+        },
         IROp::VShlN {
             elem: I32,
             count: 4,
@@ -294,8 +300,22 @@ fn test_vec_int_binops_dispatch_reachable() {
             128,
             128,
         ),
-        (IROp::VInterleaveLO { elem: IRType::I8 }, 128, 128),
-        (IROp::VInterleaveHI { elem: IRType::I8 }, 128, 128),
+        (
+            IROp::VInterleaveLO {
+                elem: IRType::I8,
+                count: 16,
+            },
+            128,
+            128,
+        ),
+        (
+            IROp::VInterleaveHI {
+                elem: IRType::I8,
+                count: 16,
+            },
+            128,
+            128,
+        ),
         (
             IROp::VShl {
                 elem: IRType::I32,

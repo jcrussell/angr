@@ -80,6 +80,23 @@ fn test_packed_lane_result_type_tracks_mapped_width() {
         ("Iop_MullEven32Sx4", IRType::V128),
         ("Iop_QDMull16Sx4", IRType::V128),
         ("Iop_QDMull32Sx2", IRType::V128),
+        // Interleave preserves the total width, and libVEX defines both the
+        // 64-bit D-reg NEON and the 128-bit Q-reg/SSE shapes — the old
+        // hardcoded-V128 arm was wrong by 2x for the former (angr-sqfj8.142).
+        ("Iop_InterleaveLO8x8", IRType::I64),
+        ("Iop_InterleaveLO16x4", IRType::I64),
+        ("Iop_InterleaveLO32x2", IRType::I64),
+        ("Iop_InterleaveHI8x8", IRType::I64),
+        ("Iop_InterleaveHI16x4", IRType::I64),
+        ("Iop_InterleaveHI32x2", IRType::I64),
+        ("Iop_InterleaveLO8x16", IRType::V128),
+        ("Iop_InterleaveLO16x8", IRType::V128),
+        ("Iop_InterleaveLO32x4", IRType::V128),
+        ("Iop_InterleaveLO64x2", IRType::V128),
+        ("Iop_InterleaveHI8x16", IRType::V128),
+        ("Iop_InterleaveHI16x8", IRType::V128),
+        ("Iop_InterleaveHI32x4", IRType::V128),
+        ("Iop_InterleaveHI64x2", IRType::V128),
     ];
 
     for (op_str, expected) in cases {

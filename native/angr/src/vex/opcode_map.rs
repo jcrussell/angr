@@ -910,18 +910,22 @@ fn parse_vector(op_str: &str) -> Option<IROp> {
         "64Ux2" => (I64, 2, false),
     });
 
-    // Vector interleave — count is implicit from elem.
-    scalar_arms!(op_str; "Iop_InterleaveLO" => VInterleaveLO {
-        "8x8" => I8, "8x16" => I8,
-        "16x4" => I16, "16x8" => I16,
-        "32x2" => I32, "32x4" => I32,
-        "64x2" => I64,
+    // Vector interleave. Both the 64-bit D-reg NEON shapes (8x8/16x4/32x2) and
+    // the 128-bit Q-reg/SSE ones are mapped, so `count` must be carried
+    // explicitly — `elem` alone cannot distinguish 8x8 from 8x16, and
+    // `result_type()` needs the total width (angr-sqfj8.142).
+    // The Iop_Interleave{Even,Odd}Lanes* families are a separate, unmapped op.
+    vec_arms!(op_str; "Iop_InterleaveLO" => VInterleaveLO {
+        "8x8" => (I8, 8), "8x16" => (I8, 16),
+        "16x4" => (I16, 4), "16x8" => (I16, 8),
+        "32x2" => (I32, 2), "32x4" => (I32, 4),
+        "64x2" => (I64, 2),
     });
-    scalar_arms!(op_str; "Iop_InterleaveHI" => VInterleaveHI {
-        "8x8" => I8, "8x16" => I8,
-        "16x4" => I16, "16x8" => I16,
-        "32x2" => I32, "32x4" => I32,
-        "64x2" => I64,
+    vec_arms!(op_str; "Iop_InterleaveHI" => VInterleaveHI {
+        "8x8" => (I8, 8), "8x16" => (I8, 16),
+        "16x4" => (I16, 4), "16x8" => (I16, 8),
+        "32x2" => (I32, 2), "32x4" => (I32, 4),
+        "64x2" => (I64, 2),
     });
 
     // Packed integer min/max — signed (S suffix) and unsigned (U suffix).
