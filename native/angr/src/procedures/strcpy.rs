@@ -13,7 +13,7 @@ use super::strings::{
     MAX_STRING_SCAN, ScanOutcome, build_strlen_chain, scan_concrete_bounded,
     scan_concrete_until_null, scan_for_null_symbolic, write_concrete_bytes, write_cstr,
 };
-use super::{ProcedureError, extract_concrete_arg};
+use super::{ProcedureError, check_max, extract_concrete_arg};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
@@ -101,9 +101,7 @@ crate::declare_proc! {
     call |state| {
         let dest = extract_concrete_arg(&dest_bv, "dest")?;
 
-        if n > MAX_STRING_SCAN as u64 {
-            return Err(ProcedureError::MaxIterations(n as usize));
-        }
+        check_max(n, MAX_STRING_SCAN)?;
 
         // Read up to n bytes from source, stopping early at null. Pre-null
         // bytes go in `buf` (null itself excluded); when null is found we
@@ -189,9 +187,7 @@ crate::declare_proc! {
     call |state| {
         let dest = extract_concrete_arg(&dest_bv, "dest")?;
 
-        if n > MAX_STRING_SCAN as u64 {
-            return Err(ProcedureError::MaxIterations(n as usize));
-        }
+        check_max(n, MAX_STRING_SCAN)?;
 
         let (mut buf, null_found) = scan_concrete_bounded(state, src, n as usize, "src")?;
         // Return offset is the #non-null bytes copied = min(strlen(src), n),
@@ -257,9 +253,7 @@ crate::declare_proc! {
     struct = NativeStrndup,
     args = [src: concrete, n: concrete],
     call |state| {
-        if n > MAX_STRING_SCAN as u64 {
-            return Err(ProcedureError::MaxIterations(n as usize));
-        }
+        check_max(n, MAX_STRING_SCAN)?;
 
         // strnlen(s, n): bytes up to the first NUL or `n`, whichever comes
         // first (the `null_found` flag is irrelevant — either way the copied
@@ -295,9 +289,7 @@ crate::declare_proc! {
     call |state| {
         let dest = extract_concrete_arg(&dest_bv, "dest")?;
 
-        if n > MAX_STRING_SCAN as u64 {
-            return Err(ProcedureError::MaxIterations(n as usize));
-        }
+        check_max(n, MAX_STRING_SCAN)?;
 
         // Full source length (strlen), excluding the NUL — this is the return.
         let buf = scan_concrete_until_null(state, src, MAX_STRING_SCAN, "src")?;

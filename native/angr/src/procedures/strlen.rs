@@ -17,6 +17,7 @@
 //! - Maximum string length is 4096 bytes (configurable).
 
 use super::ProcedureError;
+use super::check_max;
 use super::strings::{
     ScanOutcome, build_strlen_chain, null_exists_constraint, scan_for_null_symbolic,
 };
@@ -92,9 +93,7 @@ crate::declare_proc! {
     struct = NativeStrnlen,
     args = [s: concrete, maxlen: concrete],
     call |state| {
-        if maxlen > MAX_STRLEN as u64 {
-            return Err(ProcedureError::MaxIterations(maxlen as usize));
-        }
+        check_max(maxlen, MAX_STRLEN)?;
         scan_for_null(state, s, maxlen, /*require_null=*/false)
     }
 }

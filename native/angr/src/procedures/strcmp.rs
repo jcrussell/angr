@@ -32,6 +32,7 @@
 //! - Maximum compare length is 4096 bytes (configurable).
 
 use super::ProcedureError;
+use super::check_max;
 use super::strings::{
     ConcreteStep, ScanResult, null_exists_constraint, scan_concrete_then_collect,
 };
@@ -98,9 +99,7 @@ pub(super) fn compare_bytes(
     if max_len == 0 {
         return Ok(Some(RustBV::zero(32)));
     }
-    if max_len > MAX_STRCMP_LEN as u64 {
-        return Err(ProcedureError::MaxIterations(MAX_STRCMP_LEN));
-    }
+    check_max(max_len, MAX_STRCMP_LEN)?;
 
     let result = scan_concrete_then_collect(
         state,

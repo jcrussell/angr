@@ -11,6 +11,7 @@
 //! Python via SymbolicArgument).
 
 use super::ProcedureError;
+use super::check_max;
 use super::strings::{ConcreteStep, ScanResult, scan_concrete_then_collect};
 use crate::state::RustSimState;
 use crate::symbolic::{RustBV, SymContext};
@@ -426,8 +427,8 @@ crate::declare_proc! {
         // An `n` past the scan cap is only servable when the prefix we did scan
         // pins the answer; otherwise a match past the cap would have been the
         // real result and reporting NULL is silently wrong. Defer to Python.
-        if n > MAX_SCAN as u64 && !forward_match_is_conclusive(&result) {
-            return Err(ProcedureError::MaxIterations(n as usize));
+        if !forward_match_is_conclusive(&result) {
+            check_max(n, MAX_SCAN)?;
         }
         Ok(result)
     }
@@ -477,9 +478,7 @@ crate::declare_proc! {
         // *last* match in `n` bytes, and any match past the cap would override
         // whatever the prefix found. So an oversized `n` always defers to Python
         // (the unconditional strncpy shape rather than memchr's refinement).
-        if n > MAX_SCAN as u64 {
-            return Err(ProcedureError::MaxIterations(n as usize));
-        }
+        check_max(n, MAX_SCAN)?;
         scan_for_byte_last(state, addr, &c, n, /*stop_at_null=*/ false)
     }
 }

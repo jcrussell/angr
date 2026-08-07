@@ -213,6 +213,33 @@ pub(crate) fn extract_concrete_arg(arg: &RustBV, name: &str) -> Result<u64, Proc
         .ok_or_else(|| ProcedureError::SymbolicArgument(name.to_string()))
 }
 
+/// Bail out to Python when a requested size/count `n` exceeds the native cap
+/// `max`.
+///
+/// Every native proc that walks or copies a caller-supplied number of bytes
+/// caps that work so a bogus (or merely huge) argument can't stall the engine;
+/// past the cap the honest answer is "Python's turn", not a silently truncated
+/// result. This helper owns the two conventions those ~15 sites used to
+/// re-derive by hand:
+///
+/// - the error variant is always [`ProcedureError::MaxIterations`] — never
+///   `Other(format!(...))`, which buries the same condition in prose (the
+///   `malloc`/`calloc`/`memalign` family did exactly that before angr-12jjk.24);
+/// - the payload is the **offending value** `n`, not the cap. The cap is a
+///   compile-time constant a reader can look up; `n` is the part of the
+///   diagnostic that isn't already in the source.
+///
+/// Sites whose bail-out condition is not a plain `n > max` compare (a scan that
+/// ran to exhaustion, a conclusiveness check) still build the error directly —
+/// forcing those through a predicate-shaped helper would obscure more than it
+/// shares.
+pub(crate) fn check_max(n: u64, max: usize) -> Result<(), ProcedureError> {
+    if n > max as u64 {
+        return Err(ProcedureError::MaxIterations(n as usize));
+    }
+    Ok(())
+}
+
 /// Reserved SimProcedure name for the native sub-call **resume sentinel**.
 ///
 /// A native proc that returns [`ProcOutcome::CallAndResume`] makes the guest

@@ -2,7 +2,7 @@
 //!
 //! Concrete string concatenation. Symbolic arguments fall back to Python.
 
-use super::ProcedureError;
+use super::check_max;
 use super::strings::{
     MAX_STRING_SCAN, find_null_addr, scan_concrete_bounded, scan_concrete_until_null, write_cstr,
 };
@@ -40,8 +40,8 @@ crate::declare_proc! {
         // inside the cap — then the copy is exactly the same as for an
         // unbounded `n`. Otherwise the answer would be a silently truncated
         // 4096-byte copy, so defer to Python like the sibling strncpy does.
-        if !null_found && n > MAX_STRING_SCAN as u64 {
-            return Err(ProcedureError::MaxIterations(n as usize));
+        if !null_found {
+            check_max(n, MAX_STRING_SCAN)?;
         }
 
         // Always null-terminate after the copied bytes.

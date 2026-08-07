@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::memory::Permission;
-use crate::procedures::NativeSimProcedure;
+use crate::procedures::{NativeSimProcedure, ProcedureError};
 use crate::state::RustSimState;
 
 #[test]

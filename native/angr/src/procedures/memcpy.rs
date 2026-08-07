@@ -24,7 +24,7 @@ use super::mem_common::{
     MAX_SYMBOLIC_ADDR_STORES, bounded_symbolic_size, check_symbolic_addr_size,
     enumerate_addr_candidates, symbolic_size_conditional_store,
 };
-use super::{ProcedureError, extract_concrete_arg};
+use super::{ProcedureError, check_max, extract_concrete_arg};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 use std::collections::HashMap;
@@ -210,10 +210,7 @@ crate::declare_proc! {
         };
         let size = size as usize;
 
-        // Check size limit
-        if size > MAX_COPY_SIZE {
-            return Err(ProcedureError::MaxIterations(MAX_COPY_SIZE));
-        }
+        check_max(size as u64, MAX_COPY_SIZE)?;
 
         // Handle zero-size copy
         if size == 0 {
@@ -257,10 +254,7 @@ crate::declare_proc! {
         };
         let size = size as usize;
 
-        // Check size limit
-        if size > MAX_COPY_SIZE {
-            return Err(ProcedureError::MaxIterations(MAX_COPY_SIZE));
-        }
+        check_max(size as u64, MAX_COPY_SIZE)?;
 
         // Handle zero-size copy
         if size == 0 {

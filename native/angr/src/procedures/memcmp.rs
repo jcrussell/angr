@@ -10,7 +10,7 @@
 //! - Symbolic bytes produce a 32-bit ITE chain via `compare_bytes` shared
 //!   with strcmp/strncmp (with stop_at_null=false).
 
-use super::ProcedureError;
+use super::check_max;
 use super::strcmp::{MAX_STRCMP_LEN, compare_bytes};
 use crate::symbolic::RustBV;
 
@@ -25,9 +25,7 @@ crate::declare_proc! {
         if n == 0 {
             return Ok(Some(RustBV::zero(32)));
         }
-        if n > MAX_STRCMP_LEN as u64 {
-            return Err(ProcedureError::MaxIterations(MAX_STRCMP_LEN));
-        }
+        check_max(n, MAX_STRCMP_LEN)?;
         compare_bytes(state, s1, s2, n,
                       /*stop_at_null=*/false, /*case_insensitive=*/false)
     }
