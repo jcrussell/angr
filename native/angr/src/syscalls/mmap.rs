@@ -33,6 +33,9 @@
 //!    already-mapped pages, fall back so Python's loop runs.
 //! 4. addr != 0 && !MAP_FIXED: try the requested addr first; on
 //!    collision, fall back so Python's loop finds a different addr.
+//!    A misaligned addr is only a hint here, so it is accepted and
+//!    the page-granular `Memory::map` rounds it down to its containing
+//!    page (matching Python).
 //! 5. addr != 0 && MAP_FIXED: POSIX semantics — atomically unmap any
 //!    colliding pages in `[addr, addr+length)` and remap with the
 //!    requested perms. This diverges from `procedures/posix/mmap.py`
@@ -40,6 +43,10 @@
 //!    "If the memory region specified by addr and length overlaps
 //!    pages of any existing mapping(s), then the overlapped part of
 //!    the existing mapping(s) will be discarded." See angr-ttr7.
+//!    A *misaligned* MAP_FIXED addr is rejected with -1 (EINVAL),
+//!    also matching Linux and again diverging from Python, which
+//!    would silently map the containing page instead. See
+//!    angr-sqfj8.110 and the check in `do_mmap`.
 //!
 //! Bad-flags fast path: when `(flags & (MAP_SHARED|MAP_PRIVATE)) == 0`
 //! or both bits are set, Python returns -1 outright. Mirror that here
@@ -136,6 +143,21 @@ fn do_mmap(
     // Choose a candidate address. addr=0 ⇒ use mmap_base.
     let candidate = if addr == 0 { state.mmap_base() } else { addr };
     let is_fixed = addr != 0 && (flags & MAP_FIXED) != 0;
+
+    // MAP_FIXED demands the mapping land at exactly `addr`, so a
+    // misaligned `addr` has no correct answer: `Memory::map`/`unmap`
+    // are page-granular (they floor `addr` to its containing page), so
+    // honoring the request would silently map a *different* range than
+    // the caller named. Linux rejects this outright
+    // (`do_mmap`: `if (flags & MAP_FIXED) { if (offset_in_page(addr))
+    // return -EINVAL; }`), so return -1 rather than round down. This
+    // is a deliberate divergence from `procedures/posix/mmap.py`, which
+    // never checks alignment — same class of divergence as the
+    // MAP_FIXED collision policy above (angr-ttr7). Non-MAP_FIXED
+    // `addr` is only a hint, so it keeps the round-down behavior.
+    if is_fixed && addr & PAGE_MASK != 0 {
+        return Ok(SyscallOutcome::Continue { ret: u64::MAX });
+    }
 
     // Collision policy:
     //   - addr=0 + collision: fall back. Python's allocate_memory loop

@@ -311,6 +311,89 @@ fn map_fixed_clean_addr_still_maps_without_unmap_noise() {
 }
 
 #[test]
+fn map_fixed_misaligned_addr_returns_einval_and_maps_nothing() {
+    // angr-sqfj8.110: MAP_FIXED must land at exactly `addr`, but
+    // Memory::map is page-granular and would floor the request to its
+    // containing page — mapping a range the caller never named. Linux
+    // returns EINVAL; so do we, and nothing is mapped.
+    let h = NativeMmapSyscall;
+    let mut state = fresh_state();
+    let target = 0x4000_0123;
+
+    let outcome = h
+        .call(
+            &mut state,
+            &args(target, 0x1000, 0x3, ANON_PRIVATE | MAP_FIXED, ANON_FD, 0),
+        )
+        .expect("misaligned MAP_FIXED must complete natively, not fall back");
+    match outcome {
+        SyscallOutcome::Continue { ret } => assert_eq!(ret, u64::MAX, "expected -1 (EINVAL)"),
+        _ => panic!("expected Continue"),
+    }
+    // Neither the containing page nor the next one may be mapped.
+    assert_eq!(state.memory().page_permissions(target >> 12), None);
+    assert_eq!(state.memory().page_permissions((target >> 12) + 1), None);
+}
+
+#[test]
+fn map_fixed_misaligned_addr_leaves_existing_mapping_intact() {
+    // The rejection must happen *before* the unmap+remap, otherwise a
+    // bad request would still destroy a live mapping.
+    let h = NativeMmapSyscall;
+    let mut state = fresh_state();
+    let page = 0x4000_0000;
+    state.memory_mut().map(page, 0x1000, Permission::RWX);
+
+    let outcome = h
+        .call(
+            &mut state,
+            &args(
+                page + 0x800,
+                0x1000,
+                0x3,
+                ANON_PRIVATE | MAP_FIXED,
+                ANON_FD,
+                0,
+            ),
+        )
+        .expect("misaligned MAP_FIXED must complete natively, not fall back");
+    match outcome {
+        SyscallOutcome::Continue { ret } => assert_eq!(ret, u64::MAX, "expected -1 (EINVAL)"),
+        _ => panic!("expected Continue"),
+    }
+    assert_eq!(
+        state.memory().page_permissions(page >> 12),
+        Some(Permission::RWX),
+        "pre-existing mapping must survive a rejected MAP_FIXED",
+    );
+}
+
+#[test]
+fn misaligned_addr_without_map_fixed_is_a_hint_and_still_maps() {
+    // Contrast with the two tests above: without MAP_FIXED the addr is
+    // only a hint, so the page-granular round-down stays the behavior
+    // (and matches procedures/posix/mmap.py).
+    let h = NativeMmapSyscall;
+    let mut state = fresh_state();
+    let target = 0x4000_0123;
+
+    let outcome = h
+        .call(
+            &mut state,
+            &args(target, 0x1000, 0x3, ANON_PRIVATE, ANON_FD, 0),
+        )
+        .expect("misaligned hint addr must still map");
+    match outcome {
+        SyscallOutcome::Continue { ret } => assert_eq!(ret, target),
+        _ => panic!("expected Continue"),
+    }
+    assert_eq!(
+        state.memory().page_permissions(target >> 12),
+        Some(Permission::RW),
+    );
+}
+
+#[test]
 fn map_fixed_with_addr_zero_does_not_engage_fixed_path() {
     // `is_fixed` requires addr != 0 — MAP_FIXED with addr=0 is a
     // nonsensical combination (Linux treats it as a portable
