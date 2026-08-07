@@ -315,9 +315,14 @@ pub enum IROp {
     VInterleaveHI {
         elem: IRType,
     },
-    /// Permute/shuffle
+    /// Permute/shuffle (`Iop_Perm{N}x{M}`): (table, control) -> vec.
+    /// `count` is the lane count, so the result width is `elem * count`
+    /// (64 for `Perm8x8`, 128 for `Perm8x16`/`Perm32x4`, 256 for `Perm32x8`).
+    /// No native dispatch arm — see `is_dispatch_fabricate_family`
+    /// (`interpreter/expressions.rs`); the whole family routes to Python.
     VPerm {
         elem: IRType,
+        count: u8,
     },
     /// NEON lane extract (Iop_GetElem{N}x{M}): (vec, idx) -> scalar lane.
     /// Binop; idx is Ity_I8. Result width = elem.bits().
@@ -915,9 +920,12 @@ impl IROp {
             | IROp::VSar { elem, count } => {
                 Self::width_total_to_type(elem.bits() * (*count as u32))
             }
-            IROp::VInterleaveLO { .. } | IROp::VInterleaveHI { .. } | IROp::VPerm { .. } => {
-                Some(IRType::V128)
-            }
+            IROp::VInterleaveLO { .. } | IROp::VInterleaveHI { .. } => Some(IRType::V128),
+
+            // Perm preserves the vector width: total = elem * count, which is
+            // 64 for Iop_Perm8x8 and 256 for Iop_Perm32x8 — neither of which
+            // the old hardcoded V128 covered (angr-sqfj8.117).
+            IROp::VPerm { elem, count } => Self::width_total_to_type(elem.bits() * (*count as u32)),
 
             // GetElem returns one lane.
             IROp::VGetElem { elem, .. } => Some(*elem),

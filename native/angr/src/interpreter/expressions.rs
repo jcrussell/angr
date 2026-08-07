@@ -4,8 +4,8 @@ use crate::vex::ir::{IRCallee, IRRegArray};
 use rustc_hash::FxHashMap;
 
 /// The three binop families that parse to a concrete `IROp` but have no native
-/// dispatch arm (`VEXOps::binop` returns `OpError::NotBinary`): `Iop_Perm8x*`
-/// (=> `VPerm`), `Iop_Pclmul*`, and `Iop_Crc32C`. All deterministic — Python's
+/// dispatch arm (`VEXOps::binop` returns `OpError::NotBinary`):
+/// `Iop_Perm{8,32}x*` (=> `VPerm`), `Iop_Pclmul*`, and `Iop_Crc32C`. All deterministic — Python's
 /// VEX engine models them exactly — so `eval_binop` routes them to Python
 /// fallback rather than fabricating a wrong fresh symbolic. Keep this in lockstep
 /// with `opcode_map.rs` if a new must-fallback family is added.
@@ -507,7 +507,7 @@ impl<'a> VEXInterpreter<'a> {
             // path; stringified into the errored stash live).
             Err(e @ OpError::UnsupportedVexOp { .. }) => Err(CbExecutionError::Op(e)),
             // angr-s6miz: the three dispatch-fabricate families
-            // (Iop_Perm8x* => VPerm, Iop_Pclmul*, Iop_Crc32C) parse to a
+            // (Iop_Perm{8,32}x* => VPerm, Iop_Pclmul*, Iop_Crc32C) parse to a
             // concrete IROp but have no native dispatch arm, so `binop` returns
             // `NotBinary`. They are deterministic ops Python models exactly, so
             // route the block to Python's VEX engine rather than fabricating a

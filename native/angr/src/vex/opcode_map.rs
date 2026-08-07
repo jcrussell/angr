@@ -1102,8 +1102,34 @@ fn parse_neon_unimplemented(op_str: &str) -> Option<IROp> {
 /// Parse special and x86-specific operations
 fn parse_special(op_str: &str) -> Option<IROp> {
     match op_str {
-        // x86 PCLMUL
-        "Iop_Perm8x8" | "Iop_Perm8x16" | "Iop_Perm8x32" => Some(IROp::VPerm { elem: IRType::I8 }),
+        // Byte/word lane permute (PSHUFB on x86, VPERMD on AVX2, TBL/TBX on
+        // NEON). Not PCLMUL — that is the correctly-labeled block further
+        // down. angr-sqfj8.117: the arm previously listed a nonexistent
+        // `Iop_Perm8x32` (dead string) while the real `Iop_Perm32x4` /
+        // `Iop_Perm32x8` went unmapped; verified against the full
+        // `Iop_Perm*` set in `vendor/pyvex_ffi.h`.
+        //
+        // `Iop_Perm8x16x2` (the two-table AArch64 TBL form) is deliberately
+        // NOT mapped: it is a *triop*, and the whole `VPerm` family exists
+        // only to route to Python's VEX engine, whose `_op_generic_Perm`
+        // (`angr/engines/vex/claripy/irop.py`) is two-argument. Mapping it
+        // would move the failure, not fix it.
+        "Iop_Perm8x8" => Some(IROp::VPerm {
+            elem: IRType::I8,
+            count: 8,
+        }),
+        "Iop_Perm8x16" => Some(IROp::VPerm {
+            elem: IRType::I8,
+            count: 16,
+        }),
+        "Iop_Perm32x4" => Some(IROp::VPerm {
+            elem: IRType::I32,
+            count: 4,
+        }),
+        "Iop_Perm32x8" => Some(IROp::VPerm {
+            elem: IRType::I32,
+            count: 8,
+        }),
 
         // x86 CRC
         "Iop_Crc32C" => Some(IROp::Crc32C),

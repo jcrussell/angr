@@ -602,3 +602,27 @@ fn test_parse_transcendental() {
     // Iop_PRem*F64 is deliberately out of scope — still Unmapped.
     assert!(matches!(parse_opcode("Iop_PRemF64"), IROp::Unmapped(_)));
 }
+
+/// angr-sqfj8.117: the `VPerm` arm carried a dead `Iop_Perm8x32` string (no
+/// such opcode in `vendor/pyvex_ffi.h`) while the real `Iop_Perm32x4` /
+/// `Iop_Perm32x8` were unmapped. Also pins `result_type`, which used to be a
+/// hardcoded `V128` and was therefore wrong for the 64- and 256-bit members.
+#[test]
+fn test_parse_perm() {
+    let cases: &[(&str, IRType, u8, IRType)] = &[
+        ("Iop_Perm8x8", IRType::I8, 8, IRType::I64),
+        ("Iop_Perm8x16", IRType::I8, 16, IRType::V128),
+        ("Iop_Perm32x4", IRType::I32, 4, IRType::V128),
+        ("Iop_Perm32x8", IRType::I32, 8, IRType::V256),
+    ];
+    for &(op_str, elem, count, result) in cases {
+        let op = parse_opcode(op_str);
+        assert_eq!(op, IROp::VPerm { elem, count }, "{op_str}");
+        assert_eq!(op.result_type(), Some(result), "{op_str} result_type");
+    }
+    // Never existed in VEX — the dead string that motivated this bead.
+    assert!(matches!(parse_opcode("Iop_Perm8x32"), IROp::Unmapped(_)));
+    // Real, but deliberately unmapped: a triop whose two-table form Python's
+    // two-argument `_op_generic_Perm` cannot model either.
+    assert!(matches!(parse_opcode("Iop_Perm8x16x2"), IROp::Unmapped(_)));
+}
