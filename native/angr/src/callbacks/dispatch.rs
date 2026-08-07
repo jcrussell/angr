@@ -83,9 +83,7 @@ impl PythonCallbacks {
             let _gil = crate::gil_profile::GilWorkGuard::enter_site(
                 crate::gil_profile::CallbackSite::MemoryLoad,
             );
-            let cb = self.memory_load.as_ref().ok_or_else(|| {
-                pyo3::exceptions::PyRuntimeError::new_err("memory_load callback not set")
-            })?;
+            let cb = require_callback!(self.memory_load);
 
             let result = cb.call1(py, (addr, size))?;
             let tuple = result.cast_bound::<pyo3::types::PyTuple>(py)?;
@@ -99,9 +97,7 @@ impl PythonCallbacks {
             let _gil = crate::gil_profile::GilWorkGuard::enter_site(
                 crate::gil_profile::CallbackSite::MemoryStore,
             );
-            let cb = self.memory_store.as_ref().ok_or_else(|| {
-                pyo3::exceptions::PyRuntimeError::new_err("memory_store callback not set")
-            })?;
+            let cb = require_callback!(self.memory_store);
 
             let py_bytes = PyBytes::new(py, data);
             cb.call1(py, (addr, py_bytes))?;
@@ -207,30 +203,29 @@ impl PythonCallbacks {
                 crate::gil_profile::CallbackSite::MemoryStoreSymbolic,
             );
 
-            // Prefer the full symbolic callback whenever it is wired. It handles
-            // both symbolic and *concrete* data over a symbolic address range by
-            // handing the address AST + data to Python's memory model, which
-            // builds the correct conditional stores across every concretized
-            // candidate. Gating this on `data.is_symbolic()` (the old behavior)
-            // let concrete data fall through to the first-address-only fallback
-            // below, silently dropping stores to addrs[1..] — the angr-ph300.64
-            // divergent-memory bug for `table[x]=const` with 17+ concretizations.
-            if self.memory_store_symbolic_full.is_some() {
-                return self.call_memory_store_symbolic_full(addr_ast, data);
-            }
-
-            // Hard-error rather than silently storing only addrs[0] (module
-            // invariant 1, `avoid-silent-no-op-callback-fallbacks`). The older
-            // fallbacks below the `_full` dispatch above stored to addrs.first()
-            // and returned Ok(()), silently dropping addrs[1..] — the exact
-            // angr-ph300.64 divergent-memory bug class. `_full` is wired
-            // unconditionally by rust_manager.py::_setup_callbacks, so this is
-            // only reachable under Python/.so version skew (a stale .so predating
-            // the setter); surface that loudly instead of diverging memory.
+            // Unconditionally hand off to the full symbolic callback. It
+            // handles both symbolic and *concrete* data over a symbolic address
+            // range by giving the address AST + data to Python's memory model,
+            // which builds the correct conditional stores across every
+            // concretized candidate. Gating this on `data.is_symbolic()` (the
+            // old behavior) let concrete data fall through to a
+            // first-address-only fallback that silently dropped stores to
+            // addrs[1..] — the angr-ph300.64 divergent-memory bug for
+            // `table[x]=const` with 17+ concretizations.
+            //
+            // With `_full` unwired the callee hard-errors (module invariant 1,
+            // `avoid-silent-no-op-callback-fallbacks`) and that error is this
+            // method's answer too — deliberately, rather than re-deriving a
+            // duplicate "not set" message here. `_full` is wired
+            // unconditionally by rust_manager.py::_setup_callbacks, so the
+            // unset path is only reachable under Python/.so version skew (a
+            // stale .so predating the setter).
+            //
+            // `addrs` is the concretization the interpreter already computed;
+            // Python's memory model re-derives it from `addr_ast`, so it is
+            // accepted for call-site symmetry but not forwarded.
             let _ = addrs;
-            Err(pyo3::exceptions::PyRuntimeError::new_err(
-                "memory_store_symbolic_full callback not set",
-            ))
+            self.call_memory_store_symbolic_full(addr_ast, data)
         })
     }
 
@@ -250,9 +245,7 @@ impl PythonCallbacks {
             let _gil = crate::gil_profile::GilWorkGuard::enter_site(
                 crate::gil_profile::CallbackSite::LiftBlock,
             );
-            let cb = self.lift_block.as_ref().ok_or_else(|| {
-                pyo3::exceptions::PyRuntimeError::new_err("lift_block callback not set")
-            })?;
+            let cb = require_callback!(self.lift_block);
 
             let result = match (opt_level, dirty_bytes) {
                 (None, None) => cb.call1(py, (addr,))?,
@@ -284,9 +277,7 @@ impl PythonCallbacks {
             let _gil = crate::gil_profile::GilWorkGuard::enter_site(
                 crate::gil_profile::CallbackSite::DirtyCall,
             );
-            let cb = self.dirty_call.as_ref().ok_or_else(|| {
-                pyo3::exceptions::PyRuntimeError::new_err("dirty_call callback not set")
-            })?;
+            let cb = require_callback!(self.dirty_call);
 
             // `args` becomes a Python list via `IntoPyObject for &[T]` — no copy needed.
             let result = cb.call1(py, (name, args, ret_ty_bits))?;
@@ -347,9 +338,7 @@ impl PythonCallbacks {
             let _gil = crate::gil_profile::GilWorkGuard::enter_site(
                 crate::gil_profile::CallbackSite::FetchPage,
             );
-            let cb = self.fetch_page.as_ref().ok_or_else(|| {
-                pyo3::exceptions::PyRuntimeError::new_err("fetch_page callback not set")
-            })?;
+            let cb = require_callback!(self.fetch_page);
 
             let result = cb.call1(py, (page_addr,))?;
             let tuple = result.cast_bound::<pyo3::types::PyTuple>(py)?;
@@ -493,23 +482,19 @@ impl PythonCallbacks {
             );
             use crate::claripy_bridge::rustbv_to_claripy;
 
-            if let Some(cb) = &self.memory_store_symbolic_full {
-                let claripy_mod = py.import("claripy")?;
-                let addr_ast = rustbv_to_claripy(py, addr_val, &claripy_mod)?;
-                let data_ast = rustbv_to_claripy(py, data_val, &claripy_mod)?;
-                cb.call1(py, (addr_ast, data_ast))?;
-                return Ok(());
-            }
-
             // Hard-error rather than silently no-op (module invariant 1,
             // `avoid-silent-no-op-callback-fallbacks`): a silent Ok(()) here
             // would drop the store and diverge Rust↔Python memory. Every
             // production call site guards with has_memory_store_symbolic_full(),
             // so this is only reachable if a future unguarded caller (or a
             // teardown that nulls the callback) hits it — surface it loudly.
-            Err(pyo3::exceptions::PyRuntimeError::new_err(
-                "memory_store_symbolic_full callback not set",
-            ))
+            let cb = require_callback!(self.memory_store_symbolic_full);
+
+            let claripy_mod = py.import("claripy")?;
+            let addr_ast = rustbv_to_claripy(py, addr_val, &claripy_mod)?;
+            let data_ast = rustbv_to_claripy(py, data_val, &claripy_mod)?;
+            cb.call1(py, (addr_ast, data_ast))?;
+            Ok(())
         })
     }
 
@@ -542,14 +527,11 @@ impl PythonCallbacks {
             );
             use crate::claripy_bridge::rustbv_to_claripy;
 
-            if let Some(cb) = &self.memory_load_symbolic_full {
-                let claripy_mod = py.import("claripy")?;
-                let addr_ast = rustbv_to_claripy(py, addr_val, &claripy_mod)?;
-                return cb.call1(py, (addr_ast, size));
-            }
-            Err(pyo3::exceptions::PyRuntimeError::new_err(
-                "memory_load_symbolic_full callback not set",
-            ))
+            let cb = require_callback!(self.memory_load_symbolic_full);
+
+            let claripy_mod = py.import("claripy")?;
+            let addr_ast = rustbv_to_claripy(py, addr_val, &claripy_mod)?;
+            cb.call1(py, (addr_ast, size))
         })
     }
 
@@ -581,9 +563,7 @@ impl PythonCallbacks {
             let _gil = crate::gil_profile::GilWorkGuard::enter_site(
                 crate::gil_profile::CallbackSite::ResolveFunction,
             );
-            let cb = self.resolve_function.as_ref().ok_or_else(|| {
-                pyo3::exceptions::PyRuntimeError::new_err("resolve_function callback not set")
-            })?;
+            let cb = require_callback!(self.resolve_function);
 
             let result = cb.call1(py, (addr, symbol_name))?;
 

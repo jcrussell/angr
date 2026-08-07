@@ -14,15 +14,16 @@
 //! 1. **`avoid-silent-no-op-callback-fallbacks`** — every *dispatch*
 //!    `call_*` method on [`PythonCallbacks`] MUST hard-error when the hook
 //!    is `None`.
-//!    The exemplar is [`PythonCallbacks::call_lift_block`]: it `ok_or_else`'s
-//!    into `PyRuntimeError::new_err("lift_block callback not set")`, and
+//!    The exemplar is [`PythonCallbacks::call_lift_block`]: it binds its slot
+//!    with [`require_callback!`], which yields
+//!    `PyRuntimeError::new_err("lift_block callback not set")` when unset, and
 //!    `dispatch_tests::unset_dispatch_callbacks_hard_error` pins that shape
 //!    for the dispatch `call_*`s on the struct. Silent
 //!    `Ok(())` fallbacks (the removed `call_memory_store_symbolic_ast`)
 //!    mask wiring bugs by making the engine appear to run while stores
 //!    are silently dropped, which produces divergent Rust↔Python memory
-//!    that is painful to debug. When adding a new `call_*`, copy the
-//!    `ok_or_else` idiom — do NOT return `Ok(())` or default values when
+//!    that is painful to debug. When adding a new `call_*`, use
+//!    `require_callback!` — do NOT return `Ok(())` or default values when
 //!    the hook is unset.
 //!
 //!    **Exception: the `call_inspect_*` family** (18 methods in
@@ -110,6 +111,44 @@ mod inspect;
 
 pub(crate) use config::{DeferredFork, ExecutionConfig};
 pub(crate) use events::{RunErrorKind, RunResult};
+
+/// Bind a callback slot, or bail with the standard
+/// `"<slot> callback not set"` [`pyo3::exceptions::PyRuntimeError`].
+///
+/// This is the one spelling of module invariant 1
+/// (`avoid-silent-no-op-callback-fallbacks`) for a dispatch `call_*` whose
+/// only unset behavior is to hard-error:
+///
+/// ```ignore
+/// let cb = require_callback!(self.lift_block);
+/// ```
+///
+/// It expands to the `as_ref().ok_or_else(...)?` idiom the nine hard-erroring
+/// slots used to hand-write, and **derives the message from the field ident**,
+/// so a slot renamed without its error string — or a copy-pasted guard left
+/// naming the slot it was copied from — is no longer expressible. That drift
+/// class is what the macro buys; it does not (and cannot, while the fields
+/// stay reachable) force an unguarded call site to use it. The
+/// `is_ready` doc comment remains the register of which slots hard-error and
+/// which are `has_*`-guarded (angr-12jjk.19).
+///
+/// Not for the `call_inspect_*` family, whose unset arm is a documented
+/// no-op — see the exception under module invariant 1 — nor for a slot with
+/// a real degraded path (`call_memory_store_symbolic_value` falls back to a
+/// byte-level store for concrete data), which must spell out its own `if let
+/// Some` so the fallback is visible at the site.
+macro_rules! require_callback {
+    ($self:ident . $field:ident) => {
+        $self.$field.as_ref().ok_or_else(|| {
+            pyo3::exceptions::PyRuntimeError::new_err(concat!(
+                stringify!($field),
+                " callback not set"
+            ))
+        })?
+    };
+}
+
+pub(crate) use require_callback;
 
 /// Single source of truth for the set of `Option<Py<PyAny>>` callback slots
 /// on [`PythonCallbacks`].
