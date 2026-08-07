@@ -7,6 +7,7 @@ pub(crate) mod mutator;
 use std::num::NonZeroUsize;
 use std::time::Duration;
 
+use crate::errors::MapPyErr;
 use libafl::{
     NopInputFilter, StdFuzzer,
     events::SimpleEventManager,
@@ -130,7 +131,7 @@ impl Fuzzer {
             &mut feedback,
             &mut objective,
         )
-        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        .py_runtime_err()?;
 
         let fuzzer: StdFuzzer<
             QueueScheduler,
@@ -159,7 +160,7 @@ impl Fuzzer {
             // Some(0ms) and never read — angr-ph300.69.)
             timeout.map(Duration::from_millis),
         )
-        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        .py_runtime_err()?;
 
         Ok(Fuzzer {
             fuzzer_state,
@@ -192,7 +193,7 @@ impl Fuzzer {
             &mut SimpleEventManager::new(progress_callback.unwrap_or_default()),
         )
         .map(|corpus_id| corpus_id.0)
-        .map_err(|e| PyRuntimeError::new_err(e.to_string()))
+        .py_runtime_err()
     }
 
     #[pyo3(signature = (progress_callback = None, iterations = None))]
@@ -220,7 +221,7 @@ impl Fuzzer {
                 &mut SimpleEventManager::new(progress_callback.unwrap_or_default()),
             )
         }
-        .map_err(|e| PyRuntimeError::new_err(e.to_string()))
+        .py_runtime_err()
     }
 }
 

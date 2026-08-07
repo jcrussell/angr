@@ -5,12 +5,10 @@ use libafl::{
     corpus::{Corpus, CorpusId, InMemoryCorpus, OnDiskCorpus, Testcase},
     inputs::BytesInput,
 };
-use pyo3::{
-    exceptions::{PyRuntimeError, PyTypeError},
-    prelude::*,
-};
+use pyo3::{exceptions::PyRuntimeError, prelude::*};
 use serde::{Deserialize, Serialize};
 
+use crate::errors::MapPyErr;
 use crate::fuzzer::delegate::delegate_two_variant;
 
 // A Send+Sync wrapper of InMemoryCorpus for use in PyInMemoryCorpus.
@@ -62,8 +60,7 @@ impl TryFrom<&PyInMemoryCorpus> for InMemoryCorpus<BytesInput> {
     type Error = PyErr;
 
     fn try_from(value: &PyInMemoryCorpus) -> Result<Self, Self::Error> {
-        InMemoryCorpus::<BytesInput>::try_from(&value.inner)
-            .map_err(|e| PyRuntimeError::new_err(e.to_string()))
+        InMemoryCorpus::<BytesInput>::try_from(&value.inner).py_runtime_err()
     }
 }
 
@@ -71,8 +68,7 @@ impl TryFrom<&InMemoryCorpus<BytesInput>> for PyInMemoryCorpus {
     type Error = PyErr;
 
     fn try_from(value: &InMemoryCorpus<BytesInput>) -> Result<Self, Self::Error> {
-        let serialized = SerializedCorpus::try_from(value)
-            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        let serialized = SerializedCorpus::try_from(value).py_runtime_err()?;
         Ok(PyInMemoryCorpus { inner: serialized })
     }
 }
@@ -90,7 +86,7 @@ impl PyInMemoryCorpus {
         for item in list {
             corpus
                 .add(Testcase::new(BytesInput::from(item)))
-                .map_err(|e| PyTypeError::new_err(e.to_string()))?;
+                .py_type_err()?;
         }
         PyInMemoryCorpus::try_from(&corpus)
     }
@@ -112,9 +108,7 @@ impl PyInMemoryCorpus {
     fn __getitem__(&self, id: usize) -> PyResult<Vec<u8>> {
         let deserialized = InMemoryCorpus::<BytesInput>::try_from(self)?;
         let corpus_id = CorpusId::from(id);
-        let testcase_ref = deserialized
-            .get(corpus_id)
-            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        let testcase_ref = deserialized.get(corpus_id).py_runtime_err()?;
         let testcase = testcase_ref.borrow();
         match testcase.input().clone() {
             Some(input) => Ok(input.into_inner()),
@@ -127,12 +121,11 @@ impl PyInMemoryCorpus {
     }
 
     fn __getstate__(&self) -> PyResult<Vec<u8>> {
-        postcard::to_stdvec(&self.inner).map_err(|e| PyRuntimeError::new_err(e.to_string()))
+        postcard::to_stdvec(&self.inner).py_runtime_err()
     }
 
     fn __setstate__(&mut self, state: Vec<u8>) -> PyResult<()> {
-        self.inner =
-            postcard::from_bytes(&state).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        self.inner = postcard::from_bytes(&state).py_runtime_err()?;
         Ok(())
     }
 }
@@ -157,27 +150,19 @@ pub struct PyOnDiskCorpus {
 impl PyOnDiskCorpus {
     #[new]
     fn py_new(dir_path: String) -> PyResult<Self> {
-        let corpus =
-            OnDiskCorpus::new(&dir_path).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        let corpus = OnDiskCorpus::new(&dir_path).py_runtime_err()?;
         Ok(PyOnDiskCorpus { inner: corpus })
     }
 
     fn add(&mut self, input: Vec<u8>) -> PyResult<usize> {
         let testcase = Testcase::new(BytesInput::from(input));
-        let corpus_id = self
-            .inner
-            .add(testcase)
-            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        let corpus_id = self.inner.add(testcase).py_runtime_err()?;
         Ok(corpus_id.into())
     }
 
     fn __getitem__(&self, id: usize) -> PyResult<Vec<u8>> {
         let corpus_id = CorpusId::from(id);
-        let mut testcase = self
-            .inner
-            .get(corpus_id)
-            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
-            .borrow_mut();
+        let mut testcase = self.inner.get(corpus_id).py_runtime_err()?.borrow_mut();
         let input = testcase.input().clone().unwrap_or({
             testcase
                 .load_input(&self.inner)
@@ -214,12 +199,11 @@ impl PyOnDiskCorpus {
     }
 
     fn __getstate__(&self) -> PyResult<Vec<u8>> {
-        postcard::to_stdvec(&self.inner).map_err(|e| PyRuntimeError::new_err(e.to_string()))
+        postcard::to_stdvec(&self.inner).py_runtime_err()
     }
 
     fn __setstate__(&mut self, state: Vec<u8>) -> PyResult<()> {
-        self.inner =
-            postcard::from_bytes(&state).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        self.inner = postcard::from_bytes(&state).py_runtime_err()?;
         Ok(())
     }
 }
@@ -266,8 +250,8 @@ impl TryFrom<&PyInMemoryCorpus> for DynCorpus<BytesInput> {
     type Error = PyErr;
 
     fn try_from(value: &PyInMemoryCorpus) -> Result<Self, Self::Error> {
-        let inner: InMemoryCorpus<BytesInput> = InMemoryCorpus::<BytesInput>::try_from(value)
-            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        let inner: InMemoryCorpus<BytesInput> =
+            InMemoryCorpus::<BytesInput>::try_from(value).py_runtime_err()?;
         Ok(DynCorpus::InMem(inner))
     }
 }
@@ -285,8 +269,7 @@ impl DynCorpus<BytesInput> {
     pub(crate) fn to_py<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
         match self {
             DynCorpus::InMem(inner) => {
-                let py_inmem = PyInMemoryCorpus::try_from(inner)
-                    .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+                let py_inmem = PyInMemoryCorpus::try_from(inner).py_runtime_err()?;
                 let obj = Py::new(py, py_inmem)?; // Py<PyInMemoryCorpus>
                 Ok(obj.into_bound(py).into_any().unbind())
             }

@@ -22,6 +22,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use super::*;
+use crate::errors::MapPyErr;
 
 /// Convert one `(bv, is_true)` assumed-constraint pair to a claripy AST and
 /// push it into `results`, logging (rather than silently dropping) a failed
@@ -749,9 +750,7 @@ impl RustExplorationManager {
         // pattern in RustSimState::apply_changes, which shares this helper.
         self.with_state_mut(state_id, |state| {
             crate::symbolic::store_concrete_bytes_chunked(addr, data, |chunk_addr, bv| {
-                state
-                    .memory_store(chunk_addr, bv)
-                    .map_err(|e| PyValueError::new_err(e.to_string()))
+                state.memory_store(chunk_addr, bv).py_value_err()
             })
         })
     }
@@ -773,9 +772,7 @@ impl RustExplorationManager {
         self.with_state_mut(state_id, |state| {
             state.add_memory_lazy_region(addr, (data.len() as u64).max(1));
             crate::symbolic::store_concrete_bytes_chunked(addr, data, |chunk_addr, bv| {
-                state
-                    .memory_store(chunk_addr, bv)
-                    .map_err(|e| PyValueError::new_err(e.to_string()))
+                state.memory_store(chunk_addr, bv).py_value_err()
             })
         })
     }
@@ -799,9 +796,7 @@ impl RustExplorationManager {
                 claripy_to_rustbv(py, ast, ctx_ref)
                     .map_err(|e| PyValueError::new_err(format!("AST conversion failed: {e}")))?
             };
-            state
-                .memory_store(addr, bv)
-                .map_err(|e| PyValueError::new_err(e.to_string()))
+            state.memory_store(addr, bv).py_value_err()
         })
     }
 
@@ -833,9 +828,7 @@ impl RustExplorationManager {
             };
             let size = (bv.width() / 8) as u64;
             state.add_memory_lazy_region(addr, size.max(1));
-            state
-                .memory_store(addr, bv)
-                .map_err(|e| PyValueError::new_err(e.to_string()))
+            state.memory_store(addr, bv).py_value_err()
         })
     }
 

@@ -9,6 +9,7 @@
 //! cohesive group may be peeled into its own file + block the way
 //! `exploration/manager_methods_*.rs` does.
 use super::*;
+use crate::errors::MapPyErr;
 use crate::memory::Permission;
 use crate::symbolic::{
     RustBV, load_concrete_bytes_chunked, store_concrete_bytes_chunked, u128_to_le_bytes,
@@ -487,7 +488,7 @@ impl PyRustSimState {
             let bv = self
                 .inner
                 .memory_load(chunk_addr, chunk_size)
-                .map_err(|e| PyValueError::new_err(e.to_string()))?;
+                .py_value_err()?;
             let value = bv.as_u128().ok_or_else(|| {
                 PyValueError::new_err(format!(
                     "memory_load at 0x{chunk_addr:x} returned a symbolic value; cannot convert to concrete bytes",
@@ -507,9 +508,7 @@ impl PyRustSimState {
     /// `exploration` memory-set entry points (angr-9ke6b.230).
     pub fn memory_store(&mut self, addr: u64, data: &[u8]) -> PyResult<()> {
         store_concrete_bytes_chunked(addr, data, |chunk_addr, bv| {
-            self.inner
-                .memory_store(chunk_addr, bv)
-                .map_err(|e| PyValueError::new_err(e.to_string()))
+            self.inner.memory_store(chunk_addr, bv).py_value_err()
         })
     }
 
@@ -550,7 +549,7 @@ impl PyRustSimState {
         let loaded = self
             .inner
             .memory_load_symbolic(sym_addr, size)
-            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            .py_value_err()?;
         let lo = self
             .inner
             .min(&loaded, false)

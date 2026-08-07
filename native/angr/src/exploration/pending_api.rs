@@ -20,6 +20,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use super::*;
+use crate::errors::MapPyErr;
 use crate::vex::ir::JumpKind;
 
 impl RustExplorationManager {
@@ -314,10 +315,7 @@ impl RustExplorationManager {
     ) -> PyResult<Vec<u8>> {
         self.with_pending(state_id, |pending| {
             crate::symbolic::load_concrete_bytes_chunked(addr, size, |a, n| {
-                let bv = pending
-                    .state
-                    .memory_load(a, n)
-                    .map_err(|e| PyValueError::new_err(e.to_string()))?;
+                let bv = pending.state.memory_load(a, n).py_value_err()?;
 
                 let value = bv.as_u128().ok_or_else(|| {
                     PyValueError::new_err(format!(

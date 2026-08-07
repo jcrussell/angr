@@ -179,6 +179,44 @@ impl From<RustExecError> for PyErr {
     }
 }
 
+/// Collapse a `Result<T, E: Display>` into a `PyResult<T>` at the PyO3
+/// boundary (angr-12jjk.5).
+///
+/// This is the sanctioned shorthand for the sanctioned collapse point
+/// described in item 3 of the "Internal error-typing convention" module
+/// note above: internal code threads a typed domain error, and the
+/// `#[pymethods]` / `#[pyfunction]` entry point stringifies it into a
+/// `PyErr` exactly once. Before this trait every such site hand-wrote
+/// `.map_err(|e| PyValueError::new_err(e.to_string()))`, which made it
+/// hard to audit *which* exception kind a given failure mode maps to.
+///
+/// Only the "no extra context" form lives here. A site that wants to
+/// prefix the message (`format!("page load failed: {e}")`) keeps its
+/// explicit `map_err` — the prefix is the point, and hiding it behind a
+/// method would not shorten anything.
+pub(crate) trait MapPyErr<T> {
+    /// Map the error to `ValueError` — bad argument / unconvertible value.
+    fn py_value_err(self) -> PyResult<T>;
+    /// Map the error to `RuntimeError` — an operation failed at runtime.
+    fn py_runtime_err(self) -> PyResult<T>;
+    /// Map the error to `TypeError` — wrong Python type supplied.
+    fn py_type_err(self) -> PyResult<T>;
+}
+
+impl<T, E: std::fmt::Display> MapPyErr<T> for Result<T, E> {
+    fn py_value_err(self) -> PyResult<T> {
+        self.map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+    }
+
+    fn py_runtime_err(self) -> PyResult<T> {
+        self.map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
+    }
+
+    fn py_type_err(self) -> PyResult<T> {
+        self.map_err(|e| pyo3::exceptions::PyTypeError::new_err(e.to_string()))
+    }
+}
+
 #[cfg(test)]
 #[path = "errors_tests.rs"]
 mod tests;
