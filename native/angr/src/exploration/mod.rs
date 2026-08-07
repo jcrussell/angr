@@ -111,6 +111,26 @@ pub(crate) fn get_stepping_state_id() -> Option<u64> {
     STEPPING_STATE_ID.with(std::cell::Cell::get)
 }
 
+/// Bucket a schedulable-frontier width into the 5-slot width histogram:
+/// `[==1, ==2, 3–4, 5–8, ≥9]`.
+///
+/// Two paths fill a width histogram — the serial model
+/// (`RustExplorationManager::record_migration_sample` in helpers.rs →
+/// `parallel_width_hist`) and the real scheduler
+/// (`SchedulerCounters::record_dispatch` in scheduler_stats.rs →
+/// `width_hist`) — and both sets of doc comments promise the two are directly
+/// comparable. That promise only holds if they bucket identically, so the
+/// bucketing lives here once rather than being copy-pasted into each.
+pub(crate) fn width_bucket(width: u64) -> usize {
+    match width {
+        0 | 1 => 0,
+        2 => 1,
+        3..=4 => 2,
+        5..=8 => 3,
+        _ => 4,
+    }
+}
+
 pub(crate) use self::callback_types::CallbackReason;
 pub(crate) use self::callback_types::PendingCallback;
 pub(crate) use self::callback_types::apply_deferred_fork_constraints;

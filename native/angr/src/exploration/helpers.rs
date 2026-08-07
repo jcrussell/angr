@@ -170,16 +170,8 @@ impl RustExplorationManager {
         }
         // angr-panhl.3: step-weighted width histogram. Bucket BEFORE the
         // <2-width / single-worker early return so width-1 steps (the common
-        // narrow-path case the audit must distinguish) are counted. Buckets:
-        // [==1, ==2, 3–4, 5–8, ≥9].
-        let bucket = match width {
-            0 | 1 => 0,
-            2 => 1,
-            3..=4 => 2,
-            5..=8 => 3,
-            _ => 4,
-        };
-        self.parallel_width_hist[bucket] += 1;
+        // narrow-path case the audit must distinguish) are counted.
+        self.parallel_width_hist[width_bucket(width)] += 1;
         // <2 schedulable states (or single worker): no cross-boundary steal.
         if active_ids.len() < 2 || m < 2 {
             return;

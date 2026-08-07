@@ -124,8 +124,9 @@ impl SchedulerCounters {
     /// (queued + in-flight, including the state being dispatched). Two relaxed
     /// bumps plus a max-CAS: cheap enough for the dispatch hot path.
     ///
-    /// Buckets match the serial model's `record_migration_sample` (helpers.rs)
-    /// so the two width histograms are directly comparable.
+    /// Buckets come from the shared `exploration::width_bucket`, the same fn the
+    /// serial model's `record_migration_sample` (helpers.rs) uses, so the two
+    /// width histograms cannot drift out of comparability.
     pub(crate) fn record_dispatch(&self, worker_id: usize, width: usize) {
         if worker_id >= MAX_TRACKED_WORKERS {
             // SILENT(cat-b): the per-worker column loses its tail resolution here,
@@ -146,14 +147,8 @@ impl SchedulerCounters {
         }
         self.worker_dispatches[worker_id.min(MAX_TRACKED_WORKERS - 1)]
             .fetch_add(1, Ordering::Relaxed);
-        let bucket = match width {
-            0 | 1 => 0,
-            2 => 1,
-            3..=4 => 2,
-            5..=8 => 3,
-            _ => 4,
-        };
-        self.width_hist[bucket].fetch_add(1, Ordering::Relaxed);
+        self.width_hist[crate::exploration::width_bucket(width as u64)]
+            .fetch_add(1, Ordering::Relaxed);
         self.max_width.fetch_max(width, Ordering::Relaxed);
     }
 
