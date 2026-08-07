@@ -127,9 +127,16 @@ fn test_extract_no_ctx_canonicalizes_like_extract_into() {
     let wide = RustBV::symbolic(&ctx, "w", 32);
     let folded = wide.extract_no_ctx(23, 8).extract_no_ctx(7, 0);
     assert_eq!(bv_shape(&folded), bv_shape(&wide.extract(15, 8, &ctx)));
+    // Debug for a leaf symbol carries its allocated id (angr-sqfj8.99), which
+    // is drawn from a process-global counter — build the expectation from the
+    // actual id rather than hardcoding one.
+    let wide_id = match &wide {
+        RustBV::Symbolic { id, .. } => *id,
+        other => panic!("expected a leaf symbol, got {other:?}"),
+    };
     assert_eq!(
         bv_shape(&folded),
-        "Expr(Extract(15, 8), 8, [Symbolic(w, 32)])"
+        format!("Expr(Extract(15, 8), 8, [Symbolic(#{wide_id}, w, 32)])")
     );
 
     // Rule 4: Extract above a ZeroExt's original width is the zero constant.
@@ -1988,4 +1995,39 @@ fn test_partial_eq_classes_are_disjoint_and_identity_based() {
         assert_ne!(a, b, "{a:?} and {b:?} are in different equality classes");
         assert_ne!(b, a, "{b:?} and {a:?} are in different equality classes");
     }
+}
+
+/// `id` is the identity key for the two leaf variants (`query_class` matches on
+/// it, and it is what the claripy registry keys off), so `Debug` must surface
+/// it — otherwise two distinct symbols that share a name/value + width print
+/// identically in logs and assertion failures (angr-sqfj8.99).
+#[test]
+fn test_debug_includes_symbol_id_for_leaf_variants() {
+    let a = RustBV::symbolic_with_id(11, "alpha", 32);
+    let b = RustBV::symbolic_with_id(12, "alpha", 32);
+    let da = format!("{a:?}");
+    let db = format!("{b:?}");
+    assert_eq!(da, "Symbolic(#11, alpha, 32)");
+    assert_ne!(da, db, "distinct symbol ids must print differently");
+
+    let c = RustBV::Constrained {
+        id: 7,
+        value: 0x2a,
+        width: 32,
+    };
+    let d = RustBV::Constrained {
+        id: 8,
+        value: 0x2a,
+        width: 32,
+    };
+    assert_eq!(format!("{c:?}"), "Constrained(#7, 0x2a, 32)");
+    assert_ne!(
+        format!("{c:?}"),
+        format!("{d:?}"),
+        "distinct constrained ids must print differently"
+    );
+
+    // Display is the user-facing `<BVn ...>` rendering and deliberately stays
+    // id-free; only Debug carries identity.
+    assert_eq!(a.to_string(), b.to_string());
 }

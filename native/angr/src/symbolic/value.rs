@@ -763,11 +763,17 @@ impl fmt::Debug for RustBV {
             RustBV::Concrete { value, width } => {
                 write!(f, "Concrete(0x{value:x}, {width})")
             }
-            RustBV::Symbolic { width, name, .. } => {
-                write!(f, "Symbolic({name}, {width})")
+            // `id` is the actual identity key for these two leaf variants —
+            // `query_class` matches on it, memory ITE-building and the claripy
+            // registry key off it — so Debug must print it or two values that
+            // differ only by id read as identical in logs (angr-sqfj8.99).
+            RustBV::Symbolic {
+                id, width, name, ..
+            } => {
+                write!(f, "Symbolic(#{id}, {name}, {width})")
             }
-            RustBV::Constrained { value, width, .. } => {
-                write!(f, "Constrained(0x{value:x}, {width})")
+            RustBV::Constrained { id, value, width } => {
+                write!(f, "Constrained(#{id}, 0x{value:x}, {width})")
             }
             RustBV::Expression {
                 width,
