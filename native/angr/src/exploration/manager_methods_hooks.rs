@@ -33,15 +33,22 @@ impl RustExplorationManager {
         }
     }
 
-    /// Clear all hooks.
+    /// Clear all hooks, including every registered SimProcedure.
     ///
     /// Guarded like its sibling mutators (`add_hook`/`add_hooks`) — `hooks` is
     /// snapshotted into each worker's `StepContext`, so clearing it mid-run
     /// must finalize first or a worker keeps dispatching to an already-cleared
     /// hook.
+    ///
+    /// Clears `simprocedures` too, upholding the same both-maps invariant
+    /// `unregister_simprocedures` does (angr-sqfj8.30): the run loop reads
+    /// `simprocedures.get(&pc)` *inside* the `hooks.contains(&pc)` gate, so a
+    /// stale entry surviving a clear would resurrect as a SimProcedure call
+    /// the moment the same address was re-hooked via a plain `add_hook`.
     #[angr_macros::steady_guarded]
     pub fn clear_hooks(&mut self) {
         self.hooks.clear();
+        self.simprocedures.clear();
     }
 
     /// Register a SimProcedure.
@@ -119,3 +126,12 @@ impl RustExplorationManager {
         self.environment.prefer_native_library_hooks = enabled;
     }
 }
+
+#[cfg(test)]
+#[path = "manager_methods_hooks_tests.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable"
+)]
+mod tests;
