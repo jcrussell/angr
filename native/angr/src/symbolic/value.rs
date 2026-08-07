@@ -806,11 +806,69 @@ impl fmt::Display for RustBV {
     }
 }
 
+/// Equality is **value-based where a value is known, identity-based otherwise**
+/// (angr-sqfj8.96).
+///
+/// The relation partitions `RustBV` into three classes that never compare
+/// equal across the class boundary:
+///
+/// 1. **Known-value** (`Concrete`, and `Constrained` — which carries a pinned
+///    concrete `value`): equal iff same `as_u128()` and same width. A
+///    `Constrained` therefore equals the `Concrete` holding its value, which
+///    is the point — the two are interchangeable results of the same
+///    computation.
+/// 2. **Leaf symbols** (`Symbolic`): equal iff same allocated `id` (from
+///    [`crate::symbolic::SymbolicIdentityRegistry`]) and width. `name` is
+///    debug-only and ids are unique, so id equality is the identity test.
+/// 3. **Compound expressions** (`Expression`): equal iff same `op`, same
+///    width, and *pointer-identical* operand slices. The `id` field is the
+///    `EXPRESSION_ID` sentinel for every `Expression` (see its doc), so it
+///    carries no identity; `Arc::ptr_eq` is what survives a `clone` (which
+///    only bumps the refcount). Deliberately **not** a deep structural walk:
+///    `==` sits on hot paths and expression trees are unbounded in depth, so
+///    two independently-built but structurally identical trees compare
+///    unequal. Treat `Expression` equality as "same node", not "same value".
+///    The `memo` Z3 cache is excluded (pure deterministic-function cache).
+///
+/// Each class uses a genuine equivalence relation and the classes are
+/// disjoint, so the whole relation is reflexive, symmetric and transitive —
+/// `x == x` holds for every variant. It used to short-circuit to `false`
+/// whenever either side lacked an `as_u128()`, which broke reflexivity for
+/// `Symbolic`/`Expression` and made `==` a trap for dedup/`contains` callers.
+///
+/// There is intentionally no `Eq`/`Hash`: two `RustBV`s that compare equal
+/// (a `Concrete` and the matching `Constrained`) have no shared cheap hash,
+/// and `Expression`'s pointer identity would hash differently after a
+/// serde round-trip.
 impl PartialEq for RustBV {
     fn eq(&self, other: &Self) -> bool {
-        match (self.as_u128(), other.as_u128()) {
-            (Some(a), Some(b)) => a == b && self.width() == other.width(),
-            _ => false,
+        match (self, other) {
+            (
+                RustBV::Symbolic {
+                    id: a, width: wa, ..
+                },
+                RustBV::Symbolic {
+                    id: b, width: wb, ..
+                },
+            ) => a == b && wa == wb,
+            (
+                RustBV::Expression {
+                    width: wa,
+                    op: opa,
+                    operands: oa,
+                    ..
+                },
+                RustBV::Expression {
+                    width: wb,
+                    op: opb,
+                    operands: ob,
+                    ..
+                },
+            ) => wa == wb && opa == opb && Arc::ptr_eq(oa, ob),
+            _ => match (self.as_u128(), other.as_u128()) {
+                (Some(a), Some(b)) => a == b && self.width() == other.width(),
+                _ => false,
+            },
         }
     }
 }
