@@ -304,6 +304,57 @@ impl RegisterFile {
         self.arch.as_ref()
     }
 
+    /// Compose the byte range `[offset, offset + size)` out of this file's
+    /// symbolic overlays and its concrete backing bytes.
+    ///
+    /// Walks the range low-to-high: an overlay starting at a position
+    /// contributes its bytes (truncated to what still fits in the range), and
+    /// every position no overlay starts at contributes its concrete byte.
+    /// Little-endian, so the lowest offset is the LSB of the result.
+    ///
+    /// Shared by both of [`Self::get`]'s composition paths so that a read wider
+    /// than the overlay at its own offset sees *all* the overlays inside the
+    /// range, not just one that happens to fill the remainder exactly
+    /// (angr-49v03).
+    fn compose_range(&self, offset: u32, size: u32, ctx: &crate::symbolic::SymContext) -> RustBV {
+        let end = offset + size;
+        let mut parts: Vec<RustBV> = Vec::new();
+        let mut pos = offset;
+        while pos < end {
+            if let Some(sub_sym) = self.symbolic.get(&pos) {
+                let sub_size = sub_sym.width() / 8;
+                if sub_size > 0 {
+                    if pos + sub_size <= end {
+                        parts.push(sub_sym.clone());
+                        pos += sub_size;
+                        continue;
+                    }
+                    // Overlay runs past the end of the read — take the low bytes
+                    // that do fit rather than falling back to stale concrete.
+                    parts.push(sub_sym.extract((end - pos) * 8 - 1, 0, ctx));
+                    break;
+                }
+            }
+            // Concrete byte
+            let idx = pos as usize;
+            if idx < self.data.len() {
+                parts.push(RustBV::concrete(self.data[idx] as u128, 8));
+            } else {
+                parts.push(RustBV::zero(8));
+            }
+            pos += 1;
+        }
+        // Compose parts: in little-endian, lower offset = LSB. Concat builds
+        // MSB first, so we consume the vector back-to-front.
+        let Some(mut result) = parts.pop() else {
+            return RustBV::zero(size * 8);
+        };
+        while let Some(part) = parts.pop() {
+            result = result.concat(&part, ctx);
+        }
+        result
+    }
+
     /// Read a register value by offset and size.
     pub(crate) fn get(&self, offset: u32, size: u32, ctx: &crate::symbolic::SymContext) -> RustBV {
         // Check for symbolic value at this exact offset
@@ -317,42 +368,13 @@ impl RegisterFile {
             }
             // Wider read of narrower symbolic: e.g., reading ecx (32-bit) when
             // cx (16-bit) was written symbolically. Compose the symbolic low part
-            // with the concrete high bytes from the data array.
+            // with whatever covers the remaining bytes — which may be several
+            // narrower overlays, not just one that exactly fills the remainder
+            // (angr-49v03), falling back to the concrete backing bytes.
             if sym.width() < size * 8 {
-                let sym_bytes = sym.width() / 8;
-                let remaining_offset = offset + sym_bytes;
-                let remaining_bytes = size - sym_bytes;
-                let remaining_start = remaining_offset as usize;
-                let remaining_end = remaining_start + remaining_bytes as usize;
-
-                if remaining_end <= self.data.len() {
-                    // Check if the upper portion also has a symbolic value
-                    let upper = if let Some(upper_sym) = self.symbolic.get(&remaining_offset) {
-                        if upper_sym.width() == remaining_bytes * 8 {
-                            upper_sym.clone()
-                        } else {
-                            // Read concrete upper bytes
-                            let mut v: u128 = 0;
-                            for (i, &byte) in
-                                self.data[remaining_start..remaining_end].iter().enumerate()
-                            {
-                                v |= (byte as u128) << (i * 8);
-                            }
-                            RustBV::concrete(v, remaining_bytes * 8)
-                        }
-                    } else {
-                        // Read concrete upper bytes
-                        let mut v: u128 = 0;
-                        for (i, &byte) in
-                            self.data[remaining_start..remaining_end].iter().enumerate()
-                        {
-                            v |= (byte as u128) << (i * 8);
-                        }
-                        RustBV::concrete(v, remaining_bytes * 8)
-                    };
-
-                    // Compose: upper (MSB) concat sym (LSB) — little-endian layout
-                    return upper.concat(sym, ctx);
+                let end = offset as usize + size as usize;
+                if end <= self.data.len() {
+                    return self.compose_range(offset, size, ctx);
                 }
             }
         }
@@ -376,35 +398,7 @@ impl RegisterFile {
             let sym_size = sym_val.width() / 8;
             if sym_offset >= offset && sym_offset + sym_size <= offset + size {
                 // This symbolic sub-register is contained within our read range
-                // Build the result by composing symbolic and concrete parts
-                let mut parts: Vec<RustBV> = Vec::new();
-                let mut pos = offset;
-                while pos < offset + size {
-                    if let Some(sub_sym) = self.symbolic.get(&pos) {
-                        let sub_size = sub_sym.width() / 8;
-                        if pos + sub_size <= offset + size {
-                            parts.push(sub_sym.clone());
-                            pos += sub_size;
-                            continue;
-                        }
-                    }
-                    // Concrete byte
-                    let idx = pos as usize;
-                    if idx < self.data.len() {
-                        parts.push(RustBV::concrete(self.data[idx] as u128, 8));
-                    } else {
-                        parts.push(RustBV::zero(8));
-                    }
-                    pos += 1;
-                }
-                // Compose parts: in little-endian, lower offset = LSB
-                // Concat builds MSB first, so we reverse
-                if let Some(mut result) = parts.pop() {
-                    while let Some(part) = parts.pop() {
-                        result = result.concat(&part, ctx);
-                    }
-                    return result;
-                }
+                return self.compose_range(offset, size, ctx);
             }
         }
 
@@ -764,31 +758,25 @@ impl RegisterFile {
                     }
                 }
                 (Some(sv), None) => {
-                    // self is symbolic, other is concrete — read other's concrete
+                    // self is symbolic, other has no overlay at this exact
+                    // offset — read other through `get`, not raw concrete bytes:
+                    // a *wider* overlay of other's may still cover this span
+                    // (e.g. self wrote `ah`, other wrote all of `rax`), and
+                    // reading the backing array would silently substitute stale
+                    // concrete for it (angr-49v03).
                     let size = sv.width() / 8;
-                    let start = offset as usize;
-                    let end = start + size as usize;
-                    if end <= other.data.len() {
-                        let mut v: u128 = 0;
-                        for (i, &byte) in other.data[start..end].iter().enumerate() {
-                            v |= (byte as u128) << (i * 8);
-                        }
-                        let other_concrete = RustBV::concrete(v, sv.width());
-                        updates.push((offset, merge_cond_other.ite(&other_concrete, sv, ctx)));
+                    if size > 0 && offset as usize + size as usize <= other.data.len() {
+                        let other_full = other.get(offset, size, ctx);
+                        updates.push((offset, merge_cond_other.ite(&other_full, sv, ctx)));
                     }
                 }
                 (None, Some(ov)) => {
-                    // self is concrete, other is symbolic — read self's concrete
+                    // self has no overlay at this exact offset, other is
+                    // symbolic — same reasoning as above, mirrored.
                     let size = ov.width() / 8;
-                    let start = offset as usize;
-                    let end = start + size as usize;
-                    if end <= self.data.len() {
-                        let mut v: u128 = 0;
-                        for (i, &byte) in self.data[start..end].iter().enumerate() {
-                            v |= (byte as u128) << (i * 8);
-                        }
-                        let self_concrete = RustBV::concrete(v, ov.width());
-                        updates.push((offset, merge_cond_other.ite(ov, &self_concrete, ctx)));
+                    if size > 0 && offset as usize + size as usize <= self.data.len() {
+                        let self_full = self.get(offset, size, ctx);
+                        updates.push((offset, merge_cond_other.ite(ov, &self_full, ctx)));
                     }
                 }
                 (None, None) => {
@@ -801,6 +789,11 @@ impl RegisterFile {
             self.symbolic.insert(offset, val);
             merged = true;
         }
+        // Drop overlays strictly inside a widened span. This subsumes rather
+        // than loses them: both sides of the wide ITE were built with `get`,
+        // which composes every overlay inside the span (angr-49v03), so an
+        // inner offset merged earlier in this same loop is already represented
+        // in the wide value at `offset`.
         for (offset, size) in widened {
             self.symbolic
                 .retain(|&k, _| !(k > offset && k < offset + size));

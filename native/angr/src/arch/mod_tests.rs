@@ -862,6 +862,107 @@ fn merge_width_mismatch_ite_merges_both_paths() {
     );
 }
 
+/// Regression for angr-49v03: the widening merge must not drop an *adjacent*
+/// overlay of `self`'s. `self` holds two independent byte overlays — `al` at
+/// `rax_off` and `ah` at `rax_off + 1` — while `other` holds a full 64-bit
+/// `rax`. `rax_off` takes the width-mismatch arm and records a widened span of
+/// 8 bytes; the cleanup that follows then deletes every overlay strictly inside
+/// that span, including the `ah` entry the same merge call had just written.
+/// That is only sound if the wide value genuinely subsumes `ah`, which it did
+/// not: `get`'s composition path used to substitute a neighbouring overlay only
+/// when it exactly filled the remaining width, so `ah` (1 of the remaining 7
+/// bytes) was silently replaced by stale concrete on both paths.
+#[test]
+fn merge_widen_keeps_adjacent_symbolic_overlay() {
+    let ctx = SymContext::new_mock();
+    let rax_off = AMD64.register_offset("rax").unwrap();
+
+    let mut a = RegisterFile::new(Box::new(AMD64));
+    a.put(rax_off, RustBV::symbolic(&ctx, "al", 8));
+    a.put(rax_off + 1, RustBV::symbolic(&ctx, "ah", 8));
+    let mut b = RegisterFile::new(Box::new(AMD64));
+    b.put(rax_off, RustBV::symbolic(&ctx, "rax", 64));
+
+    let cond = RustBV::symbolic(&ctx, "merge_cond", 1);
+    assert!(a.merge(&b, &cond, &ctx));
+
+    let collect_names = |bv: &RustBV| {
+        let mut names: Vec<String> = Vec::new();
+        let mut stack = vec![bv.clone()];
+        while let Some(node) = stack.pop() {
+            if let RustBV::Symbolic { name, .. } = &node {
+                names.push(name.to_string());
+            }
+            if let Some(ops) = node.operands() {
+                stack.extend(ops.iter().cloned());
+            }
+        }
+        names
+    };
+
+    let wide = a.get(rax_off, 8, &ctx);
+    assert_eq!(wide.width(), 64);
+    let names = collect_names(&wide);
+    for expected in ["al", "ah", "rax"] {
+        assert!(
+            names.iter().any(|n| n == expected),
+            "merged rax lost `{expected}`: {names:?}"
+        );
+    }
+
+    // Reading `ah` back must still see the symbolic byte, whether it survives as
+    // its own overlay or as a slice of the widened one.
+    let ah_back = a.get(rax_off + 1, 1, &ctx);
+    assert_eq!(ah_back.width(), 8);
+    let ah_names = collect_names(&ah_back);
+    assert!(
+        ah_names.iter().any(|n| n == "ah"),
+        "reading ah after the merge returned a stale value: {ah_names:?}"
+    );
+}
+
+/// Solver twin of `merge_widen_keeps_adjacent_symbolic_overlay`: the `cond == 0`
+/// leg of the widened ITE must reproduce *both* of `self`'s byte overlays in
+/// their own bit positions, zero-extended over its concrete high bytes.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn merge_widen_adjacent_overlay_selects_both_bytes_under_solver() {
+    let ctx = SymContext::new();
+    let rax_off = AMD64.register_offset("rax").unwrap();
+
+    let al = RustBV::symbolic(&ctx, "al", 8);
+    let ah = RustBV::symbolic(&ctx, "ah", 8);
+    let rax = RustBV::symbolic(&ctx, "rax", 64);
+
+    let mut a = RegisterFile::new(Box::new(AMD64));
+    a.put(rax_off, al.clone());
+    a.put(rax_off + 1, ah.clone());
+    let mut b = RegisterFile::new(Box::new(AMD64));
+    b.put(rax_off, rax.clone());
+
+    let cond = RustBV::symbolic(&ctx, "merge_cond", 1);
+    assert!(a.merge(&b, &cond, &ctx));
+    let got = a.get(rax_off, 8, &ctx).to_z3_ast();
+
+    // cond == 1 selects other's whole 64-bit rax.
+    ctx.push();
+    ctx.add_constraint(cond.to_z3_ast().eq(z3::ast::BV::from_u64(1, 1)));
+    ctx.add_constraint(got.eq(rax.to_z3_ast()).not());
+    assert!(!ctx.is_sat(), "cond=1 must select other's `rax`");
+    ctx.pop();
+
+    // cond == 0 selects self's two bytes over its own (zero) high bytes.
+    let expected = ah.to_z3_ast().concat(al.to_z3_ast()).zero_ext(48);
+    ctx.push();
+    ctx.add_constraint(cond.to_z3_ast().eq(z3::ast::BV::from_u64(0, 1)));
+    ctx.add_constraint(got.eq(expected).not());
+    assert!(
+        !ctx.is_sat(),
+        "cond=0 must select both of self's byte overlays"
+    );
+    ctx.pop();
+}
+
 /// Semantic twin of `merge_width_mismatch_ite_merges_both_paths`: prove with
 /// the solver that the widened ITE selects each path's value under the
 /// matching merge condition. `self`'s 32-bit value composes with its own
