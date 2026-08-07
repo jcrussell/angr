@@ -19,15 +19,41 @@ pub struct Segment {
     sort: Option<String>,
 }
 
+impl Segment {
+    /// Infallible constructor for a range that already comes from the backing
+    /// `RangeMap`, where `start <= end` is a structural guarantee. Python-facing
+    /// construction goes through `Segment::new`, which validates.
+    fn from_range(start: u64, end: u64, sort: Option<String>) -> Self {
+        Segment { start, end, sort }
+    }
+}
+
 #[allow(
     unreachable_pub,
     reason = "pyo3 `#[pymethods]`/`#[pyclass]` surface: these items are reached from Python, not from Rust. See the `unreachable_pub` note in lib.rs (angr-9ke6b.50)."
 )]
 #[pymethods]
 impl Segment {
+    /// Builds a segment from an explicit `[start, end)` pair.
+    ///
+    /// This is the `#[new]` constructor, so Python can call it with arbitrary
+    /// arguments — including `end < start`, which would make `size()` wrap to a
+    /// huge `u64` because the crate builds with `overflow-checks` off in
+    /// release. Reject that here so `size()` needs no guard of its own, in the
+    /// same spirit as the wrap-around guards in `SegmentList::occupy` /
+    /// `SegmentList::release` (angr-sqfj8.134).
+    ///
+    /// # Errors
+    ///
+    /// Returns `ValueError` when `start > end`.
     #[new]
-    pub fn new(start: u64, end: u64, sort: Option<String>) -> Self {
-        Segment { start, end, sort }
+    pub fn new(start: u64, end: u64, sort: Option<String>) -> PyResult<Self> {
+        if start > end {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "Segment start {start:#x} must not exceed end {end:#x}"
+            )));
+        }
+        Ok(Segment::from_range(start, end, sort))
     }
 
     pub fn __getnewargs__(&self) -> (u64, u64, Option<String>) {
@@ -38,6 +64,8 @@ impl Segment {
         self.clone()
     }
 
+    /// Cannot wrap: the fields are read-only from Python and every constructor
+    /// (`Segment::new`, `Segment::from_range`) establishes `start <= end`.
     #[getter]
     pub fn size(&self) -> u64 {
         self.end - self.start
@@ -120,7 +148,7 @@ impl SegmentList {
         self.map
             .iter()
             .nth(idx)
-            .map(|(r, sort)| Segment::new(r.start, r.end, sort.clone()))
+            .map(|(r, sort)| Segment::from_range(r.start, r.end, sort.clone()))
             .ok_or_else(|| {
                 PyErr::new::<pyo3::exceptions::PyIndexError, _>(format!("Index {idx} out of range"))
             })
@@ -331,7 +359,7 @@ impl SegmentListIter {
     fn __next__(&mut self) -> PyResult<Segment> {
         match self.segments.get(self.idx) {
             Some((start, end, sort)) => {
-                let segment = Segment::new(*start, *end, sort.clone());
+                let segment = Segment::from_range(*start, *end, sort.clone());
                 self.idx += 1;
                 Ok(segment)
             }

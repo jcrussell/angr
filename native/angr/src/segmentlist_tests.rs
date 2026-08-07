@@ -1,7 +1,7 @@
 // Unit tests for segmentlist.rs (SegmentList / SegmentListIter).
 // Extracted from the inline `mod tests` block; see rust-mod-tests-sibling-extraction.
 
-use super::{SegmentList, SegmentListIter};
+use super::{Segment, SegmentList, SegmentListIter};
 
 /// Drains an iterator without a Python interpreter: `__next__` hands back
 /// `Segment` pyobjects, which these tests have no GIL to build.
@@ -190,4 +190,21 @@ fn release_at_top_of_address_space() {
     sl.release(u64::MAX - 16, 16);
     assert_eq!(sl.occupied_size(), 0);
     assert!(sl.is_empty());
+}
+
+// `Segment::size()` subtracts without a guard and the release profile has
+// `overflow-checks` off, so an inverted `[start, end)` pair must be rejected at
+// construction rather than wrapping to a near-u64::MAX size (angr-sqfj8.134).
+#[test]
+fn segment_new_rejects_inverted_range() {
+    assert!(Segment::new(0x2000, 0x1000, None).is_err());
+    assert!(Segment::new(u64::MAX, 0, Some("code".into())).is_err());
+}
+
+#[test]
+fn segment_new_accepts_empty_and_forward_ranges() {
+    let empty = Segment::new(0x1000, 0x1000, None).expect("start == end is valid");
+    assert_eq!(empty.size(), 0);
+    let forward = Segment::new(0x1000, 0x1100, Some("code".into())).expect("start < end is valid");
+    assert_eq!(forward.size(), 0x100);
 }
