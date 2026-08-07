@@ -481,11 +481,17 @@ fn parse_float(op_str: &str) -> Option<IROp> {
     vec_arms!(op_str; "Iop_Min"  => VFMin  { "32Fx2" => (F32, 2), "32Fx4" => (F32, 4), "64Fx2" => (F64, 2), "32Fx8" => (F32, 8), "64Fx4" => (F64, 4) });
     vec_arms!(op_str; "Iop_Max"  => VFMax  { "32Fx2" => (F32, 2), "32Fx4" => (F32, 4), "64Fx2" => (F64, 2), "32Fx8" => (F32, 8), "64Fx4" => (F64, 4) });
 
-    // NEON pairwise FP add — `Iop_PwAdd32Fx2` (ARM VPADD.F32, D-reg). The only
-    // FP variant of the `Pw*` family; the integer `Iop_PwAdd{N}x{M}` are routed
-    // in parse_vector to VPwAdd. VEX emits only the 32Fx2 shape. Matched here
-    // (parse_float runs before parse_neon_unimplemented in parse_opcode).
+    // NEON pairwise FP add/max/min — `Iop_PwAdd32Fx2` (ARM VPADD.F32, D-reg),
+    // `Iop_PwMax32Fx{2,4}` / `Iop_PwMin32Fx{2,4}` (VPMAX.F32 / VPMIN.F32,
+    // AArch64 FMAXP / FMINP). These are the FP variants of the `Pw*` family;
+    // the integer `Iop_Pw{Add,Min,Max}{N}{S/U}x{M}` are routed in parse_vector
+    // to VPwAdd / VPwMin / VPwMax and never reach these arms (the `F` in the
+    // suffix makes the two sets disjoint). Matched here because parse_float
+    // runs before both parse_vector and parse_neon_unimplemented in
+    // parse_opcode. VEX declares no `Iop_PwAdd32Fx4`, hence the single add arm.
     vec_arms!(op_str; "Iop_PwAdd" => VFPwAdd { "32Fx2" => (F32, 2) });
+    vec_arms!(op_str; "Iop_PwMax" => VFPwMax { "32Fx2" => (F32, 2), "32Fx4" => (F32, 4) });
+    vec_arms!(op_str; "Iop_PwMin" => VFPwMin { "32Fx2" => (F32, 2), "32Fx4" => (F32, 4) });
 
     // FP reciprocal estimate (1/x) — RCPPS / NEON FRECPE. F0x4 = SSE scalar.
     scalar_arms!(op_str; "Iop_RecipEst" => VFRecipEstS { "32F0x4" => F32 });
@@ -1083,7 +1089,12 @@ fn parse_vreverse(op_str: &str) -> Option<IROp> {
 ///   `Iop_PwMin{N}{S/U}x{M}`, `Iop_PwMax{N}{S/U}x{M}` — angr-tukg.2, via
 ///   `parse_vector` to `IROp::VPwAdd` / `VPwAddL` / `VPwMin` / `VPwMax`; the FP
 ///   pairwise `Iop_PwAdd32Fx2` — angr-cudgw.6, via `parse_float` to
-///   `IROp::VFPwAdd`. No `Pw*` op remains unimplemented.
+///   `IROp::VFPwAdd`; the FP pairwise `Iop_PwMax32Fx{2,4}` /
+///   `Iop_PwMin32Fx{2,4}` — angr-sqfj8.116, via `parse_float` to
+///   `IROp::VFPwMax` / `VFPwMin`. The only `Pw*` op left unimplemented is
+///   `Iop_PwBitMtxXpose64x2` (PPC vgbbd bit-matrix transpose), which is not a
+///   NEON op and so falls through to the generic unmapped path, not to
+///   `parse_neon_unimplemented`.
 /// - `Iop_PolynomialMul8x{8,16}` / `Iop_PolynomialMull8x8` (GF(2) carry-less
 ///   multiply) — angr-tukg.6, via `parse_vector` to `IROp::VPolynomialMul`.
 /// - `Iop_Cnt8x{8,16}` (per-byte popcount), `Iop_Clz{N}x{M}` and

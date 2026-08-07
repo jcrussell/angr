@@ -129,6 +129,93 @@ fn test_vfpwadd_32fx2_symbolic() {
     assert_f32_lanes_approx(model, &[3.0f32, 11.0], 1e-6);
 }
 
+/// Iop_PwMax32Fx2 / Iop_PwMin32Fx2 — NEON pairwise FP max/min (ARM
+/// VPMAX.F32 / VPMIN.F32, D-reg). Same interleave shape as VFPwAdd:
+/// a=[a0,a1], b=[b0,b1] → [a0 op a1, b0 op b1] (angr-sqfj8.116).
+#[test]
+fn test_vfpwmaxmin_32fx2_concrete() {
+    let ctx = SymContext::new_mock();
+    let a = [1.5f32, -2.5];
+    let b = [-3.0f32, 0.25];
+    for (op, exp) in [
+        (
+            IROp::VFPwMax {
+                elem: IRType::F32,
+                count: 2,
+            },
+            [1.5f32, 0.25],
+        ),
+        (
+            IROp::VFPwMin {
+                elem: IRType::F32,
+                count: 2,
+            },
+            [-2.5f32, -3.0],
+        ),
+    ] {
+        let result = VEXOps::binop(
+            op,
+            RustBV::concrete(pack_lanes_f32(&a), 64),
+            RustBV::concrete(pack_lanes_f32(&b), 64),
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(result.width(), 64, "{op:?}: width");
+        assert_f32_lanes_approx(result.as_u128().unwrap(), &exp, 1e-6);
+    }
+}
+
+/// Iop_PwMax32Fx4 — the Q-reg / AArch64 FMAXP shape. Four F32 lanes per
+/// 128-bit operand: [a0,a1,a2,a3] and [b0,b1,b2,b3] →
+/// [max(a0,a1), max(a2,a3), max(b0,b1), max(b2,b3)]. Pins that the 32Fx4
+/// arm produces a 128-bit result, not the 64-bit D-reg one.
+#[test]
+fn test_vfpwmax_32fx4_concrete() {
+    let ctx = SymContext::new_mock();
+    let a = [1.0f32, 7.0, -4.0, -9.0];
+    let b = [0.5f32, 0.25, 100.0, 3.0];
+    let result = VEXOps::binop(
+        IROp::VFPwMax {
+            elem: IRType::F32,
+            count: 4,
+        },
+        RustBV::concrete(pack_lanes_f32(&a), 128),
+        RustBV::concrete(pack_lanes_f32(&b), 128),
+        &ctx,
+    )
+    .unwrap();
+    assert_eq!(result.width(), 128);
+    assert_f32_lanes_approx(result.as_u128().unwrap(), &[7.0f32, -4.0, 0.5, 100.0], 1e-6);
+}
+
+/// Symbolic Iop_PwMin32Fx2: free `left` pinned to [1.0, 2.0], concrete
+/// `right` = [5.0, -6.0]. Expect [min(1.0,2.0), min(5.0,-6.0)] = [1.0, -6.0].
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_vfpwmin_32fx2_symbolic() {
+    let ctx = SymContext::new_mock();
+    let r = RustBV::concrete(pack_lanes_f32(&[5.0f32, -6.0]), 64);
+    let l = RustBV::symbolic(&ctx, "vfpwmin_l", 64);
+    ctx.add_constraint(
+        l.to_z3_ast()
+            .eq(RustBV::concrete(pack_lanes_f32(&[1.0f32, 2.0]), 64).to_z3_ast()),
+    );
+    let result = VEXOps::binop(
+        IROp::VFPwMin {
+            elem: IRType::F32,
+            count: 2,
+        },
+        l,
+        r,
+        &ctx,
+    )
+    .unwrap();
+    assert_eq!(result.width(), 64);
+    assert!(ctx.is_sat(), "expected SAT");
+    let model = ctx.eval(&result).expect("eval(result) returned None");
+    assert_f32_lanes_approx(model, &[1.0f32, -6.0], 1e-6);
+}
+
 /// Iop_PwAddL8Sx8 — signed widening pairwise add. Input is 8 lanes × 8 bits;
 /// output is 4 lanes × 16 bits. Negative sources must sign-extend before
 /// adding so the sum doesn't lose its sign.
@@ -490,6 +577,45 @@ fn test_parse_pairwise_routing() {
             assert_eq!(count, 2, "PwAdd32Fx2: count");
         }
         other => panic!("Iop_PwAdd32Fx2 expected VFPwAdd, got {other:?}"),
+    }
+
+    // Float pairwise max/min (Iop_PwMax32Fx{2,4} / Iop_PwMin32Fx{2,4}) route
+    // to VFPwMax / VFPwMin via parse_float (angr-sqfj8.116). The integer
+    // Iop_PwMax/PwMin cases above must keep landing on VPwMax / VPwMin — the
+    // two families share a prefix and are only told apart by the `F` suffix.
+    for (op, count) in [("Iop_PwMax32Fx2", 2u8), ("Iop_PwMax32Fx4", 4)] {
+        match parse_opcode(op) {
+            IROp::VFPwMax { elem, count: c } => {
+                assert_eq!(elem, IRType::F32, "{op}: elem");
+                assert_eq!(c, count, "{op}: count");
+            }
+            other => panic!("{op} expected VFPwMax, got {other:?}"),
+        }
+    }
+    for (op, count) in [("Iop_PwMin32Fx2", 2u8), ("Iop_PwMin32Fx4", 4)] {
+        match parse_opcode(op) {
+            IROp::VFPwMin { elem, count: c } => {
+                assert_eq!(elem, IRType::F32, "{op}: elem");
+                assert_eq!(c, count, "{op}: count");
+            }
+            other => panic!("{op} expected VFPwMin, got {other:?}"),
+        }
+    }
+
+    // result_type follows the mapped width, per
+    // invariant-result-type-width-from-opcode-map: the D-reg shapes are
+    // Ity_I64, the Q-reg ones Ity_V128.
+    for (op, expected) in [
+        ("Iop_PwMax32Fx2", IRType::I64),
+        ("Iop_PwMin32Fx2", IRType::I64),
+        ("Iop_PwMax32Fx4", IRType::V128),
+        ("Iop_PwMin32Fx4", IRType::V128),
+    ] {
+        assert_eq!(
+            parse_opcode(op).result_type(),
+            Some(expected),
+            "{op}: result_type"
+        );
     }
 }
 

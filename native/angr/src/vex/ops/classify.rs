@@ -168,6 +168,8 @@ pub fn iropclass(op: &IROp) -> VexOpFamily {
         | IROp::VFMin { .. }
         | IROp::VFMax { .. }
         | IROp::VFPwAdd { .. }
+        | IROp::VFPwMax { .. }
+        | IROp::VFPwMin { .. }
         | IROp::VFRecipEst { .. }
         | IROp::VFRecipStep { .. }
         | IROp::VFRSqrtEst { .. }

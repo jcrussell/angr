@@ -6,14 +6,15 @@
 //! dispatch in `ops`, and the shared sibling methods they call
 //! (`Self::concat_le_elements`, `Self::vec_float_lane_op`) stay visible by the
 //! descendant-module rule. `PwOp` (the per-pair combiner kind) lives in `ops`
-//! and the `FAdd` `FloatLaneOp` marker in `ops/lane_traits.rs`; both are
-//! reached via `super::`.
+//! and the `FloatLaneOp` trait (with its `FAdd`/`FMin`/`FMax` markers) in
+//! `ops/lane_traits.rs`; both are reached via `super::`.
 //!
 //! Covers the pairwise widening add (Iop_PwAddL), the integer binary pairwise
-//! family (Iop_PwAdd/PwMin/PwMax), the FP pairwise add (Iop_PwAdd32Fx2), and
-//! the rounding halving add (Iop_Avg).
+//! family (Iop_PwAdd/PwMin/PwMax), the FP pairwise family (Iop_PwAdd32Fx2,
+//! Iop_PwMax32Fx{2,4}, Iop_PwMin32Fx{2,4}), and the rounding halving add
+//! (Iop_Avg).
 
-use super::{FAdd, OpError, PwOp, VEXOps};
+use super::{FloatLaneOp, OpError, PwOp, VEXOps};
 use crate::symbolic::{RustBV, SymContext};
 use crate::vex::ir::IRType;
 
@@ -111,19 +112,24 @@ impl VEXOps {
         }
     }
 
-    /// NEON pairwise FP add — `Iop_PwAdd32Fx2` (ARM VPADD.F32). Binary; the FP
-    /// analogue of `vec_pairwise_binop` with `PwOp::Add`, but the per-pair
-    /// combine is an FP add (via the `FAdd` `FloatLaneOp` so both the concrete
-    /// and symbolic branches stay in lockstep). Output lane shape matches the
-    /// inputs: first half from `left`, second half from `right`. For the only
-    /// VEX-emitted shape (`32Fx2`) this yields `[a0+a1, b0+b1]`.
-    pub(super) fn vec_float_pairwise_add(
+    /// NEON pairwise FP binary op — `Iop_PwAdd32Fx2` (ARM VPADD.F32),
+    /// `Iop_PwMax32Fx{2,4}` / `Iop_PwMin32Fx{2,4}` (VPMAX.F32 / VPMIN.F32,
+    /// AArch64 FMAXP / FMINP). Binary; the FP analogue of `vec_pairwise_binop`,
+    /// but the per-pair combine comes from `op` (a `FloatLaneOp`, so both the
+    /// concrete and symbolic branches stay in lockstep with the packed
+    /// `VFAdd`/`VFMax`/`VFMin` of the same lane kind). Output lane shape matches
+    /// the inputs: first half from `left`, second half from `right`. For
+    /// `32Fx2` this yields `[a0 op a1, b0 op b1]`; for `32Fx4`,
+    /// `[a0 op a1, a2 op a3, b0 op b1, b2 op b3]`.
+    pub(super) fn vec_float_pairwise_op(
         left: RustBV,
         right: RustBV,
         elem: IRType,
         count: u8,
+        op: &dyn FloatLaneOp,
         ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
+        debug_assert_eq!(op.arity(), 2);
         let elem_width = elem.bits();
         let total_width = elem_width * count as u32;
         debug_assert_eq!(left.width(), total_width);
@@ -142,9 +148,9 @@ impl VEXOps {
                 let hi_b = lo_b + elem_width - 1;
                 let a = src.extract(hi_a, lo_a, ctx);
                 let b = src.extract(hi_b, lo_b, ctx);
-                // Reuse the single-lane FP-add path (count=1) so the concrete
-                // and symbolic branches match the packed `VFAdd`.
-                elements.push(Self::vec_float_lane_op(&[a, b], elem, 1, &FAdd, ctx)?);
+                // Reuse the single-lane FP path (count=1) so the concrete and
+                // symbolic branches match the packed op of the same kind.
+                elements.push(Self::vec_float_lane_op(&[a, b], elem, 1, op, ctx)?);
             }
         }
         Ok(Self::concat_le_elements(elements, ctx))

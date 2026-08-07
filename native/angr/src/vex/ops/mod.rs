@@ -412,6 +412,8 @@ impl VEXOps {
             | IROp::VFMin { .. }
             | IROp::VFMax { .. }
             | IROp::VFPwAdd { .. }
+            | IROp::VFPwMax { .. }
+            | IROp::VFPwMin { .. }
             | IROp::VFRecipStep { .. }
             | IROp::VFRSqrtStep { .. }
             | IROp::VFMaxS { .. }
@@ -808,9 +810,16 @@ impl VEXOps {
                 Self::vec_float_lane_op(&[left, right], elem, count, &FMax, ctx)
             }
 
-            // NEON pairwise FP add (Iop_PwAdd32Fx2).
+            // NEON pairwise FP add/max/min (Iop_PwAdd32Fx2,
+            // Iop_PwMax32Fx{2,4}, Iop_PwMin32Fx{2,4}).
             IROp::VFPwAdd { elem, count } => {
-                Self::vec_float_pairwise_add(left, right, elem, count, ctx)
+                Self::vec_float_pairwise_op(left, right, elem, count, &FAdd, ctx)
+            }
+            IROp::VFPwMax { elem, count } => {
+                Self::vec_float_pairwise_op(left, right, elem, count, &FMax, ctx)
+            }
+            IROp::VFPwMin { elem, count } => {
+                Self::vec_float_pairwise_op(left, right, elem, count, &FMin, ctx)
             }
 
             // NEON Newton-Raphson reciprocal / rsqrt step. Operands consumed

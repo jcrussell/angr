@@ -502,6 +502,23 @@ pub enum IROp {
         count: u8,
     },
 
+    /// NEON pairwise FP max — `Iop_PwMax32F{x2,x4}` (ARM VPMAX.F32 on a D-reg,
+    /// DDI 0487 C7.2.271; AArch64 FMAXP on a Q-reg). Binary; same interleave
+    /// shape as `VFPwAdd` (first half of the result from `a`, second half from
+    /// `b`) with a per-pair FP max instead of an FP add. `32Fx2` returns
+    /// `Ity_I64`, `32Fx4` returns `Ity_V128`.
+    VFPwMax {
+        elem: IRType,
+        count: u8,
+    },
+
+    /// NEON pairwise FP min — `Iop_PwMin32F{x2,x4}` (ARM VPMIN.F32, DDI 0487
+    /// C7.2.273; AArch64 FMINP). Same shape rules as `VFPwMax`.
+    VFPwMin {
+        elem: IRType,
+        count: u8,
+    },
+
     /// NEON rounding halving add (a.k.a. rounding-average) —
     /// `Iop_Avg{N}{S/U}x{M}`. Binary; output has the same lane shape as the
     /// inputs. Per-lane semantics (widening to `elem+1` bits avoids overflow):
@@ -981,10 +998,12 @@ impl IROp {
             }
 
             // Pairwise add/min/max (non-widening): output width = elem * count.
-            // The FP pairwise add `VFPwAdd` shares the same width rule (32Fx2 →
-            // 64-bit → Ity_I64).
+            // The FP pairwise ops share the same width rule (32Fx2 → 64-bit →
+            // Ity_I64; 32Fx4 → 128-bit → Ity_V128).
             IROp::VPwAdd { elem, count }
             | IROp::VFPwAdd { elem, count }
+            | IROp::VFPwMax { elem, count }
+            | IROp::VFPwMin { elem, count }
             | IROp::VPwMin { elem, count, .. }
             | IROp::VPwMax { elem, count, .. } => {
                 Self::width_total_to_type(elem.bits() * (*count as u32))
