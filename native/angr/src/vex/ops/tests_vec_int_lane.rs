@@ -258,3 +258,103 @@ fn test_vec_cmp_gt_unsigned_symbolic_u32x4() {
     let model = ctx.eval(&result).expect("eval(result) returned None");
     assert_int_lanes_eq(model, &exp, 32);
 }
+
+// =========================================================================
+// AVX2 256-bit compares (angr-sqfj8.112)
+// =========================================================================
+
+/// VPCMPEQD/VPCMPGTD-style: 256-bit compares over 8x i32 lanes.
+///
+/// A 256-bit vector can never be a `Concrete` RustBV — that variant stores its
+/// value in a `u128` — so it arrives as a `Concat` and must route through
+/// `vec_int_lane_op`'s per-lane symbolic path. That is exactly what the
+/// `total_width <= 128` guard there protects: without it the concrete fold
+/// would shift a `u128` by up to 224 while assembling the result
+/// (`invariant-concrete-bv-u128-16-byte-limit`).
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_vec_cmp_avx2_256_bit_i32x8() {
+    let ctx = SymContext::new_mock();
+
+    // Low lane first. Covers equal lanes, sign-boundary values and a pair
+    // where the signed and unsigned orderings would disagree (0xFFFF_FFFF is
+    // -1 signed but the largest value unsigned).
+    let l: [u32; 8] = [
+        5,
+        0x8000_0000,
+        0x7FFF_FFFF,
+        0xFFFF_FFFF,
+        0,
+        0x1234_5678,
+        0xDEAD_BEEF,
+        7,
+    ];
+    let r: [u32; 8] = [
+        5,
+        0x7FFF_FFFF,
+        0x8000_0000,
+        0x0000_0000,
+        0,
+        0x1234_5679,
+        0xDEAD_BEEF,
+        6,
+    ];
+
+    let pack = |lanes: &[u32; 8]| {
+        let mut lo: u128 = 0;
+        let mut hi: u128 = 0;
+        for (i, lane) in lanes.iter().enumerate() {
+            let placed = (*lane as u128) << ((i % 4) * 32);
+            if i < 4 {
+                lo |= placed;
+            } else {
+                hi |= placed;
+            }
+        }
+        RustBV::concrete(hi, 128).concat_into(RustBV::concrete(lo, 128), &ctx)
+    };
+    let lv = pack(&l);
+    let rv = pack(&r);
+    assert_eq!(lv.width(), 256);
+
+    // Reference semantics, computed independently of the code under test.
+    type LaneFn = fn(u32, u32) -> u32;
+    let cases: [(IROp, LaneFn); 2] = [
+        (
+            IROp::VCmpEQ {
+                elem: IRType::I32,
+                count: 8,
+            },
+            |a, b| if a == b { u32::MAX } else { 0 },
+        ),
+        (
+            IROp::VCmpGT {
+                elem: IRType::I32,
+                count: 8,
+                signed: true,
+            },
+            |a, b| {
+                if (a as i32) > (b as i32) { u32::MAX } else { 0 }
+            },
+        ),
+    ];
+
+    for (op, expected_lane) in cases {
+        let result = VEXOps::binop(op, lv.clone(), rv.clone(), &ctx).unwrap();
+        assert_eq!(result.width(), 256, "{op:?} result width");
+
+        // Wider than a u128, so check one lane at a time.
+        for i in 0..8u32 {
+            let low = i * 32;
+            let extracted = result.extract(low + 31, low, &ctx);
+            let got = ctx.eval(&extracted).expect("eval(lane) returned None");
+            assert_eq!(
+                got,
+                u128::from(expected_lane(l[i as usize], r[i as usize])),
+                "{op:?} lane {i}: {:#010x} vs {:#010x}",
+                l[i as usize],
+                r[i as usize]
+            );
+        }
+    }
+}

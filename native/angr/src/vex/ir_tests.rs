@@ -72,6 +72,14 @@ fn test_packed_lane_result_type_tracks_mapped_width() {
         ("Iop_Sub16x16", IRType::V256),
         ("Iop_Sub32x8", IRType::V256),
         ("Iop_Sub64x4", IRType::V256),
+        ("Iop_CmpEQ8x32", IRType::V256),
+        ("Iop_CmpEQ16x16", IRType::V256),
+        ("Iop_CmpEQ32x8", IRType::V256),
+        ("Iop_CmpEQ64x4", IRType::V256),
+        ("Iop_CmpGT8Sx32", IRType::V256),
+        ("Iop_CmpGT16Sx16", IRType::V256),
+        ("Iop_CmpGT32Sx8", IRType::V256),
+        ("Iop_CmpGT64Sx4", IRType::V256),
         // Widening multiplies: full-lane doubles the lane width, MullEven
         // halves the lane count — both land on V128 for every mapped shape.
         ("Iop_Mull8Ux8", IRType::V128),

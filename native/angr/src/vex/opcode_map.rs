@@ -898,22 +898,29 @@ fn parse_vector(op_str: &str) -> Option<IROp> {
         "64Uto32Ux4" => (I64, 4,  false, false),
     });
 
-    // Vector compare equal / greater-than (signed).
+    // Vector compare equal / greater-than (signed). The AVX2 256-bit shapes
+    // are safe to map because `vec_int_lane_op` (ops/vec_int_lane.rs) gates its
+    // u128 concrete fast path on `total_width <= 128` and falls back to the
+    // per-lane symbolic path above that — see
+    // `invariant-concrete-bv-u128-16-byte-limit` (angr-sqfj8.112).
     vec_arms!(op_str; "Iop_CmpEQ" => VCmpEQ {
-        "8x8" => (I8, 8), "8x16" => (I8, 16),
-        "16x4" => (I16, 4), "16x8" => (I16, 8),
-        "32x2" => (I32, 2), "32x4" => (I32, 4),
-        "64x2" => (I64, 2),
+        "8x8" => (I8, 8), "8x16" => (I8, 16), "8x32" => (I8, 32),
+        "16x4" => (I16, 4), "16x8" => (I16, 8), "16x16" => (I16, 16),
+        "32x2" => (I32, 2), "32x4" => (I32, 4), "32x8" => (I32, 8),
+        "64x2" => (I64, 2), "64x4" => (I64, 4),
     });
     // Signed (S) and unsigned (U) suffixes both exist in libVEX; the U family
     // backs ARM NEON VCGT.U8/U16/U32 and the SSE/AVX unsigned compares
     // (angr-9ke6b.160). libVEX defines no Iop_CmpGT64Ux1 (D-reg), so that
-    // suffix is absent by design rather than omission.
+    // suffix is absent by design rather than omission. The AVX2 256-bit forms
+    // are **signed-only** — vendor/pyvex_ffi.h declares Iop_CmpGT8Sx32 and
+    // friends but no `*Ux32`/`*Ux16`/`*Ux8`/`*Ux4` counterparts, matching the
+    // ISA (VPCMPGT* is signed).
     vec_signed_arms!(op_str; "Iop_CmpGT" => VCmpGT {
-        "8Sx8" => (I8, 8, true), "8Sx16" => (I8, 16, true),
-        "16Sx4" => (I16, 4, true), "16Sx8" => (I16, 8, true),
-        "32Sx2" => (I32, 2, true), "32Sx4" => (I32, 4, true),
-        "64Sx2" => (I64, 2, true),
+        "8Sx8" => (I8, 8, true), "8Sx16" => (I8, 16, true), "8Sx32" => (I8, 32, true),
+        "16Sx4" => (I16, 4, true), "16Sx8" => (I16, 8, true), "16Sx16" => (I16, 16, true),
+        "32Sx2" => (I32, 2, true), "32Sx4" => (I32, 4, true), "32Sx8" => (I32, 8, true),
+        "64Sx2" => (I64, 2, true), "64Sx4" => (I64, 4, true),
         "8Ux8" => (I8, 8, false), "8Ux16" => (I8, 16, false),
         "16Ux4" => (I16, 4, false), "16Ux8" => (I16, 8, false),
         "32Ux2" => (I32, 2, false), "32Ux4" => (I32, 4, false),

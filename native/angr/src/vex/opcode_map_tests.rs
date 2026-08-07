@@ -563,6 +563,11 @@ fn test_parse_vec_cmp_gt_signed_and_unsigned() {
         ("Iop_CmpGT16Ux8", IRType::I16, 8, false),
         ("Iop_CmpGT32Ux4", IRType::I32, 4, false),
         ("Iop_CmpGT64Ux2", IRType::I64, 2, false),
+        // AVX2 256-bit (angr-sqfj8.112) — signed only.
+        ("Iop_CmpGT8Sx32", IRType::I8, 32, true),
+        ("Iop_CmpGT16Sx16", IRType::I16, 16, true),
+        ("Iop_CmpGT32Sx8", IRType::I32, 8, true),
+        ("Iop_CmpGT64Sx4", IRType::I64, 4, true),
     ];
     for &(op_str, elem, count, signed) in cases {
         assert_eq!(
@@ -576,6 +581,46 @@ fn test_parse_vec_cmp_gt_signed_and_unsigned() {
         );
     }
     assert!(matches!(parse_opcode("Iop_CmpGT64Ux1"), IROp::Unmapped(_)));
+    // libVEX declares no unsigned 256-bit greater-than (VPCMPGT* is signed),
+    // so these must stay unmapped rather than silently parsing (angr-sqfj8.112).
+    for absent in [
+        "Iop_CmpGT8Ux32",
+        "Iop_CmpGT16Ux16",
+        "Iop_CmpGT32Ux8",
+        "Iop_CmpGT64Ux4",
+    ] {
+        assert!(
+            matches!(parse_opcode(absent), IROp::Unmapped(_)),
+            "{absent} is not a libVEX op and must not parse"
+        );
+    }
+}
+
+/// angr-sqfj8.112: the AVX2 256-bit vector equality compares
+/// (`Iop_CmpEQ{N}x{M}` with a 256-bit total) were unmapped even though the
+/// sibling `VAdd`/`VSub` families already carried the same shapes.
+#[test]
+fn test_parse_vec_cmp_eq_shapes() {
+    let cases: &[(&str, IRType, u8)] = &[
+        ("Iop_CmpEQ8x8", IRType::I8, 8),
+        ("Iop_CmpEQ16x4", IRType::I16, 4),
+        ("Iop_CmpEQ32x2", IRType::I32, 2),
+        ("Iop_CmpEQ8x16", IRType::I8, 16),
+        ("Iop_CmpEQ16x8", IRType::I16, 8),
+        ("Iop_CmpEQ32x4", IRType::I32, 4),
+        ("Iop_CmpEQ64x2", IRType::I64, 2),
+        ("Iop_CmpEQ8x32", IRType::I8, 32),
+        ("Iop_CmpEQ16x16", IRType::I16, 16),
+        ("Iop_CmpEQ32x8", IRType::I32, 8),
+        ("Iop_CmpEQ64x4", IRType::I64, 4),
+    ];
+    for &(op_str, elem, count) in cases {
+        assert_eq!(
+            parse_opcode(op_str),
+            IROp::VCmpEQ { elem, count },
+            "{op_str}"
+        );
+    }
 }
 
 /// angr-9ke6b.233: `IROp::Raw` had no producer, so every x87 / FRECPX
