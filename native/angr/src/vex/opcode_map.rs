@@ -469,15 +469,19 @@ fn parse_float(op_str: &str) -> Option<IROp> {
     // The 32Fx2 shape is the ARM NEON D-reg 2-lane form (VADD.F32 &c.). It was
     // missing from Add/Sub/Mul/Min/Max until angr-sqfj8.114 even though the
     // evaluator is generic over (elem, count). Div and Sqrt have no 32Fx2 arm
-    // because VEX declares no `Iop_Div32Fx2`/`Iop_Sqrt32Fx2`; `Iop_Abs32Fx2`
-    // does exist but stays unmapped here — it is tracked with the vector-float
-    // negate family in angr-sqfj8.115.
+    // because VEX declares no `Iop_Div32Fx2`/`Iop_Sqrt32Fx2`.
+    //
+    // Abs/Neg have their own shape set (angr-sqfj8.115): the header declares
+    // exactly `Iop_Abs32Fx{2,4}` / `Iop_Abs64Fx2` and `Iop_Neg32Fx{2,4}` /
+    // `Iop_Neg64Fx2` — no 256-bit form of either, so unlike Add/Sub/Mul/Min/Max
+    // they get no `32Fx8`/`64Fx4` arms (Abs had two dead ones until .115).
     vec_arms!(op_str; "Iop_Add"  => VFAdd  { "32Fx2" => (F32, 2), "32Fx4" => (F32, 4), "64Fx2" => (F64, 2), "32Fx8" => (F32, 8), "64Fx4" => (F64, 4) });
     vec_arms!(op_str; "Iop_Sub"  => VFSub  { "32Fx2" => (F32, 2), "32Fx4" => (F32, 4), "64Fx2" => (F64, 2), "32Fx8" => (F32, 8), "64Fx4" => (F64, 4) });
     vec_arms!(op_str; "Iop_Mul"  => VFMul  { "32Fx2" => (F32, 2), "32Fx4" => (F32, 4), "64Fx2" => (F64, 2), "32Fx8" => (F32, 8), "64Fx4" => (F64, 4) });
     vec_arms!(op_str; "Iop_Div"  => VFDiv  { "32Fx4" => (F32, 4), "64Fx2" => (F64, 2), "32Fx8" => (F32, 8), "64Fx4" => (F64, 4) });
     vec_arms!(op_str; "Iop_Sqrt" => VFSqrt { "32Fx4" => (F32, 4), "64Fx2" => (F64, 2), "32Fx8" => (F32, 8), "64Fx4" => (F64, 4) });
-    vec_arms!(op_str; "Iop_Abs"  => VFAbs  { "32Fx4" => (F32, 4), "64Fx2" => (F64, 2), "32Fx8" => (F32, 8), "64Fx4" => (F64, 4) });
+    vec_arms!(op_str; "Iop_Abs"  => VFAbs  { "32Fx2" => (F32, 2), "32Fx4" => (F32, 4), "64Fx2" => (F64, 2) });
+    vec_arms!(op_str; "Iop_Neg"  => VFNeg  { "32Fx2" => (F32, 2), "32Fx4" => (F32, 4), "64Fx2" => (F64, 2) });
     vec_arms!(op_str; "Iop_Min"  => VFMin  { "32Fx2" => (F32, 2), "32Fx4" => (F32, 4), "64Fx2" => (F64, 2), "32Fx8" => (F32, 8), "64Fx4" => (F64, 4) });
     vec_arms!(op_str; "Iop_Max"  => VFMax  { "32Fx2" => (F32, 2), "32Fx4" => (F32, 4), "64Fx2" => (F64, 2), "32Fx8" => (F32, 8), "64Fx4" => (F64, 4) });
 

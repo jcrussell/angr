@@ -37,9 +37,9 @@ use super::transcendentals;
 mod lane_traits;
 
 use lane_traits::{
-    FAbs, FAdd, FDiv, FLOAT_LANE_OP_MAX_ARITY, FMax, FMin, FMul, FSqrt, FSub, FloatLaneOp, IAbs,
-    IAdd, ICmpEq, ICmpGt, IMinMax, IMul, INT_LANE_OP_MAX_ARITY, ISub, IntLaneOp, build_float_expr,
-    float_prec_of,
+    FAbs, FAdd, FDiv, FLOAT_LANE_OP_MAX_ARITY, FMax, FMin, FMul, FNeg, FSqrt, FSub, FloatLaneOp,
+    IAbs, IAdd, ICmpEq, ICmpGt, IMinMax, IMul, INT_LANE_OP_MAX_ARITY, ISub, IntLaneOp,
+    build_float_expr, float_prec_of,
 };
 
 /// Compress same-width unary arms `assert width(arg) == ty.bits(); arg.$method(ctx)`.
@@ -204,6 +204,7 @@ impl VEXOps {
                 Self::vec_float_lane_op(&[arg], elem, count, &FSqrt, ctx)
             }
             IROp::VFAbs { elem, count } => Self::vec_float_lane_op(&[arg], elem, count, &FAbs, ctx),
+            IROp::VFNeg { elem, count } => Self::vec_float_lane_op(&[arg], elem, count, &FNeg, ctx),
 
             // Packed FP reciprocal / reciprocal-sqrt estimate. Returns a fresh
             // symbolic per lane: VEX leaves precision implementation-defined and

@@ -165,6 +165,7 @@ pub fn iropclass(op: &IROp) -> VexOpFamily {
         | IROp::VFDiv { .. }
         | IROp::VFSqrt { .. }
         | IROp::VFAbs { .. }
+        | IROp::VFNeg { .. }
         | IROp::VFMin { .. }
         | IROp::VFMax { .. }
         | IROp::VFPwAdd { .. }

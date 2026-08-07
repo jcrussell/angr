@@ -92,6 +92,98 @@ fn test_vec_float_abs_concrete_f32x4() {
     assert_f32_lanes_bits(result.as_u128().unwrap(), &exp);
 }
 
+/// Iop_Abs32Fx2-style: the NEON D-reg shape (64-bit total), which had no
+/// parse arm until angr-sqfj8.115. Only the low two lanes are meaningful.
+#[test]
+fn test_vec_float_abs_concrete_f32x2_is_64_bit() {
+    let ctx = SymContext::new_mock();
+
+    let v = [-1.5f32, -0.0];
+    let exp = [1.5f32, 0.0];
+
+    let result = VEXOps::unop(
+        IROp::VFAbs {
+            elem: IRType::F32,
+            count: 2,
+        },
+        RustBV::concrete(pack_lanes_f32(&v), 64),
+        &ctx,
+    )
+    .unwrap();
+    assert_eq!(result.width(), 64);
+    assert_f32_lanes_bits(result.as_u128().unwrap(), &exp);
+}
+
+/// Iop_Neg32Fx4-style: per-lane sign flip. Checked bit-exactly because negate
+/// must flip the sign of -0.0 and of infinities, where `==` would not notice.
+#[test]
+fn test_vec_float_neg_concrete_f32x4() {
+    let ctx = SymContext::new_mock();
+
+    let v = [-1.5f32, 2.5, -0.0, f32::NEG_INFINITY];
+    let exp = [1.5f32, -2.5, 0.0, f32::INFINITY];
+
+    let result = VEXOps::unop(
+        IROp::VFNeg {
+            elem: IRType::F32,
+            count: 4,
+        },
+        RustBV::concrete(pack_lanes_f32(&v), 128),
+        &ctx,
+    )
+    .unwrap();
+    assert_eq!(result.width(), 128);
+    assert_f32_lanes_bits(result.as_u128().unwrap(), &exp);
+}
+
+/// Iop_Neg64Fx2-style: per-lane sign flip on the f64x2 shape.
+#[test]
+fn test_vec_float_neg_concrete_f64x2() {
+    let ctx = SymContext::new_mock();
+
+    let v = [3.25f64, -0.0];
+    let exp = [-3.25f64, 0.0];
+
+    let result = VEXOps::unop(
+        IROp::VFNeg {
+            elem: IRType::F64,
+            count: 2,
+        },
+        RustBV::concrete(pack_lanes_f64(&v), 128),
+        &ctx,
+    )
+    .unwrap();
+    assert_eq!(result.width(), 128);
+    assert_f64_lanes_approx(result.as_u128().unwrap(), &exp, 1e-12);
+}
+
+/// Iop_Neg32Fx2-style: the NEON D-reg shape, symbolic operand. Pins that the
+/// Z3 path builds a 64-bit (not 128-bit) result and negates each lane.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_vec_float_neg_symbolic_f32x2() {
+    let ctx = SymContext::new_mock();
+
+    let target = pack_lanes_f32(&[1.5f32, -4.0]);
+    let v = RustBV::symbolic(&ctx, "vfneg_v", 64);
+    ctx.add_constraint(v.to_z3_ast().eq(RustBV::concrete(target, 64).to_z3_ast()));
+
+    let result = VEXOps::unop(
+        IROp::VFNeg {
+            elem: IRType::F32,
+            count: 2,
+        },
+        v,
+        &ctx,
+    )
+    .unwrap();
+    assert_eq!(result.width(), 64);
+    assert!(ctx.is_sat(), "expected SAT");
+
+    let model = ctx.eval(&result).expect("eval(result) returned None");
+    assert_f32_lanes_approx(model, &[-1.5f32, 4.0], 1e-6);
+}
+
 /// MAXPS-style: per-lane max of two f32x4 vectors.
 #[test]
 fn test_vec_float_max_concrete_f32x4() {

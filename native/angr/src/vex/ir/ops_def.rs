@@ -654,8 +654,16 @@ pub enum IROp {
         elem: IRType,
         count: u8,
     },
-    /// Packed float abs (Iop_Abs32Fx4/Iop_Abs64Fx2)
+    /// Packed float abs (Iop_Abs32Fx2/Iop_Abs32Fx4/Iop_Abs64Fx2)
     VFAbs {
+        elem: IRType,
+        count: u8,
+    },
+    /// Packed float negate — Iop_Neg32Fx2 (NEON D-reg VNEG.F32),
+    /// Iop_Neg32Fx4, Iop_Neg64Fx2. Flips the sign bit per lane, so it is
+    /// distinct from `Sub(0, x)` on zeros and NaNs. libVEX declares no
+    /// 256-bit `Iop_Neg*Fx*`, hence no AVX shapes.
+    VFNeg {
         elem: IRType,
         count: u8,
     },
@@ -1048,19 +1056,34 @@ impl IROp {
                 Self::width_total_to_type(elem_out * (*count as u32))
             }
 
-            // Packed integer min/max/abs and packed FP arith all return V128 (or V256
-            // for AVX variants — we pick V128 to match the rest of the family for now)
-            IROp::VMin { .. }
-            | IROp::VMax { .. }
-            | IROp::VAbs { .. }
-            | IROp::VFAdd { .. }
-            | IROp::VFSub { .. }
-            | IROp::VFMul { .. }
-            | IROp::VFDiv { .. }
-            | IROp::VFSqrt { .. }
-            | IROp::VFAbs { .. }
-            | IROp::VFMin { .. }
-            | IROp::VFMax { .. } => Some(IRType::V128),
+            // Packed integer min/max/abs and packed FP arith: width = elem * count.
+            // These arms used to hardcode V128, which was wrong in both directions —
+            // opcode_map maps the D-reg NEON shapes (Iop_Min8Sx8, Iop_Abs32x2,
+            // Iop_Add32Fx2 → 64-bit totals) and the AVX2/AVX shapes (Iop_Min8Sx32,
+            // Iop_Add32Fx8 → 256-bit totals) alongside the 128-bit ones. Closed in
+            // angr-sqfj8.115; see the width rule in width_total_to_type.
+            IROp::VMin {
+                elem,
+                count,
+                signed: _,
+            }
+            | IROp::VMax {
+                elem,
+                count,
+                signed: _,
+            }
+            | IROp::VAbs { elem, count }
+            | IROp::VFAdd { elem, count }
+            | IROp::VFSub { elem, count }
+            | IROp::VFMul { elem, count }
+            | IROp::VFDiv { elem, count }
+            | IROp::VFSqrt { elem, count }
+            | IROp::VFAbs { elem, count }
+            | IROp::VFNeg { elem, count }
+            | IROp::VFMin { elem, count }
+            | IROp::VFMax { elem, count } => {
+                Self::width_total_to_type(elem.bits() * (*count as u32))
+            }
 
             // Integer reciprocal/rsqrt estimates (ARM URECPE / URSQRTE): 32-bit
             // lanes, count=2 → I64 (D-reg) or count=4 → V128 (Q-reg).

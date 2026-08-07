@@ -9,6 +9,10 @@
 //! `use super::{FloatLaneOp, build_float_expr, ...}` imports in the sibling
 //! modules keep resolving unchanged.
 
+// `Neg` is imported so `impl_float_lane_unop!(FNeg, neg, ...)` can reuse the
+// method-call macro shape: unary minus on f32/f64 is `std::ops::Neg::neg`,
+// which is not an inherent method and so needs the trait in scope.
+use std::ops::Neg;
 use std::sync::Arc;
 
 use crate::symbolic::{BVOp, FloatOpKind, FloatPrec, RustBV, SymContext};
@@ -73,6 +77,9 @@ pub(super) struct FMul;
 pub(super) struct FDiv;
 pub(super) struct FSqrt;
 pub(super) struct FAbs;
+/// FP negate (flips the sign bit, including on NaN and zero) — the lane op
+/// behind `IROp::VFNeg`.
+pub(super) struct FNeg;
 /// FP min: matches Rust `<` semantics (NaN passes through right).
 pub(super) struct FMin;
 /// FP max: matches Rust `>` semantics (NaN passes through right).
@@ -126,6 +133,7 @@ impl_float_lane_binop!(FMul, *, FloatOpKind::Mul);
 impl_float_lane_binop!(FDiv, /, FloatOpKind::Div);
 impl_float_lane_unop!(FSqrt, sqrt, FloatOpKind::Sqrt);
 impl_float_lane_unop!(FAbs, abs, FloatOpKind::Abs);
+impl_float_lane_unop!(FNeg, neg, FloatOpKind::Neg);
 
 /// Build a symbolic min/max ITE over two operand lanes. `swap_cmp_args=false`
 /// gives `ITE(l < r, l, r)` (min); `true` gives `ITE(r < l, l, r)` (max).

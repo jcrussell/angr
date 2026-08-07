@@ -97,6 +97,35 @@ fn test_packed_lane_result_type_tracks_mapped_width() {
         ("Iop_InterleaveHI16x8", IRType::V128),
         ("Iop_InterleaveHI32x4", IRType::V128),
         ("Iop_InterleaveHI64x2", IRType::V128),
+        // Packed integer min/max/abs and packed FP arith: the last group that
+        // still hardcoded V128 until angr-sqfj8.115. Same 2x-both-directions
+        // error — D-reg NEON shapes are 64-bit, AVX/AVX2 shapes are 256-bit.
+        ("Iop_Min8Sx8", IRType::I64),
+        ("Iop_Max32Ux2", IRType::I64),
+        ("Iop_Abs16x4", IRType::I64),
+        ("Iop_Min8Sx16", IRType::V128),
+        ("Iop_Max64Ux2", IRType::V128),
+        ("Iop_Abs32x4", IRType::V128),
+        ("Iop_Min8Sx32", IRType::V256),
+        ("Iop_Max16Ux16", IRType::V256),
+        ("Iop_Abs64x4", IRType::V256),
+        ("Iop_Add32Fx2", IRType::I64),
+        ("Iop_Sub32Fx2", IRType::I64),
+        ("Iop_Mul32Fx2", IRType::I64),
+        ("Iop_Min32Fx2", IRType::I64),
+        ("Iop_Max32Fx2", IRType::I64),
+        ("Iop_Abs32Fx2", IRType::I64),
+        ("Iop_Neg32Fx2", IRType::I64),
+        ("Iop_Add32Fx4", IRType::V128),
+        ("Iop_Div64Fx2", IRType::V128),
+        ("Iop_Sqrt32Fx4", IRType::V128),
+        ("Iop_Abs32Fx4", IRType::V128),
+        ("Iop_Neg32Fx4", IRType::V128),
+        ("Iop_Neg64Fx2", IRType::V128),
+        ("Iop_Add32Fx8", IRType::V256),
+        ("Iop_Div64Fx4", IRType::V256),
+        ("Iop_Sqrt32Fx8", IRType::V256),
+        ("Iop_Max64Fx4", IRType::V256),
     ];
 
     for (op_str, expected) in cases {
