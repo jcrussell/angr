@@ -1,9 +1,10 @@
 #!/bin/sh
 # states/clean/gate: post-commit regression gate for the clean state.
 #
-# Thin wrapper — the checks (cargo test --release, then the fast-tier benchmark
-# regression) live in tools/ralph-gate.sh so this hook and dirty/gate cannot
-# drift apart. See that script for the rationale behind each check.
+# Thin wrapper — the checks (cargo test --profile release-checked, then the
+# fast-tier benchmark regression) live in tools/ralph-gate.sh so this hook and
+# dirty/gate cannot drift apart. See that script for the rationale behind each
+# check.
 #
 # Env: RALPH_REPO RALPH_ITER RALPH_STATE RALPH_PROMPT_FILE RALPH_ITER_JSON
 

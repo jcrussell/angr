@@ -18,16 +18,20 @@
 memory_limit_bytes = "6G"
 
 [gate]
-# The gate (tools/ralph-gate.sh, shared by the clean/ and dirty/ state hooks) now
-# runs `cargo test --release` ahead of the fast-tier benchmark regression.
-# Measured on a warm tree: 14s cargo test + 32s bench = 46s wall. An iteration
-# that touched native/ must rebuild the Rust test binaries first, which costs
-# ~2m — note that `cargo clippy --all-targets` does NOT warm them, since clippy's
-# driver keeps separate fingerprints from rustc's — so the realistic worst case
-# is ~3m. That still fits the 600s default, but the margin is thinner than it
-# was; 1200s keeps a slow/loaded box from tripping a timeout on what is really a
-# passing gate. All other [gate] knobs keep their built-in defaults:
-# soft_fail=true, run_when="commits-only".
+# The gate (tools/ralph-gate.sh, shared by the clean/ and dirty/ state hooks) runs
+# `cargo test --profile release-checked` ahead of the fast-tier benchmark
+# regression. release-checked (lto="off", codegen-units=16) matches CI's
+# rust_test job and replaces the old plain `cargo test --release` (fat LTO,
+# codegen-units=1), which measured ~181s to relink 4 test binaries from scratch
+# on iteration 211 — a touched-native iteration, which is most of them in this
+# loop. Measured 2026-08-07 under release-checked: ~43s warm (mostly actual
+# test run time, ~2500 tests) + ~33s bench = ~76s wall on a typical iteration;
+# ~89s for a one-time from-scratch target/release-checked/ dependency build
+# (paid once, the first run after this profile switch, since it's a separate
+# target dir from target/release/). All well under the old ~181s+32s figure.
+# 1200s keeps a slow/loaded box from tripping a timeout even on that cold
+# build. All other [gate] knobs keep their built-in defaults: soft_fail=true,
+# run_when="commits-only".
 timeout_secs = 1200
 
 [runner]

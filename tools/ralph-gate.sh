@@ -7,23 +7,40 @@
 #
 # Two checks, cheapest-and-most-fundamental first:
 #
-#   1. cargo test --release — the Rust unit + integration suite. Added after
-#      angr-8kk32, where a real correctness regression (NativeRead minting fresh
-#      symbolic bytes over a write-demoted file) was caught by a Rust unit test,
-#      failed for a full iteration, and nothing noticed: the gate ran pytest +
-#      benches only, and CI's `rust_test` job never fires in the loop (the box
-#      has no network to GitHub). See bd memory `cargo-test-not-in-ralph-gate`.
+#   1. cargo test --profile release-checked — the Rust unit + integration
+#      suite. Added after angr-8kk32, where a real correctness regression
+#      (NativeRead minting fresh symbolic bytes over a write-demoted file) was
+#      caught by a Rust unit test, failed for a full iteration, and nothing
+#      noticed: the gate ran pytest + benches only, and CI's `rust_test` job
+#      never fires in the loop (the box has no network to GitHub). See bd
+#      memory `cargo-test-not-in-ralph-gate`.
 #
-#      Cost: ~15s when the test binaries are warm (any iteration that did not
-#      touch native/), ~2m when they must be rebuilt (any iteration that did).
-#      Note that `cargo clippy --all-targets` does NOT warm them — clippy's
+#      Uses `release-checked` (Cargo.toml: inherits release, lto="off",
+#      codegen-units=16, overflow-checks=true) rather than plain `--release`
+#      (fat LTO + codegen-units=1) — matches .github/workflows/ci.yml's
+#      `rust_test` job, which already made this switch. Measured on iteration
+#      211 (a touched-native iteration), plain `--release` cost ~181s of
+#      relinking 4 LTO'd test binaries (1 unittest + 3 native/angr/tests/*.rs
+#      integration binaries) from scratch every time; `release-checked` avoids
+#      the LTO relink entirely. Measured 2026-08-07: ~43s once
+#      target/release-checked/ is warm (dominated by actually running the
+#      ~2500 tests, not by compiling — relinking is near-instant when nothing
+#      changed), ~89s for a from-scratch dependency build of that profile
+#      (paid once, the first time this runs after switching profiles, since
+#      it's a separate target dir from the plain `target/release/` the .so
+#      build uses). Both are well under the old ~181s touched-native figure.
+#      Note that `cargo clippy --all-targets` does NOT warm it — clippy's
 #      driver produces separate fingerprints from rustc's.
+#
+#      Side effect, not just a speedup: plain `--release` never set
+#      overflow-checks, so this is the first time the loop's own local gate
+#      (as opposed to CI's rust_test job, which never fires here — no GitHub
+#      network) runs the suite with overflow-checks on.
 #
 #      Runs first: a failing unit test invalidates the bench numbers anyway, and
 #      failing fast keeps the gate short in the case we most want to catch.
 #
-#      Hard-capped at CARGO_TEST_TIMEOUT_SECS (default 600s = 5x the ~2m worst
-#      case above): a hung test (observed 2026-07-21,
+#      Hard-capped at CARGO_TEST_TIMEOUT_SECS (default 600s): a hung test (observed 2026-07-21,
 #      context_tests_solver::test_check_branch_feasibility_keeps_branch_on_timeout
 #      — Z3_solver_check itself never returns, so the timeout-under-test never
 #      fires) otherwise blocks every future iteration's gate forever, since
@@ -54,16 +71,16 @@ export PATH="$HOME/.cargo/bin:$PATH"
 # shellcheck disable=SC1091
 . /home/ubuntu/repos/angr/.venv/bin/activate
 
-echo "== ralph gate [1/2]: cargo test --release =="
+echo "== ralph gate [1/2]: cargo test --profile release-checked =="
 : "${CARGO_TEST_TIMEOUT_SECS:=600}"
 # `rc=$?` must be captured on the || side, not inside `if ! cmd`: the `!`
 # rewrites $? to 0 in the then-block, so the gate would exit 0 on a failure.
 rc=0
-timeout --kill-after=30s --signal=TERM "${CARGO_TEST_TIMEOUT_SECS}s" cargo test --release || rc=$?
+timeout --kill-after=30s --signal=TERM "${CARGO_TEST_TIMEOUT_SECS}s" cargo test --profile release-checked || rc=$?
 if [ "$rc" -ne 0 ]; then
-    echo "cargo test --release failed or timed out after ${CARGO_TEST_TIMEOUT_SECS}s (rc=$rc);" \
+    echo "cargo test --profile release-checked failed or timed out after ${CARGO_TEST_TIMEOUT_SECS}s (rc=$rc);" \
         "sweeping any orphaned test binaries" >&2
-    pkill -KILL -f 'target/release/deps/rustylib-' 2>/dev/null || true
+    pkill -KILL -f 'target/release-checked/deps/rustylib-' 2>/dev/null || true
     exit "$rc"
 fi
 
