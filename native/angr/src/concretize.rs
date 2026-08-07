@@ -149,10 +149,6 @@ pub struct AddressConcretizer {
     /// silently dropped (no-op). Mirrors the early `return` at
     /// `address_concretization_mixin.py:327-329`.
     pub avoid_multivalued_writes: bool,
-
-    // Legacy field for backward compatibility with callers using .max_range
-    // This is kept in sync with read_range_limit.
-    pub max_range: u64,
 }
 
 impl Default for AddressConcretizer {
@@ -170,7 +166,6 @@ impl Default for AddressConcretizer {
             write_fallback_max: true, // Match Python: Max() fallback for writes
             avoid_multivalued_reads: false, // Default: enumerate within strategy limits
             avoid_multivalued_writes: false,
-            max_range: 1024, // Legacy, kept in sync with read_range_limit
         }
     }
 }
@@ -181,22 +176,13 @@ impl AddressConcretizer {
         Self::default()
     }
 
-    /// Set the read range limit, keeping the legacy `max_range` mirror in
-    /// sync. Every write to `read_range_limit` goes through here so the two
-    /// fields cannot drift apart.
-    #[inline]
-    fn set_read_range_limit(&mut self, limit: u64) {
-        self.read_range_limit = limit;
-        self.max_range = limit;
-    }
-
     /// Raise the read range limit to `APPROXIMATE_MIN_RANGE` when it sits
     /// below that floor. Shared by `configure` and `configure_strategies` so
     /// the approximate-mode bump stays identical from both entry points.
     #[inline]
     fn apply_approximate_read_floor(&mut self) {
         if self.read_range_limit < APPROXIMATE_MIN_RANGE {
-            self.set_read_range_limit(APPROXIMATE_MIN_RANGE);
+            self.read_range_limit = APPROXIMATE_MIN_RANGE;
         }
     }
 
@@ -213,7 +199,7 @@ impl AddressConcretizer {
     pub fn configure(&mut self, use_approximate: bool, range_limit: Option<u64>) {
         self.use_approximate = use_approximate;
         if let Some(limit) = range_limit {
-            self.set_read_range_limit(limit);
+            self.read_range_limit = limit;
         }
         // When approximate is enabled, we can be more aggressive with range
         if use_approximate {
@@ -243,7 +229,7 @@ impl AddressConcretizer {
         self.avoid_multivalued_writes = avoid_multivalued_writes;
 
         if let Some(limit) = read_range_limit {
-            self.set_read_range_limit(limit);
+            self.read_range_limit = limit;
         }
         if let Some(limit) = write_range_limit {
             self.write_range_limit = limit;

@@ -86,7 +86,6 @@ fn test_default_config() {
     let concretizer = AddressConcretizer::default();
     assert_eq!(concretizer.read_range_limit, 1024); // Match Python default
     assert_eq!(concretizer.write_range_limit, 128); // Match Python default
-    assert_eq!(concretizer.max_range, 1024); // Legacy compatibility
     assert_eq!(concretizer.max_solutions, 256);
     assert_eq!(concretizer.max_stride_count, 16384);
     assert!(concretizer.enable_stride_detection);
@@ -112,29 +111,26 @@ fn test_configure() {
 }
 
 // angr-sqfj8.130: `configure` and `configure_strategies` now share the
-// approximate read-range floor. Pin the two properties that share must not
-// change: `max_range` tracks `read_range_limit`, and the legacy `configure`
-// still leaves `write_range_limit` alone (it has no write-range parameter).
+// approximate read-range floor. Pin the property that share must not change:
+// the legacy `configure` still leaves `write_range_limit` alone (it has no
+// write-range parameter), even under `use_approximate`.
 #[test]
-fn test_configure_keeps_max_range_synced_and_write_range_untouched() {
+fn test_configure_applies_read_floor_and_leaves_write_range_untouched() {
     let mut concretizer = AddressConcretizer::default();
     let default_write = concretizer.write_range_limit;
 
     concretizer.configure(false, Some(2048));
-    assert_eq!(concretizer.max_range, 2048);
+    assert_eq!(concretizer.read_range_limit, 2048);
     assert_eq!(concretizer.write_range_limit, default_write);
 
-    // The approximate floor bumps the read limit and its max_range mirror,
-    // but not the write limit.
+    // The approximate floor bumps the read limit but not the write limit.
     concretizer.configure(true, Some(512));
     assert_eq!(concretizer.read_range_limit, 4096);
-    assert_eq!(concretizer.max_range, 4096);
     assert_eq!(concretizer.write_range_limit, default_write);
 
     // A limit already above the floor is left as given.
     concretizer.configure(true, Some(8192));
     assert_eq!(concretizer.read_range_limit, 8192);
-    assert_eq!(concretizer.max_range, 8192);
 }
 
 #[test]
