@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Baseline-audited guard against raw line-number citations in Rust comments.
+"""Baseline-audited guard against raw line-number citations in comments and docs.
 
 angr-9ke6b (the pre-PR audit of native/angr/src/) turned up a recurring bug
 class: doc comments and inline comments that cite an EXACT line number in
@@ -21,6 +21,13 @@ checked-in baseline is base-ref-independent and self-documenting: existing
 citations are grandfathered once, and the baseline should only shrink as they
 get converted to symbol references.
 
+Scanned surfaces: ``//``-comments under ``native/angr/src/`` and *every* line of
+``docs/**/*.rst``. The docs half was added by angr-kw5f6 after angr-sqfj8.126
+found ``docs/advanced-topics/rust_engine.rst``'s typed-exception table citing
+``engine.rs``/``errors.rs`` line numbers that had drifted 60-95 lines with zero
+gate signal -- prose rots exactly the way comments do, and the ``.rst`` files
+here are dense with ``file.py:NNN`` cross-references.
+
 Usage::
 
     tools/check_line_citations.py                 # report new un-baselined citations
@@ -40,6 +47,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SRC_ROOT = REPO_ROOT / "native" / "angr" / "src"
+DOCS_ROOT = REPO_ROOT / "docs"
 BASELINE_PATH = REPO_ROOT / "tools" / "line_citations_baseline.txt"
 
 # file.rs:123 / some/path/foo.py:45 -- cite-another-location-by-line-number.
@@ -48,8 +56,20 @@ FILE_LINE_RE = re.compile(r"[\w./-]+\.(?:rs|py):\d+")
 LINE_WORD_RE = re.compile(r"\blines?\s*~?\d+\b", re.IGNORECASE)
 
 
-def _iter_rs_files() -> list[Path]:
-    return sorted(SRC_ROOT.rglob("*.rs"))
+def _iter_sources() -> list[Path]:
+    """Every file whose citations are gated, in a stable order.
+
+    ``.rs`` sources are filtered down to comment lines by :func:`_is_scannable`;
+    ``.rst`` docs are scanned whole, since the entire file is prose.
+    """
+    return sorted(SRC_ROOT.rglob("*.rs")) + sorted(DOCS_ROOT.rglob("*.rst"))
+
+
+def _is_scannable(path: Path, stripped: str) -> bool:
+    """Whether this line of ``path`` is eligible to be a citation."""
+    if path.suffix == ".rs":
+        return stripped.startswith("//")
+    return bool(stripped)
 
 
 def _key(rel: str, stripped: str) -> str:
@@ -58,17 +78,17 @@ def _key(rel: str, stripped: str) -> str:
 
 
 def scan() -> list[tuple[str, int, str]]:
-    """Return (rel, lineno, stripped) for every citation-shaped comment line."""
+    """Return (rel, lineno, stripped) for every citation-shaped line."""
     hits: list[tuple[str, int, str]] = []
-    for path in _iter_rs_files():
-        rel = path.relative_to(SRC_ROOT).as_posix()
+    for path in _iter_sources():
+        rel = path.relative_to(REPO_ROOT).as_posix()
         try:
             lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
         except OSError:
             continue
         for idx, raw in enumerate(lines):
             stripped = raw.strip()
-            if not stripped.startswith("//"):
+            if not _is_scannable(path, stripped):
                 continue
             if FILE_LINE_RE.search(stripped) or LINE_WORD_RE.search(stripped):
                 hits.append((rel, idx + 1, stripped))
@@ -91,7 +111,7 @@ def write_baseline(hits: list[tuple[str, int, str]]) -> int:
     keys = sorted({_key(rel, stripped) for rel, _, stripped in hits})
     header = (
         "# Line-number-citation baseline -- see tools/check_line_citations.py\n"
-        "# One key per known citation: <relpath-under-native/angr/src>\\t<stripped-comment>.\n"
+        "# One key per known citation: <repo-relative-path>\\t<stripped-line>.\n"
         "# Regenerate with: tools/check_line_citations.py --update-baseline\n"
         "# Shrinking this file (by citing a symbol name instead of a line number) is the goal.\n"
     )
@@ -105,9 +125,10 @@ def main() -> int:
     ap.add_argument("--update-baseline", action="store_true", help="rewrite the baseline from current citations")
     args = ap.parse_args()
 
-    if not SRC_ROOT.is_dir():
-        print(f"error: source root not found: {SRC_ROOT}", file=sys.stderr)
-        return 2
+    for root in (SRC_ROOT, DOCS_ROOT):
+        if not root.is_dir():
+            print(f"error: scan root not found: {root}", file=sys.stderr)
+            return 2
 
     hits = scan()
 

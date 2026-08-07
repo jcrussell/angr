@@ -1,47 +1,147 @@
 # Line-number-citation baseline -- see tools/check_line_citations.py
-# One key per known citation: <relpath-under-native/angr/src>\t<stripped-comment>.
+# One key per known citation: <repo-relative-path>\t<stripped-line>.
 # Regenerate with: tools/check_line_citations.py --update-baseline
 # Shrinking this file (by citing a symbol name instead of a line number) is the goal.
-callbacks/mod.rs	/// Matches Python's callstack.py:430/432 semantics.
-callbacks/mod.rs	/// pushed). Matches Python's callstack.py:386/419 semantics.
-concretize.rs	/// `address_concretization_mixin.py:327-329`.
-concretize.rs	/// branch at line 272 (`return self._default_value(...)`).
-interpreter/execution.rs	// mirror Python callstack.py:386/419 (BEFORE
-interpreter/execution.rs	// mirror Python callstack.py:430/432.
-interpreter/execution.rs	/// Mirrors Python `callstack.py:386` / `:419`.
-interpreter/execution.rs	/// `callstack.py:430` which reads `rself.top.func_addr` prior to
-interpreter/exits.rs	// NO_IP_CONCRETIZATION (engines/successors.py:292-296) and
-interpreter/exits.rs	// NO_SYMBOLIC_JUMP_RESOLUTION (engines/successors.py:234-239) both
-interpreter/exits.rs	// _eval_target_brutal behaviour (engines/successors.py:308-323):
-interpreter/exits.rs	// engines/successors.py:327-328, which skips
-interpreter/expressions.rs	/// `solver.py:432-439`'s BP_AFTER signature.
-interpreter/expressions.rs	/// `when="before"`). Mirrors `address_concretization_mixin.py:156-180`'s
-interpreter/mod.rs	// BVS minting. Mirrors Python's `solver.py:432-439` BP_AFTER
-interpreter/mod.rs	/// NO_IP_CONCRETIZATION option (engines/successors.py:292-296).
-interpreter/mod.rs	/// NO_SYMBOLIC_JUMP_RESOLUTION option (engines/successors.py:234-239).
-interpreter/mod.rs	/// `split_state.regs.ip = target` at engines/successors.py:328). Also
-interpreter/mod.rs	/// `split_state.regs.ip = target` write at engines/successors.py:328.
-interpreter/statements_store.rs	// Mirrors `address_concretization_mixin.py:327-329`.
-memory/mod.rs	/// (angr/engines/vex/heavy/heavy.py:115-124). Default false.
-memory/store.rs	// early `return` at `address_concretization_mixin.py:327-329`.
-memory/store.rs	/// address_concretization_mixin.py:292-294, 342-344) does the same for
-memory/tests/multi.rs	/// `load_concrete_lazy_inner` at line 548) checks `multi_objects.contains_key`
-memory/tests/symbolic.rs	/// (memory/mod.rs:298) and the flush pipeline.
-memory/tests/symbolic.rs	/// The linear scan at lines 672-680 is reached when no per-byte
-memory/tests/symbolic.rs	/// check at line ~95) and removes a single spans entry so
-memory/tests/symbolic.rs	/// load.rs:74 returns `symbolic_objects[addr]` entire because its
-memory/tests/symbolic.rs	/// overwritten offset hits the span fast path at load.rs:95 and
-memory/tests/symbolic.rs	/// store.rs:154 removes the wider sym entirely (and the spans),
-memory/tests/symbolic.rs	/// the per-byte concat fallback (~lines 642-680 of memory.rs).
-procedures/sprintf_tests.rs	// format_parser.py masks each concretized int arg to `size*8` bits (line 96)
-state/mod.rs	/// before enumeration is attempted. See engines/successors.py:234-239.
-state/mod.rs	/// the next block lift. See engines/successors.py:297-307,326-331.
-state/mod.rs	/// unconstrained stash without warning. See engines/successors.py:292-296.
-state/options.rs	/// (matches engines/successors.py:292-296). Default off.
-state/options.rs	/// added (matches engines/successors.py:297-307,326-331). Default off.
-state/options.rs	/// engines/successors.py:234-239). Default off.
-syscalls/identity.rs	//! (`angr/state_plugins/posix.py:159`).
-syscalls/identity.rs	/// Angr's default `state.posix.pid` (see `state_plugins/posix.py:159`).
-syscalls/identity.rs	/// Angr's default `state.posix.ppid` (see `state_plugins/posix.py:160`).
-syscalls/rlimit.rs	/// RLIMIT_STACK (see `procedures/linux_kernel/getrlimit.py:13`).
-vex/ops/vec_permute_mul.rs	/// `angr/engines/vex/claripy/irop.py:599`, generalised to the full
+docs/advanced-topics/debug_var.rst	# Find the addr before executing printf("%d\n", a) (line 12)
+docs/advanced-topics/debug_var.rst	# Get a state before executing printf(%d\n", *b) (line 7)
+docs/advanced-topics/debug_var.rst	# Resolve 'a' in state before execute line 10
+docs/advanced-topics/debug_var.rst	# the addr to line 7 is 0x401193 you can search for it with
+docs/advanced-topics/rust_engine.rst	(``angr/exploration/rust_state_proxy.py:2574-2596``), which raises the
+docs/advanced-topics/rust_engine.rst	(``angr/exploration/rust_state_proxy.py:2702-2706``). A
+docs/advanced-topics/rust_engine.rst	(``angr/state_plugins/posix.py:684``). There is no companion
+docs/advanced-topics/rust_engine.rst	(``cfg_emulated.py:1552-1554`` / ``:1760-1761``), which is
+docs/advanced-topics/rust_engine.rst	(``context.rs:1058``) sets ``bv_extract_prop=true`` and
+docs/advanced-topics/rust_engine.rst	(``context.rs:2073``) reached only via
+docs/advanced-topics/rust_engine.rst	(``context.rs:989``), which runs every 64th call across
+docs/advanced-topics/rust_engine.rst	(``exploration/state_lifecycle.rs:71``) forks the incoming state via
+docs/advanced-topics/rust_engine.rst	(``identifier/identify.py:315``) and the per-call replay path
+docs/advanced-topics/rust_engine.rst	(``identifier/runner.py:72`` / ``:82``) build internal
+docs/advanced-topics/rust_engine.rst	(``native/angr/src/memory/load.rs:384-394``) already falls back to a
+docs/advanced-topics/rust_engine.rst	(``native/angr/src/memory/load.rs:384-394``) returns a fresh
+docs/advanced-topics/rust_engine.rst	(``native/angr/src/symbolic/context.rs:360``) applies when the env var
+docs/advanced-topics/rust_engine.rst	(``native/angr/src/symbolic/context.rs:3739``) constructs a child with
+docs/advanced-topics/rust_engine.rst	(``rust_state_sync.py:235``) returns ``False``. Each manager then
+docs/advanced-topics/rust_engine.rst	(``symbolic/context.rs:1784``) requires each pointer to be a valid,
+docs/advanced-topics/rust_engine.rst	(``symbolic/registry.rs:310``) and holds ``Py<PyAny>`` values keyed by
+docs/advanced-topics/rust_engine.rst	(``veritesting.py:256``) against the Python engine, so a
+docs/advanced-topics/rust_engine.rst	(line 466). Per-Callable ``map_loader`` dropped from several ms
+docs/advanced-topics/rust_engine.rst	(see ``z3-rs 0.19+`` note at ``native/angr/src/solver.rs:99``).
+docs/advanced-topics/rust_engine.rst	* ``StashManager`` (``native/angr/src/stash.rs:51``) — straightforward:
+docs/advanced-topics/rust_engine.rst	* ``check_branch_feasibility`` (``context.rs:2304–2383``) — outer
+docs/advanced-topics/rust_engine.rst	**1. ``Rc<RefCell<SymContext>>`` in ``RustSimState`` (state.rs:960).**
+docs/advanced-topics/rust_engine.rst	- ``ExplorationEvent`` (``native/angr/src/exploration/mod.rs:124``) —
+docs/advanced-topics/rust_engine.rst	- ``Fuzzer`` (``native/angr/src/fuzzer.rs:59``) — libafl state machine;
+docs/advanced-topics/rust_engine.rst	- ``Icicle`` (``native/angr/src/icicle.rs:230``) — icicle VM owns
+docs/advanced-topics/rust_engine.rst	- ``PyOnDiskCorpus`` (``native/angr/src/fuzzer/corpus.rs:146``) — libafl
+docs/advanced-topics/rust_engine.rst	- ``RustBVHandle`` (``native/angr/src/symbolic/handle.rs:28``) — three
+docs/advanced-topics/rust_engine.rst	- ``RustExplorationManager`` (``native/angr/src/exploration/mod.rs:386``)
+docs/advanced-topics/rust_engine.rst	- ``RustSolverContext`` (``native/angr/src/solver.rs:102``) — holds
+docs/advanced-topics/rust_engine.rst	- ``SymContext`` itself (``native/angr/src/symbolic/context.rs:1325``)
+docs/advanced-topics/rust_engine.rst	- ``VmExit``, ``ExceptionCode`` (``native/angr/src/icicle.rs:47,97``) —
+docs/advanced-topics/rust_engine.rst	- ``rust_manager.py:1417``, ``:3896`` (re-checked at ``explore()`` time)
+docs/advanced-topics/rust_engine.rst	- ``rust_manager.py:1420``
+docs/advanced-topics/rust_engine.rst	- ``rust_manager.py:1424`` (consumed at ``:1443``)
+docs/advanced-topics/rust_engine.rst	- ``rust_manager.py:1425`` (consumed at ``:1443``)
+docs/advanced-topics/rust_engine.rst	- ``rust_manager.py:3517`` (per-state, also propagated through
+docs/advanced-topics/rust_engine.rst	- ``thread_local! STEPPING_STATE_ID`` (``exploration/mod.rs:63``) is
+docs/advanced-topics/rust_engine.rst	Matches Python's ``engines/successors.py:232-237`` (early elif
+docs/advanced-topics/rust_engine.rst	Vec<usize>)`` (``exploration/state_api.rs:100``) iterates ``ptrs``
+docs/advanced-topics/rust_engine.rst	``RustBV::Symbolic`` (``symbolic/value.rs:425``) and
+docs/advanced-topics/rust_engine.rst	``RustBVHandle`` (``symbolic/handle.rs:28``) is a pure value type:
+docs/advanced-topics/rust_engine.rst	``SymContext::z3_assertions_shared`` (``symbolic/context.rs:1357``)
+docs/advanced-topics/rust_engine.rst	``_map_loader_pages`` (line 375) and ``_add_loader_lazy_regions``
+docs/advanced-topics/rust_engine.rst	``angr/exploration/rust_manager.py``: lines 1413–1449 (per-state
+docs/advanced-topics/rust_engine.rst	``engines/successors.py:201`` where ``state._inspect("fork",
+docs/advanced-topics/rust_engine.rst	``engines/successors.py:290-294`` behavior
+docs/advanced-topics/rust_engine.rst	``engines/successors.py:295-304,325-326``.
+docs/advanced-topics/rust_engine.rst	``fastpath`` mode bundle (``sim_options.py:412``); fastpath users
+docs/advanced-topics/rust_engine.rst	``find_state_mut`` (``exploration/helpers.rs:122``). Misses become one
+docs/advanced-topics/rust_engine.rst	``jumptable.py:1053`` with ``resilience=True`` and steps via
+docs/advanced-topics/rust_engine.rst	``model_cache: RefCell<Option<z3::Model>>`` (line 1375). These would
+docs/advanced-topics/rust_engine.rst	``native/angr/src/symbolic/value.rs:415``:
+docs/advanced-topics/rust_engine.rst	``rust_state_sync.py:348`` is consumed by both
+docs/advanced-topics/rust_engine.rst	``sat_cache: Cell<Option<bool>>`` (line 1372) and
+docs/advanced-topics/rust_engine.rst	``state.scratch`` directly (``runner.py:93``), which is deep
+docs/advanced-topics/rust_engine.rst	both set (``angr/engines/vex/heavy/heavy.py:118-127``).
+docs/advanced-topics/rust_engine.rst	boundary. It takes an explicit ``z3::Context`` clone (line 35) so
+docs/advanced-topics/rust_engine.rst	call inside ``veritesting.py:215``. ``RustStateProxy.copy()``
+docs/advanced-topics/rust_engine.rst	call site with ``do_nothing`` (lines 95–107 of the example), so the
+docs/advanced-topics/rust_engine.rst	claripy's z3 backend (``solver.rs:38``) and so are safe by
+docs/advanced-topics/rust_engine.rst	jump resolution (``cfg_emulated.py:2615`` / ``:2747`` /
+docs/advanced-topics/rust_engine.rst	repeatedly (``identifier/identify.py:482`` / ``:493`` / ``:500``
+docs/advanced-topics/rust_engine.rst	syscalls or routes to the unknown-syscall stub (line 352). Before
+docs/advanced-topics/rust_engine.rst	the default ``symbolic`` mode bundle (``sim_options.py:392``,
+docs/advanced-topics/rust_engine_characterization.rst	(``angr/factory.py:164``, 5.4 s cumulative), which builds a *fresh*
+docs/advanced-topics/rust_engine_characterization.rst	(``page_backer_mixins.py:240``), which linearly scans the
+docs/advanced-topics/rust_engine_characterization.rst	``angr/callable.py:88 (Callable.__call__)`` is 88 % of cProfile
+docs/advanced-topics/rust_engine_flame_comparison.rst	(``factory.py:164``, 5.4 s cumulative), which builds a fresh state
+docs/advanced-topics/rust_engine_flame_comparison.rst	(``page_backer_mixins.py:240``) per-page backer scan come from
+docs/advanced-topics/rust_engine_flame_comparison.rst	``solve.py`` — ``callable.py:88 (Callable.__call__)`` is 88 % of
+docs/advanced-topics/rust_lazy_memory_design.rst	(``address_concretization_mixin.py:14``) is an opt-in annotation
+docs/advanced-topics/rust_lazy_memory_design.rst	(line 320).
+docs/advanced-topics/rust_lazy_memory_design.rst	(line 366), ``load_concrete_lazy_inner`` (line 517),
+docs/advanced-topics/rust_lazy_memory_design.rst	2. Teach ``load_concrete_lazy_inner`` (``memory/load.rs:517``) to
+docs/advanced-topics/rust_lazy_memory_design.rst	``angr/exploration/rust_manager.py:1619``).
+docs/advanced-topics/rust_lazy_memory_design.rst	``apply_pending_writes_{concrete,symbolic}`` (lines 474, 489 —
+docs/advanced-topics/rust_lazy_memory_design.rst	``memory/mod.rs:375``) to materialize Multi cells via the same
+docs/advanced-topics/rust_lazy_memory_design.rst	``store_conditional_multiple`` (line 363), ``store_with_concretization``
+docs/advanced-topics/rust_lazy_memory_design.rst	``store_symbolic_unified`` (line 261), ``store_strided`` (line 216),
+docs/advanced-topics/rust_lazy_memory_design.rst	base value unchanged (``memory/load.rs:474-499``). This was an earlier
+docs/advanced-topics/rust_lazy_memory_design.rst	lines 884-1130. Use the new helpers directly.
+docs/advanced-topics/rust_lazy_memory_design.rst	tests (lines 884-1130) to cover the Multi-cell path.
+docs/advanced-topics/rust_parallel_design.rst	* z3-patched Translate trait: ``native/z3-patched/src/translate/mod.rs:23-31``.
+docs/advanced-topics/rust_parallel_design.rst	``native/z3-patched/src/translate/mod.rs:23-31`` —
+docs/advanced-topics/rust_proxy_writes_design.rst	(``rust_state_proxy.py:240-425``), with ``memory.store`` raising
+docs/advanced-topics/rust_proxy_writes_design.rst	* ``angr/exploration/rust_callback_dispatch.py:960-1040`` —
+docs/advanced-topics/rust_proxy_writes_design.rst	* ``angr/exploration/rust_callback_dispatch.py:960-1040`` — the
+docs/advanced-topics/rust_proxy_writes_design.rst	* ``angr/exploration/rust_state_proxy.py:240-425`` —
+docs/advanced-topics/rust_proxy_writes_design.rst	* ``angr/exploration/rust_state_sync.py:1143-1400`` —
+docs/advanced-topics/rust_proxy_writes_design.rst	* ``angr/exploration/rust_state_sync.py:1143`` —
+docs/advanced-topics/rust_proxy_writes_design.rst	* ``angr/exploration/rust_state_sync.py:1202`` —
+docs/advanced-topics/rust_proxy_writes_design.rst	* ``angr/exploration/rust_state_sync.py:1328`` —
+docs/advanced-topics/rust_proxy_writes_design.rst	* ``native/angr/src/exploration/state_api.rs:557, 617`` —
+docs/advanced-topics/rust_proxy_writes_design.rst	``NotImplementedError`` at ``rust_state_proxy.py:422``. The
+docs/advanced-topics/rust_proxy_writes_design.rst	``native/angr/src/exploration/state_api.rs:557`` (symbolic
+docs/advanced-topics/rust_proxy_writes_design.rst	``rust_callback_dispatch.py:1025-1035`` are battle-tested.
+docs/advanced-topics/rust_proxy_writes_design.rst	``rust_callback_dispatch.py:989-997``).
+docs/advanced-topics/rust_proxy_writes_design.rst	``state_api.rs:617`` (symbolic memory regions).
+docs/advanced-topics/rust_proxy_writes_design.rst	regions via ``_group_changed_bytes`` (``rust_state_sync.py:1402``).
+docs/advanced-topics/rust_z3_sharing.rst	(``SymContext::fork``, line ~3400) reads the parent counter.
+native/angr/src/callbacks/mod.rs	/// Matches Python's callstack.py:430/432 semantics.
+native/angr/src/callbacks/mod.rs	/// pushed). Matches Python's callstack.py:386/419 semantics.
+native/angr/src/interpreter/execution.rs	// mirror Python callstack.py:386/419 (BEFORE
+native/angr/src/interpreter/execution.rs	// mirror Python callstack.py:430/432.
+native/angr/src/interpreter/execution.rs	/// Mirrors Python `callstack.py:386` / `:419`.
+native/angr/src/interpreter/execution.rs	/// `callstack.py:430` which reads `rself.top.func_addr` prior to
+native/angr/src/interpreter/exits.rs	// NO_IP_CONCRETIZATION (engines/successors.py:292-296) and
+native/angr/src/interpreter/exits.rs	// NO_SYMBOLIC_JUMP_RESOLUTION (engines/successors.py:234-239) both
+native/angr/src/interpreter/exits.rs	// _eval_target_brutal behaviour (engines/successors.py:308-323):
+native/angr/src/interpreter/exits.rs	// engines/successors.py:327-328, which skips
+native/angr/src/interpreter/expressions.rs	/// `solver.py:432-439`'s BP_AFTER signature.
+native/angr/src/interpreter/expressions.rs	/// `when="before"`). Mirrors `address_concretization_mixin.py:156-180`'s
+native/angr/src/interpreter/mod.rs	// BVS minting. Mirrors Python's `solver.py:432-439` BP_AFTER
+native/angr/src/interpreter/mod.rs	/// NO_IP_CONCRETIZATION option (engines/successors.py:292-296).
+native/angr/src/interpreter/mod.rs	/// NO_SYMBOLIC_JUMP_RESOLUTION option (engines/successors.py:234-239).
+native/angr/src/interpreter/mod.rs	/// `split_state.regs.ip = target` at engines/successors.py:328). Also
+native/angr/src/interpreter/mod.rs	/// `split_state.regs.ip = target` write at engines/successors.py:328.
+native/angr/src/interpreter/statements_store.rs	// Mirrors `address_concretization_mixin.py:327-329`.
+native/angr/src/memory/mod.rs	/// (angr/engines/vex/heavy/heavy.py:115-124). Default false.
+native/angr/src/memory/store.rs	// early `return` at `address_concretization_mixin.py:327-329`.
+native/angr/src/memory/store.rs	/// address_concretization_mixin.py:292-294, 342-344) does the same for
+native/angr/src/memory/tests/multi.rs	/// `load_concrete_lazy_inner` at line 548) checks `multi_objects.contains_key`
+native/angr/src/memory/tests/symbolic.rs	/// (memory/mod.rs:298) and the flush pipeline.
+native/angr/src/memory/tests/symbolic.rs	/// The linear scan at lines 672-680 is reached when no per-byte
+native/angr/src/memory/tests/symbolic.rs	/// check at line ~95) and removes a single spans entry so
+native/angr/src/memory/tests/symbolic.rs	/// load.rs:74 returns `symbolic_objects[addr]` entire because its
+native/angr/src/memory/tests/symbolic.rs	/// overwritten offset hits the span fast path at load.rs:95 and
+native/angr/src/memory/tests/symbolic.rs	/// store.rs:154 removes the wider sym entirely (and the spans),
+native/angr/src/memory/tests/symbolic.rs	/// the per-byte concat fallback (~lines 642-680 of memory.rs).
+native/angr/src/procedures/sprintf_tests.rs	// format_parser.py masks each concretized int arg to `size*8` bits (line 96)
+native/angr/src/state/mod.rs	/// before enumeration is attempted. See engines/successors.py:234-239.
+native/angr/src/state/mod.rs	/// the next block lift. See engines/successors.py:297-307,326-331.
+native/angr/src/state/mod.rs	/// unconstrained stash without warning. See engines/successors.py:292-296.
+native/angr/src/syscalls/identity.rs	//! (`angr/state_plugins/posix.py:159`).
+native/angr/src/syscalls/identity.rs	/// Angr's default `state.posix.pid` (see `state_plugins/posix.py:159`).
+native/angr/src/syscalls/identity.rs	/// Angr's default `state.posix.ppid` (see `state_plugins/posix.py:160`).
+native/angr/src/syscalls/rlimit.rs	/// RLIMIT_STACK (see `procedures/linux_kernel/getrlimit.py:13`).
+native/angr/src/vex/ops/vec_permute_mul.rs	/// `angr/engines/vex/claripy/irop.py:599`, generalised to the full

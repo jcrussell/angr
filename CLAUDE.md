@@ -43,7 +43,11 @@ more). `tools/check_line_citations.py` gates new occurrences in CI
 of the ones that already exist — it does not require fixing those
 retroactively, only stops the class from growing. Regenerate the baseline
 with `--update-baseline` after intentionally adding one (rare — e.g. citing
-an external, non-repo line number that can't drift).
+an external, non-repo line number that can't drift). Since angr-kw5f6 the
+same check also scans **every line of `docs/**/*.rst`** — prose rots the same
+way comments do (angr-sqfj8.126 found `rust_engine.rst`'s typed-exception
+table 60-95 lines off with no gate signal), so the symbol-anchor convention
+applies when writing docs too.
 
 **Provenance-tag convention:** a comment that records *why* a change was made
 cites the bd bead id (`angr-xxxxx`, optionally `angr-xxxxx Phase N` for a
