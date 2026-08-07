@@ -1012,8 +1012,8 @@ impl<'a> VEXInterpreter<'a> {
     ) -> Result<Option<RustBV>, CbExecutionError> {
         // AVOID_MULTIVALUED_READS: bypass `load_symbolic_unified` (and its
         // concretization) for symbolic addresses and return unconstrained.
-        // Matches Python's `address_concretization_mixin._load_one` early
-        // `return self._default_value(...)`.
+        // Matches the early `return self._default_value(...)` in Python's
+        // `address_concretization_mixin.AddressConcretizationMixin.load`.
         if self.concretizer.should_avoid_multivalued_read(addr_val)
             && let Some(rust_mem) = self.rust_memory.as_ref()
         {

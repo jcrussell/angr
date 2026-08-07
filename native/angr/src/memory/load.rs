@@ -118,7 +118,8 @@ impl SymbolicMemory {
     /// short-circuit. Returns a zero BV when `zero_fill_unconstrained` is set
     /// (mirrors Python's `_default_value` honoring `ZERO_FILL_UNCONSTRAINED_MEMORY`),
     /// otherwise a fresh BVS named `symbolic_read_unconstrained_N` — same
-    /// name stem Python uses in `_load_one` so post-hoc state-export readers
+    /// name stem Python uses in `AddressConcretizationMixin.load` so
+    /// post-hoc state-export readers
     /// can identify the origin. The N suffix is sourced from a process-wide
     /// atomic to keep Z3 symbol names unique across SymbolicMemory instances
     /// without an `&mut self` borrow (this hook fires on a read-only path).
@@ -495,7 +496,7 @@ impl SymbolicMemory {
 
         // AVOID_MULTIVALUED_READS: bypass concretization and return an
         // unconstrained value. Mirrors Python's `_default_value(...)` branch
-        // in `address_concretization_mixin._load_one`.
+        // in `address_concretization_mixin.AddressConcretizationMixin.load`.
         if concretizer.should_avoid_multivalued_read(&addr) {
             return Ok(self.unconstrained_read_value(size, ctx));
         }

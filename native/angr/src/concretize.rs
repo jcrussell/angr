@@ -141,13 +141,14 @@ pub struct AddressConcretizer {
     /// Matches Python's SimConcretizationStrategyMax.
     pub write_fallback_max: bool,
     /// AVOID_MULTIVALUED_READS: when true, symbolic-address loads skip
-    /// concretization and return an unconstrained value. Mirrors
-    /// `angr.storage.memory_mixins.address_concretization_mixin._load_one`
-    /// branch at line 272 (`return self._default_value(...)`).
+    /// concretization and return an unconstrained value. Mirrors the
+    /// `return self._default_value(...)` branch in
+    /// `angr.storage.memory_mixins.address_concretization_mixin`'s
+    /// `AddressConcretizationMixin.load`.
     pub avoid_multivalued_reads: bool,
     /// AVOID_MULTIVALUED_WRITES: when true, symbolic-address stores are
-    /// silently dropped (no-op). Mirrors the early `return` at
-    /// `address_concretization_mixin.py:327-329`.
+    /// silently dropped (no-op). Mirrors the early `return` in
+    /// `AddressConcretizationMixin.store` (same module).
     pub avoid_multivalued_writes: bool,
 }
 
