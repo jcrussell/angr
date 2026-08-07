@@ -405,6 +405,56 @@ fn pread64_symbolic_offset_falls_back() {
     ));
 }
 
+/// Regression: a 0-byte pread64 on an open-but-empty/exhausted fd must
+/// return 0 as a native no-op instead of falling back to Python. Before the
+/// fix, the `content_len == 0` check ran before any `nbyte == 0` short
+/// circuit, so a legitimate 0-byte read on an empty fd was wrongly treated
+/// as "no concrete content" and bounced to Python.
+#[test]
+fn pread64_zero_byte_on_empty_fd_is_native_no_op() {
+    let mut state = fresh_state();
+    state
+        .file_system()
+        .open_with_content("empty".to_string(), FdFlags::ReadOnly, Vec::new());
+    let out = NativePread64Syscall
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(3, 64),
+                RustBV::concrete(0x3000, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+            ],
+        )
+        .expect("0-byte read on an empty fd is a native no-op, not a Python fallback");
+    match out {
+        SyscallOutcome::Continue { ret } => assert_eq!(ret, 0),
+        _ => panic!("expected Continue"),
+    }
+}
+
+/// Regression guard for the placement of the `nbyte == 0` fast path: it
+/// must come AFTER the open-fd check, not before, so a 0-byte read on an
+/// invalid/closed fd still falls back to Python's errno handling like every
+/// other invalid-fd path in this function — instead of wrongly reporting a
+/// successful 0-byte read.
+#[test]
+fn pread64_zero_byte_on_unopened_fd_still_falls_back() {
+    let mut state = fresh_state();
+    let err = NativePread64Syscall
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(9, 64), // never opened
+                RustBV::concrete(0x3000, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+            ],
+        )
+        .expect_err("fallback");
+    assert!(matches!(err, SyscallError::Other(_)));
+}
+
 #[test]
 fn pwrite64_overwrites_at_offset_without_moving_position() {
     let mut state = fresh_state();

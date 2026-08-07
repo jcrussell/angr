@@ -426,6 +426,15 @@ impl NativeSyscall for NativePread64Syscall {
                 "pread64 from fd={fd} (not open in Rust FileSystem) falls back to Python"
             )));
         }
+        // A 0-byte positioned read is a legitimate no-op regardless of
+        // content_len (including an exhausted/empty concrete fd, which the
+        // content_len==0 check below would otherwise wrongly bounce to
+        // Python for). Must come after the open check above, not before —
+        // an invalid/closed fd with nbyte=0 should still fall back to
+        // Python's errno handling like every other invalid-fd path here.
+        if nbyte == 0 {
+            return Ok(SyscallOutcome::Continue { ret: 0 });
+        }
         // Bounded symbolic file content (angr-0xyq2 Phase 2): positioned
         // serve of the registered per-byte BVs; the fd position is untouched.
         // nbyte is clamped to MAX_SYMFILE_SERVE_SIZE (= the export cap;
