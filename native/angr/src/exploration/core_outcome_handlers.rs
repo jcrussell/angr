@@ -611,12 +611,21 @@ pub(super) fn handle_simprocedure_core(
                     state.set_register_by_offset(ctx.cc.return_register, rv);
                 }
                 state.set_pc(return_addr);
-                let sp = state.get_sp().as_u64().unwrap_or(0);
-                let ptr_size = state.arch().bytes() as u64;
-                state.set_sp(RustBV::concrete(
-                    (sp + ptr_size) as u128,
-                    state.arch().bits(),
-                ));
+                // Only stack-return ABIs (x86/AMD64) pop the return address, so
+                // only they advance SP here. On link-register ABIs (ARM/ARM64
+                // LR/X30, MIPS $ra) the caller's return address never went on
+                // the stack, and bumping SP would discard a live stack slot
+                // (angr-sqfj8.37). `step_one`'s inline native path in
+                // `run_loop_single.rs` gates the same bump the same way; keep
+                // the two in sync.
+                if ctx.cc.pops_return_addr {
+                    let sp = state.get_sp().as_u64().unwrap_or(0);
+                    let ptr_size = state.arch().bytes() as u64;
+                    state.set_sp(RustBV::concrete(
+                        (sp + ptr_size) as u128,
+                        state.arch().bits(),
+                    ));
+                }
             }
             Some(no_return)
         }

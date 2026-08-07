@@ -352,10 +352,13 @@ impl crate::procedures::NativeSimProcedure for FindTargetProc {
     }
     fn call(
         &self,
-        _state: &mut RustSimState,
+        state: &mut RustSimState,
         _args: &[crate::symbolic::RustBV],
     ) -> Result<Option<crate::symbolic::RustBV>, crate::procedures::ProcedureError> {
-        Ok(Some(crate::symbolic::RustBV::concrete(0, 64)))
+        Ok(Some(crate::symbolic::RustBV::concrete(
+            0,
+            state.arch().bits(),
+        )))
     }
 }
 
@@ -363,7 +366,17 @@ impl crate::procedures::NativeSimProcedure for FindTargetProc {
 /// `FindTargetProc` registered, under a manager configured by `cfg` (which
 /// seeds find/avoid addresses). Returns the raw outcome.
 fn dispatch_hook_with(cfg: impl FnOnce(&mut RustExplorationManager)) -> CoreOutcome {
-    let mut mgr = RustExplorationManager::new("amd64", None).unwrap();
+    dispatch_hook_on_arch("amd64", None, cfg)
+}
+
+/// [`dispatch_hook_with`] on an arbitrary architecture, optionally seeding SP,
+/// so the return path's SP adjustment can be checked per calling convention.
+fn dispatch_hook_on_arch(
+    arch: &str,
+    sp: Option<u64>,
+    cfg: impl FnOnce(&mut RustExplorationManager),
+) -> CoreOutcome {
+    let mut mgr = RustExplorationManager::new(arch, None).unwrap();
     cfg(&mut mgr);
     let ctx = mgr.step_context();
     let prof = ParallelProfiling::default();
@@ -371,8 +384,12 @@ fn dispatch_hook_with(cfg: impl FnOnce(&mut RustExplorationManager)) -> CoreOutc
     procs.register(std::sync::Arc::new(FindTargetProc));
     let syscalls = NativeSyscallRegistry::new();
 
-    let mut state = RustSimState::new("amd64").unwrap();
+    let mut state = RustSimState::new(arch).unwrap();
     state.set_pc(HOOK_ADDR);
+    if let Some(sp) = sp {
+        let bits = state.arch().bits();
+        state.set_sp(crate::symbolic::RustBV::concrete(sp as u128, bits));
+    }
     let sid = state.state_id();
 
     run_post_step_core(
@@ -460,6 +477,61 @@ fn native_hook_at_avoid_addr_bounces_to_python() {
                 ..
             })
         ));
+    });
+}
+
+// --- angr-sqfj8.37: the native-return SP bump is gated on pops_return_addr ---
+
+const SP_SEED: u64 = 0x7fff_0000;
+
+/// Run the native-return path on `arch` and hand back the successor's SP.
+fn native_return_sp(arch: &str) -> u64 {
+    let outcome = dispatch_hook_on_arch(arch, Some(SP_SEED), |_| {});
+    assert_eq!(
+        outcome.counters.native_calls, 1,
+        "{arch}: native proc must have run"
+    );
+    match outcome.ret {
+        CoreReturn::Continue(succ) => {
+            assert_eq!(succ.len(), 1);
+            assert_eq!(succ[0].0.pc(), HOOK_RET, "{arch}: landed at return address");
+            succ[0]
+                .0
+                .get_sp()
+                .as_u64()
+                .unwrap_or_else(|| panic!("{arch}: SP went symbolic"))
+        }
+        _ => panic!("{arch}: expected Continue"),
+    }
+}
+
+/// Stack-return ABIs pop the return address, so the parallel path advances SP
+/// by one pointer — the control for the link-register cases below.
+#[test]
+fn native_return_advances_sp_on_stack_return_abi() {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|_py| {
+        assert_eq!(native_return_sp("amd64"), SP_SEED + 8);
+        assert_eq!(native_return_sp("x86"), SP_SEED + 4);
+    });
+}
+
+/// ARM/ARM64/MIPS return through LR/X30/$ra: nothing was pushed, so nothing may
+/// be popped. Before angr-sqfj8.37 `handle_simprocedure_core` bumped SP
+/// unconditionally — only `step_one` (run_loop_single.rs) gated it — so every
+/// native proc return under the wave/steady/worker engines silently dropped a
+/// pointer-sized live stack slot.
+#[test]
+fn native_return_leaves_sp_untouched_on_link_register_abis() {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|_py| {
+        for arch in ["armel", "aarch64", "mips32", "mips64"] {
+            assert_eq!(
+                native_return_sp(arch),
+                SP_SEED,
+                "{arch} returns via a link register; SP must not move"
+            );
+        }
     });
 }
 
