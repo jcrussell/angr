@@ -746,7 +746,7 @@ impl RustExplorationManager {
         // byte indices >= 16, and the downstream store_concrete page-fill
         // loop would emit a 16-byte-cycle pattern across the entire
         // data.len() range — corrupting memory wholesale. Mirrors the safe
-        // pattern in RustSimState::apply_changes (state.rs).
+        // pattern in RustSimState::apply_changes, which shares this helper.
         self.with_state_mut(state_id, |state| {
             crate::symbolic::store_concrete_bytes_chunked(addr, data, |chunk_addr, bv| {
                 state

@@ -3237,3 +3237,56 @@ fn test_memory_load_sees_unflushed_multi_cells() {
         "memory_load must reconstruct the Multi alternative"
     );
 }
+
+/// `apply_changes` splits a Python SimProcedure memory write into 16-byte
+/// chunks (RustBV is u128-backed), so a buffer wider than one chunk must land
+/// byte-for-byte rather than repeating the first 16 bytes.
+#[test]
+fn apply_changes_chunks_memory_writes_wider_than_16_bytes() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory(0x1000, 0x1000, Permission::RWX);
+
+    let data: Vec<u8> = (0..40u8).collect();
+    let mut changes = StateChanges::new();
+    changes.memory_writes.push((0x1000, data.clone()));
+    state.apply_changes(&changes);
+
+    for (i, &expected) in data.iter().enumerate() {
+        let byte = state
+            .memory_load(0x1000 + i as u64, 1)
+            .expect("mapped load")
+            .as_u64();
+        assert_eq!(byte, Some(expected as u64), "byte {i} did not land");
+    }
+}
+
+/// A write whose address is unmapped fails inside `store_concrete`.
+/// `apply_changes` has no error channel to its callers, so it must warn and
+/// keep applying the *remaining* changes instead of aborting the whole sync
+/// (angr-sqfj8.87).
+#[test]
+fn apply_changes_continues_past_a_failed_memory_write() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory(0x1000, 0x1000, Permission::RWX);
+
+    let mut changes = StateChanges::new();
+    // Unmapped — store_concrete returns MemoryError::Unmapped.
+    changes.memory_writes.push((0xdead_0000, vec![0xAA; 4]));
+    // Mapped — must still be applied after the failure above.
+    changes
+        .memory_writes
+        .push((0x1000, vec![0x11, 0x22, 0x33, 0x44]));
+    changes.new_pc = Some(0x2000);
+    state.apply_changes(&changes);
+
+    assert_eq!(
+        state.memory_load(0x1000, 4).expect("mapped load").as_u64(),
+        Some(0x4433_2211),
+        "a later write must survive an earlier unmapped write"
+    );
+    assert_eq!(
+        state.pc(),
+        0x2000,
+        "PC update must survive the failed write"
+    );
+}

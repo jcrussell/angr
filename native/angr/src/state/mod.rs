@@ -713,19 +713,25 @@ impl RustSimState {
         // Apply memory writes — split into 16-byte chunks since RustBV
         // uses u128 internally (max 128 bits per concrete value)
         for (addr, bytes) in &changes.memory_writes {
-            let mut offset = 0usize;
-            while offset < bytes.len() {
-                let remaining = bytes.len() - offset;
-                let chunk_size = remaining.min(16);
-                let chunk = &bytes[offset..offset + chunk_size];
-                let width = (chunk_size * 8) as u32;
-                let mut value: u128 = 0;
-                for (i, &b) in chunk.iter().enumerate() {
-                    value |= (b as u128) << (i * 8);
-                }
-                let bv = RustBV::concrete(value, width);
-                let _ = self.memory.store_concrete(*addr + offset as u64, bv);
-                offset += chunk_size;
+            let memory = &mut self.memory;
+            let res =
+                crate::symbolic::store_concrete_bytes_chunked(*addr, bytes, |chunk_addr, bv| {
+                    memory.store_concrete(chunk_addr, bv)
+                });
+            // SILENT(cat-c): the write came from a Python SimProcedure that
+            // already believes it landed, so dropping it leaves Rust memory
+            // disagreeing with Python's view — a wrong-answer risk, not an
+            // expected control-flow path. `apply_changes` has no error channel
+            // to its callers (`resume.rs::_resume_after_simprocedure` and
+            // friends), so warn loudly and keep applying the remaining writes
+            // rather than abandoning the rest of the sync (angr-sqfj8.87).
+            if let Err(e) = res {
+                let len = bytes.len();
+                log::warn!(
+                    "apply_changes: failed to store a {len}-byte Python SimProcedure memory \
+                     write at {addr:#x} ({e:?}); Rust state now diverges from Python's view \
+                     of this write"
+                );
             }
         }
 
