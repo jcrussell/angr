@@ -679,9 +679,25 @@ pub const STASH_SNAPSHOT_VERSION: u8 = 2;
 pub fn process_token() -> u64 {
     static TOKEN: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
     *TOKEN.get_or_init(|| {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_nanos() as u64);
+        // SILENT(cat-b): a system clock reading before the Unix epoch makes
+        // `duration_since` fail. Taking the error's magnitude keeps the
+        // wall-clock entropy the token relies on (a plain `0` fallback would
+        // collapse the token to just the pid, so a recycled pid on a later
+        // pre-epoch run could alias ours and suppress the `SymbolIdRebase` in
+        // `StashManager::load_snapshot`). Lossy only in sign: two clocks
+        // equidistant either side of the epoch hash alike (angr-sqfj8.137).
+        let nanos = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+            Ok(d) => d.as_nanos() as u64,
+            Err(e) => {
+                log::warn!(
+                    "system clock reads before the Unix epoch; process token falls back to the \
+                     pre-epoch offset ({} ns) — snapshot id-space rebasing may misjudge a foreign \
+                     envelope written by a same-pid process with a mirrored clock skew",
+                    e.duration().as_nanos()
+                );
+                e.duration().as_nanos() as u64
+            }
+        };
         nanos.rotate_left(17) ^ u64::from(std::process::id())
     })
 }
