@@ -30,6 +30,25 @@ fn test_unique_names() {
 }
 
 #[test]
+fn test_new_bv_name_id_matches_symbol_id() {
+    // angr-sqfj8.90: new_bv must mint one id, not two — the `{base}_{id}`
+    // suffix in the display name has to be the value's real `Symbolic.id`.
+    let ctx = SymContext::new_mock();
+    let bv = ctx.new_bv("mergeflag", 1);
+    let RustBV::Symbolic { id, name, .. } = &bv else {
+        panic!("new_bv must produce a Symbolic, got {bv:?}");
+    };
+    assert_eq!(&**name, format!("mergeflag_{id}"));
+
+    // ...and consecutive calls must still not collide.
+    let other = ctx.new_bv("mergeflag", 1);
+    let RustBV::Symbolic { id: other_id, .. } = &other else {
+        panic!("new_bv must produce a Symbolic");
+    };
+    assert_ne!(id, other_id);
+}
+
+#[test]
 fn test_concrete_eval() {
     let ctx = SymContext::new_mock();
     let bv = RustBV::concrete(42, 32);
