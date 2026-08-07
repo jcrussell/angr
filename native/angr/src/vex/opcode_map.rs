@@ -738,6 +738,14 @@ fn parse_vector(op_str: &str) -> Option<IROp> {
         "32Sx4" => (I32, 4, true), "32Ux4" => (I32, 4, false),
     });
 
+    // PPC bit-matrix transpose — `Iop_PwBitMtxXpose64x2` (unary, V128 only).
+    // Backs PowerPC `vgbbd`; not a NEON op despite the `Pw` prefix it shares
+    // with the pairwise family above. libVEX declares exactly one shape, so
+    // this is a plain string match rather than a `vec_arms!` table.
+    if op_str == "Iop_PwBitMtxXpose64x2" {
+        return Some(IROp::VPwBitMtxXpose);
+    }
+
     // NEON per-byte popcount — `Iop_Cnt8x{8,16}` (unary, 8-bit lanes only).
     // ARM CNT (DDI 0487 C7.2.62).
     match op_str {
@@ -1102,10 +1110,9 @@ fn parse_vreverse(op_str: &str) -> Option<IROp> {
 ///   pairwise `Iop_PwAdd32Fx2` — angr-cudgw.6, via `parse_float` to
 ///   `IROp::VFPwAdd`; the FP pairwise `Iop_PwMax32Fx{2,4}` /
 ///   `Iop_PwMin32Fx{2,4}` — angr-sqfj8.116, via `parse_float` to
-///   `IROp::VFPwMax` / `VFPwMin`. The only `Pw*` op left unimplemented is
-///   `Iop_PwBitMtxXpose64x2` (PPC vgbbd bit-matrix transpose), which is not a
-///   NEON op and so falls through to the generic unmapped path, not to
-///   `parse_neon_unimplemented`.
+///   `IROp::VFPwMax` / `VFPwMin`. The one non-NEON member of the family,
+///   `Iop_PwBitMtxXpose64x2` (PPC vgbbd bit-matrix transpose) — angr-sqfj8.143,
+///   via `parse_vector` to `IROp::VPwBitMtxXpose`. No `Pw*` op is unmapped.
 /// - `Iop_PolynomialMul8x{8,16}` / `Iop_PolynomialMull8x8` (GF(2) carry-less
 ///   multiply) — angr-tukg.6, via `parse_vector` to `IROp::VPolynomialMul`.
 /// - `Iop_Cnt8x{8,16}` (per-byte popcount), `Iop_Clz{N}x{M}` and

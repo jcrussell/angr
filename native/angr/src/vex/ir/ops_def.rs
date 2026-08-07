@@ -571,6 +571,23 @@ pub enum IROp {
         count: u8,
     },
 
+    /// PPC bit-matrix transpose — `Iop_PwBitMtxXpose64x2` (unary, V128 ->
+    /// V128). Backs the PowerPC `vgbbd` ("Vector Gather Bits by Bytes by
+    /// Doubleword") instruction. Each 64-bit half is read as an 8x8 bit
+    /// matrix indexed `M[byte][bit]` and replaced by its transpose:
+    /// `out.byte[j].bit[k] = in.byte[k].bit[j]`.
+    ///
+    /// The op carries no lane fields: libVEX defines only the `64x2` shape.
+    ///
+    /// Index-order note (why this is unambiguous): PPC ISA 2.07 states the
+    /// rule in big-endian numbering (byte 0 = most significant, bit 0 = MSB),
+    /// while the implementation uses little-endian numbering. Substituting
+    /// `j' = 7-j` and `k' = 7-k` into `out[j][k] = in[k][j]` yields
+    /// `out'[j'][k'] = in'[k'][j']` — the same transpose. Reversing *both*
+    /// index orders leaves a transpose fixed, so no direction/endianness
+    /// choice can silently flip the result.
+    VPwBitMtxXpose,
+
     /// NEON GF(2) polynomial multiply — `Iop_PolynomialMul8x{8,16}` (non-
     /// widening, `widen=false`) and `Iop_PolynomialMull8x8` (widening,
     /// `widen=true`). Per-lane carry-less multiply over GF(2): for `a*b` with
@@ -1041,6 +1058,10 @@ impl IROp {
                 16 => Some(IRType::I16),
                 _ => None,
             },
+
+            // PPC vgbbd (Iop_PwBitMtxXpose64x2): V128 in, V128 out. The op has
+            // exactly one shape, so the width is not derived from lane fields.
+            IROp::VPwBitMtxXpose => Some(IRType::V128),
 
             // Per-lane Clz/Cls: width preserved (lane width = elem bits).
             IROp::VClz { elem, count } | IROp::VCls { elem, count } => {

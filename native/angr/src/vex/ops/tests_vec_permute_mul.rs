@@ -599,3 +599,121 @@ fn test_vec_qdmull_32sx2_symbolic_matches_reference() {
     );
     ctx.pop();
 }
+
+// =========================================================================
+// VPwBitMtxXpose — PPC vgbbd 8x8 bit-matrix transpose (angr-sqfj8.143).
+//   Iop_PwBitMtxXpose64x2, V128 -> V128, each 64-bit half independent.
+// =========================================================================
+
+/// Independent reference for PPC `vgbbd`, written directly in the ISA 2.07
+/// big-endian numbering the instruction is specified in (byte 0 = most
+/// significant byte of the doubleword, bit 0 = most significant bit of the
+/// byte):
+///
+///   VRT.dword[i].byte[j].bit[k] <- VRB.dword[i].byte[k].bit[j]
+///
+/// `vec_bit_mtx_xpose` uses little-endian numbering instead, so this is a
+/// genuinely independent replay of the spec rather than a copy of the
+/// implementation — it catches a byte/bit-order confusion in either direction.
+fn vgbbd_be_reference(v: u128) -> u128 {
+    let mut out: u128 = 0;
+    for half_shift in [0u32, 64] {
+        let src = ((v >> half_shift) & 0xFFFF_FFFF_FFFF_FFFF) as u64;
+        let mut dst: u64 = 0;
+        for j in 0..8u32 {
+            for k in 0..8u32 {
+                // BE byte b occupies bits [63-8b ..= 56-8b]; BE bit index i
+                // inside it sits at 56 - 8*b + (7 - i).
+                let src_bit = (src >> (56 - 8 * k + (7 - j))) & 1;
+                dst |= src_bit << (56 - 8 * j + (7 - k));
+            }
+        }
+        out |= (dst as u128) << half_shift;
+    }
+    out
+}
+
+/// The canonical `vgbbd` use: every byte's most significant bit is gathered
+/// into a single byte of the result. Low half has all eight MSBs set (each
+/// byte 0x80) and collapses to one 0xFF byte; the high half has a single set
+/// bit and moves it to the opposite corner of the matrix.
+#[test]
+fn test_vec_bit_mtx_xpose_concrete_gathers_msbs() {
+    let ctx = SymContext::new_mock();
+    let v: u128 = 0x01000000_00000000_80808080_80808080u128;
+    let result = VEXOps::unop(IROp::VPwBitMtxXpose, RustBV::concrete(v, 128), &ctx).unwrap();
+    assert_eq!(result.width(), 128);
+    // Low half: LE bit 8j+7 set for every j → transposed to LE bits 56..=63,
+    // i.e. the top byte of the half becomes 0xFF.
+    // High half: only LE byte 7 bit 0 set → transposed to LE byte 0 bit 7.
+    let expected: u128 = 0x00000000_00000080_FF000000_00000000u128;
+    assert_eq!(result.as_u128().unwrap(), expected);
+    assert_eq!(expected, vgbbd_be_reference(v));
+}
+
+/// Concrete path vs the big-endian spec replay over a spread of patterns,
+/// including asymmetric ones where a transposed-the-wrong-way result would
+/// differ.
+#[test]
+fn test_vec_bit_mtx_xpose_concrete_matches_be_spec_replay() {
+    let ctx = SymContext::new_mock();
+    let cases: [u128; 6] = [
+        0,
+        u128::MAX,
+        // Anti-diagonal per half: the identity matrix under BE numbering, so
+        // the transpose is a fixed point (guards against a no-op passing by
+        // accident — the other cases are not fixed points).
+        0x80402010_08040201_80402010_08040201u128,
+        // One set bit per half, off the diagonal.
+        0x00000000_00000001_01000000_00000000u128,
+        // Distinct bytes so every (j, k) slot is exercised.
+        0x0123_4567_89AB_CDEFu128 | (0xFEDC_BA98_7654_3210u128 << 64),
+        0xDEADBEEF_CAFEBABE_0BADF00D_5AA55AA5u128,
+    ];
+    for v in cases {
+        let result = VEXOps::unop(IROp::VPwBitMtxXpose, RustBV::concrete(v, 128), &ctx).unwrap();
+        assert_eq!(
+            result.as_u128().unwrap(),
+            vgbbd_be_reference(v),
+            "vgbbd mismatch for input {v:#034x}"
+        );
+    }
+}
+
+/// A transpose is its own inverse, so applying the op twice must be the
+/// identity — proved over a fully symbolic operand, which exercises the
+/// per-bit extract/concat path rather than the u128 fold.
+#[test]
+fn test_vec_bit_mtx_xpose_symbolic_double_apply_is_identity() {
+    let ctx = SymContext::new_mock();
+    let arg = RustBV::symbolic(&ctx, "vgbbd_arg", 128);
+    let once = VEXOps::unop(IROp::VPwBitMtxXpose, arg.clone(), &ctx).unwrap();
+    assert!(once.as_u128().is_none(), "operand must stay symbolic");
+    let twice = VEXOps::unop(IROp::VPwBitMtxXpose, once, &ctx).unwrap();
+    assert_eq!(twice.width(), 128);
+
+    ctx.push();
+    ctx.add_constraint(twice.to_z3_ast().eq(arg.to_z3_ast()).not());
+    assert!(
+        !ctx.is_sat(),
+        "VPwBitMtxXpose applied twice must be the identity"
+    );
+    ctx.pop();
+}
+
+/// The symbolic per-bit path must agree with the concrete u128 fold: pin a
+/// symbolic operand to a known value and eval the result.
+#[test]
+fn test_vec_bit_mtx_xpose_symbolic_matches_concrete_path() {
+    let ctx = SymContext::new_mock();
+    let v: u128 = 0xDEADBEEF_CAFEBABE_0BADF00D_5AA55AA5u128;
+    let arg = RustBV::symbolic(&ctx, "vgbbd_pinned", 128);
+    let got = VEXOps::unop(IROp::VPwBitMtxXpose, arg.clone(), &ctx).unwrap();
+
+    ctx.push();
+    ctx.add_constraint(arg.to_z3_ast().eq(RustBV::concrete(v, 128).to_z3_ast()));
+    assert!(ctx.is_sat());
+    let evaluated = ctx.eval(&got).expect("pinned operand must evaluate");
+    ctx.pop();
+    assert_eq!(evaluated, vgbbd_be_reference(v));
+}

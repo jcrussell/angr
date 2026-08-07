@@ -153,6 +153,7 @@ pub fn iropclass(op: &IROp) -> VexOpFamily {
         | IROp::VAvg { .. }
         | IROp::VCnt { .. }
         | IROp::VGetMSBs { .. }
+        | IROp::VPwBitMtxXpose
         | IROp::VClz { .. }
         | IROp::VCls { .. }
         | IROp::VPolynomialMul { .. }

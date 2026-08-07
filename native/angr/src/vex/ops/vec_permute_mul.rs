@@ -8,7 +8,8 @@
 //! super/the descendant rule.
 //!
 //! Covers the ARM REV*/RBIT sub-unit reversal family
-//! (Iop_Reverse{n}sIn{m}_x{k}).
+//! (Iop_Reverse{n}sIn{m}_x{k}), the PPC vgbbd bit-matrix transpose
+//! (Iop_PwBitMtxXpose64x2), and the widening multiplies (Iop_Mull*/QDMull*).
 
 use super::{OpError, VEXOps};
 use crate::symbolic::{RustBV, SymContext};
@@ -82,6 +83,51 @@ impl VEXOps {
             }
         }
         Ok(Self::concat_le_elements(elements, ctx))
+    }
+
+    /// PPC bit-matrix transpose — `Iop_PwBitMtxXpose64x2` (unary, V128 ->
+    /// V128), backing the PowerPC `vgbbd` instruction. Each 64-bit half is
+    /// treated as an 8x8 bit matrix `M[byte][bit]` and replaced by its
+    /// transpose: `out.byte[j].bit[k] = in.byte[k].bit[j]`. The two halves are
+    /// independent, so V128 lane order is irrelevant.
+    ///
+    /// See the `IROp::VPwBitMtxXpose` doc comment for why the little-endian
+    /// bit/byte numbering used here agrees with the big-endian numbering the
+    /// PPC ISA states the rule in (reversing both index orders leaves a
+    /// transpose fixed). angr's Python VEX engine has no handler for this op
+    /// at all, so this is new capability rather than a parity port.
+    pub(super) fn vec_bit_mtx_xpose(arg: RustBV, ctx: &SymContext) -> Result<RustBV, OpError> {
+        debug_assert_eq!(arg.width(), 128);
+
+        // Concrete fast path: move one bit at a time within each half.
+        if let Some(v) = arg.as_u128() {
+            let mut result: u128 = 0;
+            for half in 0..2u32 {
+                let half_lo = half * 64;
+                for j in 0..8u32 {
+                    for k in 0..8u32 {
+                        let bit = (v >> (half_lo + k * 8 + j)) & 1;
+                        result |= bit << (half_lo + j * 8 + k);
+                    }
+                }
+            }
+            return Ok(RustBV::concrete(result, 128));
+        }
+
+        // Symbolic: concat_le_elements puts elements[0] at the LSB, so walk
+        // output bit positions from low to high and push the source bit each
+        // one pulls from.
+        let mut bits: Vec<RustBV> = Vec::with_capacity(128);
+        for half in 0..2u32 {
+            let half_lo = half * 64;
+            for j in 0..8u32 {
+                for k in 0..8u32 {
+                    let src = half_lo + k * 8 + j;
+                    bits.push(arg.extract(src, src, ctx));
+                }
+            }
+        }
+        Ok(Self::concat_le_elements(bits, ctx))
     }
 
     /// Widening vector multiply (`Iop_Mull{N}{S,U}x{M}` full-lane, NEON VMULL;

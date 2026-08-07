@@ -671,3 +671,32 @@ fn test_parse_perm() {
     // two-argument `_op_generic_Perm` cannot model either.
     assert!(matches!(parse_opcode("Iop_Perm8x16x2"), IROp::Unmapped(_)));
 }
+
+/// angr-sqfj8.143: `Iop_PwBitMtxXpose64x2` (PPC vgbbd) routes to
+/// `IROp::VPwBitMtxXpose` and reports a V128 result. It is the one `Pw*`
+/// opcode that is not NEON, so it is parsed by an explicit string match
+/// rather than a lane-shape table.
+#[test]
+fn test_parse_pw_bit_mtx_xpose() {
+    assert_eq!(parse_opcode("Iop_PwBitMtxXpose64x2"), IROp::VPwBitMtxXpose);
+    assert_eq!(
+        IROp::VPwBitMtxXpose.result_type(),
+        Some(IRType::V128),
+        "vgbbd is V128 -> V128"
+    );
+
+    // libVEX declares exactly one shape (vendor/pyvex_ffi.h). Pin the absence
+    // of the plausible-looking siblings so a future audit does not "restore
+    // symmetry" by inventing opcodes that do not exist.
+    for op_str in [
+        "Iop_PwBitMtxXpose32x4",
+        "Iop_PwBitMtxXpose8x16",
+        "Iop_PwBitMtxXpose64x4",
+        "Iop_PwBitMtxXpose64x1",
+    ] {
+        assert!(
+            matches!(parse_opcode(op_str), IROp::Unmapped(_)),
+            "{op_str} is not declared by libVEX and must stay unmapped"
+        );
+    }
+}

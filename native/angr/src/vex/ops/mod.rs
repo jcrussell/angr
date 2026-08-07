@@ -266,6 +266,9 @@ impl VEXOps {
             // SSE byte-mask extract (PMOVMSKB) — Iop_GetMSBs8x{8,16}.
             IROp::VGetMSBs { count } => Self::vec_get_msbs(arg, count, ctx),
 
+            // PPC bit-matrix transpose (vgbbd) — Iop_PwBitMtxXpose64x2.
+            IROp::VPwBitMtxXpose => Self::vec_bit_mtx_xpose(arg, ctx),
+
             // NEON per-lane count leading zeros — Iop_Clz{N}x{M}.
             IROp::VClz { elem, count } => {
                 Self::vec_lane_count(arg, elem, count, LaneCountKind::Clz, ctx)
