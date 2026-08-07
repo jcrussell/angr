@@ -208,6 +208,35 @@ fn wrtmp_unknown_temp_errors() {
     });
 }
 
+/// angr-sqfj8.69: LoadG used to drop an out-of-range `dst` write on the floor
+/// (bounds check with no `else`), unlike WrTmp/LLSC. Every temp write now goes
+/// through `write_tmp`, so a `dst` the tyenv doesn't cover fails loud.
+#[test]
+fn loadg_unknown_temp_errors() {
+    let ctx = SymContext::new_mock();
+    let mut interp = new_interp(&ctx);
+    // tyenv declares tmp 5 (so the handler gets past its dst-type lookup) but
+    // the temps vector was never sized to match. A concrete-false guard takes
+    // the alt-value path, so this needs no memory or load callback.
+    let irsb = make_irsb_with_temps(0x1000, &[IRType::I32; 6]);
+    assert!(interp.temps.is_empty());
+    let stmt = IRStmt::LoadG {
+        dst: 5,
+        addr: Box::new(IRExpr::Const(IRConst::U64(0x4010))),
+        alt: Box::new(IRExpr::Const(IRConst::U32(0))),
+        guard: Box::new(IRExpr::Const(IRConst::U1(false))),
+        cvt: IRLoadGOp::Identity,
+        endness: Endness::Little,
+    };
+    with_python(|cb| {
+        let res = interp.execute_stmt_with_callbacks(cb, &stmt, &irsb);
+        assert!(
+            matches!(res, Err(CbExecutionError::UnknownTemp(5))),
+            "LoadG must error on an out-of-range dst, not silently drop the write"
+        );
+    });
+}
+
 #[test]
 fn exit_with_concrete_false_guard_continues() {
     let ctx = SymContext::new_mock();

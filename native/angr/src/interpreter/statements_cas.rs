@@ -155,15 +155,9 @@ impl<'a> VEXInterpreter<'a> {
         )?;
 
         // Write current values to oldLo (and oldHi for DCAS).
-        if (old_lo as usize) >= self.temps.len() {
-            return Err(CbExecutionError::UnknownTemp(old_lo));
-        }
-        self.temps[old_lo as usize] = Some(current_lo);
+        self.write_tmp(old_lo, current_lo)?;
         if let Some(d) = dcas {
-            if (d.old_hi_idx as usize) >= self.temps.len() {
-                return Err(CbExecutionError::UnknownTemp(d.old_hi_idx));
-            }
-            self.temps[d.old_hi_idx as usize] = Some(d.current_hi);
+            self.write_tmp(d.old_hi_idx, d.current_hi)?;
         }
 
         Ok(StmtResult::Continue)

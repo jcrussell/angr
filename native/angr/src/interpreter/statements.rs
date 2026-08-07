@@ -13,6 +13,27 @@ pub(super) struct LoadGArgs<'s> {
 }
 
 impl<'a> VEXInterpreter<'a> {
+    /// Write `value` into VEX temp slot `tmp`, erroring when the index is out
+    /// of range for the temps vector sized from this IRSB's tyenv.
+    ///
+    /// The single write path for the statement handlers (`WrTmp`, `LLSC`,
+    /// `LoadG`, `CAS`, `Dirty`) — every one of them previously hand-wrote its
+    /// own `if (tmp as usize) < self.temps.len()` guard, and they had drifted
+    /// into two behaviours: erroring vs. silently dropping the computed value
+    /// (angr-12jjk.18 / angr-sqfj8.69). An out-of-range slot means the lifted
+    /// IR disagrees with its own tyenv, which is a lifter trust-boundary bug,
+    /// so the one policy here is to fail loud with `UnknownTemp`. A future
+    /// caller that genuinely wants to drop the write must say so explicitly
+    /// with a `SILENT(cat-x)` tag rather than by omitting an `else` arm.
+    pub(super) fn write_tmp(&mut self, tmp: u32, value: RustBV) -> Result<(), CbExecutionError> {
+        let slot = self
+            .temps
+            .get_mut(tmp as usize)
+            .ok_or(CbExecutionError::UnknownTemp(tmp))?;
+        *slot = Some(value);
+        Ok(())
+    }
+
     /// Execute a single statement using Python callbacks.
     pub(super) fn execute_stmt_with_callbacks(
         &mut self,
@@ -51,11 +72,13 @@ impl<'a> VEXInterpreter<'a> {
 
             IRStmt::WrTmp { tmp, data } => {
                 let value = self.eval_expr_with_callbacks(callbacks, data, &irsb.tyenv)?;
-                if (*tmp as usize) < self.temps.len() {
-                    self.dispatch_tmp_write_inspect(callbacks, *tmp, &value);
-                    self.temps[*tmp as usize] = Some(value);
-                } else {
-                    return Err(CbExecutionError::UnknownTemp(*tmp));
+                self.write_tmp(*tmp, value)?;
+                // Dispatched after the store (the callback's `when` is
+                // "after") and by re-borrowing the slot rather than cloning
+                // `value`, which would cost a refcount bump on the hottest
+                // statement in the IR.
+                if let Some(written) = &self.temps[*tmp as usize] {
+                    self.dispatch_tmp_write_inspect(callbacks, *tmp, written);
                 }
                 Ok(StmtResult::Continue)
             }
@@ -411,11 +434,7 @@ impl<'a> VEXInterpreter<'a> {
                         };
                         let value =
                             self.eval_expr_with_callbacks(callbacks, &load_expr, &irsb.tyenv)?;
-                        if (*result as usize) < self.temps.len() {
-                            self.temps[*result as usize] = Some(value);
-                        } else {
-                            return Err(CbExecutionError::UnknownTemp(*result));
-                        }
+                        self.write_tmp(*result, value)?;
                     }
                     Some(data_expr) => {
                         // Store-conditional: store data, write 1 (success) to result temp.
@@ -426,11 +445,7 @@ impl<'a> VEXInterpreter<'a> {
                             endness: *endness,
                         };
                         self.execute_stmt_with_callbacks(callbacks, &store_stmt, irsb)?;
-                        if (*result as usize) < self.temps.len() {
-                            self.temps[*result as usize] = Some(RustBV::concrete(1, 1));
-                        } else {
-                            return Err(CbExecutionError::UnknownTemp(*result));
-                        }
+                        self.write_tmp(*result, RustBV::concrete(1, 1))?;
                     }
                 }
                 Ok(StmtResult::Continue)
@@ -645,17 +660,13 @@ impl<'a> VEXInterpreter<'a> {
                 // Apply conversion
                 let result = self.apply_loadg_conversion(*cvt, loaded, dst_ty.bits());
 
-                if (*dst as usize) < self.temps.len() {
-                    self.temps[*dst as usize] = Some(result);
-                }
+                self.write_tmp(*dst, result)?;
                 return Ok(StmtResult::Continue);
             }
 
             if !can_be_true && can_be_false {
                 // Guard is always false - use alt value
-                if (*dst as usize) < self.temps.len() {
-                    self.temps[*dst as usize] = Some(alt_val);
-                }
+                self.write_tmp(*dst, alt_val)?;
                 return Ok(StmtResult::Continue);
             }
 
@@ -670,9 +681,7 @@ impl<'a> VEXInterpreter<'a> {
             // Create ITE: if guard then loaded else alt
             let result = guard_val.ite(&converted, &alt_val, self.ctx);
 
-            if (*dst as usize) < self.temps.len() {
-                self.temps[*dst as usize] = Some(result);
-            }
+            self.write_tmp(*dst, result)?;
             return Ok(StmtResult::Continue);
         }
 
@@ -693,9 +702,7 @@ impl<'a> VEXInterpreter<'a> {
                 alt_val
             };
 
-            if (*dst as usize) < self.temps.len() {
-                self.temps[*dst as usize] = Some(result);
-            }
+            self.write_tmp(*dst, result)?;
         } else {
             // This shouldn't happen if guard_val is concrete
             return Err(CbExecutionError::InvalidIR(
@@ -794,9 +801,7 @@ impl<'a> VEXInterpreter<'a> {
                 && let Some(return_value) = result.return_value
             {
                 let value = RustBV::concrete(return_value as u128, ret_ty_bits);
-                if (tmp as usize) < self.temps.len() {
-                    self.temps[tmp as usize] = Some(value);
-                }
+                self.write_tmp(tmp, value)?;
             }
 
             // Apply any register writes from the helper
@@ -824,9 +829,7 @@ impl<'a> VEXInterpreter<'a> {
                 let bits = if ret_ty_bits == 0 { 64 } else { ret_ty_bits };
                 let stub =
                     RustBV::symbolic(self.ctx, format!("dirty_{}_stub", dirty.cee.name), bits);
-                if (tmp as usize) < self.temps.len() {
-                    self.temps[tmp as usize] = Some(stub);
-                }
+                self.write_tmp(tmp, stub)?;
             }
             return Ok(StmtResult::Continue);
         }
@@ -870,9 +873,7 @@ impl<'a> VEXInterpreter<'a> {
                 RustBV::concrete(value, ret_ty_bits)
             };
 
-            if (tmp as usize) < self.temps.len() {
-                self.temps[tmp as usize] = Some(result);
-            }
+            self.write_tmp(tmp, result)?;
         }
 
         Ok(StmtResult::Continue)
