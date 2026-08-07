@@ -59,6 +59,101 @@ pub(crate) enum SubcallSetupError {
     UnsupportedAbi,
 }
 
+/// The ABI facts [`setup_native_subcall_with_abi`] needs, decoupled from where
+/// they came from.
+///
+/// The single-threaded path reads them off the manager's
+/// `Box<dyn CallingConvention>`; the parallel post-step path reads them off the
+/// scalar `CcSnapshot` (the trait object is not `Clone`). Both funnel through
+/// this borrow so the dispatch logic exists once (angr-sqfj8.41).
+pub(crate) struct SubcallAbi<'a> {
+    pub(crate) arg_registers: &'a [u32],
+    pub(crate) pointer_size: u32,
+    pub(crate) pops_return_addr: bool,
+    pub(crate) link_register: Option<u32>,
+}
+
+/// Set up a native sub-call (`ProcOutcome::CallAndResume`): make the guest
+/// routine `sub.target` run with `sub.sub_args`, then return to the resume
+/// sentinel so the proc's continuation re-enters via `handle_native_resume`.
+///
+/// All feasibility checks happen before any state mutation, so on `Err` the
+/// caller can cleanly fall back to the Python SimProcedure path. `S2`,
+/// bead angr-5gf0s. See `tools/decisions/native_subcall_dispatcher_design.md`.
+///
+/// Stack-return ABI (x86/amd64): at proc entry `[sp]` holds the caller's
+/// return address; we overwrite it with the sentinel so the guest `ret`
+/// lands on the sentinel (SP unchanged here — the guest's own `ret` advances
+/// it). The original caller address rides in the frame's
+/// `caller_return_addr`, not the stack. Link-register ABI: write the
+/// sentinel into the link register (requires `SubcallAbi::link_register`).
+pub(crate) fn setup_native_subcall_with_abi(
+    abi: &SubcallAbi<'_>,
+    state: &mut RustSimState,
+    sub: NativeSubcall,
+) -> Result<(), SubcallSetupError> {
+    let NativeSubcall {
+        proc_name,
+        saved_args,
+        caller_return_addr,
+        target,
+        sub_args,
+        resume_tag,
+    } = sub;
+    let arg_regs = abi.arg_registers;
+    if sub_args.len() > arg_regs.len() {
+        return Err(SubcallSetupError::TooManyArgs {
+            requested: sub_args.len(),
+            available: arg_regs.len(),
+        });
+    }
+    let ptr_bits = abi.pointer_size * 8;
+    let sentinel = crate::procedures::native_resume_sentinel(abi.pointer_size);
+
+    // --- feasibility checks (no mutation yet) ---
+    let lr_offset = if abi.pops_return_addr {
+        None
+    } else {
+        Some(abi.link_register.ok_or(SubcallSetupError::UnsupportedAbi)?)
+    };
+    let sp_val = if abi.pops_return_addr {
+        Some(
+            state
+                .get_sp()
+                .as_u64()
+                .ok_or(SubcallSetupError::SpSymbolic)?,
+        )
+    } else {
+        None
+    };
+
+    // --- mutation: redirect the guest routine's return to the sentinel ---
+    if let Some(sp) = sp_val {
+        // Overwrite the caller return slot at [sp] with the sentinel. This
+        // is the only fallible mutation; do it first so an unmapped stack
+        // leaves the state untouched for the Python fallback.
+        state
+            .memory_mut()
+            .store_concrete(sp, RustBV::concrete(sentinel as u128, ptr_bits))
+            .map_err(SubcallSetupError::Memory)?;
+    } else if let Some(lr) = lr_offset {
+        state.set_register_by_offset(lr, RustBV::concrete(sentinel as u128, ptr_bits));
+    }
+
+    // --- record the continuation and enter the guest routine ---
+    state.push_native_resume_frame(crate::state::NativeResumeFrame {
+        proc_name,
+        resume_tag,
+        saved_args,
+        caller_return_addr,
+    });
+    for (reg, val) in arg_regs.iter().zip(sub_args.into_iter()) {
+        state.set_register_by_offset(*reg, val);
+    }
+    state.set_pc(target);
+    Ok(())
+}
+
 /// Output of one interpreter run, packaged for the post-execution phase.
 ///
 /// Replaces a 12-element tuple destructure that became unreadable as fields
@@ -615,89 +710,26 @@ impl RustExplorationManager {
         }
     }
 
-    /// Set up a native sub-call (`ProcOutcome::CallAndResume`): make the guest
-    /// routine `target` run with `sub_args`, then return to the resume sentinel
-    /// so the proc's continuation re-enters via [`handle_native_resume`].
+    /// Set up a native sub-call (`ProcOutcome::CallAndResume`) from the
+    /// manager's live calling convention.
     ///
-    /// All feasibility checks happen before any state mutation, so on `Err` the
-    /// caller can cleanly fall back to the Python SimProcedure path. `S2`,
-    /// bead angr-5gf0s. See `tools/decisions/native_subcall_dispatcher_design.md`.
-    ///
-    /// Stack-return ABI (x86/amd64): at proc entry `[sp]` holds the caller's
-    /// return address; we overwrite it with the sentinel so the guest `ret`
-    /// lands on the sentinel (SP unchanged here — the guest's own `ret` advances
-    /// it). The original caller address rides in the frame's
-    /// `caller_return_addr`, not the stack. Link-register ABI: write the
-    /// sentinel into the link register (requires `link_register()`).
+    /// Thin adapter over [`setup_native_subcall_with_abi`], which holds the
+    /// dispatch logic and documents the per-ABI behavior; the parallel path's
+    /// `CcSnapshot::setup_native_subcall` adapts the same helper from its
+    /// scalar snapshot.
     pub(crate) fn setup_native_subcall(
         &self,
         state: &mut RustSimState,
         sub: NativeSubcall,
     ) -> Result<(), SubcallSetupError> {
-        let NativeSubcall {
-            proc_name,
-            saved_args,
-            caller_return_addr,
-            target,
-            sub_args,
-            resume_tag,
-        } = sub;
         let cc = &self.environment.calling_convention;
-        let arg_regs = cc.arg_registers();
-        if sub_args.len() > arg_regs.len() {
-            return Err(SubcallSetupError::TooManyArgs {
-                requested: sub_args.len(),
-                available: arg_regs.len(),
-            });
-        }
-        let ptr_bits = cc.pointer_size() * 8;
-        let sentinel = crate::procedures::native_resume_sentinel(cc.pointer_size());
-
-        // --- feasibility checks (no mutation yet) ---
-        let lr_offset = if cc.pops_return_addr() {
-            None
-        } else {
-            Some(
-                cc.link_register()
-                    .ok_or(SubcallSetupError::UnsupportedAbi)?,
-            )
+        let abi = SubcallAbi {
+            arg_registers: cc.arg_registers(),
+            pointer_size: cc.pointer_size(),
+            pops_return_addr: cc.pops_return_addr(),
+            link_register: cc.link_register(),
         };
-        let sp_val = if cc.pops_return_addr() {
-            Some(
-                state
-                    .get_sp()
-                    .as_u64()
-                    .ok_or(SubcallSetupError::SpSymbolic)?,
-            )
-        } else {
-            None
-        };
-
-        // --- mutation: redirect the guest routine's return to the sentinel ---
-        if let Some(sp) = sp_val {
-            // Overwrite the caller return slot at [sp] with the sentinel. This
-            // is the only fallible mutation; do it first so an unmapped stack
-            // leaves the state untouched for the Python fallback.
-            state
-                .memory_mut()
-                .store_concrete(sp, RustBV::concrete(sentinel as u128, ptr_bits))
-                .map_err(SubcallSetupError::Memory)?;
-        } else if let Some(lr) = lr_offset {
-            state.set_register_by_offset(lr, RustBV::concrete(sentinel as u128, ptr_bits));
-        }
-
-        // --- record the continuation and enter the guest routine ---
-        state.push_native_resume_frame(crate::state::NativeResumeFrame {
-            proc_name,
-            resume_tag,
-            saved_args,
-            caller_return_addr,
-        });
-        for (reg, val) in arg_regs.iter().zip(sub_args.into_iter()) {
-            state.set_register_by_offset(*reg, val);
-        }
-        state.set_pc(target);
-        Ok(())
+        setup_native_subcall_with_abi(&abi, state, sub)
     }
 
     /// Re-enter a native proc's continuation after a `CallAndResume` sub-call

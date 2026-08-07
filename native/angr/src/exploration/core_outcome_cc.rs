@@ -120,71 +120,24 @@ impl CcSnapshot {
         Ok(args)
     }
 
-    /// Mirror of `RustExplorationManager::setup_native_subcall` (no `&self`).
+    /// Set up a native sub-call from this scalar snapshot (no `&self` on the
+    /// manager, so the parallel post-step path can run it off-thread).
+    ///
+    /// Thin adapter over [`setup_native_subcall_with_abi`], which holds the
+    /// dispatch logic and documents the per-ABI behavior; the single-threaded
+    /// `RustExplorationManager::setup_native_subcall` adapts the same helper
+    /// from the live `Box<dyn CallingConvention>`.
     pub(crate) fn setup_native_subcall(
         &self,
         state: &mut RustSimState,
         sub: NativeSubcall,
     ) -> Result<(), SubcallSetupError> {
-        let NativeSubcall {
-            proc_name,
-            saved_args,
-            caller_return_addr,
-            target,
-            sub_args,
-            resume_tag,
-        } = sub;
-        let arg_regs = &self.arg_registers;
-        if sub_args.len() > arg_regs.len() {
-            return Err(SubcallSetupError::TooManyArgs {
-                requested: sub_args.len(),
-                available: arg_regs.len(),
-            });
-        }
-        let ptr_bits = self.pointer_size * 8;
-        let sentinel = native_resume_sentinel(self.pointer_size);
-
-        // --- feasibility checks (no mutation yet) ---
-        let lr_offset = if self.pops_return_addr {
-            None
-        } else {
-            Some(
-                self.link_register
-                    .ok_or(SubcallSetupError::UnsupportedAbi)?,
-            )
+        let abi = SubcallAbi {
+            arg_registers: &self.arg_registers,
+            pointer_size: self.pointer_size,
+            pops_return_addr: self.pops_return_addr,
+            link_register: self.link_register,
         };
-        let sp_val = if self.pops_return_addr {
-            Some(
-                state
-                    .get_sp()
-                    .as_u64()
-                    .ok_or(SubcallSetupError::SpSymbolic)?,
-            )
-        } else {
-            None
-        };
-
-        // --- mutation: redirect the guest routine's return to the sentinel ---
-        if let Some(sp) = sp_val {
-            state
-                .memory_mut()
-                .store_concrete(sp, RustBV::concrete(sentinel as u128, ptr_bits))
-                .map_err(SubcallSetupError::Memory)?;
-        } else if let Some(lr) = lr_offset {
-            state.set_register_by_offset(lr, RustBV::concrete(sentinel as u128, ptr_bits));
-        }
-
-        // --- record the continuation and enter the guest routine ---
-        state.push_native_resume_frame(NativeResumeFrame {
-            proc_name,
-            resume_tag,
-            saved_args,
-            caller_return_addr,
-        });
-        for (reg, val) in arg_regs.iter().zip(sub_args.into_iter()) {
-            state.set_register_by_offset(*reg, val);
-        }
-        state.set_pc(target);
-        Ok(())
+        setup_native_subcall_with_abi(&abi, state, sub)
     }
 }

@@ -62,17 +62,15 @@ use rustc_hash::FxHashMap;
 
 use crate::callbacks::{DeferredFork, PythonCallbacks, RunErrorKind, RunResult};
 use crate::interpreter::{BranchSnapshot, ExecutionStats};
-use crate::procedures::{
-    NATIVE_RESUME_SENTINEL_NAME, NativeProcedureRegistry, ProcOutcome, native_resume_sentinel,
-};
+use crate::procedures::{NATIVE_RESUME_SENTINEL_NAME, NativeProcedureRegistry, ProcOutcome};
 use crate::stash::STASH_DEADENDED;
-use crate::state::{NativeResumeFrame, RustSimState};
+use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 use crate::syscalls::{NativeSyscallRegistry, SyscallOutcome};
 
 use super::callback_types::SimProcCall;
 use super::step_core::StepContext;
-use super::stepping::SubcallSetupError;
+use super::stepping::{SubcallAbi, SubcallSetupError, setup_native_subcall_with_abi};
 
 #[path = "core_outcome_cc.rs"]
 mod cc;
