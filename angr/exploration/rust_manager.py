@@ -3022,6 +3022,48 @@ class RustExplorationManager(
         bits = self._project.arch.bits if self._project is not None else 64
         return claripy.BVV(addr, bits)
 
+    def _fire_inspect_event(
+        self,
+        event_type: str,
+        state_id: int,
+        when: str,
+        *,
+        _inject: str | None = None,
+        _original=None,
+        **attrs,
+    ):
+        """Shared body of every ``_cb_inspect_*`` callback (angr-12jjk.28).
+
+        Forwards to :meth:`_dispatch_inspect_event` with `attrs` and
+        contains the error handling all 18 event callbacks used to
+        hand-roll. Each `_cb_inspect_*` is then just its docstring plus the
+        per-event attr names, which is the only thing that actually differs
+        between them.
+
+        When `_inject` names an attribute, the user's BP action is allowed
+        to override that value: the attr is read back off the post-dispatch
+        proxy and returned when the user swapped the object (identity
+        check — a needless round-trip back to Rust costs an AST->RustBV
+        conversion and its width checks on every untouched event). Returns
+        ``None`` otherwise, meaning "caller keeps its original value".
+        Fire-and-forget events pass no `_inject` and ignore the return.
+
+        cat-(b) FALLBACK WITH LOSS: a raising user handler drops this one
+        event (no breakpoint fired) and the engine keeps stepping; the
+        exception type is open since handlers are user code. For an
+        `_inject` event the drop additionally means the *original* value
+        stands, so a half-applied override is never observable.
+        """
+        try:
+            proxy = self._dispatch_inspect_event(event_type, state_id, when, **attrs)
+            if _inject is not None and proxy is not None:
+                mutated = getattr(proxy, _inject)
+                if mutated is not _original:
+                    return mutated
+        except Exception as e:
+            l.warning("inspect %s dispatch failed: %s: %s", event_type, type(e).__name__, e)
+        return None
+
     def _cb_inspect_mem_read(
         self,
         state_id: int,
@@ -3038,29 +3080,17 @@ class RustExplorationManager(
         substitutes it for the loaded value. Returns ``None`` when unchanged,
         so the original load result stands.
         """
-        try:
-            proxy = self._dispatch_inspect_event(
-                "mem_read",
-                state_id,
-                when,
-                mem_read_address=self._addr_attr_for(addr),
-                mem_read_length=size,
-                mem_read_expr=value_ast,
-                mem_read_endness=endness,
-            )
-            if proxy is not None:
-                mutated = proxy.mem_read_expr
-                # Identity check: only round-trip back to Rust when the user
-                # actually swapped the object — avoids a needless AST->RustBV
-                # conversion (and its width checks) on every untouched read.
-                if mutated is not value_ast:
-                    return mutated
-        except Exception as e:
-            # cat-(c) WRONG-ANSWER RISK: user BP action errored. Log and
-            # swallow so the engine keeps stepping; the user can see the
-            # warning in stderr.
-            l.warning("inspect mem_read dispatch failed: %s: %s", type(e).__name__, e)
-        return None
+        return self._fire_inspect_event(
+            "mem_read",
+            state_id,
+            when,
+            _inject="mem_read_expr",
+            _original=value_ast,
+            mem_read_address=self._addr_attr_for(addr),
+            mem_read_length=size,
+            mem_read_expr=value_ast,
+            mem_read_endness=endness,
+        )
 
     def _cb_inspect_mem_write(
         self,
@@ -3079,29 +3109,17 @@ class RustExplorationManager(
         when unchanged (and always for ``when='after'``, post-commit), so the
         original store value stands.
         """
-        try:
-            proxy = self._dispatch_inspect_event(
-                "mem_write",
-                state_id,
-                when,
-                mem_write_address=self._addr_attr_for(addr),
-                mem_write_length=size,
-                mem_write_expr=value_ast,
-                mem_write_endness=endness,
-            )
-            if proxy is not None:
-                mutated = proxy.mem_write_expr
-                # Identity check: only round-trip back to Rust when the user
-                # actually swapped the object — avoids a needless AST->RustBV
-                # conversion (and its width checks) on every untouched store.
-                if mutated is not value_ast:
-                    return mutated
-        except Exception as e:
-            # cat-(b) FALLBACK WITH LOSS: user inspect handler raised; this
-            # mem_write event is dropped (no breakpoint fired). Exception
-            # type is open since handlers are user code.
-            l.warning("inspect mem_write dispatch failed: %s: %s", type(e).__name__, e)
-        return None
+        return self._fire_inspect_event(
+            "mem_write",
+            state_id,
+            when,
+            _inject="mem_write_expr",
+            _original=value_ast,
+            mem_write_address=self._addr_attr_for(addr),
+            mem_write_length=size,
+            mem_write_expr=value_ast,
+            mem_write_endness=endness,
+        )
 
     def _cb_inspect_reg_read(
         self,
@@ -3112,21 +3130,16 @@ class RustExplorationManager(
         value_ast,
     ):
         """PyO3 callback target for reg_read events from Rust (IRExpr::Get)."""
-        try:
-            self._dispatch_inspect_event(
-                "reg_read",
-                state_id,
-                when,
-                reg_read_offset=offset,
-                reg_read_length=size,
-                reg_read_expr=value_ast,
-                reg_read_condition=None,
-                reg_read_endness=None,
-            )
-        except Exception as e:
-            # cat-(b) FALLBACK WITH LOSS: user inspect handler raised; this
-            # reg_read event is dropped (no breakpoint fired).
-            l.warning("inspect reg_read dispatch failed: %s: %s", type(e).__name__, e)
+        self._fire_inspect_event(
+            "reg_read",
+            state_id,
+            when,
+            reg_read_offset=offset,
+            reg_read_length=size,
+            reg_read_expr=value_ast,
+            reg_read_condition=None,
+            reg_read_endness=None,
+        )
 
     def _cb_inspect_reg_write(
         self,
@@ -3137,49 +3150,24 @@ class RustExplorationManager(
         value_ast,
     ):
         """PyO3 callback target for reg_write events from Rust (IRStmt::Put)."""
-        try:
-            self._dispatch_inspect_event(
-                "reg_write",
-                state_id,
-                when,
-                reg_write_offset=offset,
-                reg_write_length=size,
-                reg_write_expr=value_ast,
-                reg_write_condition=None,
-                reg_write_endness=None,
-            )
-        except Exception as e:
-            # cat-(b) FALLBACK WITH LOSS: user inspect handler raised; this
-            # reg_write event is dropped (no breakpoint fired).
-            l.warning("inspect reg_write dispatch failed: %s: %s", type(e).__name__, e)
+        self._fire_inspect_event(
+            "reg_write",
+            state_id,
+            when,
+            reg_write_offset=offset,
+            reg_write_length=size,
+            reg_write_expr=value_ast,
+            reg_write_condition=None,
+            reg_write_endness=None,
+        )
 
     def _cb_inspect_instruction(self, state_id: int, when: str, addr: int):
         """PyO3 callback target for instruction events (one per IMark)."""
-        try:
-            self._dispatch_inspect_event(
-                "instruction",
-                state_id,
-                when,
-                instruction=addr,
-            )
-        except Exception as e:
-            # cat-(b) FALLBACK WITH LOSS: user inspect handler raised; this
-            # instruction event is dropped (no breakpoint fired).
-            l.warning("inspect instruction dispatch failed: %s: %s", type(e).__name__, e)
+        self._fire_inspect_event("instruction", state_id, when, instruction=addr)
 
     def _cb_inspect_irsb(self, state_id: int, when: str, addr: int):
         """PyO3 callback target for irsb events (one per basic block)."""
-        try:
-            self._dispatch_inspect_event(
-                "irsb",
-                state_id,
-                when,
-                address=addr,
-            )
-        except Exception as e:
-            # cat-(b) FALLBACK WITH LOSS: user inspect handler raised; this
-            # irsb event is dropped (no breakpoint fired).
-            l.warning("inspect irsb dispatch failed: %s: %s", type(e).__name__, e)
+        self._fire_inspect_event("irsb", state_id, when, address=addr)
 
     def _cb_inspect_exit(
         self,
@@ -3190,19 +3178,14 @@ class RustExplorationManager(
         guard_ast,
     ):
         """PyO3 callback target for VEX conditional exit events."""
-        try:
-            self._dispatch_inspect_event(
-                "exit",
-                state_id,
-                when,
-                exit_target=self._addr_attr_for(target),
-                exit_guard=guard_ast,
-                exit_jumpkind=jumpkind,
-            )
-        except Exception as e:
-            # cat-(b) FALLBACK WITH LOSS: user inspect handler raised; this
-            # exit event is dropped (no breakpoint fired).
-            l.warning("inspect exit dispatch failed: %s: %s", type(e).__name__, e)
+        self._fire_inspect_event(
+            "exit",
+            state_id,
+            when,
+            exit_target=self._addr_attr_for(target),
+            exit_guard=guard_ast,
+            exit_jumpkind=jumpkind,
+        )
 
     def _cb_inspect_call(self, state_id: int, when: str, function_address: int):
         """PyO3 callback target for Ijk_Call events (function entry).
@@ -3213,17 +3196,12 @@ class RustExplorationManager(
         word-sized BVV so user code may compare it with `state.regs._ip`
         which is also symbolic.
         """
-        try:
-            self._dispatch_inspect_event(
-                "call",
-                state_id,
-                when,
-                function_address=self._addr_attr_for(function_address),
-            )
-        except Exception as e:
-            # cat-(b) FALLBACK WITH LOSS: user inspect handler raised; this
-            # call event is dropped (no breakpoint fired).
-            l.warning("inspect call dispatch failed: %s: %s", type(e).__name__, e)
+        self._fire_inspect_event(
+            "call",
+            state_id,
+            when,
+            function_address=self._addr_attr_for(function_address),
+        )
 
     def _cb_inspect_return(self, state_id: int, when: str, function_address: int):
         """PyO3 callback target for Ijk_Ret events (function exit).
@@ -3233,17 +3211,12 @@ class RustExplorationManager(
         function_address is 0 when the Rust call stack is empty (popping
         from an unentered frame), matching the int convention.
         """
-        try:
-            self._dispatch_inspect_event(
-                "return",
-                state_id,
-                when,
-                function_address=self._addr_attr_for(function_address),
-            )
-        except Exception as e:
-            # cat-(b) FALLBACK WITH LOSS: user inspect handler raised; this
-            # return event is dropped (no breakpoint fired).
-            l.warning("inspect return dispatch failed: %s: %s", type(e).__name__, e)
+        self._fire_inspect_event(
+            "return",
+            state_id,
+            when,
+            function_address=self._addr_attr_for(function_address),
+        )
 
     def _cb_inspect_tmp_read(self, state_id: int, when: str, tmp_num: int, value_ast):
         """PyO3 callback target for tmp_read events (VEX `RdTmp`).
@@ -3251,18 +3224,13 @@ class RustExplorationManager(
         Fired `when='after'` once the tmp slot has been read. `value_ast`
         is the claripy reconstruction of the stored RustBV.
         """
-        try:
-            self._dispatch_inspect_event(
-                "tmp_read",
-                state_id,
-                when,
-                tmp_read_num=tmp_num,
-                tmp_read_expr=value_ast,
-            )
-        except Exception as e:
-            # cat-(b) FALLBACK WITH LOSS: user inspect handler raised; this
-            # tmp_read event is dropped (no breakpoint fired).
-            l.warning("inspect tmp_read dispatch failed: %s: %s", type(e).__name__, e)
+        self._fire_inspect_event(
+            "tmp_read",
+            state_id,
+            when,
+            tmp_read_num=tmp_num,
+            tmp_read_expr=value_ast,
+        )
 
     def _cb_inspect_tmp_write(self, state_id: int, when: str, tmp_num: int, value_ast):
         """PyO3 callback target for tmp_write events (VEX `WrTmp`).
@@ -3272,18 +3240,13 @@ class RustExplorationManager(
         so user BP_AFTER overrides are not honored — same MVP gap as the
         Python-dispatched events documented in `rust_engine.rst`.
         """
-        try:
-            self._dispatch_inspect_event(
-                "tmp_write",
-                state_id,
-                when,
-                tmp_write_num=tmp_num,
-                tmp_write_expr=value_ast,
-            )
-        except Exception as e:
-            # cat-(b) FALLBACK WITH LOSS: user inspect handler raised; this
-            # tmp_write event is dropped (no breakpoint fired).
-            l.warning("inspect tmp_write dispatch failed: %s: %s", type(e).__name__, e)
+        self._fire_inspect_event(
+            "tmp_write",
+            state_id,
+            when,
+            tmp_write_num=tmp_num,
+            tmp_write_expr=value_ast,
+        )
 
     def _cb_inspect_statement(self, state_id: int, when: str, stmt_idx: int):
         """PyO3 callback target for statement events (per VEX IR statement).
@@ -3294,17 +3257,7 @@ class RustExplorationManager(
         `SimInspectMixin._handle_vex_stmt` BP_BEFORE attr signature.
         The BP_AFTER mirror is not wired — same MVP scope as `instruction`.
         """
-        try:
-            self._dispatch_inspect_event(
-                "statement",
-                state_id,
-                when,
-                statement=stmt_idx,
-            )
-        except Exception as e:
-            # cat-(b) FALLBACK WITH LOSS: user inspect handler raised; this
-            # statement event is dropped (no breakpoint fired).
-            l.warning("inspect statement dispatch failed: %s: %s", type(e).__name__, e)
+        self._fire_inspect_event("statement", state_id, when, statement=stmt_idx)
 
     def _cb_inspect_expr(self, state_id: int, when: str, expr_result):
         """PyO3 callback target for expr events (per VEX IR expression eval).
@@ -3317,18 +3270,7 @@ class RustExplorationManager(
         actions are NOT honored — same MVP gap as the other inspect
         events.
         """
-        try:
-            self._dispatch_inspect_event(
-                "expr",
-                state_id,
-                when,
-                expr=None,
-                expr_result=expr_result,
-            )
-        except Exception as e:
-            # cat-(b) FALLBACK WITH LOSS: user inspect handler raised; this
-            # expr event is dropped (no breakpoint fired).
-            l.warning("inspect expr dispatch failed: %s: %s", type(e).__name__, e)
+        self._fire_inspect_event("expr", state_id, when, expr=None, expr_result=expr_result)
 
     def _cb_inspect_address_concretization(
         self,
@@ -3348,22 +3290,17 @@ class RustExplorationManager(
         memory and add_constraints attrs are passed as None — the Rust
         engine doesn't surface those objects (MVP gap).
         """
-        try:
-            self._dispatch_inspect_event(
-                "address_concretization",
-                state_id,
-                when,
-                address_concretization_strategy=None,
-                address_concretization_action=action,
-                address_concretization_memory=None,
-                address_concretization_expr=addr_ast,
-                address_concretization_result=result,
-                address_concretization_add_constraints=None,
-            )
-        except Exception as e:
-            # cat-(b) FALLBACK WITH LOSS: user inspect handler raised; this
-            # address_concretization event is dropped (no breakpoint fired).
-            l.warning("inspect address_concretization dispatch failed: %s: %s", type(e).__name__, e)
+        self._fire_inspect_event(
+            "address_concretization",
+            state_id,
+            when,
+            address_concretization_strategy=None,
+            address_concretization_action=action,
+            address_concretization_memory=None,
+            address_concretization_expr=addr_ast,
+            address_concretization_result=result,
+            address_concretization_add_constraints=None,
+        )
 
     def _cb_inspect_fork(self, state_id: int, when: str):
         """PyO3 callback target for fork events.
@@ -3379,12 +3316,7 @@ class RustExplorationManager(
         (the Rust dispatch is pre-satisfiability check, matching
         Python's pre-discard fire).
         """
-        try:
-            self._dispatch_inspect_event("fork", state_id, when)
-        except Exception as e:
-            # cat-(b) FALLBACK WITH LOSS: user inspect handler raised; this
-            # fork event is dropped (no breakpoint fired).
-            l.warning("inspect fork dispatch failed: %s: %s", type(e).__name__, e)
+        self._fire_inspect_event("fork", state_id, when)
 
     def _cb_inspect_symbolic_variable(
         self,
@@ -3403,19 +3335,14 @@ class RustExplorationManager(
         user-callable `state.solver.BVS()` path still fires the same
         event from Python natively, independent of this dispatch.
         """
-        try:
-            self._dispatch_inspect_event(
-                "symbolic_variable",
-                state_id,
-                when,
-                symbolic_name=name,
-                symbolic_size=size,
-                symbolic_expr=expr_ast,
-            )
-        except Exception as e:
-            # cat-(b) FALLBACK WITH LOSS: user inspect handler raised; this
-            # symbolic_variable event is dropped (no breakpoint fired).
-            l.warning("inspect symbolic_variable dispatch failed: %s: %s", type(e).__name__, e)
+        self._fire_inspect_event(
+            "symbolic_variable",
+            state_id,
+            when,
+            symbolic_name=name,
+            symbolic_size=size,
+            symbolic_expr=expr_ast,
+        )
 
     def _cb_inspect_simprocedure(
         self,
@@ -3435,20 +3362,15 @@ class RustExplorationManager(
         `simprocedure_result` (the procedure return value on AFTER;
         `NO_OVERRIDE` on BEFORE).
         """
-        try:
-            self._dispatch_inspect_event(
-                "simprocedure",
-                state_id,
-                when,
-                simprocedure_name=sp_name,
-                simprocedure_addr=sp_addr,
-                simprocedure=sp_inst,
-                simprocedure_result=sp_result,
-            )
-        except Exception as e:
-            # cat-(b) FALLBACK WITH LOSS: user inspect handler raised; this
-            # simprocedure event is dropped (no breakpoint fired).
-            l.warning("inspect simprocedure dispatch failed: %s: %s", type(e).__name__, e)
+        self._fire_inspect_event(
+            "simprocedure",
+            state_id,
+            when,
+            simprocedure_name=sp_name,
+            simprocedure_addr=sp_addr,
+            simprocedure=sp_inst,
+            simprocedure_result=sp_result,
+        )
 
     def _cb_inspect_syscall(
         self,
@@ -3465,18 +3387,13 @@ class RustExplorationManager(
         AFTER. `simprocedure` is `None` on BEFORE (matches the Python
         engine, which does not pass it before execution).
         """
-        try:
-            self._dispatch_inspect_event(
-                "syscall",
-                state_id,
-                when,
-                syscall_name=syscall_name,
-                simprocedure=sp_inst,
-            )
-        except Exception as e:
-            # cat-(b) FALLBACK WITH LOSS: user inspect handler raised; this
-            # syscall event is dropped (no breakpoint fired).
-            l.warning("inspect syscall dispatch failed: %s: %s", type(e).__name__, e)
+        self._fire_inspect_event(
+            "syscall",
+            state_id,
+            when,
+            syscall_name=syscall_name,
+            simprocedure=sp_inst,
+        )
 
     def _cb_inspect_dirty(
         self,
@@ -3502,25 +3419,17 @@ class RustExplorationManager(
         ``None`` when unchanged (or no BP fired), so the original result
         stands.
         """
-        try:
-            proxy = self._dispatch_inspect_event(
-                "dirty",
-                state_id,
-                when,
-                dirty_name=dirty_name,
-                dirty_handler=dirty_handler,
-                dirty_args=dirty_args,
-                dirty_result=dirty_result,
-            )
-            if proxy is not None:
-                mutated = proxy.dirty_result
-                if mutated is not dirty_result:
-                    return mutated
-        except Exception as e:
-            # cat-(b) FALLBACK WITH LOSS: user inspect handler raised; this
-            # dirty event is dropped (no breakpoint fired).
-            l.warning("inspect dirty dispatch failed: %s: %s", type(e).__name__, e)
-        return None
+        return self._fire_inspect_event(
+            "dirty",
+            state_id,
+            when,
+            _inject="dirty_result",
+            _original=dirty_result,
+            dirty_name=dirty_name,
+            dirty_handler=dirty_handler,
+            dirty_args=dirty_args,
+            dirty_result=dirty_result,
+        )
 
     def _cb_inspect_constraints(self, state_id: int, when: str, added_constraints=None):
         """Python-side dispatch target for constraints inspect events (angr-4aach).
@@ -3536,22 +3445,15 @@ class RustExplorationManager(
         ``None`` when unchanged or no BP fired, so the caller keeps its
         original list. BP_AFTER always returns ``None`` (post-install).
         """
-        try:
-            proxy = self._dispatch_inspect_event(
-                "constraints",
-                state_id,
-                when,
-                added_constraints=added_constraints,
-            )
-            if proxy is not None and when == "before":
-                mutated = proxy.added_constraints
-                if mutated is not added_constraints:
-                    return mutated
-        except Exception as e:
-            # cat-(b) FALLBACK WITH LOSS: user inspect handler raised; this
-            # constraints event is dropped (no breakpoint fired).
-            l.warning("inspect constraints dispatch failed: %s: %s", type(e).__name__, e)
-        return None
+        return self._fire_inspect_event(
+            "constraints",
+            state_id,
+            when,
+            # BP_AFTER runs post-install, so there is nothing left to inject.
+            _inject="added_constraints" if when == "before" else None,
+            _original=added_constraints,
+            added_constraints=added_constraints,
+        )
 
     def _cb_inspect_vex_lift(self, state_id: int, when: str, addr, size, buff=None):
         """Python-side dispatch target for vex_lift inspect events (angr-4aach).
@@ -3566,6 +3468,10 @@ class RustExplorationManager(
         state-independent (shared block cache). User mutation of the attrs
         is not honored (MVP gap; the engine uses its own lift bytes).
         """
+        # Unlike its siblings this one resolves the owning state before
+        # dispatching, and that resolution can itself raise — so it keeps a
+        # try/except of its own; the dispatch below still goes through the
+        # shared `_fire_inspect_event` body.
         try:
             # Lifts are state-independent; when the caller has no owning
             # state_id (-1) attribute the event to a representative active
@@ -3585,18 +3491,19 @@ class RustExplorationManager(
                     active_ids = self._rust_mgr.get_state_ids("active")
                     if active_ids:
                         state_id = active_ids[0]
-            self._dispatch_inspect_event(
-                "vex_lift",
-                state_id,
-                when,
-                vex_lift_addr=self._addr_attr_for(addr),
-                vex_lift_size=size,
-                vex_lift_buff=buff,
-            )
         except Exception as e:
-            # cat-(b) FALLBACK WITH LOSS: user inspect handler raised; this
-            # vex_lift event is dropped (no breakpoint fired).
+            # cat-(b) FALLBACK WITH LOSS: no state to attribute the lift to;
+            # this vex_lift event is dropped (no breakpoint fired).
             l.warning("inspect vex_lift dispatch failed: %s: %s", type(e).__name__, e)
+            return
+        self._fire_inspect_event(
+            "vex_lift",
+            state_id,
+            when,
+            vex_lift_addr=self._addr_attr_for(addr),
+            vex_lift_size=size,
+            vex_lift_buff=buff,
+        )
 
     def _load_binary_regions(self):
         """Load binary code regions for native lifting."""
