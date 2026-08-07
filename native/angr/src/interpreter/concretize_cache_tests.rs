@@ -46,7 +46,7 @@ fn concretize_cached_read_applies_any_fallback_on_cached_toolarge() {
 
     let addr = RustBV::symbolic(&ctx, "read_addr", 64);
     // Seed the cache with a raw TooLarge for this address's key.
-    let key = VEXInterpreter::bv_cache_key(&addr);
+    let key = VEXInterpreter::bv_cache_key(ConcretizeNs::ReadJump, &addr);
     interp.concretize_cache.insert(
         key,
         Arc::new(ConcretizationResult::TooLarge {
@@ -71,7 +71,7 @@ fn concretize_cached_read_keeps_toolarge_when_fallback_disabled() {
     interp.set_concretizer(concretizer_with_fallbacks(false, true));
 
     let addr = RustBV::symbolic(&ctx, "read_addr_nofb", 64);
-    let key = VEXInterpreter::bv_cache_key(&addr);
+    let key = VEXInterpreter::bv_cache_key(ConcretizeNs::ReadJump, &addr);
     interp.concretize_cache.insert(
         key,
         Arc::new(ConcretizationResult::TooLarge {
@@ -100,7 +100,7 @@ fn concretize_cached_write_applies_max_fallback_on_cached_toolarge() {
     interp.set_concretizer(concretizer_with_fallbacks(true, true));
 
     let addr = RustBV::symbolic(&ctx, "write_addr", 64);
-    let key = VEXInterpreter::bv_cache_key(&addr);
+    let key = VEXInterpreter::bv_cache_key(ConcretizeNs::Write, &addr);
     interp.concretize_cache.insert(
         key,
         Arc::new(ConcretizationResult::TooLarge {
@@ -125,7 +125,7 @@ fn concretize_cached_write_keeps_toolarge_when_fallback_disabled() {
     interp.set_concretizer(concretizer_with_fallbacks(true, false));
 
     let addr = RustBV::symbolic(&ctx, "write_addr_nofb", 64);
-    let key = VEXInterpreter::bv_cache_key(&addr);
+    let key = VEXInterpreter::bv_cache_key(ConcretizeNs::Write, &addr);
     interp.concretize_cache.insert(
         key,
         Arc::new(ConcretizationResult::TooLarge {
@@ -166,7 +166,7 @@ fn concretize_cached_jump_keeps_toolarge_verbatim_on_cache_hit() {
     interp.set_concretizer(concretizer_with_fallbacks(true, true));
 
     let addr = RustBV::symbolic(&ctx, "jump_target", 64);
-    let key = VEXInterpreter::bv_cache_key(&addr);
+    let key = VEXInterpreter::bv_cache_key(ConcretizeNs::ReadJump, &addr);
     interp.concretize_cache.insert(
         key,
         Arc::new(ConcretizationResult::TooLarge {
@@ -184,16 +184,17 @@ fn concretize_cached_jump_keeps_toolarge_verbatim_on_cache_hit() {
     }
 }
 
-/// The cache is shared with the read/write variants: a `Single` seeded by an
-/// earlier store in the same block is reused for a later jump target with the
-/// same key, so the block pays one solver query rather than one per exit.
+/// The cache is shared with the read variant (same `Range(read_range_limit)`
+/// chain, `ConcretizeNs::ReadJump`): a `Single` seeded by an earlier load in
+/// the same block is reused for a later jump target with the same key, so the
+/// block pays one solver query rather than one per exit.
 #[test]
 fn concretize_cached_jump_reuses_shared_cache_entry() {
     let ctx = SymContext::new_mock();
     let mut interp = new_interp(&ctx);
 
     let addr = RustBV::symbolic(&ctx, "shared_target", 64);
-    let key = VEXInterpreter::bv_cache_key(&addr);
+    let key = VEXInterpreter::bv_cache_key(ConcretizeNs::ReadJump, &addr);
     interp
         .concretize_cache
         .insert(key, Arc::new(ConcretizationResult::Single(0x4141)));
@@ -202,6 +203,84 @@ fn concretize_cached_jump_reuses_shared_cache_entry() {
         ConcretizationResult::Single(a) => assert_eq!(*a, 0x4141),
         other => panic!("expected the cached Single(0x4141), got {other:?}"),
     }
+}
+
+/// angr-360gt: the read/jump chain and the write chain run *different* range
+/// limits, so their cache entries must live in different namespaces.
+#[test]
+fn bv_cache_key_separates_read_and_write_namespaces() {
+    let ctx = SymContext::new_mock();
+    let addr = RustBV::symbolic(&ctx, "xover", 64);
+    assert_ne!(
+        VEXInterpreter::bv_cache_key(ConcretizeNs::ReadJump, &addr),
+        VEXInterpreter::bv_cache_key(ConcretizeNs::Write, &addr),
+        "a read/jump entry must not be reachable from the write cache lookup"
+    );
+}
+
+/// angr-360gt: a `Multiple` produced under `read_range_limit` (1024) must not
+/// satisfy a later store on the same expression, whose `write_range_limit`
+/// (128) would have rejected it. Pre-fix, `concretize_cached_write` hit the
+/// shared entry and — since `Multiple` is not `TooLarge` — returned it
+/// verbatim, fanning the store out across every cached address instead of
+/// collapsing to one Max-pinned cell. Whether that happened depended purely on
+/// whether a load / mid-block `Ist_Exit` touched the expression first.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn write_does_not_reuse_a_read_range_multiple() {
+    let ctx = SymContext::new_mock();
+    let mut interp = new_interp(&ctx);
+    let mut concretizer = concretizer_with_fallbacks(true, true);
+    // SYMBOLIC_WRITE_ADDRESSES on: the write chain is Range(128) -> Max, i.e.
+    // the exact configuration in which the crossover changes the outcome.
+    concretizer.symbolic_write_addresses = true;
+    interp.set_concretizer(concretizer);
+
+    let addr = RustBV::symbolic(&ctx, "xover_addr", 64);
+    // 200 candidates: inside read_range_limit=1024, outside write_range_limit=128.
+    let read_side: Vec<u64> = (0..200).map(|i| 0x5000 + i).collect();
+    interp.concretize_cache.insert(
+        VEXInterpreter::bv_cache_key(ConcretizeNs::ReadJump, &addr),
+        Arc::new(ConcretizationResult::Multiple(read_side)),
+    );
+
+    // The store must run its own chain: the unconstrained 64-bit address is
+    // TooLarge for Range(128), so write_fallback_max collapses it to one cell.
+    match &*interp.concretize_cached_write(&addr) {
+        ConcretizationResult::Single(_) => {}
+        other => panic!("write must not inherit the read-range Multiple, got {other:?}"),
+    }
+}
+
+/// The converse direction of angr-360gt: a store's Max-collapsed `Single` also
+/// lives in its own namespace, so a later load re-runs its own chain. That is
+/// still consistent — `pin_fallback_addr` asserted `addr == max` when the write
+/// fallback fired, so the fresh read concretization sees one solution — but the
+/// entry must not be *reused* verbatim, since a write `Single` can equally come
+/// from a Max-only chain whose limit the read side never applied.
+#[test]
+fn read_does_not_reuse_a_write_namespace_entry() {
+    let ctx = SymContext::new_mock();
+    let mut interp = new_interp(&ctx);
+    interp.set_concretizer(concretizer_with_fallbacks(false, true));
+
+    let addr = RustBV::symbolic(&ctx, "write_then_read", 64);
+    interp.concretize_cache.insert(
+        VEXInterpreter::bv_cache_key(ConcretizeNs::Write, &addr),
+        Arc::new(ConcretizationResult::Multiple(vec![0xdead, 0xbeef])),
+    );
+
+    let before = interp.concretize_cache.len();
+    let result = interp.concretize_cached_read(&addr);
+    assert!(
+        !matches!(&*result, ConcretizationResult::Multiple(a) if a == &[0xdead, 0xbeef]),
+        "read must not inherit the write-namespace entry, got {result:?}"
+    );
+    assert_eq!(
+        interp.concretize_cache.len(),
+        before + 1,
+        "the read must have missed and inserted its own ReadJump entry"
+    );
 }
 
 /// angr-owr37: two addresses whose differing leaf symbol sits >= 2 levels deep
@@ -226,8 +305,8 @@ fn bv_cache_key_distinguishes_nested_leaf_symbols() {
     assert!(matches!(addr_y, RustBV::Expression { .. }));
 
     assert_ne!(
-        VEXInterpreter::bv_cache_key(&addr_x),
-        VEXInterpreter::bv_cache_key(&addr_y),
+        VEXInterpreter::bv_cache_key(ConcretizeNs::ReadJump, &addr_x),
+        VEXInterpreter::bv_cache_key(ConcretizeNs::ReadJump, &addr_y),
         "distinct nested leaf symbols must produce distinct cache keys"
     );
 }
@@ -247,8 +326,8 @@ fn bv_cache_key_distinguishes_op_payload() {
     assert!(matches!(hi, RustBV::Expression { .. }));
 
     assert_ne!(
-        VEXInterpreter::bv_cache_key(&lo),
-        VEXInterpreter::bv_cache_key(&hi),
+        VEXInterpreter::bv_cache_key(ConcretizeNs::ReadJump, &lo),
+        VEXInterpreter::bv_cache_key(ConcretizeNs::ReadJump, &hi),
         "Extract ops reading disjoint bit ranges must produce distinct cache keys"
     );
 }
@@ -277,9 +356,9 @@ fn bv_cache_key_distinguishes_leaf_variants_with_equal_scalars() {
     };
 
     let keys = [
-        VEXInterpreter::bv_cache_key(&sym),
-        VEXInterpreter::bv_cache_key(&concrete),
-        VEXInterpreter::bv_cache_key(&constrained),
+        VEXInterpreter::bv_cache_key(ConcretizeNs::ReadJump, &sym),
+        VEXInterpreter::bv_cache_key(ConcretizeNs::ReadJump, &concrete),
+        VEXInterpreter::bv_cache_key(ConcretizeNs::ReadJump, &constrained),
     ];
     assert_ne!(keys[0], keys[1], "Symbolic{{id:N}} vs Concrete{{value:N}}");
     assert_ne!(keys[0], keys[2], "Symbolic{{id:N}} vs Constrained{{id:N}}");

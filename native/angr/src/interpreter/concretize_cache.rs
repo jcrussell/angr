@@ -1,6 +1,35 @@
 //! Per-block address concretization cache + unconstrained-read minting.
 use super::*;
 
+/// Which strategy chain a `concretize_cache` entry was produced under.
+///
+/// The cache stores the *raw* shape a chain returned, and `Multiple` /
+/// `Strided` / `TooLarge` all encode the range limit that produced them. So an
+/// entry is only reusable by a consumer that runs the **same** limit — sharing
+/// across limits lets a wide `Multiple` computed under `read_range_limit`
+/// (default 1024) be handed to a store whose own `write_range_limit` (default
+/// 128) would have collapsed it to a single Max-pinned address, making the
+/// store fan out to hundreds of cells purely as a function of statement order
+/// within the block (angr-360gt).
+///
+/// Only `TooLarge` is re-validated on a hit (each consumer re-applies its own
+/// fallback), which is why the pre-fix code looked safe: the *other* shapes
+/// were passed through verbatim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ConcretizeNs {
+    /// `concretize_cached_read` and `concretize_cached_jump`. Both drive
+    /// `Range(read_range_limit)`, so their raw shapes are interchangeable; they
+    /// differ only in the post-hoc fallback each applies to a `TooLarge`, and
+    /// read's Any fallback pins `addr == chosen` before caching a `Single`, so
+    /// a fresh jump concretization of the same expression yields that `Single`
+    /// too.
+    ReadJump,
+    /// `concretize_cached_write`. Runs `Range(write_range_limit)` → Max (or a
+    /// Max-only chain when `SYMBOLIC_WRITE_ADDRESSES` is off), a different
+    /// limit *and* a different fallback from the read side.
+    Write,
+}
+
 impl<'a> VEXInterpreter<'a> {
     /// Set custom concretizer settings.
     pub(crate) fn set_concretizer(&mut self, concretizer: AddressConcretizer) {
@@ -36,10 +65,10 @@ impl<'a> VEXInterpreter<'a> {
             return Arc::new(ConcretizationResult::Single(concrete_addr));
         }
 
-        let cache_key = Self::bv_cache_key(addr);
-        // Note: read and write may produce different results for same address,
-        // but within a block they're typically used consistently for a given address.
-        // Cache the raw result and apply fallback after cache lookup.
+        // Keyed in the ReadJump namespace: a write's raw shape was computed
+        // under `write_range_limit` and must not be reused here (see
+        // `ConcretizeNs`).
+        let cache_key = Self::bv_cache_key(ConcretizeNs::ReadJump, addr);
         if let Some(cached) = self.concretize_cache.get(&cache_key) {
             let result = Arc::clone(cached);
             // Apply read fallback to cached result
@@ -76,7 +105,11 @@ impl<'a> VEXInterpreter<'a> {
             return Arc::new(ConcretizationResult::Single(concrete_addr));
         }
 
-        let cache_key = Self::bv_cache_key(addr);
+        // Private namespace: `write_range_limit` (default 128) is narrower than
+        // the read side's 1024, so a `Multiple`/`Strided` cached by a load or a
+        // jump target would bypass this site's limit and Max fallback entirely
+        // (angr-360gt).
+        let cache_key = Self::bv_cache_key(ConcretizeNs::Write, addr);
         if let Some(cached) = self.concretize_cache.get(&cache_key) {
             let result = Arc::clone(cached);
             // Apply write fallback to cached result
@@ -115,14 +148,18 @@ impl<'a> VEXInterpreter<'a> {
     /// address is surfaced as `Unsupported` and deferred to Python rather than
     /// pinned to an arbitrary solution.
     ///
-    /// Shares the one `concretize_cache` with `concretize_cached_read` /
-    /// `concretize_cached_write` rather than keeping a private map. That is
-    /// sound because every `Single` those two can store is either a genuinely
-    /// unique solution or a fallback value that `concretize::pin_fallback_addr`
-    /// has already asserted into the solver — so a fresh `concretize` on the
-    /// same expression would return that same `Single` anyway. Every non-`Single`
-    /// shape (`Multiple` / `Strided` / `TooLarge`) maps to the same
-    /// `Unsupported` deferral here regardless of which range limit produced it.
+    /// Shares the `ConcretizeNs::ReadJump` half of `concretize_cache` with
+    /// `concretize_cached_read` — both run `Range(read_range_limit)`, so their
+    /// raw shapes are interchangeable. It deliberately does **not** see
+    /// `concretize_cached_write`'s entries: those were computed under
+    /// `write_range_limit` (angr-360gt).
+    ///
+    /// Reusing read's entries is sound because every `Single` read can store is
+    /// either a genuinely unique solution or a fallback value that
+    /// `concretize::pin_fallback_addr` has already asserted into the solver — so
+    /// a fresh `concretize` on the same expression would return that same
+    /// `Single` anyway. Every non-`Single` shape (`Multiple` / `Strided` /
+    /// `TooLarge`) maps to the same `Unsupported` deferral here.
     ///
     /// Returns an `Arc<ConcretizationResult>` (see `concretize_cached_read`).
     pub(super) fn concretize_cached_jump(&mut self, addr: &RustBV) -> Arc<ConcretizationResult> {
@@ -130,7 +167,7 @@ impl<'a> VEXInterpreter<'a> {
             return Arc::new(ConcretizationResult::Single(concrete_addr));
         }
 
-        let cache_key = Self::bv_cache_key(addr);
+        let cache_key = Self::bv_cache_key(ConcretizeNs::ReadJump, addr);
         if let Some(cached) = self.concretize_cache.get(&cache_key) {
             // No jump-side fallback to re-apply, unlike the read/write variants.
             return Arc::clone(cached);
@@ -147,8 +184,12 @@ impl<'a> VEXInterpreter<'a> {
         result
     }
 
-    /// Compute a cache key for a RustBV value: a hash of the FULL op tree,
-    /// variant-tagged at every node by `hash_bv`.
+    /// Compute a cache key for a RustBV value: the consumer's `ConcretizeNs`
+    /// tag plus a hash of the FULL op tree, variant-tagged at every node by
+    /// `hash_bv`.
+    ///
+    /// The namespace tag partitions the one map so entries never cross between
+    /// strategy chains with different range limits — see `ConcretizeNs`.
     ///
     /// Every variant goes through `hash_bv` rather than shortcutting leaves to
     /// their raw `id` / `value`. An untagged leaf key would let a
@@ -166,10 +207,14 @@ impl<'a> VEXInterpreter<'a> {
     /// addresses like `Add(And(x,0xf),c)` vs `Add(And(y,0xf),c)` then collided,
     /// and `concretize_cached_write` returned the first store's target for the
     /// second store — silent wrong-address memory corruption.
-    fn bv_cache_key(bv: &RustBV) -> u64 {
+    fn bv_cache_key(ns: ConcretizeNs, bv: &RustBV) -> u64 {
         use std::collections::hash_map::DefaultHasher;
-        use std::hash::Hasher;
+        use std::hash::{Hash, Hasher};
         let mut hasher = DefaultHasher::new();
+        match ns {
+            ConcretizeNs::ReadJump => 0u8.hash(&mut hasher),
+            ConcretizeNs::Write => 1u8.hash(&mut hasher),
+        }
         Self::hash_bv(bv, &mut hasher);
         hasher.finish()
     }
