@@ -158,6 +158,10 @@ use rustc_hash::FxHashMap;
 
 use pyo3::prelude::*;
 
+// Called by the `merge_field_*` bodies `#[derive(angr_macros::MergePolicy)]`
+// generates for every `warn_on_diverge` field below; the derive emits a bare
+// call, so the name has to be in scope here.
+use self::fork::warn_config_divergence;
 use crate::arch::{Arch, RegisterFile, arch_from_name};
 use crate::concretize::AddressConcretizer;
 use crate::memory::{MemoryError, Permission, SymbolicMemory};
@@ -467,6 +471,7 @@ pub struct RustSimState {
     /// across fork + snapshot so each path resumes its own pending sub-calls.
     /// Foundation slice (bead angr-pn3w8); the dispatcher is S2.
     #[merge_policy = "warn_on_diverge"]
+    #[merge_manual = "divergence is per-frame (native_resume_stack_diverges), not `!=`"]
     native_resume_stack: Vec<NativeResumeFrame>,
     /// Pointers to the three glibc locale ctype lookup tables. Built once by
     /// Python's `__libc_start_main` init pass (mallocs + fills them in shared
@@ -480,6 +485,7 @@ pub struct RustSimState {
     /// fgets/fgetc/getchar. On export, Python recreates matching claripy BVS
     /// and writes them to the posix stdin plugin.
     #[merge_policy = "union"]
+    #[merge_manual = "set-like union over a Vec keyed by name, not a bool OR"]
     stdin_symbols: Vec<(String, u32)>,
     /// Function call stack. Pushed on Ijk_Call, popped on Ijk_Ret.
     /// Cloned on fork so each path has its own call stack.
@@ -492,6 +498,7 @@ pub struct RustSimState {
     /// Inspection/breakpoint system for tracking memory and register access.
     /// Only records events when enabled (single bitmask check per operation).
     #[merge_policy = "warn_on_diverge"]
+    #[merge_manual = "divergence compares enabled_mask(), not the whole manager"]
     inspection: InspectionManager,
     /// Environment variables map for native getenv/setenv.
     /// Keys and values are byte vectors (no NUL terminator in storage).
@@ -537,6 +544,7 @@ pub struct RustSimState {
     /// to be monotonic (`new >= prev`). Cloned on fork; not synced across the
     /// Python boundary today (same drift class as `posix_brk` / `mmap_base`).
     #[merge_policy = "max"]
+    #[merge_manual = "Option<RustBV> has no Ord; the maximum is built symbolically via uge+ite"]
     last_time: Option<RustBV>,
     /// Mirrors angr's NO_IP_CONCRETIZATION SimOption. When true, symbolic
     /// jump targets are NOT enumerated via solver — the state routes to the
