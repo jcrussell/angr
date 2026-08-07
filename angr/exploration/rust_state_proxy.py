@@ -2317,23 +2317,32 @@ class RustCallStackFrameProxy:
         return f"<RustCallStackFrame func=0x{self.func_addr:x} ret=0x{self.ret_addr:x} sp=0x{self.stack_ptr:x}>"
 
 
-class RustCallStackProxy:
-    """Iterable callstack view of a Rust state.
+class _RustCallStackFramesMixin:
+    """Live-read frame access shared by the two Rust callstack proxies.
 
-    Frames are read live from Rust on every ``_frames`` access (top frame
-    first, matching angr's CallStack iteration order — the Rust engine
-    stores them in push order, top last, so we reverse). No Python-side
-    frame cache: a ``RustStateProxy`` view memoizes its ``callstack``
-    sub-proxy (``self._callstack_proxy``), so caching frames here would
-    silently serve pre-step call frames if the view is held across a Rust
-    step (angr-qwyti.10 — the same state_id-keyed stale-cache shape as the
-    register-proxy read cache in angr-4rq7). Mirrors the deliberate
-    live-read model of the sibling ``RustCallStackProxyPlugin``.
+    :class:`RustCallStackProxy` (the ``RustStateProxy.callstack`` view) and
+    :class:`RustCallStackProxyPlugin` (the ``state.callstack`` plugin
+    installed on SimProcedure callback states) present the same top-frame
+    accessor surface over the same ``get_state_call_stack(state_id)`` FFI
+    read. Implementors supply ``_mgr`` and ``_state_id``; the frame fetch,
+    ``len()``, and the seven top-frame properties live here.
+
+    Frames are read live on every ``_frames`` access (top frame first,
+    matching angr's CallStack iteration order — the Rust engine stores them
+    in push order, top last, so we reverse). No Python-side frame cache: a
+    ``RustStateProxy`` view memoizes its ``callstack`` sub-proxy
+    (``self._callstack_proxy``), so caching frames here would silently serve
+    pre-step call frames if the view is held across a Rust step
+    (angr-qwyti.10 — the same state_id-keyed stale-cache shape as the
+    register-proxy read cache in angr-4rq7). The plugin has the same
+    requirement for concurrent Rust-side pushes during a callback.
+
+    Iteration, indexing, ``top`` and ``next`` stay on the subclasses: the
+    plugin yields *itself* as the top node (matching ``CallStack.top is
+    self``), the view yields a :class:`RustCallStackFrameProxy` for it.
     """
 
-    def __init__(self, rust_mgr, state_id):
-        self._mgr = rust_mgr
-        self._state_id = state_id
+    __slots__ = ()
 
     @property
     def _frames(self):
@@ -2342,10 +2351,67 @@ class RustCallStackProxy:
         except Exception as e:
             # cat-(b) FALLBACK WITH LOSS: empty callstack when FFI fails.
             # Distinguishable from a real empty stack only via the log.
-            l.debug("get_state_call_stack(sid=%d) failed: %s: %s", self._state_id, type(e).__name__, e)
+            l.debug(
+                "%s.get_state_call_stack(sid=%d) failed: %s: %s",
+                type(self).__name__,
+                self._state_id,
+                type(e).__name__,
+                e,
+            )
             return []
         # Rust pushes onto the end → most recent is last → reverse.
         return list(reversed(raw))
+
+    def __len__(self):
+        return len(self._frames)
+
+    def _top_frame_field(self, index):
+        """Read one field of the top Rust frame, 0 when the stack is empty."""
+        frames = self._frames
+        if not frames:
+            return 0
+        return frames[0][index]
+
+    @property
+    def current_function_address(self):
+        return self._top_frame_field(1)  # callee_addr
+
+    @property
+    def current_return_target(self):
+        return self._top_frame_field(2)  # return_addr
+
+    @property
+    def current_stack_pointer(self):
+        return self._top_frame_field(3)  # stack_ptr
+
+    @property
+    def call_site_addr(self):
+        return self._top_frame_field(0)
+
+    @property
+    def func_addr(self):
+        return self.current_function_address
+
+    @property
+    def ret_addr(self):
+        return self.current_return_target
+
+    @property
+    def stack_ptr(self):
+        return self.current_stack_pointer
+
+
+class RustCallStackProxy(_RustCallStackFramesMixin):
+    """Iterable callstack view of a Rust state.
+
+    Frame reads and the top-frame accessors come from
+    :class:`_RustCallStackFramesMixin`, shared with the sibling
+    ``RustCallStackProxyPlugin``.
+    """
+
+    def __init__(self, rust_mgr, state_id):
+        self._mgr = rust_mgr
+        self._state_id = state_id
 
     def __iter__(self):
         # Snapshot once so index-based frame.next walks stay internally
@@ -2354,9 +2420,6 @@ class RustCallStackProxy:
         owner = _StaticFrameOwner(frames)
         for i, frame in enumerate(frames):
             yield RustCallStackFrameProxy(frame, i, owner)
-
-    def __len__(self):
-        return len(self._frames)
 
     def __getitem__(self, k):
         frames = self._frames
@@ -2373,47 +2436,11 @@ class RustCallStackProxy:
             return None
         return RustCallStackFrameProxy(frames[0], 0, _StaticFrameOwner(frames))
 
-    @property
-    def current_function_address(self):
-        if not self._frames:
-            return 0
-        return self._frames[0][1]  # callee_addr
-
-    @property
-    def current_return_target(self):
-        if not self._frames:
-            return 0
-        return self._frames[0][2]  # return_addr
-
-    @property
-    def current_stack_pointer(self):
-        if not self._frames:
-            return 0
-        return self._frames[0][3]  # stack_ptr
-
-    @property
-    def func_addr(self):
-        return self.current_function_address
-
-    @property
-    def ret_addr(self):
-        return self.current_return_target
-
-    @property
-    def stack_ptr(self):
-        return self.current_stack_pointer
-
-    @property
-    def call_site_addr(self):
-        if not self._frames:
-            return 0
-        return self._frames[0][0]
-
     def __repr__(self):
         return f"<RustCallStackProxy depth={len(self)}>"
 
 
-class RustCallStackProxyPlugin(_ProxyStatePluginMixin):
+class RustCallStackProxyPlugin(_RustCallStackFramesMixin, _ProxyStatePluginMixin):
     """SimStatePlugin-shaped proxy that reads frames from Rust on demand.
 
     Installed as ``state.callstack`` on SimProcedure callback states under
@@ -2488,28 +2515,11 @@ class RustCallStackProxyPlugin(_ProxyStatePluginMixin):
         return clone
 
     # ---------------------------------------------------------------
-    # Frame reads (no Python-side cache; each access re-reads from
-    # Rust so the plugin stays in sync with concurrent Rust-side
-    # pushes during the same callback).
+    # Frame reads: ``_frames`` / ``__len__`` / the top-frame accessors
+    # come from _RustCallStackFramesMixin (no Python-side cache; each
+    # access re-reads from Rust so the plugin stays in sync with
+    # concurrent Rust-side pushes during the same callback).
     # ---------------------------------------------------------------
-
-    @property
-    def _frames(self):
-        try:
-            raw = self._mgr.get_state_call_stack(self._state_id)
-        except Exception as e:
-            # cat-(b) FALLBACK WITH LOSS: empty stack when FFI fails;
-            # distinguishable from a real empty stack only via the log.
-            l.debug(
-                "RustCallStackProxyPlugin.get_state_call_stack(sid=%d) failed: %s: %s",
-                self._state_id,
-                type(e).__name__,
-                e,
-            )
-            return []
-        # Rust pushes onto the end (most recent last). Reverse so the
-        # top frame is first, matching angr's CallStack iteration order.
-        return list(reversed(raw))
 
     def __iter__(self):
         frames = self._frames
@@ -2524,9 +2534,6 @@ class RustCallStackProxyPlugin(_ProxyStatePluginMixin):
         owner = _StaticFrameOwner(frames)
         for i in range(1, len(frames)):
             yield RustCallStackFrameProxy(frames[i], i, owner)
-
-    def __len__(self):
-        return len(self._frames)
 
     def __getitem__(self, k):
         frames = self._frames
@@ -2567,46 +2574,6 @@ class RustCallStackProxyPlugin(_ProxyStatePluginMixin):
             1,
             _StaticFrameOwner(frames),
         )
-
-    @property
-    def current_function_address(self):
-        frames = self._frames
-        if not frames:
-            return 0
-        return frames[0][1]  # callee_addr
-
-    @property
-    def current_return_target(self):
-        frames = self._frames
-        if not frames:
-            return 0
-        return frames[0][2]  # return_addr
-
-    @property
-    def current_stack_pointer(self):
-        frames = self._frames
-        if not frames:
-            return 0
-        return frames[0][3]  # stack_ptr
-
-    @property
-    def func_addr(self):
-        return self.current_function_address
-
-    @property
-    def ret_addr(self):
-        return self.current_return_target
-
-    @property
-    def stack_ptr(self):
-        return self.current_stack_pointer
-
-    @property
-    def call_site_addr(self):
-        frames = self._frames
-        if not frames:
-            return 0
-        return frames[0][0]
 
     # ---------------------------------------------------------------
     # push / pop / call / ret — gap stubs.
