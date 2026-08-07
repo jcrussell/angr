@@ -3385,8 +3385,9 @@ Behavior on exhaustion
 * **Rust ``alloc::handle_alloc_error``** — defaults to aborting the
   process (``cargo`` release profile). ``RustOomError`` exists in the
   exception hierarchy but is currently only raised by an explicit
-  test hook (``engine.rs::_raise_typed_test_error`` def ``:319``,
-  ``oom`` arm ``:342``); real Rust allocation failures abort rather
+  test hook (the ``oom`` arm of
+  ``engine.rs::_raise_typed_test_error``); real Rust allocation
+  failures abort rather
   than propagate.
 
 Recovery contract
@@ -3554,9 +3555,10 @@ from ``RustExecutionError``, which itself derives from the built-in
 way to catch everything the Rust core raises.
 
 The hierarchy and per-variant trigger conditions are derived from
-``native/angr/src/errors.rs`` (variant list at lines 73–97, dispatch
-table at lines 99–111) — if a future commit grows or renames a
-variant, this table is the first thing to update.
+``native/angr/src/errors.rs`` (the ``RustExecError`` enum and the
+``From<RustExecError> for PyErr`` dispatch impl below it) — if a future
+commit grows or renames a variant, this table is the first thing to
+update.
 
 .. warning::
 
@@ -3593,16 +3595,16 @@ variant, this table is the first thing to update.
        error, or generic ``Unsupported`` — anything not promoted to
        a specialized subclass). Useful as a single-clause catch for
        "anything the Rust engine threw".
-     - ``errors.rs:99-115``; populated via the catch-all arms in
-       ``engine.rs:cb_execution_error_to_typed`` / ``op_error_to_typed``.
+     - ``errors.rs::RustExecError::Other``; populated via the catch-all
+       arms in ``engine.rs::cb_execution_error_to_typed`` /
+       ``op_error_to_typed``.
    * - ``RustMalformedIRSBError``
      - The pyvex lifter produced an IRSB the interpreter could not
        execute (bad/missing statements, malformed exits, invalid
        block bounds).
-     - ``errors.rs:79-80``; raised from
-       ``CbExecutionError::InvalidIR(reason)`` mapped at
-       ``engine.rs::cb_execution_error_to_typed`` (def ``:31``,
-       InvalidIR arm ``:33``).
+     - ``errors.rs::RustExecError::MalformedIRSB``; raised from
+       ``CbExecutionError::InvalidIR(reason)`` mapped at the
+       ``InvalidIR`` arm of ``engine.rs::cb_execution_error_to_typed``.
    * - ``RustUnsupportedSyscallError``
      - A syscall handler that ran in Rust hit a number / name / arch
        combination it does not implement. Reserved class — the
@@ -3610,29 +3612,29 @@ variant, this table is the first thing to update.
        through the Python fallback (``UnsupportedFeature``), so this
        class is exposed for forward-compatibility and exercised by
        the ``_raise_typed_test_error("unsupported_syscall", ...)``
-       hook (``engine.rs::_raise_typed_test_error`` def ``:319``,
-       ``unsupported_syscall`` arm ``:331``). No production trigger
+       hook (the ``unsupported_syscall`` arm of
+       ``engine.rs::_raise_typed_test_error``). No production trigger
        in the current code.
-     - ``errors.rs:82-88``; production sites land here when an
-       upcoming Rust syscall handler chooses to raise rather than
-       fall back to Python.
+     - ``errors.rs::RustExecError::UnsupportedSyscall``; production
+       sites land here when an upcoming Rust syscall handler chooses
+       to raise rather than fall back to Python.
    * - ``RustUnsupportedVexOpError``
      - A VEX op (NEON / vector / unmapped opcode) is not implemented
        by the Rust interpreter. The op name and arch are baked into
        the message.
-     - ``errors.rs:90-91``; populated from ``OpError::UnsupportedNeon``,
-       ``OpError::UnsupportedVectorOp``, ``OpError::UnsupportedVexOp``
-       at ``engine.rs::op_error_to_typed`` (def ``:53``, arms ``:55-68``).
+     - ``errors.rs::RustExecError::UnsupportedVexOp``; populated from
+       ``OpError::UnsupportedNeon``, ``OpError::UnsupportedVectorOp``,
+       ``OpError::UnsupportedVexOp`` at the three matching arms of
+       ``engine.rs::op_error_to_typed``.
    * - ``RustZ3Error``
      - Z3 returned an error status (not ``Unknown`` — that collapses
        to UNSAT inside ``SymContext::is_sat``). Reserved class —
        solver hangs are bounded by ``solver_timeout_ms`` and the
        ``Unknown`` collapse, so this class is exposed for
        forward-compatibility and exercised only via the
-       ``_raise_typed_test_error("z3", ...)`` hook
-       (``engine.rs::_raise_typed_test_error`` def ``:319``, ``z3``
-       arm ``:341``).
-     - ``errors.rs:93-94``.
+       ``_raise_typed_test_error("z3", ...)`` hook (the ``z3`` arm of
+       ``engine.rs::_raise_typed_test_error``).
+     - ``errors.rs::RustExecError::Z3``.
    * - ``RustOomError``
      - Rust allocator returned a failure that the engine can
        propagate (as opposed to ``alloc::handle_alloc_error`` aborting
@@ -3641,13 +3643,12 @@ variant, this table is the first thing to update.
        release profile rather than raising this. Production sites
        land here when a Rust allocator hook chooses to propagate
        instead of abort. Currently only the
-       ``_raise_typed_test_error("oom", ...)`` hook
-       (``engine.rs::_raise_typed_test_error`` def ``:319``, ``oom``
-       arm ``:342``) raises it.
-     - ``errors.rs:96-97``.
+       ``_raise_typed_test_error("oom", ...)`` hook (the ``oom`` arm of
+       ``engine.rs::_raise_typed_test_error``) raises it.
+     - ``errors.rs::RustExecError::Oom``.
 
-The ``RustExecError`` Rust enum is ``#[non_exhaustive]``
-(``errors.rs:76``) so new variants can land in minor versions
+The ``RustExecError`` Rust enum carries ``#[non_exhaustive]``
+(``native/angr/src/errors.rs``) so new variants can land in minor versions
 without breaking downstream code that matches on it.
 
 Internal error convention
