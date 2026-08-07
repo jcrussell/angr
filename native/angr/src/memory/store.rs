@@ -53,7 +53,8 @@
 //!   `install_multi_for_candidates` maps every candidate page RW, while
 //!   `install_multi_for_candidates_safe` returns `UnmappedPageInRegion` for a
 //!   lazy-region miss (so Python's backer data is fetched first) and silently
-//!   filters non-lazy misses as unreachable.
+//!   filters non-lazy misses as unreachable — when that filter empties the
+//!   candidate list the store is dropped entirely (tagged `SILENT(cat-b)`).
 //! * Every symbolic entry point drops the store entirely under
 //!   AVOID_MULTIVALUED_WRITES, before any page is touched (tagged
 //!   `SILENT(cat-b)` at the two `_unified` sites).
@@ -706,7 +707,13 @@ impl SymbolicMemory {
 
         if ready.is_empty() {
             // No candidate page is currently mapped and none are lazy.
-            // Match eager semantics: silently no-op rather than error.
+            // SILENT(cat-b): the whole symbolic-address store is dropped, but
+            // every candidate was already filtered as unreachable by the loop
+            // above (non-lazy unmapped page => the address could not validly
+            // resolve there), so there is no reachable cell left to write.
+            // This mirrors eager `prepare_addresses_for_ite`, which skips the
+            // same candidates and likewise ends up storing nothing; erroring
+            // instead would diverge from the eager path.
             return Ok(());
         }
 

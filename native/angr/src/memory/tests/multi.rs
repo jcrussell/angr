@@ -805,6 +805,41 @@ fn test_phase2_safe_install_skips_unmapped_non_lazy() {
     assert!(mem.get_multi_alternatives(0x2000).is_none());
 }
 
+/// angr-sqfj8.74: when the non-lazy-unmapped filter above empties the
+/// candidate list entirely, `install_multi_for_candidates_safe` drops the
+/// whole store and returns `Ok` rather than erroring — the `SILENT(cat-b)`
+/// case documented at that site. Pins the boundary so a future change that
+/// turns "all candidates unreachable" into an error (diverging from eager
+/// `prepare_addresses_for_ite`, which stores nothing in the same situation)
+/// fails loudly here.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_phase2_safe_install_drops_store_when_every_candidate_unmapped() {
+    let ctx = SymContext::new_mock();
+    let concretizer = multi_write_concretizer();
+    let mut mem = SymbolicMemory::new(Endness::Little);
+
+    // Neither candidate page is mapped, and neither is in a lazy region.
+    // An unrelated mapped page keeps the memory non-empty.
+    mem.map(0x5000, 0x1000, Permission::RWX);
+
+    let addr_var = RustBV::symbolic(&ctx, "p2_all_unmapped_addr", 64);
+    ctx.assume_true(
+        &addr_var
+            .eq(&RustBV::concrete(0x1000, 64), &ctx)
+            .or(&addr_var.eq(&RustBV::concrete(0x2000, 64), &ctx), &ctx),
+    );
+    let value = RustBV::concrete(0xAB, 8);
+
+    mem.store_symbolic_unified(addr_var, value, &ctx, &concretizer)
+        .expect("all-unreachable candidate set must drop the store, not error");
+
+    // Nothing was installed and no page was auto-mapped by the drop.
+    assert_eq!(mem.multi_cell_count(), 0);
+    assert!(mem.get_multi_alternatives(0x1000).is_none());
+    assert!(mem.get_multi_alternatives(0x2000).is_none());
+}
+
 /// angr-9ke6b.94: with `enforce_permissions` on, a Multiple-concretized
 /// symbolic-address store into a read-only page must be rejected exactly like
 /// the Single-concretized store `store_concrete` already rejects. Before the
