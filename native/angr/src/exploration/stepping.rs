@@ -9,6 +9,7 @@ use crate::memory::SymbolicMemory;
 use crate::stash::STASH_STEP_OUT;
 use crate::state::{CallStackEntry, HistoryEntry};
 use crate::vex::IRSB;
+use crate::vex::ir::JumpKind;
 use lru::LruCache;
 use pyo3::exceptions::PyNotImplementedError;
 
@@ -527,7 +528,7 @@ impl RustExplorationManager {
                         num_args: 0,
                         return_addr: 0,
                     },
-                    "Ijk_Boring",
+                    JumpKind::Boring.ijk_name(),
                     Some(shared_ctx),
                     ForkBundle {
                         deferred_forks,
@@ -602,7 +603,7 @@ impl RustExplorationManager {
                     state,
                     None,
                     CallbackReason::PythonVEXFallback { addr, reason },
-                    "Ijk_Boring",
+                    JumpKind::Boring.ijk_name(),
                     None,
                     ForkBundle {
                         deferred_forks,

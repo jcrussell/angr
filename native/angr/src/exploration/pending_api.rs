@@ -20,6 +20,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use super::*;
+use crate::vex::ir::JumpKind;
 
 impl RustExplorationManager {
     // -------------------------------------------------------------------------
@@ -115,7 +116,7 @@ impl RustExplorationManager {
             let jumpkind = pending
                 .jumpkind
                 .clone()
-                .unwrap_or_else(|| "Ijk_Boring".to_string());
+                .unwrap_or_else(|| JumpKind::Boring.ijk_name().to_string());
             Ok((history, jumpkind))
         })
     }
@@ -505,7 +506,7 @@ impl RustExplorationManager {
                 pending
                     .jumpkind
                     .clone()
-                    .unwrap_or_else(|| "Ijk_Boring".to_string()),
+                    .unwrap_or_else(|| JumpKind::Boring.ijk_name().to_string()),
             )?;
 
             dict.set_item("stdout", pending.state.stdout_buffer().to_vec())?;
