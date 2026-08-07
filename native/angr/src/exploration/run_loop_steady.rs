@@ -768,7 +768,23 @@ impl RustExplorationManager {
             // A pymethod may be called without a Python token in hand, but we
             // are always on the GIL thread here (pymethods hold the GIL), so
             // reacquire it to drain the session.
-            let _ = Python::attach(|py| self.finalize_steady_session(py));
+            let finalized = Python::attach(|py| self.finalize_steady_session(py));
+            // SILENT(cat-c): the guard is injected by
+            // `#[angr_macros::steady_guarded]` into ~58 pymethods, all but one
+            // of which return `()`, so the only Err `finalize_steady_session`
+            // can produce (the drain timeout, whose message names the stuck
+            // workers and says their resident frontier states are lost) has no
+            // `?` to ride out on. Losing states silently would make a later
+            // `run()` look merely under-explored, so warn loudly with the full
+            // error text instead of discarding it (angr-sqfj8.38). The public
+            // `finalize_parallel_session` pymethod stays the propagating path.
+            if let Err(e) = finalized {
+                log::warn!(
+                    "steady_config_guard: finalizing the live steady session for a config \
+                     mutation failed; frontier states may have been lost and this run's \
+                     results may be incomplete: {e}"
+                );
+            }
         }
     }
 }
