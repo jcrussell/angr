@@ -145,6 +145,34 @@ pub(crate) fn install_shared_z3_context(py_z3_ctx_ptr: usize) -> PyResult<bool> 
     Ok(true)
 }
 
+/// Install claripy's Z3 context as this thread's Rust thread-local context —
+/// the cargo-test equivalent of `rust_manager._setup_shared_z3_context()`.
+/// Returns `false` (skip signal) when the `z3` module is not importable, which
+/// is the default state of the cargo-test binary's embedded interpreter.
+///
+/// Mandatory before any test exercises a claripy-`Z3_ast`-pointer path: the
+/// raw pointer claripy hands back belongs to *Python's* context, so asserting
+/// it onto a Rust-owned one is undefined behaviour rather than a recoverable
+/// error — in practice Z3's no-op error handler swallows it and the constraint
+/// silently never lands (angr-sqfj8.125). Must run BEFORE any `SymContext` the
+/// test will use is constructed, since `SymContext::new` captures the
+/// thread-local context that is current at that moment.
+#[cfg(all(test, feature = "vex-engine-z3"))]
+pub(crate) fn install_python_z3_context(py: Python<'_>) -> bool {
+    let Ok(z3_mod) = py.import("z3") else {
+        return false;
+    };
+    let ptr = z3_mod
+        .call_method0("main_ctx")
+        .and_then(|c| c.getattr("ctx"))
+        .and_then(|c| c.getattr("value"))
+        .and_then(|v| v.extract::<usize>());
+    match ptr {
+        Ok(p) if p != 0 => install_shared_z3_context(p).is_ok(),
+        _ => false,
+    }
+}
+
 /// Reset the Rust thread-local Z3 context to a fresh Rust-owned context.
 /// Call this before Python's Z3 context is freed (e.g., via atexit) to
 /// prevent use-after-free during process shutdown.

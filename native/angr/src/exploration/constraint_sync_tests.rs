@@ -17,29 +17,6 @@ use crate::state::RustSimState;
 // guaranteed venv.
 // ---------------------------------------------------------------------------
 
-/// Install claripy's Z3 context as this thread's Rust thread-local context —
-/// the cargo-test equivalent of `rust_manager._setup_shared_z3_context()`.
-/// Mandatory before exercising the Z3-pointer rescue arm: without it the raw
-/// `Z3_ast` claripy hands back belongs to Python's context while
-/// `add_constraint_raw` asserts it onto a Rust-owned one, which is undefined
-/// behaviour rather than a recoverable error. Must run BEFORE any `SymContext`
-/// this test will use is constructed.
-#[cfg(feature = "vex-engine-z3")]
-fn install_python_z3_context(py: Python<'_>) -> bool {
-    let Ok(z3_mod) = py.import("z3") else {
-        return false;
-    };
-    let ptr = z3_mod
-        .call_method0("main_ctx")
-        .and_then(|c| c.getattr("ctx"))
-        .and_then(|c| c.getattr("value"))
-        .and_then(|v| v.extract::<usize>());
-    match ptr {
-        Ok(p) if p != 0 => crate::engine::install_shared_z3_context(p).is_ok(),
-        _ => false,
-    }
-}
-
 /// Build a `PyList` out of already-bound Python objects (the shape
 /// `sync_constraints_from_python` takes).
 #[cfg(feature = "vex-engine-z3")]
@@ -148,7 +125,7 @@ fn sync_constraints_unsat_returns_false_for_pruning() {
 fn sync_constraints_fp_rescued_via_z3_pointer() {
     Python::initialize();
     Python::attach(|py| {
-        if !install_python_z3_context(py) {
+        if !crate::engine::install_python_z3_context(py) {
             return;
         }
         let Ok(claripy) = py.import("claripy") else {
