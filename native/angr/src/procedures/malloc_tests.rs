@@ -238,6 +238,72 @@ fn test_realloc_copies_data() {
     assert_eq!(val.as_u64(), Some(0xDEADBEEF));
 }
 
+/// angr-sqfj8.82: an unreadable source region must produce a `ProcedureError`
+/// (→ Python fallback), not a silently truncated copy.
+#[test]
+fn test_realloc_unmapped_source_errors_instead_of_truncating() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    // Deliberately no map_memory: the bump heap at 0xC000_0000 is unmapped, so
+    // every load of the source region fails.
+    let r1 = NativeMalloc
+        .call(&mut state, &[RustBV::concrete(16, 64)])
+        .unwrap();
+    let old_addr = r1.unwrap().as_u64().unwrap();
+    assert!(
+        state.memory_load(old_addr, 8).is_err(),
+        "precondition: source region must be unmapped"
+    );
+
+    let result = NativeRealloc.call(
+        &mut state,
+        &[
+            RustBV::concrete(old_addr as u128, 64),
+            RustBV::concrete(32, 64),
+        ],
+    );
+    assert!(
+        matches!(result, Err(ProcedureError::Memory(_))),
+        "expected a memory error, got {result:?}"
+    );
+    // The old block must still be live: Python re-runs the whole realloc.
+    assert!(state.heap_metadata().is_allocated(old_addr));
+    assert_eq!(state.heap_metadata().free_count(), 0);
+}
+
+/// The bead's concrete scenario: the source is readable at the start and hits
+/// an unmapped page partway through (e.g. next to a guard page).
+#[test]
+fn test_realloc_source_unmapped_partway_through_errors() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    // Map exactly one page at the heap base; the allocation below spans two.
+    state.map_memory(0xC000_0000, 0x1000, Permission::RWX);
+
+    let r1 = NativeMalloc
+        .call(&mut state, &[RustBV::concrete(0x2000, 64)])
+        .unwrap();
+    let old_addr = r1.unwrap().as_u64().unwrap();
+    assert_eq!(old_addr, 0xC000_0000);
+    state
+        .memory_store(old_addr, RustBV::concrete(0xDEADBEEF, 32))
+        .unwrap();
+    // First page readable, second page not.
+    assert!(state.memory_load(old_addr, 4).is_ok());
+    assert!(state.memory_load(old_addr + 0x1000, 4).is_err());
+
+    let result = NativeRealloc.call(
+        &mut state,
+        &[
+            RustBV::concrete(old_addr as u128, 64),
+            RustBV::concrete(0x2000, 64),
+        ],
+    );
+    assert!(
+        matches!(result, Err(ProcedureError::Memory(_))),
+        "expected a memory error, got {result:?}"
+    );
+    assert!(state.heap_metadata().is_allocated(old_addr));
+}
+
 #[test]
 fn test_memalign_returns_aligned_addr() {
     let mut state = RustSimState::new("amd64").unwrap();

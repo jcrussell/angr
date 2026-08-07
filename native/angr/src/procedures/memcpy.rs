@@ -159,7 +159,12 @@ fn copy_symbolic_size(
 }
 
 /// Copy `size` bytes forward from `src` to `dst` using 8-byte chunks.
-fn copy_forward(
+///
+/// Both the loads and the stores propagate their errors, so a caller that
+/// hands this an unreadable source region (or an unwritable destination) gets
+/// a `ProcedureError` and falls back to Python rather than a half-copied
+/// buffer. `NativeRealloc` reuses it for exactly that reason (angr-sqfj8.82).
+pub(super) fn copy_forward(
     state: &mut RustSimState,
     src: u64,
     dst: u64,

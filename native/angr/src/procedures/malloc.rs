@@ -89,27 +89,28 @@ crate::declare_proc! {
         let old_size = state.heap_metadata().alloc_size(ptr);
         let new_addr = state.heap_alloc(size);
 
-        // Free the old allocation (metadata only, bump allocator doesn't
-        // reclaim). Unconditional on ptr != 0: realloc(ptr, 0) frees too.
-        if ptr != 0 {
-            state.heap_free(ptr);
-        }
-
-        // Copy old data if ptr != NULL and the new block can hold anything
+        // Copy old data if ptr != NULL and the new block can hold anything.
+        // angr-sqfj8.82: this used to `break` on a failed load and drop every
+        // store's `Result`, so a source region with an unmapped page partway
+        // through returned a buffer whose tail was silently whatever
+        // `heap_alloc` left behind. `copy_forward` propagates both, so such a
+        // realloc now falls back to Python, which reads unmapped memory under
+        // angr's own fill semantics instead of guessing.
         if ptr != 0 && size > 0 {
             // Copy min(size, old_size) bytes
             let copy_len = old_size.map_or(size, |os| size.min(os));
-            let mut offset = 0u64;
-            while offset < copy_len {
-                let chunk = std::cmp::min(copy_len - offset, 8);
-                match state.memory_load(ptr.wrapping_add(offset), chunk as u32) {
-                    Ok(val) => {
-                        let _ = state.memory_store(new_addr.wrapping_add(offset), val);
-                    }
-                    Err(_) => break, // Stop copying on unmapped memory
-                }
-                offset += chunk;
-            }
+            super::memcpy::copy_forward(state, ptr, new_addr, copy_len as usize)?;
+        }
+
+        // Free the old allocation (metadata only, bump allocator doesn't
+        // reclaim). Unconditional on ptr != 0: realloc(ptr, 0) frees too.
+        // Runs *after* the copy so a copy failure leaves `ptr` still live in
+        // HeapMetadata for the Python fallback, which re-runs the whole
+        // realloc. (The new bump allocation above is leaked on that path —
+        // unavoidable without a second read pass, and the bump heap never
+        // reclaims anyway.)
+        if ptr != 0 {
+            state.heap_free(ptr);
         }
 
         let bits = state.arch().bits();
