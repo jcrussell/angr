@@ -23,6 +23,27 @@
 
 use super::*;
 
+/// Convert one `(bv, is_true)` assumed-constraint pair to a claripy AST and
+/// push it into `results`, logging (rather than silently dropping) a failed
+/// conversion — mirrors `pending_api.rs::_export_pending_constraints`'s
+/// already-correct handling of the same failure mode. Shared by
+/// `_export_state_constraints` and `_state_unsat_core`, which both walk
+/// `get_assumed_constraints()`-shaped pairs; `context` identifies the caller
+/// for the log line.
+fn push_assumed_constraint_or_log(
+    py: Python<'_>,
+    bv: &RustBV,
+    is_true: bool,
+    claripy: &Bound<'_, PyAny>,
+    results: &mut Vec<Py<PyAny>>,
+    context: &str,
+) {
+    match crate::claripy_bridge::assumed_guard_to_claripy(py, bv, claripy, is_true) {
+        Ok(c) => results.push(c),
+        Err(e) => log::debug!("{context}: could not convert assumed constraint to claripy: {e}"),
+    }
+}
+
 impl RustExplorationManager {
     // -------------------------------------------------------------------------
     // Constraint sync (state-keyed)
@@ -155,14 +176,14 @@ impl RustExplorationManager {
                 // Shared with the native `constraints` inspect dispatch — a
                 // BV-typed guard must be compared against BVV(1|0, 1), not
                 // handed to `claripy.Not` (angr-op0dn.14.4.1).
-                if let Ok(c) = crate::claripy_bridge::assumed_guard_to_claripy(
+                push_assumed_constraint_or_log(
                     py,
                     bv,
-                    claripy.as_any(),
                     *is_true,
-                ) {
-                    results.push(c);
-                }
+                    claripy.as_any(),
+                    &mut results,
+                    "_export_state_constraints",
+                );
             }
             Ok(results)
         })
@@ -222,14 +243,14 @@ impl RustExplorationManager {
             let mut results = Vec::new();
             for idx in ctx.unsat_core_assumed(&extra) {
                 let (bv, is_true) = &assumed[idx];
-                if let Ok(c) = crate::claripy_bridge::assumed_guard_to_claripy(
+                push_assumed_constraint_or_log(
                     py,
                     bv,
-                    claripy.as_any(),
                     *is_true,
-                ) {
-                    results.push(c);
-                }
+                    claripy.as_any(),
+                    &mut results,
+                    "_state_unsat_core",
+                );
             }
             Ok(results)
         })
