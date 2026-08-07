@@ -234,6 +234,126 @@ fn test_strtod_non_fp_return_arch_falls_back() {
     assert!(matches!(res, Err(ProcedureError::NotImplemented)));
 }
 
+/// C99 hex-float literals: `floating_prefix_len` has always recognized them,
+/// but `f64::from_str` rejects the syntax, so the value silently came out 0.0
+/// with `*endptr` advanced past the whole literal (angr-sqfj8.81).
+#[test]
+fn test_strtod_hex_float_literal_parses_and_sets_endptr() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    setup_string(&mut state, 0x1000, b"0x1.8p3rest");
+    state.map_memory_data(0x2000, &[0u8; 8], Permission::RWX);
+    NativeStrtod
+        .call(
+            &mut state,
+            &[RustBV::concrete(0x1000, 64), RustBV::concrete(0x2000, 64)],
+        )
+        .unwrap();
+    assert_eq!(read_xmm0_low64(&state), 12.0f64.to_bits());
+    let end = state.memory_load(0x2000, 8).unwrap();
+    assert_eq!(end.as_u64(), Some(0x1000 + 7)); // past "0x1.8p3"
+}
+
+#[test]
+fn test_strtod_hex_float_forms() {
+    // (literal, expected value) — hand-computed, since Rust has no reference
+    // hex-float parser to diff against.
+    let cases: &[(&[u8], f64)] = &[
+        (b"0x1p0", 1.0),
+        (b"0X1P+4", 16.0),
+        (b"0x10", 16.0),
+        (b"-0x1.8p3", -12.0),
+        (b"+0x1.8p-3", 0.1875),
+        (b"0x.8p1", 1.0),
+        (b"0x0p0", 0.0),
+        (b"0xffp0", 255.0),
+    ];
+    for (lit, want) in cases {
+        let mut state = RustSimState::new("amd64").unwrap();
+        setup_string(&mut state, 0x1000, lit);
+        NativeStrtod
+            .call(
+                &mut state,
+                &[RustBV::concrete(0x1000, 64), RustBV::concrete(0, 64)],
+            )
+            .unwrap();
+        assert_eq!(
+            read_xmm0_low64(&state),
+            want.to_bits(),
+            "strtod({:?})",
+            std::str::from_utf8(lit).unwrap()
+        );
+    }
+}
+
+/// A hex significand can name far more bits than an f64 holds. The exact tie
+/// must round to even, and a nonzero digit past the 124-bit accumulator cutoff
+/// must still break that tie upward via the sticky bit.
+#[test]
+fn test_parse_hex_float_rounds_to_nearest_even_with_sticky() {
+    // 1 + 2^-53: exactly halfway between 1.0 and the next double.
+    assert_eq!(parse_hex_float(b"0x1.00000000000008p0"), Some(1.0));
+    // Same, plus a nonzero digit ~144 bits in — past the accumulator cutoff,
+    // so it survives only as the sticky bit.
+    let above_tie = parse_hex_float(b"0x1.00000000000008000000000000000000001p0");
+    assert_eq!(above_tie, Some(f64::from_bits(0x3ff0_0000_0000_0001)));
+    // Largest double below 2.0.
+    assert_eq!(
+        parse_hex_float(b"0x1.fffffffffffffp0"),
+        Some(f64::from_bits(0x3fff_ffff_ffff_ffff))
+    );
+}
+
+/// The exponent tails must not be lost to an intermediate over/underflow —
+/// the reason `scale_by_pow2` exists instead of a plain `2f64.powi(n)`.
+#[test]
+fn test_parse_hex_float_exponent_extremes() {
+    assert_eq!(parse_hex_float(b"0x1p-1074"), Some(f64::from_bits(1))); // min subnormal
+    assert_eq!(parse_hex_float(b"0x1p-1075"), Some(0.0)); // ties to even → 0
+    assert_eq!(
+        parse_hex_float(b"0x1p1023"),
+        Some(f64::from_bits(0x7fe0_0000_0000_0000))
+    );
+    assert_eq!(parse_hex_float(b"0x1p5000"), Some(f64::INFINITY));
+    assert_eq!(
+        parse_hex_float(b"-0x1p99999999999999999999"),
+        Some(f64::NEG_INFINITY)
+    );
+    assert_eq!(parse_hex_float(b"0x1p-5000"), Some(0.0));
+}
+
+/// Non-hex forms must fall through to `f64::from_str`, and an incomplete hex
+/// literal must not be mistaken for a complete one.
+#[test]
+fn test_parse_hex_float_rejects_non_hex_forms() {
+    for s in [
+        &b"1.5"[..],
+        b"inf",
+        b"nan",
+        b"0x",       // no digits
+        b"0x1p",     // 'p' without exponent digits
+        b"0x1p+",    // ditto
+        b"0x1.8p3x", // trailing byte — not a complete literal
+        b"",
+    ] {
+        assert_eq!(parse_hex_float(s), None, "parse_hex_float({s:?})");
+    }
+}
+
+/// Whitespace-only input: `floating_prefix_len` reports a nonzero prefix end
+/// (it consumed the spaces) but there is no literal to parse. Returning 0.0
+/// with `*endptr` past the whitespace would claim a conversion C says never
+/// happened — defer to Python instead.
+#[test]
+fn test_strtod_whitespace_only_falls_back() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    setup_string(&mut state, 0x1000, b"   ");
+    let res = NativeStrtod.call(
+        &mut state,
+        &[RustBV::concrete(0x1000, 64), RustBV::concrete(0, 64)],
+    );
+    assert!(matches!(res, Err(ProcedureError::NotImplemented)));
+}
+
 #[test]
 fn test_floating_prefix_len_grammar() {
     assert_eq!(floating_prefix_len(b"3.14abc"), 4);
