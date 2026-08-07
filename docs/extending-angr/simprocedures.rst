@@ -412,6 +412,15 @@ and ``Other(String)``. Any of them triggers Python fallback. The enum is
 ``#[non_exhaustive]`` (angr-irwe): minor versions may add variants, so
 every ``match`` on it needs a wildcard arm.
 
+If your procedure caps how many bytes it will walk or copy, express the
+bail-out as ``check_max(n, MAX_WHATEVER)?`` (``procedures/mod.rs``) rather
+than hand-rolling the compare: it fixes the variant at ``MaxIterations``
+and the payload at the *offending* value, the two things the ~19 call sites
+had started to disagree about before angr-12jjk.24. Only bail-outs that
+aren't a plain ``n > max`` compare — a scan that ran to exhaustion, a
+"is this prefix result conclusive?" check — should build the error
+directly.
+
 .. warning::
 
    **Value-returning "unconstrained" stubs must match Python's
@@ -679,9 +688,7 @@ bail out on any symbolic one." Source:
            let src  = extract_concrete_arg(&args[1], "src")?;
            let size = extract_concrete_arg(&args[2], "size")? as usize;
 
-           if size > MAX_COPY_SIZE {
-               return Err(ProcedureError::MaxIterations(MAX_COPY_SIZE));
-           }
+           check_max(size as u64, MAX_COPY_SIZE)?;
            if size == 0 {
                return Ok(Some(args[0].clone()));
            }
