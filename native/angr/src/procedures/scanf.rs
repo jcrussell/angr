@@ -272,18 +272,31 @@ fn do_scanf(
     let mut conversions: u64 = 0;
 
     for (spec_idx, spec) in specs.iter().enumerate() {
-        if spec.suppress {
-            // Suppressed: no pointer argument consumed, no storage
+        // A suppressed conversion (`%*s`) assigns nothing — it consumes no
+        // pointer argument and stores nowhere — but the real scanf(3) still
+        // *reads* the matched bytes off the stream. On stdin that read is the
+        // only thing advancing the fd-0 cursor, so skipping it outright made a
+        // later `%s`/`%c` in the same format re-read from the wrong offset
+        // (angr-sqfj8.84). Off-stream sources (sscanf/fscanf on a real file,
+        // i.e. `!record_stdin`) have no cursor here, so a suppressed spec is a
+        // genuine no-op for them. Suppressed *numeric* specs need no special
+        // handling either: the seeded-stdin check above ignores `suppress`, so
+        // `%*d` over unread seed already defers the whole call to Python.
+        if spec.suppress && !record_stdin {
             continue;
         }
 
-        if arg_idx >= ptr_args.len() {
-            // Ran out of pointer arguments — return what we have
-            break;
-        }
-
-        let ptr = extract_concrete_arg(&ptr_args[arg_idx], &format!("scanf arg {arg_idx}"))?;
-        arg_idx += 1;
+        let ptr = if spec.suppress {
+            None
+        } else {
+            if arg_idx >= ptr_args.len() {
+                // Ran out of pointer arguments — return what we have
+                break;
+            }
+            let ptr = extract_concrete_arg(&ptr_args[arg_idx], &format!("scanf arg {arg_idx}"))?;
+            arg_idx += 1;
+            Some(ptr)
+        };
 
         if spec.is_string {
             // %s: create symbolic bytes + NUL terminator
@@ -305,12 +318,16 @@ fn do_scanf(
                     .collect()
             };
 
-            for (j, sym_byte) in sym_bytes.into_iter().enumerate() {
-                state.memory_store(ptr.wrapping_add(j as u64), sym_byte)?;
-            }
+            // Suppressed (`ptr == None`): the bytes were still read off the
+            // stream above, they just have nowhere to land.
+            if let Some(ptr) = ptr {
+                for (j, sym_byte) in sym_bytes.into_iter().enumerate() {
+                    state.memory_store(ptr.wrapping_add(j as u64), sym_byte)?;
+                }
 
-            // NUL terminator
-            state.memory_store(ptr.wrapping_add(str_len), RustBV::concrete(0, 8))?;
+                // NUL terminator
+                state.memory_store(ptr.wrapping_add(str_len), RustBV::concrete(0, 8))?;
+            }
         } else if spec.is_char && record_stdin {
             // %c reads exactly one byte off the stream — a byte-for-byte
             // mapping, so it consumes the harness seed like %s does (angr-ggb66).
@@ -323,7 +340,9 @@ fn do_scanf(
                 .into_iter()
                 .next()
                 .expect("mint_stdin_bytes returns one BV per name");
-            state.memory_store(ptr, sym_byte)?;
+            if let Some(ptr) = ptr {
+                state.memory_store(ptr, sym_byte)?;
+            }
         } else {
             // Numeric or char: create one symbolic BVS of appropriate width
             let name = format!("{source}_scanf_{scan_id}_{spec_idx}");
@@ -332,15 +351,24 @@ fn do_scanf(
                 RustBV::symbolic(&ctx, &name, spec.bits)
             };
 
+            // A suppressed numeric still consumes digits off the stream, so it
+            // is recorded for the stdin reconstruction exactly like an assigned
+            // one — only the store is skipped.
             if record_stdin {
                 state.record_stdin_symbol(name, spec.bits);
             }
 
             // Store to pointer — write spec.bits/8 bytes
-            state.memory_store(ptr, sym_val)?;
+            if let Some(ptr) = ptr {
+                state.memory_store(ptr, sym_val)?;
+            }
         }
 
-        conversions += 1;
+        // scanf(3) counts *assigned* conversions; a suppressed one is read but
+        // never counted.
+        if ptr.is_some() {
+            conversions += 1;
+        }
     }
 
     // Return number of successful conversions

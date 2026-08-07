@@ -866,6 +866,70 @@ fn test_scanf_percent_c_consumes_seeded_stdin() {
     assert_eq!(state.stdin_symbols().len(), 0);
 }
 
+/// angr-sqfj8.84: a *suppressed* conversion assigns nothing but still reads its
+/// bytes off the stream, so it has to advance the fd-0 cursor — otherwise the
+/// next conversion in the same format string re-reads the seed from the wrong
+/// offset. Here `%*2s` must swallow "AB" so `%2s` lands on "CD".
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_scanf_suppressed_consumes_seeded_stdin() {
+    let mut state = setup_state();
+    state.map_memory_data(0x1000, b"%*2s %2s\x00", Permission::RWX);
+    let seed: Vec<RustBV> = (0x41u128..0x45).map(|b| RustBV::concrete(b, 8)).collect();
+    state.file_system().set_fd_content_sym(0, seed);
+
+    let result = NativeScanf
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x1000, 64), // format
+                RustBV::concrete(0x2000, 64), // char buf[] (for the %2s)
+            ],
+        )
+        .expect("scanf served natively");
+
+    // Suppressed conversions are read but not counted.
+    assert_eq!(result.unwrap().as_u64(), Some(1));
+
+    for (i, want) in [0x43u128, 0x44].iter().enumerate() {
+        let byte = state.memory_load(0x2000 + i as u64, 1).unwrap();
+        assert!(byte.as_u64().is_none(), "byte {i} is still a leaf symbol");
+        assert_eq!(
+            state.eval(&byte),
+            Some(*want),
+            "byte {i} binds to the seed past the suppressed field"
+        );
+    }
+    // All four seeded bytes consumed: two by `%*2s`, two by `%2s`.
+    assert_eq!(state.file_system_ref().fd_info(0).unwrap().1, 4);
+    assert_eq!(state.stdin_symbols().len(), 0);
+}
+
+/// angr-sqfj8.84: the suppressed field is still a *read*, so the bytes it
+/// swallowed have to surface in the stdin reconstruction — a suppressed `%*c`
+/// off an unseeded fd 0 records its byte exactly like an assigned `%c` does.
+#[test]
+fn test_scanf_suppressed_records_stdin_symbol() {
+    let mut state = setup_state();
+    state.map_memory_data(0x1000, b"%*c%c\x00", Permission::RWX);
+
+    NativeScanf
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x1000, 64), // format
+                RustBV::concrete(0x2000, 64), // char c (for the assigned %c)
+            ],
+        )
+        .expect("scanf served natively");
+
+    assert_eq!(
+        state.stdin_symbols().len(),
+        2,
+        "both the suppressed and the assigned %c read a byte off stdin"
+    );
+}
+
 /// angr-ggb66: a numeric conversion cannot map the seed byte-for-byte (it models
 /// a digit parse), so while fd 0 has unread seed the whole call defers to Python
 /// — and it defers *before* any store, so the earlier `%s` in the format has not
