@@ -462,9 +462,13 @@ impl<'a> VEXInterpreter<'a> {
         // bytes that the Python lifter would normally read are stale. Try
         // to read fresh bytes from rust_memory and pass them via byte_string=
         // so the Python lift sees the post-store program.
-        let dirty_bytes: Option<Vec<u8>> = if self.is_code_range_dirtied(addr, 4096) {
+        // The window is `VEX_MAX_BYTES`, the same budget `native_lift_source_bytes`
+        // uses: a narrower one would leave a block whose fresh bytes sit past the
+        // cap to be lifted from the stale image (angr-sqfj8.67).
+        let dirty_bytes: Option<Vec<u8>> = if self.is_code_range_dirtied(addr, VEX_MAX_BYTES as u64)
+        {
             self.rust_memory.as_ref().and_then(|rust_mem| {
-                let mut max_bytes = 4096usize;
+                let mut max_bytes = VEX_MAX_BYTES;
                 for &hook_addr in self.hook_addrs.iter() {
                     if hook_addr > addr && hook_addr < addr + max_bytes as u64 {
                         let limit = (hook_addr - addr) as usize;
@@ -598,10 +602,6 @@ impl<'a> VEXInterpreter<'a> {
     /// left to the callback, which passes fresh bytes through `byte_string=`.
     #[cfg(feature = "libvex-ffi")]
     fn native_lift_source_bytes(&self, addr: u64) -> Option<Vec<u8>> {
-        // 5000 == pyvex's VEX_MAX_BYTES; libVEX stops at the block boundary so
-        // trailing bytes beyond the block are simply unused.
-        const VEX_MAX_BYTES: usize = 5000;
-
         if let Some(rust_mem) = self.rust_memory.as_ref()
             && let Some(bytes) = rust_mem.read_concrete_bytes_for_lift(addr, VEX_MAX_BYTES)
             && !bytes.is_empty()

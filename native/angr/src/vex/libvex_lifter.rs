@@ -62,9 +62,9 @@ use super::opcode_map::{parse_endness, parse_jumpkind, parse_opcode, parse_type}
 /// single-width CAS or an untyped Dirty result).
 const IRTEMP_INVALID: u32 = 0xFFFF_FFFF;
 
-/// pyvex `_lift` defaults (disassembled from `pyvex/lifting/libvex.py`).
+/// pyvex `_lift` default (disassembled from `pyvex/lifting/libvex.py`). Its
+/// `max_bytes` companion is the crate-shared `super::VEX_MAX_BYTES`.
 const VEX_MAX_INSTRUCTIONS: u32 = 99;
-const VEX_MAX_BYTES: u32 = 5000;
 
 /// Serializes every `vex_lift` call — libVEX global state is not re-entrant.
 static LIFT_LOCK: Mutex<()> = Mutex::new(());
@@ -152,7 +152,7 @@ impl VEXLifter for NativeLibVEXLifter {
         });
 
         // Cap max_bytes to the slice length so libVEX never reads past `bytes`.
-        let max_bytes = (bytes.len() as u32).min(VEX_MAX_BYTES);
+        let max_bytes = (bytes.len() as u32).min(super::VEX_MAX_BYTES as u32);
 
         let _guard = LIFT_LOCK.lock().expect("libVEX lift lock poisoned");
         // SAFETY: single-threaded through LIFT_LOCK; we marshal the whole IRSB

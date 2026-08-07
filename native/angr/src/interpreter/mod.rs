@@ -45,7 +45,7 @@ use crate::vex::ir::{
     IRConst, IRExpr, IRLoadGOp, IROp, IRSB, IRStmt, IRType, JumpKind, TypeEnv, VexArch,
 };
 use crate::vex::ops::{OpError, VEXOps, iropclass};
-use crate::vex::{Endness, deserialize_irsb};
+use crate::vex::{Endness, VEX_MAX_BYTES, deserialize_irsb};
 
 /// VEX block (IRSB) LRU cache capacity in entries.
 ///
