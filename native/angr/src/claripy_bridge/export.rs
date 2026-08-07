@@ -559,143 +559,110 @@ fn rustbv_to_claripy_memo(
                 args
             };
 
-            // Build the claripy expression based on the operation
+            // Build the claripy expression based on the operation.
+            //
+            // Most arms below are pure plumbing over one of five shapes, so
+            // each names only the claripy callable and lets the shared closure
+            // carry the bind/call/convert boilerplate (angr-12jjk.10) — the
+            // mirror of `import.rs::import_binary_op` on the opposite
+            // direction. Only ops with genuinely per-op logic (the extension
+            // ops' arity, `Concat`, `Ite`, the bit-count family, `Float`) keep
+            // a hand-written body.
+
+            // `claripy.NAME(args[0], args[1])` — top-level claripy function.
+            let claripy_fn2 = |name: &str| -> PyResult<Py<PyAny>> {
+                claripy_mod
+                    .call_method1(name, (&args[0], &args[1]))
+                    .map(std::convert::Into::into)
+            };
+            // `args[0].NAME(args[1])` — dunder on the first operand.
+            let dunder2 = |name: &str| -> PyResult<Py<PyAny>> {
+                args[0]
+                    .bind(py)
+                    .call_method1(name, (&args[1],))
+                    .map(std::convert::Into::into)
+            };
+            // `args[0].NAME()` — unary dunder on the first operand.
+            let dunder1 = |name: &str| -> PyResult<Py<PyAny>> {
+                args[0]
+                    .bind(py)
+                    .call_method0(name)
+                    .map(std::convert::Into::into)
+            };
+            // The bitwise dunders answer Python's `NotImplemented` sentinel on
+            // a type/width mismatch instead of raising, so it would otherwise
+            // escape as a non-AST return value. Diagnose both operands (the
+            // richer message `__or__` alone used to build; `__and__`/`__xor__`
+            // reported only the op name).
+            let bitwise_dunder = |name: &str| -> PyResult<Py<PyAny>> {
+                let result = args[0].bind(py).call_method1(name, (&args[1],))?;
+                if result.is_none()
+                    || result
+                        .get_type()
+                        .name()
+                        .is_ok_and(|n| n == "NotImplementedType")
+                {
+                    let describe = |arg: &Py<PyAny>| {
+                        let bound = arg.bind(py);
+                        let ty = bound
+                            .get_type()
+                            .name()
+                            .map_or_else(|_| "?".to_string(), |n| n.to_string());
+                        let w = bound
+                            .getattr("length")
+                            .map_or_else(|_| "?".to_string(), |l| format!("{l}"));
+                        format!("{ty}(w={w})")
+                    };
+                    return Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
+                        "{name} returned NotImplemented: {} {name} {}",
+                        describe(&args[0]),
+                        describe(&args[1])
+                    )));
+                }
+                Ok(result.into())
+            };
+            // `__eq__` / `__ne__` on claripy BVV objects may return a Python
+            // bool rather than a claripy Bool (concrete comparison result), so
+            // wrap that back into a `BoolV` to keep the output an AST.
+            // `extract::<bool>` covers PyBool and PyInt alike (True/False are
+            // ints in Python).
+            let compare_dunder = |name: &str| -> PyResult<Py<PyAny>> {
+                let result = args[0].bind(py).call_method1(name, (&args[1],))?;
+                if let Ok(bool_val) = result.extract::<bool>() {
+                    claripy_mod
+                        .call_method1("BoolV", (bool_val,))
+                        .map(std::convert::Into::into)
+                } else {
+                    Ok(result.into())
+                }
+            };
+
             match op {
                 // Arithmetic operations (binary, use method on first arg)
-                BVOp::Add => {
-                    let arg0 = args[0].bind(py);
-                    arg0.call_method1("__add__", (&args[1],))
-                        .map(std::convert::Into::into)
-                }
-                BVOp::Sub => {
-                    let arg0 = args[0].bind(py);
-                    arg0.call_method1("__sub__", (&args[1],))
-                        .map(std::convert::Into::into)
-                }
-                BVOp::Mul => {
-                    let arg0 = args[0].bind(py);
-                    arg0.call_method1("__mul__", (&args[1],))
-                        .map(std::convert::Into::into)
-                }
+                BVOp::Add => dunder2("__add__"),
+                BVOp::Sub => dunder2("__sub__"),
+                BVOp::Mul => dunder2("__mul__"),
                 // claripy exposes no top-level UDiv/URem; unsigned div/rem are
                 // the `//` / `%` operators (op-names __floordiv__ / __mod__),
                 // which is exactly what the import side maps back to udiv/urem.
-                BVOp::UDiv => {
-                    let arg0 = args[0].bind(py);
-                    arg0.call_method1("__floordiv__", (&args[1],))
-                        .map(std::convert::Into::into)
-                }
-                BVOp::SDiv => claripy_mod
-                    .call_method1("SDiv", (&args[0], &args[1]))
-                    .map(std::convert::Into::into),
-                BVOp::URem => {
-                    let arg0 = args[0].bind(py);
-                    arg0.call_method1("__mod__", (&args[1],))
-                        .map(std::convert::Into::into)
-                }
-                BVOp::SRem => claripy_mod
-                    .call_method1("SMod", (&args[0], &args[1]))
-                    .map(std::convert::Into::into),
-                BVOp::Neg => {
-                    let arg0 = args[0].bind(py);
-                    arg0.call_method0("__neg__").map(std::convert::Into::into)
-                }
+                BVOp::UDiv => dunder2("__floordiv__"),
+                BVOp::SDiv => claripy_fn2("SDiv"),
+                BVOp::URem => dunder2("__mod__"),
+                BVOp::SRem => claripy_fn2("SMod"),
+                BVOp::Neg => dunder1("__neg__"),
 
                 // Bitwise operations
-                BVOp::And => {
-                    let arg0 = args[0].bind(py);
-                    let result = arg0.call_method1("__and__", (&args[1],))?;
-                    // Check for NotImplemented (width mismatch etc)
-                    if result.is_none()
-                        || result
-                            .get_type()
-                            .name()
-                            .is_ok_and(|n| n == "NotImplementedType")
-                    {
-                        return Err(pyo3::exceptions::PyRuntimeError::new_err(
-                            "__and__ returned NotImplemented",
-                        ));
-                    }
-                    Ok(result.into())
-                }
-                BVOp::Or => {
-                    let arg0 = args[0].bind(py);
-                    let result = arg0.call_method1("__or__", (&args[1],))?;
-                    if result.is_none()
-                        || result
-                            .get_type()
-                            .name()
-                            .is_ok_and(|n| n == "NotImplementedType")
-                    {
-                        let t0 = args[0]
-                            .bind(py)
-                            .get_type()
-                            .name()
-                            .map(|n| n.to_string())
-                            .unwrap_or("?".into());
-                        let t1 = args[1]
-                            .bind(py)
-                            .get_type()
-                            .name()
-                            .map(|n| n.to_string())
-                            .unwrap_or("?".into());
-                        let w0: String = args[0]
-                            .bind(py)
-                            .getattr("length")
-                            .map(|l| format!("{l}"))
-                            .unwrap_or("?".into());
-                        let w1: String = args[1]
-                            .bind(py)
-                            .getattr("length")
-                            .map(|l| format!("{l}"))
-                            .unwrap_or("?".into());
-                        return Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
-                            "__or__ NotImpl: {t0}(w={w0}) | {t1}(w={w1})"
-                        )));
-                    }
-                    Ok(result.into())
-                }
-                BVOp::Xor => {
-                    let arg0 = args[0].bind(py);
-                    let result = arg0.call_method1("__xor__", (&args[1],))?;
-                    if result.is_none()
-                        || result
-                            .get_type()
-                            .name()
-                            .is_ok_and(|n| n == "NotImplementedType")
-                    {
-                        return Err(pyo3::exceptions::PyRuntimeError::new_err(
-                            "__xor__ returned NotImplemented",
-                        ));
-                    }
-                    Ok(result.into())
-                }
-                BVOp::Not => {
-                    let arg0 = args[0].bind(py);
-                    arg0.call_method0("__invert__")
-                        .map(std::convert::Into::into)
-                }
+                BVOp::And => bitwise_dunder("__and__"),
+                BVOp::Or => bitwise_dunder("__or__"),
+                BVOp::Xor => bitwise_dunder("__xor__"),
+                BVOp::Not => dunder1("__invert__"),
 
                 // Shift operations
-                BVOp::Shl => {
-                    let arg0 = args[0].bind(py);
-                    arg0.call_method1("__lshift__", (&args[1],))
-                        .map(std::convert::Into::into)
-                }
-                BVOp::Lshr => claripy_mod
-                    .call_method1("LShR", (&args[0], &args[1]))
-                    .map(std::convert::Into::into),
-                BVOp::Ashr => {
-                    let arg0 = args[0].bind(py);
-                    arg0.call_method1("__rshift__", (&args[1],))
-                        .map(std::convert::Into::into)
-                }
-                BVOp::RotL => claripy_mod
-                    .call_method1("RotateLeft", (&args[0], &args[1]))
-                    .map(std::convert::Into::into),
-                BVOp::RotR => claripy_mod
-                    .call_method1("RotateRight", (&args[0], &args[1]))
-                    .map(std::convert::Into::into),
+                BVOp::Shl => dunder2("__lshift__"),
+                BVOp::Lshr => claripy_fn2("LShR"),
+                BVOp::Ashr => dunder2("__rshift__"),
+                BVOp::RotL => claripy_fn2("RotateLeft"),
+                BVOp::RotR => claripy_fn2("RotateRight"),
 
                 // Extension operations (args already validated)
                 BVOp::ZeroExt(extend_bits) => {
@@ -735,60 +702,16 @@ fn rustbv_to_claripy_memo(
                 }
 
                 // Comparison operations
-                // Note: __eq__ and __ne__ on claripy BVV objects may return Python bool,
-                // not claripy Bool. We must wrap Python bools to ensure claripy AST output.
-                BVOp::Eq => {
-                    let arg0 = args[0].bind(py);
-                    let result = arg0.call_method1("__eq__", (&args[1],))?;
-                    // If result is Python bool/int (concrete comparison result),
-                    // wrap it in claripy.BoolV. Use extract::<bool> which works for
-                    // both PyBool and PyInt (True/False are ints in Python).
-                    if let Ok(bool_val) = result.extract::<bool>() {
-                        claripy_mod
-                            .call_method1("BoolV", (bool_val,))
-                            .map(std::convert::Into::into)
-                    } else {
-                        Ok(result.into())
-                    }
-                }
-                BVOp::Ne => {
-                    let arg0 = args[0].bind(py);
-                    let result = arg0.call_method1("__ne__", (&args[1],))?;
-                    // If result is Python bool/int (concrete comparison result),
-                    // wrap it in claripy.BoolV. Use extract::<bool> which works for
-                    // both PyBool and PyInt (True/False are ints in Python).
-                    if let Ok(bool_val) = result.extract::<bool>() {
-                        claripy_mod
-                            .call_method1("BoolV", (bool_val,))
-                            .map(std::convert::Into::into)
-                    } else {
-                        Ok(result.into())
-                    }
-                }
-                BVOp::Ult => claripy_mod
-                    .call_method1("ULT", (&args[0], &args[1]))
-                    .map(std::convert::Into::into),
-                BVOp::Ule => claripy_mod
-                    .call_method1("ULE", (&args[0], &args[1]))
-                    .map(std::convert::Into::into),
-                BVOp::Ugt => claripy_mod
-                    .call_method1("UGT", (&args[0], &args[1]))
-                    .map(std::convert::Into::into),
-                BVOp::Uge => claripy_mod
-                    .call_method1("UGE", (&args[0], &args[1]))
-                    .map(std::convert::Into::into),
-                BVOp::Slt => claripy_mod
-                    .call_method1("SLT", (&args[0], &args[1]))
-                    .map(std::convert::Into::into),
-                BVOp::Sle => claripy_mod
-                    .call_method1("SLE", (&args[0], &args[1]))
-                    .map(std::convert::Into::into),
-                BVOp::Sgt => claripy_mod
-                    .call_method1("SGT", (&args[0], &args[1]))
-                    .map(std::convert::Into::into),
-                BVOp::Sge => claripy_mod
-                    .call_method1("SGE", (&args[0], &args[1]))
-                    .map(std::convert::Into::into),
+                BVOp::Eq => compare_dunder("__eq__"),
+                BVOp::Ne => compare_dunder("__ne__"),
+                BVOp::Ult => claripy_fn2("ULT"),
+                BVOp::Ule => claripy_fn2("ULE"),
+                BVOp::Ugt => claripy_fn2("UGT"),
+                BVOp::Uge => claripy_fn2("UGE"),
+                BVOp::Slt => claripy_fn2("SLT"),
+                BVOp::Sle => claripy_fn2("SLE"),
+                BVOp::Sgt => claripy_fn2("SGT"),
+                BVOp::Sge => claripy_fn2("SGE"),
 
                 // Conditional
                 BVOp::Ite => {
