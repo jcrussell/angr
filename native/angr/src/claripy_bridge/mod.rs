@@ -147,6 +147,36 @@ impl From<PyErr> for BridgeError {
     }
 }
 
+/// Wording hub for a failed `claripy_to_rustbv` at the PyO3 boundary
+/// (angr-12jjk.4).
+///
+/// `what` names the thing being imported — `"register rax"`,
+/// `"memory 0x400080"`, `"content byte 3"` — and is rendered as
+/// `AST import failed (<what>): <err>`. Call it from inside the `map_err`
+/// closure so the `format!` for a dynamic `what` stays off the success path.
+///
+/// The `ValueError` class is the one every import site already raised: a
+/// bridge failure means the caller handed us an AST this engine cannot
+/// represent, which is a bad-argument condition, not an engine fault.
+/// Exports use [`ast_export_err`] and `RuntimeError` for the mirror-image
+/// reason.
+///
+/// Both helpers take the error as `impl Display` rather than a concrete type
+/// because the two directions disagree: `claripy_to_rustbv` fails with
+/// [`BridgeError`], `rustbv_to_claripy` with `PyErr`.
+pub(crate) fn ast_import_err(what: &str, e: impl std::fmt::Display) -> PyErr {
+    pyo3::exceptions::PyValueError::new_err(format!("AST import failed ({what}): {e}"))
+}
+
+/// Wording hub for a failed `rustbv_to_claripy` at the PyO3 boundary
+/// (angr-12jjk.4). See [`ast_import_err`] for the `what` convention.
+///
+/// Raises `RuntimeError`: the caller supplied no AST here, so a failure to
+/// build one out of a value the engine itself is holding is an engine fault.
+pub(crate) fn ast_export_err(what: &str, e: impl std::fmt::Display) -> PyErr {
+    pyo3::exceptions::PyRuntimeError::new_err(format!("AST export failed ({what}): {e}"))
+}
+
 /// Extract an integer value from a Python object.
 /// Handles both regular ints and large ints.
 fn extract_int_value(obj: Bound<'_, PyAny>) -> Result<u128, BridgeError> {

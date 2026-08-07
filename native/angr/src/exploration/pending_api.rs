@@ -73,7 +73,7 @@ impl RustExplorationManager {
 
             let claripy = py.import("claripy")?;
             rustbv_to_claripy(py, condition, claripy.as_any())
-                .map_err(|e| PyRuntimeError::new_err(format!("failed to convert condition: {e}")))
+                .map_err(|e| ast_export_err(&format!("condition {condition_id}"), e))
         })
     }
 
@@ -186,7 +186,7 @@ impl RustExplorationManager {
             let ctx_ref: &SymContext = &sym_ctx;
 
             let bv = claripy_to_rustbv(py, ast, ctx_ref)
-                .map_err(|e| PyValueError::new_err(format!("AST conversion failed: {e}")))?;
+                .map_err(|e| ast_import_err(&format!("register {reg_name}"), e))?;
 
             drop(sym_ctx);
 
@@ -216,7 +216,7 @@ impl RustExplorationManager {
             let solver_ref = state.solver();
             let sym_ctx = solver_ref.borrow();
             let bv = claripy_to_rustbv(py, ast, &sym_ctx)
-                .map_err(|e| PyValueError::new_err(format!("AST conversion: {e}")))?;
+                .map_err(|e| ast_import_err(&format!("memory 0x{addr:x}"), e))?;
             drop(sym_ctx);
             state.memory_mut().import_symbolic_value(addr, bv, None);
             Ok(())
@@ -286,7 +286,7 @@ impl RustExplorationManager {
             let solver_ref = pending.state.solver();
             let sym_ctx = solver_ref.borrow();
             let bv = claripy_to_rustbv(py, ast, &sym_ctx)
-                .map_err(|e| PyValueError::new_err(format!("AST conversion failed: {e}")))?;
+                .map_err(|e| ast_import_err(&format!("memory 0x{addr:x}"), e))?;
             drop(sym_ctx);
 
             pending
@@ -719,7 +719,7 @@ fn import_byte_asts(
     let mut bytes = Vec::with_capacity(byte_asts.len());
     for (idx, item) in byte_asts.iter().enumerate() {
         let bv = claripy_to_rustbv(py, &item, &sym_ctx)
-            .map_err(|e| PyValueError::new_err(format!("AST conversion (byte {idx}): {e}")))?;
+            .map_err(|e| ast_import_err(&format!("content byte {idx}"), e))?;
         if bv.width() != 8 {
             return Err(PyValueError::new_err(format!(
                 "content byte {idx} has width {} (expected 8)",

@@ -613,9 +613,8 @@ impl RustExplorationManager {
                 None => return Ok(None),
             };
             let claripy = py.import("claripy")?;
-            let ast = rustbv_to_claripy(py, &bv, claripy.as_any()).map_err(|e| {
-                PyRuntimeError::new_err(format!("register {name} AST conversion failed: {e}"))
-            })?;
+            let ast = rustbv_to_claripy(py, &bv, claripy.as_any())
+                .map_err(|e| ast_export_err(&format!("register {name}"), e))?;
             Ok(Some(ast))
         })
     }
@@ -642,7 +641,7 @@ impl RustExplorationManager {
                 let sym_ctx = solver_ref.borrow();
                 let ctx_ref: &SymContext = &sym_ctx;
                 claripy_to_rustbv(py, ast, ctx_ref)
-                    .map_err(|e| PyValueError::new_err(format!("AST conversion failed: {e}")))?
+                    .map_err(|e| ast_import_err(&format!("register {reg_name}"), e))?
             };
             if state.set_register(reg_name, bv) {
                 Ok(())
@@ -716,11 +715,8 @@ impl RustExplorationManager {
         self.with_state(state_id, |state| match state.memory_load(addr, size) {
             Ok(bv) => {
                 let claripy = py.import("claripy")?;
-                let ast = rustbv_to_claripy(py, &bv, claripy.as_any()).map_err(|e| {
-                    PyRuntimeError::new_err(format!(
-                        "memory AST conversion at addr 0x{addr:x} size {size}: {e}"
-                    ))
-                })?;
+                let ast = rustbv_to_claripy(py, &bv, claripy.as_any())
+                    .map_err(|e| ast_export_err(&format!("memory 0x{addr:x} size {size}"), e))?;
                 Ok(Some(ast))
             }
             Err(_) => Ok(None),
@@ -794,7 +790,7 @@ impl RustExplorationManager {
                 let sym_ctx = solver_ref.borrow();
                 let ctx_ref: &SymContext = &sym_ctx;
                 claripy_to_rustbv(py, ast, ctx_ref)
-                    .map_err(|e| PyValueError::new_err(format!("AST conversion failed: {e}")))?
+                    .map_err(|e| ast_import_err(&format!("memory 0x{addr:x}"), e))?
             };
             state.memory_store(addr, bv).py_value_err()
         })
@@ -824,7 +820,7 @@ impl RustExplorationManager {
                 let sym_ctx = solver_ref.borrow();
                 let ctx_ref: &SymContext = &sym_ctx;
                 claripy_to_rustbv(py, ast, ctx_ref)
-                    .map_err(|e| PyValueError::new_err(format!("AST conversion failed: {e}")))?
+                    .map_err(|e| ast_import_err(&format!("memory 0x{addr:x}"), e))?
             };
             let size = (bv.width() / 8) as u64;
             state.add_memory_lazy_region(addr, size.max(1));

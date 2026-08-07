@@ -388,8 +388,9 @@ impl PyRustSimState {
         let solver = self.inner.solver().clone();
         let bv = {
             let ctx = solver.borrow();
-            crate::claripy_bridge::claripy_to_rustbv(py, ast, &ctx)
-                .map_err(|e| PyValueError::new_err(format!("AST conversion: {e}")))?
+            crate::claripy_bridge::claripy_to_rustbv(py, ast, &ctx).map_err(|e| {
+                crate::claripy_bridge::ast_import_err(&format!("register {name}"), e)
+            })?
         };
         if bv.width() != size * 8 {
             return Err(PyValueError::new_err(format!(
