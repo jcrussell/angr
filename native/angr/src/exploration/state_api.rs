@@ -571,12 +571,43 @@ impl RustExplorationManager {
         self.with_state(state_id, |state| Ok(state.has_option(name)))
     }
 
+    /// Read a register from a state as a concrete `u128`.
+    ///
+    /// `None` has **two** causes and this API deliberately does not
+    /// distinguish them: the architecture has no `(offset, size)` slot for
+    /// `name`, or the register holds a symbolic `RustBV` with no `u128`
+    /// form. The mirrored `_get_pending_register` makes the opposite choice
+    /// — it raises `PyValueError("unknown register: ...")` for the first
+    /// case — and the asymmetry is intentional (angr-sqfj8.56):
+    ///
+    /// * This method backs `RustRegisterProxy.__getattr__` / `.prefetch`
+    ///   (`angr/exploration/rust_state_proxy.py`), the stand-in for angr's
+    ///   `state.regs`. angr's `arch.registers` is a strict superset of the
+    ///   names Rust's `RegisterFile` models — see invariant I5 on
+    ///   `RustSimState::set_registers_bulk` in `state/pymethods.rs` for the
+    ///   list (`cr0..8`, `ymm0..15`, `fs_seg`, `fpreg`, ...). Raising here
+    ///   would turn every `state.regs.ymm0` read into an `AttributeError`;
+    ///   answering `None` lets the proxy fall back to an unconstrained BVS,
+    ///   which is what angr's own register view would have produced.
+    /// * `_get_pending_register` is reached only from our own callback-arg
+    ///   plumbing, with names we generate from the arch tables, so an
+    ///   unknown name there is a programming error and must be loud.
+    ///
+    /// Residual hazard, owned by the proxy rather than by this method: a
+    /// *typo'd* register name is indistinguishable from an unmodeled one and
+    /// yields an orphan BVS. `RustRegisterProxy._recover_symbolic_register_ast`
+    /// logs that at debug level.
     pub(crate) fn _get_state_register(&self, state_id: u64, name: &str) -> PyResult<Option<u128>> {
         self.with_state(state_id, |state| {
             Ok(state.get_register(name).and_then(|bv| bv.as_u128()))
         })
     }
 
+    /// Batch form of `_get_state_register`, one output per input name in
+    /// order. Same two-cause `None` contract — see `_get_state_register` for
+    /// why an unknown name is not an error here. Keeping it per-element also
+    /// means one unmodeled name in a `prefetch` batch does not discard the
+    /// values fetched for its siblings.
     pub(crate) fn _get_state_registers_batch(
         &self,
         state_id: u64,

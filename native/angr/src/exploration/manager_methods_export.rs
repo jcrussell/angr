@@ -130,12 +130,19 @@ impl RustExplorationManager {
     }
 
     /// Get a register value from a state.
+    ///
+    /// Returns `None` both for a register name this architecture does not
+    /// model and for a register holding a symbolic value — unlike
+    /// `get_pending_register`, which raises `ValueError` on an unknown name.
+    /// The asymmetry is deliberate; see `state_api::_get_state_register` for
+    /// the body and the rationale.
     pub fn get_state_register(&self, state_id: u64, name: &str) -> PyResult<Option<u128>> {
         self._get_state_register(state_id, name)
     }
 
     /// Get multiple register values from a state in one FFI call.
-    /// Returns a list of `Option<u128>` in the same order as the input names.
+    /// Returns a list of `Option<u128>` in the same order as the input names,
+    /// each with the same two-cause `None` contract as `get_state_register`.
     pub fn get_state_registers_batch(
         &self,
         state_id: u64,

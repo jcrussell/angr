@@ -77,6 +77,17 @@ impl RustExplorationManager {
         })
     }
 
+    /// Read a register from a parked pending callback's state as a concrete
+    /// `u128`.
+    ///
+    /// An unknown register name is a hard `PyValueError`, so `Ok(None)` means
+    /// exactly one thing: the register exists but holds a symbolic value.
+    /// That is the opposite of the mirrored `_get_state_register`, which
+    /// folds both cases into `None`; the rationale for the split lives in
+    /// `state_api::_get_state_register`'s doc comment (angr-sqfj8.56). Short
+    /// version: this API's callers are our own callback-arg plumbing passing
+    /// arch-derived names, so a miss is a bug — not an angr register that
+    /// Rust's `RegisterFile` declines to model.
     pub(crate) fn _get_pending_register(
         &self,
         state_id: u64,

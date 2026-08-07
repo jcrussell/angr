@@ -205,6 +205,9 @@ impl RustExplorationManager {
     }
 
     /// Get register value from pending state (concrete only).
+    /// Raises `ValueError` for an unknown register name, so `None` means
+    /// "known register, symbolic value" — unlike `get_state_register`, which
+    /// folds both cases into `None`.
     /// See `pending_api::_get_pending_register` for the body.
     pub fn get_pending_register(&self, state_id: u64, name: &str) -> PyResult<Option<u128>> {
         self._get_pending_register(state_id, name)

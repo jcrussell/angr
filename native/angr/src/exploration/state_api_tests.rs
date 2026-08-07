@@ -131,3 +131,58 @@ fn export_state_flushes_multi_cells() {
         "unflushed export dropped the Multi-cell bytes: {symbolic_offsets:?}"
     );
 }
+
+/// `_get_state_register`'s `None` is deliberately two-valued — an unmodeled
+/// register name and a symbolic value are indistinguishable — while the
+/// mirrored `_get_pending_register` raises for the first case. Pin all three
+/// outcomes (concrete / symbolic / unmodeled) plus the batch form, so the
+/// asymmetry documented on `_get_state_register` stays a decision rather than
+/// drifting into an accident (angr-sqfj8.56).
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn get_state_register_folds_unmodeled_name_and_symbolic_into_none() {
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    let mut state = RustSimState::new("amd64").expect("amd64 state");
+
+    assert!(state.set_register("rax", RustBV::concrete(0x2a, 64)));
+    let sym = {
+        let ctx = state.solver().borrow();
+        RustBV::symbolic(&ctx, "rbx_sym", 64)
+    };
+    assert!(state.set_register("rbx", sym));
+    // `ymm0` is one of the names angr's `arch.registers` carries but Rust's
+    // `RegisterFile` does not model (invariant I5 on `set_registers_bulk`);
+    // it is what makes the fold load-bearing for `RustRegisterProxy`.
+    assert!(
+        state.arch().register_offset("ymm0").is_none(),
+        "precondition: ymm0 must be unmodeled for this test to mean anything",
+    );
+
+    let state_id = state.state_id();
+    mgr.sm.push(STASH_FOUND, state);
+
+    assert_eq!(
+        mgr._get_state_register(state_id, "rax").expect("rax read"),
+        Some(0x2a),
+    );
+    assert_eq!(
+        mgr._get_state_register(state_id, "rbx").expect("rbx read"),
+        None,
+        "symbolic register reads as None",
+    );
+    assert_eq!(
+        mgr._get_state_register(state_id, "ymm0")
+            .expect("ymm0 read"),
+        None,
+        "unmodeled register name reads as None rather than raising",
+    );
+
+    // The batch form must agree element-wise, and an unmodeled name must not
+    // discard its siblings' values.
+    let names = vec!["rax".to_string(), "ymm0".to_string(), "rbx".to_string()];
+    assert_eq!(
+        mgr._get_state_registers_batch(state_id, names)
+            .expect("batch read"),
+        vec![Some(0x2a), None, None],
+    );
+}

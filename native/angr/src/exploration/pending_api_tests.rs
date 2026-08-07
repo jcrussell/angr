@@ -272,3 +272,45 @@ fn pending_memory_load_symbolic_page_flushes_multi_cells() {
         );
     });
 }
+
+/// The other half of the asymmetry pinned in
+/// `state_api_tests::get_state_register_folds_unmodeled_name_and_symbolic_into_none`:
+/// on the pending API an unknown register name is a hard `PyValueError`, so
+/// `Ok(None)` means "known register, symbolic value" and nothing else
+/// (angr-sqfj8.56).
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn get_pending_register_raises_for_unknown_name_but_not_for_symbolic() {
+    Python::initialize();
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+
+    let mut state = RustSimState::new("amd64").expect("state");
+    assert!(state.set_register("rax", crate::symbolic::RustBV::concrete(0x2a, 64)));
+    let sym = {
+        let ctx = state.solver().borrow();
+        crate::symbolic::RustBV::symbolic(&ctx, "rbx_sym", 64)
+    };
+    assert!(state.set_register("rbx", sym));
+    let state_id = state.state_id();
+    mgr.pending_callbacks
+        .insert(StateId::new(state_id), pending_for(state));
+
+    assert_eq!(
+        mgr._get_pending_register(state_id, "rax")
+            .expect("rax read"),
+        Some(0x2a),
+    );
+    assert_eq!(
+        mgr._get_pending_register(state_id, "rbx")
+            .expect("rbx read"),
+        None,
+        "a known-but-symbolic register is the ONLY source of Ok(None) here",
+    );
+    let err = mgr
+        ._get_pending_register(state_id, "ymm0")
+        .expect_err("unmodeled register name must be a loud error");
+    assert!(
+        err.to_string().contains("unknown register: ymm0"),
+        "error names the offending register: {err}",
+    );
+}
