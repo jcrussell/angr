@@ -629,11 +629,13 @@ impl NativeSyscallRegistry {
                 (270, signals::NativeTgkillSyscall),
                 (295, file_path::NativeOpenatSyscall),
                 (296, directory::NativeMkdiratSyscall),
+                // angr-sqfj8.107: newfstatat absent on i386 — Linux 32-bit
+                // uses fstatat64, which is **300** in angr's i386 map, wired
+                // to the same handler. 327 is signalfd4 on i386 (it is
+                // fstatat64 only on ARM EABI) and must stay unregistered.
+                (300, file_path::NativeNewfstatatSyscall),
                 (301, directory::NativeUnlinkatSyscall),
                 (302, directory::NativeRenameatSyscall),
-                // newfstatat absent on i386 — Linux 32-bit uses fstatat64
-                // (327 in angr's i386 map), wired to the same handler.
-                (327, file_path::NativeNewfstatatSyscall),
                 (305, file_path::NativeReadlinkatSyscall),
                 (307, file_path::NativeFaccessatSyscall),
                 (319, concurrency::NativeEpollPwaitSyscall),
@@ -751,7 +753,8 @@ impl NativeSyscallRegistry {
                 (328, directory::NativeUnlinkatSyscall),
                 (329, directory::NativeRenameatSyscall),
                 // newfstatat absent on ARM EABI — uses fstatat64 (327 in
-                // angr's "arm" map), wired to the same handler as i386.
+                // angr's "arm" map; the i386 number is a different one, 300),
+                // wired to the same handler as i386.
                 // renameat2 absent in angr's ARM EABI table.
                 (327, file_path::NativeNewfstatatSyscall),
                 (332, file_path::NativeReadlinkatSyscall),

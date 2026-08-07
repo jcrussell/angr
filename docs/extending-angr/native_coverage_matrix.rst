@@ -401,7 +401,7 @@ Per-arch matrix
      - ✗ (no MIPS64 ``struct stat`` writer)
    * - ``newfstatat``
      - ✓
-     - ✓ (``fstatat64`` 327)
+     - ✓ (``fstatat64`` 300)
      - ✓ (``fstatat64`` 327)
      - ✓
      - ✓ (``fstatat64`` 4293)

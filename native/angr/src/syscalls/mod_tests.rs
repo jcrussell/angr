@@ -745,8 +745,10 @@ fn file_path_stubs_registered_on_all_arches() {
     //   * AArch64 asm-generic ABI dropped legacy `lstat` and `readlink`
     //     (only *at variants exist).
     //   * 32-bit Linux i386 / ARM EABI use the LFS `lstat64` (196) and
-    //     `fstatat64` (327) numbers, both wired to the lstat / newfstatat
-    //     handlers (angr-11djq.5.1 / .5.2). MIPS32 O32 also uses the LFS
+    //     `fstatat64` numbers, both wired to the lstat / newfstatat
+    //     handlers (angr-11djq.5.1 / .5.2). The two arches disagree on the
+    //     `fstatat64` number: i386 is **300** (327 there is signalfd4),
+    //     ARM EABI is **327** (angr-sqfj8.107). MIPS32 O32 also uses the LFS
     //     `lstat64` (4214) and `fstatat64` (4293, wired to the newfstatat
     //     handler) numbers (angr-11djq.5.3). The legacy `lstat` numbers
     //     (i386/ARM 107, MIPS32 4107) stay on Python — the Rust writers
@@ -767,8 +769,9 @@ fn file_path_stubs_registered_on_all_arches() {
     );
     let table: &[FilePathRow] = &[
         ("AMD64", Some(6), Some(262), Some(89), 267, 269),
-        // X86 / ARM: LFS lstat64 (196) + fstatat64 (327), no legacy 107.
-        ("X86", Some(196), Some(327), Some(85), 305, 307),
+        // X86 / ARM: LFS lstat64 (196) + fstatat64, no legacy 107. The
+        // fstatat64 numbers differ: 300 on i386, 327 on ARM EABI.
+        ("X86", Some(196), Some(300), Some(85), 305, 307),
         ("ARM", Some(196), Some(327), Some(85), 332, 334),
         ("ARM64", None, Some(79), None, 78, 48),
         ("MIPS32", Some(4214), Some(4293), Some(4085), 4298, 4300),
@@ -830,6 +833,44 @@ fn file_path_stubs_registered_on_all_arches() {
                 "{arch} legacy stat-family ({n}) must fall back to Python"
             );
         }
+    }
+}
+
+/// angr-sqfj8.107: `fstatat64` has a *different* number on i386 (300) than on
+/// ARM EABI (327), and the i386 table originally used the ARM number. That is
+/// not a missed fast path but a wrong answer: 327 on i386 is `signalfd4`, so a
+/// guest `signalfd4(fd, mask, sizemask, flags)` was dispatched to the
+/// newfstatat handler, which reinterpreted the args as
+/// `(dirfd, pathname, statbuf, flag)` and wrote a bogus `struct stat64` into
+/// whatever address sat in the third argument.
+///
+/// The numbers below are angr's own, from
+/// `angr/procedures/definitions/linux_kernel.py`'s
+/// `syscall_number_mapping["i386"]` / `["arm"]` — that map is the contract the
+/// registry must match, since it is what selects the Python `SimProcedure` we
+/// are shadowing.
+#[test]
+fn fstatat64_uses_per_arch_number_and_does_not_shadow_signalfd4() {
+    let r = NativeSyscallRegistry::new();
+
+    // Positive: each arch's own fstatat64 number reaches the handler.
+    for &(arch, n) in &[("X86", 300u64), ("ARM", 327)] {
+        let h = r
+            .get(arch, n)
+            .unwrap_or_else(|| panic!("{arch} fstatat64 ({n}) missing"));
+        assert_eq!(h.name(), "newfstatat");
+        assert_eq!(h.num_args(), 4);
+    }
+
+    // Negative: the *other* arch's number must not be registered, or a
+    // different syscall silently gets the stat writer. i386 327 = signalfd4,
+    // ARM EABI 300 = semctl; neither has a native handler, so both must fall
+    // through to Python.
+    for &(arch, n, actual) in &[("X86", 327u64, "signalfd4"), ("ARM", 300, "semctl")] {
+        assert!(
+            r.get(arch, n).is_none(),
+            "{arch} {n} is {actual}, not fstatat64 — must fall back to Python"
+        );
     }
 }
 
