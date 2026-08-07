@@ -708,18 +708,38 @@ impl RustSimState {
     ///
     /// This is used when syncing from Python after a SimProcedure runs.
     pub fn apply_changes(&mut self, changes: &StateChanges) {
-        // Apply register writes
+        // Apply register writes. The register file is byte-addressed just
+        // like memory, so this shares the same chunk walk as the memory loop
+        // below — a register wider than `MAX_CONCRETE_CHUNK` (ymm/zmm) would
+        // otherwise shift-overflow the pack and then be truncated by
+        // `RustBV::concrete`'s u128 backing (angr-xdjsx).
         for (offset, size, bytes) in &changes.register_writes {
-            let mut value: u128 = 0;
-            for (i, &b) in bytes.iter().enumerate() {
-                value |= (b as u128) << (i * 8);
+            if *size as usize != bytes.len() {
+                // SILENT(cat-c): a declared width that disagrees with the
+                // payload means the Python side built a malformed change; the
+                // old code zero-extended (or truncated) to `size` without
+                // saying so. Warn and use the bytes actually supplied.
+                log::warn!(
+                    "apply_changes: register write at offset {offset} declares {size} bytes but \
+                     carries {}; using the payload length",
+                    bytes.len()
+                );
             }
-            let bv = RustBV::concrete(value, *size * 8);
-            self.set_register_by_offset(*offset, bv);
+            let Ok(()) = crate::symbolic::store_concrete_bytes_chunked::<(), _>(
+                u64::from(*offset),
+                bytes,
+                |chunk_offset, bv| {
+                    self.set_register_by_offset(chunk_offset as u32, bv);
+                    Ok(())
+                },
+            ) else {
+                unreachable!("the register sink never returns Err")
+            };
         }
 
-        // Apply memory writes — split into 16-byte chunks since RustBV
-        // uses u128 internally (max 128 bits per concrete value)
+        // Apply memory writes. The 16-byte chunk walk lives in
+        // `symbolic::store_concrete_bytes_chunked` (see its docs for the
+        // `RustBV::Concrete`-is-a-u128 constraint behind it).
         for (addr, bytes) in &changes.memory_writes {
             let memory = &mut self.memory;
             let res =

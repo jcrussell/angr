@@ -3260,6 +3260,32 @@ fn apply_changes_chunks_memory_writes_wider_than_16_bytes() {
     }
 }
 
+/// The register file is byte-addressed like memory, so `apply_changes` chunks
+/// a register write the same way. A 32-byte YMM slot must land byte-for-byte
+/// rather than shift-overflowing the pack loop and truncating to `u128`
+/// (angr-xdjsx).
+#[test]
+fn apply_changes_chunks_register_writes_wider_than_16_bytes() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    // VEX lays amd64 out with 256-bit YMM slots; XMM0 is the low half of YMM0,
+    // so its offset is the base of a 32-byte register.
+    let ymm0 = crate::arch::amd64::offsets::XMM0;
+
+    let data: Vec<u8> = (1..=32u8).collect();
+    let mut changes = StateChanges::new();
+    changes.register_writes.push((ymm0, 32, data.clone()));
+    state.apply_changes(&changes);
+
+    for (i, &expected) in data.iter().enumerate() {
+        let byte = state.get_register_by_offset(ymm0 + i as u32, 1).as_u64();
+        assert_eq!(
+            byte,
+            Some(u64::from(expected)),
+            "register byte {i} did not land"
+        );
+    }
+}
+
 /// A write whose address is unmapped fails inside `store_concrete`.
 /// `apply_changes` has no error channel to its callers, so it must warn and
 /// keep applying the *remaining* changes instead of aborting the whole sync

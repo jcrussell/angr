@@ -738,12 +738,10 @@ impl RustExplorationManager {
         addr: u64,
         data: &[u8],
     ) -> PyResult<()> {
-        // angr-5aj8: split into 16-byte chunks because RustBV::Concrete is
-        // backed by a u128. A single packed value would shift-overflow for
-        // byte indices >= 16, and the downstream store_concrete page-fill
-        // loop would emit a 16-byte-cycle pattern across the entire
-        // data.len() range — corrupting memory wholesale. Mirrors the safe
-        // pattern in RustSimState::apply_changes, which shares this helper.
+        // The 16-byte chunk walk (and the angr-5aj8 shift-overflow it exists
+        // to prevent) is documented once on
+        // `symbolic::store_concrete_bytes_chunked`; every concrete-byte store
+        // entry point shares that helper (angr-9ke6b.230).
         self.with_state_mut(state_id, |state| {
             crate::symbolic::store_concrete_bytes_chunked(addr, data, |chunk_addr, bv| {
                 state.memory_store(chunk_addr, bv).py_value_err()
