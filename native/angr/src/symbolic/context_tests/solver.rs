@@ -648,6 +648,41 @@ fn test_range_seeded_unsat_returns_none() {
     assert_eq!(ctx.range_seeded(&x, 5, 5), None);
 }
 
+/// `range_seeded` must carry the same `width > 128` bail-out as `min` / `max`
+/// (angr-sqfj8.103). Its bounds live in a `u128`, so above 128 bits the true
+/// extrema are unrepresentable and the binary search would report a truncated
+/// range with full confidence. 128 itself is still fine.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_range_seeded_above_128_bits_returns_none() {
+    for width in [129u32, 192, 256] {
+        let ctx = SymContext::new();
+        let x = RustBV::symbolic(&ctx, "x_range_wide", width);
+        // Constrain to a narrow interval whose extrema *are* u128-representable,
+        // so a missing guard would return Some((10, 200)) rather than garbage —
+        // the guard is about the search space, not the answer.
+        ctx.assume_true(&x.uge(&RustBV::concrete(10, width), &ctx));
+        ctx.assume_true(&x.ule(&RustBV::concrete(200, width), &ctx));
+        assert_eq!(
+            ctx.range_seeded(&x, 50, 150),
+            None,
+            "width {width} must report unknown, matching min/max"
+        );
+        // Same contract as min/max at this width, and the early return must
+        // not have left a stray push frame behind.
+        assert_eq!(ctx.min(&x, false), None, "width {width}");
+        assert_eq!(ctx.max(&x, false), None, "width {width}");
+        assert!(ctx.is_sat(), "width {width} context still usable");
+    }
+
+    // The 128-bit boundary itself still searches normally.
+    let ctx = SymContext::new();
+    let x = RustBV::symbolic(&ctx, "x_range_128", 128);
+    ctx.assume_true(&x.uge(&RustBV::concrete(10, 128), &ctx));
+    ctx.assume_true(&x.ule(&RustBV::concrete(200, 128), &ctx));
+    assert_eq!(ctx.range_seeded(&x, 50, 150), Some((10, 200)));
+}
+
 #[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_merge_guards_each_branch_under_its_condition() {

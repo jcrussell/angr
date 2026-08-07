@@ -63,8 +63,9 @@ fn u128_to_be_bytes_width(value: u128, width: u32) -> Vec<u8> {
 /// The saturation matters: `1u128 << 128` overflows (panic under debug,
 /// wrap under release), and callers that binary-search in a `u128` cannot
 /// represent anything above `u128::MAX` anyway — the `width > 128` guard in
-/// `min` / `max` bails out before the search rather than returning a
-/// truncated extremum (angr-cxw7). Shared by `lex_min_witness`,
+/// `min` / `max` / `range_seeded` bails out before the search rather than
+/// returning a truncated extremum (angr-cxw7, extended to the seeded path in
+/// angr-sqfj8.103). Shared by `lex_min_witness`,
 /// `eval_upto_ascending`, both arms of `min` and `max`, and `range_seeded`
 /// so a future width-boundary fix lands in one place (angr-9ke6b.141).
 #[cfg(feature = "vex-engine-z3")]
@@ -1163,6 +1164,10 @@ impl SymContext {
     /// initial bounds: `min` is searched in `[0, smallest_known]` and `max`
     /// is searched in `[largest_known, 2^width - 1]`. This roughly halves the
     /// SAT calls when `smallest_known` is well below `2^width`.
+    ///
+    /// Returns `None` for widths above 128 — the bounds are tracked in a
+    /// `u128`, so a wider extremum cannot be represented (same guard as
+    /// `min` / `max`).
     #[cfg(feature = "vex-engine-z3")]
     pub fn range_seeded(
         &self,
@@ -1179,6 +1184,17 @@ impl SymContext {
 
         let ast = bv.to_z3_ast();
         let width = bv.width();
+
+        // Same u128-bound guard `min` and `max` carry: the two binary searches
+        // below track bounds in a u128, so for widths above 128 the true
+        // extremum can exceed `u128::MAX` and `max_val_for_width` saturates.
+        // Report unknown rather than a truncated range (angr-sqfj8.103, the
+        // angr-cxw7 fix applied to the seeded path). 128-bit BVs are fine:
+        // their range is exactly [0, u128::MAX].
+        if width > 128 {
+            return None;
+        }
+
         let _class = query_class::scope(|| {
             query_class::classify_extrema(bv, &self.get_assumed_constraints())
         });
