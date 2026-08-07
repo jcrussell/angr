@@ -545,7 +545,9 @@ fn import_binary_op(
 ///    makes the RustBV/export layer look right while every constraint quietly
 ///    stops binding (angr-izov2). The names differ whenever the symbol was
 ///    minted in Rust and exported: `claripy.BVS(name, w)` renames to
-///    `name_<counter>_<w>` unless `explicit_name` is set.
+///    `name_<counter>_<w>` unless `explicit_name` is set. If the canonical
+///    name is missing the id is *not* reused — see the `SILENT(cat-b)` note
+///    at the hash-hit arm — and resolution falls through to step 2.
 /// 2. **By name+width+sort** — the hash changed but the identity is stable.
 ///    The key includes `kind` so a `BoolS("x")` and a `BVS("x", 1)` occupy
 ///    distinct slots (angr-9ke6b.38); dropping it re-aliases them and export
@@ -572,9 +574,36 @@ fn import_symbolic_leaf(
     let rust_name = kind.rust_symbol_name(name);
 
     if let Some(existing_id) = lookup_symbol_by_hash(ast_hash) {
-        let canonical = lookup_symbol_name_by_id(existing_id);
-        let bound_name = canonical.as_deref().unwrap_or(&rust_name);
-        return RustBV::symbolic_with_id(existing_id, bound_name, width);
+        // Binding `existing_id` is only safe while its canonical name is
+        // recoverable: that name is what `RustBV::from_parts` turns into the
+        // Z3 constant. Reusing the id with *this call's* `rust_name` instead
+        // is precisely the angr-izov2 failure mode — the RustBV/export layer
+        // looks right while every constraint on the original quietly stops
+        // binding.
+        //
+        // SILENT(cat-b): a name miss here means the two maps disagree, which
+        // `SymbolicIdentityRegistry::register` never produces —
+        // `update_hash_mapping` (no callers) is the only way to add a hash
+        // mapping without a name, and `remove` drops `rust_id_to_name` a few
+        // instructions before `py_hash_to_rust_id`, so a hash hit can briefly
+        // outlive its name. That window is not reachable today (both
+        // `import_symbolic_leaf` and the sole production remover,
+        // `claripy_bridge::export`'s `evict_claripy_ast`, run under the GIL,
+        // and nothing releases it between the two lookups here) — hence
+        // `warn!` rather than a hard error. Falling through re-does what a
+        // hash miss a moment later would have done: resolve by name, else
+        // mint and re-register. The loss is object identity, not soundness —
+        // the re-minted leaf carries `rust_name`, so it denotes the *same* Z3
+        // constant the fallback would have named, just under a consistently
+        // registered id.
+        if let Some(canonical) = lookup_symbol_name_by_id(existing_id) {
+            return RustBV::symbolic_with_id(existing_id, &canonical, width);
+        }
+        log::warn!(
+            "symbol identity registry: hash {ast_hash:#x} resolves to id {existing_id} but that \
+             id has no canonical name; re-resolving {rust_name:?} by name instead of rebinding \
+             the id (symbol identity for this leaf is lost, constraints still bind)"
+        );
     }
 
     if let Some(info) = lookup_symbol_by_name_and_width(&rust_name, width, kind) {
@@ -617,3 +646,12 @@ fn reverse_bytes(bv: &RustBV, ctx: &SymContext) -> Result<RustBV, BridgeError> {
         Ok(result)
     }
 }
+
+#[cfg(test)]
+#[path = "import_tests.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+)]
+mod import_tests;
