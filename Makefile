@@ -82,8 +82,12 @@ check:  ## cargo check (release) — fast type/borrow check, no link.
 
 .PHONY: check-no-z3
 check-no-z3:  ## cargo check the four --no-default-features combos CI gates (angr-9ke6b.236).
+	@# -D warnings (angr-sqfj8.139): these combos compile the
+	@# #[cfg(not(feature = "vex-engine-z3"))] arms nothing else covers, so
+	@# without it unused-import/dead-code rot accumulates here invisibly.
 	@for f in "" "vex-engine" "vex-engine,vex-engine-z3" "automaton"; do \
 		echo "--- --no-default-features --features \"$$f\""; \
+		RUSTFLAGS="$$RUSTFLAGS -D warnings" \
 		$(CARGO) check --manifest-path $(MANIFEST) --no-default-features --features "$$f" || exit 1; \
 	done
 

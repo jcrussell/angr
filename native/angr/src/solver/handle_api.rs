@@ -15,7 +15,11 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 use crate::claripy_bridge::claripy_to_rustbv;
-use crate::symbolic::{BinaryOpError, RustBV, RustBVHandle, RustSymbolTable, SymContext};
+use crate::symbolic::{BinaryOpError, RustBVHandle, RustSymbolTable, SymContext};
+// Only `add_constraint_handle`'s Z3-gated block builds a `RustBV` directly
+// (angr-sqfj8.139).
+#[cfg(feature = "vex-engine-z3")]
+use crate::symbolic::RustBV;
 
 use super::{RustSolverContext, invalid_handle_id};
 
@@ -78,6 +82,12 @@ impl RustSolverContext {
     }
 
     /// Add a constraint from a handle (must be 1-bit).
+    // Without Z3 there is no assert path, so the resolved `bv` is unread — the
+    // handle lookup still runs for its `invalid_handle_id` error (angr-sqfj8.139).
+    #[cfg_attr(
+        not(feature = "vex-engine-z3"),
+        allow(unused_variables, reason = "Z3-only consumer")
+    )]
     pub fn add_constraint_handle(&self, handle_id: u64) -> PyResult<()> {
         let bv = self
             .i()

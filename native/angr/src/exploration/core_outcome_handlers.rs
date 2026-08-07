@@ -254,6 +254,10 @@ fn process_deferred_forks_into_core(
 /// Python handler runs) as the fork base — the same logical base the
 /// single-threaded resume path uses at simproc-return time, so the forks are
 /// identical. Returns `(sat forks, unsat/pruned forks, minted fork ids)`.
+///
+/// Retained without Z3: its only caller is the `vex-engine-z3`-gated parallel
+/// wave loop (angr-sqfj8.139).
+#[cfg_attr(not(feature = "vex-engine-z3"), allow(dead_code))]
 #[allow(clippy::type_complexity)]
 pub(crate) fn materialize_bounce_forks(
     cc: &CoreCtx,

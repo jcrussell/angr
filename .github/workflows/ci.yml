@@ -97,7 +97,14 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
       - uses: actions-rust-lang/setup-rust-toolchain@150fca883cd4034361b621bd4e6a9d34e5143606 # v1
+      # -D warnings (angr-sqfj8.139): this is the only lane that compiles the
+      # #[cfg(not(feature = "vex-engine-z3"))] arms — neither `make check` nor
+      # the `--all-features` clippy gate reaches them — so warnings must fail
+      # here or unused-import/dead-code rot accumulates invisibly. Mirrors
+      # `make check-no-z3`.
       - name: Cargo check with features "${{ matrix.features }}"
+        env:
+          RUSTFLAGS: "-D warnings"
         run: cargo check --manifest-path native/angr/Cargo.toml --no-default-features --features "${{ matrix.features }}"
       # Execute (not just compile) the no-default-features combo at PR time —
       # the cheapest build and the combo that has historically broken

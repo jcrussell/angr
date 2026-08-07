@@ -35,6 +35,12 @@ impl RustExplorationManager {
     ///   - Ok(true): Constraints synced and state is SAT (satisfiable)
     ///   - Ok(false): State became UNSAT after syncing - should be pruned (P12)
     ///   - Err: Python error during sync
+    // Without Z3 the whole assert half of the loop compiles out, leaving the
+    // converted `bv` and the `z3_ptr_fallback_count` tally unread (angr-sqfj8.139).
+    #[cfg_attr(
+        not(feature = "vex-engine-z3"),
+        allow(unused_variables, unused_mut, reason = "Z3-only consumers")
+    )]
     pub(crate) fn sync_constraints_from_python(
         &self,
         py: Python<'_>,

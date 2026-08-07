@@ -130,6 +130,10 @@ impl SymbolKind {
 /// a constraint added through the fast path and a leaf imported through
 /// `claripy_to_rustbv` would name two unrelated Z3 declarations and the
 /// constraint would silently fail to bind.
+///
+/// Retained without Z3: every caller rebuilds a Z3 leaf term and is therefore
+/// `vex-engine-z3`-gated (angr-sqfj8.139).
+#[cfg_attr(not(feature = "vex-engine-z3"), allow(dead_code))]
 pub(crate) fn strip_bool_symbol_name(name: &str) -> Option<&str> {
     name.strip_prefix(BOOL_NAME_PREFIX)
 }

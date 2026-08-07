@@ -207,6 +207,12 @@ impl RustSolverContext {
     /// Uses fast path when Z3 context is shared: extracts the raw Z3_ast
     /// from claripy's z3 backend and asserts it directly, preserving the
     /// original Z3 AST structure. Falls back to RustBV conversion otherwise.
+    // Without Z3 the assert half compiles out and the slow path's `bv` is
+    // unread — the conversion still runs for its `?` validation (angr-sqfj8.139).
+    #[cfg_attr(
+        not(feature = "vex-engine-z3"),
+        allow(unused_variables, reason = "Z3-only consumer")
+    )]
     pub fn add_constraint_ast(&self, py: Python<'_>, ast: &Bound<'_, PyAny>) -> PyResult<()> {
         let ctx = self.i().ctx();
 
@@ -342,9 +348,11 @@ impl RustSolverContext {
         py: Python<'_>,
         ast: &Bound<'_, PyAny>,
     ) -> PyResult<usize> {
-        let ctx = self.i().ctx();
         #[cfg(feature = "vex-engine-z3")]
         {
+            // Bound inside the gate: the no-z3 arm below errors out without
+            // ever touching the context (angr-sqfj8.139).
+            let ctx = self.i().ctx();
             // angr-d01qu: mirror add_constraint_ast's is_bool() gate. A
             // non-Bool AST wrapped as z3::ast::Bool via Ast::wrap would trip
             // Z3's CHECK_FORMULA sort-mismatch guard inside

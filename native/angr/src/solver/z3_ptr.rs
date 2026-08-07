@@ -10,9 +10,14 @@
 //! (it owns a Z3 refcount and cannot be reconstructed from a Python value), so
 //! these are internal helpers the claripy-AST API in the parent module calls.
 
+// Both are consumed only by the `Z3AstPtr` paths below, which are themselves
+// `vex-engine-z3`-gated — importing them unconditionally warns in the no-z3
+// combos `make check-no-z3` gates (angr-sqfj8.139).
+#[cfg(feature = "vex-engine-z3")]
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 
+#[cfg(feature = "vex-engine-z3")]
 use std::sync::Arc;
 
 use crate::claripy_bridge::claripy_to_rustbv;

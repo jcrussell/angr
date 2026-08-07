@@ -16,6 +16,9 @@ use crate::symbolic::{
 };
 use pyo3::exceptions::PyValueError;
 use pyo3::types::{PyAny, PyDict};
+// Only the `vex-engine-z3`-gated `set_register_z3_ast` mints an `Arc`-named
+// symbol (angr-sqfj8.139).
+#[cfg(feature = "vex-engine-z3")]
 use std::sync::Arc;
 
 #[pymethods]

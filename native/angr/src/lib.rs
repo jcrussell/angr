@@ -176,6 +176,10 @@ use pyo3::prelude::*;
 /// and collapses the 7 scattered per-fn `#[allow]`s into this single site.
 /// The lone `#[allow]` below is the single, deliberate suppression that
 /// replaces the former per-call-site cluster. See bd bead angr-inieg.1.
+///
+/// Retained without the engine: every caller lives under `vex-engine`
+/// (angr-sqfj8.139).
+#[cfg_attr(not(feature = "vex-engine"), allow(dead_code))]
 #[allow(clippy::arc_with_non_send_sync)]
 #[inline]
 pub(crate) fn arc_shared<T>(value: T) -> std::sync::Arc<T> {

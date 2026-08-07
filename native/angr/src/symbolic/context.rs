@@ -71,10 +71,20 @@
 //! function just stored under the same held guard.
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
+// The Z3-only half of the std imports: every consumer of `Cell`/`RefCell`
+// (`sat_cache`, `model_cache`), `HashSet` (`LocalConstraints::dedup_set`),
+// `AtomicU32` (`timeout_ms`) and `Ordering` is itself behind
+// `#[cfg(feature = "vex-engine-z3")]`, so importing them unconditionally warns
+// in the no-z3 combos `make check-no-z3` gates (angr-sqfj8.139).
+#[cfg(feature = "vex-engine-z3")]
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+#[cfg(feature = "vex-engine-z3")]
+use std::collections::HashSet;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize};
+#[cfg(feature = "vex-engine-z3")]
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -85,7 +95,9 @@ use super::RustBV;
 // Solver/engine profiling counters live in `stats.rs` (angr-ugc2). The glob
 // brings every counter static plus `CheckSite` / `VexOpFamily` and the
 // `record_*` helpers into scope so the solving paths below read and bump them
-// unchanged.
+// unchanged. Z3-gated: every read/bump site is itself behind
+// `vex-engine-z3` (angr-sqfj8.139).
+#[cfg(feature = "vex-engine-z3")]
 use super::stats::*;
 
 // Z3 solver construction + per-check timing/sampling wrappers live in

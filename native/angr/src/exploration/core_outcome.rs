@@ -80,6 +80,8 @@ pub(crate) use cc::CcSnapshot;
 
 #[path = "core_outcome_handlers.rs"]
 mod handlers;
+// Consumed only by the `vex-engine-z3`-gated parallel wave loop (angr-sqfj8.139).
+#[cfg(feature = "vex-engine-z3")]
 pub(crate) use handlers::materialize_bounce_forks;
 use handlers::{
     bounce, handle_simprocedure_core, handle_symbolic_branch_core,
@@ -124,6 +126,10 @@ impl ParallelProfiling {
     /// `accumulated_stats.merge(&step.step_stats)`. Unconditional (not gated on
     /// `profiling_enabled`): timing fields are already zero when profiling is
     /// off, and the always-on cache hit/miss counters must still accumulate.
+    ///
+    /// Retained without Z3: its only callers are the `vex-engine-z3`-gated
+    /// parallel worker paths (angr-sqfj8.139).
+    #[cfg_attr(not(feature = "vex-engine-z3"), allow(dead_code))]
     #[allow(
         clippy::expect_used,
         reason = "`ParallelProfiling::step_stats` poison guard: poison requires a thread to unwind out of a live `MutexGuard`, which `panic = \"abort\"` forecloses — see the module Panic policy header"
@@ -165,6 +171,10 @@ impl ParallelProfiling {
     /// steady-state coordinator folds deltas at every event return while
     /// workers keep adding (angr-nkoct). A wave calling this once is
     /// byte-identical to `fold_into` (the wave's accumulator dies right after).
+    ///
+    /// Retained without Z3: its only callers are the `vex-engine-z3`-gated
+    /// steady-state/wave coordinators (angr-sqfj8.139).
+    #[cfg_attr(not(feature = "vex-engine-z3"), allow(dead_code))]
     #[allow(
         clippy::expect_used,
         reason = "`ParallelProfiling::step_stats` poison guard: poison requires a thread to unwind out of a live `MutexGuard`, which `panic = \"abort\"` forecloses — see the module Panic policy header"

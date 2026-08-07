@@ -407,6 +407,10 @@ pub struct RustExplorationManager {
     /// `StateMigrationPayload::reattach`'s cross-context AST minting) and the
     /// result is discarded — it measures the migration cost, never routes it.
     /// Feeds the 2b' overhead GO/NO-GO gate (SI-C).
+    ///
+    /// Retained without Z3: the probe's only reader is the parallel dispatch
+    /// path, which is `vex-engine-z3`-gated (angr-sqfj8.139).
+    #[cfg_attr(not(feature = "vex-engine-z3"), allow(dead_code))]
     pub(crate) shadow_probe: bool,
     /// Cumulative nanoseconds spent in the shadow-probe migration round-trip:
     /// `to_serialized` time (measured on the main thread) + `from_serialized`
@@ -474,6 +478,10 @@ pub struct RustExplorationManager {
     /// per-manager pattern as `RUST_PARALLEL_WORKERS`, so tests can
     /// monkeypatch it). Opt-in for the steady-state loop during angr-nkoct
     /// phases C-D; flipped to opt-out once the measurement gate passes.
+    ///
+    /// Retained without Z3: the steady-state engagement check that reads it is
+    /// `vex-engine-z3`-gated (angr-sqfj8.139).
+    #[cfg_attr(not(feature = "vex-engine-z3"), allow(dead_code))]
     pub(crate) parallel_steady_env: bool,
     /// Residual live frontier states a cancelled parallel run returned to
     /// `STASH_ACTIVE` instead of dropping (the Bug M1 cancel-drain; both the
