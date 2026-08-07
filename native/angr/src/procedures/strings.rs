@@ -326,6 +326,13 @@ pub(crate) enum ScanOutcome {
     /// All scanned bytes were concrete; null terminator found at this length
     /// (or `max` was reached without finding null — caller decides whether
     /// that's an error or natural saturation).
+    ///
+    /// `length == max` is *exactly* the "no terminator in the window" case:
+    /// a found null always sits at an index `< max`, so the equality is a
+    /// reliable exhausted-test and every caller must decide what it means.
+    /// Treating it as a real length silently truncates the string — see
+    /// `strlen::scan_for_null` and `fileops::read_pathname`, both of which
+    /// error out (angr-sqfj8.80).
     AllConcrete { length: u64 },
     /// At least one byte was symbolic; the chain builder must be invoked.
     /// Each entry is `(position, byte_8bit)`.

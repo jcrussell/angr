@@ -32,6 +32,16 @@ const MAX_PATH: u64 = 256;
 fn read_pathname(state: &mut RustSimState, addr: u64) -> Result<Vec<u8>, ProcedureError> {
     let bytes = match scan_for_null_symbolic(state, addr, MAX_PATH)? {
         ScanOutcome::AllConcrete { length } => {
+            // `scan_for_null_symbolic` only reports `length == max` when it ran
+            // the whole window without hitting a terminator (a found null is
+            // always at an index `< max`). Python's `open` uses an unbounded
+            // `strlen`, so a longer pathname is a real path there — returning
+            // the 256-byte prefix would silently open a *different* file.
+            // Error out so dispatch falls back, matching sibling
+            // `read_cstring`/`scan_concrete_until_null` (angr-sqfj8.80).
+            if length == MAX_PATH {
+                return Err(ProcedureError::MaxIterations(MAX_PATH as usize));
+            }
             let (buf, _) = scan_concrete_bounded(state, addr, length as usize, "pathname")?;
             return Ok(buf);
         }

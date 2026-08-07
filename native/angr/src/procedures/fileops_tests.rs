@@ -818,3 +818,48 @@ fn test_open_symbolic_pathname_is_concretized() {
     let info = state.file_system_ref().fd_info(3).unwrap();
     assert_eq!(info.0, "abc.txt");
 }
+
+#[test]
+fn test_open_overlong_pathname_errors_instead_of_truncating() {
+    // A concrete pathname with no NUL inside the MAX_PATH window used to be
+    // returned as its 256-byte prefix, silently opening a *different* path
+    // than the program asked for. Python's open uses an unbounded strlen, so
+    // the only correct native answer is to decline (angr-sqfj8.80).
+    let mut state = RustSimState::new("amd64").unwrap();
+    let mut path = vec![b'a'; MAX_PATH as usize + 44];
+    path.push(0);
+    state.map_memory_data(0x1000, &path, Permission::RWX);
+
+    let err = NativeOpen
+        .call(
+            &mut state,
+            &[RustBV::concrete(0x1000, 64), RustBV::concrete(0, 64)],
+        )
+        .expect_err("overlong pathname must decline, not truncate");
+    assert!(
+        matches!(err, ProcedureError::MaxIterations(n) if n == MAX_PATH as usize),
+        "expected MaxIterations({MAX_PATH}), got {err:?}"
+    );
+    // Nothing was opened: the fallback must see an untouched fd table.
+    assert!(!state.file_system_ref().is_open(3));
+}
+
+#[test]
+fn test_open_pathname_filling_the_window_exactly_is_served() {
+    // Boundary: the NUL sits at the last scannable index (MAX_PATH - 1), so
+    // the scan still finds it and the call is served natively.
+    let mut state = RustSimState::new("amd64").unwrap();
+    let mut path = vec![b'a'; MAX_PATH as usize - 1];
+    path.push(0);
+    state.map_memory_data(0x1000, &path, Permission::RWX);
+
+    let result = NativeOpen
+        .call(
+            &mut state,
+            &[RustBV::concrete(0x1000, 64), RustBV::concrete(0, 64)],
+        )
+        .expect("a pathname that exactly fills the window must still be served");
+    assert_eq!(result.unwrap().as_u64(), Some(3));
+    let info = state.file_system_ref().fd_info(3).unwrap();
+    assert_eq!(info.0.len(), MAX_PATH as usize - 1);
+}
