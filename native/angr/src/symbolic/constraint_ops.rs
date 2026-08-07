@@ -615,30 +615,52 @@ impl SymContext {
     /// Add a constraint that the bitvector is true (non-zero for 1-bit).
     #[cfg(feature = "vex-engine-z3")]
     pub fn assume_true(&self, cond: &RustBV) {
+        self.assume(cond, true);
+    }
+
+    /// Add a constraint that the bitvector is false (zero for 1-bit).
+    #[cfg(feature = "vex-engine-z3")]
+    pub fn assume_false(&self, cond: &RustBV) {
+        self.assume(cond, false);
+    }
+
+    /// Shared body of `assume_true` / `assume_false` (angr-12jjk.11).
+    ///
+    /// The two entry points differ only in polarity: which concrete value is
+    /// the tautology, the `bool` recorded in the `assumed` export log, and
+    /// whether the Z3 bool is negated. Everything else — the concrete/symbolic
+    /// counter split, the sampled simplify-skip probe, the dedup contract and
+    /// the `add_constraint` handoff — is identical, so it lives here once
+    /// rather than in two hand-synced copies.
+    #[cfg(feature = "vex-engine-z3")]
+    fn assume(&self, cond: &RustBV, want_true: bool) {
         debug_assert_eq!(cond.width(), 1);
-        // Fast path: concrete true is a tautology — skip Z3 entirely (still
-        // record it for Python export).
+        // Fast path: the concrete value matching `want_true` is a tautology —
+        // skip Z3 entirely (still record it for Python export).
         if let Some(v) = cond.as_u128()
-            && v != 0
+            && (v != 0) == want_true
         {
             self.local_constraints
                 .lock()
                 .assumed
-                .push((cond.clone(), true));
+                .push((cond.clone(), want_true));
             Z3_ASSUME_CONCRETE_COUNT.fetch_add(1, Ordering::Relaxed);
-            return; // Asserting True is a no-op
+            return; // Asserting a tautology is a no-op
         }
-        // v == 0: asserting False makes solver UNSAT — still add it
+        // Concrete but opposite polarity: asserting False makes the solver
+        // UNSAT — still add it.
         Z3_ASSUME_SYMBOLIC_COUNT.fetch_add(1, Ordering::Relaxed);
-        // Use to_z3_bool() to produce native Z3 Bool for comparison ops,
-        // avoiding ITE(cmp, BV(1,1), BV(0,1)).eq(BV(1,1)) round-trip.
-        let constraint = cond.to_z3_bool();
+        // Use to_z3_bool() to produce a native Z3 Bool for comparison ops,
+        // avoiding the ITE(cmp, BV(1,1), BV(0,1)).eq(BV(1,1)) round-trip; the
+        // false polarity negates that bool directly.
+        let bool_ast = cond.to_z3_bool();
+        let constraint = if want_true { bool_ast } else { bool_ast.not() };
         // angr-1joc measurement: sampled simplify-skip check.
         sample_simplify_skip(&constraint);
         // angr-mwbp: piggy-back dedup on the side-table when it's already
         // seeded by an earlier `add_constraint_raw` call in this context.
         // Triggering the seed from here would walk shared+local on every
-        // assume_*/false call in fresh contexts — a real bench regression
+        // assume_true/false call in fresh contexts — a real bench regression
         // on heavily-branched workloads where add_constraint_raw isn't
         // hot (flareon2015_2 timed out at 30s under unconditional seeding).
         // When seeded, `assumed` still grows unconditionally to preserve
@@ -647,41 +669,7 @@ impl SymContext {
         // `z3_assertions.push` + `add_constraint(c)` round-trip.
         let was_dup = {
             let mut local = self.local_constraints.lock();
-            local.assumed.push((cond.clone(), true));
-            self.check_z3_dedup_if_seeded(&mut local, &constraint)
-        };
-        if was_dup {
-            Z3_ASSUME_DEDUP_HIT_COUNT.fetch_add(1, Ordering::Relaxed);
-            return;
-        }
-        self.add_constraint(constraint);
-    }
-
-    /// Add a constraint that the bitvector is false (zero for 1-bit).
-    #[cfg(feature = "vex-engine-z3")]
-    pub fn assume_false(&self, cond: &RustBV) {
-        debug_assert_eq!(cond.width(), 1);
-        // Fast path: concrete false (== 0) means not(False) = True — skip Z3
-        if let Some(v) = cond.as_u128()
-            && v == 0
-        {
-            self.local_constraints
-                .lock()
-                .assumed
-                .push((cond.clone(), false));
-            Z3_ASSUME_CONCRETE_COUNT.fetch_add(1, Ordering::Relaxed);
-            return; // Asserting not(False) = True is a no-op
-        }
-        // v != 0: asserting not(True) = False makes solver UNSAT — still add it
-        Z3_ASSUME_SYMBOLIC_COUNT.fetch_add(1, Ordering::Relaxed);
-        // Negate the bool directly
-        let constraint = cond.to_z3_bool().not();
-        // angr-1joc measurement: sampled simplify-skip check.
-        sample_simplify_skip(&constraint);
-        // angr-mwbp: see assume_true above for the dedup contract.
-        let was_dup = {
-            let mut local = self.local_constraints.lock();
-            local.assumed.push((cond.clone(), false));
+            local.assumed.push((cond.clone(), want_true));
             self.check_z3_dedup_if_seeded(&mut local, &constraint)
         };
         if was_dup {

@@ -749,21 +749,25 @@ impl SymContext {
 
     #[cfg(not(feature = "vex-engine-z3"))]
     pub fn assume_true(&self, cond: &RustBV) {
+        self.assume(cond, true);
+    }
+
+    #[cfg(not(feature = "vex-engine-z3"))]
+    pub fn assume_false(&self, cond: &RustBV) {
+        self.assume(cond, false);
+    }
+
+    /// Non-Z3 mirror of `constraint_ops.rs::assume` (angr-12jjk.11): the two
+    /// polarities share one body here too, so a change to the export contract
+    /// can't land in one twin and miss the other.
+    #[cfg(not(feature = "vex-engine-z3"))]
+    fn assume(&self, cond: &RustBV, want_true: bool) {
         debug_assert_eq!(cond.width(), 1);
         // Track for export to Python; no Z3 to assert against.
         self.local_constraints
             .lock()
             .assumed
-            .push((cond.clone(), true));
-    }
-
-    #[cfg(not(feature = "vex-engine-z3"))]
-    pub fn assume_false(&self, cond: &RustBV) {
-        debug_assert_eq!(cond.width(), 1);
-        self.local_constraints
-            .lock()
-            .assumed
-            .push((cond.clone(), false));
+            .push((cond.clone(), want_true));
     }
 
     #[cfg(not(feature = "vex-engine-z3"))]
