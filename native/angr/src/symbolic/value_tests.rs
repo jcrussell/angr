@@ -370,6 +370,38 @@ fn test_reverse_double() {
 }
 
 #[test]
+fn test_reverse_non_byte_aligned_width_is_identity_not_truncation() {
+    // angr-sqfj8.92: a byte reverse is undefined over a partial byte. The old
+    // code guarded the precondition with a `debug_assert!` and, in release,
+    // swapped only the `w / 8` whole bytes — silently zeroing the high bits of
+    // a concrete operand (12-bit 0xABC came back as 0x0BC-swapped garbage).
+    // Every profile now returns the operand unchanged instead, so no bit is
+    // dropped and the concrete answer matches what the Z3 lowering already
+    // produces for a misaligned width.
+    let ctx = SymContext::new_mock();
+    for (width, value) in [(12u32, 0xABCu128), (9, 0x1FF), (33, 0x1_2345_6789)] {
+        let rev = RustBV::concrete(value, width).reverse(&ctx);
+        assert_eq!(rev.width(), width, "width {width} must be preserved");
+        assert_eq!(
+            rev.as_u128(),
+            Some(value),
+            "width {width}: misaligned reverse must keep every bit"
+        );
+    }
+
+    // Symbolic operands take the same no-op path, so no `Reverse` node is
+    // built for a width whose claripy export would raise.
+    let sym = RustBV::symbolic(&ctx, "misaligned", 12);
+    let rev = sym.reverse(&ctx);
+    assert!(matches!(rev, RustBV::Symbolic { .. }), "{rev:?}");
+    assert_eq!(rev.width(), 12);
+
+    // Byte-aligned widths still reverse normally.
+    let aligned = RustBV::concrete(0x1122, 16).reverse(&ctx);
+    assert_eq!(aligned.as_u128(), Some(0x2211));
+}
+
+#[test]
 fn test_shift_by_zero() {
     let ctx = SymContext::new_mock();
     let x = RustBV::symbolic(&ctx, "x", 32);

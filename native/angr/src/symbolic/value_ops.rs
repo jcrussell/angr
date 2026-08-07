@@ -580,12 +580,39 @@ impl RustBV {
     /// reach it without fabricating a `SymContext` (angr-9ke6b.237); the public
     /// entry points keep their `&SymContext` parameter for signature parity
     /// with `extract`/`concat`.
+    ///
+    /// **Non-byte-aligned widths (angr-sqfj8.92):** a byte reverse is only
+    /// defined for a whole number of bytes. Every in-tree caller is aligned by
+    /// construction (VEX `Iop_Reverse*`, `procedures::byteorder`'s
+    /// 16/32/64-bit swaps, and `claripy_bridge::import::reverse_bytes`, which
+    /// rejects a misaligned width with `BridgeError::InvalidArgs` before
+    /// reaching here). The width is nonetheless *handled* rather than assumed:
+    /// a misaligned width returns the operand unchanged, in every profile. That
+    /// is the same answer the Z3 lowering already produces for this case
+    /// (`value_z3.rs`'s `BVOp::Reverse` arm falls through to the bare operand
+    /// when `!w.is_multiple_of(8)`), so concrete and symbolic stay in
+    /// agreement, and no `Reverse` node is built for a width whose claripy
+    /// export would raise. The previous code was a `debug_assert!` — compiled
+    /// out of release per this module's `debug_assert!` policy, which is
+    /// justified by "a bad width hits a Z3 sort error anyway", a backstop the
+    /// concrete fold never reaches. Release therefore ran the swap loop over
+    /// `w / 8` truncated bytes, silently zeroing the leftover high bits.
+    /// The assert is deliberately *not* re-added on top of the handling: a
+    /// dev-build panic against a release-build no-op is the same
+    /// profile-divergence this fix removes.
     #[inline]
     fn reverse_owned(self) -> Self {
         let w = self.width();
-        debug_assert!(w.is_multiple_of(8), "reverse requires byte-aligned width");
         if w <= 8 {
             return self; // Single byte, no-op
+        }
+        if !w.is_multiple_of(8) {
+            // SILENT(cat-c): no byte reverse is defined over a partial byte,
+            // and this path has no error channel (`reverse`/`reverse_into`
+            // return `Self`). Identity keeps every bit and matches the Z3 arm;
+            // warn so a caller that got here leaves a trail.
+            log::warn!("reverse of non-byte-aligned width {w} is a no-op; caller is misaligned");
+            return self;
         }
         match self.as_u128() {
             Some(v) => {
