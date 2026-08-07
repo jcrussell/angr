@@ -126,6 +126,15 @@ pub enum MemoryError {
     /// or raise instead of hanging.
     #[error("zero-size memory access at 0x{addr:x}")]
     ZeroSize { addr: u64 },
+    /// A symbolic value whose width is not a whole number of bytes. Memory is
+    /// byte-addressed, so `width_bits / 8` truncates: a sub-byte width yields
+    /// size 0 (no byte marked symbolic at all) and a width like 12 silently
+    /// drops the high nibble. `import_symbolic_value` rejects both up-front
+    /// rather than storing an object no load can reconstruct — the sibling of
+    /// [`MemoryError::ZeroSize`] on the identity-preserving import path
+    /// (angr-sqfj8.73).
+    #[error("symbolic value at 0x{addr:x} has non-byte-multiple width {width_bits}")]
+    UnalignedWidth { addr: u64, width_bits: u32 },
     /// A concrete value was expected but the BV was symbolic. Defense-in-depth:
     /// the concrete store path is guarded by an `is_symbolic()` early-return, so
     /// this should be unreachable in practice — it converts a would-be panic

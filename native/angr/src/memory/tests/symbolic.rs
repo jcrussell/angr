@@ -364,6 +364,50 @@ fn test_wide_linear_scan_big_endian() {
     );
 }
 
+/// angr-sqfj8.73: `import_symbolic_value` rejects a width that is not a
+/// positive multiple of 8 instead of storing an object no load can
+/// reconstruct. Before the guard, a 1-bit import truncated to `size == 0`:
+/// the entry landed in `symbolic_objects` but the page bitmap stayed clear,
+/// so a later byte load found `contains_key(addr)` true,
+/// `bytes_all_marked_symbolic` false, and silently returned the page's
+/// concrete placeholder byte. Also pins that a rejected import leaves *no*
+/// trace — no side-table entry, no imported-addr mark, no auto-mapped page.
+#[test]
+fn test_import_symbolic_value_rejects_non_byte_multiple_width() {
+    let ctx = SymContext::new_mock();
+    let mut mem = SymbolicMemory::new(Endness::Little);
+
+    for width in [1u32, 4, 12, 63] {
+        let sym = RustBV::symbolic(&ctx, format!("sub_byte_{width}"), width);
+        let err = mem
+            .import_symbolic_value(0x1000, sym, None)
+            .expect_err("non-byte-multiple width must be rejected");
+        assert!(
+            matches!(
+                err,
+                MemoryError::UnalignedWidth {
+                    addr: 0x1000,
+                    width_bits
+                } if width_bits == width
+            ),
+            "expected UnalignedWidth for width {width}, got {err:?}"
+        );
+    }
+
+    // Nothing was recorded, and the auto-map the success path performs did
+    // not run either.
+    assert_eq!(mem.symbolic_object_count(), 0);
+    assert!(!mem.is_imported_addr(0x1000));
+    assert!(!mem.pages.contains_key(&(0x1000u64 >> 12)));
+
+    // The narrowest accepted width still works and marks its byte.
+    let byte_sym = RustBV::symbolic(&ctx, "byte_sqfj8_73", 8);
+    mem.import_symbolic_value(0x1000, byte_sym, None)
+        .expect("byte-wide import must be accepted");
+    assert_eq!(mem.symbolic_object_count(), 1);
+    assert!(mem.bytes_all_marked_symbolic(Address(0x1000), 1));
+}
+
 /// angr-uwtj: `containing_wider_sym` consults `symbolic_spans` first
 /// (O(1)) before falling back to a linear scan over
 /// `symbolic_objects` (O(n)). After `import_symbolic_value`, the
@@ -381,7 +425,7 @@ fn test_containing_wider_sym_spans_first() {
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x1000, Permission::RWX);
     let wide = RustBV::symbolic(&ctx, "wide128_uwtj", 128);
-    mem.import_symbolic_value(0x1000, wide, None);
+    mem.import_symbolic_value(0x1000, wide, None).unwrap();
 
     // Path 1: addr inside the wider sym → spans hit.
     let hit = mem
@@ -437,7 +481,7 @@ fn test_load_concrete_slow_path_spans_first_little_endian() {
     let pinned: u128 = 0x1011_1213_1415_1617_1819_1A1B_1C1D_1E1F;
     let wide = RustBV::symbolic(&ctx, "wide128_slow_le", 128);
     ctx.assume_true(&wide.eq(&RustBV::concrete(pinned, 128), &ctx));
-    mem.import_symbolic_value(0x1000, wide, None);
+    mem.import_symbolic_value(0x1000, wide, None).unwrap();
     // Insert an unrelated symbolic_objects entry inside the load
     // range to force has_inner_overlap=true on the load below.
     let noise = RustBV::symbolic(&ctx, "noise8", 8);
@@ -584,7 +628,9 @@ fn test_fork_symbolic_spans_isolation() {
     // Parent imports a 64-bit (8-byte) wide symbolic value at 0x1000.
     // import_symbolic_value populates symbolic_spans for bytes 1..8.
     let parent_sym = RustBV::symbolic(&ctx, "parent_wide", 64);
-    parent.import_symbolic_value(0x1000, parent_sym, None);
+    parent
+        .import_symbolic_value(0x1000, parent_sym, None)
+        .unwrap();
     // Sanity: spans for 0x1001..0x1008 exist on parent.
     for off in 1..8u64 {
         assert!(
@@ -599,7 +645,9 @@ fn test_fork_symbolic_spans_isolation() {
     // base. This must NOT add 0x2001..0x2008 to the parent's spans.
     let mut child = parent.fork();
     let child_sym = RustBV::symbolic(&ctx, "child_wide", 64);
-    child.import_symbolic_value(0x2000, child_sym, None);
+    child
+        .import_symbolic_value(0x2000, child_sym, None)
+        .unwrap();
 
     // Parent's symbolic_spans is unchanged.
     assert_eq!(
@@ -631,13 +679,17 @@ fn test_fork_imported_addrs_isolation() {
     parent.map(0x2000, 0x1000, Permission::RWX);
 
     let parent_sym = RustBV::symbolic(&ctx, "parent_imp", 32);
-    parent.import_symbolic_value(0x1000, parent_sym, None);
+    parent
+        .import_symbolic_value(0x1000, parent_sym, None)
+        .unwrap();
     assert!(parent.is_imported_addr(0x1000));
     assert!(!parent.is_imported_addr(0x2000));
 
     let mut child = parent.fork();
     let child_sym = RustBV::symbolic(&ctx, "child_imp", 32);
-    child.import_symbolic_value(0x2000, child_sym, None);
+    child
+        .import_symbolic_value(0x2000, child_sym, None)
+        .unwrap();
 
     // Child sees both; parent must only see its own.
     assert!(child.is_imported_addr(0x1000));

@@ -146,7 +146,7 @@ fn test_multi_supersedes_existing_symbolic() {
 
     // Install a single-byte symbolic value at 0x1000.
     let sym_byte = RustBV::symbolic(&ctx, "byte", 8);
-    mem.import_symbolic_value(0x1000, sym_byte, None);
+    mem.import_symbolic_value(0x1000, sym_byte, None).unwrap();
     assert!(mem.get_symbolic_object(0x1000).is_some());
 
     // Now upgrade the same byte to Multi.

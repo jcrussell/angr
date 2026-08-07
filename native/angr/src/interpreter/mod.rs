@@ -666,7 +666,16 @@ impl<'a> VEXInterpreter<'a> {
                 // Drain in this loop and insert into all_flushed_symbolic_stores too,
                 // sharing one clone instead of doing iter+clone followed by drain.
                 for (addr, bv) in self.pending_symbolic_stores.drain() {
-                    rust_mem.import_symbolic_value(addr, bv.clone(), None);
+                    // SILENT(cat-c): a non-byte-multiple width cannot be
+                    // placed in byte-addressed memory at all. VEX stores are
+                    // always byte-multiple (Ity_I8 and wider), so this is a
+                    // "shouldn't happen" arm — log loudly and keep the value
+                    // in all_flushed_symbolic_stores so the block-boundary
+                    // path still sees it, mirroring the concrete-store arm
+                    // above.
+                    if let Err(e) = rust_mem.import_symbolic_value(addr, bv.clone(), None) {
+                        log::error!("dropped symbolic store at {addr:#x}: {e:?}");
+                    }
                     self.all_flushed_symbolic_stores.insert(addr, bv);
                 }
             } else {
@@ -707,9 +716,12 @@ impl<'a> VEXInterpreter<'a> {
                     log::error!("dropped concrete store at {addr:#x}: {e:?}");
                 }
             }
-            // Flush symbolic pending stores
+            // Flush symbolic pending stores. Same "shouldn't happen" arm as
+            // `flush_stores`: SILENT(cat-c), a width VEX cannot produce.
             for (addr, bv) in self.pending_symbolic_stores.drain() {
-                rust_mem.import_symbolic_value(addr, bv, None);
+                if let Err(e) = rust_mem.import_symbolic_value(addr, bv, None) {
+                    log::error!("dropped symbolic store at {addr:#x}: {e:?}");
+                }
             }
             self.all_flushed_stores.clear();
             self.all_flushed_symbolic_stores.clear();

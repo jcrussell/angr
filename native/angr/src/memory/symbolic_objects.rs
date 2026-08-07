@@ -10,7 +10,7 @@
 //! All entry points are inherent methods on `SymbolicMemory`, so callers in
 //! `memory/mod.rs` and external crates keep using `mem.method(...)`.
 
-use super::{Address, MemoryPage, Permission, SymbolicMemory};
+use super::{Address, MemoryError, MemoryPage, Permission, SymbolicMemory};
 use crate::symbolic::RustBV;
 
 impl SymbolicMemory {
@@ -23,19 +23,37 @@ impl SymbolicMemory {
     /// * `addr` - The address to store the value at
     /// * `value` - The symbolic value to store
     /// * `symbol_id` - Optional symbol ID for identity tracking
+    ///
+    /// # Errors
+    /// [`MemoryError::UnalignedWidth`] when `value.width()` is not a positive
+    /// multiple of 8. Memory is byte-addressed, so every downstream structure
+    /// here is sized by `width_bits / 8`: a 1-bit value truncates to size 0,
+    /// the page-marking loop below never runs, and a later byte load — which
+    /// finds `symbolic_objects.contains_key(addr)` true but the page bitmap
+    /// clear — falls through to the page's concrete placeholder byte and
+    /// returns 0 instead of the imported symbol. Rejecting mirrors
+    /// `store_concrete`'s [`MemoryError::ZeroSize`] guard (see
+    /// `end_page_inclusive`) rather than silently storing an object
+    /// `extract_byte_lane` can never reconstruct (angr-sqfj8.73).
     pub fn import_symbolic_value(
         &mut self,
         addr: impl Into<Address>,
         value: RustBV,
         _symbol_id: Option<u64>,
-    ) {
+    ) -> Result<(), MemoryError> {
         let addr = addr.into();
+        let width_bits = value.width();
+        if width_bits == 0 || !width_bits.is_multiple_of(8) {
+            return Err(MemoryError::UnalignedWidth {
+                addr: addr.raw(),
+                width_bits,
+            });
+        }
         // Track as Python-imported so get_state_symbolic_z3_asts can filter it out
         self.imported_addrs.insert(addr);
         // Store in symbolic_objects for lookup
         self.symbolic_objects.insert(addr, value.clone());
         // Update reverse span index
-        let width_bits = value.width();
         let sym_bytes = width_bits / 8;
         for i in 1..sym_bytes {
             self.symbolic_spans
@@ -44,8 +62,7 @@ impl SymbolicMemory {
 
         // Mark pages as having symbolic bytes
         // Create pages if they don't exist (critical for stack addresses)
-        let size = value.width() / 8;
-        for i in 0..size {
+        for i in 0..sym_bytes {
             let byte_addr = addr + i as u64;
             let page_num = byte_addr.page_num();
             let offset = byte_addr.page_offset();
@@ -60,6 +77,7 @@ impl SymbolicMemory {
             // Modify in place (COW handled by bitmap allocation in mark_symbolic)
             page.mark_symbolic(offset, 1);
         }
+        Ok(())
     }
 
     /// Get the symbolic object at an address if it exists.

@@ -218,8 +218,10 @@ impl RustExplorationManager {
             let bv = claripy_to_rustbv(py, ast, &sym_ctx)
                 .map_err(|e| ast_import_err(&format!("memory 0x{addr:x}"), e))?;
             drop(sym_ctx);
-            state.memory_mut().import_symbolic_value(addr, bv, None);
-            Ok(())
+            state
+                .memory_mut()
+                .import_symbolic_value(addr, bv, None)
+                .py_value_err()
         })
     }
 
@@ -292,7 +294,8 @@ impl RustExplorationManager {
             pending
                 .state
                 .memory_mut()
-                .import_symbolic_value(addr, bv, None);
+                .import_symbolic_value(addr, bv, None)
+                .py_value_err()?;
             log::debug!("Imported symbolic memory at 0x{addr:x}");
             Ok(())
         })
