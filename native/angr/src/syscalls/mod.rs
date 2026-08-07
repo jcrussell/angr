@@ -290,6 +290,36 @@ macro_rules! stub_syscall {
 }
 pub(crate) use stub_syscall;
 
+/// Bail out of a handler's `call` when the arg slice is shorter than the
+/// handler's own declared `num_args()`.
+///
+/// The dispatcher (`exploration::core_outcome_handlers::handle_syscall_core`)
+/// always extracts exactly `num_args()` args before calling, so this never
+/// fires in production — it is defense-in-depth for direct calls (unit tests,
+/// and any future handler that delegates to a sibling the way
+/// `procedures/fortify_*` do).
+///
+/// Deriving both the arity and the label from `num_args()` / `name()` is the
+/// whole point: this replaced 26 hand-written `if args.len() < N` guards that
+/// each re-stated `N` and the handler name as literals, which could silently
+/// drift from the trait methods when an arity changed (angr-12jjk.17). Use it
+/// instead of hand-rolling a new guard; a handler that genuinely needs a
+/// *weaker* bound than its declared arity should say so explicitly with a
+/// comment rather than copy the old shape back in.
+macro_rules! require_syscall_args {
+    ($self:ident, $args:ident) => {
+        if $args.len() < $self.num_args() {
+            return Err($crate::syscalls::SyscallError::Other(format!(
+                "{} expected {} args, got {}",
+                $self.name(),
+                $self.num_args(),
+                $args.len()
+            )));
+        }
+    };
+}
+pub(crate) use require_syscall_args;
+
 impl Default for NativeSyscallRegistry {
     fn default() -> Self {
         Self::new()

@@ -12,6 +12,7 @@
 //! Hit early during glibc's TLS initialization (the "frequently called
 //! during early init" rationale in angr-4e3q).
 
+use super::require_syscall_args;
 use super::{NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
@@ -38,12 +39,7 @@ impl NativeSyscall for NativeArchPrctlSyscall {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<SyscallOutcome, SyscallError> {
-        if args.len() < 2 {
-            return Err(SyscallError::Other(format!(
-                "arch_prctl expected 2 args, got {}",
-                args.len()
-            )));
-        }
+        require_syscall_args!(self, args);
         let code = extract_concrete_arg(&args[0], "arch_prctl code")?;
 
         match code {

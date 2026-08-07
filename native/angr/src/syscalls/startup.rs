@@ -21,6 +21,7 @@
 
 use std::sync::atomic::AtomicU64;
 
+use super::require_syscall_args;
 use super::{
     MAX_IO_SIZE as MAX_GETRANDOM, NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg,
 };
@@ -70,11 +71,7 @@ impl NativeSyscall for NativeUnameSyscall {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<SyscallOutcome, SyscallError> {
-        if args.is_empty() {
-            return Err(SyscallError::Other(
-                "uname expected 1 arg, got 0".to_string(),
-            ));
-        }
+        require_syscall_args!(self, args);
         let buf = extract_concrete_arg(&args[0], "uname buf")?;
         let machine: &[u8] = if state.arch().bits() == 64 {
             b"x86_64"
@@ -149,12 +146,7 @@ impl NativeSyscall for NativeGetrandomSyscall {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<SyscallOutcome, SyscallError> {
-        if args.len() < 3 {
-            return Err(SyscallError::Other(format!(
-                "getrandom expected 3 args, got {}",
-                args.len()
-            )));
-        }
+        require_syscall_args!(self, args);
         let buf = extract_concrete_arg(&args[0], "getrandom buf")?;
         let buflen = extract_concrete_arg(&args[1], "getrandom buflen")?;
         // flags (args[2]) ignored: GRND_NONBLOCK/GRND_RANDOM do not change the

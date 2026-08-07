@@ -44,6 +44,7 @@
 
 use std::sync::atomic::AtomicU64;
 
+use super::require_syscall_args;
 use super::{MAX_IO_SIZE, NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg};
 use crate::procedures::strings::write_bv_bytes;
 use crate::state::MAX_SYMFILE_SERVE_SIZE;
@@ -75,12 +76,7 @@ impl NativeSyscall for NativeLseekSyscall {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<SyscallOutcome, SyscallError> {
-        if args.len() < 3 {
-            return Err(SyscallError::Other(format!(
-                "lseek expected 3 args, got {}",
-                args.len()
-            )));
-        }
+        require_syscall_args!(self, args);
         let fd = extract_concrete_arg(&args[0], "lseek fd")?;
         let offset = extract_concrete_arg(&args[1], "lseek offset")?;
         let whence = extract_concrete_arg(&args[2], "lseek whence")?;
@@ -145,12 +141,7 @@ impl NativeSyscall for NativeWritevSyscall {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<SyscallOutcome, SyscallError> {
-        if args.len() < 3 {
-            return Err(SyscallError::Other(format!(
-                "writev expected 3 args, got {}",
-                args.len()
-            )));
-        }
+        require_syscall_args!(self, args);
         let fd = match extract_concrete_arg(&args[0], "writev fd") {
             Ok(fd) => fd,
             Err(e) => {
@@ -247,12 +238,7 @@ impl NativeSyscall for NativeReadvSyscall {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<SyscallOutcome, SyscallError> {
-        if args.len() < 3 {
-            return Err(SyscallError::Other(format!(
-                "readv expected 3 args, got {}",
-                args.len()
-            )));
-        }
+        require_syscall_args!(self, args);
         let fd = extract_concrete_arg(&args[0], "readv fd")?;
         let iov = extract_concrete_arg(&args[1], "readv iov")?;
         let iovcnt = extract_concrete_arg(&args[2], "readv iovcnt")?;
@@ -398,12 +384,7 @@ impl NativeSyscall for NativePread64Syscall {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<SyscallOutcome, SyscallError> {
-        if args.len() < 4 {
-            return Err(SyscallError::Other(format!(
-                "pread64 expected 4 args, got {}",
-                args.len()
-            )));
-        }
+        require_syscall_args!(self, args);
         let fd = extract_concrete_arg(&args[0], "pread64 fd")?;
         let buf = extract_concrete_arg(&args[1], "pread64 buf")?;
         let nbyte = extract_concrete_arg(&args[2], "pread64 nbyte")?;
@@ -494,12 +475,7 @@ impl NativeSyscall for NativePwrite64Syscall {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<SyscallOutcome, SyscallError> {
-        if args.len() < 4 {
-            return Err(SyscallError::Other(format!(
-                "pwrite64 expected 4 args, got {}",
-                args.len()
-            )));
-        }
+        require_syscall_args!(self, args);
         let fd = match extract_concrete_arg(&args[0], "pwrite64 fd") {
             Ok(fd) => fd,
             Err(e) => {

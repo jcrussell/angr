@@ -48,6 +48,7 @@
 
 use std::sync::atomic::AtomicU64;
 
+use super::require_syscall_args;
 use super::{
     MAX_IO_SIZE as MAX_CGC_BYTES, NativeSyscall, SyscallError, SyscallOutcome, exit,
     extract_concrete_arg, fresh_byte_names, mint_symbolic_bytes,
@@ -127,12 +128,7 @@ impl NativeSyscall for NativeTransmitSyscall {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<SyscallOutcome, SyscallError> {
-        if args.len() < 4 {
-            return Err(SyscallError::Other(format!(
-                "transmit expected 4 args, got {}",
-                args.len()
-            )));
-        }
+        require_syscall_args!(self, args);
         let fd = match extract_concrete_arg(&args[0], "transmit fd") {
             Ok(fd) => fd,
             Err(e) => {
@@ -212,12 +208,7 @@ impl NativeSyscall for NativeReceiveSyscall {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<SyscallOutcome, SyscallError> {
-        if args.len() < 4 {
-            return Err(SyscallError::Other(format!(
-                "receive expected 4 args, got {}",
-                args.len()
-            )));
-        }
+        require_syscall_args!(self, args);
         let fd = extract_concrete_arg(&args[0], "receive fd")?;
         let buf = extract_concrete_arg(&args[1], "receive buf")?;
         let count = extract_concrete_arg(&args[2], "receive count")?;
@@ -298,12 +289,7 @@ impl NativeSyscall for NativeFdwaitSyscall {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<SyscallOutcome, SyscallError> {
-        if args.len() < 5 {
-            return Err(SyscallError::Other(format!(
-                "fdwait expected 5 args, got {}",
-                args.len()
-            )));
-        }
+        require_syscall_args!(self, args);
         // The concrete-ready stub below IS the `CGC_NON_BLOCKING_FDS`
         // behavior. Without the option the Python proc fills the masks
         // with *unconstrained* per-fd ready bits, so a binary that
@@ -384,12 +370,7 @@ impl NativeSyscall for NativeRandomSyscall {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<SyscallOutcome, SyscallError> {
-        if args.len() < 3 {
-            return Err(SyscallError::Other(format!(
-                "random expected 3 args, got {}",
-                args.len()
-            )));
-        }
+        require_syscall_args!(self, args);
         let buf = extract_concrete_arg(&args[0], "random buf")?;
         let count = extract_concrete_arg(&args[1], "random count")?;
         let rnd_bytes = extract_concrete_arg(&args[2], "random rnd_bytes")?;
@@ -447,12 +428,7 @@ impl NativeSyscall for NativeAllocateSyscall {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<SyscallOutcome, SyscallError> {
-        if args.len() < 3 {
-            return Err(SyscallError::Other(format!(
-                "allocate expected 3 args, got {}",
-                args.len()
-            )));
-        }
+        require_syscall_args!(self, args);
         let length = extract_concrete_arg(&args[0], "allocate length")?;
         let is_x = extract_concrete_arg(&args[1], "allocate is_x")?;
         let addr_ptr = extract_concrete_arg(&args[2], "allocate addr")?;
@@ -538,12 +514,7 @@ impl NativeSyscall for NativeDeallocateSyscall {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<SyscallOutcome, SyscallError> {
-        if args.len() < 2 {
-            return Err(SyscallError::Other(format!(
-                "deallocate expected 2 args, got {}",
-                args.len()
-            )));
-        }
+        require_syscall_args!(self, args);
         let addr = extract_concrete_arg(&args[0], "deallocate addr")?;
         let length = extract_concrete_arg(&args[1], "deallocate length")?;
 

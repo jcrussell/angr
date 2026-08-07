@@ -14,6 +14,7 @@
 //!
 //! See `procedures/write.rs` for the fd-table sync invariant (angr-8j16).
 
+use super::require_syscall_args;
 use super::{
     MAX_IO_SIZE as MAX_WRITE_SIZE, NativeSyscall, SyscallError, SyscallOutcome,
     extract_concrete_arg,
@@ -37,12 +38,7 @@ impl NativeSyscall for NativeWriteSyscall {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<SyscallOutcome, SyscallError> {
-        if args.len() < 3 {
-            return Err(SyscallError::Other(format!(
-                "write expected 3 args, got {}",
-                args.len()
-            )));
-        }
+        require_syscall_args!(self, args);
         let fd = match extract_concrete_arg(&args[0], "write fd") {
             Ok(fd) => fd,
             Err(e) => {

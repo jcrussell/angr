@@ -36,6 +36,7 @@
 //!   which we propagate as `SyscallError::Other` so Python (which
 //!   auto-faults pages via the default plugin) can handle the store.
 
+use super::require_syscall_args;
 use super::{NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg, fresh_symbolic};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
@@ -61,12 +62,7 @@ impl NativeSyscall for NativeGettimeofdaySyscall {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<SyscallOutcome, SyscallError> {
-        if args.len() < 2 {
-            return Err(SyscallError::Other(format!(
-                "gettimeofday expected 2 args, got {}",
-                args.len()
-            )));
-        }
+        require_syscall_args!(self, args);
         let tv = extract_concrete_arg(&args[0], "gettimeofday tv")?;
         // tz is intentionally not extracted; Python ignores it too.
 
@@ -145,12 +141,7 @@ impl NativeSyscall for NativeTimeSyscall {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<SyscallOutcome, SyscallError> {
-        if args.is_empty() {
-            return Err(SyscallError::Other(format!(
-                "time expected 1 arg, got {}",
-                args.len()
-            )));
-        }
+        require_syscall_args!(self, args);
         let pointer = extract_concrete_arg(&args[0], "time pointer")?;
 
         let sys_time = fresh_monotonic_time(state);
@@ -179,12 +170,7 @@ impl NativeSyscall for NativeClockGettimeSyscall {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<SyscallOutcome, SyscallError> {
-        if args.len() < 2 {
-            return Err(SyscallError::Other(format!(
-                "clock_gettime expected 2 args, got {}",
-                args.len()
-            )));
-        }
+        require_syscall_args!(self, args);
         let which_clock = extract_concrete_arg(&args[0], "clock_gettime which_clock")?;
         if which_clock != CLOCK_REALTIME {
             // Python raises SimProcedureError for non-REALTIME clocks; let

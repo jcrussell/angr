@@ -53,6 +53,7 @@
 //! work (see angr-0z34 / state-cache sync) should address both.
 
 use super::page::{PAGE_MASK, PAGE_SIZE, linux_prot_to_permission};
+use super::require_syscall_args;
 use super::{NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
@@ -192,12 +193,7 @@ impl NativeSyscall for NativeMmapSyscall {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<SyscallOutcome, SyscallError> {
-        if args.len() < 6 {
-            return Err(SyscallError::Other(format!(
-                "mmap expected 6 args, got {}",
-                args.len()
-            )));
-        }
+        require_syscall_args!(self, args);
         let addr = extract_concrete_arg(&args[0], "mmap addr")?;
         let length = extract_concrete_arg(&args[1], "mmap length")?;
         let prot = extract_concrete_arg(&args[2], "mmap prot")?;
@@ -291,12 +287,7 @@ impl NativeSyscall for NativeMmap2Syscall {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<SyscallOutcome, SyscallError> {
-        if args.len() < 6 {
-            return Err(SyscallError::Other(format!(
-                "mmap2 expected 6 args, got {}",
-                args.len()
-            )));
-        }
+        require_syscall_args!(self, args);
         let addr = extract_concrete_arg(&args[0], "mmap2 addr")?;
         let length = extract_concrete_arg(&args[1], "mmap2 length")?;
         let prot = extract_concrete_arg(&args[2], "mmap2 prot")?;

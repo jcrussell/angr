@@ -19,6 +19,7 @@
 //! we fall back to the Python path to preserve semantics.
 
 use super::page::{PAGE_MASK, PAGE_SIZE};
+use super::require_syscall_args;
 use super::{NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg};
 use crate::memory::Permission;
 use crate::state::RustSimState;
@@ -40,9 +41,7 @@ impl NativeSyscall for NativeBrkSyscall {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<SyscallOutcome, SyscallError> {
-        if args.is_empty() {
-            return Err(SyscallError::Other("brk expected 1 arg, got 0".into()));
-        }
+        require_syscall_args!(self, args);
         let new_brk = extract_concrete_arg(&args[0], "brk new_brk")?;
 
         let current = state.posix_brk();

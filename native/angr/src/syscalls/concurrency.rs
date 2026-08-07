@@ -29,6 +29,7 @@
 //! that limitation is upstream of these handlers and applies equally
 //! to the Python `syscall_stub` fallback.
 
+use super::require_syscall_args;
 use super::{
     NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg, fresh_symbolic, stub_syscall,
 };
@@ -54,15 +55,9 @@ impl NativeSyscall for NativeFutexSyscall {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<SyscallOutcome, SyscallError> {
-        // Threshold matches `num_args()` and the message, as every other
-        // handler in this directory does. The dispatcher always extracts
-        // exactly `num_args()` args, so this only fires on a direct call.
-        if args.len() < 6 {
-            return Err(SyscallError::Other(format!(
-                "futex expected 6 args, got {}",
-                args.len()
-            )));
-        }
+        // The dispatcher always extracts exactly `num_args()` args, so this
+        // only fires on a direct call.
+        require_syscall_args!(self, args);
         let op = extract_concrete_arg(&args[1], "futex op")?;
         // FUTEX_WAKE = 1, FUTEX_WAKE_PRIVATE = 1 | 128, etc. Python
         // matches `op & 1`, covering both the bare and the

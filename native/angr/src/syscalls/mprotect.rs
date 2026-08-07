@@ -15,6 +15,7 @@
 //! Linux bits explicitly here rather than going through `from_bits`.
 
 use super::page::{PAGE_MASK, PAGE_SIZE, linux_prot_to_permission};
+use super::require_syscall_args;
 use super::{NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
@@ -35,12 +36,7 @@ impl NativeSyscall for NativeMprotectSyscall {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<SyscallOutcome, SyscallError> {
-        if args.len() < 3 {
-            return Err(SyscallError::Other(format!(
-                "mprotect expected 3 args, got {}",
-                args.len()
-            )));
-        }
+        require_syscall_args!(self, args);
         let addr = extract_concrete_arg(&args[0], "mprotect addr")?;
         let length = extract_concrete_arg(&args[1], "mprotect length")?;
         let prot = extract_concrete_arg(&args[2], "mprotect prot")?;

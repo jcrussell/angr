@@ -28,6 +28,7 @@
 //! `"getrlimit"` (same as the Python subclass would inherit if
 //! introspected via `mro()`); per-arch tests assert this alias holds.
 
+use super::require_syscall_args;
 use super::{
     NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg, fresh_symbolic, stub_syscall,
 };
@@ -57,12 +58,7 @@ impl NativeSyscall for NativeGetrlimitSyscall {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<SyscallOutcome, SyscallError> {
-        if args.len() < 2 {
-            return Err(SyscallError::Other(format!(
-                "getrlimit expected 2 args, got {}",
-                args.len()
-            )));
-        }
+        require_syscall_args!(self, args);
         let resource = extract_concrete_arg(&args[0], "getrlimit resource")?;
         let rlim = extract_concrete_arg(&args[1], "getrlimit rlim")?;
 

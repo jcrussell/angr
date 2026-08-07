@@ -68,7 +68,9 @@ fn futex_symbolic_op_returns_error() {
 
 /// The guard threshold must match the declared `num_args()` (6), not the
 /// weaker `< 2` it used to check — a short arg list is a caller bug, and
-/// the error message has always claimed 6.
+/// the error message has always claimed 6. Since angr-12jjk.17 the guard is
+/// `require_syscall_args!`, which reads `num_args()` / `name()` directly, so
+/// this also pins the macro's message format for every handler.
 #[test]
 fn futex_rejects_short_arg_list() {
     let h = NativeFutexSyscall;

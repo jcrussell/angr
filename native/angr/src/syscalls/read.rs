@@ -29,6 +29,7 @@
 
 use std::sync::atomic::AtomicU64;
 
+use super::require_syscall_args;
 use super::{
     MAX_IO_SIZE as MAX_READ_SIZE, NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg,
 };
@@ -59,12 +60,7 @@ impl NativeSyscall for NativeReadSyscall {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<SyscallOutcome, SyscallError> {
-        if args.len() < 3 {
-            return Err(SyscallError::Other(format!(
-                "read expected 3 args, got {}",
-                args.len()
-            )));
-        }
+        require_syscall_args!(self, args);
         let fd = extract_concrete_arg(&args[0], "read fd")?;
         let buf = extract_concrete_arg(&args[1], "read buf")?;
         let count = extract_concrete_arg(&args[2], "read count")?;
