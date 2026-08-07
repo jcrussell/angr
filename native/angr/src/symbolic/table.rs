@@ -9,6 +9,7 @@
 //! itself should not be shared across threads.
 
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use parking_lot::RwLock;
@@ -92,7 +93,16 @@ macro_rules! op_unary {
 /// exploration paths to have independent symbolic state.
 pub struct RustSymbolTable {
     /// Map from handle ID to RustBV value.
-    symbols: RwLock<HashMap<u64, RustBV>>,
+    ///
+    /// Refcount-wrapped so [`RustSymbolTable::fork`] is O(1): the child shares
+    /// the parent's map until either side writes, at which point
+    /// `write_symbols`' [`Rc::make_mut`] clones it exactly once. Same
+    /// copy-on-write shape as `SymContext::symbol_table` (angr-0dgj), which
+    /// this deliberately mirrors — [`Rc`] rather than `Arc` because [`RustBV`]
+    /// holds Z3 ASTs and is neither `Send` nor `Sync`, so the table is already
+    /// owner-thread-only (see the module docs and `solver.rs`'s `unsendable`
+    /// pyclass).
+    symbols: RwLock<Rc<HashMap<u64, RustBV>>>,
     /// Counter for generating unique handle IDs.
     next_id: AtomicU64,
 }
@@ -101,9 +111,23 @@ impl RustSymbolTable {
     /// Create a new empty symbol table.
     pub fn new() -> Self {
         RustSymbolTable {
-            symbols: RwLock::new(HashMap::new()),
+            symbols: RwLock::new(Rc::new(HashMap::new())),
             next_id: AtomicU64::new(0),
         }
+    }
+
+    /// Run `f` against a mutable view of the map, un-sharing it from any fork
+    /// sibling first.
+    ///
+    /// Every mutating method goes through here so the copy-on-write unshare
+    /// cannot be forgotten at one call site — writing through the `RwLock`
+    /// directly would mutate a map a forked table still points at.
+    fn write_symbols<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&mut HashMap<u64, RustBV>) -> R,
+    {
+        let mut guard = self.symbols.write();
+        f(Rc::make_mut(&mut guard))
     }
 
     /// Generate the next unique handle ID.
@@ -129,7 +153,7 @@ impl RustSymbolTable {
     pub fn create_symbolic(&self, ctx: &SymContext, name: &str, width: u32) -> RustBVHandle {
         let id = self.next_id();
         let bv = RustBV::symbolic(ctx, name, width);
-        self.symbols.write().insert(id, bv);
+        self.write_symbols(|symbols| symbols.insert(id, bv));
         RustBVHandle::new_symbolic(id, width)
     }
 
@@ -137,7 +161,7 @@ impl RustSymbolTable {
     pub fn create_concrete(&self, value: u128, width: u32) -> RustBVHandle {
         let id = self.next_id();
         let bv = RustBV::concrete(value, width);
-        self.symbols.write().insert(id, bv);
+        self.write_symbols(|symbols| symbols.insert(id, bv));
         RustBVHandle::new_concrete(id, value, width)
     }
 
@@ -146,7 +170,7 @@ impl RustSymbolTable {
         let id = self.next_id();
         let width = bv.width();
         let concrete = bv.as_u128();
-        self.symbols.write().insert(id, bv);
+        self.write_symbols(|symbols| symbols.insert(id, bv));
 
         if let Some(v) = concrete {
             RustBVHandle::new_concrete(id, v, width)
@@ -176,12 +200,12 @@ impl RustSymbolTable {
 
     /// Remove a value from the table.
     pub fn remove(&self, id: u64) -> Option<RustBV> {
-        self.symbols.write().remove(&id)
+        self.write_symbols(|symbols| symbols.remove(&id))
     }
 
     /// Clear all values from the table.
     pub fn clear(&self) {
-        self.symbols.write().clear();
+        self.write_symbols(HashMap::clear);
     }
 
     // =========================================================================
@@ -320,9 +344,17 @@ impl RustSymbolTable {
     // Forking
     // =========================================================================
 
-    /// Fork the symbol table, creating a copy with the same values.
+    /// Fork the symbol table, creating a copy-on-write child with the same
+    /// values.
+    ///
+    /// O(1): the child shares the parent's map behind an [`Rc`]. The `HashMap`
+    /// clone is deferred to the first mutation on *either* side (see
+    /// `write_symbols`) and never happens at all for the common
+    /// fork-then-read-only case. Handle ids stay valid across the fork because
+    /// `next_id` continues from the parent's counter, so neither side reissues
+    /// an id the other already bound.
     pub fn fork(&self) -> Self {
-        let symbols = self.symbols.read().clone();
+        let symbols = Rc::clone(&self.symbols.read());
         let next_id = self.next_id.load(Ordering::SeqCst);
         RustSymbolTable {
             symbols: RwLock::new(symbols),

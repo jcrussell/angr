@@ -47,3 +47,48 @@ fn test_fork() {
     assert_eq!(forked.len(), 1);
     assert!(forked.get(h1.id()).is_some());
 }
+
+/// The copy-on-write map behind `fork` must stay invisible: a write on either
+/// side unshares, so neither table observes the other's mutations.
+#[test]
+fn test_fork_is_copy_on_write_isolated() {
+    let table = RustSymbolTable::new();
+    let h1 = table.create_concrete(42, 32);
+
+    let forked = table.fork();
+
+    // Child insert doesn't leak into the parent...
+    let h2 = forked.create_concrete(7, 32);
+    assert_eq!(forked.len(), 2);
+    assert_eq!(table.len(), 1);
+    assert!(table.get(h2.id()).is_none());
+
+    // ...and a parent remove doesn't tear the entry out from under the child.
+    assert!(table.remove(h1.id()).is_some());
+    assert_eq!(table.len(), 0);
+    assert_eq!(forked.get(h1.id()).unwrap().as_u128(), Some(42));
+
+    // `clear` unshares too, rather than emptying the sibling's map.
+    forked.clear();
+    let fresh = forked.fork();
+    assert!(fresh.is_empty());
+}
+
+/// A child must not reissue an id the parent already bound — handles minted
+/// before the fork stay resolvable to their original value in both tables.
+/// (Sibling tables are independent id namespaces; only parent-inherited ids
+/// have to agree.)
+#[test]
+fn test_fork_child_does_not_reissue_parent_ids() {
+    let table = RustSymbolTable::new();
+    let h1 = table.create_concrete(1, 32);
+    let h2 = table.create_concrete(2, 32);
+
+    let child = table.fork();
+    let h3 = child.create_concrete(3, 32);
+
+    assert_ne!(h3.id(), h1.id());
+    assert_ne!(h3.id(), h2.id());
+    assert_eq!(child.get(h1.id()).unwrap().as_u128(), Some(1));
+    assert_eq!(child.get(h2.id()).unwrap().as_u128(), Some(2));
+}
