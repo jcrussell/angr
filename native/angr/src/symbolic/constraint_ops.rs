@@ -518,9 +518,48 @@ impl SymContext {
             i
         };
 
+        // angr-sqfj8.101: every other adder (`add_constraint_raw_inner`,
+        // `add_constraints_raw_batch`) logs into `local.z3_assertions`, so
+        // `fork()` and `SymContext::solver()`'s lazy rematerialization see
+        // the constraint. This path used to skip that entirely. Push
+        // unconditionally (no dedup-skip) rather than routing through
+        // `seed_and_check_z3_dedup`/`contains_or_insert_ptr`: those
+        // conditionally omit the push on a dup, which would leave
+        // `tracker_idx` out of sync with `unsat_core()`'s by-position match
+        // against `constraint_trackers` (pinned by
+        // `tests/engines/rust/test_solver_ops.py`'s `tracker_idx == call
+        // order` expectation) — every call here mints a tracker and asserts
+        // regardless of dedup, so the bookkeeping must do the same.
         self.install_constraint(&constraint, |s| {
             s.assert_and_track(&constraint, &track_bool)
         });
+
+        // The push happens *after* `install_constraint`, not before, for two
+        // reasons. (1) Lock ordering: `install_constraint`'s `None`-lineage
+        // branch calls `self.solver()`, whose cold-start path
+        // (`context.rs::solver`) re-locks `local_constraints` to replay
+        // `z3_assertions` — holding the lock across that call would
+        // self-deadlock. (2) Correctness: pushing first would make that same
+        // cold-start replay assert this constraint a second time, *plain*
+        // (`new_solver.assert`), on top of the `assert_and_track` call below —
+        // a duplicate assert that lets Z3 satisfy UNSAT via the untracked
+        // copy and silently drop `track_bool` from `unsat_core()`'s result,
+        // corrupting core extraction exactly the way double-listing a
+        // constraint in both the residual and assumed logs corrupts
+        // `unsat_core_assumed` (see `add_constraint_raw_assumed`'s doc
+        // comment). Pushing after means any cold-start replay triggered by
+        // `install_constraint` above only sees the *previous* z3_assertions
+        // state, not this constraint — no duplicate.
+        {
+            use z3::ast::Ast;
+            let mut local = self.local_constraints.lock();
+            local.z3_assertions.push(constraint.clone());
+            if local.dedup_set_seeded {
+                local
+                    .dedup_set
+                    .insert(constraint.get_z3_ast().as_ptr() as usize);
+            }
+        }
         tracker_idx
     }
 

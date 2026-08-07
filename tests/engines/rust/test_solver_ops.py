@@ -190,6 +190,36 @@ class TestSolverOperations:
             "reports SAT -- the tracked constraint was silently dropped"
         )
 
+    def test_tracked_constraint_survives_fork(self):
+        """add_constraint_tracked_ast() must be visible to a forked child,
+        not just the live solver it was asserted on directly.
+
+        Regression for angr-sqfj8.101: add_constraint_tracked_indexed used
+        to call install_constraint() directly, skipping the
+        local_constraints.z3_assertions push every sibling adder does.
+        fork() freezes z3_assertions into the shared prefix the child
+        inherits, so a tracked-only constraint was silently invisible to
+        every forked child (and to a lazily-rematerialized solver on the
+        parent itself).
+        """
+        import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
+
+        ctx = RustSolverContext()
+        x = claripy.BVS("x", 32)
+        ctx.add_constraint_tracked_ast(x == 5)
+        assert ctx.satisfiable() is True
+
+        child = ctx.fork()
+        # If the tracked constraint didn't propagate, x != 5 would be
+        # satisfiable in the child (x unconstrained there).
+        child.add_constraint_ast(x != 5)
+        assert child.satisfiable() is False, (
+            "x == 5 (tracked) did not survive fork() -- the tracked constraint was invisible to the forked child"
+        )
+        # Parent is untouched by the child's extra constraint.
+        assert ctx.satisfiable() is True
+
     def test_unsat_core_empty_when_untracked(self):
         """unsat_core() returns [] when constraints were added via
         add_constraint_ast() (the untracked fast path), even on UNSAT.

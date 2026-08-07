@@ -693,6 +693,107 @@ fn test_add_constraint_tracked_indexed_sibling_isolation() {
     assert!(!sibling_a.solution(&x_a, 42));
 }
 
+/// angr-sqfj8.101 regression: `add_constraint_tracked_indexed` on a freshly
+/// `fork()`ed child (whose solver is lazily `None`, per `snapshot_fork_ops.rs`
+/// setting `solver: Mutex::new(None)`) must not corrupt `unsat_core()`.
+///
+/// The first fix attempt pushed the constraint into `local.z3_assertions`
+/// *before* calling `install_constraint`. `install_constraint`'s `None`-
+/// lineage branch calls `self.solver()`, whose cold-start path replays
+/// `local.z3_assertions` with plain, untracked asserts — so pushing first
+/// meant the replay asserted the same constraint the *upcoming*
+/// `assert_and_track` call was about to assert too, plain-and-tracked at
+/// once. Z3 can then satisfy UNSAT from the untracked copy alone and omit
+/// the tracker from `get_unsat_core()`, silently dropping a genuinely
+/// contributing index. The fix pushes *after* `install_constraint` instead,
+/// so a cold-start replay only ever sees the *previous* z3_assertions state.
+/// This test calls the tracked add as the very first Z3-touching operation
+/// on a forked child (forcing the cold-start path) and checks both tracker
+/// indices survive in the core.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_add_constraint_tracked_indexed_first_op_on_forked_child_unsat_core() {
+    let parent = SymContext::new();
+    let child = parent.fork();
+
+    let x = RustBV::symbolic(&child, "test_act_indexed_fork_cold_x", 8);
+    let five = RustBV::concrete(5, 8);
+    let ten = RustBV::concrete(10, 8);
+
+    // First Z3-touching call on `child` — its solver is still `None`,
+    // forcing `install_constraint`'s cold-start replay path.
+    let c1 = x.eq(&five, &child).to_z3_bool();
+    let idx1 = child.add_constraint_tracked_indexed(c1);
+    assert_eq!(idx1, 0);
+
+    let c2 = x.eq(&ten, &child).to_z3_bool();
+    let idx2 = child.add_constraint_tracked_indexed(c2);
+    assert_eq!(idx2, 1);
+
+    assert!(!child.is_sat(), "x == 5 ∧ x == 10 must be UNSAT");
+    let core = child.unsat_core();
+    assert!(
+        core.contains(&idx1) && core.contains(&idx2),
+        "both tracker indices must survive a cold-start solver \
+         rematerialization; got {core:?}"
+    );
+}
+
+/// angr-sqfj8.121: a constraint with a RustBV form must land in EXACTLY ONE
+/// of the residual (`non_bv_assertions`) or assumed (`assumed`) logs, never
+/// both — `unsat_core_assumed` asserts residual entries UNCONDITIONALLY
+/// (see its doc comment), so a double-listed constraint sits outside its
+/// assumption literal and corrupts the on-demand core. `solver.rs`'s
+/// `add_constraint_ast` fast path used to call `add_constraint_raw`
+/// (residual) *and* unconditionally `assumed_constraints_push` (assumed)
+/// for the same constraint; the fix branches so exactly one of
+/// `add_constraint_raw_assumed` (skips the residual log, per its own doc
+/// comment) or `add_constraint_raw` runs. This pins the exclusivity
+/// invariant the fix depends on: the `add_constraint_raw_assumed` +
+/// `assumed_constraints_push` pair the fixed code now calls must NOT touch
+/// `non_bv_assertions`, in contrast to plain `add_constraint_raw`, which
+/// does (that's the whole point of the `_assumed` variant existing).
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_add_constraint_raw_assumed_skips_residual_log() {
+    let ctx = SymContext::new();
+    let x = RustBV::symbolic(&ctx, "test_araa_x", 8);
+    let five = RustBV::concrete(5, 8);
+    let cond = x.eq(&five, &ctx);
+
+    // The pair `add_constraint_ast`'s fixed fast path calls when the
+    // RustBV conversion succeeds.
+    ctx.add_constraint_raw_assumed(raw_entry(&cond));
+    ctx.assumed_constraints_push(cond.clone(), true);
+
+    {
+        let local = ctx.local_constraints.lock();
+        assert_eq!(
+            local.non_bv_assertions.len(),
+            0,
+            "add_constraint_raw_assumed must not populate the residual log — \
+             a constraint with a RustBV form belongs in `assumed` only"
+        );
+        assert_eq!(local.assumed.len(), 1);
+    }
+    // Sanity: the constraint is still actually in force on the solver.
+    assert!(ctx.solution(&x, 5));
+    assert!(!ctx.solution(&x, 6));
+
+    // Contrast: plain `add_constraint_raw` (the residual sink) DOES push to
+    // `non_bv_assertions` — proving the assertion above is discriminating
+    // and not just an artifact of an always-empty field.
+    let ctx2 = SymContext::new();
+    let y = RustBV::symbolic(&ctx2, "test_araa_y", 8);
+    let five2 = RustBV::concrete(5, 8);
+    ctx2.add_constraint_raw(raw_entry(&y.eq(&five2, &ctx2)));
+    assert_eq!(
+        ctx2.local_constraints.lock().non_bv_assertions.len(),
+        1,
+        "add_constraint_raw is the residual sink and must log here"
+    );
+}
+
 /// angr-op0dn.14.2: `unsat_core_assumed` rebuilds a tracked solver from the
 /// assumed-constraint IR at query time, so constraints the engine added
 /// UNTRACKED (the `assume_true`/`assume_false` fork-guard path) are still

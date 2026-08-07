@@ -225,10 +225,21 @@ impl RustSolverContext {
             if let Ok(z3_ast) = extract_z3_ast_ptr(py, ast)
                 && z3_ast.is_bool()
             {
-                ctx.add_constraint_raw(z3_ast);
-                // Also track in RustBV for export (best-effort, non-critical)
+                // angr-sqfj8.121: a constraint with a RustBV form must land
+                // in EXACTLY ONE of the residual (`add_constraint_raw`) or
+                // assumed (`add_constraint_raw_assumed` +
+                // `assumed_constraints_push`) logs, never both — see
+                // `add_constraint_raw_assumed`'s doc comment for why
+                // double-listing corrupts `unsat_core_assumed`. Mirrors the
+                // already-correct `import_python_constraints` pattern
+                // (`exploration/constraints.rs`): try the RustBV conversion
+                // first and branch on it, instead of unconditionally calling
+                // both.
                 if let Ok(bv) = claripy_to_rustbv(py, ast, &ctx) {
+                    ctx.add_constraint_raw_assumed(z3_ast);
                     ctx.assumed_constraints_push(bv, true);
+                } else {
+                    ctx.add_constraint_raw(z3_ast);
                 }
                 return Ok(());
             }
