@@ -34,15 +34,18 @@ fn test_counts() {
 /// change edits a constant's value the test still drives the same code
 /// path — and it fails loudly if `push_or_drop_terminal`'s match arms are
 /// ever re-hardcoded to literals that drift from the constants.
+///
+/// `STASH_ERRORED` is deliberately absent: it now panics here (angr-sqfj8.136)
+/// and is covered by `test_push_errored_counts_indexes_and_never_drops` plus
+/// `test_push_or_drop_terminal_rejects_errored`.
 #[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_push_or_drop_terminal_counters_track_stash_constants() {
     type CounterFn = fn(&StashManager) -> u64;
-    let cases: [(&str, CounterFn); 5] = [
+    let cases: [(&str, CounterFn); 4] = [
         (STASH_AVOID, |m| m.avoided_count),
         (STASH_PRUNED, |m| m.pruned_count),
         (STASH_DEADENDED, |m| m.deadended_count),
-        (STASH_ERRORED, |m| m.errored_count),
         (STASH_UNCONSTRAINED, |m| m.unconstrained_count),
     ];
     for (stash, counter) in cases {
@@ -83,6 +86,17 @@ fn test_push_errored_counts_indexes_and_never_drops() {
         );
         assert_eq!(mgr.stash_of(id), Some(STASH_ERRORED));
     }
+}
+
+/// angr-sqfj8.136: routing an errored state through `push_or_drop_terminal`
+/// is a programming error, not a silently-counted alternative — under
+/// `drop_terminal_states` it would discard the state, breaking invariant I6.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+#[should_panic(expected = "push_errored")]
+fn test_push_or_drop_terminal_rejects_errored() {
+    let mut mgr = StashManager::new();
+    mgr.push_or_drop_terminal(STASH_ERRORED, RustSimState::new("amd64").unwrap());
 }
 
 /// Round-trip a non-empty StashManager via the per-state codec.

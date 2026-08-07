@@ -280,12 +280,24 @@ impl StashManager {
     /// **Invariant I6:** on the drop path, the corresponding `state_roots`
     /// entry must be removed to keep lineage tracking consistent with
     /// `state_index`. Both maps move together here. See module-level I6.
+    ///
+    /// # Panics
+    ///
+    /// On `STASH_ERRORED` (angr-sqfj8.136). Errored states are the one terminal
+    /// disposition that must survive `drop_terminal_states`, so routing one
+    /// here would silently discard a diagnostic the caller always needs. The
+    /// arm used to just bump `errored_count`, which made the wrong call look
+    /// correct at the call site; `push_errored` is the only sanctioned path.
     pub fn push_or_drop_terminal(&mut self, stash_name: &str, state: RustSimState) {
         match stash_name {
             STASH_AVOID => self.avoided_count += 1,
             STASH_PRUNED => self.pruned_count += 1,
             STASH_DEADENDED => self.deadended_count += 1,
-            STASH_ERRORED => self.errored_count += 1,
+            STASH_ERRORED => unreachable!(
+                "errored states must be pushed via StashManager::push_errored: \
+                 push_or_drop_terminal would drop them under drop_terminal_states, \
+                 violating module invariant I6 (errored is never dropped)"
+            ),
             STASH_UNCONSTRAINED => self.unconstrained_count += 1,
             _ => {}
         }
@@ -323,7 +335,8 @@ impl StashManager {
     /// `errored_count == 0` while the parallel loop folded
     /// `stats.summarized_errored` into the same field. This method is the
     /// errored-only counterpart of `push_or_drop_terminal`; route every errored
-    /// push through it.
+    /// push through it — since angr-sqfj8.136 that is enforced, not merely
+    /// documented: `push_or_drop_terminal` panics on `STASH_ERRORED`.
     pub fn push_errored(&mut self, state: RustSimState) {
         self.errored_count += 1;
         self.push(STASH_ERRORED, state);
