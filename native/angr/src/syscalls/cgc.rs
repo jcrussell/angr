@@ -228,18 +228,23 @@ impl NativeSyscall for NativeReceiveSyscall {
                 "receive count {count} exceeds limit"
             )));
         }
-        if count == 0 {
-            if rx_bytes != 0 {
-                store_u32_le(state, rx_bytes, 0)?;
-            }
-            return Ok(SyscallOutcome::Continue { ret: 0 });
-        }
-
+        // fd validation precedes every count-based short-circuit, matching
+        // both `NativeTransmitSyscall::call` and the Python reference
+        // (procedures/cgc/receive.py::run), which resolves `posix.get_fd(fd)`
+        // and returns -1 before it ever looks at `count`. Checking `count == 0`
+        // first would report success for a never-opened fd (angr-fs583).
         if fd != 0 {
             // Non-stdin receive: defer to Python's symbolic-file model.
             return Err(SyscallError::Other(format!(
                 "receive fd={fd} falls back to Python"
             )));
+        }
+
+        if count == 0 {
+            if rx_bytes != 0 {
+                store_u32_le(state, rx_bytes, 0)?;
+            }
+            return Ok(SyscallOutcome::Continue { ret: 0 });
         }
 
         // Write fresh symbolic bytes into [buf, buf+count). Each byte

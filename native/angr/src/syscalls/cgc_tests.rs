@@ -227,6 +227,35 @@ fn receive_non_stdin_fd_falls_back() {
     assert!(matches!(err, SyscallError::Other(_)));
 }
 
+/// A zero-length receive on a non-stdin fd must still fall back to Python
+/// rather than reporting success: Python's `procedures/cgc/receive.py::run`
+/// resolves the fd and returns -1 for an unopened one before it looks at
+/// `count`, so short-circuiting on `count == 0` would silently model a
+/// never-opened fd as valid (angr-fs583).
+#[test]
+fn receive_zero_count_non_stdin_fd_falls_back() {
+    let h = NativeReceiveSyscall;
+    let mut state = x86_state_with_buf();
+    state.map_memory_data(0x2800, &[0xAA; 4], Permission::RWX);
+
+    let err = h
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(999, 32),
+                RustBV::concrete(0x2000, 32),
+                RustBV::concrete(0, 32),
+                RustBV::concrete(0x2800, 32),
+            ],
+        )
+        .expect_err("fall back");
+    assert!(matches!(err, SyscallError::Other(_)));
+    // The rx_bytes out-param must be untouched — writing 0 there would leave
+    // the state claiming a successful zero-byte read on a bogus fd.
+    let stored = state.memory_load(0x2800, 4).expect("load").as_u64();
+    assert_eq!(stored, Some(0xAAAA_AAAA));
+}
+
 /// fdwait's native stub only models the `CGC_NON_BLOCKING_FDS` mode, so
 /// every fdwait happy-path test must opt into it (angr-op0dn.14.8).
 fn nonblocking_state() -> RustSimState {
