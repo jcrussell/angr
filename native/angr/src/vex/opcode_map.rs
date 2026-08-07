@@ -299,7 +299,11 @@ fn parse_shift(op_str: &str) -> Option<IROp> {
     tuple_arms!(op_str; "Iop_Sar" => Sar { "8" => I8, "16" => I16, "32" => I32, "64" => I64 });
 
     // Vector shift {left, right-logical, right-arithmetic} by immediate.
-    // NOTE: SarN deliberately omits 64x2 (no NEON SARN.I64 in pyvex).
+    // All three families cover the same widths: the 8x8/16x4/32x2 shapes are
+    // NEON D-reg, the 8x16/16x8/32x4/64x2 shapes SSE/NEON Q-reg. (Before
+    // angr-sqfj8.113 SarN omitted 64x2 on the false premise that pyvex has no
+    // such op; `Iop_SarN64x2` is declared right alongside its ShlN/ShrN
+    // siblings and was silently falling to IROp::Unmapped.)
     vec_arms!(op_str; "Iop_ShlN" => VShlN {
         "8x8" => (I8, 8), "8x16" => (I8, 16),
         "16x4" => (I16, 4), "16x8" => (I16, 8),
@@ -316,6 +320,7 @@ fn parse_shift(op_str: &str) -> Option<IROp> {
         "8x8" => (I8, 8), "8x16" => (I8, 16),
         "16x4" => (I16, 4), "16x8" => (I16, 8),
         "32x2" => (I32, 2), "32x4" => (I32, 4),
+        "64x2" => (I64, 2),
     });
     None
 }
@@ -452,15 +457,21 @@ fn parse_float(op_str: &str) -> Option<IROp> {
     scalar_arms!(op_str; "Iop_Max"  => VFMaxS  { "32F0x4" => F32, "64F0x2" => F64 });
     scalar_arms!(op_str; "Iop_Min"  => VFMinS  { "32F0x4" => F32, "64F0x2" => F64 });
 
-    // Packed (whole-vector) float ops — SSE / AVX.
-    vec_arms!(op_str; "Iop_Add"  => VFAdd  { "32Fx4" => (F32, 4), "64Fx2" => (F64, 2), "32Fx8" => (F32, 8), "64Fx4" => (F64, 4) });
-    vec_arms!(op_str; "Iop_Sub"  => VFSub  { "32Fx4" => (F32, 4), "64Fx2" => (F64, 2), "32Fx8" => (F32, 8), "64Fx4" => (F64, 4) });
-    vec_arms!(op_str; "Iop_Mul"  => VFMul  { "32Fx4" => (F32, 4), "64Fx2" => (F64, 2), "32Fx8" => (F32, 8), "64Fx4" => (F64, 4) });
+    // Packed (whole-vector) float ops — SSE / AVX / NEON.
+    // The 32Fx2 shape is the ARM NEON D-reg 2-lane form (VADD.F32 &c.). It was
+    // missing from Add/Sub/Mul/Min/Max until angr-sqfj8.114 even though the
+    // evaluator is generic over (elem, count). Div and Sqrt have no 32Fx2 arm
+    // because VEX declares no `Iop_Div32Fx2`/`Iop_Sqrt32Fx2`; `Iop_Abs32Fx2`
+    // does exist but stays unmapped here — it is tracked with the vector-float
+    // negate family in angr-sqfj8.115.
+    vec_arms!(op_str; "Iop_Add"  => VFAdd  { "32Fx2" => (F32, 2), "32Fx4" => (F32, 4), "64Fx2" => (F64, 2), "32Fx8" => (F32, 8), "64Fx4" => (F64, 4) });
+    vec_arms!(op_str; "Iop_Sub"  => VFSub  { "32Fx2" => (F32, 2), "32Fx4" => (F32, 4), "64Fx2" => (F64, 2), "32Fx8" => (F32, 8), "64Fx4" => (F64, 4) });
+    vec_arms!(op_str; "Iop_Mul"  => VFMul  { "32Fx2" => (F32, 2), "32Fx4" => (F32, 4), "64Fx2" => (F64, 2), "32Fx8" => (F32, 8), "64Fx4" => (F64, 4) });
     vec_arms!(op_str; "Iop_Div"  => VFDiv  { "32Fx4" => (F32, 4), "64Fx2" => (F64, 2), "32Fx8" => (F32, 8), "64Fx4" => (F64, 4) });
     vec_arms!(op_str; "Iop_Sqrt" => VFSqrt { "32Fx4" => (F32, 4), "64Fx2" => (F64, 2), "32Fx8" => (F32, 8), "64Fx4" => (F64, 4) });
     vec_arms!(op_str; "Iop_Abs"  => VFAbs  { "32Fx4" => (F32, 4), "64Fx2" => (F64, 2), "32Fx8" => (F32, 8), "64Fx4" => (F64, 4) });
-    vec_arms!(op_str; "Iop_Min"  => VFMin  { "32Fx4" => (F32, 4), "64Fx2" => (F64, 2), "32Fx8" => (F32, 8), "64Fx4" => (F64, 4) });
-    vec_arms!(op_str; "Iop_Max"  => VFMax  { "32Fx4" => (F32, 4), "64Fx2" => (F64, 2), "32Fx8" => (F32, 8), "64Fx4" => (F64, 4) });
+    vec_arms!(op_str; "Iop_Min"  => VFMin  { "32Fx2" => (F32, 2), "32Fx4" => (F32, 4), "64Fx2" => (F64, 2), "32Fx8" => (F32, 8), "64Fx4" => (F64, 4) });
+    vec_arms!(op_str; "Iop_Max"  => VFMax  { "32Fx2" => (F32, 2), "32Fx4" => (F32, 4), "64Fx2" => (F64, 2), "32Fx8" => (F32, 8), "64Fx4" => (F64, 4) });
 
     // NEON pairwise FP add — `Iop_PwAdd32Fx2` (ARM VPADD.F32, D-reg). The only
     // FP variant of the `Pw*` family; the integer `Iop_PwAdd{N}x{M}` are routed

@@ -345,6 +345,66 @@ fn test_neon_unimplemented_scaffold_is_empty() {
     }
 }
 
+/// angr-sqfj8.113: the three shift-by-immediate families cover the same
+/// widths. `Iop_SarN64x2` used to fall through to `Unmapped` on the false
+/// premise that pyvex declares no such op.
+#[test]
+fn test_shift_by_immediate_families_cover_the_same_widths() {
+    let widths: [(&str, IRType, u8); 7] = [
+        ("8x8", IRType::I8, 8),
+        ("8x16", IRType::I8, 16),
+        ("16x4", IRType::I16, 4),
+        ("16x8", IRType::I16, 8),
+        ("32x2", IRType::I32, 2),
+        ("32x4", IRType::I32, 4),
+        ("64x2", IRType::I64, 2),
+    ];
+    for (suffix, want_elem, want_count) in widths {
+        for family in ["ShlN", "ShrN", "SarN"] {
+            let op_str = format!("Iop_{family}{suffix}");
+            let (elem, count) = match parse_opcode(&op_str) {
+                IROp::VShlN { elem, count }
+                | IROp::VShrN { elem, count }
+                | IROp::VSarN { elem, count } => (elem, count),
+                other => panic!("{op_str} expected a V{family} mapping, got {other:?}"),
+            };
+            assert_eq!(elem, want_elem, "{op_str} element type");
+            assert_eq!(count, want_count, "{op_str} lane count");
+        }
+    }
+}
+
+/// angr-sqfj8.114: the NEON D-reg 2-lane float shape. VEX declares `32Fx2`
+/// for Add/Sub/Mul/Min/Max only — Div/Sqrt have no such opcode, so those
+/// strings staying unmapped is the correct outcome, not a second gap.
+#[test]
+fn test_packed_float_32fx2_maps() {
+    for op_str in [
+        "Iop_Add32Fx2",
+        "Iop_Sub32Fx2",
+        "Iop_Mul32Fx2",
+        "Iop_Min32Fx2",
+        "Iop_Max32Fx2",
+    ] {
+        let (elem, count) = match parse_opcode(op_str) {
+            IROp::VFAdd { elem, count }
+            | IROp::VFSub { elem, count }
+            | IROp::VFMul { elem, count }
+            | IROp::VFMin { elem, count }
+            | IROp::VFMax { elem, count } => (elem, count),
+            other => panic!("{op_str} expected a packed-float mapping, got {other:?}"),
+        };
+        assert_eq!(elem, IRType::F32, "{op_str} element type");
+        assert_eq!(count, 2, "{op_str} lane count");
+    }
+    for absent in ["Iop_Div32Fx2", "Iop_Sqrt32Fx2"] {
+        assert!(
+            matches!(parse_opcode(absent), IROp::Unmapped(_)),
+            "{absent} is not a VEX op"
+        );
+    }
+}
+
 #[test]
 fn test_neon_does_not_shadow_existing_mappings() {
     // Sanity: opcodes already mapped to real IROps (VAdd/VShlN/etc.)
