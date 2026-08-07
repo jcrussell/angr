@@ -33,8 +33,17 @@
 //! that Python angr aliases `fseeko = fseek`). Mirrors the trait's
 //! `aliases()` default; see `NativeProcedureRegistry::register`.
 //!
-//! Registration with `NativeProcedureRegistry::new` remains hand-written;
-//! the macro only enforces the declaration-side lockstep.
+//! Registration happens in `NativeProcedureRegistry::new` via
+//! [`register_procs!`], which takes the flat list of unit-struct paths and
+//! emits the `register(Arc::new(..))` call for each.
+//!
+//! Declaring a procedure and forgetting to add it to that list is a **build
+//! failure**, not a silent no-op: the unit struct `declare_proc!` emits is
+//! `pub(crate)`, and the list is the only place in the crate that constructs
+//! it, so an unregistered procedure trips rustc's `dead_code` lint
+//! ("struct `NativeFoo` is never constructed") — an error under CI's clippy
+//! `-D warnings` gate. Verified empirically in angr-12jjk.6; a trait `impl`
+//! does not count as a construction, so the lint sees through the macro.
 
 #[macro_export]
 macro_rules! declare_proc {
@@ -154,5 +163,38 @@ macro_rules! declare_const_proc {
                 ))
             }
         }
+    };
+}
+
+/// Register a batch of native procedures into a [`NativeProcedureRegistry`].
+///
+/// Each row is the path to a unit struct declared by [`declare_proc!`] (or
+/// hand-written); the macro wraps it in `Arc::new(..)` and calls `register`,
+/// which also installs every `aliases()` name. Mirrors `register_syscalls!`
+/// in `syscalls/mod.rs` — the syscall table was already list-driven, the
+/// procedure table was 147 hand-written `registry.register(Arc::new(..));`
+/// lines (angr-12jjk.6).
+///
+/// The list is also what makes a declared-but-unregistered procedure a
+/// `dead_code` build failure rather than a silently unreachable one — see
+/// the module doc above.
+///
+/// # Example
+///
+/// ```ignore
+/// register_procs!(
+///     registry,
+///     [
+///         strlen::NativeStrlen,
+///         // aliases() covers memmove_unlocked etc.
+///         memcpy::NativeMemcpy,
+///     ]
+/// );
+/// ```
+macro_rules! register_procs {
+    ($registry:expr, [ $( $proc:path ),* $(,)? ]) => {
+        $(
+            $registry.register(::std::sync::Arc::new($proc));
+        )*
     };
 }

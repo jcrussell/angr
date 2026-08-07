@@ -410,239 +410,243 @@ impl NativeProcedureRegistry {
             python_overrides: std::collections::HashSet::new(),
         };
 
-        // Register default native procedures (original set)
-        registry.register(Arc::new(strlen::NativeStrlen));
-        registry.register(Arc::new(memcpy::NativeMemcpy));
-        registry.register(Arc::new(memcpy::NativeMemmove));
-        registry.register(Arc::new(memcpy::NativeMempcpy));
-        registry.register(Arc::new(strcmp::NativeStrcmp));
-        registry.register(Arc::new(strcmp::NativeStrncmp));
-        registry.register(Arc::new(strcmp::NativeStrcasecmp));
-        registry.register(Arc::new(strcmp::NativeStrncasecmp));
-        registry.register(Arc::new(puts::NativePuts));
-        // perror: write the user string to stderr (fd 2), no errno suffix —
-        // mirrors Python posix/perror.py (write(2, s, strlen(s))).
-        registry.register(Arc::new(perror::NativePerror));
-        registry.register(Arc::new(printf::NativePrintf));
-        registry.register(Arc::new(printf::NativeFprintf));
-        // New procedures (verified safe — no exploration flow changes)
-        registry.register(Arc::new(memset::NativeMemset));
-        // bzero(s, n) — forwards to native memset(s, 0, n).
-        registry.register(Arc::new(memset::NativeBzero));
-        // Fortify-source `_chk` mem wrappers (forward to the base mem procs).
-        registry.register(Arc::new(fortify_mem::NativeMemcpyChk));
-        registry.register(Arc::new(fortify_mem::NativeMemmoveChk));
-        registry.register(Arc::new(fortify_mem::NativeMemsetChk));
-        registry.register(Arc::new(fortify_mem::NativeMempcpyChk));
-        // Fortify-source `_chk` string wrappers (forward to the base str procs).
-        registry.register(Arc::new(fortify_str::NativeStrcpyChk));
-        registry.register(Arc::new(fortify_str::NativeStrncpyChk));
-        registry.register(Arc::new(fortify_str::NativeStrcatChk));
-        registry.register(Arc::new(fortify_str::NativeStrncatChk));
-        registry.register(Arc::new(fortify_str::NativeStpcpyChk));
-        registry.register(Arc::new(strcpy::NativeStrcpy));
-        registry.register(Arc::new(strcpy::NativeStrncpy));
-        registry.register(Arc::new(strcpy::NativeStpcpy));
-        registry.register(Arc::new(strcpy::NativeStpncpy));
-        registry.register(Arc::new(strlen::NativeStrnlen));
-        // exit/abort: terminal NO_RET procedures. The native dispatchers in
-        // both stepping.rs (interpreter exit) and mod.rs (top-of-loop hook
-        // check) recognize no_return and route the main state to STASH_DEADENDED
-        // instead of advancing PC to the call's return address. Without that
-        // check the state would re-execute past the call (which in fauxware
-        // overlaps main's prologue, causing an infinite re-entry loop).
-        registry.register(Arc::new(exit::NativeExit));
-        registry.register(Arc::new(exit::NativeUnderscoreExit));
-        registry.register(Arc::new(exit::NativeAbort));
-        registry.register(Arc::new(exit::NativeStackChkFail));
-        registry.register(Arc::new(rand::NativeRand));
-        registry.register(Arc::new(rand::NativeSrand));
-        registry.register(Arc::new(access::NativeAccess));
-        // pthread mutex no-ops (single-path symex => locks always succeed,
-        // matching Python pthread_mutex_lock/unlock `return 0`).
-        registry.register(Arc::new(pthread::NativePthreadMutexLock));
-        registry.register(Arc::new(pthread::NativePthreadMutexUnlock));
-        // pthread_once: native sub-call (CallAndResume) — runs the init routine
-        // then returns 0; already-initialised guard returns 0 directly (xxukz).
-        registry.register(Arc::new(pthread::NativePthreadOnce));
-        // Heap procedures (bump allocator, matching SimHeapBrk)
-        registry.register(Arc::new(malloc::NativeMalloc));
-        registry.register(Arc::new(malloc::NativeFree));
-        registry.register(Arc::new(malloc::NativeCalloc));
-        registry.register(Arc::new(malloc::NativeRealloc));
-        registry.register(Arc::new(malloc::NativeMemalign));
-        registry.register(Arc::new(malloc::NativePosixMemalign));
-        // Character classification (ctype.h)
-        registry.register(Arc::new(ctype::NativeIsDigit));
-        registry.register(Arc::new(ctype::NativeIsAlpha));
-        registry.register(Arc::new(ctype::NativeIsSpace));
-        registry.register(Arc::new(ctype::NativeIsAlnum));
-        registry.register(Arc::new(ctype::NativeIsUpper));
-        registry.register(Arc::new(ctype::NativeIsLower));
-        registry.register(Arc::new(ctype::NativeIsXdigit));
-        registry.register(Arc::new(ctype::NativeIsPrint));
-        registry.register(Arc::new(ctype::NativeIsAscii));
-        registry.register(Arc::new(ctype::NativeIsBlank));
-        registry.register(Arc::new(ctype::NativeIsCntrl));
-        registry.register(Arc::new(ctype::NativeIsGraph));
-        registry.register(Arc::new(ctype::NativeIsPunct));
-        registry.register(Arc::new(ctype::NativeToLower));
-        registry.register(Arc::new(ctype::NativeToUpper));
-        // Locale ctype table accessors (return tables built by Python
-        // __libc_start_main; see CtypeLocPtrs).
-        registry.register(Arc::new(ctype::NativeCtypeBLoc));
-        registry.register(Arc::new(ctype::NativeCtypeToLowerLoc));
-        registry.register(Arc::new(ctype::NativeCtypeToUpperLoc));
-
-        registry.register(Arc::new(byteorder::NativeHtonl));
-        registry.register(Arc::new(byteorder::NativeHtons));
-        // String/memory search
-        registry.register(Arc::new(strchr::NativeStrchr));
-        registry.register(Arc::new(strchr::NativeStrchrnul));
-        registry.register(Arc::new(strchr::NativeMemchr));
-        registry.register(Arc::new(strchr::NativeRawmemchr));
-        registry.register(Arc::new(strchr::NativeStrrchr));
-        registry.register(Arc::new(strchr::NativeMemrchr));
-        // Byte-set search (angr-f16h.5)
-        registry.register(Arc::new(strset::NativeStrpbrk));
-        registry.register(Arc::new(strset::NativeStrspn));
-        registry.register(Arc::new(strset::NativeStrcspn));
-        // String-to-integer conversion
-        registry.register(Arc::new(strtol::NativeStrtol));
-        registry.register(Arc::new(strtol::NativeStrtoul));
-        registry.register(Arc::new(strtol::NativeStrtoll));
-        registry.register(Arc::new(strtol::NativeStrtoull));
-        registry.register(Arc::new(strtol::NativeAtoi));
-        registry.register(Arc::new(strtol::NativeAtol));
-        // String-to-float conversion (amd64 only; xmm0 return register)
-        registry.register(Arc::new(strtod::NativeStrtod));
-        // String concatenation
-        registry.register(Arc::new(strcat::NativeStrcat));
-        registry.register(Arc::new(strcat::NativeStrncat));
-        // Input procedures (stdin) — create symbolic bytes and track them
-        // in state.stdin_symbols for posix.dumps(0) export.
-        registry.register(Arc::new(fgets::NativeFgets));
-        registry.register(Arc::new(fgets::NativeFgetc));
-        registry.register(Arc::new(fgets::NativeGetchar));
-        registry.register(Arc::new(fgets::NativeGetc));
-        registry.register(Arc::new(fgets::NativeGets));
-        // Output procedures (stdout)
-        registry.register(Arc::new(puts::NativePutchar));
-        // NativeFputc also covers putc / *_unlocked via its aliases().
-        registry.register(Arc::new(puts::NativeFputc));
-        // String duplication
-        registry.register(Arc::new(strcpy::NativeStrdup));
-        registry.register(Arc::new(strcpy::NativeStrndup));
-        registry.register(Arc::new(strcpy::NativeStrxfrm));
-        // Memory comparison
-        registry.register(Arc::new(memcmp::NativeMemcmp));
-        // String search
-        registry.register(Arc::new(strstr::NativeStrstr));
-        // Input parsing (scanf family)
-        // NativeScanf/NativeFscanf also serve the __isoc99_ dispatch names
-        // modern glibc emits, via their `aliases()` (angr-9ke6b.112).
-        registry.register(Arc::new(scanf::NativeScanf));
-        registry.register(Arc::new(scanf::NativeSscanf));
-        // fscanf/__isoc99_fscanf: resolve FILE._fileno → route through the
-        // shared scanf core (stream variant, mirrors fprintf↔printf).
-        registry.register(Arc::new(scanf::NativeFscanf));
-        // Environment variable access
-        registry.register(Arc::new(getenv::NativeGetenv));
-        registry.register(Arc::new(getopt::NativeGetopt));
-        registry.register(Arc::new(getenv::NativeSetenv));
-        registry.register(Arc::new(getenv::NativePutenv));
-        registry.register(Arc::new(getenv::NativeUnsetenv));
-        registry.register(Arc::new(getenv::NativeClearenv));
-        // POSIX identity getters (angr-ae54t.9): getuid/geteuid/getgid/getegid
-        // each return the constant 1000 (mirror procedures/posix/getuid.py and
-        // syscalls/identity.rs DEFAULT_UID_GID). Without these, a PLT libc call
-        // to getuid round-trips to Python — the syscall handler doesn't cover it.
-        registry.register(Arc::new(getid::NativeGetuid));
-        registry.register(Arc::new(getid::NativeGeteuid));
-        registry.register(Arc::new(getid::NativeGetgid));
-        registry.register(Arc::new(getid::NativeGetegid));
-        // POSIX no-op timers (angr-ae54t.15): sleep/usleep ignore their
-        // argument and return 0 (mirror procedures/posix/{sleep,usleep}.py).
-        // A PLT libc call to sleep/usleep otherwise round-trips to Python.
-        registry.register(Arc::new(sleep::NativeSleep));
-        registry.register(Arc::new(sleep::NativeUsleep));
-        // system() (angr-ae54t.16): cannot run a real shell, so model the exit
-        // status as an unconstrained 8-bit code zero-extended to 32-bit int
-        // (mirror procedures/libc/system.py). Otherwise round-trips to Python.
-        registry.register(Arc::new(system::NativeSystem));
-        // syslog family (angr-ae54t.20): openlog/closelog are void no-op stubs
-        // in Python (procedures/libc/{openlog,closelog}.py: return). Native
-        // void no-ops keep a PLT call from round-tripping to Python. syslog(3)
-        // itself (FormatParser) is left to Python.
-        registry.register(Arc::new(syslog::NativeOpenlog));
-        registry.register(Arc::new(syslog::NativeCloselog));
-        // libc time() (angr-ae54t.21): Python's procedures/libc/time.py just
-        // inline_calls the linux_kernel time syscall. Native parity forwards
-        // to the same model via syscalls::sim_time::fresh_monotonic_time, so a
-        // PLT time() call no longer round-trips to Python. Symbolic *tloc falls
-        // back to Python (matches the syscall's concrete-pointer gate).
-        registry.register(Arc::new(time::NativeTime));
-        // String formatting (sprintf, asprintf, snprintf)
-        registry.register(Arc::new(sprintf::NativeSprintf));
-        registry.register(Arc::new(sprintf::NativeAsprintf));
-        registry.register(Arc::new(sprintf::NativeSnprintf));
-        registry.register(Arc::new(sprintf::NativeVsnprintf));
-        registry.register(Arc::new(sprintf::NativeVsprintf));
-        // Fortify-source `_chk` printf-family wrappers forward to the base
-        // printf/sprintf/snprintf procs above (drop the injected flag/slen args).
-        registry.register(Arc::new(fortify_printf::NativePrintfChk));
-        registry.register(Arc::new(fortify_printf::NativeSprintfChk));
-        registry.register(Arc::new(fortify_printf::NativeSnprintfChk));
-        registry.register(Arc::new(fortify_printf::NativeFprintfChk));
-        registry.register(Arc::new(fortify_printf::NativeVsnprintfChk));
-        // I/O procedures: re-enabled by angr-3tek.2. The Python-side cache
-        // is now invalidate-and-replayed per dirty page in
-        // `_create_state_for_callback` (rust_callback_dispatch.py +
-        // rust_state_sync.py::_replay_rust_dirty_pages), so the stale-cache
-        // issue described in angr-mme3 / angr-3tek no longer applies.
-        registry.register(Arc::new(read::NativeRead));
-        registry.register(Arc::new(write::NativeWrite));
-        // fread/fread_unlocked (angr-m674p): resolve FILE._fileno → serve
-        // concrete FS content or synthesize symbolic bytes for a
-        // natively-opened symbolic file. Avoids the Python callback round-trip
-        // that hung asisctffinals2015_license on its symbolic file size.
-        registry.register(Arc::new(fread::NativeFread));
-        registry.register(Arc::new(fread::NativeFreadUnlocked));
-        // stdio shims (angr-70no): fwrite resolves FILE._fileno → fd buffer;
-        // fflush / setvbuf are no-ops returning 0 (match Python procs).
-        // setbuf (angr-ae54t.19) is a void no-op returning nothing.
-        registry.register(Arc::new(stdio::NativeFwrite));
-        registry.register(Arc::new(stdio::NativeFflush));
-        registry.register(Arc::new(stdio::NativeSetvbuf));
-        registry.register(Arc::new(stdio::NativeSetbuf));
-        // stdio status / write shims (angr-f16h.1): feof/ferror dispatch off
-        // FILE._fileno and return concrete int flags; fputs reuses fwrite's
-        // write_fd path with a NUL-terminated source string.
-        registry.register(Arc::new(stdio::NativeFeof));
-        registry.register(Arc::new(stdio::NativeFerror));
-        registry.register(Arc::new(stdio::NativeFputs));
-        // File operations: registered for fd tracking in FileSystem.
-        registry.register(Arc::new(fileops::NativeOpen));
-        registry.register(Arc::new(fileops::NativeClose));
-        registry.register(Arc::new(fileops::NativeLseek));
-        registry.register(Arc::new(fileops::NativeDup));
-        registry.register(Arc::new(fileops::NativeDup2));
-        registry.register(Arc::new(fileops::NativePipe));
-        // stdio file ops (angr-karp): allocate _IO_FILE structs and dispatch
-        // through the FILE._fileno field. fopen/fdopen heap-allocate, fclose/
-        // fseek/ftell/rewind read fileno back out.
-        registry.register(Arc::new(fileops::NativeFopen));
-        registry.register(Arc::new(fileops::NativeFdopen));
-        registry.register(Arc::new(fileops::NativeFclose));
-        registry.register(Arc::new(fileops::NativeFseek));
-        registry.register(Arc::new(fileops::NativeFtell));
-        registry.register(Arc::new(fileops::NativeRewind));
-        // __libc_start_main: handles the after_main continuation by
-        // deadending. Python init (rust_manager._step_python_to_main) covers
-        // the entry/run path before Rust takes over, so the only invocation
-        // path during Rust exploration is after_main → exit(0). See
-        // procedures/libc_start_main.rs for the safety argument.
-        registry.register(Arc::new(libc_start_main::NativeLibcStartMain));
+        register_procs!(
+            registry,
+            [
+                // Register default native procedures (original set)
+                strlen::NativeStrlen,
+                memcpy::NativeMemcpy,
+                memcpy::NativeMemmove,
+                memcpy::NativeMempcpy,
+                strcmp::NativeStrcmp,
+                strcmp::NativeStrncmp,
+                strcmp::NativeStrcasecmp,
+                strcmp::NativeStrncasecmp,
+                puts::NativePuts,
+                // perror: write the user string to stderr (fd 2), no errno suffix —
+                // mirrors Python posix/perror.py (write(2, s, strlen(s))).
+                perror::NativePerror,
+                printf::NativePrintf,
+                printf::NativeFprintf,
+                // New procedures (verified safe — no exploration flow changes)
+                memset::NativeMemset,
+                // bzero(s, n) — forwards to native memset(s, 0, n).
+                memset::NativeBzero,
+                // Fortify-source `_chk` mem wrappers (forward to the base mem procs).
+                fortify_mem::NativeMemcpyChk,
+                fortify_mem::NativeMemmoveChk,
+                fortify_mem::NativeMemsetChk,
+                fortify_mem::NativeMempcpyChk,
+                // Fortify-source `_chk` string wrappers (forward to the base str procs).
+                fortify_str::NativeStrcpyChk,
+                fortify_str::NativeStrncpyChk,
+                fortify_str::NativeStrcatChk,
+                fortify_str::NativeStrncatChk,
+                fortify_str::NativeStpcpyChk,
+                strcpy::NativeStrcpy,
+                strcpy::NativeStrncpy,
+                strcpy::NativeStpcpy,
+                strcpy::NativeStpncpy,
+                strlen::NativeStrnlen,
+                // exit/abort: terminal NO_RET procedures. The native dispatchers in
+                // both stepping.rs (interpreter exit) and mod.rs (top-of-loop hook
+                // check) recognize no_return and route the main state to STASH_DEADENDED
+                // instead of advancing PC to the call's return address. Without that
+                // check the state would re-execute past the call (which in fauxware
+                // overlaps main's prologue, causing an infinite re-entry loop).
+                exit::NativeExit,
+                exit::NativeUnderscoreExit,
+                exit::NativeAbort,
+                exit::NativeStackChkFail,
+                rand::NativeRand,
+                rand::NativeSrand,
+                access::NativeAccess,
+                // pthread mutex no-ops (single-path symex => locks always succeed,
+                // matching Python pthread_mutex_lock/unlock `return 0`).
+                pthread::NativePthreadMutexLock,
+                pthread::NativePthreadMutexUnlock,
+                // pthread_once: native sub-call (CallAndResume) — runs the init routine
+                // then returns 0; already-initialised guard returns 0 directly (xxukz).
+                pthread::NativePthreadOnce,
+                // Heap procedures (bump allocator, matching SimHeapBrk)
+                malloc::NativeMalloc,
+                malloc::NativeFree,
+                malloc::NativeCalloc,
+                malloc::NativeRealloc,
+                malloc::NativeMemalign,
+                malloc::NativePosixMemalign,
+                // Character classification (ctype.h)
+                ctype::NativeIsDigit,
+                ctype::NativeIsAlpha,
+                ctype::NativeIsSpace,
+                ctype::NativeIsAlnum,
+                ctype::NativeIsUpper,
+                ctype::NativeIsLower,
+                ctype::NativeIsXdigit,
+                ctype::NativeIsPrint,
+                ctype::NativeIsAscii,
+                ctype::NativeIsBlank,
+                ctype::NativeIsCntrl,
+                ctype::NativeIsGraph,
+                ctype::NativeIsPunct,
+                ctype::NativeToLower,
+                ctype::NativeToUpper,
+                // Locale ctype table accessors (return tables built by Python
+                // __libc_start_main; see CtypeLocPtrs).
+                ctype::NativeCtypeBLoc,
+                ctype::NativeCtypeToLowerLoc,
+                ctype::NativeCtypeToUpperLoc,
+                byteorder::NativeHtonl,
+                byteorder::NativeHtons,
+                // String/memory search
+                strchr::NativeStrchr,
+                strchr::NativeStrchrnul,
+                strchr::NativeMemchr,
+                strchr::NativeRawmemchr,
+                strchr::NativeStrrchr,
+                strchr::NativeMemrchr,
+                // Byte-set search (angr-f16h.5)
+                strset::NativeStrpbrk,
+                strset::NativeStrspn,
+                strset::NativeStrcspn,
+                // String-to-integer conversion
+                strtol::NativeStrtol,
+                strtol::NativeStrtoul,
+                strtol::NativeStrtoll,
+                strtol::NativeStrtoull,
+                strtol::NativeAtoi,
+                strtol::NativeAtol,
+                // String-to-float conversion (amd64 only; xmm0 return register)
+                strtod::NativeStrtod,
+                // String concatenation
+                strcat::NativeStrcat,
+                strcat::NativeStrncat,
+                // Input procedures (stdin) — create symbolic bytes and track them
+                // in state.stdin_symbols for posix.dumps(0) export.
+                fgets::NativeFgets,
+                fgets::NativeFgetc,
+                fgets::NativeGetchar,
+                fgets::NativeGetc,
+                fgets::NativeGets,
+                // Output procedures (stdout)
+                puts::NativePutchar,
+                // NativeFputc also covers putc / *_unlocked via its aliases().
+                puts::NativeFputc,
+                // String duplication
+                strcpy::NativeStrdup,
+                strcpy::NativeStrndup,
+                strcpy::NativeStrxfrm,
+                // Memory comparison
+                memcmp::NativeMemcmp,
+                // String search
+                strstr::NativeStrstr,
+                // Input parsing (scanf family)
+                // NativeScanf/NativeFscanf also serve the __isoc99_ dispatch names
+                // modern glibc emits, via their `aliases()` (angr-9ke6b.112).
+                scanf::NativeScanf,
+                scanf::NativeSscanf,
+                // fscanf/__isoc99_fscanf: resolve FILE._fileno → route through the
+                // shared scanf core (stream variant, mirrors fprintf↔printf).
+                scanf::NativeFscanf,
+                // Environment variable access
+                getenv::NativeGetenv,
+                getopt::NativeGetopt,
+                getenv::NativeSetenv,
+                getenv::NativePutenv,
+                getenv::NativeUnsetenv,
+                getenv::NativeClearenv,
+                // POSIX identity getters (angr-ae54t.9): getuid/geteuid/getgid/getegid
+                // each return the constant 1000 (mirror procedures/posix/getuid.py and
+                // syscalls/identity.rs DEFAULT_UID_GID). Without these, a PLT libc call
+                // to getuid round-trips to Python — the syscall handler doesn't cover it.
+                getid::NativeGetuid,
+                getid::NativeGeteuid,
+                getid::NativeGetgid,
+                getid::NativeGetegid,
+                // POSIX no-op timers (angr-ae54t.15): sleep/usleep ignore their
+                // argument and return 0 (mirror procedures/posix/{sleep,usleep}.py).
+                // A PLT libc call to sleep/usleep otherwise round-trips to Python.
+                sleep::NativeSleep,
+                sleep::NativeUsleep,
+                // system() (angr-ae54t.16): cannot run a real shell, so model the exit
+                // status as an unconstrained 8-bit code zero-extended to 32-bit int
+                // (mirror procedures/libc/system.py). Otherwise round-trips to Python.
+                system::NativeSystem,
+                // syslog family (angr-ae54t.20): openlog/closelog are void no-op stubs
+                // in Python (procedures/libc/{openlog,closelog}.py: return). Native
+                // void no-ops keep a PLT call from round-tripping to Python. syslog(3)
+                // itself (FormatParser) is left to Python.
+                syslog::NativeOpenlog,
+                syslog::NativeCloselog,
+                // libc time() (angr-ae54t.21): Python's procedures/libc/time.py just
+                // inline_calls the linux_kernel time syscall. Native parity forwards
+                // to the same model via syscalls::sim_time::fresh_monotonic_time, so a
+                // PLT time() call no longer round-trips to Python. Symbolic *tloc falls
+                // back to Python (matches the syscall's concrete-pointer gate).
+                time::NativeTime,
+                // String formatting (sprintf, asprintf, snprintf)
+                sprintf::NativeSprintf,
+                sprintf::NativeAsprintf,
+                sprintf::NativeSnprintf,
+                sprintf::NativeVsnprintf,
+                sprintf::NativeVsprintf,
+                // Fortify-source `_chk` printf-family wrappers forward to the base
+                // printf/sprintf/snprintf procs above (drop the injected flag/slen args).
+                fortify_printf::NativePrintfChk,
+                fortify_printf::NativeSprintfChk,
+                fortify_printf::NativeSnprintfChk,
+                fortify_printf::NativeFprintfChk,
+                fortify_printf::NativeVsnprintfChk,
+                // I/O procedures: re-enabled by angr-3tek.2. The Python-side cache
+                // is now invalidate-and-replayed per dirty page in
+                // `_create_state_for_callback` (rust_callback_dispatch.py +
+                // rust_state_sync.py::_replay_rust_dirty_pages), so the stale-cache
+                // issue described in angr-mme3 / angr-3tek no longer applies.
+                read::NativeRead,
+                write::NativeWrite,
+                // fread/fread_unlocked (angr-m674p): resolve FILE._fileno → serve
+                // concrete FS content or synthesize symbolic bytes for a
+                // natively-opened symbolic file. Avoids the Python callback round-trip
+                // that hung asisctffinals2015_license on its symbolic file size.
+                fread::NativeFread,
+                fread::NativeFreadUnlocked,
+                // stdio shims (angr-70no): fwrite resolves FILE._fileno → fd buffer;
+                // fflush / setvbuf are no-ops returning 0 (match Python procs).
+                // setbuf (angr-ae54t.19) is a void no-op returning nothing.
+                stdio::NativeFwrite,
+                stdio::NativeFflush,
+                stdio::NativeSetvbuf,
+                stdio::NativeSetbuf,
+                // stdio status / write shims (angr-f16h.1): feof/ferror dispatch off
+                // FILE._fileno and return concrete int flags; fputs reuses fwrite's
+                // write_fd path with a NUL-terminated source string.
+                stdio::NativeFeof,
+                stdio::NativeFerror,
+                stdio::NativeFputs,
+                // File operations: registered for fd tracking in FileSystem.
+                fileops::NativeOpen,
+                fileops::NativeClose,
+                fileops::NativeLseek,
+                fileops::NativeDup,
+                fileops::NativeDup2,
+                fileops::NativePipe,
+                // stdio file ops (angr-karp): allocate _IO_FILE structs and dispatch
+                // through the FILE._fileno field. fopen/fdopen heap-allocate, fclose/
+                // fseek/ftell/rewind read fileno back out.
+                fileops::NativeFopen,
+                fileops::NativeFdopen,
+                fileops::NativeFclose,
+                fileops::NativeFseek,
+                fileops::NativeFtell,
+                fileops::NativeRewind,
+                // __libc_start_main: handles the after_main continuation by
+                // deadending. Python init (rust_manager._step_python_to_main) covers
+                // the entry/run path before Rust takes over, so the only invocation
+                // path during Rust exploration is after_main → exit(0). See
+                // procedures/libc_start_main.rs for the safety argument.
+                libc_start_main::NativeLibcStartMain,
+            ]
+        );
 
         registry
     }
