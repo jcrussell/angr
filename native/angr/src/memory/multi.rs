@@ -294,11 +294,22 @@ impl SymbolicMemory {
         let had_payload = self.multi_objects.remove(&addr).is_some();
         let page_num = addr.page_num();
         let offset = addr.page_offset();
-        if let Some(page) = self.pages.get_mut(&page_num) {
+        // angr-fgqco: probe read-only before taking `&mut`. `pages` is an
+        // `im::OrdMap` shared with forked states, so `get_mut` copies the tree
+        // path down to the target page even when `clear_multi` would be a
+        // no-op. `store_symbolic` calls this for *every byte* of every
+        // symbolic store as soon as a single Multi cell exists anywhere in
+        // memory, so the no-op case has to stay free of page-map mutation.
+        if self
+            .pages
+            .get(&page_num)
+            .is_some_and(|page| page.is_multi(offset))
+            && let Some(page) = self.pages.get_mut(&page_num)
+        {
             page.clear_multi(offset);
         }
         // Phase 4.1: bump version only when a payload was actually present
-        // so the no-op case stays free.
+        // so the no-op case skips the version map too.
         if had_payload {
             self.bump_multi_version(addr);
         }
