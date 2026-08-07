@@ -2336,3 +2336,152 @@ fn newfstatat_follows_symlink_like_stat() {
     assert_eq!(read_u32_le(&state, 0x4000 + 0x18), S_IFREG_0755 as u32);
     assert_eq!(read_u64_le(&state, 0x4000 + 0x30), 9);
 }
+
+// ===== newfstatat AT_SYMLINK_NOFOLLOW (angr-zueuw) =====
+//
+// The flag used to be discarded, so `newfstatat` always followed. That
+// is wrong everywhere, but *only* reachable-as-lstat on ARM64: the
+// asm-generic ABI dropped legacy `lstat`, so glibc's `lstat()` there
+// lowers to `fstatat(AT_FDCWD, path, buf, AT_SYMLINK_NOFOLLOW)`.
+
+#[test]
+fn newfstatat_nofollow_reports_the_link_itself() {
+    let target = b"/tmp/nf-target";
+    let mut state = state_with_path(b"/link");
+    state
+        .file_system()
+        .add_symlink("/link".to_string(), target.to_vec());
+    let _fd = state.file_system().open_with_content(
+        "/tmp/nf-target".into(),
+        FdFlags::ReadOnly,
+        vec![0u8; 9],
+    );
+    state.map_memory(0x4000, 0x1000, Permission::RW);
+
+    let out = NativeNewfstatatSyscall
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(TEST_AT_FDCWD_NFA as u128, 64),
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(0x4000, 64),
+                RustBV::concrete(AT_SYMLINK_NOFOLLOW as u128, 64),
+            ],
+        )
+        .expect("newfstatat ok");
+    assert_eq!(expect_continue(out), 0);
+    // The LINK's mode/size, not the 9-byte target's — same answer
+    // `NativeLstatSyscall` gives for this scenario on amd64.
+    assert_eq!(read_u32_le(&state, 0x4000 + 0x18), S_IFLNK_0777 as u32);
+    assert_eq!(read_u64_le(&state, 0x4000 + 0x30), target.len() as u64);
+}
+
+#[test]
+fn newfstatat_nofollow_on_aarch64_matches_lstat_semantics() {
+    // The scenario the bug actually breaks: an ARM64 binary calling
+    // lstat() on a registered symlink.
+    let target = b"/tmp/arm-target";
+    let mut state = RustSimState::new("aarch64").expect("state");
+    stage_path(&mut state, 0x2000, b"/armlink");
+    state
+        .file_system()
+        .add_symlink("/armlink".to_string(), target.to_vec());
+    state.map_memory(0x4000, 0x1000, Permission::RW);
+
+    let out = NativeNewfstatatSyscall
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(TEST_AT_FDCWD_NFA as u128, 64),
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(0x4000, 64),
+                RustBV::concrete(AT_SYMLINK_NOFOLLOW as u128, 64),
+            ],
+        )
+        .expect("newfstatat ok");
+    assert_eq!(expect_continue(out), 0);
+    // ARM64 layout: st_mode at 0x10 (u32), st_size at 0x30 (u64).
+    assert_eq!(read_u32_le(&state, 0x4000 + 0x10), S_IFLNK_0777 as u32);
+    assert_eq!(read_u64_le(&state, 0x4000 + 0x30), target.len() as u64);
+}
+
+#[test]
+fn newfstatat_nofollow_honors_other_flag_bits_alongside() {
+    // Only the AT_SYMLINK_NOFOLLOW bit is consulted; unrelated bits
+    // (here AT_EMPTY_PATH 0x1000, still unmodeled) must not clear it.
+    let target = b"/tmp/mix";
+    let mut state = state_with_path(b"/link");
+    state
+        .file_system()
+        .add_symlink("/link".to_string(), target.to_vec());
+    state.map_memory(0x4000, 0x1000, Permission::RW);
+
+    let out = NativeNewfstatatSyscall
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(TEST_AT_FDCWD_NFA as u128, 64),
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(0x4000, 64),
+                RustBV::concrete((AT_SYMLINK_NOFOLLOW | 0x1000) as u128, 64),
+            ],
+        )
+        .expect("newfstatat ok");
+    assert_eq!(expect_continue(out), 0);
+    assert_eq!(read_u32_le(&state, 0x4000 + 0x18), S_IFLNK_0777 as u32);
+}
+
+#[test]
+fn newfstatat_nofollow_on_dangling_link_still_succeeds() {
+    // lstat() on a dangling symlink succeeds (it stats the link, never
+    // the target) where the following variant returns -1/ENOENT.
+    let mut state = state_with_path(b"/link");
+    state
+        .file_system()
+        .add_symlink("/link".to_string(), b"/tmp/never-registered".to_vec());
+    state.map_memory(0x4000, 0x1000, Permission::RW);
+
+    let args = |flag: u64| {
+        [
+            RustBV::concrete(TEST_AT_FDCWD_NFA as u128, 64),
+            RustBV::concrete(0x2000, 64),
+            RustBV::concrete(0x4000, 64),
+            RustBV::concrete(flag as u128, 64),
+        ]
+    };
+
+    let followed = NativeNewfstatatSyscall
+        .call(&mut state, &args(0))
+        .expect("newfstatat ok");
+    assert_eq!(expect_continue(followed), NEG_ONE);
+
+    let nofollow = NativeNewfstatatSyscall
+        .call(&mut state, &args(AT_SYMLINK_NOFOLLOW))
+        .expect("newfstatat ok");
+    assert_eq!(expect_continue(nofollow), 0);
+    assert_eq!(read_u32_le(&state, 0x4000 + 0x18), S_IFLNK_0777 as u32);
+}
+
+#[test]
+fn newfstatat_symbolic_flag_falls_back() {
+    // The flag now selects between two different st_mode answers, so an
+    // unconstrained flag must defer to Python rather than assume follow.
+    let mut state = state_with_path(b"/tmp/x");
+    let sym_flag = {
+        let ctx = state.solver().borrow();
+        RustBV::symbolic(&ctx, "flag", 64)
+    };
+
+    let err = NativeNewfstatatSyscall
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(TEST_AT_FDCWD_NFA as u128, 64),
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(0x4000, 64),
+                sym_flag,
+            ],
+        )
+        .expect_err("must fall back");
+    assert_symbolic_arg(err, "flag");
+}

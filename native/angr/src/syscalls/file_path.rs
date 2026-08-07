@@ -154,9 +154,14 @@
 //!   distinguishable from a regular file only by `st_size`.
 //! * `newfstatat` adds `openat`-style dirfd handling: absolute paths
 //!   and `AT_FDCWD` resolve via `FileSystem`; relative paths with any
-//!   other dirfd return `-1` (we do not model directory fds). The
-//!   `flag` arg (incl. `AT_EMPTY_PATH` 0x1000, which would route to
-//!   `NativeFstatSyscall(dirfd)`) is ignored — deferred. Arch coverage
+//!   other dirfd return `-1` (we do not model directory fds). Its
+//!   `flag` arg honors `AT_SYMLINK_NOFOLLOW` (0x100) by routing to
+//!   `stat_lookup_nofollow` (angr-zueuw) — ARM64 dropped legacy
+//!   `lstat`, so glibc's `lstat()` there lowers to
+//!   `fstatat(AT_FDCWD, path, buf, AT_SYMLINK_NOFOLLOW)` and this is
+//!   the only no-follow entry point on that arch. `AT_EMPTY_PATH`
+//!   (0x1000), which would route to `NativeFstatSyscall(dirfd)`, is
+//!   still deferred (empty path → `-1`). Arch coverage
 //!   is the full `write_stat_for_arch` set (AMD64 / ARM64 / X86 / ARM /
 //!   MIPS32) — one arch wider than `stat` / `lstat`, since `newfstatat`
 //!   is the only stat-shaped syscall on ARM64's asm-generic ABI (79).
@@ -531,6 +536,14 @@ const ST_BLKSIZE: u64 = 0x400;
 /// here. Written by `NativeLstatSyscall` when the path is registered in
 /// `FileSystem`'s symlink table (`FileSystem::readlink_target`).
 const S_IFLNK_0777: u64 = 0o120_777;
+
+/// `AT_SYMLINK_NOFOLLOW` — `newfstatat`'s flag bit that selects
+/// `lstat` semantics. ARM64's asm-generic ABI has no legacy `lstat`
+/// syscall, so glibc's `lstat()` there lowers to
+/// `fstatat(AT_FDCWD, path, buf, AT_SYMLINK_NOFOLLOW)`; honoring this
+/// bit is what makes `NativeNewfstatatSyscall` the ARM64 equivalent of
+/// `NativeLstatSyscall` (angr-zueuw).
+const AT_SYMLINK_NOFOLLOW: u64 = 0x100;
 
 /// Maximum symlink hops `stat_lookup_follow` will traverse before giving
 /// up. Linux's own limit is 40 (`ELOOP`); 8 is plenty for the tiny
@@ -999,13 +1012,19 @@ impl NativeSyscall for NativeLstatSyscall {
 /// layout. Mirrors `NativeStatSyscall`, plus the dirfd policy from
 /// `NativeOpenatSyscall`: absolute paths and `AT_FDCWD` resolve via
 /// `FileSystem`; relative paths with any other dirfd return `-1` (we
-/// do not model directory fds). Like `stat`, it resolves through
-/// `stat_lookup_follow` (symlinks are walked to their target). The
-/// `flag` arg (incl. `AT_EMPTY_PATH` 0x1000 and `AT_SYMLINK_NOFOLLOW`
-/// 0x100) is ignored — `AT_EMPTY_PATH`'s "stat the dirfd directly"
-/// semantics would require dispatching to `NativeFstatSyscall(dirfd)`,
-/// and `AT_SYMLINK_NOFOLLOW` would route to `stat_lookup_nofollow`;
-/// both are deferred. Arch coverage: AMD64 + ARM64 + X86 + ARM (AMD64/
+/// do not model directory fds). `AT_SYMLINK_NOFOLLOW` (0x100) in `flag`
+/// selects `stat_lookup_nofollow` (`lstat` semantics — a registered
+/// symlink reports its own `S_IFLNK | 0777` mode and target-length
+/// size); without it, symlinks are walked to their target via
+/// `stat_lookup_follow`. That bit is load-bearing on ARM64, whose
+/// asm-generic ABI has no legacy `lstat` syscall, so `newfstatat` is the
+/// only no-follow stat entry point there (angr-zueuw). A symbolic `flag`
+/// is `SymbolicArgument` (falls back to Python) rather than an assumed
+/// follow, since the two branches now report different `st_mode`s.
+/// `AT_EMPTY_PATH` (0x1000) is still ignored — its "stat the dirfd
+/// directly" semantics would require dispatching to
+/// `NativeFstatSyscall(dirfd)`; an empty path stays `-1`.
+/// Arch coverage: AMD64 + ARM64 + X86 + ARM (AMD64/
 /// ARM64 use the 64-bit `struct stat`; X86/ARM use the LFS `struct
 /// stat64` via `fstatat64`, mirroring `fstat64.py`). MIPS32 also uses the
 /// LFS `struct stat64` via `fstatat64` (4293). Unsupported arch returns
@@ -1041,9 +1060,11 @@ impl NativeSyscall for NativeNewfstatatSyscall {
         let dirfd = extract_concrete_arg(&args[0], "newfstatat dirfd")?;
         let pathname_addr = extract_concrete_arg(&args[1], "newfstatat pathname")?;
         let buf = extract_concrete_arg(&args[2], "newfstatat statbuf")?;
-        // args[3] = flag — AT_EMPTY_PATH / AT_SYMLINK_NOFOLLOW are not
-        // modeled (see doc comment).
-        let _ = args.get(3);
+        // args[3] = flag. AT_SYMLINK_NOFOLLOW is honored below;
+        // AT_EMPTY_PATH is not modeled (see doc comment). A symbolic
+        // flag defers to Python — the bit changes the reported st_mode.
+        let flag = extract_concrete_arg(&args[3], "newfstatat flag")?;
+        let nofollow = flag & AT_SYMLINK_NOFOLLOW != 0;
 
         let path = read_path(state, pathname_addr, "newfstatat")?;
         if path.is_empty() {
@@ -1054,7 +1075,13 @@ impl NativeSyscall for NativeNewfstatatSyscall {
             return Ok(SyscallOutcome::Continue { ret: NEG_ONE });
         }
 
-        let Some((size, mode)) = stat_lookup_follow(state.file_system_ref(), &path) else {
+        let fs = state.file_system_ref();
+        let looked_up = if nofollow {
+            stat_lookup_nofollow(fs, &path)
+        } else {
+            stat_lookup_follow(fs, &path)
+        };
+        let Some((size, mode)) = looked_up else {
             return Ok(SyscallOutcome::Continue { ret: NEG_ONE });
         };
 
