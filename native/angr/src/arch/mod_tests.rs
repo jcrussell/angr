@@ -665,6 +665,51 @@ fn exported_register_names_reverse_resolve() {
     }
 }
 
+/// The converse of `register_names_all_resolve_and_fit_in_u128`: every
+/// `CANONICAL` entry narrow enough for the u128 named-register channel must
+/// actually be exported by `register_names()`.
+///
+/// `Arch::register_names`'s own doc says the export list is the whole canonical
+/// table minus the too-wide entries ("`fpreg` is the only such register"), but
+/// nothing checked that direction, so an omission read as a deliberate
+/// exclusion. It is not: a missing name is filtered out of Python's
+/// `_supported_register_names` (`angr/exploration/rust_state_sync.py`), so
+/// `set_registers_bulk` silently drops any `state.regs.<name>` write for that
+/// arch while the identical write works on a sibling arch. X86's `sseround`
+/// shipped exactly that (angr-sqfj8.1), one sweep after angr-9ke6b.6 fixed the
+/// same class for `fptag`/`fpround`/`fc3210`/`ftop` — a hardcoded field list
+/// (`x87_control_registers_round_trip_through_register_names`) only ever
+/// catches the registers someone already thought of.
+///
+/// The width filter is the *only* legitimate reason to omit a canonical entry,
+/// so it is the only exemption here — no per-arch allowlist to drift.
+#[test]
+fn every_narrow_canonical_register_is_exported() {
+    for desc in ALL_ARCHES {
+        let arch = (desc.make_arch)();
+        let exported = arch.register_names();
+        for &(name, _offset, size) in arch.canonical_registers() {
+            if size > 16 {
+                // Cannot cross the boundary: see `register_names`' doc.
+                assert!(
+                    !exported.contains(&name),
+                    "{}: {name} is {size} bytes but is exported — the u128 \
+                     named-register channel would truncate it",
+                    desc.name
+                );
+                continue;
+            }
+            assert!(
+                exported.contains(&name),
+                "{}: CANONICAL has {name} ({size} B) but register_names() does \
+                 not export it — Python-side state.regs.{name} writes are \
+                 silently dropped on this arch",
+                desc.name
+            );
+        }
+    }
+}
+
 /// Expected `(offset, size)` for the five VEX bookkeeping fields, one row per
 /// architecture, joined to [`ALL_ARCHES`] by `name`. Every value here was read
 /// off `archinfo.Arch*.registers` (angr-9ke6b.10).

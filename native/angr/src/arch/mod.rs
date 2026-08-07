@@ -120,6 +120,19 @@ pub trait Arch: Send + Sync {
     /// Today `fpreg` (64 B on x86/AMD64) is the only such register.
     fn register_names(&self) -> &[&'static str];
 
+    /// The arch's whole `CANONICAL` register table — the superset
+    /// `register_names` is drawn from.
+    ///
+    /// Like `register_name`, this exists to be the assertion primitive of the
+    /// arch-table integrity sweeps rather than to serve a production caller:
+    /// `mod_tests::every_narrow_canonical_register_is_exported` walks it to
+    /// check the *converse* of the `register_names` doc above — every entry
+    /// that fits the u128 named-register channel has to be exported, or the
+    /// corresponding `state.regs.*` write is silently dropped on the Python
+    /// side. Only checking the forward direction is how X86's missing
+    /// `sseround` survived the angr-9ke6b.6 sweep (angr-sqfj8.1/.6).
+    fn canonical_registers(&self) -> &[RegEntry];
+
     /// Get the offset of the register holding the syscall number.
     ///
     /// The size always equals `bytes()` (pointer width), so callers
@@ -197,7 +210,7 @@ pub(crate) fn lookup_register_name(offset: u32, canonical: &[RegEntry]) -> Optio
         .map(|(n, _, _)| *n)
 }
 
-/// Generate the four name/offset/size trait methods of `Arch` from a
+/// Generate the five name/offset/size trait methods of `Arch` from a
 /// per-arch `(canonical, aliases, register_names)` triple. Place inside
 /// `impl Arch for $Arch { ... }` blocks alongside the other arch fields.
 macro_rules! impl_arch_registers {
@@ -216,6 +229,10 @@ macro_rules! impl_arch_registers {
 
         fn register_names(&self) -> &[&'static str] {
             $names
+        }
+
+        fn canonical_registers(&self) -> &[super::RegEntry] {
+            $canonical
         }
     };
 }
