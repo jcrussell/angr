@@ -76,10 +76,22 @@ impl NativeSyscall for NativeMprotectSyscall {
         let mut page_addr = addr;
         while page_addr < page_end {
             let page_num = page_addr >> 12;
-            // Pages confirmed mapped above; assert via debug_assert and
-            // tolerate concurrent unmaps (unlikely but cheap to handle).
-            let updated = memory.set_page_permissions(page_num, new_perm);
-            debug_assert!(updated, "mprotect: page {page_addr:#x} disappeared");
+            // angr-sqfj8.109: the loop above confirmed every page is mapped, so
+            // this cannot fail today. Guard it in *every* profile anyway: a
+            // debug_assert! here compiled out in release, where a failed update
+            // would have left the page's permissions unchanged while mprotect
+            // still reported success. Report the failure the same way an
+            // unmapped page does (-1), which is also what Linux returns
+            // (ENOMEM) for a range with a hole — partial application before the
+            // failure matches Linux too.
+            if !memory.set_page_permissions(page_num, new_perm) {
+                log::warn!(
+                    "mprotect: page {page_addr:#x} unmapped between the \
+                     mapped-range check and the permission update; \
+                     returning -1 with pages below it already updated"
+                );
+                return Ok(SyscallOutcome::Continue { ret: u64::MAX });
+            }
             page_addr += PAGE_SIZE;
         }
 

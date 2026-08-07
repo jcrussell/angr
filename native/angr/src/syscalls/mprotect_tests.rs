@@ -218,6 +218,28 @@ fn zero_length_is_noop() {
     assert_eq!(state.memory().page_permissions(0x1), Some(Permission::RW));
 }
 
+/// angr-sqfj8.109: the update loop's release-mode guard keys on
+/// `set_page_permissions` reporting failure for an unmapped page. That
+/// branch is unreachable through `call` (the loop above it proves every
+/// page mapped), so pin the underlying contract instead — if
+/// `set_page_permissions` ever started returning `true` for an unmapped
+/// page, the guard would silently become a no-op again.
+#[test]
+fn set_page_permissions_reports_failure_for_unmapped_page() {
+    let mut state = mk_state_with_page(0x1000, Permission::RW);
+    let memory = state.memory_mut();
+    assert!(
+        memory.set_page_permissions(0x1, Permission::R),
+        "mapped page must report success",
+    );
+    assert!(
+        !memory.set_page_permissions(0x2, Permission::R),
+        "unmapped page must report failure",
+    );
+    assert_eq!(state.memory().page_permissions(0x1), Some(Permission::R));
+    assert_eq!(state.memory().page_permissions(0x2), None);
+}
+
 #[test]
 fn handler_metadata() {
     let h = NativeMprotectSyscall;
