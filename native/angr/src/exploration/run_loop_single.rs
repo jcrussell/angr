@@ -465,7 +465,8 @@ impl RustExplorationManager {
                     .simprocedure_fallback_by_name
                     .entry(name.clone())
                     .or_insert(0) += 1;
-                let return_addr = self.get_return_addr(&state).unwrap_or(0);
+                let return_addr =
+                    self.get_return_addr_or_log(&state, "Python SimProcedure fallback");
 
                 // No deferred forks in run-loop path, so pre_callback_snapshot
                 // is unnecessary (it's only used as fork base for deferred forks).

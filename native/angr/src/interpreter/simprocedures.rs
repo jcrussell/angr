@@ -111,6 +111,27 @@ impl<'a> VEXInterpreter<'a> {
 
         cc_fallback()
     }
+
+    /// [`Self::get_return_addr`], substituting `0` and logging when the
+    /// answer is symbolic/unavailable instead of silently carrying a
+    /// plausible-looking-but-wrong address into `RunResult`/`BlockResult`.
+    ///
+    /// `context` should identify the call site (e.g. the `RunResult`/
+    /// `BlockResult` variant it feeds) so the warning is actionable.
+    // SILENT(cat-c): a symbolic/unavailable return address collapsing to the
+    // literal 0 is a wrong-answer risk (a bogus call-stack/return target
+    // downstream looks like a legitimate one) — every caller must go through
+    // this single logged fallback rather than a bare `.unwrap_or(0)`
+    // (angr-sqfj8.62).
+    pub(crate) fn get_return_addr_or_log(&self, context: &str) -> u64 {
+        self.get_return_addr().unwrap_or_else(|| {
+            log::warn!(
+                "get_return_addr() returned None ({context}); using return_addr=0 \
+                 — likely a symbolic or unavailable return address collapsed to a wrong value"
+            );
+            0
+        })
+    }
 }
 
 #[cfg(test)]

@@ -208,7 +208,8 @@ impl<'a> VEXInterpreter<'a> {
 
         // For CALL instructions to external code, ask Python to resolve
         if jumpkind.is_call() && !self.is_in_binary(target) {
-            let return_addr = self.get_return_addr().unwrap_or(0);
+            let return_addr =
+                self.get_return_addr_or_log("BlockResult::UnmodeledCall (call to external code)");
             return BlockResult::UnmodeledCall {
                 addr: target,
                 return_addr,
@@ -241,7 +242,9 @@ impl<'a> VEXInterpreter<'a> {
         // - extern stubs and SimProcedure return points
         // - dynamically registered hooks that weren't synced yet
         if !self.is_in_binary(target) {
-            let return_addr = self.get_return_addr().unwrap_or(0);
+            let return_addr = self.get_return_addr_or_log(
+                "BlockResult::UnmodeledCall (unhooked jump/return to external addr)",
+            );
             return BlockResult::UnmodeledCall {
                 addr: target,
                 return_addr,

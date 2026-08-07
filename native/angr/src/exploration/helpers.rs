@@ -682,6 +682,24 @@ impl RustExplorationManager {
         let sp = state.get_sp().as_u64()?;
         state.memory_load(sp, cc.pointer_size()).ok()?.as_u64()
     }
+
+    /// [`Self::get_return_addr`], substituting `0` and logging when the
+    /// answer is symbolic/unavailable instead of silently carrying a
+    /// plausible-looking-but-wrong address forward. Mirrors
+    /// `VEXInterpreter::get_return_addr_or_log` (same contract, same
+    /// rationale — `angr-sqfj8.62`).
+    // SILENT(cat-c): a symbolic/unavailable return address collapsing to the
+    // literal 0 is a wrong-answer risk; route through this single logged
+    // fallback rather than a bare `.unwrap_or(0)`.
+    pub(crate) fn get_return_addr_or_log(&self, state: &RustSimState, context: &str) -> u64 {
+        self.get_return_addr(state).unwrap_or_else(|| {
+            log::warn!(
+                "get_return_addr() returned None ({context}); using return_addr=0 \
+                 — likely a symbolic or unavailable return address collapsed to a wrong value"
+            );
+            0
+        })
+    }
 }
 
 /// Prepare the per-callback solver context for a Python round-trip.

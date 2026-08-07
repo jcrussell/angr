@@ -80,7 +80,8 @@ impl<'a> VEXInterpreter<'a> {
                 // Check if this is a registered SimProcedure with known args
                 if let Some(info) = self.simprocedure_registry.get(&self.pc).cloned() {
                     // Get return address if available
-                    let return_addr = self.get_return_addr().unwrap_or(0);
+                    let return_addr =
+                        self.get_return_addr_or_log("RunResult::SimProcedure (hooked-at-pc)");
                     return (
                         RunResult::SimProcedure {
                             addr: self.pc,
@@ -145,7 +146,8 @@ impl<'a> VEXInterpreter<'a> {
                                     .registers
                                     .get_offset_u64(sp_offset, self.ctx)
                                     .unwrap_or(0);
-                                let ret_addr = self.get_return_addr().unwrap_or(0);
+                                let ret_addr =
+                                    self.get_return_addr_or_log("CallStackEntry.return_addr");
                                 // angr-4ai9: state.inspect `call` event —
                                 // mirror Python callstack.py:386/419 (BEFORE
                                 // the push with the target IP, AFTER the
@@ -203,7 +205,9 @@ impl<'a> VEXInterpreter<'a> {
                                 if let Some(info) =
                                     self.simprocedure_registry.get(&next_addr).cloned()
                                 {
-                                    let return_addr = self.get_return_addr().unwrap_or(0);
+                                    let return_addr = self.get_return_addr_or_log(
+                                        "RunResult::SimProcedure (post-block hooked target)",
+                                    );
                                     return (
                                         RunResult::SimProcedure {
                                             addr: next_addr,
@@ -251,7 +255,9 @@ impl<'a> VEXInterpreter<'a> {
                             let forks = self.take_deferred_forks();
                             // Check if this is a registered SimProcedure
                             if let Some(info) = self.simprocedure_registry.get(&addr).cloned() {
-                                let return_addr = self.get_return_addr().unwrap_or(0);
+                                let return_addr = self.get_return_addr_or_log(
+                                    "RunResult::SimProcedure (BlockResult::Hook)",
+                                );
                                 return (
                                     RunResult::SimProcedure {
                                         addr,
