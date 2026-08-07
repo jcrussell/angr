@@ -12,6 +12,14 @@
 //! shift (Iop_QShl*) deliberately stays in `ops` alongside the rest of the
 //! saturation helpers, and the scalar shift normaliser
 //! (`normalize_shift_amount`) stays with the scalar shift dispatch.
+//!
+//! The concrete fast paths in `vec_shl_n` / `vec_shr_n` / `vec_sar_n` are
+//! gated on `total_width <= 128`, matching `vec_int_lane_op`. A `RustBV`
+//! stores concrete values in a `u128` (see `RustBV::concrete`), so a wider
+//! vector can only arrive as an expression; folding one anyway would shift a
+//! `u128` by up to 192 and either panic (debug) or wrap mod 128 (release).
+//! The guard became reachable with the AVX2 256-bit shift-by-immediate arms
+//! added in angr-sqfj8.118.
 
 use super::{OpError, VEXOps, VecShiftKind};
 use crate::symbolic::{RustBV, SymContext};
@@ -32,7 +40,9 @@ impl VEXOps {
         debug_assert_eq!(vec.width(), total_width);
 
         // Concrete shift amount: keep the existing fast paths.
-        if let Some(s) = shift_amt.as_u128() {
+        if total_width <= 128
+            && let Some(s) = shift_amt.as_u128()
+        {
             let shift = s as u32;
 
             if shift >= elem_width {
@@ -125,7 +135,9 @@ impl VEXOps {
 
         debug_assert_eq!(vec.width(), total_width);
 
-        if let Some(s) = shift_amt.as_u128() {
+        if total_width <= 128
+            && let Some(s) = shift_amt.as_u128()
+        {
             let shift = s as u32;
 
             if shift >= elem_width {
@@ -172,7 +184,9 @@ impl VEXOps {
 
         debug_assert_eq!(vec.width(), total_width);
 
-        if let Some(s) = shift_amt.as_u128() {
+        if total_width <= 128
+            && let Some(s) = shift_amt.as_u128()
+        {
             let shift = s as u32;
 
             if let Some(v) = vec.as_u128() {

@@ -553,3 +553,84 @@ fn test_sar_fill_mask_shift0_is_empty_every_width() {
         );
     }
 }
+
+/// angr-sqfj8.118: AVX2 256-bit shift-by-immediate (ShlN/ShrN/SarN 32x8).
+///
+/// A 256-bit vector can never be a `Concrete` RustBV — that variant stores its
+/// value in a `u128` — so it arrives as a `Concat` expression and must route
+/// through the per-lane path. Before the `total_width <= 128` guard in
+/// `vec_shift.rs` the concrete fold would have shifted a `u128` by up to 192.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_vec_shift_n_avx2_256_bit() {
+    let ctx = SymContext::new_mock();
+
+    // Low lane first; the mix covers positive, negative and sign-boundary
+    // values so the SarN sign fill is actually exercised.
+    let lanes: [u32; 8] = [
+        0x0000_0001,
+        0x8000_0000,
+        0x1234_5678,
+        0xFFFF_FFF0,
+        0x0000_00FF,
+        0x7FFF_FFFF,
+        0xDEAD_BEEF,
+        0x0000_0010,
+    ];
+    let mut lo: u128 = 0;
+    let mut hi: u128 = 0;
+    for (i, lane) in lanes.iter().enumerate() {
+        let shifted = (*lane as u128) << ((i % 4) * 32);
+        if i < 4 {
+            lo |= shifted;
+        } else {
+            hi |= shifted;
+        }
+    }
+    let vec = RustBV::concrete(hi, 128).concat_into(RustBV::concrete(lo, 128), &ctx);
+    assert_eq!(vec.width(), 256);
+
+    let shift = RustBV::concrete(4, 8);
+    // Reference semantics for one 32-bit lane shifted by 4.
+    type LaneFn = fn(u32) -> u32;
+    let cases: [(IROp, LaneFn); 3] = [
+        (
+            IROp::VShlN {
+                elem: IRType::I32,
+                count: 8,
+            },
+            |l| l.wrapping_shl(4),
+        ),
+        (
+            IROp::VShrN {
+                elem: IRType::I32,
+                count: 8,
+            },
+            |l| l >> 4,
+        ),
+        (
+            IROp::VSarN {
+                elem: IRType::I32,
+                count: 8,
+            },
+            |l| ((l as i32) >> 4) as u32,
+        ),
+    ];
+
+    for (op, expected_lane) in cases {
+        let result = VEXOps::binop(op, vec.clone(), shift.clone(), &ctx).unwrap();
+        assert_eq!(result.width(), 256, "{op:?} result width");
+
+        // The result is wider than a u128, so check it a lane at a time.
+        for (i, lane) in lanes.iter().enumerate() {
+            let low = (i as u32) * 32;
+            let extracted = result.extract(low + 31, low, &ctx);
+            let got = ctx.eval(&extracted).expect("eval(lane) returned None");
+            assert_eq!(
+                got,
+                u128::from(expected_lane(*lane)),
+                "{op:?} lane {i} of {lane:#010x}"
+            );
+        }
+    }
+}

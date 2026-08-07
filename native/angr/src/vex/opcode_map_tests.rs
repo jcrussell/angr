@@ -345,22 +345,35 @@ fn test_neon_unimplemented_scaffold_is_empty() {
     }
 }
 
-/// angr-sqfj8.113: the three shift-by-immediate families cover the same
-/// widths. `Iop_SarN64x2` used to fall through to `Unmapped` on the false
-/// premise that pyvex declares no such op.
+/// angr-sqfj8.113 / .118: the three shift-by-immediate families cover the same
+/// widths, up through the AVX2 256-bit shapes. `Iop_SarN64x2` used to fall
+/// through to `Unmapped` on the false premise that pyvex declares no such op,
+/// and the whole 16x16/32x8/64x4 tier was missing.
 #[test]
 fn test_shift_by_immediate_families_cover_the_same_widths() {
-    let widths: [(&str, IRType, u8); 7] = [
+    let widths: [(&str, IRType, u8); 10] = [
         ("8x8", IRType::I8, 8),
         ("8x16", IRType::I8, 16),
         ("16x4", IRType::I16, 4),
         ("16x8", IRType::I16, 8),
+        ("16x16", IRType::I16, 16),
         ("32x2", IRType::I32, 2),
         ("32x4", IRType::I32, 4),
+        ("32x8", IRType::I32, 8),
         ("64x2", IRType::I64, 2),
+        ("64x4", IRType::I64, 4),
     ];
     for (suffix, want_elem, want_count) in widths {
         for family in ["ShlN", "ShrN", "SarN"] {
+            // The one legitimate hole in the grid: arithmetic qword shift
+            // arrived with AVX-512 (VPSRAQ), so VEX declares no Iop_SarN64x4.
+            if family == "SarN" && suffix == "64x4" {
+                assert!(
+                    matches!(parse_opcode("Iop_SarN64x4"), IROp::Unmapped(_)),
+                    "Iop_SarN64x4 is not a real VEX op; mapping it would be a dead arm"
+                );
+                continue;
+            }
             let op_str = format!("Iop_{family}{suffix}");
             let (elem, count) = match parse_opcode(&op_str) {
                 IROp::VShlN { elem, count }
@@ -371,6 +384,15 @@ fn test_shift_by_immediate_families_cover_the_same_widths() {
             assert_eq!(elem, want_elem, "{op_str} element type");
             assert_eq!(count, want_count, "{op_str} lane count");
         }
+    }
+
+    // AVX2 has no byte shift-by-immediate, so no family declares an 8x32 form.
+    for family in ["ShlN", "ShrN", "SarN"] {
+        let op_str = format!("Iop_{family}8x32");
+        assert!(
+            matches!(parse_opcode(&op_str), IROp::Unmapped(_)),
+            "{op_str} is not a real VEX op; mapping it would be a dead arm"
+        );
     }
 }
 

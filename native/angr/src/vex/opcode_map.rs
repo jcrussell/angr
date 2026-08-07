@@ -299,27 +299,35 @@ fn parse_shift(op_str: &str) -> Option<IROp> {
     tuple_arms!(op_str; "Iop_Sar" => Sar { "8" => I8, "16" => I16, "32" => I32, "64" => I64 });
 
     // Vector shift {left, right-logical, right-arithmetic} by immediate.
-    // All three families cover the same widths: the 8x8/16x4/32x2 shapes are
-    // NEON D-reg, the 8x16/16x8/32x4/64x2 shapes SSE/NEON Q-reg. (Before
-    // angr-sqfj8.113 SarN omitted 64x2 on the false premise that pyvex has no
-    // such op; `Iop_SarN64x2` is declared right alongside its ShlN/ShrN
+    // The 8x8/16x4/32x2 shapes are NEON D-reg, the 8x16/16x8/32x4/64x2 shapes
+    // SSE/NEON Q-reg, and the 16x16/32x8/64x4 shapes AVX2 (angr-sqfj8.118).
+    // (Before angr-sqfj8.113 SarN omitted 64x2 on the false premise that pyvex
+    // has no such op; `Iop_SarN64x2` is declared right alongside its ShlN/ShrN
     // siblings and was silently falling to IROp::Unmapped.)
+    //
+    // Two asymmetries below are real, not gaps — both mirror the x86 ISA and
+    // are declared exactly this way in `vendor/pyvex_ffi.h`:
+    //   * no `8x32`: AVX2 has no byte shift-by-immediate (VPSLLB et al. do not
+    //     exist), so VEX declares no 8x32 form for any of the three families;
+    //   * no `SarN64x4`: arithmetic right shift of qwords arrived only with
+    //     AVX-512 (VPSRAQ), so VEX declares ShlN64x4/ShrN64x4 but no SarN64x4.
+    // Adding either would be a dead arm matching a string no lift can emit.
     vec_arms!(op_str; "Iop_ShlN" => VShlN {
         "8x8" => (I8, 8), "8x16" => (I8, 16),
-        "16x4" => (I16, 4), "16x8" => (I16, 8),
-        "32x2" => (I32, 2), "32x4" => (I32, 4),
-        "64x2" => (I64, 2),
+        "16x4" => (I16, 4), "16x8" => (I16, 8), "16x16" => (I16, 16),
+        "32x2" => (I32, 2), "32x4" => (I32, 4), "32x8" => (I32, 8),
+        "64x2" => (I64, 2), "64x4" => (I64, 4),
     });
     vec_arms!(op_str; "Iop_ShrN" => VShrN {
         "8x8" => (I8, 8), "8x16" => (I8, 16),
-        "16x4" => (I16, 4), "16x8" => (I16, 8),
-        "32x2" => (I32, 2), "32x4" => (I32, 4),
-        "64x2" => (I64, 2),
+        "16x4" => (I16, 4), "16x8" => (I16, 8), "16x16" => (I16, 16),
+        "32x2" => (I32, 2), "32x4" => (I32, 4), "32x8" => (I32, 8),
+        "64x2" => (I64, 2), "64x4" => (I64, 4),
     });
     vec_arms!(op_str; "Iop_SarN" => VSarN {
         "8x8" => (I8, 8), "8x16" => (I8, 16),
-        "16x4" => (I16, 4), "16x8" => (I16, 8),
-        "32x2" => (I32, 2), "32x4" => (I32, 4),
+        "16x4" => (I16, 4), "16x8" => (I16, 8), "16x16" => (I16, 16),
+        "32x2" => (I32, 2), "32x4" => (I32, 4), "32x8" => (I32, 8),
         "64x2" => (I64, 2),
     });
     None
