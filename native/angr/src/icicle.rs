@@ -255,8 +255,10 @@ impl Icicle {
         let mut config =
             icicle_vm::cpu::Config::from_target_triple(format!("{architecture}-none").as_str());
         config.enable_shadow_stack = false;
-        let mut vm = icicle_vm::build_with_path(&config, &PathBuf::from(processors_path))
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to build VM: {e}")))?;
+        let mut vm = ffi_result(
+            icicle_vm::build_with_path(&config, &PathBuf::from(processors_path)),
+            "build VM",
+        )?;
 
         // Populate the lowercase register map
         let mut regs = HashMap::new();
@@ -284,14 +286,11 @@ impl Icicle {
             _ => {}
         }
 
-        let path_tracer =
-            if enable_tracing {
-                Some(add_path_tracer(&mut vm).map_err(|e| {
-                    PyRuntimeError::new_err(format!("Failed to add path tracer: {e}"))
-                })?)
-            } else {
-                None
-            };
+        let path_tracer = if enable_tracing {
+            Some(ffi_result(add_path_tracer(&mut vm), "add path tracer")?)
+        } else {
+            None
+        };
 
         let edge_count_hitmap = if enable_edge_count {
             let mut hitmap = Hitmap::new(65536);
@@ -324,52 +323,45 @@ impl Icicle {
     }
 
     pub(crate) fn mem_map(&mut self, addr: u64, size: u64, perm: u8) -> PyResult<()> {
-        if !self.vm.cpu.mem.map_memory_len(
-            addr,
-            size,
-            Mapping {
-                perm: perms_to_icicle(perm),
-                value: 0,
-            },
-        ) {
-            return Err(PyRuntimeError::new_err(format!(
-                "Failed to map memory at {addr:#x} with size {size}"
-            )));
-        }
-        Ok(())
+        ffi_bool(
+            self.vm.cpu.mem.map_memory_len(
+                addr,
+                size,
+                Mapping {
+                    perm: perms_to_icicle(perm),
+                    value: 0,
+                },
+            ),
+            format_args!("map memory at {addr:#x} with size {size}"),
+        )
     }
 
     pub(crate) fn mem_unmap(&mut self, addr: u64, size: u64) -> PyResult<()> {
         self.invalidate_code_range(addr, size);
-        if !self.vm.cpu.mem.unmap_memory_len(addr, size) {
-            return Err(PyRuntimeError::new_err(format!(
-                "Failed to unmap memory at {addr:#x} with size {size}"
-            )));
-        }
-        Ok(())
+        ffi_bool(
+            self.vm.cpu.mem.unmap_memory_len(addr, size),
+            format_args!("unmap memory at {addr:#x} with size {size}"),
+        )
     }
 
     pub(crate) fn mem_protect(&mut self, addr: u64, size: u64, perms: u8) -> PyResult<()> {
         self.invalidate_code_range(addr, size);
-        self.vm
-            .cpu
-            .mem
-            .update_perm(addr, size, perms_to_icicle(perms))
-            .map_err(|e| {
-                PyRuntimeError::new_err(format!(
-                    "Failed to protect memory at {addr:#x} with size {size}: {e}"
-                ))
-            })?;
+        ffi_result(
+            self.vm
+                .cpu
+                .mem
+                .update_perm(addr, size, perms_to_icicle(perms)),
+            format_args!("protect memory at {addr:#x} with size {size}"),
+        )?;
         Ok(())
     }
 
     pub(crate) fn mem_read(&mut self, addr: u64, size: u64) -> PyResult<Vec<u8>> {
         let mut buf = vec![0; size as usize];
-        self.vm
-            .cpu
-            .mem
-            .read_bytes(addr, &mut buf, perm::NONE)
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to read memory: {e}")))?;
+        ffi_result(
+            self.vm.cpu.mem.read_bytes(addr, &mut buf, perm::NONE),
+            "read memory",
+        )?;
         Ok(buf)
     }
 
@@ -381,12 +373,10 @@ impl Icicle {
         // during `emu.run()` still see the guard.
         let prev_smc = self.vm.cpu.mem.detect_self_modifying_code;
         self.vm.cpu.mem.detect_self_modifying_code = false;
-        let result = self
-            .vm
-            .cpu
-            .mem
-            .write_bytes(addr, &data, perm::NONE)
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to write memory: {e}")));
+        let result = ffi_result(
+            self.vm.cpu.mem.write_bytes(addr, &data, perm::NONE),
+            "write memory",
+        );
         self.vm.cpu.mem.detect_self_modifying_code = prev_smc;
         result
     }
@@ -458,12 +448,10 @@ impl Icicle {
     }
 
     pub(crate) fn remove_breakpoint(&mut self, addr: u64) -> PyResult<()> {
-        if !self.vm.remove_breakpoint(addr) {
-            return Err(PyRuntimeError::new_err(format!(
-                "Failed to remove breakpoint at {addr:#x}"
-            )));
-        }
-        Ok(())
+        ffi_bool(
+            self.vm.remove_breakpoint(addr),
+            format_args!("remove breakpoint at {addr:#x}"),
+        )
     }
 
     #[setter]
@@ -584,6 +572,28 @@ impl Icicle {
             }
         }
         self.vm.cpu.mem.clear_page_modification_log();
+    }
+}
+
+/// Wrap a failing icicle call as `PyRuntimeError("Failed to {what}: {err}")`.
+///
+/// `what` is a `Display` so a static site can pass a `&str` and a site with
+/// address/size context can pass `format_args!(...)` without allocating on the
+/// success path.
+fn ffi_result<T, E: std::fmt::Display>(
+    result: Result<T, E>,
+    what: impl std::fmt::Display,
+) -> PyResult<T> {
+    result.map_err(|e| PyRuntimeError::new_err(format!("Failed to {what}: {e}")))
+}
+
+/// Same as [`ffi_result`], for the icicle APIs that signal failure with a bare
+/// `false` and carry no error value to append.
+fn ffi_bool(ok: bool, what: impl std::fmt::Display) -> PyResult<()> {
+    if ok {
+        Ok(())
+    } else {
+        Err(PyRuntimeError::new_err(format!("Failed to {what}")))
     }
 }
 
