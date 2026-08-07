@@ -430,78 +430,12 @@ impl PyRustSimState {
         }
     }
 
-    /// Enable or disable strict memory permission enforcement on load/store.
-    /// Mirrors angr's STRICT_PAGE_ACCESS option. Default off.
-    #[pyo3(name = "set_enforce_permissions")]
-    pub fn py_set_enforce_permissions(&mut self, enabled: bool) {
-        self.inner.set_enforce_permissions(enabled);
-    }
-
-    /// Whether strict memory permission enforcement is enabled.
-    #[pyo3(name = "enforce_permissions")]
-    pub fn py_enforce_permissions(&self) -> bool {
-        self.inner.enforce_permissions()
-    }
-
-    /// Enable or disable non-executable page enforcement on instruction fetch.
-    /// Mirrors angr's ENABLE_NX option. The X check fires only when this and
-    /// `enforce_permissions` are both on. Default off.
-    #[pyo3(name = "set_enforce_nx")]
-    pub fn py_set_enforce_nx(&mut self, enabled: bool) {
-        self.inner.set_enforce_nx(enabled);
-    }
-
-    /// Whether non-executable page enforcement is enabled.
-    #[pyo3(name = "enforce_nx")]
-    pub fn py_enforce_nx(&self) -> bool {
-        self.inner.enforce_nx()
-    }
-
-    /// Suppress IP concretization for symbolic jump targets.
-    /// Mirrors angr's NO_IP_CONCRETIZATION option. When set, a symbolic IP
-    /// at block boundary routes the state to the unconstrained stash
-    /// silently instead of being enumerated. Default off.
-    #[pyo3(name = "set_no_ip_concretization")]
-    pub fn py_set_no_ip_concretization(&mut self, enabled: bool) {
-        self.inner.set_no_ip_concretization(enabled);
-    }
-
-    /// Whether NO_IP_CONCRETIZATION is active on this state.
-    #[pyo3(name = "no_ip_concretization")]
-    pub fn py_no_ip_concretization(&self) -> bool {
-        self.inner.no_ip_concretization()
-    }
-
-    /// Suppress resolution of symbolic jump targets.
-    /// Mirrors angr's NO_SYMBOLIC_JUMP_RESOLUTION option. When set, a symbolic
-    /// jump target routes the state to the unconstrained stash before
-    /// AddressConcretizer enumeration is attempted. Default off.
-    #[pyo3(name = "set_no_symbolic_jump_resolution")]
-    pub fn py_set_no_symbolic_jump_resolution(&mut self, enabled: bool) {
-        self.inner.set_no_symbolic_jump_resolution(enabled);
-    }
-
-    /// Whether NO_SYMBOLIC_JUMP_RESOLUTION is active on this state.
-    #[pyo3(name = "no_symbolic_jump_resolution")]
-    pub fn py_no_symbolic_jump_resolution(&self) -> bool {
-        self.inner.no_symbolic_jump_resolution()
-    }
-
-    /// Preserve the symbolic IP across block boundaries.
-    /// Mirrors angr's KEEP_IP_SYMBOLIC option. When set, the engine still
-    /// concretizes the next pc, but each fork's IP register is left holding
-    /// the original symbolic expression and no `target == addr` narrowing
-    /// constraint is added. Default off.
-    #[pyo3(name = "set_keep_ip_symbolic")]
-    pub fn py_set_keep_ip_symbolic(&mut self, enabled: bool) {
-        self.inner.set_keep_ip_symbolic(enabled);
-    }
-
-    /// Whether KEEP_IP_SYMBOLIC is active on this state.
-    #[pyo3(name = "keep_ip_symbolic")]
-    pub fn py_keep_ip_symbolic(&self) -> bool {
-        self.inner.keep_ip_symbolic()
-    }
+    // The boolean flag pairs that used to be hand-written here
+    // (`enforce_permissions`, `enforce_nx`, `no_ip_concretization`,
+    // `no_symbolic_jump_resolution`, `keep_ip_symbolic`) are now generated
+    // alongside their `RustSimState` accessors by the `state_flags!` macro in
+    // `state/options.rs`, so a new flag cannot be added at one layer and
+    // forgotten at the other (angr-12jjk.13). The Python names are unchanged.
 
     /// Mirror a symex-relevant SimOption onto this state so native
     /// SimProcedures can branch on it (angr-kzjv6). `name` is the angr option
