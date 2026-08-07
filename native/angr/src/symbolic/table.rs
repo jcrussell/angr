@@ -9,7 +9,7 @@
 //! itself should not be shared across threads.
 
 use std::collections::HashMap;
-use std::rc::Rc;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use parking_lot::RwLock;
@@ -94,15 +94,16 @@ macro_rules! op_unary {
 pub struct RustSymbolTable {
     /// Map from handle ID to RustBV value.
     ///
-    /// Refcount-wrapped so [`RustSymbolTable::fork`] is O(1): the child shares
-    /// the parent's map until either side writes, at which point
-    /// `write_symbols`' [`Rc::make_mut`] clones it exactly once. Same
-    /// copy-on-write shape as `SymContext::symbol_table` (angr-0dgj), which
-    /// this deliberately mirrors — [`Rc`] rather than `Arc` because [`RustBV`]
-    /// holds Z3 ASTs and is neither `Send` nor `Sync`, so the table is already
-    /// owner-thread-only (see the module docs and `solver.rs`'s `unsendable`
-    /// pyclass).
-    symbols: RwLock<Rc<HashMap<u64, RustBV>>>,
+    /// `Arc`-wrapped so [`RustSymbolTable::fork`] is O(1): the child shares the
+    /// parent's map until either side writes, at which point `write_symbols`'
+    /// [`Arc::make_mut`] clones it exactly once. Same copy-on-write shape as
+    /// `SymContext::symbol_table` (angr-0dgj), which this deliberately mirrors.
+    ///
+    /// This is one of the crate's `!Send` copy-on-write handles ([`RustBV`]
+    /// holds Z3 ASTs), so it is built via [`crate::arc_shared`] rather than a
+    /// local `#[allow(clippy::arc_with_non_send_sync)]` — see that helper's
+    /// docs for why the suppression is sound.
+    symbols: RwLock<Arc<HashMap<u64, RustBV>>>,
     /// Counter for generating unique handle IDs.
     next_id: AtomicU64,
 }
@@ -111,7 +112,7 @@ impl RustSymbolTable {
     /// Create a new empty symbol table.
     pub fn new() -> Self {
         RustSymbolTable {
-            symbols: RwLock::new(Rc::new(HashMap::new())),
+            symbols: RwLock::new(crate::arc_shared(HashMap::new())),
             next_id: AtomicU64::new(0),
         }
     }
@@ -127,7 +128,7 @@ impl RustSymbolTable {
         F: FnOnce(&mut HashMap<u64, RustBV>) -> R,
     {
         let mut guard = self.symbols.write();
-        f(Rc::make_mut(&mut guard))
+        f(Arc::make_mut(&mut guard))
     }
 
     /// Generate the next unique handle ID.
@@ -347,14 +348,14 @@ impl RustSymbolTable {
     /// Fork the symbol table, creating a copy-on-write child with the same
     /// values.
     ///
-    /// O(1): the child shares the parent's map behind an [`Rc`]. The `HashMap`
+    /// O(1): the child shares the parent's map behind an [`Arc`]. The `HashMap`
     /// clone is deferred to the first mutation on *either* side (see
     /// `write_symbols`) and never happens at all for the common
     /// fork-then-read-only case. Handle ids stay valid across the fork because
     /// `next_id` continues from the parent's counter, so neither side reissues
     /// an id the other already bound.
     pub fn fork(&self) -> Self {
-        let symbols = Rc::clone(&self.symbols.read());
+        let symbols = Arc::clone(&self.symbols.read());
         let next_id = self.next_id.load(Ordering::SeqCst);
         RustSymbolTable {
             symbols: RwLock::new(symbols),
