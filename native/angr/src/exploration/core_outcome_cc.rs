@@ -26,7 +26,20 @@ pub(crate) struct CcSnapshot {
 }
 
 impl CcSnapshot {
-    /// Mirror of `RustExplorationManager::write_syscall_return`.
+    /// Write a syscall's return value into the ABI's return register, splitting
+    /// off the errno flag on ABIs that carry one in a second register.
+    ///
+    /// On a `syscall_error_register` ABI (MIPS: `$a3`), a return at or above
+    /// `errno_start` (unsigned compare) means failure: the error register is
+    /// set to all-ones and
+    /// the return register to the negated value. Everything is expressed as
+    /// `ite` over the symbolic return, so a return value the solver has not
+    /// pinned stays symbolic in both registers.
+    ///
+    /// The sole implementation — unlike its `extract_*_args` /
+    /// `setup_native_subcall` siblings there is no live-CC twin to share with;
+    /// the single-threaded path routes syscall returns through the same post-step
+    /// handlers in `core_outcome_handlers.rs`.
     pub(crate) fn write_syscall_return(&self, state: &mut RustSimState, ret_reg: u32, ret: RustBV) {
         let Some((err_reg, errno_start)) = self.syscall_error_register else {
             state.set_register_by_offset(ret_reg, ret);
@@ -46,78 +59,42 @@ impl CcSnapshot {
         state.set_register_by_offset(err_reg, err_val);
     }
 
-    /// Mirror of `RustExplorationManager::extract_procedure_args`.
+    /// Extract procedure arguments from this scalar snapshot.
+    ///
+    /// Thin adapter over [`extract_args_with_abi`], which holds the extraction
+    /// logic and documents the error semantics; the single-threaded
+    /// `RustExplorationManager::extract_procedure_args` adapts the same helper
+    /// from the live `Box<dyn CallingConvention>`.
     pub(crate) fn extract_procedure_args(
         &self,
         state: &RustSimState,
         num_args: usize,
     ) -> Result<Vec<RustBV>, crate::arch::ExtractionError> {
-        use crate::arch::ExtractionError;
-        let ptr_size = self.pointer_size;
-        let mut args = Vec::with_capacity(num_args);
-
-        let ctx = state.solver().borrow();
-
-        for &offset in self.arg_registers.iter().take(num_args) {
-            args.push(state.get_register_by_offset(offset, ptr_size));
-        }
-
-        if args.len() < num_args {
-            let sp = state.get_sp().as_u64().ok_or(ExtractionError::SpSymbolic)?;
-            let stack_start = sp + self.stack_arg_offset;
-            let already = args.len();
-            for i in 0..(num_args - already) {
-                let addr = stack_start + (i as u64 * ptr_size as u64);
-                let value = state.memory_load(addr, ptr_size).map_err(|_| {
-                    ExtractionError::StackUnmapped {
-                        arg_index: already + i,
-                        addr,
-                    }
-                })?;
-                args.push(value);
-            }
-        }
-
-        drop(ctx);
-        Ok(args)
+        let abi = ArgExtractAbi {
+            arg_registers: &self.arg_registers,
+            pointer_size: self.pointer_size,
+            stack_arg_offset: Some(self.stack_arg_offset),
+        };
+        extract_args_with_abi(&abi, state, num_args)
     }
 
-    /// Mirror of `RustExplorationManager::extract_syscall_args`.
+    /// Extract syscall arguments from this scalar snapshot.
+    ///
+    /// Same adapter shape as [`CcSnapshot::extract_procedure_args`], but over
+    /// the syscall register window and its (usually absent) stack window — see
+    /// [`extract_args_with_abi`] and the twin
+    /// `RustExplorationManager::extract_syscall_args`.
     pub(crate) fn extract_syscall_args(
         &self,
         state: &RustSimState,
         num_args: usize,
     ) -> Result<Vec<RustBV>, crate::arch::ExtractionError> {
-        use crate::arch::ExtractionError;
-        let ptr_size = self.pointer_size;
-        let mut args = Vec::with_capacity(num_args);
-        for &offset in self.syscall_arg_registers.iter().take(num_args) {
-            args.push(state.get_register_by_offset(offset, ptr_size));
-        }
-
-        if args.len() < num_args {
-            let stack_offset =
-                self.syscall_stack_arg_offset
-                    .ok_or(ExtractionError::RegisterOverflow {
-                        requested: num_args,
-                        available: self.syscall_arg_registers.len(),
-                    })?;
-            let sp = state.get_sp().as_u64().ok_or(ExtractionError::SpSymbolic)?;
-            let stack_start = sp + stack_offset;
-            let already = args.len();
-            for i in 0..(num_args - already) {
-                let addr = stack_start + (i as u64 * ptr_size as u64);
-                let value = state.memory_load(addr, ptr_size).map_err(|_| {
-                    ExtractionError::StackUnmapped {
-                        arg_index: already + i,
-                        addr,
-                    }
-                })?;
-                args.push(value);
-            }
-        }
-
-        Ok(args)
+        let abi = ArgExtractAbi {
+            arg_registers: &self.syscall_arg_registers,
+            pointer_size: self.pointer_size,
+            stack_arg_offset: self.syscall_stack_arg_offset,
+        };
+        extract_args_with_abi(&abi, state, num_args)
     }
 
     /// Set up a native sub-call from this scalar snapshot (no `&self` on the

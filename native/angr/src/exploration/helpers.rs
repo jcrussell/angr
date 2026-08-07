@@ -541,64 +541,34 @@ impl RustExplorationManager {
     /// Extract procedure arguments from state registers (and stack, when
     /// `num_args` exceeds the register portion of the calling convention).
     ///
-    /// Returns an [`ExtractionError`] instead of silently zero-padding when
-    /// the stack pointer is symbolic or a stack slot cannot be read. Callers
-    /// (the native-procedure dispatchers in `stepping.rs` / `run_loop_single.rs`)
-    /// treat any error as a signal to skip the native fast path and fall
-    /// through to the Python SimProcedure callback rather than handing the
-    /// handler a fabricated `RustBV::zero` that would silently mask a real
-    /// stack-setup bug (mirror of the `angr-ydli` fix to the trait method).
+    /// Thin adapter over [`extract_args_with_abi`], which holds the extraction
+    /// logic and documents the error semantics; the parallel post-step path
+    /// adapts the same helper from the scalar `CcSnapshot`.
     pub(crate) fn extract_procedure_args(
         &self,
         state: &RustSimState,
         num_args: usize,
     ) -> Result<Vec<RustBV>, ExtractionError> {
-        let arg_regs = self.environment.calling_convention.arg_registers();
-        let ptr_size = self.environment.calling_convention.pointer_size();
-        let mut args = Vec::with_capacity(num_args);
-
-        let ctx = state.solver().borrow();
-
-        for &offset in arg_regs.iter().take(num_args) {
-            args.push(state.get_register_by_offset(offset, ptr_size));
-        }
-
-        if args.len() < num_args {
-            let sp = state.get_sp().as_u64().ok_or(ExtractionError::SpSymbolic)?;
-            let stack_start = sp + self.environment.calling_convention.stack_arg_offset();
-            let already = args.len();
-            for i in 0..(num_args - already) {
-                let addr = stack_start + (i as u64 * ptr_size as u64);
-                let value = state.memory_load(addr, ptr_size).map_err(|_| {
-                    ExtractionError::StackUnmapped {
-                        arg_index: already + i,
-                        addr,
-                    }
-                })?;
-                args.push(value);
-            }
-        }
-
-        drop(ctx);
-        Ok(args)
+        let cc = &self.environment.calling_convention;
+        let abi = ArgExtractAbi {
+            arg_registers: cc.arg_registers(),
+            pointer_size: cc.pointer_size(),
+            stack_arg_offset: Some(cc.stack_arg_offset()),
+        };
+        extract_args_with_abi(&abi, state, num_args)
     }
 
     /// Extract syscall arguments from state registers.
     ///
     /// Uses the calling convention's `syscall_arg_registers()` rather than
     /// `arg_registers()`. On Linux amd64 these differ at the 4th argument
-    /// (R10 vs RCX). Most syscall ABIs expose every argument in registers, so
-    /// a request for more arguments than the register window holds returns
-    /// [`ExtractionError::RegisterOverflow`] and the caller falls through to
-    /// the Python syscall callback instead of running a native handler with
-    /// fabricated zero arguments.
+    /// (R10 vs RCX). Only MIPS O32 spills syscall args (5+ at `sp+16`); every
+    /// other syscall ABI passes `None` for the stack window, so an over-wide
+    /// request reports [`ExtractionError::RegisterOverflow`].
     ///
-    /// The exception is MIPS O32, whose syscall ABI spills args 5+ onto the
-    /// stack at `sp+16` (`syscall_stack_arg_offset()`). For those ABIs the
-    /// remaining args are read from the stack, but only when SP is concrete
-    /// and the slots are mapped — a symbolic SP ([`ExtractionError::SpSymbolic`])
-    /// or an unmapped slot ([`ExtractionError::StackUnmapped`]) still falls
-    /// through to Python rather than fabricating values.
+    /// Thin adapter over [`extract_args_with_abi`], which holds the extraction
+    /// logic and documents the error semantics; the parallel post-step path
+    /// adapts the same helper from the scalar `CcSnapshot`.
     ///
     /// Retained as a direct-call test harness (`helpers_tests.rs`); the
     /// production syscall path now extracts via `CcSnapshot::extract_syscall_args`
@@ -611,39 +581,12 @@ impl RustExplorationManager {
         num_args: usize,
     ) -> Result<Vec<RustBV>, ExtractionError> {
         let cc = &self.environment.calling_convention;
-        let arg_regs = cc.syscall_arg_registers();
-        let ptr_size = cc.pointer_size();
-        let mut args = Vec::with_capacity(num_args);
-        for &offset in arg_regs.iter().take(num_args) {
-            args.push(state.get_register_by_offset(offset, ptr_size));
-        }
-
-        if args.len() < num_args {
-            // Need stack args. Only ABIs that spill syscall args to the stack
-            // (currently MIPS O32) provide a syscall stack offset; otherwise
-            // report RegisterOverflow so the caller falls through to Python.
-            let stack_offset =
-                cc.syscall_stack_arg_offset()
-                    .ok_or(ExtractionError::RegisterOverflow {
-                        requested: num_args,
-                        available: arg_regs.len(),
-                    })?;
-            let sp = state.get_sp().as_u64().ok_or(ExtractionError::SpSymbolic)?;
-            let stack_start = sp + stack_offset;
-            let already = args.len();
-            for i in 0..(num_args - already) {
-                let addr = stack_start + (i as u64 * ptr_size as u64);
-                let value = state.memory_load(addr, ptr_size).map_err(|_| {
-                    ExtractionError::StackUnmapped {
-                        arg_index: already + i,
-                        addr,
-                    }
-                })?;
-                args.push(value);
-            }
-        }
-
-        Ok(args)
+        let abi = ArgExtractAbi {
+            arg_registers: cc.syscall_arg_registers(),
+            pointer_size: cc.pointer_size(),
+            stack_arg_offset: cc.syscall_stack_arg_offset(),
+        };
+        extract_args_with_abi(&abi, state, num_args)
     }
 
     /// Get the caller's return address at a call boundary, resolved through the
@@ -696,6 +639,79 @@ impl RustExplorationManager {
             0
         })
     }
+}
+
+/// The ABI facts [`extract_args_with_abi`] needs, decoupled from where they
+/// came from.
+///
+/// The single-threaded path reads them off the manager's
+/// `Box<dyn CallingConvention>`; the parallel post-step path reads them off the
+/// scalar `CcSnapshot` (the trait object is not `Clone`). Both funnel through
+/// this borrow so the extraction logic exists once (angr-sqfj8.145) — the same
+/// adapter shape [`SubcallAbi`] uses for `setup_native_subcall_with_abi`.
+///
+/// `arg_registers` is the *procedure* or *syscall* register window depending on
+/// which caller built it; on Linux amd64 those differ at the 4th argument
+/// (R10 vs RCX).
+pub(crate) struct ArgExtractAbi<'a> {
+    pub(crate) arg_registers: &'a [u32],
+    pub(crate) pointer_size: u32,
+    /// Byte offset from SP of the first stack-spilled argument, or `None` for
+    /// an ABI that has no stack window (every syscall ABI except MIPS O32).
+    pub(crate) stack_arg_offset: Option<u64>,
+}
+
+/// Extract `num_args` ABI arguments from a state's registers, spilling to the
+/// stack once the register window is exhausted.
+///
+/// Returns an [`ExtractionError`] instead of silently zero-padding when the ABI
+/// has no stack window ([`ExtractionError::RegisterOverflow`]), the stack
+/// pointer is symbolic ([`ExtractionError::SpSymbolic`]), or a stack slot
+/// cannot be read ([`ExtractionError::StackUnmapped`]). Callers — the native
+/// procedure/syscall dispatchers in `core_outcome_handlers.rs` and
+/// `run_loop_single.rs` — treat any error as a signal to skip the native fast
+/// path and fall through to the Python callback rather than handing the handler
+/// a fabricated `RustBV::zero` that would mask a real stack-setup bug (the
+/// angr-ydli fix to the trait method).
+///
+/// Every procedure ABI supplies a stack window, so `RegisterOverflow` is
+/// reachable only from the syscall adapters. MIPS O32 is the one syscall ABI
+/// that spills (args 5+ at `sp+16`).
+pub(crate) fn extract_args_with_abi(
+    abi: &ArgExtractAbi<'_>,
+    state: &RustSimState,
+    num_args: usize,
+) -> Result<Vec<RustBV>, ExtractionError> {
+    let ptr_size = abi.pointer_size;
+    let mut args = Vec::with_capacity(num_args);
+    for &offset in abi.arg_registers.iter().take(num_args) {
+        args.push(state.get_register_by_offset(offset, ptr_size));
+    }
+
+    if args.len() < num_args {
+        let stack_offset = abi
+            .stack_arg_offset
+            .ok_or(ExtractionError::RegisterOverflow {
+                requested: num_args,
+                available: abi.arg_registers.len(),
+            })?;
+        let sp = state.get_sp().as_u64().ok_or(ExtractionError::SpSymbolic)?;
+        let stack_start = sp + stack_offset;
+        let already = args.len();
+        for i in 0..(num_args - already) {
+            let addr = stack_start + (i as u64 * ptr_size as u64);
+            let value =
+                state
+                    .memory_load(addr, ptr_size)
+                    .map_err(|_| ExtractionError::StackUnmapped {
+                        arg_index: already + i,
+                        addr,
+                    })?;
+            args.push(value);
+        }
+    }
+
+    Ok(args)
 }
 
 /// Prepare the per-callback solver context for a Python round-trip.

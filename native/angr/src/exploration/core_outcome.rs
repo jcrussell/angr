@@ -69,6 +69,7 @@ use crate::symbolic::RustBV;
 use crate::syscalls::{NativeSyscallRegistry, SyscallOutcome};
 
 use super::callback_types::SimProcCall;
+use super::helpers::{ArgExtractAbi, extract_args_with_abi};
 use super::step_core::StepContext;
 use super::stepping::{SubcallAbi, SubcallSetupError, setup_native_subcall_with_abi};
 
