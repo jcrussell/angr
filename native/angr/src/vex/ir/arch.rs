@@ -54,6 +54,10 @@ pub enum JumpKind {
     Sys_int145,
     Sys_int210,
     Sys_sysenter,
+    /// `int N` for an N with no dedicated `Ijk_Sys_intNNN` tag.
+    Sys_int,
+    /// `int 0x20`.
+    Sys_int32,
     /// Client request (Valgrind).
     ClientReq,
     /// Yield (threading).
@@ -76,6 +80,24 @@ pub enum JumpKind {
     ExtV128,
     /// Extended exit.
     Extension,
+    /// Jump without redirection (Valgrind translation-table hint).
+    NoRedir,
+    /// Guest hit an illegal instruction (e.g. `ud2`).
+    SigILL,
+    /// Guest hit a breakpoint/trap instruction (e.g. `int3`).
+    SigTRAP,
+    /// Guest took a segmentation fault.
+    SigSEGV,
+    /// Guest took a bus error.
+    SigBUS,
+    /// Guest took a floating-point exception.
+    SigFPE,
+    /// Guest divided by zero.
+    SigFPE_IntDiv,
+    /// Guest integer operation overflowed.
+    SigFPE_IntOvf,
+    /// Guest executed a privileged instruction from user mode.
+    Privileged,
 }
 
 impl JumpKind {
@@ -90,6 +112,36 @@ impl JumpKind {
                 | JumpKind::Sys_int145
                 | JumpKind::Sys_int210
                 | JumpKind::Sys_sysenter
+                | JumpKind::Sys_int
+                | JumpKind::Sys_int32
+        )
+    }
+
+    /// Check if this exit delivers a guest trap/signal rather than transferring
+    /// control normally.
+    ///
+    /// Python treats these as unexecutable: `engines/failure.py`'s
+    /// `SimEngineFailure::process_successors` raises `AngrExitError` for any
+    /// `Ijk_Sig*` parent jumpkind, so such a successor always ends up in the
+    /// errored stash. Before angr-sqfj8.111 `parse_jumpkind` had no variants
+    /// for them at all and folded every one into `Boring`, so a native `int3`
+    /// or `ud2` continued executing as an ordinary fallthrough — a silently
+    /// wrong answer with no diagnostic trail.
+    ///
+    /// `Ijk_Privileged` joins them: the guest took a privilege fault, and
+    /// continuing straight-line is equally wrong. `Ijk_NoRedir` does not — it
+    /// is a Valgrind translation hint on an otherwise ordinary jump.
+    pub fn is_trap(&self) -> bool {
+        matches!(
+            self,
+            JumpKind::SigILL
+                | JumpKind::SigTRAP
+                | JumpKind::SigSEGV
+                | JumpKind::SigBUS
+                | JumpKind::SigFPE
+                | JumpKind::SigFPE_IntDiv
+                | JumpKind::SigFPE_IntOvf
+                | JumpKind::Privileged
         )
     }
 
@@ -118,6 +170,8 @@ impl JumpKind {
             JumpKind::Sys_int145 => "Ijk_Sys_int145",
             JumpKind::Sys_int210 => "Ijk_Sys_int210",
             JumpKind::Sys_sysenter => "Ijk_Sys_sysenter",
+            JumpKind::Sys_int => "Ijk_Sys_int",
+            JumpKind::Sys_int32 => "Ijk_Sys_int32",
             JumpKind::ClientReq => "Ijk_ClientReq",
             JumpKind::Yield => "Ijk_Yield",
             JumpKind::EmWarn => "Ijk_EmWarn",
@@ -129,6 +183,15 @@ impl JumpKind {
             JumpKind::FlushDCacheLine => "Ijk_FlushDCacheLine",
             JumpKind::ExtV128 => "Ijk_ExtV128",
             JumpKind::Extension => "Ijk_Extension",
+            JumpKind::NoRedir => "Ijk_NoRedir",
+            JumpKind::SigILL => "Ijk_SigILL",
+            JumpKind::SigTRAP => "Ijk_SigTRAP",
+            JumpKind::SigSEGV => "Ijk_SigSEGV",
+            JumpKind::SigBUS => "Ijk_SigBUS",
+            JumpKind::SigFPE => "Ijk_SigFPE",
+            JumpKind::SigFPE_IntDiv => "Ijk_SigFPE_IntDiv",
+            JumpKind::SigFPE_IntOvf => "Ijk_SigFPE_IntOvf",
+            JumpKind::Privileged => "Ijk_Privileged",
         }
     }
 }

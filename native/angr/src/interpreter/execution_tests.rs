@@ -171,3 +171,76 @@ fn run_error_kind_other_panic_variants_are_fatal() {
         assert_eq!(e.run_error_kind(), RunErrorKind::Fatal);
     }
 }
+
+// angr-sqfj8.111: a block whose default exit is a VEX trap (Ijk_Sig*,
+// Ijk_Privileged) must stop the run with a Fatal error — Python's
+// engines/failure.py raises AngrExitError on such a successor, landing it in
+// the errored stash. Before the fix `parse_jumpkind` had no variants for
+// these tags, so they arrived as Boring and the interpreter kept executing
+// straight through the trap.
+#[test]
+fn trap_jumpkind_block_end_errors_instead_of_continuing() {
+    for (jk, tag) in [
+        (JumpKind::SigTRAP, "Ijk_SigTRAP"),
+        (JumpKind::SigILL, "Ijk_SigILL"),
+        (JumpKind::SigSEGV, "Ijk_SigSEGV"),
+        (JumpKind::SigFPE_IntDiv, "Ijk_SigFPE_IntDiv"),
+        (JumpKind::Privileged, "Ijk_Privileged"),
+    ] {
+        let ctx = SymContext::new_mock();
+        let mut interp = new_interp(&ctx);
+        interp.add_concrete_memory(0x1000, vec![0u8; 0x1000]);
+        let mut irsb = make_irsb(0x1000, 4);
+        irsb.next = IRExpr::Const(IRConst::U64(0x1004));
+        irsb.jumpkind = jk;
+        interp.cache_block(0x1000, irsb);
+        interp.set_pc(0x1000);
+
+        let callbacks = PythonCallbacks::new();
+        let (result, _blocks, _forks) =
+            interp.run_until_event(&callbacks, 4, &std::collections::HashSet::new(), false);
+        match result {
+            RunResult::Error {
+                message,
+                addr,
+                kind,
+            } => {
+                assert_eq!(addr, 0x1004, "{tag} should error at the trap target");
+                assert_eq!(
+                    kind,
+                    RunErrorKind::Fatal,
+                    "{tag} must reach the errored stash"
+                );
+                assert!(
+                    message.contains(tag),
+                    "{tag} missing from message: {message}"
+                );
+            }
+            other => panic!("expected Error for {tag}, got {other:?}"),
+        }
+        // PC points at the trap target, matching the Python successor.
+        assert_eq!(interp.get_pc(), 0x1004);
+    }
+}
+
+// The converse: Ijk_NoRedir is an ordinary jump with a Valgrind translation
+// hint, so it must keep executing rather than tripping the trap check above.
+#[test]
+fn noredir_jumpkind_is_not_treated_as_a_trap() {
+    let ctx = SymContext::new_mock();
+    let mut interp = new_interp(&ctx);
+    interp.add_concrete_memory(0x1000, vec![0u8; 0x1000]);
+    let mut irsb = make_irsb(0x1000, 4);
+    irsb.next = IRExpr::Const(IRConst::U64(0x1004));
+    irsb.jumpkind = JumpKind::NoRedir;
+    interp.cache_block(0x1000, irsb);
+    interp.set_pc(0x1000);
+
+    let callbacks = PythonCallbacks::new();
+    let (result, _blocks, _forks) =
+        interp.run_until_event(&callbacks, 1, &std::collections::HashSet::new(), false);
+    assert!(
+        !matches!(result, RunResult::Error { .. }),
+        "Ijk_NoRedir must not error, got {result:?}"
+    );
+}

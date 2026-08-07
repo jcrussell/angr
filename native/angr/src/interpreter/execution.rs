@@ -139,6 +139,31 @@ impl<'a> VEXInterpreter<'a> {
                             next_addr,
                             jumpkind,
                         } => {
+                            // angr-sqfj8.111: a trap/signal exit (Ijk_Sig*,
+                            // Ijk_Privileged) is not executable. Python's
+                            // `engines/failure.py::SimEngineFailure::process_successors`
+                            // raises AngrExitError as soon as such a successor
+                            // is stepped, landing it in the errored stash; do
+                            // the same here rather than continuing straight
+                            // through as if it were an ordinary jump. The PC is
+                            // advanced first so the errored state points at the
+                            // trap target, matching the Python successor.
+                            if jumpkind.is_trap() {
+                                self.pc = next_addr;
+                                let forks = self.take_deferred_forks();
+                                return (
+                                    RunResult::Error {
+                                        message: format!(
+                                            "unexecutable VEX trap exit {} at {next_addr:#x}",
+                                            jumpkind.ijk_name()
+                                        ),
+                                        addr: next_addr,
+                                        kind: crate::callbacks::RunErrorKind::Fatal,
+                                    },
+                                    blocks_executed,
+                                    forks,
+                                );
+                            }
                             // Track call stack before updating PC
                             if jumpkind.is_call() {
                                 let sp_offset = self.registers.arch().sp_offset();

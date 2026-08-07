@@ -1165,6 +1165,8 @@ pub fn parse_jumpkind(jk_str: &str) -> super::ir::JumpKind {
         "Ijk_Sys_int145" => JumpKind::Sys_int145,
         "Ijk_Sys_int210" => JumpKind::Sys_int210,
         "Ijk_Sys_sysenter" => JumpKind::Sys_sysenter,
+        "Ijk_Sys_int" => JumpKind::Sys_int,
+        "Ijk_Sys_int32" => JumpKind::Sys_int32,
         "Ijk_ClientReq" => JumpKind::ClientReq,
         "Ijk_Yield" => JumpKind::Yield,
         "Ijk_EmWarn" => JumpKind::EmWarn,
@@ -1176,7 +1178,26 @@ pub fn parse_jumpkind(jk_str: &str) -> super::ir::JumpKind {
         "Ijk_FlushDCacheLine" => JumpKind::FlushDCacheLine,
         "Ijk_ExtV128" => JumpKind::ExtV128,
         "Ijk_Extension" => JumpKind::Extension,
-        _ => JumpKind::Boring,
+        "Ijk_NoRedir" => JumpKind::NoRedir,
+        "Ijk_SigILL" => JumpKind::SigILL,
+        "Ijk_SigTRAP" => JumpKind::SigTRAP,
+        "Ijk_SigSEGV" => JumpKind::SigSEGV,
+        "Ijk_SigBUS" => JumpKind::SigBUS,
+        "Ijk_SigFPE" => JumpKind::SigFPE,
+        "Ijk_SigFPE_IntDiv" => JumpKind::SigFPE_IntDiv,
+        "Ijk_SigFPE_IntOvf" => JumpKind::SigFPE_IntOvf,
+        "Ijk_Privileged" => JumpKind::Privileged,
+        // SILENT(cat-c): every `IRJumpKind` in vendor/pyvex_ffi.h now has an
+        // arm above, so reaching this one means the lifter emitted a tag this
+        // build does not know. Boring is the only non-terminal answer we can
+        // give, but it is a wrong-answer risk (angr-sqfj8.111 was exactly that
+        // for the trap kinds), hence the warn.
+        _ => {
+            log::warn!(
+                "parse_jumpkind: unrecognized VEX jumpkind {jk_str:?}, treating as Ijk_Boring"
+            );
+            JumpKind::Boring
+        }
     }
 }
 

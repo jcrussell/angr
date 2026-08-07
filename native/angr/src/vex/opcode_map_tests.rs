@@ -112,6 +112,106 @@ fn test_parse_jumpkind() {
     ] {
         assert_eq!(parse_jumpkind(jk.ijk_name()), jk);
     }
+
+    // angr-sqfj8.111: the trap/signal/privileged/int kinds were the next
+    // batch to fall through to Boring, masking guest traps as ordinary
+    // fallthrough exits.
+    for jk in [
+        super::super::ir::JumpKind::NoRedir,
+        super::super::ir::JumpKind::SigILL,
+        super::super::ir::JumpKind::SigTRAP,
+        super::super::ir::JumpKind::SigSEGV,
+        super::super::ir::JumpKind::SigBUS,
+        super::super::ir::JumpKind::SigFPE,
+        super::super::ir::JumpKind::SigFPE_IntDiv,
+        super::super::ir::JumpKind::SigFPE_IntOvf,
+        super::super::ir::JumpKind::Privileged,
+        super::super::ir::JumpKind::Sys_int,
+        super::super::ir::JumpKind::Sys_int32,
+    ] {
+        assert_eq!(parse_jumpkind(jk.ijk_name()), jk);
+    }
+}
+
+/// Every `IRJumpKind` tag in `vendor/pyvex_ffi.h` must parse to a
+/// non-`Boring` variant (angr-sqfj8.111). Guards the whole class rather
+/// than the specific kinds this bead added: a future VEX bump that grows
+/// the C enum should fail here, not silently execute a trap as
+/// fallthrough.
+#[test]
+fn test_parse_jumpkind_covers_every_vex_tag() {
+    for tag in [
+        "Ijk_Boring",
+        "Ijk_Call",
+        "Ijk_Ret",
+        "Ijk_ClientReq",
+        "Ijk_Yield",
+        "Ijk_EmWarn",
+        "Ijk_EmFail",
+        "Ijk_NoDecode",
+        "Ijk_MapFail",
+        "Ijk_InvalICache",
+        "Ijk_FlushDCache",
+        "Ijk_NoRedir",
+        "Ijk_SigILL",
+        "Ijk_SigTRAP",
+        "Ijk_SigSEGV",
+        "Ijk_SigBUS",
+        "Ijk_SigFPE",
+        "Ijk_SigFPE_IntDiv",
+        "Ijk_SigFPE_IntOvf",
+        "Ijk_Privileged",
+        "Ijk_Sys_syscall",
+        "Ijk_Sys_int",
+        "Ijk_Sys_int32",
+        "Ijk_Sys_int128",
+        "Ijk_Sys_int129",
+        "Ijk_Sys_int130",
+        "Ijk_Sys_int145",
+        "Ijk_Sys_int210",
+        "Ijk_Sys_sysenter",
+    ] {
+        let jk = parse_jumpkind(tag);
+        assert_eq!(jk.ijk_name(), tag, "{tag} did not round-trip");
+        if tag != "Ijk_Boring" {
+            assert_ne!(
+                jk,
+                super::super::ir::JumpKind::Boring,
+                "{tag} fell through to Boring"
+            );
+        }
+    }
+}
+
+/// `Ijk_Sys_int`/`Ijk_Sys_int32` are syscall exits, not ordinary jumps:
+/// angr classifies on the `Ijk_Sys` prefix (`engines/successors.py`), so
+/// `is_syscall` must too. `Ijk_Sig*`/`Ijk_Privileged` are traps and must
+/// not be mistaken for either.
+#[test]
+fn test_jumpkind_syscall_and_trap_classification() {
+    use super::super::ir::JumpKind;
+
+    for jk in [JumpKind::Sys_int, JumpKind::Sys_int32] {
+        assert!(jk.is_syscall(), "{} must be a syscall", jk.ijk_name());
+        assert!(!jk.is_trap(), "{} must not be a trap", jk.ijk_name());
+    }
+    for jk in [
+        JumpKind::SigILL,
+        JumpKind::SigTRAP,
+        JumpKind::SigSEGV,
+        JumpKind::SigBUS,
+        JumpKind::SigFPE,
+        JumpKind::SigFPE_IntDiv,
+        JumpKind::SigFPE_IntOvf,
+        JumpKind::Privileged,
+    ] {
+        assert!(jk.is_trap(), "{} must be a trap", jk.ijk_name());
+        assert!(!jk.is_syscall(), "{} must not be a syscall", jk.ijk_name());
+        assert!(!jk.is_call() && !jk.is_ret());
+    }
+    // NoRedir is an ordinary jump with a translation hint, not a trap.
+    assert!(!JumpKind::NoRedir.is_trap());
+    assert!(!JumpKind::NoRedir.is_syscall());
 }
 
 #[test]
