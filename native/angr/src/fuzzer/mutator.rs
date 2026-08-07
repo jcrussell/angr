@@ -11,7 +11,7 @@ use libafl::{
 use libafl_bolts::Named;
 use pyo3::{exceptions::PyTypeError, prelude::*};
 
-use crate::fuzzer::S;
+use crate::fuzzer::{S, delegate::delegate_two_variant};
 
 /// A deterministic mutator that cycles through a predefined sequence of byte values.
 ///
@@ -62,28 +62,19 @@ pub(crate) enum DynMutator {
     Deterministic(DeterministicMutator),
 }
 
+// Both impls are plain forwards to the active variant (angr-12jjk.25).
 impl Named for DynMutator {
-    fn name(&self) -> &Cow<'static, str> {
-        match self {
-            DynMutator::Havoc(m) => m.name(),
-            DynMutator::Deterministic(m) => m.name(),
-        }
+    delegate_two_variant! {
+        DynMutator { Havoc, Deterministic }
+        fn name(&self) -> &Cow<'static, str>;
     }
 }
 
 impl Mutator<BytesInput, S> for DynMutator {
-    fn mutate(&mut self, state: &mut S, input: &mut BytesInput) -> Result<MutationResult, Error> {
-        match self {
-            DynMutator::Havoc(m) => m.mutate(state, input),
-            DynMutator::Deterministic(m) => m.mutate(state, input),
-        }
-    }
-
-    fn post_exec(&mut self, state: &mut S, new_corpus_id: Option<CorpusId>) -> Result<(), Error> {
-        match self {
-            DynMutator::Havoc(m) => m.post_exec(state, new_corpus_id),
-            DynMutator::Deterministic(m) => m.post_exec(state, new_corpus_id),
-        }
+    delegate_two_variant! {
+        DynMutator { Havoc, Deterministic }
+        fn mutate(&mut self, state: &mut S, input: &mut BytesInput) -> Result<MutationResult, Error>;
+        fn post_exec(&mut self, state: &mut S, new_corpus_id: Option<CorpusId>) -> Result<(), Error>;
     }
 }
 

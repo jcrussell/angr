@@ -11,6 +11,8 @@ use pyo3::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::fuzzer::delegate::delegate_two_variant;
+
 // A Send+Sync wrapper of InMemoryCorpus for use in PyInMemoryCorpus.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SerializedCorpus<I> {
@@ -229,142 +231,33 @@ pub(crate) enum DynCorpus<I> {
     OnDisk(OnDiskCorpus<I>),
 }
 
-// Have Dynamic Corpus implement Corpus<I> trait
+// Have Dynamic Corpus implement Corpus<I> trait. Every method is a plain
+// forward to the active variant, so the bodies are generated (angr-12jjk.25).
 impl<I> Corpus<I> for DynCorpus<I>
 where
     I: libafl::inputs::Input,
 {
-    fn count(&self) -> usize {
-        match self {
-            DynCorpus::InMem(c) => c.count(),
-            DynCorpus::OnDisk(c) => c.count(),
-        }
-    }
-
-    fn count_disabled(&self) -> usize {
-        match self {
-            DynCorpus::InMem(c) => c.count_disabled(),
-            DynCorpus::OnDisk(c) => c.count_disabled(),
-        }
-    }
-
-    fn count_all(&self) -> usize {
-        match self {
-            DynCorpus::InMem(c) => c.count_all(),
-            DynCorpus::OnDisk(c) => c.count_all(),
-        }
-    }
-
-    fn add(&mut self, testcase: Testcase<I>) -> Result<CorpusId, Error> {
-        match self {
-            DynCorpus::InMem(c) => c.add(testcase),
-            DynCorpus::OnDisk(c) => c.add(testcase),
-        }
-    }
-
-    fn add_disabled(&mut self, testcase: Testcase<I>) -> Result<CorpusId, Error> {
-        match self {
-            DynCorpus::InMem(c) => c.add_disabled(testcase),
-            DynCorpus::OnDisk(c) => c.add_disabled(testcase),
-        }
-    }
-
-    fn replace(&mut self, id: CorpusId, testcase: Testcase<I>) -> Result<Testcase<I>, Error> {
-        match self {
-            DynCorpus::InMem(c) => c.replace(id, testcase),
-            DynCorpus::OnDisk(c) => c.replace(id, testcase),
-        }
-    }
-
-    fn remove(&mut self, id: CorpusId) -> Result<Testcase<I>, Error> {
-        match self {
-            DynCorpus::InMem(c) => c.remove(id),
-            DynCorpus::OnDisk(c) => c.remove(id),
-        }
-    }
-
-    fn get(&self, id: CorpusId) -> Result<&RefCell<Testcase<I>>, Error> {
-        match self {
-            DynCorpus::InMem(c) => c.get(id),
-            DynCorpus::OnDisk(c) => c.get(id),
-        }
-    }
-
-    fn get_from_all(&self, id: CorpusId) -> Result<&RefCell<Testcase<I>>, Error> {
-        match self {
-            DynCorpus::InMem(c) => c.get_from_all(id),
-            DynCorpus::OnDisk(c) => c.get_from_all(id),
-        }
-    }
-
-    fn current(&self) -> &Option<CorpusId> {
-        match self {
-            DynCorpus::InMem(c) => c.current(),
-            DynCorpus::OnDisk(c) => c.current(),
-        }
-    }
-
-    fn current_mut(&mut self) -> &mut Option<CorpusId> {
-        match self {
-            DynCorpus::InMem(c) => c.current_mut(),
-            DynCorpus::OnDisk(c) => c.current_mut(),
-        }
-    }
-
-    fn next(&self, id: CorpusId) -> Option<CorpusId> {
-        match self {
-            DynCorpus::InMem(c) => c.next(id),
-            DynCorpus::OnDisk(c) => c.next(id),
-        }
-    }
-
-    fn peek_free_id(&self) -> CorpusId {
-        match self {
-            DynCorpus::InMem(c) => c.peek_free_id(),
-            DynCorpus::OnDisk(c) => c.peek_free_id(),
-        }
-    }
-
-    fn prev(&self, id: CorpusId) -> Option<CorpusId> {
-        match self {
-            DynCorpus::InMem(c) => c.prev(id),
-            DynCorpus::OnDisk(c) => c.prev(id),
-        }
-    }
-
-    fn first(&self) -> Option<CorpusId> {
-        match self {
-            DynCorpus::InMem(c) => c.first(),
-            DynCorpus::OnDisk(c) => c.first(),
-        }
-    }
-
-    fn last(&self) -> Option<CorpusId> {
-        match self {
-            DynCorpus::InMem(c) => c.last(),
-            DynCorpus::OnDisk(c) => c.last(),
-        }
-    }
-
-    fn nth_from_all(&self, nth: usize) -> CorpusId {
-        match self {
-            DynCorpus::InMem(c) => c.nth_from_all(nth),
-            DynCorpus::OnDisk(c) => c.nth_from_all(nth),
-        }
-    }
-
-    fn load_input_into(&self, testcase: &mut Testcase<I>) -> Result<(), Error> {
-        match self {
-            DynCorpus::InMem(c) => c.load_input_into(testcase),
-            DynCorpus::OnDisk(c) => c.load_input_into(testcase),
-        }
-    }
-
-    fn store_input_from(&self, testcase: &Testcase<I>) -> Result<(), Error> {
-        match self {
-            DynCorpus::InMem(c) => c.store_input_from(testcase),
-            DynCorpus::OnDisk(c) => c.store_input_from(testcase),
-        }
+    delegate_two_variant! {
+        DynCorpus { InMem, OnDisk }
+        fn count(&self) -> usize;
+        fn count_disabled(&self) -> usize;
+        fn count_all(&self) -> usize;
+        fn add(&mut self, testcase: Testcase<I>) -> Result<CorpusId, Error>;
+        fn add_disabled(&mut self, testcase: Testcase<I>) -> Result<CorpusId, Error>;
+        fn replace(&mut self, id: CorpusId, testcase: Testcase<I>) -> Result<Testcase<I>, Error>;
+        fn remove(&mut self, id: CorpusId) -> Result<Testcase<I>, Error>;
+        fn get(&self, id: CorpusId) -> Result<&RefCell<Testcase<I>>, Error>;
+        fn get_from_all(&self, id: CorpusId) -> Result<&RefCell<Testcase<I>>, Error>;
+        fn current(&self) -> &Option<CorpusId>;
+        fn current_mut(&mut self) -> &mut Option<CorpusId>;
+        fn next(&self, id: CorpusId) -> Option<CorpusId>;
+        fn peek_free_id(&self) -> CorpusId;
+        fn prev(&self, id: CorpusId) -> Option<CorpusId>;
+        fn first(&self) -> Option<CorpusId>;
+        fn last(&self) -> Option<CorpusId>;
+        fn nth_from_all(&self, nth: usize) -> CorpusId;
+        fn load_input_into(&self, testcase: &mut Testcase<I>) -> Result<(), Error>;
+        fn store_input_from(&self, testcase: &Testcase<I>) -> Result<(), Error>;
     }
 }
 
