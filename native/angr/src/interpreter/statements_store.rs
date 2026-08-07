@@ -1,5 +1,6 @@
 use super::bv_utils::{bv_to_bytes, reject_symbolic_byte_store};
 use super::*;
+use crate::symbolic::{MAX_CONCRETE_CHUNK, u128_to_le_bytes};
 
 impl<'a> VEXInterpreter<'a> {
     /// Attempt to store via Rust-native memory. Returns Ok(true) if the store
@@ -279,18 +280,38 @@ impl<'a> VEXInterpreter<'a> {
                     .call_memory_store_symbolic_value(addr_concrete, &data_val)
                     .map_err(|e| CbExecutionError::Callback(e.to_string()))
             })();
-            if sym_ok.is_err() {
+            if let Err(sym_err) = sym_ok {
                 // Symbolic store callback failed — evaluate to concrete and
                 // store directly via Python callback (not pending_stores).
                 // pending_stores would pollute all_flushed_stores with zeros
                 // since bv_to_bytes returns zeros for symbolic expressions.
-                let concrete_val = self.ctx.eval(&data_val).unwrap_or(0);
+                //
+                // angr-sqfj8.61: when the *concretization* also fails (unsat /
+                // unknown context, or a value wider than the `u128` the eval
+                // path and `u128_to_le_bytes` can carry), this used to
+                // `unwrap_or(0)` and write concrete 0 — the same zero-fill
+                // wrong answer `reject_symbolic_byte_store` exists to prevent,
+                // except self-inflicted. Propagate the original callback error
+                // instead so the store fails loudly. Ditto the byte-level
+                // callback's own error, which used to be dropped on the floor.
                 let size_bytes = (data_val.width() / 8) as usize;
-                let mut data_bytes = vec![0u8; size_bytes];
-                for (i, b) in data_bytes.iter_mut().enumerate() {
-                    *b = (concrete_val >> (i * 8)) as u8;
-                }
-                let _ = callbacks.call_memory_store(addr_concrete, &data_bytes);
+                let concrete_val = self
+                    .ctx
+                    .eval(&data_val)
+                    .filter(|_| size_bytes <= MAX_CONCRETE_CHUNK);
+                let Some(concrete_val) = concrete_val else {
+                    log::warn!(
+                        "symbolic store at {addr_concrete:#x} failed ({sym_err}) and the \
+                         {}-bit value could not be concretized; failing the store rather \
+                         than writing zeros",
+                        data_val.width(),
+                    );
+                    return Err(sym_err);
+                };
+                let data_bytes = u128_to_le_bytes(concrete_val, size_bytes);
+                callbacks
+                    .call_memory_store(addr_concrete, &data_bytes)
+                    .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
             }
             Ok(())
         } else if data_val.is_symbolic() {

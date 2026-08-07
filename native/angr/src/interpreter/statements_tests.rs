@@ -830,3 +830,115 @@ fn loadg_single_concretization_sees_rust_memory_store() {
         "LoadG on a Single-concretized address must read the just-stored value"
     );
 }
+
+/// angr-sqfj8.61: `handle_concrete_store`'s symbolic-store-callback failure
+/// path used to `self.ctx.eval(&data_val).unwrap_or(0)` and write the result
+/// through `call_memory_store`. When the concretization itself fails, that
+/// wrote concrete **zeros** over the target — the exact zero-fill wrong answer
+/// `reject_symbolic_byte_store` exists to prevent — while reporting `Ok(())`.
+///
+/// A value wider than `MAX_CONCRETE_CHUNK` is the deterministic trigger: it
+/// cannot round-trip through the `u128` the eval path carries. The store must
+/// now fail loudly instead, and must not touch memory at all.
+#[test]
+fn symbolic_store_fallback_errors_instead_of_zero_filling_when_eval_fails() {
+    use pyo3::types::{PyDict, PyList};
+
+    let ctx = SymContext::new_mock();
+    // X86 (32-bit, non-stack address) is the only configuration that arms the
+    // `memory_store_symbolic_value` path in `handle_concrete_store`.
+    let mut interp = VEXInterpreter::new(VexArch::X86, &ctx);
+
+    Python::initialize();
+    Python::attach(|py| {
+        let globals = PyDict::new(py);
+        py.run(
+            c"_rec = []
+def sym_store_cb(addr, ast):
+    raise RuntimeError('symbolic store unavailable')
+def store_cb(addr, data):
+    _rec.append((addr, bytes(data)))
+",
+            Some(&globals),
+            None,
+        )
+        .expect("define callbacks");
+
+        let mut cb = PythonCallbacks::new();
+        cb.set_memory_store_symbolic_value(
+            globals.get_item("sym_store_cb").unwrap().unwrap().unbind(),
+        );
+        cb.set_memory_store(globals.get_item("store_cb").unwrap().unwrap().unbind());
+
+        // 256 bits = 32 bytes > MAX_CONCRETE_CHUNK, so no u128 witness exists.
+        let data_val = RustBV::symbolic(&ctx, "wide_store_data", 256);
+        let err = interp
+            .handle_concrete_store(&cb, 0x10_0000, data_val, 32)
+            .expect_err("unconcretizable symbolic store must fail, not zero-fill");
+        assert!(
+            matches!(err, CbExecutionError::Callback(_)),
+            "the original symbolic-store callback error is propagated, got {err:?}"
+        );
+
+        let rec = globals.get_item("_rec").unwrap().unwrap();
+        assert_eq!(
+            rec.cast::<PyList>().unwrap().len(),
+            0,
+            "no byte-level store may reach memory when concretization failed"
+        );
+    });
+}
+
+/// Converse of the test above: when the value *is* concretizable, the fallback
+/// still writes the concretized bytes little-endian through `memory_store`.
+/// Guards against "fix the zero-fill by disabling the fallback entirely".
+#[test]
+fn symbolic_store_fallback_writes_concretized_bytes_when_eval_succeeds() {
+    use pyo3::types::{PyDict, PyList};
+
+    let ctx = SymContext::new_mock();
+    let mut interp = VEXInterpreter::new(VexArch::X86, &ctx);
+
+    let data_val = RustBV::symbolic(&ctx, "store_data", 32);
+    ctx.assume_true(&data_val.eq(&RustBV::concrete(0xdead_beef, 32), &ctx));
+
+    Python::initialize();
+    Python::attach(|py| {
+        let globals = PyDict::new(py);
+        py.run(
+            c"_rec = []
+def sym_store_cb(addr, ast):
+    raise RuntimeError('symbolic store unavailable')
+def store_cb(addr, data):
+    _rec.append((addr, bytes(data)))
+",
+            Some(&globals),
+            None,
+        )
+        .expect("define callbacks");
+
+        let mut cb = PythonCallbacks::new();
+        cb.set_memory_store_symbolic_value(
+            globals.get_item("sym_store_cb").unwrap().unwrap().unbind(),
+        );
+        cb.set_memory_store(globals.get_item("store_cb").unwrap().unwrap().unbind());
+
+        interp
+            .handle_concrete_store(&cb, 0x10_0000, data_val, 4)
+            .expect("concretizable symbolic store falls back cleanly");
+
+        let rec = globals.get_item("_rec").unwrap().unwrap();
+        let rec = rec.cast::<PyList>().unwrap();
+        assert_eq!(rec.len(), 1, "exactly one byte-level fallback store");
+        let tup = rec.get_item(0).unwrap();
+        let tup = tup.cast::<pyo3::types::PyTuple>().unwrap();
+        let addr: u64 = tup.get_item(0).unwrap().extract().unwrap();
+        let data: Vec<u8> = tup.get_item(1).unwrap().extract().unwrap();
+        assert_eq!(addr, 0x10_0000);
+        assert_eq!(
+            data,
+            vec![0xef, 0xbe, 0xad, 0xde],
+            "little-endian concretization"
+        );
+    });
+}
