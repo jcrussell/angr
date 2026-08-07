@@ -491,8 +491,11 @@ impl RustExplorationManager {
     /// `eval` returns the unsigned minimum of the feasible set and `eval_upto`
     /// its ascending prefix, so a truncated result is reproducible instead of
     /// being whatever model Z3 happened to build. States already in a stash
-    /// are updated in place, so the order of this call relative to
-    /// `add_state` does not matter.
+    /// are updated in place — as are states parked in an outstanding callback
+    /// and the pre-branch snapshots their deferred forks will be materialized
+    /// from (angr-sqfj8.32) — so the order of this call relative to
+    /// `add_state` does not matter, and neither does whether a SimProcedure /
+    /// syscall callback happens to be in flight.
     ///
     /// Costs Z3 checks (an `O(log width)` binary search per witness), hence
     /// opt-in. Note this makes *witness choice* deterministic; with more than
@@ -509,6 +512,14 @@ impl RustExplorationManager {
             for state in states.iter() {
                 constraints::apply_state_deterministic(state, v);
             }
+        }
+        // A state parked in `pending_callbacks` is in no stash, so the loop
+        // above misses it: it — and every deferred fork later materialized from
+        // its snapshots — would resume on the old mode (angr-sqfj8.32). The
+        // steady guard above does not cover this; it only drains the parallel
+        // session's resident frontier.
+        for pending in self.pending_callbacks.values() {
+            constraints::apply_pending_deterministic(pending, v);
         }
         log::debug!("Strict-deterministic witness selection set to {v}");
     }

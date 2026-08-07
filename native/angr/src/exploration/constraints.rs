@@ -59,6 +59,43 @@ pub(crate) fn apply_state_deterministic(state: &crate::state::RustSimState, v: b
 #[cfg(not(feature = "vex-engine-z3"))]
 pub(crate) fn apply_state_deterministic(_state: &crate::state::RustSimState, _v: bool) {}
 
+/// Apply strict-deterministic witness selection to every solver context a
+/// parked callback owns (angr-sqfj8.32).
+///
+/// A state in `pending_callbacks` lives in NO stash by design, so
+/// `set_deterministic`'s stash loop cannot see it. Three contexts have to be
+/// reached, because each one becomes the solver of a state that enters a stash
+/// when the callback resumes:
+///
+/// * `pending.state` — the continuing successor `_resume_*` routes back to a
+///   stash. Its `SymContext` is the same `Rc` that `pending.solver_ctx` wraps
+///   (`from_shared_sym_context`, see the `PendingCallback::with_context` call
+///   sites in `stepping.rs`), so the Python-facing handle is covered by this
+///   one call.
+/// * `pending.pre_callback_snapshot` — `_resume_after_simprocedure`'s
+///   `fork_base`, i.e. the parent every materialized deferred fork forks off.
+/// * `pending.fork_snapshots` — `fork_materialize::build_unexplored_fork` turns
+///   each into a state via `RustSimState::fork_from_snapshot`, so the
+///   snapshot's context *is* the fork's context and inheritance from
+///   `fork_base` never happens for it.
+///
+/// Missing any of the three silently leaves that lineage on the old
+/// witness-selection mode with no error — the failure shape bd memory
+/// `invariant-lineage-flag-propagation` describes.
+#[cfg(feature = "vex-engine-z3")]
+pub(crate) fn apply_pending_deterministic(pending: &super::PendingCallback, v: bool) {
+    apply_state_deterministic(&pending.state, v);
+    if let Some(snapshot) = pending.pre_callback_snapshot.as_ref() {
+        apply_state_deterministic(snapshot, v);
+    }
+    for snapshot in pending.fork_snapshots.values() {
+        snapshot.solver.set_deterministic(v);
+    }
+}
+
+#[cfg(not(feature = "vex-engine-z3"))]
+pub(crate) fn apply_pending_deterministic(_pending: &super::PendingCallback, _v: bool) {}
+
 /// Whether a state's solver is in strict-deterministic mode. Always false on
 /// a non-Z3 build, where the mode does not exist.
 #[cfg(feature = "vex-engine-z3")]

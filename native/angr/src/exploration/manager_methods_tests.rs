@@ -206,3 +206,88 @@ fn stash_counts_censuses_every_stash_after_move_drop_clear() {
     assert_eq!(mgr.active_count(), 1);
     assert_eq!(mgr.found_count(), 1);
 }
+
+// --- set_deterministic reach (angr-sqfj8.32) -----------------------------
+
+/// `set_deterministic` propagates to states parked in `pending_callbacks`, not
+/// just to the stashes.
+///
+/// A parked state is in NO stash (see `stash_counts_censuses_every_stash_...`
+/// above), so the stash loop cannot reach it. Before angr-sqfj8.32 a flip made
+/// while a SimProcedure/syscall callback was outstanding left that state — and
+/// every deferred fork later materialized from its `pre_callback_snapshot` /
+/// `fork_snapshots` — on the old witness-selection mode, silently and forever
+/// (nothing re-applies the flag on resume).
+///
+/// Asserted in both directions: the flag has to be a genuine propagation, not
+/// a one-way `true` latch that a fresh `SymContext` would satisfy by accident.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn set_deterministic_reaches_parked_pending_callback_states() {
+    use crate::exploration::{CallbackReason, PendingCallback};
+    use rustc_hash::FxHashMap;
+
+    Python::initialize();
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    let stashed = push_states(&mut mgr, STASH_ACTIVE, 1)[0];
+
+    let state = RustSimState::new("amd64").expect("state");
+    let sid = state.state_id();
+    let mut fork_snapshots = FxHashMap::default();
+    fork_snapshots.insert(
+        7u64,
+        crate::interpreter::BranchSnapshot {
+            solver: state.solver().borrow().fork(),
+            registers: state.registers().fork(),
+            memory: None,
+        },
+    );
+    let pre_callback_snapshot = Some(state.fork());
+    mgr.pending_callbacks.insert(
+        StateId::new(sid),
+        PendingCallback {
+            state,
+            pre_callback_snapshot,
+            reason: CallbackReason::Syscall { num: Some(60) },
+            jumpkind: None,
+            solver_ctx: None,
+            deferred_forks: Vec::new(),
+            stored_conditions: FxHashMap::default(),
+            fork_snapshots,
+        },
+    );
+
+    for v in [true, false, true] {
+        mgr.set_deterministic(v);
+        assert_eq!(
+            mgr.state_is_deterministic(stashed).expect("stashed state"),
+            v,
+            "stashed state follows set_deterministic({v})",
+        );
+        let pending = mgr
+            .pending_callbacks
+            .get(&StateId::new(sid))
+            .expect("callback still parked");
+        assert_eq!(
+            constraints::state_is_deterministic(&pending.state),
+            v,
+            "parked state follows set_deterministic({v})",
+        );
+        assert_eq!(
+            constraints::state_is_deterministic(
+                pending
+                    .pre_callback_snapshot
+                    .as_ref()
+                    .expect("pre-callback snapshot"),
+            ),
+            v,
+            "pre-callback snapshot (the deferred forks' fork_base) follows \
+             set_deterministic({v})",
+        );
+        assert_eq!(
+            pending.fork_snapshots[&7].solver.is_deterministic(),
+            v,
+            "pre-branch fork snapshot follows set_deterministic({v})",
+        );
+    }
+}
