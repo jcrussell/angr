@@ -166,11 +166,8 @@ impl<'a> VEXInterpreter<'a> {
                             }
                             // Track call stack before updating PC
                             if jumpkind.is_call() {
-                                let sp_offset = self.registers.arch().sp_offset();
-                                let sp_val = self
-                                    .registers
-                                    .get_offset_u64(sp_offset, self.ctx)
-                                    .unwrap_or(0);
+                                let sp_val =
+                                    self.get_stack_pointer_or_log("CallStackEntry.stack_ptr");
                                 let ret_addr =
                                     self.get_return_addr_or_log("CallStackEntry.return_addr");
                                 // angr-4ai9: state.inspect `call` event —

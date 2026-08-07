@@ -31,6 +31,37 @@ fn get_stack_pointer_returns_rsp_value() {
     assert_eq!(interp.get_stack_pointer(), Some(0x1234_5678));
 }
 
+// angr-sqfj8.63: the `CallStackEntry.stack_ptr` push in
+// `execution.rs::run_until_event` used a bare `.unwrap_or(0)`, so a symbolic
+// SP was exported to Python as a genuine-looking stack pointer of 0. These two
+// pin the replacement helper's contract: concrete SPs pass through untouched,
+// and a symbolic SP substitutes 0 (same value the old site used) after a
+// `log::warn!` rather than panicking.
+#[test]
+fn get_stack_pointer_or_log_passes_through_concrete_sp() {
+    let ctx = SymContext::new_mock();
+    let mut interp = new_interp(&ctx);
+    interp
+        .registers
+        .put_reg("rsp", RustBV::concrete(0x1234_5678, 64));
+    assert_eq!(interp.get_stack_pointer_or_log("test"), 0x1234_5678);
+}
+
+#[test]
+fn get_stack_pointer_or_log_substitutes_zero_for_symbolic() {
+    let ctx = SymContext::new_mock();
+    let mut interp = new_interp(&ctx);
+    interp
+        .registers
+        .put_reg("rsp", RustBV::symbolic(&ctx, "sp", 64));
+    assert_eq!(
+        interp.get_stack_pointer(),
+        None,
+        "a symbolic SP must decline, not report a concrete value"
+    );
+    assert_eq!(interp.get_stack_pointer_or_log("test"), 0);
+}
+
 #[test]
 fn is_stack_region_below_rsp_within_window() {
     let ctx = SymContext::new_mock();

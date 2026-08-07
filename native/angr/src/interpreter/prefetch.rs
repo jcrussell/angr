@@ -185,9 +185,31 @@ impl<'a> VEXInterpreter<'a> {
     }
 
     /// Get the current stack pointer value (architecture-aware).
-    fn get_stack_pointer(&self) -> Option<u64> {
+    ///
+    /// `None` when the stack pointer is symbolic or otherwise unreadable.
+    pub(crate) fn get_stack_pointer(&self) -> Option<u64> {
         let offset = self.registers.arch().sp_offset();
         self.registers.get_offset_u64(offset, self.ctx)
+    }
+
+    /// [`Self::get_stack_pointer`], substituting `0` and logging when the
+    /// answer is symbolic/unavailable.
+    ///
+    /// `context` should identify the call site so the warning is actionable.
+    // SILENT(cat-c): a symbolic/unreadable stack pointer collapsing to the
+    // literal 0 is a wrong-answer risk — the value is exported verbatim as
+    // `CallStackEntry.stack_ptr` (see `state/export.rs::get_call_stack`), so
+    // downstream call-stack logic and Python callers cannot distinguish it
+    // from a genuine SP of 0. Callers must go through this single logged
+    // fallback rather than a bare `.unwrap_or(0)` (angr-sqfj8.63).
+    pub(crate) fn get_stack_pointer_or_log(&self, context: &str) -> u64 {
+        self.get_stack_pointer().unwrap_or_else(|| {
+            log::warn!(
+                "get_stack_pointer() returned None ({context}); using stack_ptr=0 \
+                 — likely a symbolic or unavailable stack pointer collapsed to a wrong value"
+            );
+            0
+        })
     }
 
     /// Check if an address is in the stack region (near current RSP).
