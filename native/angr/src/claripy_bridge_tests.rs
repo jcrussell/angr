@@ -283,9 +283,35 @@ fn test_roundtrip_import_export_preserves_semantics() {
         assert_equiv(&x.shl(&RustBV::concrete(3, 32), &ctx), "shl");
         assert_equiv(&x.lshr(&RustBV::concrete(3, 32), &ctx), "lshr");
         assert_equiv(&x.ashr(&y, &ctx), "ashr_sym");
+        // Rotates. Symbolic amount keeps the concrete-fold arm of
+        // `define_rotate_pair!` from collapsing the node before export, so the
+        // RotL/RotR -> RotateLeft/RotateRight op-name mapping is exercised.
+        assert_equiv(&x.rotl(&y, &ctx), "rotl_sym");
+        assert_equiv(&x.rotr(&y, &ctx), "rotr_sym");
+        assert_equiv(&x.rotl(&RustBV::concrete(7, 32), &ctx), "rotl_const");
+        // Byte reversal. Requires a byte-aligned width on the import side.
+        assert_equiv(&x.reverse(&ctx), "reverse");
         // Comparisons -> width-1 Bool.
         assert_equiv(&x.eq(&c5, &ctx), "eq");
         assert_equiv(&x.ne(&y, &ctx), "ne");
+        // Ordered comparisons, both signednesses and both directions. These are
+        // the op names most prone to a mixed-up mapping (ULT vs UGT, SLT vs
+        // ULT); an inverted or sign-swapped entry on either bridge direction
+        // makes the round-trip semantically different, which the
+        // counter-example check below catches.
+        assert_equiv(&x.ult(&y, &ctx), "ult");
+        assert_equiv(&x.ule(&y, &ctx), "ule");
+        assert_equiv(&x.ugt(&y, &ctx), "ugt");
+        assert_equiv(&x.uge(&y, &ctx), "uge");
+        assert_equiv(&x.slt(&y, &ctx), "slt");
+        assert_equiv(&x.sle(&y, &ctx), "sle");
+        assert_equiv(&x.sgt(&y, &ctx), "sgt");
+        assert_equiv(&x.sge(&y, &ctx), "sge");
+        // Same ops against a concrete operand: `c5` has a clear high bit of 0,
+        // so a signed/unsigned mix-up in the mapping is separable from an
+        // operand-order mix-up.
+        assert_equiv(&x.ult(&c5, &ctx), "ult_const");
+        assert_equiv(&x.slt(&c5, &ctx), "slt_const");
         // Bool combinators (And/Or/Not over two comparisons).
         let b1 = x.eq(&c5, &ctx);
         let b2 = y.eq(&RustBV::concrete(7, 32), &ctx);
