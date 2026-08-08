@@ -4486,7 +4486,7 @@ State ID handling
 
 Every public method that accepts a ``state_id: u64`` routes through
 ``RustExplorationManager::find_state`` /
-``find_state_mut`` (``exploration/helpers.rs:122``). Misses become one
+``find_state_mut`` (``exploration/helpers.rs``). Misses become one
 of two surfaces depending on the call site:
 
 * **Optional reads** — ``get_state_pc_by_id``,

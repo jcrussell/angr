@@ -54,7 +54,6 @@ docs/advanced-topics/rust_engine.rst	``engines/successors.py:201`` where ``state
 docs/advanced-topics/rust_engine.rst	``engines/successors.py:290-294`` behavior
 docs/advanced-topics/rust_engine.rst	``engines/successors.py:295-304,325-326``.
 docs/advanced-topics/rust_engine.rst	``fastpath`` mode bundle (``sim_options.py:412``); fastpath users
-docs/advanced-topics/rust_engine.rst	``find_state_mut`` (``exploration/helpers.rs:122``). Misses become one
 docs/advanced-topics/rust_engine.rst	``jumptable.py:1053`` with ``resilience=True`` and steps via
 docs/advanced-topics/rust_engine.rst	``model_cache: RefCell<Option<z3::Model>>`` (line 1375). These would
 docs/advanced-topics/rust_engine.rst	``native/angr/src/symbolic/value.rs:415``:
@@ -86,12 +85,9 @@ docs/advanced-topics/rust_proxy_writes_design.rst	* ``angr/exploration/rust_stat
 docs/advanced-topics/rust_proxy_writes_design.rst	* ``angr/exploration/rust_state_sync.py:1143`` —
 docs/advanced-topics/rust_proxy_writes_design.rst	* ``angr/exploration/rust_state_sync.py:1202`` —
 docs/advanced-topics/rust_proxy_writes_design.rst	* ``angr/exploration/rust_state_sync.py:1328`` —
-docs/advanced-topics/rust_proxy_writes_design.rst	* ``native/angr/src/exploration/state_api.rs:557, 617`` —
 docs/advanced-topics/rust_proxy_writes_design.rst	``NotImplementedError`` at ``rust_state_proxy.py:422``. The
-docs/advanced-topics/rust_proxy_writes_design.rst	``native/angr/src/exploration/state_api.rs:557`` (symbolic
 docs/advanced-topics/rust_proxy_writes_design.rst	``rust_callback_dispatch.py:1025-1035`` are battle-tested.
 docs/advanced-topics/rust_proxy_writes_design.rst	``rust_callback_dispatch.py:989-997``).
-docs/advanced-topics/rust_proxy_writes_design.rst	``state_api.rs:617`` (symbolic memory regions).
 docs/advanced-topics/rust_proxy_writes_design.rst	regions via ``_group_changed_bytes`` (``rust_state_sync.py:1402``).
 docs/advanced-topics/rust_z3_sharing.rst	(``SymContext::fork``, line ~3400) reads the parent counter.
 native/angr/src/callbacks/mod.rs	/// Matches Python's callstack.py:430/432 semantics.

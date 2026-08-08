@@ -189,10 +189,14 @@ Reference points in the live code:
 What the manager already exposes to a state_id-keyed write path:
 
 * ``set_state_register_symbolic_ast(state_id, name, ast)`` —
-  ``native/angr/src/exploration/state_api.rs:557`` (symbolic
+  ``#[pymethods]`` wrapper in
+  ``native/angr/src/exploration/manager_methods_export.rs``, body in
+  ``state_api.rs::_set_state_register_symbolic_ast`` (symbolic
   registers).
 * ``state_memory_store_symbolic_multi(state_id, addr, data)`` —
-  ``state_api.rs:617`` (symbolic memory regions).
+  wrapper in ``manager_methods_export.rs``, body in
+  ``state_api.rs::_state_memory_store_symbolic_multi`` (symbolic
+  memory regions).
 * Concrete-register write by state_id: **does not exist**. Rust
   has ``RustSimState::set_register`` and a manager-scoped
   ``set_register`` (current state only); a state-id-keyed shim
@@ -568,8 +572,10 @@ References
     sync_back call site.
   * ``angr/exploration/rust_state_proxy.py:240-425`` —
     read-only proxies that would extend to write paths.
-  * ``native/angr/src/exploration/state_api.rs:557, 617`` —
-    existing symbolic-write FFI shims that the proxy would reuse.
+  * ``native/angr/src/exploration/state_api.rs`` —
+    ``_set_state_register_symbolic_ast`` and
+    ``_state_memory_store_symbolic_multi``, the existing
+    symbolic-write FFI shims that the proxy would reuse.
 
 * Measurements: ``run_single.py --dump-counters`` per-bench
   output captured at HEAD ``5ad385aef`` during this design pass.
