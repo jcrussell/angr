@@ -36,6 +36,28 @@ fn test_parse_comparison() {
     assert_eq!(parse_opcode("Iop_CmpLT64U"), IROp::CmpLTU(IRType::I64));
 }
 
+/// angr-sqfj8.120: `parse_comparison` documents the `Iop_CmpORD*` family as an
+/// intentional gap — ordered comparison yields a full-width -1/0 result rather
+/// than the 1-bit result every mapped `Iop_Cmp*` arm produces, so routing it
+/// through the neighboring `CmpLT`/`CmpLE` arms would be silently wrong (a
+/// widening of those arms is the plausible way this breaks, since the tuple
+/// suffixes `32S`/`32U`/`64S`/`64U` are shared). Pin the gap so it stays a
+/// deliberate `Unmapped` Python fallback instead of a wrong answer.
+#[test]
+fn test_parse_cmp_ord_stays_unmapped() {
+    for absent in [
+        "Iop_CmpORD32S",
+        "Iop_CmpORD32U",
+        "Iop_CmpORD64S",
+        "Iop_CmpORD64U",
+    ] {
+        assert!(
+            matches!(parse_opcode(absent), IROp::Unmapped(_)),
+            "{absent} must stay unmapped (full-width -1/0 result, not a 1-bit compare)"
+        );
+    }
+}
+
 #[test]
 fn test_parse_conversion() {
     assert_eq!(
