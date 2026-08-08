@@ -60,16 +60,16 @@ fn inspect_event_enabled_reads_the_right_bit() {
 
     // Default is 0: nothing enabled.
     for bit in [0u8, 1, 16, 19, 20, 31] {
-        assert!(!cb.inspect_event_enabled(bit), "bit {bit} on by default");
+        assert!(!cb.inspect_bit_enabled(bit), "bit {bit} on by default");
     }
 
     for bit in [0u8, 1, 16, 19, 20, 31] {
         cb.py_set_inspect_enabled(1u32 << bit);
-        assert!(cb.inspect_event_enabled(bit), "bit {bit} did not read back");
+        assert!(cb.inspect_bit_enabled(bit), "bit {bit} did not read back");
         assert_eq!(cb.py_get_inspect_enabled(), 1u32 << bit);
         let other = if bit == 0 { 1 } else { bit - 1 };
         assert!(
-            !cb.inspect_event_enabled(other),
+            !cb.inspect_bit_enabled(other),
             "bit {bit} leaked into bit {other}"
         );
     }

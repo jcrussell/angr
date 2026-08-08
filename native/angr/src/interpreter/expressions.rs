@@ -60,7 +60,7 @@ impl<'a> VEXInterpreter<'a> {
             self.stats.expr_eval_count += 1;
         }
         // state.inspect expr event (angr-lge2) — fires `when='after'` after
-        // every IRExpr evaluation. Gated on `inspect_event_enabled(16)` so
+        // every IRExpr evaluation. Gated on `inspect_event_enabled(InspectBit::Expr)` so
         // the no-BP case is one `AtomicU32::load + AND` per call. This is
         // the highest-frequency dispatch site in the engine (every binop
         // arg, store data, exit guard, etc. comes through here).
@@ -1139,7 +1139,7 @@ impl<'a> VEXInterpreter<'a> {
     }
 
     /// Shared prelude for the `dispatch_*_inspect` methods: gate on
-    /// `event_bit`, import claripy, and convert `value` into a claripy AST.
+    /// `event`, import claripy, and convert `value` into a claripy AST.
     /// Returns `None` when the breakpoint is disabled or the import/convert
     /// fails (the callers all swallow those failures — a missing claripy or a
     /// conversion error must not halt exploration). Centralizes the
@@ -1148,10 +1148,10 @@ impl<'a> VEXInterpreter<'a> {
     pub(super) fn inspect_ast(
         &self,
         callbacks: &PythonCallbacks,
-        event_bit: u8,
+        event: InspectBit,
         value: &RustBV,
     ) -> Option<Py<PyAny>> {
-        if !callbacks.inspect_event_enabled(event_bit) {
+        if !callbacks.inspect_event_enabled(event) {
             return None;
         }
         Python::attach(|py| {
@@ -1163,7 +1163,7 @@ impl<'a> VEXInterpreter<'a> {
     /// Fire a `mem_read` inspect callback into Python for this load.
     ///
     /// Mirrors `dispatch_mem_write_inspect` in `statements.rs`. Gated on
-    /// `inspect_event_enabled(MemRead)` so the no-breakpoint case costs a
+    /// `inspect_event_enabled(InspectBit::MemRead)` so the no-breakpoint case costs a
     /// single bitmask test per Load. Symbolic addresses are skipped for
     /// the MVP — only concrete addresses dispatch. The `when='after'`
     /// event is fired once the value has been computed; the BP receives
@@ -1183,8 +1183,7 @@ impl<'a> VEXInterpreter<'a> {
         size: usize,
         endness: Endness,
     ) -> Option<RustBV> {
-        // MemRead = InspectEvent variant 0 — see crate::state::InspectEvent.
-        let value_ast = self.inspect_ast(callbacks, 0, value)?;
+        let value_ast = self.inspect_ast(callbacks, InspectBit::MemRead, value)?;
         let addr_u64 = addr_val.as_u64()?;
         let endness_str = match endness {
             Endness::Little => "Iend_LE",
@@ -1216,7 +1215,7 @@ impl<'a> VEXInterpreter<'a> {
 
     /// Fire a `reg_read` inspect callback into Python for a VEX `Get`.
     ///
-    /// Gated on `inspect_event_enabled(RegRead)` so the no-breakpoint case
+    /// Gated on `inspect_event_enabled(InspectBit::RegRead)` so the no-breakpoint case
     /// is one bitmask test per `IRExpr::Get`. Dispatches `when='after'`
     /// with the loaded register value as `reg_read_expr`. Errors from the
     /// Python callback are swallowed and logged on the Python side.
@@ -1227,8 +1226,7 @@ impl<'a> VEXInterpreter<'a> {
         size: u32,
         value: &RustBV,
     ) {
-        // RegRead = InspectEvent variant 2.
-        let Some(value_ast) = self.inspect_ast(callbacks, 2, value) else {
+        let Some(value_ast) = self.inspect_ast(callbacks, InspectBit::RegRead, value) else {
             return;
         };
         let _ = callbacks.call_inspect_reg_read(
@@ -1242,14 +1240,13 @@ impl<'a> VEXInterpreter<'a> {
 
     /// Fire a `tmp_read` inspect callback for a VEX `RdTmp` (angr-64pi).
     ///
-    /// Gated on `inspect_event_enabled(13)` so the no-breakpoint case is
+    /// Gated on `inspect_event_enabled(InspectBit::TmpRead)` so the no-breakpoint case is
     /// one bitmask test per `RdTmp` evaluation. Dispatches `when='after'`
     /// with the tmp's stored value as `tmp_read_expr`. RdTmp can fire many
     /// times per IRSB (every binop/load/store args go through it); the
     /// claripy AST round-trip is therefore only done when a BP is set.
     fn dispatch_tmp_read_inspect(&self, callbacks: &PythonCallbacks, tmp_num: u32, value: &RustBV) {
-        // TmpRead bit assigned in _INSPECT_EVENT_SPECS.
-        let Some(value_ast) = self.inspect_ast(callbacks, 13, value) else {
+        let Some(value_ast) = self.inspect_ast(callbacks, InspectBit::TmpRead, value) else {
             return;
         };
         let _ = callbacks.call_inspect_tmp_read(
@@ -1262,7 +1259,7 @@ impl<'a> VEXInterpreter<'a> {
 
     /// Fire an `expr` inspect callback for a VEX IRExpr eval (angr-lge2).
     ///
-    /// Gated on `inspect_event_enabled(16)` so the no-BP case is one
+    /// Gated on `inspect_event_enabled(InspectBit::Expr)` so the no-BP case is one
     /// bitmask test per `eval_expr_with_callbacks` call (the most frequent
     /// dispatch site in the engine — fires for every constant, RdTmp,
     /// register read, load, unop, binop, ITE, etc.). When fired, the
@@ -1271,7 +1268,7 @@ impl<'a> VEXInterpreter<'a> {
     /// (Rust IRExpr doesn't round-trip cleanly into a `pyvex.IRExpr`);
     /// the BP receives `expr=None` and only the computed value.
     fn dispatch_expr_inspect(&self, callbacks: &PythonCallbacks, value: &RustBV) {
-        let Some(value_ast) = self.inspect_ast(callbacks, 16, value) else {
+        let Some(value_ast) = self.inspect_ast(callbacks, InspectBit::Expr, value) else {
             return;
         };
         let _ = callbacks.call_inspect_expr(self.current_state_id, "after", Some(&value_ast));
@@ -1279,7 +1276,7 @@ impl<'a> VEXInterpreter<'a> {
 
     /// Fire an `address_concretization` inspect callback (angr-vfst).
     ///
-    /// Gated on `inspect_event_enabled(17)`. The address AST is round-tripped
+    /// Gated on `inspect_event_enabled(InspectBit::AddressConcretization)`. The address AST is round-tripped
     /// into a claripy reconstruction for the BP; `result` carries the list
     /// of concrete addresses produced by the concretizer (`None` on
     /// `when="before"`). Mirrors `address_concretization_mixin.py:156-180`'s
@@ -1294,7 +1291,9 @@ impl<'a> VEXInterpreter<'a> {
         when: &str,
         result: Option<Vec<u64>>,
     ) {
-        let Some(addr_ast) = self.inspect_ast(callbacks, 17, addr_val) else {
+        let Some(addr_ast) =
+            self.inspect_ast(callbacks, InspectBit::AddressConcretization, addr_val)
+        else {
             return;
         };
         let _ = callbacks.call_inspect_address_concretization(
@@ -1308,7 +1307,7 @@ impl<'a> VEXInterpreter<'a> {
 
     /// Fire a `symbolic_variable` inspect callback (angr-vfst).
     ///
-    /// Gated on `inspect_event_enabled(18)`. Fires `when="after"` when the
+    /// Gated on `inspect_event_enabled(InspectBit::SymbolicVariable)`. Fires `when="after"` when the
     /// Rust engine mints a fresh BVS internally — the most common dispatch
     /// site is `load_from_callback`'s fresh-symbol fallback when Python
     /// returns `is_symbolic=True` with no AST. Mirrors
@@ -1320,7 +1319,8 @@ impl<'a> VEXInterpreter<'a> {
         size_bits: u32,
         value: &RustBV,
     ) {
-        let Some(expr_ast) = self.inspect_ast(callbacks, 18, value) else {
+        let Some(expr_ast) = self.inspect_ast(callbacks, InspectBit::SymbolicVariable, value)
+        else {
             return;
         };
         let _ = callbacks.call_inspect_symbolic_variable(

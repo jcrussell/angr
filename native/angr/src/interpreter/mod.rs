@@ -31,7 +31,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use crate::arch::{
     RegisterFile, arch_from_vex, calling_conventions::CallingConvention, default_cc_for_arch,
 };
-use crate::callbacks::{DeferredFork, ExecutionConfig, PythonCallbacks, RunResult};
+use crate::callbacks::{DeferredFork, ExecutionConfig, InspectBit, PythonCallbacks, RunResult};
 use crate::claripy_bridge::{claripy_to_rustbv, is_claripy_ast, try_handle_to_rustbv};
 use crate::concretize::{AddressConcretizer, ConcretizationResult};
 use crate::memory::{MemoryError, Permission, SymbolicMemory};

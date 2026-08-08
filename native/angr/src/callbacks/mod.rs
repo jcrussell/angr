@@ -33,7 +33,7 @@
 //!    event is the common case, not a wiring bug — so an unset slot
 //!    returns the `absent` value (`Ok(())` / `Ok(None)`) instead of
 //!    erroring. These are additionally gated on
-//!    `inspect_event_enabled(N)`, so the engine normally never reaches the
+//!    `inspect_event_enabled(InspectBit::…)`, so the engine normally never reaches the
 //!    slot check at all. Do NOT extend this exception to any callback the
 //!    engine's correctness depends on; the test above is the boundary.
 //!
@@ -108,9 +108,11 @@ mod config;
 mod dispatch;
 mod events;
 mod inspect;
+mod inspect_bits;
 
 pub(crate) use config::{DeferredFork, ExecutionConfig};
 pub(crate) use events::{RunErrorKind, RunResult};
+pub(crate) use inspect_bits::InspectBit;
 
 /// Bind a callback slot, or bail with the standard
 /// `"<slot> callback not set"` [`pyo3::exceptions::PyRuntimeError`].
@@ -323,7 +325,7 @@ pub struct PythonCallbacks {
     /// Signature: `fn(state_id: int, when: str, tmp_num: int,
     ///                value_ast: object | None) -> None`.
     /// Fired `when="after"` with the tmp's stored value as `tmp_read_expr`.
-    /// Gated on `inspect_event_enabled(13)` so the no-breakpoint case costs
+    /// Gated on `inspect_event_enabled(InspectBit::TmpRead)` so the no-breakpoint case costs
     /// one bitmask test per `RdTmp` evaluation.
     pub inspect_tmp_read: Option<Py<PyAny>>,
     /// Callback for state.inspect tmp_write events (VEX `WrTmp`).
@@ -334,7 +336,7 @@ pub struct PythonCallbacks {
     /// Callback for state.inspect statement events (per VEX IR statement).
     /// Signature: `fn(state_id: int, when: str, stmt_idx: int) -> None`.
     /// Fired `when="before"` from `execute_block_with_callbacks` just before
-    /// each statement runs. Gated on `inspect_event_enabled(15)`.
+    /// each statement runs. Gated on `inspect_event_enabled(InspectBit::Statement)`.
     pub inspect_statement: Option<Py<PyAny>>,
     /// Callback for state.inspect expr events (per VEX IR expression eval).
     /// Signature: `fn(state_id: int, when: str, expr_result: object | None)
@@ -344,7 +346,7 @@ pub struct PythonCallbacks {
     /// pyvex.IRExpr; the BP receives only the computed `expr_result` (the
     /// RustBV reconstructed as a claripy AST). User mutations to
     /// `expr_result` in BP_AFTER actions are not honored — same MVP gap
-    /// as the other inspect events. Gated on `inspect_event_enabled(16)`;
+    /// as the other inspect events. Gated on `inspect_event_enabled(InspectBit::Expr)`;
     /// this dispatch site fires more often than any other (every VEX
     /// expression evaluation), so the bitmask short-circuit is critical.
     pub inspect_expr: Option<Py<PyAny>>,
@@ -357,7 +359,7 @@ pub struct PythonCallbacks {
     /// `address_concretization_strategy` / `_memory` / `_add_constraints`
     /// attrs from the Python event are passed through as `None` — the
     /// Rust engine doesn't expose strategy objects or the SimMemory
-    /// instance to the BP. Gated on `inspect_event_enabled(17)`.
+    /// instance to the BP. Gated on `inspect_event_enabled(InspectBit::AddressConcretization)`.
     pub inspect_address_concretization: Option<Py<PyAny>>,
     /// Callback for state.inspect symbolic_variable events.
     /// Signature: `fn(state_id: int, when: str, name: str, size: int,
@@ -367,7 +369,7 @@ pub struct PythonCallbacks {
     /// `state.solver.BVS()` path still fires the event from Python
     /// natively; this Rust dispatch is for the BVS minted internally by
     /// the engine when Python returned `is_symbolic=True` with no AST.
-    /// Gated on `inspect_event_enabled(18)`.
+    /// Gated on `inspect_event_enabled(InspectBit::SymbolicVariable)`.
     pub inspect_symbolic_variable: Option<Py<PyAny>>,
     /// Callback for state.inspect fork events.
     /// Signature: `fn(state_id: int, when: str) -> None`. Fires
@@ -382,7 +384,7 @@ pub struct PythonCallbacks {
     /// before the satisfiability check so the user sees every fork
     /// attempt — same intent as Python's pre-discard fire. The `fork`
     /// event takes NO attrs in `inspect_attributes`; the dispatch is
-    /// state_id + when only. Gated on `inspect_event_enabled(4)`.
+    /// state_id + when only. Gated on `inspect_event_enabled(InspectBit::Fork)`.
     pub inspect_fork: Option<Py<PyAny>>,
     /// `state.inspect.constraints` dispatcher (angr-op0dn.14.4.1).
     ///
@@ -393,7 +395,7 @@ pub struct PythonCallbacks {
     /// continuing state, mirroring Python's `state_plugins/solver.py::add`.
     /// The Python endpoint is `RustExplorationManager._cb_inspect_constraints`,
     /// shared with the `RustSolverProxyPlugin.add` dispatch. Gated on
-    /// `inspect_event_enabled(19)`. The BP's return value (mutated
+    /// `inspect_event_enabled(InspectBit::Constraints)`. The BP's return value (mutated
     /// `added_constraints`) is honored by the proxy-add path but NOT by this
     /// native path — the guard is already lowered into a `RustBV`.
     pub inspect_constraints: Option<Py<PyAny>>,
@@ -406,7 +408,7 @@ pub struct PythonCallbacks {
     /// lifter serves a block — that path bypasses `_cb_lift_block`, which is
     /// where the Python-lift dispatch of this event lives. The Python
     /// endpoint, `RustExplorationManager._cb_inspect_vex_lift`, is shared by
-    /// both origins. Gated on `inspect_event_enabled(20)`. The BP_BEFORE pair
+    /// both origins. Gated on `inspect_event_enabled(InspectBit::VexLift)`. The BP_BEFORE pair
     /// member is fired only once the native lift has succeeded, so user
     /// mutation of `vex_lift_buff` / `vex_lift_addr` is not honored here (the
     /// bytes are already lifted); firing it eagerly would double-fire BEFORE

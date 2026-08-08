@@ -563,7 +563,7 @@ impl<'a> VEXInterpreter<'a> {
                 NativeLiftMiss::LiftError
             })?;
 
-        if callbacks.inspect_event_enabled(20) {
+        if callbacks.inspect_event_enabled(InspectBit::VexLift) {
             let size = irsb.size();
             // A lift is state-independent: -1 lets the Python endpoint attribute
             // the event to a representative active state, exactly as the
@@ -651,8 +651,8 @@ impl<'a> VEXInterpreter<'a> {
         self.current_insn_addr = irsb.addr;
 
         // state.inspect irsb event — fires `when='before'` at block entry,
-        // before any statement runs. Bit 7 in the inspect-enabled bitmask.
-        if callbacks.inspect_event_enabled(7) {
+        // before any statement runs.
+        if callbacks.inspect_event_enabled(InspectBit::Irsb) {
             let _ = callbacks.call_inspect_irsb(self.current_state_id, "before", irsb.addr);
         }
 
@@ -663,10 +663,10 @@ impl<'a> VEXInterpreter<'a> {
                 self.stats.stmt_count += 1;
             }
             // state.inspect statement event — fires `when='before'` once per
-            // VEX IR statement, with `stmt_idx` as the only attr. Bit 15 in
-            // the inspect-enabled bitmask. The bitmask gate keeps the no-BP
-            // cost at one `AtomicU32::load + AND` per statement.
-            if callbacks.inspect_event_enabled(15) {
+            // VEX IR statement, with `stmt_idx` as the only attr. The bitmask
+            // gate keeps the no-BP cost at one `AtomicU32::load + AND` per
+            // statement.
+            if callbacks.inspect_event_enabled(InspectBit::Statement) {
                 let _ = callbacks.call_inspect_statement(
                     self.current_state_id,
                     "before",
@@ -758,9 +758,9 @@ impl<'a> VEXInterpreter<'a> {
     }
 
     /// Fire a `call` inspect callback into Python for an Ijk_Call exit.
-    /// Gated on bit 8 of the inspect-enabled bitmask (above the
-    /// `InspectEvent` enum's 0..=5 range and the custom bits 6/7 used by
-    /// instruction/irsb). `function_address` is the resolved call target.
+    /// Gated on `InspectBit::Call` (above the `InspectEvent` enum's 0..=5
+    /// range and the custom bits used by instruction/irsb).
+    /// `function_address` is the resolved call target.
     /// Mirrors Python `callstack.py:386` / `:419`.
     fn dispatch_call_inspect(
         &self,
@@ -768,14 +768,14 @@ impl<'a> VEXInterpreter<'a> {
         function_address: u64,
         when: &str,
     ) {
-        if !callbacks.inspect_event_enabled(8) {
+        if !callbacks.inspect_event_enabled(InspectBit::Call) {
             return;
         }
         let _ = callbacks.call_inspect_call(self.current_state_id, when, function_address);
     }
 
     /// Fire a `return` inspect callback into Python for an Ijk_Ret exit.
-    /// Gated on bit 9 of the inspect-enabled bitmask. `function_address`
+    /// Gated on `InspectBit::Return`. `function_address`
     /// is the callee address of the frame being popped (taken from
     /// `call_stack.last().callee_addr` before the pop, mirroring Python
     /// `callstack.py:430` which reads `rself.top.func_addr` prior to
@@ -786,7 +786,7 @@ impl<'a> VEXInterpreter<'a> {
         function_address: u64,
         when: &str,
     ) {
-        if !callbacks.inspect_event_enabled(9) {
+        if !callbacks.inspect_event_enabled(InspectBit::Return) {
             return;
         }
         let _ = callbacks.call_inspect_return(self.current_state_id, when, function_address);

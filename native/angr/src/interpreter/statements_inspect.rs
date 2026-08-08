@@ -3,7 +3,7 @@ use super::*;
 impl<'a> VEXInterpreter<'a> {
     /// Fire a `mem_write` inspect callback into Python for this store.
     ///
-    /// Gated on `inspect_event_enabled(MemWrite)` so the common case
+    /// Gated on `inspect_event_enabled(InspectBit::MemWrite)` so the common case
     /// (no breakpoints) is a single bitmask test per Store. Symbolic
     /// addresses are skipped for the MVP (uq4n.4) — only concrete
     /// addresses dispatch; symbolic-address dispatch is a follow-up.
@@ -29,8 +29,7 @@ impl<'a> VEXInterpreter<'a> {
         endness: Endness,
         when: &str,
     ) -> Option<RustBV> {
-        // MemWrite = InspectEvent variant 1 — see crate::state::InspectEvent.
-        let value_ast = self.inspect_ast(callbacks, 1, data_val)?;
+        let value_ast = self.inspect_ast(callbacks, InspectBit::MemWrite, data_val)?;
         let addr_u64 = addr_val.as_u64()?;
         let endness_str = match endness {
             Endness::Little => "Iend_LE",
@@ -62,7 +61,7 @@ impl<'a> VEXInterpreter<'a> {
     }
 
     /// Fire a `reg_write` inspect callback into Python for a VEX `Put`.
-    /// Gated on `inspect_event_enabled(RegWrite)`. Dispatches `when='after'`
+    /// Gated on `inspect_event_enabled(InspectBit::RegWrite)`. Dispatches `when='after'`
     /// with the stored value as `reg_write_expr`.
     pub(super) fn dispatch_reg_write_inspect(
         &self,
@@ -71,8 +70,7 @@ impl<'a> VEXInterpreter<'a> {
         size: u32,
         value: &RustBV,
     ) {
-        // RegWrite = InspectEvent variant 3.
-        let Some(value_ast) = self.inspect_ast(callbacks, 3, value) else {
+        let Some(value_ast) = self.inspect_ast(callbacks, InspectBit::RegWrite, value) else {
             return;
         };
         let _ = callbacks.call_inspect_reg_write(
@@ -86,7 +84,7 @@ impl<'a> VEXInterpreter<'a> {
 
     /// Fire a `tmp_write` inspect callback for a VEX `WrTmp` (angr-64pi).
     ///
-    /// Gated on `inspect_event_enabled(14)` so the no-breakpoint case is
+    /// Gated on `inspect_event_enabled(InspectBit::TmpWrite)` so the no-breakpoint case is
     /// one bitmask test per `WrTmp`. Dispatches `when='after'` with the
     /// written value as `tmp_write_expr`. Fires before the slot mutation
     /// only when a BP is registered; the mutation itself happens in the
@@ -97,8 +95,7 @@ impl<'a> VEXInterpreter<'a> {
         tmp_num: u32,
         value: &RustBV,
     ) {
-        // TmpWrite bit assigned in _INSPECT_EVENT_SPECS.
-        let Some(value_ast) = self.inspect_ast(callbacks, 14, value) else {
+        let Some(value_ast) = self.inspect_ast(callbacks, InspectBit::TmpWrite, value) else {
             return;
         };
         let _ = callbacks.call_inspect_tmp_write(
@@ -110,20 +107,19 @@ impl<'a> VEXInterpreter<'a> {
     }
 
     /// Fire an `instruction` inspect callback into Python for a VEX `IMark`.
-    /// Gated on bit 6 of the inspect-enabled bitmask. Bits 0..=5 mirror
-    /// `crate::state::InspectEvent`; bit 6 is custom for the `instruction`
-    /// event (no `InspectEvent` slot — angr Python exposes it but the Rust
+    /// Gated on `InspectBit::Instruction`. Bits 0..=5 mirror
+    /// `crate::state::InspectEvent`; the `instruction` bit is custom (no
+    /// `InspectEvent` slot — angr Python exposes it but the Rust
     /// `InspectionManager` enum doesn't track it). Dispatches `when='before'`.
     pub(super) fn dispatch_instruction_inspect(&self, callbacks: &PythonCallbacks, addr: u64) {
-        // Instruction = bit 6 (custom — not in the Rust InspectEvent enum).
-        if !callbacks.inspect_event_enabled(6) {
+        if !callbacks.inspect_event_enabled(InspectBit::Instruction) {
             return;
         }
         let _ = callbacks.call_inspect_instruction(self.current_state_id, "before", addr);
     }
 
     /// Fire an `exit` inspect callback into Python for a VEX conditional `Exit`.
-    /// Gated on the Exit bit (InspectEvent::Exit = 5). Dispatches `when='before'`
+    /// Gated on `InspectBit::Exit`. Dispatches `when='before'`
     /// with the branch target, jumpkind name (`Ijk_*`), and guard AST.
     pub(super) fn dispatch_exit_inspect(
         &self,
@@ -132,8 +128,7 @@ impl<'a> VEXInterpreter<'a> {
         jk: JumpKind,
         guard: &RustBV,
     ) {
-        // Exit = InspectEvent variant 5.
-        let Some(guard_ast) = self.inspect_ast(callbacks, 5, guard) else {
+        let Some(guard_ast) = self.inspect_ast(callbacks, InspectBit::Exit, guard) else {
             return;
         };
         let _ = callbacks.call_inspect_exit(

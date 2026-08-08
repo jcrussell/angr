@@ -45,12 +45,21 @@ impl PythonCallbacks {
     }
 
     /// Fast O(1) check for whether an inspect event is enabled.
-    /// Bit N = `crate::state::InspectEvent` variant N (MemRead=0, MemWrite=1, …).
-    /// `event_bit` is taken as `u8` for ergonomics; values up to 31 are valid
-    /// since the underlying bitmask is `AtomicU32` (widened in angr-lge2 to
-    /// fit `expr` at bit 16).
+    ///
+    /// Takes an [`InspectBit`] rather than a bare bit number so a dispatch
+    /// site names the event it gates; the bit assignment lives in the single
+    /// `inspect_events!` table (angr-12jjk.21).
     #[inline(always)]
-    pub(crate) fn inspect_event_enabled(&self, event_bit: u8) -> bool {
+    pub(crate) fn inspect_event_enabled(&self, event: InspectBit) -> bool {
+        self.inspect_bit_enabled(event.bit())
+    }
+
+    /// Raw-bit form of [`Self::inspect_event_enabled`]. Only the enabled-mask
+    /// plumbing (and its tests) should reach for this — engine code names its
+    /// event via [`InspectBit`]. Bits up to 31 are valid since the underlying
+    /// bitmask is `AtomicU32` (widened in angr-lge2 to fit `expr` at bit 16).
+    #[inline(always)]
+    fn inspect_bit_enabled(&self, event_bit: u8) -> bool {
         self.inspect_enabled
             .load(std::sync::atomic::Ordering::Relaxed)
             & (1u32 << event_bit)
@@ -59,7 +68,7 @@ impl PythonCallbacks {
 
     /// Invoke the Python inspect mem_read callback.
     ///
-    /// Caller is expected to gate this on `inspect_event_enabled(0)` for
+    /// Caller is expected to gate this on `inspect_event_enabled(InspectBit::MemRead)` for
     /// the common no-breakpoint case. Errors propagate so the engine can
     /// surface user-action failures rather than swallowing them.
     ///
@@ -335,7 +344,7 @@ impl PythonCallbacks {
     /// when the polarity is false — and handed to the BP as a one-element
     /// `added_constraints` list.
     ///
-    /// Caller gates on `inspect_event_enabled(19)`. A claripy import or
+    /// Caller gates on `inspect_event_enabled(InspectBit::Constraints)`. A claripy import or
     /// export failure drops the event (returns `Ok(())`): a BP that cannot
     /// be materialized must not halt exploration.
     pub(crate) fn call_inspect_constraints(
@@ -373,7 +382,7 @@ impl PythonCallbacks {
     /// `state_id` is `-1` there too — a lift is state-independent, so the
     /// Python endpoint attributes it to a representative active state.
     ///
-    /// Caller gates on `inspect_event_enabled(20)`. That caller lives in the
+    /// Caller gates on `inspect_event_enabled(InspectBit::VexLift)`. That caller lives in the
     /// native libVEX lift path, so this is unreachable in a build without
     /// `libvex-ffi` (default-OFF in Cargo.toml, default-ON via setup.py).
     #[cfg_attr(not(feature = "libvex-ffi"), allow(dead_code))]
