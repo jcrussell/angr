@@ -195,12 +195,15 @@ impl ParallelProfiling {
     }
 }
 
+/// Instantiating this with a type that is not `Send + Sync` fails the build
+/// (not a run). Shared by the `const _` proof blocks below (angr-sqfj8.42).
+fn assert_send_sync<T: Send + Sync>() {}
+
 // Compile-time proof the profiling accumulator is `Send + Sync`, so the
 // persistent worker pool can `Arc`-share one across all workers for a wave
 // (angr-vh834 Phase 6 / Work Item 2). All fields are `AtomicU64`, so this holds;
 // the assertion fails the build (not a run) if a non-`Send`/`Sync` field lands.
 const _: fn() = || {
-    fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<ParallelProfiling>();
 };
 
@@ -350,7 +353,6 @@ pub(crate) struct CoreOutcome {
 // Compile-time proof that the captured-context references the core fn takes are
 // `Send + Sync` — the property the future work-stealing worker path depends on.
 const _: fn() = || {
-    fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<ParallelProfiling>();
     assert_send_sync::<&NativeProcedureRegistry>();
     assert_send_sync::<&NativeSyscallRegistry>();
