@@ -25,10 +25,7 @@ impl RustExplorationManager {
         self.constraint_tracker.uniqueness_registers = register_names;
         self.constraint_tracker.uniqueness_set.clear();
         // Ensure not_unique stash exists
-        self.sm
-            .stashes_mut()
-            .entry("not_unique".to_string())
-            .or_default();
+        self.sm.declare_stash("not_unique");
     }
 
     /// Disable the native uniqueness filter.
@@ -61,7 +58,7 @@ impl RustExplorationManager {
         self.native_techniques
             .push(NativeTechnique::LengthLimiter { max_length, drop });
         if !drop {
-            self.sm.stashes_mut().entry("cut".to_string()).or_default();
+            self.sm.declare_stash("cut");
         }
     }
 
@@ -75,10 +72,7 @@ impl RustExplorationManager {
             timeout_secs,
             start_time: None,
         });
-        self.sm
-            .stashes_mut()
-            .entry("timeout".to_string())
-            .or_default();
+        self.sm.declare_stash("timeout");
     }
 
     /// Register a native LoopBound technique.
@@ -93,10 +87,7 @@ impl RustExplorationManager {
             bound,
             discard_stash: discard_stash.to_string(),
         });
-        self.sm
-            .stashes_mut()
-            .entry(discard_stash.to_string())
-            .or_default();
+        self.sm.declare_stash(discard_stash);
     }
 
     /// Register a native MergePoint technique (ManualMergepoint parity,
@@ -111,13 +102,13 @@ impl RustExplorationManager {
     #[angr_macros::steady_guarded]
     pub fn register_merge_point(&mut self, address: u64, wait_counter: usize) {
         let wait_stash = format!("merge_waiting_{address:#x}");
+        self.sm.declare_stash(&wait_stash);
         self.native_techniques.push(NativeTechnique::MergePoint {
             address,
             wait_counter_limit: wait_counter,
             counter: 0,
-            wait_stash: wait_stash.clone(),
+            wait_stash,
         });
-        self.sm.stashes_mut().entry(wait_stash).or_default();
     }
 
     /// Get the number of registered native techniques.

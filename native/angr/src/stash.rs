@@ -187,6 +187,23 @@ impl StashManager {
                  invisible to mgr.active / mgr.found / mgr.deadended etc.",
             );
         }
+        self.declare_stash(name)
+    }
+
+    /// Get or create a stash by name **without** [`Self::ensure_stash`]'s
+    /// typo warning.
+    ///
+    /// For engine-internal stash names the caller already knows are
+    /// deliberate — `"cut"`, `"timeout"`, `"not_unique"`,
+    /// `merge_waiting_<addr>` — where the warning would be pure noise. The
+    /// native-technique registrars in `manager_methods_techniques.rs` call
+    /// this at registration time, which is also what keeps the later
+    /// `ensure_stash` push in `native_technique.rs` quiet: the stash already
+    /// exists by then (angr-sqfj8.35).
+    ///
+    /// Prefer `ensure_stash` whenever the name originated in Python and a
+    /// typo is possible.
+    pub fn declare_stash(&mut self, name: &str) -> &mut VecDeque<RustSimState> {
         self.stashes.entry(name.to_string()).or_default()
     }
 
