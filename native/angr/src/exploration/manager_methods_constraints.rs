@@ -1,7 +1,39 @@
-//! `#[pymethods]` for [`RustExplorationManager`]: constraint / solver plumbing, per-state metadata and stats dicts.
+//! `#[pymethods]` for [`RustExplorationManager`]: constraint / solver plumbing, per-state metadata, stash mutation and stats dicts.
 //!
 //! One of several `#[pymethods]` blocks for the pyclass; see the
 //! `manager_methods` module doc for the split rationale (angr-9ke6b.50).
+//!
+//! The full contents, in file order — this is the widest of the
+//! `manager_methods_*` blocks, so the list is spelled out rather than
+//! summarised:
+//!
+//! - **Constraints / solvers**: `export_pending_constraints`,
+//!   `export_state_constraints`, `add_constraints_to_{pending,state}`,
+//!   `{export,import}_z3_constraint_ptrs`, `state_unsat_core`,
+//!   `{fork,borrow}_pending_solver`, `fork_state_solver`,
+//!   `{get,set}_state_solver_timeout`, `debug_solver_info`.
+//! - **Pending-state export/inspection**: `export_pending_state`,
+//!   `export_callback_bundle`, `get_active_handle_ids`,
+//!   `get_pending_{root_state_id,ancestry,mapped_pages}`,
+//!   `pending_memory_load{,_page,_symbolic_page}`.
+//! - **Per-state metadata**: mmap base, POSIX brk, heap brk,
+//!   `{get,set}_state_symbolic_pages`, `{get,set}_state_hook_symbolic_memory`,
+//!   `{get,set}_state_addr_to_ast`, `clear_state_metadata`.
+//! - **Skip-hook addresses and error queue**: `set_skip_hook_addr`,
+//!   `clear_skip_hook{,_for_addr}`, `get_errors`, `clear_errors`.
+//! - **Stash mutation**: `move_state{,s}`, `clear_stash`,
+//!   `drop_state_from_stash`, `reset_for_stage`.
+//! - **Stats dicts**: `stats`, `get_fallback_stats`.
+//!
+//! The line against `manager_methods_state.rs` is *granularity*, not subject
+//! matter: that module works on a single state's identity and contents
+//! (create/add/fork/merge, registers, memory, files, stash membership
+//! queries), whereas the stash-level mutators — moving states between
+//! stashes, emptying a stash, resetting for the next `find` stage — live
+//! here. Both boundaries are inherited from the monolith's section banners
+//! rather than derived from a taxonomy, so a few members sit on either side
+//! for historical reasons only. When adding a method, match the banner group
+//! above; do not re-derive the split from first principles.
 //!
 //! This is a Python-boundary module; `unwrap`/`expect` are denied here so a
 //! future panic-on-input landmine cannot be reintroduced without a reviewed,
