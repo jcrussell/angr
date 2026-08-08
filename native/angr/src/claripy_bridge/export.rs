@@ -18,6 +18,19 @@ use super::cache::{
     store_claripy_ast_with_info, store_expression_ast_by_operands,
 };
 
+/// Name of `obj`'s Python type, or `"unknown"` if the interpreter refuses to
+/// answer.
+///
+/// The type name drives control flow in [`ensure_claripy_ast`] (`"bool"` /
+/// `"int"`) and [`coerce_bool_to_bv1`] (`"Bool"`), so the failure fallback has
+/// to be a string that matches none of those arms — `"unknown"` is that
+/// sentinel, and the callers treat it as "not one of the shapes I handle".
+fn py_type_name(obj: &Bound<'_, PyAny>) -> String {
+    obj.get_type()
+        .name()
+        .map_or_else(|_| "unknown".to_string(), |n| n.to_string())
+}
+
 /// Ensure a `Py<PyAny>` is a claripy AST, wrapping ints/bools if needed.
 ///
 /// This is a defensive function to handle cases where a Python int or bool
@@ -33,31 +46,24 @@ fn ensure_claripy_ast(
     let bound = obj.bind(py);
 
     // Check if it's already a claripy AST by checking for 'op' attribute
-    match bound.hasattr("op") {
+    let missing_op_attr = match bound.hasattr("op") {
         Ok(true) => {
             return Ok(obj.clone_ref(py));
         }
-        Ok(false) => {
-            let type_name = bound
-                .get_type()
-                .name()
-                .map(|n| n.to_string())
-                .unwrap_or_else(|_| "unknown".to_string());
-            log::debug!("ensure_claripy_ast: object {type_name} missing 'op' attr, wrapping");
-        }
+        Ok(false) => true,
         Err(e) => {
             log::warn!("ensure_claripy_ast: hasattr('op') failed: {e}");
+            false
         }
-    }
+    };
 
     // Check the actual Python type to distinguish bool from int
     // IMPORTANT: In Python, bool is a subclass of int, so we must check bool FIRST
     // but use is_instance_of, not extract, because extract::<bool>() succeeds for ints too
-    let type_name = bound
-        .get_type()
-        .name()
-        .map(|n| n.to_string())
-        .unwrap_or_else(|_| "unknown".to_string());
+    let type_name = py_type_name(bound);
+    if missing_op_attr {
+        log::debug!("ensure_claripy_ast: object {type_name} missing 'op' attr, wrapping");
+    }
 
     // Check if it's exactly a Python bool (not an int that happens to be 0 or 1)
     if type_name == "bool"
@@ -362,12 +368,7 @@ fn coerce_bool_to_bv1<'py>(
     claripy_mod: &Bound<'py, PyAny>,
     arg: &Bound<'py, PyAny>,
 ) -> PyResult<Bound<'py, PyAny>> {
-    let arg0_type = arg
-        .get_type()
-        .name()
-        .map(|n| n.to_string())
-        .unwrap_or_else(|_| "unknown".to_string());
-    if arg0_type == "Bool" {
+    if py_type_name(arg) == "Bool" {
         bool_to_bv1(claripy_mod, arg)
     } else {
         Ok(arg.clone())
