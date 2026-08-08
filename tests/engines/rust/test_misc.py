@@ -1308,6 +1308,72 @@ class TestImportZ3ConstraintPtrsValidation:
         assert after == before + 1, f"expected 1 constraint to be added; got before={before} after={after}"
 
 
+class TestDebugSolverInfo:
+    """angr-sqfj8.59: cover ``debug_solver_info``, previously caller-less.
+
+    The method is a human-readable one-line dump of a state's solver
+    (``RustExplorationManager::debug_solver_info`` ->
+    ``state_api.rs::_debug_solver_info``). It has no production caller by
+    design — it exists for interactive debugging — but the four keys it
+    reports are a de-facto API, and the ``push_level`` key it used to carry
+    was a permanently-dead counter for a while before angr-sqfj8.94 caught
+    it. These tests pin the key set and cross-check the two numeric fields
+    against the APIs that report the same quantities.
+    """
+
+    @staticmethod
+    def _parse(info):
+        """Split ``k=v, k=v`` into a dict of ints."""
+        return {k.strip(): int(v) for k, v in (part.split("=") for part in info.split(","))}
+
+    def test_reports_expected_keys(self, fauxware_project):
+        """The dump carries exactly the four documented keys."""
+        proj = fauxware_project
+        state = proj.factory.entry_state()
+        mgr = RustExplorationManager(proj, [state])
+        sid = next(iter(mgr._rust_mgr.get_state_ids("active")))
+
+        fields = self._parse(mgr._rust_mgr.debug_solver_info(sid))
+        assert set(fields) == {
+            "scope_savepoint_depth",
+            "bare_z3_push_depth",
+            "num_constraints",
+            "exported_ptrs",
+        }
+
+    def test_exported_ptrs_matches_export_api(self, fauxware_project):
+        """``exported_ptrs`` agrees with ``export_z3_constraint_ptrs``, and
+        both grow by one when a constraint is imported."""
+        import claripy
+
+        proj = fauxware_project
+        state = proj.factory.entry_state()
+        mgr = RustExplorationManager(proj, [state])
+        sid = next(iter(mgr._rust_mgr.get_state_ids("active")))
+
+        before = self._parse(mgr._rust_mgr.debug_solver_info(sid))
+        assert before["exported_ptrs"] == len(mgr._rust_mgr.export_z3_constraint_ptrs(sid))
+
+        # Hold a strong ref to the z3 wrapper so the AST outlives the call
+        # (same refcount discipline as TestImportZ3ConstraintPtrsValidation).
+        bool_ast = claripy.backends.z3.convert(claripy.BVS("dbg_sqfj8_59", 32) == 7)
+        assert mgr._rust_mgr.import_z3_constraint_ptrs(sid, [bool_ast.as_ast().value]) is True
+
+        after = self._parse(mgr._rust_mgr.debug_solver_info(sid))
+        assert after["exported_ptrs"] == len(mgr._rust_mgr.export_z3_constraint_ptrs(sid))
+        assert after["exported_ptrs"] == before["exported_ptrs"] + 1
+        assert after["num_constraints"] >= before["num_constraints"]
+
+    def test_unknown_state_id_raises(self, fauxware_project):
+        """An unknown state id is a loud error, not an empty dump."""
+        proj = fauxware_project
+        state = proj.factory.entry_state()
+        mgr = RustExplorationManager(proj, [state])
+
+        with pytest.raises(ValueError, match="not found"):
+            mgr._rust_mgr.debug_solver_info(0xDEAD_BEEF)
+
+
 class TestStashNameValidation:
     """angr-630x: warn on unknown stash names in create_state/move_state/etc.
 

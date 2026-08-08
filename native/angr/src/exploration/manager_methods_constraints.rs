@@ -175,6 +175,11 @@ impl RustExplorationManager {
     }
 
     /// Debug: dump solver state for a given state.
+    ///
+    /// Interactive-debugging tool — it has no production caller in `angr/` by
+    /// design (angr-sqfj8.59). The key set it emits is still a de-facto API,
+    /// so `TestDebugSolverInfo` in `tests/engines/rust/test_misc.py` pins it
+    /// and cross-checks `exported_ptrs` against `export_z3_constraint_ptrs`.
     #[cfg(feature = "vex-engine-z3")]
     pub fn debug_solver_info(&self, state_id: u64) -> PyResult<String> {
         self._debug_solver_info(state_id)
