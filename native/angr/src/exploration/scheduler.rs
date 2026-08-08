@@ -138,7 +138,7 @@
 //! This file is the module root and keeps only the pieces both scheduling modes
 //! and every sibling need: [`CancelToken`], the task-result types
 //! ([`TaskOutcome`] / [`TerminalSummary`] / [`TerminalDisposition`]),
-//! [`LOCAL_HWM`], and the `#[cfg(test)]` [`ParallelScheduler`] compat shim. The
+//! [`LOCAL_HWM`], and the `#[cfg(test)]` `ParallelScheduler` compat shim. The
 //! separable concerns live in `#[path]` children (all `use super::*`, so the
 //! imports and the deny above reach them, and every `scheduler::X` path outside
 //! this module is unchanged by the re-exports below):

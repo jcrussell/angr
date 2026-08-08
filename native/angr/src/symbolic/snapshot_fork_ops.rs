@@ -814,7 +814,9 @@ impl SymContext {
     /// the per-context lazy-materialized solver exactly as a direct
     /// `let solver = self.solver();` would. When `self.lineage` is `Some`
     /// (currently only `set_lineage_for_testing` installs one), the call
-    /// routes through [`SharedLineageSolver::with_solver`], which switches
+    /// routes through
+    /// [`SharedLineageSolver::with_solver`](crate::symbolic::lineage::SharedLineageSolver::with_solver),
+    /// which switches
     /// the shared solver to this context's `scope_path` before invoking
     /// `f`.
     ///

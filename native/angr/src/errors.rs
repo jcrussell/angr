@@ -159,7 +159,7 @@ pub enum RustExecError {
     Other(String),
 }
 
-/// Map a typed [`RustExecError`] to its Python exception subclass.
+/// Map a typed `RustExecError` to its Python exception subclass.
 ///
 /// Reached only from the test-only `#[pyfunction]` hooks (see the
 /// "Test-only taxonomy vs. the live exploration path" section in the

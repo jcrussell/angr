@@ -5,11 +5,11 @@
 //! the **single stepping decision point** — find/avoid predicates, SimProcedure
 //! dispatch (native fast path or Python fallback), the interpreter step,
 //! deferred forks at find/avoid addresses — which classifies the result into a
-//! [`StepOutcome`](super::run_loop::StepOutcome) the driver routes.
+//! [`StepOutcome`] the driver routes.
 //!
 //! Split out of `run_loop.rs` (angr-9ke6b.49) — no behavior change.
 //!
-//! **Panic policy / lint enforcement:** identical to [`run_loop`](super::run_loop)
+//! **Panic policy / lint enforcement:** identical to [`run_loop`]
 //! — the crate ships with `panic = "abort"`, so a `MutexGuard` can never be
 //! poisoned by an unwind, and every `.expect()` here is a poison /
 //! session-live / pool-set invariant guard carrying a narrow

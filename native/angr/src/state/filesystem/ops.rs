@@ -365,7 +365,7 @@ impl FileSystem {
     /// Returns the new fd, or None if `oldfd` is not open.
     ///
     /// Like POSIX `dup(2)`: the new fd is the lowest number not currently
-    /// open (see [`lowest_free_fd`](Self::lowest_free_fd)), and it refers to
+    /// open (see `lowest_free_fd`), and it refers to
     /// the same underlying state. We model the sharing by cloning the
     /// `FileDescriptor` (name/position/flags/content). `next_fd` is bumped
     /// past the allocated number so a later [`open`](Self::open) cannot

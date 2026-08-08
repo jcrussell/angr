@@ -11,7 +11,7 @@
 
 use super::*;
 
-/// Read a flag out of whichever slot `$storage` names. See [`state_flags`].
+/// Read a flag out of whichever slot `$storage` names. See `state_flags!`.
 macro_rules! state_flag_read {
     (field, $this:ident, $getter:ident) => {
         $this.$getter
@@ -21,7 +21,7 @@ macro_rules! state_flag_read {
     };
 }
 
-/// Write a flag into whichever slot `$storage` names. See [`state_flags`].
+/// Write a flag into whichever slot `$storage` names. See `state_flags!`.
 macro_rules! state_flag_write {
     (field, $this:ident, $setter:ident, $getter:ident, $value:ident) => {
         $this.$getter = $value
@@ -32,7 +32,7 @@ macro_rules! state_flag_write {
 }
 
 /// Emit the Python-facing half of a flag, or nothing for a `rust_only` one.
-/// See [`state_flags`].
+/// See `state_flags!`.
 macro_rules! state_flag_export {
     (rust_only, $setter:ident, $getter:ident) => {};
     (python, $setter:ident, $getter:ident) => {

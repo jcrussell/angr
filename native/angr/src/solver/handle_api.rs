@@ -9,7 +9,7 @@
 //! Split out of `solver.rs` (angr-9ke6b.205): the ~35 wrappers here are one
 //! self-contained concern, and the parent module keeps the claripy-AST API
 //! plus the Python-boundary error mapping they share via
-//! [`invalid_handle_id`](super::invalid_handle_id).
+//! [`invalid_handle_id`].
 
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;

@@ -2,10 +2,10 @@
 //! driver shares.
 //!
 //! Split into four sibling modules (angr-9ke6b.49), one per concern:
-//! [`run_loop_single`](super::run_loop_single) (the always-compiled
-//! single-threaded driver), [`run_loop_wave`](super::run_loop_wave) and
-//! [`run_loop_steady`](super::run_loop_steady) (the two Z3-gated parallel
-//! coordinators), and [`run_loop_worker`](super::run_loop_worker) (the GIL-free
+//! [`run_loop_single`] (the always-compiled
+//! single-threaded driver), [`run_loop_wave`] and
+//! [`run_loop_steady`] (the two Z3-gated parallel
+//! coordinators), and [`run_loop_worker`] (the GIL-free
 //! worker body both coordinators dispatch). What stays here is what more than
 //! one of them needs: the `run_loop` entry point and its `must_run_serial` /
 //! `steady_state_eligible` routing predicates, the [`StepOutcome`] /
@@ -60,7 +60,7 @@
 //! never unwind out of a held `MutexGuard` to poison a lock (it aborts at the
 //! panic site first), and the `expect("session live"/"pool set")` sites guard
 //! state-machine invariants the driver upholds locally. See the "Panic policy"
-//! section of [`scheduler`](super::scheduler) for the full argument — the same
+//! section of [`scheduler`] for the full argument — the same
 //! reasoning covers every `.expect` in this file and in the four sibling
 //! modules, so there is no fallible site to propagate and no Python-exception
 //! path to build under this profile.

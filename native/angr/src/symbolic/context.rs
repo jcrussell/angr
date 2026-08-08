@@ -827,7 +827,7 @@ impl Clone for SymContext {
 // Fork freeze helpers
 // =============================================================================
 
-/// Freeze a local additions vector into the shared Arc<Vec<T>>.
+/// Freeze a local additions vector into the shared `Arc<Vec<T>>`.
 ///
 /// Outside an open push/pop scope (when `in_transaction` is false) this drains
 /// `local` into `shared` in place — when shared has unique ownership the move

@@ -18,7 +18,7 @@ use super::cache::{
     store_claripy_ast_with_info, store_expression_ast_by_operands,
 };
 
-/// Ensure a Py<PyAny> is a claripy AST, wrapping ints/bools if needed.
+/// Ensure a `Py<PyAny>` is a claripy AST, wrapping ints/bools if needed.
 ///
 /// This is a defensive function to handle cases where a Python int or bool
 /// might be returned from cache or operations instead of a proper claripy AST.
@@ -171,7 +171,7 @@ pub(crate) fn rustbv_to_claripy(
 }
 
 /// Maximum recursion depth for [`rustbv_to_claripy_memo`]'s self-recursion
-/// (angr-2a3i9). Mirrors [`super::import::MAX_IMPORT_RECURSION_DEPTH`]'s
+/// (angr-2a3i9). Mirrors `import::MAX_IMPORT_RECURSION_DEPTH`'s
 /// calibration for the opposite (Rust -> claripy) direction of the same
 /// bridge, reachable from the same unguarded main-thread 8 MiB stack.
 ///

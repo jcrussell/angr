@@ -1,6 +1,6 @@
 //! The GIL-free worker body shared by both parallel coordinators
-//! ([`run_loop_wave`](super::run_loop_wave) and
-//! [`run_loop_steady`](super::run_loop_steady)).
+//! ([`run_loop_wave`] and
+//! [`run_loop_steady`]).
 //!
 //! `parallel_process_state` is the scheduler-thread analogue of
 //! [`RustExplorationManager::step_one`](super::run_loop_single): it steps one
@@ -11,7 +11,7 @@
 //!
 //! Split out of `run_loop.rs` (angr-9ke6b.49) — no behavior change.
 //!
-//! **Panic policy / lint enforcement:** identical to [`run_loop`](super::run_loop)
+//! **Panic policy / lint enforcement:** identical to [`run_loop`]
 //! — the crate ships with `panic = "abort"`, so a `MutexGuard` can never be
 //! poisoned by an unwind, and every `.expect()` here is a poison /
 //! session-live / pool-set invariant guard carrying a narrow
@@ -42,7 +42,8 @@ use super::run_loop::bounce_target_addr;
 /// Materialized-terminal disposition the parallel worker stamps into
 /// [`ParallelShared::kind_map`] so the coordinator can route a state recovered
 /// across the `thread::scope` join (which arrives as an untagged
-/// [`StateMigrationPayload`]). Found states go to `STASH_FOUND`; `Unconstrained`
+/// [`StateMigrationPayload`](crate::state::StateMigrationPayload)). Found states
+/// go to `STASH_FOUND`; `Unconstrained`
 /// to that stash; `Bounce` carries the [`BounceKind`] the coordinator replays
 /// through `dispatch_bounce` (with empty deferred-fork data — the worker already
 /// materialized those forks locally).

@@ -560,7 +560,7 @@ impl SharedLineageSolver {
     }
 
     /// Record one switch on this tree and feed the per-tree census
-    /// (angr-g1fev). Called at the top of [`switch_to`]; `hot` says
+    /// (angr-g1fev). Called at the top of [`switch_to`](Self::switch_to); `hot` says
     /// whether the switch was a no-op (0 pops, 0 pushes).
     fn census_switch(&mut self, hot: bool) {
         let epoch = CENSUS_EPOCH.load(Ordering::Relaxed);

@@ -3,14 +3,14 @@
 //! Each wave drains the entire active stash into migration seeds, runs the
 //! work-stealing pool to quiescence with the GIL released, then applies every
 //! deferred mutation coordinator-side. The worker body it dispatches lives in
-//! [`run_loop_worker`](super::run_loop_worker); the terminal-routing helpers
+//! [`run_loop_worker`]; the terminal-routing helpers
 //! defined here (`route_materialized_terminal`,
 //! `process_parallel_bounce_queue`) are shared with the steady-state
-//! coordinator in [`run_loop_steady`](super::run_loop_steady).
+//! coordinator in [`run_loop_steady`].
 //!
 //! Split out of `run_loop.rs` (angr-9ke6b.49) — no behavior change.
 //!
-//! **Panic policy / lint enforcement:** identical to [`run_loop`](super::run_loop)
+//! **Panic policy / lint enforcement:** identical to [`run_loop`]
 //! — the crate ships with `panic = "abort"`, so a `MutexGuard` can never be
 //! poisoned by an unwind, and every `.expect()` here is a poison /
 //! session-live / pool-set invariant guard carrying a narrow
@@ -39,7 +39,7 @@ use super::run_loop_worker::{MatKind, ParallelShared, parallel_process_state};
 impl RustExplorationManager {
     /// Parallel coordinator path (angr-vh834 Phase 5): a real work-stealing wave
     /// loop. Each wave drains the entire active stash into migration seeds, runs
-    /// the [`ParallelScheduler`] pool (GIL released) to quiescence — workers keep
+    /// the `PersistentPool` (GIL released) to quiescence — workers keep
     /// their live successors thread-local (the f≈0 deep-exploration path) and
     /// materialize only found/bounce/unconstrained terminals across the join —
     /// then the coordinator (`&mut self`, GIL held) applies every deferred
@@ -60,7 +60,8 @@ impl RustExplorationManager {
     ///
     /// **`num_find` early-exit preserves the active frontier (Bug M1, fixed in
     /// angr-op0dn.13.8).** When a wave reaches `num_find`, a worker trips the
-    /// shared [`CancelToken`] and every worker stops at its next *task boundary*.
+    /// shared [`CancelToken`](crate::exploration::scheduler::CancelToken) and every
+    /// worker stops at its next *task boundary*.
     /// Both halves of the un-explored frontier are drained back rather than
     /// dropped: each worker detaches its un-dispatched local states into the
     /// wave's `results` (`scheduler_worker.rs::worker_loop`), and the coordinator
@@ -367,7 +368,8 @@ impl RustExplorationManager {
     }
 
     /// Build the GIL-free per-state processor both parallel coordinators hand to
-    /// the scheduler. It owns a fresh [`StepContext`] snapshot and `Arc`-shares
+    /// the scheduler. It owns a fresh
+    /// [`StepContext`](crate::exploration::step_core::StepContext) snapshot and `Arc`-shares
     /// `prof` / `shared` / the two native registries, so it is `'static` and
     /// `Fn + Sync`; its callbacks self-acquire the GIL via `Python::attach`.
     ///

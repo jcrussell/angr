@@ -34,7 +34,7 @@
 //! `aliases()` default; see `NativeProcedureRegistry::register`.
 //!
 //! Registration happens in `NativeProcedureRegistry::new` via
-//! [`register_procs!`], which takes the flat list of unit-struct paths and
+//! `register_procs!`, which takes the flat list of unit-struct paths and
 //! emits the `register(Arc::new(..))` call for each.
 //!
 //! Declaring a procedure and forgetting to add it to that list is a **build
@@ -166,7 +166,8 @@ macro_rules! declare_const_proc {
     };
 }
 
-/// Register a batch of native procedures into a [`NativeProcedureRegistry`].
+/// Register a batch of native procedures into a
+/// [`NativeProcedureRegistry`](crate::procedures::NativeProcedureRegistry).
 ///
 /// Each row is the path to a unit struct declared by [`declare_proc!`] (or
 /// hand-written); the macro wraps it in `Arc::new(..)` and calls `register`,

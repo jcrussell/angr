@@ -252,7 +252,8 @@ pub(crate) fn get_expression_ast_by_operands(
 /// **worker-local** clear — safe to call from any exploration worker thread
 /// because it only touches this thread's caches (see
 /// [`clear_worker_local_caches`] for the threading-intent alias). Use
-/// [`reset_for_new_exploration`] to also wipe the cross-thread global registry.
+/// the `#[cfg(test)]` `reset_for_new_exploration` to also wipe the
+/// cross-thread global registry.
 pub(crate) fn clear_ast_cache() {
     tl_cache!(AST_CACHE, clear());
     tl_cache!(EXPRESSION_BY_OPERANDS_PTR, clear());
@@ -264,9 +265,9 @@ pub(crate) fn clear_ast_cache() {
 /// angr-1ilq.2: a self-documenting entry point for the Option-A parallel
 /// scheduler (1ilq.3) to call on per-worker task-boundary / teardown. It is a
 /// thin alias for [`clear_ast_cache`] kept distinct so a worker-side call reads
-/// as worker-scoped and a future contributor does not reach for
-/// [`reset_for_new_exploration`] (which wipes global symbol identity that
-/// sibling workers depend on). See cross-cache invariant C3 in the parent
+/// as worker-scoped and a future contributor does not reach for the
+/// `#[cfg(test)]` `reset_for_new_exploration` (which wipes global symbol
+/// identity that sibling workers depend on). See cross-cache invariant C3 in the parent
 /// module rustdoc.
 ///
 /// The `worker_thread` teardown call in `exploration/scheduler_pool.rs` is eager

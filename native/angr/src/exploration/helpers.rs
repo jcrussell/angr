@@ -648,7 +648,8 @@ impl RustExplorationManager {
 /// `Box<dyn CallingConvention>`; the parallel post-step path reads them off the
 /// scalar `CcSnapshot` (the trait object is not `Clone`). Both funnel through
 /// this borrow so the extraction logic exists once (angr-sqfj8.145) — the same
-/// adapter shape [`SubcallAbi`] uses for `setup_native_subcall_with_abi`.
+/// adapter shape [`SubcallAbi`](crate::exploration::stepping::SubcallAbi) uses
+/// for `setup_native_subcall_with_abi`.
 ///
 /// `arg_registers` is the *procedure* or *syscall* register window depending on
 /// which caller built it; on Linux amd64 those differ at the 4th argument

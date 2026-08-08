@@ -312,12 +312,14 @@ impl MemoryPage {
     /// Returns `true` when the two pages are provably byte-for-byte identical
     /// with no symbolic/Multi overlay on *either* side, established WITHOUT
     /// materializing any bytes: `data` is the same `Arc` allocation (untouched
-    /// since a common fork — [`store_concrete`] is the only thing that breaks
+    /// since a common fork — [`store_concrete`](Self::store_concrete) is the
+    /// only thing that breaks
     /// sharing, via `Arc::make_mut`) and neither page carries a symbolic or Multi
     /// bitmap. `SymbolicMemory::merge` skips such pages, making merge cost
     /// proportional to *divergent* pages instead of *all shared* pages.
     ///
-    /// This is intentionally narrower than [`shares_data_with`]: it does NOT
+    /// This is intentionally narrower than the `#[cfg(test)]`
+    /// `shares_data_with`: it does NOT
     /// admit ptr-shared pages whose symbolic bitmaps merely *match*. A symbolic
     /// store touches only the bitmap + `SymbolicMemory::symbolic_objects` and
     /// leaves `data` ptr-shared (see `store` in `store.rs`), so two arms can

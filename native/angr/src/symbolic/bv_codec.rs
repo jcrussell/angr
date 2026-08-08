@@ -45,7 +45,7 @@ pub(super) fn extract_bv_value_from_string(bv: &z3::ast::BV) -> Option<u128> {
     }
 }
 
-/// Extract an arbitrarily large BV value as a Vec<u8> (big-endian).
+/// Extract an arbitrarily large BV value as a `Vec<u8>` (big-endian).
 /// Used for values > 128 bits where we need the full value.
 pub(super) fn extract_bv_value_wide(bv: &z3::ast::BV, width: u32) -> Option<Vec<u8>> {
     let s = format!("{bv}");

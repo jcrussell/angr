@@ -94,13 +94,12 @@ macro_rules! scheduler_counters {
         /// The only states that pay the serde / Z3-AST-rebuild tax are
         /// `surplus_offloaded` (cross-worker steals) plus
         /// `materialized_terminals` (found states recovered across the join).
-        /// [`honest_steal_fraction`] reports that as a fraction of non-seed
-        /// dispatches — the quantity the gate's break-even `f*` bounds.
-        ///
-        /// [`honest_steal_fraction`]: SchedulerStats::honest_steal_fraction
+        /// `SchedulerStats::honest_steal_fraction` reports that as a fraction of
+        /// non-seed dispatches — the quantity the gate's break-even `f*` bounds.
         #[derive(Clone, Debug, Default, PartialEq, Eq)]
         pub(crate) struct SchedulerStats {
-            /// Initial payloads handed to [`ParallelScheduler::run_instrumented`].
+            /// Initial payloads handed to the `#[cfg(test)]`
+            /// `ParallelScheduler::run_instrumented` shim.
             pub seeds: usize,
             $(
                 $(#[$fmeta])*

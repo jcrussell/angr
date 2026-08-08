@@ -19,7 +19,7 @@ use crate::symbolic::{RustBV, SymContext, record_concretize_read, record_concret
 
 /// Pin a TooLarge-fallback address to the chosen concrete value on the path
 /// (angr-mv08h). When the Any/Max fallback collapses a wide symbolic address to
-/// a single `chosen` cell, the solver still allows the whole [min,max] range —
+/// a single `chosen` cell, the solver still allows the whole `[min,max]` range —
 /// so a later `eval()` of inputs can yield a path-infeasible solution, a
 /// Max-store lands unconstrained, and guards after the access fork spuriously.
 /// Python's `AddressConcretizationMixin` always asserts `addr == chosen` for a

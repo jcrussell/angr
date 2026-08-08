@@ -32,7 +32,8 @@
 //! last manager's `stats()` reports the whole-process GIL fraction even when a
 //! bench builds several managers. See
 //! `exploration::manager_methods::RustExplorationManager::set_profiling` for
-//! that decision; [`reset`] exists only so unit tests can isolate.
+//! that decision; the `#[cfg(test)]` `reset` exists only so unit tests can
+//! isolate.
 //!
 //! **Coherence by construction.** GIL timing is gated on an `ACTIVE` flag that
 //! is set only while a profiled [`RunLoopWallGuard`] is live. The bridge

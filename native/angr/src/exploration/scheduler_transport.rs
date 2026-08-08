@@ -5,9 +5,9 @@
 //! scheduling modes; [`WaveJob`] is the level-synchronous wave's envelope around
 //! one (`Arc`-shared with every worker for the duration of a wave), and
 //! [`ProcessFn`] the boxed per-state processor both modes dispatch through. The
-//! steady-state counterpart — [`RunSession`](super::pool::RunSession) and the
+//! steady-state counterpart — [`RunSession`] and the
 //! duplex `WorkerCtl`/`WorkerUp` protocol — lives in
-//! [`pool`](super::pool) alongside the thread pool that drives it.
+//! [`pool`] alongside the thread pool that drives it.
 //!
 //! This is a `#[path]` child of [`scheduler`](super), so the parent's
 //! `#![deny(clippy::unwrap_used, clippy::expect_used)]` and its `use` block both
@@ -64,7 +64,8 @@ pub(crate) struct WorkTransport {
     /// [`SelectionPolicy::select`] and [`worker::absorb_continues`] through
     /// [`SelectionPolicy::on_fork`], so a find-aware policy can reorder the
     /// per-worker frontier without touching the dispatch skeleton. Defaults to
-    /// [`Lifo`] — the pre-seam behavior was an open-coded `pop_back` /
+    /// [`Lifo`](crate::exploration::selection_policy::Lifo) — the pre-seam
+    /// behavior was an open-coded `pop_back` /
     /// `push_back`, exactly what `Lifo` reproduces, so the default is
     /// byte-for-byte zero-regression. Shared across worker threads as an `Arc`
     /// (the trait is `Send + Sync`).

@@ -320,8 +320,8 @@ crate::declare_proc! {
 }
 
 crate::declare_proc! {
-    /// `int ispunct(int c)` — nonzero for punctuation: [33,47], [58,64],
-    /// [91,96], [123,126] (matches Python's ispunct ranges).
+    /// `int ispunct(int c)` — nonzero for punctuation: `[33,47]`, `[58,64]`,
+    /// `[91,96]`, `[123,126]` (matches Python's ispunct ranges).
     name = "ispunct",
     struct = NativeIsPunct,
     args = [c: bv],

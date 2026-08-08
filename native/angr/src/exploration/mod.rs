@@ -53,24 +53,31 @@ mod pending_api;
 mod profiling;
 mod resume;
 mod run_loop;
-/// The single-threaded run loop (`run_loop_single_threaded` + `step_one`), the
-/// always-compiled default driver. Split out of `run_loop.rs` (angr-9ke6b.49).
+// NOTE (angr-sqfj8.144): these are plain `//` comments, not `///` doc
+// comments, on purpose. An outer doc comment on a `mod x;` declaration makes
+// rustdoc resolve *every* fragment of that module's docs — including the
+// `//!` block inside the file — in the scope of THIS module rather than the
+// module's own, which silently breaks all of its `super::`-relative and
+// bare-item intra-doc links. Each file's `//!` header carries the real module
+// doc; what stays here is the `#[cfg]` rationale a reader of mod.rs wants.
+// The single-threaded run loop (`run_loop_single_threaded` + `step_one`), the
+// always-compiled default driver. Split out of `run_loop.rs` (angr-9ke6b.49).
 mod run_loop_single;
-/// The steady-state parallel coordinator (angr-nkoct). Z3-gated: it drives the
-/// scheduler, which transports [`crate::state::StateMigrationPayload`].
+// The steady-state parallel coordinator (angr-nkoct). Z3-gated: it drives the
+// scheduler, which transports `crate::state::StateMigrationPayload`.
 #[cfg(feature = "vex-engine-z3")]
 mod run_loop_steady;
-/// The per-wave parallel coordinator (angr-vh834 Phase 5). Z3-gated for the
-/// same reason as [`run_loop_steady`].
+// The per-wave parallel coordinator (angr-vh834 Phase 5). Z3-gated for the
+// same reason as `run_loop_steady`.
 #[cfg(feature = "vex-engine-z3")]
 mod run_loop_wave;
-/// The GIL-free worker body both parallel coordinators dispatch. Z3-gated for
-/// the same reason as [`run_loop_steady`].
+// The GIL-free worker body both parallel coordinators dispatch. Z3-gated for
+// the same reason as `run_loop_steady`.
 #[cfg(feature = "vex-engine-z3")]
 mod run_loop_worker;
-/// Work-stealing scheduler machinery for parallel exploration (angr-1ilq.3).
-/// Z3-gated: it transports [`crate::state::StateMigrationPayload`], which only
-/// exists with the Z3-backed engine.
+// Work-stealing scheduler machinery for parallel exploration (angr-1ilq.3).
+// Z3-gated: it transports `crate::state::StateMigrationPayload`, which only
+// exists with the Z3-backed engine.
 #[cfg(feature = "vex-engine-z3")]
 mod scheduler;
 pub(crate) mod selection_policy;
@@ -286,7 +293,8 @@ pub struct RustExplorationManager {
     // state_roots is now in self.sm (StashManager)
     /// Active-state selection / fork-insertion policy (angr-a32jl.1).
     /// Governs which active state is stepped next and where new forks land.
-    /// Defaults to [`Fifo`] (BFS); `set_state_selection_lifo` swaps in [`Lifo`]
+    /// Defaults to [`Fifo`](selection_policy::Fifo) (BFS);
+    /// `set_state_selection_lifo` swaps in [`Lifo`](selection_policy::Lifo)
     /// (DFS). Replaces the former `use_lifo: bool`.
     pub(crate) policy: Arc<dyn SelectionPolicy>,
     /// Solver configuration: lazy_solves flag and Z3 timeout.
@@ -437,7 +445,7 @@ pub struct RustExplorationManager {
     /// `z3::Context` for its whole life and exits cleanly when this Sender drops
     /// at manager teardown (channel close ends its `recv` loop) — no JoinHandle
     /// or Drop impl is needed.
-    /// Z3-gated for the same reason as [`shadow_probe`](self::shadow_probe):
+    /// Z3-gated for the same reason as [`shadow_probe`]:
     /// the scratch thread owns its own `z3::Context`.
     #[cfg(feature = "vex-engine-z3")]
     pub(crate) shadow_probe_chan: Option<shadow_probe::ShadowProbeChan>,

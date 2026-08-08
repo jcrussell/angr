@@ -84,7 +84,7 @@ pub(crate) const MAX_ITE_ADDRS: usize = 16;
 
 /// Start a profiling timer iff `self.profiling_enabled`. Yields `Option<Instant>`.
 ///
-/// Pair with [`profile_add!`] to fold the elapsed nanoseconds into a `u64`
+/// Pair with `profile_add!` to fold the elapsed nanoseconds into a `u64`
 /// stats field. When profiling is off both macros collapse to a single branch.
 macro_rules! profile_start {
     ($self:expr) => {

@@ -5,8 +5,8 @@
 //!
 //! * **Session protocol** — the duplex coordinator<->worker messages
 //!   ([`WorkerCtl`] downstream, [`WorkerUp`] upstream) and [`RunSession`], the
-//!   steady-state analogue of [`WaveJob`](super::transport::WaveJob): both wrap a
-//!   [`WorkTransport`](super::transport::WorkTransport), and differ only in how
+//!   steady-state analogue of [`WaveJob`]: both wrap a
+//!   [`WorkTransport`], and differ only in how
 //!   terminals leave the worker and what a worker does when it runs dry.
 //! * **Pool lifecycle** — [`PersistentPool`], the `num_workers` long-lived
 //!   threads each owning a private Z3 context for the pool's whole life, plus the

@@ -798,7 +798,7 @@ impl SymContext {
         )
     }
 
-    /// Canonical ascending enumeration for [`eval_upto`] under strict-
+    /// Canonical ascending enumeration for [`eval_upto`](Self::eval_upto) under strict-
     /// deterministic mode (angr-op0dn.10.2). Caller guarantees `n > 0`,
     /// `width <= 128`, and a symbolic `bv`.
     ///

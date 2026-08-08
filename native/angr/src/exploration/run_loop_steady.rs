@@ -4,14 +4,14 @@
 //! frontiers RESIDENT across the Python-callback boundary, so a bounce costs one
 //! materialize + re-inject instead of a full-frontier detach/reattach re-seed.
 //! Engaged only when `steady_state_eligible()`; the per-wave loop in
-//! [`run_loop_wave`](super::run_loop_wave) remains the fallback. Both share the
-//! GIL-free worker body in [`run_loop_worker`](super::run_loop_worker) and the
+//! [`run_loop_wave`] remains the fallback. Both share the
+//! GIL-free worker body in [`run_loop_worker`] and the
 //! wave loop's `route_materialized_terminal` / `process_parallel_bounce_queue`
 //! routing helpers.
 //!
 //! Split out of `run_loop.rs` (angr-9ke6b.49) — no behavior change.
 //!
-//! **Panic policy / lint enforcement:** identical to [`run_loop`](super::run_loop)
+//! **Panic policy / lint enforcement:** identical to [`run_loop`]
 //! — the crate ships with `panic = "abort"`, so a `MutexGuard` can never be
 //! poisoned by an unwind, and every `.expect()` here is a poison /
 //! session-live / pool-set invariant guard carrying a narrow

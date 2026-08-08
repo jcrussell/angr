@@ -20,8 +20,8 @@ use crate::vex::ir::IRType;
 
 impl VEXOps {
     /// NEON pairwise widening add — `Iop_PwAddL{N}{S/U}x{M}`. Unary.
-    /// Output element i (width `2*elem`) = sext_or_zext(a[2i]) +
-    /// sext_or_zext(a[2i+1]). Output lane count = `count / 2`; output total
+    /// Output element `i` (width `2*elem`) = `sext_or_zext(a[2i])` +
+    /// `sext_or_zext(a[2i+1])`. Output lane count = `count / 2`; output total
     /// width = input total width.
     pub(super) fn vec_pairwise_add_long(
         arg: RustBV,
@@ -55,8 +55,8 @@ impl VEXOps {
 
     /// NEON binary pairwise op — `Iop_PwAdd{N}x{M}` / `Iop_PwMin{N}{S/U}x{M}` /
     /// `Iop_PwMax{N}{S/U}x{M}`. Output lane shape matches the inputs. Per-lane:
-    ///   * result[i]           = op(a[2i],   a[2i+1])              for i < count/2
-    ///   * result[count/2 + i] = op(b[2i],   b[2i+1])              for i < count/2
+    ///   * `result[i]           = op(a[2i],   a[2i+1])`            for i < count/2
+    ///   * `result[count/2 + i] = op(b[2i],   b[2i+1])`            for i < count/2
     pub(super) fn vec_pairwise_binop(
         left: RustBV,
         right: RustBV,

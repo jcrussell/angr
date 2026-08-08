@@ -773,7 +773,7 @@ impl RustExplorationManager {
     /// GC traversal: visit Python callback refs held inside the cloned
     /// PythonCallbacks struct. The Python wrapper `mgr` owns
     /// `mgr._rust_mgr` (this object), and via `set_callbacks` this object
-    /// holds a cloned PythonCallbacks whose Py<PyAny> bound methods point
+    /// holds a cloned `PythonCallbacks` whose `Py<PyAny>` bound methods point
     /// back at `mgr` — a non-trivial cycle that cycle-GC can break only if
     /// __traverse__/__clear__ are exposed.
     fn __traverse__(&self, visit: PyVisit<'_>) -> Result<(), PyTraverseError> {

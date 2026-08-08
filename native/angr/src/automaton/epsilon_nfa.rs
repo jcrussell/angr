@@ -215,7 +215,7 @@ impl EpsilonNFA {
     ///
     /// # Errors
     ///
-    /// Returns [`EpsilonSymbolError`] if `symbol` is the [`EPSILON`] marker.
+    /// Returns `EpsilonSymbolError` if `symbol` is the [`EPSILON`] marker.
     /// Callers are expected to draw symbols from [`Self::alphabet`], which
     /// excludes epsilon by construction (see `add_transition`), so this is an
     /// invariant check, not an input check — but it is a `Result` rather than
