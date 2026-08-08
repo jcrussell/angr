@@ -33,10 +33,12 @@
 //!   log/exp theory, so this would just trampoline back to the same
 //!   concretization with extra FFI cost.
 //! * Option 3 — Pure-symbolic via a Z3 UF with monotonicity / range
-//!   axioms (cf. closed angr-9l1y): expensive, brittle, and no current
-//!   benchmark routes a symbolic path through these ops
-//!   (sokohashv2 hooks them out at the test driver). TODO: revisit if
-//!   precision becomes an issue for real workloads.
+//!   axioms: expensive, brittle, and no current benchmark routes a
+//!   symbolic path through these ops (sokohashv2 hooks them out at the
+//!   test driver). Tracked by closed bd `angr-9l1y`, whose recorded
+//!   re-open trigger is exactly this revisit condition: a new benchmark
+//!   or test that actually invokes one of these ops with a symbolic
+//!   operand.
 //!
 //! `Iop_RecpExpF64`/`Iop_RecpExpF32` (ARM AArch64 FRECPX) are NOT in
 //! this fallback — they have a closed-form exponent-only implementation

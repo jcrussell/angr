@@ -4,6 +4,9 @@
 //! 4 KiB page boundaries. Previously each file carried an identical
 //! `const PAGE_SIZE: u64 = 4096;` plus `const PAGE_MASK: u64 = PAGE_SIZE - 1;`
 //! — consolidated here so any future page-size adjustment lives in one place.
+//! Since angr-sqfj8.140 this module does not define its own copy either: it
+//! re-exports `crate::memory`'s, which the paging engine itself uses, so a
+//! syscall handler and the memory model can never disagree about page size.
 //!
 //! `mmap` and `mprotect` additionally shared a byte-identical PROT-bit
 //! translation; `linux_prot_to_permission` now lives here for the same
@@ -12,12 +15,12 @@
 
 use crate::memory::Permission;
 
-/// Page size in bytes (4 KiB).
-pub(crate) const PAGE_SIZE: u64 = 4096;
-
-/// Mask for the low bits within a page. `addr & !PAGE_MASK` rounds down;
-/// `(addr + PAGE_MASK) & !PAGE_MASK` rounds up.
-pub(crate) const PAGE_MASK: u64 = PAGE_SIZE - 1;
+/// Page size in bytes (4 KiB) and the mask for the low bits within a page:
+/// `addr & !PAGE_MASK` rounds down, `(addr + PAGE_MASK) & !PAGE_MASK` rounds
+/// up. Re-exported from `crate::memory::page` — the single definition — so
+/// `super::page::{PAGE_SIZE, PAGE_MASK}` keeps resolving for the `brk` /
+/// `mmap` / `mprotect` handlers.
+pub(crate) use crate::memory::{PAGE_MASK, PAGE_SIZE};
 
 /// Translate Linux PROT bits (0x1=R, 0x2=W, 0x4=X) into the internal
 /// `Permission` struct. Shared by the `mmap` and `mprotect` handlers.
