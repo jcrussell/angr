@@ -113,52 +113,9 @@ impl RustExplorationManager {
                 }
                 NativeTechnique::LengthLimiter { max_length, drop } => {
                     let max_len = *max_length;
-                    let do_drop = *drop;
-
-                    // Find states exceeding the length limit
-                    let to_remove = {
-                        let active = match self.sm.get(STASH_ACTIVE) {
-                            Some(s) => s,
-                            None => continue,
-                        };
-                        let mut indices = Vec::new();
-                        for (i, state) in active.iter().enumerate() {
-                            if state.history().len() > max_len {
-                                indices.push(i);
-                            }
-                        }
-                        indices
-                    };
-
-                    if to_remove.is_empty() {
-                        continue;
-                    }
-
-                    let active = match self.sm.get_mut(STASH_ACTIVE) {
-                        Some(s) => s,
-                        None => continue,
-                    };
-                    let mut removed_states = Vec::new();
-                    for &idx in to_remove.iter().rev() {
-                        if let Some(state) = active.remove(idx) {
-                            removed_states.push(state);
-                        }
-                    }
-                    // Removed from STASH_ACTIVE outside `policy.select` — notify
-                    // so a memoizing policy doesn't leak memo entries
-                    // (angr-myzjx.25).
-                    for state in &removed_states {
-                        self.policy.on_state_removed(state.state_id());
-                    }
-
-                    if do_drop {
-                        // States are simply discarded
-                    } else {
-                        let cut_stash = self.sm.stashes_mut().entry("cut".to_string()).or_default();
-                        for state in removed_states {
-                            cut_stash.push_back(state);
-                        }
-                    }
+                    // `drop` states have no stash of their own; the rest are cut.
+                    let dest = if *drop { None } else { Some("cut") };
+                    self.evict_active_states(|state| state.history().len() > max_len, dest);
                 }
                 NativeTechnique::LoopBound {
                     bound,
@@ -166,50 +123,13 @@ impl RustExplorationManager {
                 } => {
                     let max_bound = *bound;
                     let stash_name = discard_stash.clone();
-
-                    // Find states where any address appears more than `bound` times
-                    let to_remove = {
-                        let active = match self.sm.get(STASH_ACTIVE) {
-                            Some(s) => s,
-                            None => continue,
-                        };
-                        let mut indices = Vec::new();
-                        for (i, state) in active.iter().enumerate() {
-                            let history = state.history();
-                            if Self::exceeds_loop_bound(history, max_bound) {
-                                indices.push(i);
-                            }
-                        }
-                        indices
-                    };
-
-                    if to_remove.is_empty() {
-                        continue;
-                    }
-
-                    let active = match self.sm.get_mut(STASH_ACTIVE) {
-                        Some(s) => s,
-                        None => continue,
-                    };
-                    let mut removed_states = Vec::new();
-                    for &idx in to_remove.iter().rev() {
-                        if let Some(state) = active.remove(idx) {
-                            removed_states.push(state);
-                        }
-                    }
-                    // Removed from STASH_ACTIVE outside `policy.select` — notify
-                    // so a memoizing policy doesn't leak memo entries
-                    // (angr-myzjx.25).
-                    for state in &removed_states {
-                        self.policy.on_state_removed(state.state_id());
-                    }
-
-                    if !self.sm.drop_terminal_states() {
-                        let target = self.sm.stashes_mut().entry(stash_name).or_default();
-                        for state in removed_states {
-                            target.push_back(state);
-                        }
-                    }
+                    // Unlike `LengthLimiter`'s per-technique `drop` flag, the
+                    // discard decision here is the manager-wide one.
+                    let dest = (!self.sm.drop_terminal_states()).then_some(stash_name);
+                    self.evict_active_states(
+                        |state| Self::exceeds_loop_bound(state.history(), max_bound),
+                        dest.as_deref(),
+                    );
                 }
                 // Handled out-of-band above the match.
                 NativeTechnique::MergePoint { .. } => {}
@@ -217,6 +137,60 @@ impl RustExplorationManager {
         }
 
         complete
+    }
+
+    /// Evict every state in the active stash matching `predicate`, then either
+    /// park the evictees in `dest` or discard them (`dest == None`).
+    ///
+    /// Shared body of the `LengthLimiter` and `LoopBound` arms of
+    /// [`RustExplorationManager::apply_native_techniques`]: both scan
+    /// `STASH_ACTIVE` for states past a limit and differ only in the predicate
+    /// and in how the destination stash is chosen. States leave `STASH_ACTIVE`
+    /// here outside `policy.select`, so the policy is notified explicitly — a
+    /// memoizing policy would otherwise leak its per-state memo entries
+    /// (angr-myzjx.25).
+    fn evict_active_states(
+        &mut self,
+        predicate: impl Fn(&RustSimState) -> bool,
+        dest: Option<&str>,
+    ) {
+        let to_remove: Vec<usize> = {
+            let Some(active) = self.sm.get(STASH_ACTIVE) else {
+                return;
+            };
+            active
+                .iter()
+                .enumerate()
+                .filter(|(_, state)| predicate(state))
+                .map(|(i, _)| i)
+                .collect()
+        };
+        if to_remove.is_empty() {
+            return;
+        }
+
+        let removed_states: Vec<RustSimState> = {
+            let Some(active) = self.sm.get_mut(STASH_ACTIVE) else {
+                return;
+            };
+            // Descending index order so each removal leaves the earlier
+            // indices valid.
+            to_remove
+                .iter()
+                .rev()
+                .filter_map(|&idx| active.remove(idx))
+                .collect()
+        };
+        for state in &removed_states {
+            self.policy.on_state_removed(state.state_id());
+        }
+
+        if let Some(dest) = dest {
+            let target = self.sm.stashes_mut().entry(dest.to_string()).or_default();
+            for state in removed_states {
+                target.push_back(state);
+            }
+        }
     }
 
     /// One post-step round of the native MergePoint technique
