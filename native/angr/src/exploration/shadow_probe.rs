@@ -20,8 +20,10 @@
 //!
 //! **Panic policy / enforcement (angr-qwyti.11, angr-9ke6b.212):** this module
 //! carries `#![deny(clippy::unwrap_used, clippy::expect_used)]`. The one
-//! surviving `expect` reads the channel the same function lazily created three
-//! statements earlier — see its `#[allow]` reason.
+//! surviving non-test `expect` reads the channel the same function lazily
+//! created three statements earlier — see its `#[allow]` reason. (The deny
+//! reaches the `#[cfg(test)]` `shadow_probe_tests.rs` child too, which opts
+//! out wholesale, so count non-test sites only when checking that claim.)
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use super::*;

@@ -13,8 +13,10 @@
 //!
 //! **Panic policy / enforcement (angr-qwyti.11, angr-9ke6b.212):** this module
 //! carries `#![deny(clippy::unwrap_used, clippy::expect_used)]`. The one
-//! surviving `expect` in [`build_solver`] reads the first entry of a tactic
-//! pipeline that [`tactic_spec`] guarantees non-empty — see its `#[allow]`.
+//! surviving non-test `expect` in [`build_solver`] reads the first entry of a
+//! tactic pipeline that [`tactic_spec`] guarantees non-empty — see its
+//! `#[allow]`. (`extra_params_tests` opts out of the deny wholesale, so count
+//! non-test sites only when checking that claim.)
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use std::sync::atomic::Ordering;

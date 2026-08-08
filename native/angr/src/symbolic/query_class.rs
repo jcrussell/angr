@@ -12,8 +12,11 @@
 //! **Panic policy / enforcement (angr-qwyti.11, angr-9ke6b.212):** this module
 //! classifies guest-derived query ASTs, so it carries
 //! `#![deny(clippy::unwrap_used, clippy::expect_used)]`; an unrecognized shape
-//! falls into `QueryClass::Hard`, never a panic. The two surviving `expect`s
-//! read the single element of a set whose length was checked on the line above.
+//! falls into `QueryClass::Hard`, never a panic. The two surviving non-test
+//! `expect`s ([`classify_bool`] and [`classify_extrema`]) read the single
+//! element of a set whose length was checked on the line above; the
+//! `#[cfg(test)]` `tests` child opts out of the deny wholesale, so count
+//! non-test sites only when checking that claim.
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 //!
 //! Two protocol rules from the bead, both load-bearing for the >=30% gate:

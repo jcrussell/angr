@@ -70,9 +70,12 @@
 //!
 //! **Panic policy / enforcement (angr-qwyti.11, angr-9ke6b.212):** this module
 //! carries `#![deny(clippy::unwrap_used, clippy::expect_used)]`. It owns the Z3
-//! solver behind guest-derived constraints; the one surviving `expect` in
-//! [`SymContext::solver`] reads back a lazily-materialized solver the same
-//! function just stored under the same held guard.
+//! solver behind guest-derived constraints; the one surviving non-test
+//! `expect` in [`SymContext::solver`] reads back a lazily-materialized solver
+//! the same function just stored under the same held guard. (The deny also
+//! reaches the `#[cfg(test)]` children — `merge_instrument` and the
+//! `context_tests/` files — which opt out wholesale via a reasoned
+//! `#[allow]`, so count non-test sites only when checking that claim.)
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
 // The Z3-only half of the std imports: every consumer of `Cell`/`RefCell`

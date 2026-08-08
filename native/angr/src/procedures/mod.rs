@@ -85,8 +85,15 @@
 //! **Panic policy / enforcement (angr-qwyti.11, angr-9ke6b.212):** every
 //! procedure argument here is guest data, so this module carries
 //! `#![deny(clippy::unwrap_used, clippy::expect_used)]`; a value a procedure
-//! cannot handle returns `ProcedureError` and falls back to Python. The one
-//! surviving `expect` in [`symbol_counter`] is a mutex poison guard.
+//! cannot handle returns `ProcedureError` and falls back to Python. The deny
+//! also reaches every child module here, so a handful of `expect`s survive
+//! across the tree (the [`symbol_counter`] mutex poison guard, plus sites in
+//! `ctype`, `fgets` and `scanf`); rather than enumerate them — an inventory
+//! that goes stale the moment a procedure module adds one (angr-sqfj8.147) —
+//! the invariant is: every surviving `expect` sits under a reviewed
+//! `#[allow(clippy::expect_used, reason = "...")]` whose reason names the
+//! local guard proving it, and that guard is never guest data. If you cannot
+//! write such a reason, the code needs a `ProcedureError`, not an `expect`.
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
 #[macro_use]
