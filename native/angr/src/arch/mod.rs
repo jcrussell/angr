@@ -71,6 +71,33 @@ pub trait Arch: Send + Sync {
     fn sp_offset(&self) -> u32;
 
     /// Get the offset of the base pointer register (if any).
+    ///
+    /// **Deliberately has no non-test caller** (bead angr-sqfj8.3), unlike its
+    /// `ip_offset` / `sp_offset` siblings: SP is read by `RegisterFile::get_sp`
+    /// / `get_sp_value`, `CallingConvention::get_return_addr` and the
+    /// SimProcedure/prefetch paths, and IP by `RegisterFile::get_ip` /
+    /// `set_ip`, but nothing in the engine needs the frame pointer — we never
+    /// walk or synthesize a frame, and code that wants BP by name gets it from
+    /// `register_offset("bp")` / `register_offset("fp")`. The Python side's
+    /// `arch.bp_offset`
+    /// (`slicer.py`, `blade.py`, the reaching-definitions analyses) is
+    /// archinfo's, not this one.
+    ///
+    /// Kept rather than deleted because it is the pinned half of
+    /// `mod_tests::test_all_arches_report_expected_special_register_offsets`,
+    /// which asserts each arch's answer against a literal in that file's
+    /// `ArchExpect` table — so a guest-state layout edit that shifts EBP/RBP/
+    /// R11/X29/R30 fails there, the same integrity-sweep role `register_name`
+    /// plays. Deleting it would silently drop that arm.
+    ///
+    /// The `Option` is future-proofing, not a live case: all six arches return
+    /// `Some`. It exists for a frame-pointer-less target (a pure-RISC ABI that
+    /// spends the register as a GPR), and a caller must therefore treat `None`
+    /// as "this arch has no frame pointer", never as "unknown".
+    ///
+    /// As with `register_name`, rustc's `dead_code` lint does not flag this
+    /// (trait methods on a used trait are exempt), so the "unused" reading has
+    /// to be re-derived by hand each audit — hence this note.
     fn bp_offset(&self) -> Option<u32>;
 
     /// Get the offset of a register by name.
