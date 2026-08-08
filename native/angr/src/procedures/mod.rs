@@ -140,13 +140,7 @@ pub(crate) mod system;
 pub(crate) mod time;
 pub(crate) mod write;
 
-#[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
-)]
-mod test_util;
+test_submod!(test_util);
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -806,11 +800,4 @@ impl NativeProcedureRegistry {
     }
 }
 
-#[cfg(test)]
-#[path = "mod_tests.rs"]
-#[allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
-)]
-mod tests;
+test_submod!("mod_tests.rs" => tests);

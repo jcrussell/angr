@@ -132,11 +132,4 @@ impl NativeSimProcedure for NativePthreadOnce {
     }
 }
 
-#[cfg(test)]
-#[path = "pthread_tests.rs"]
-#[allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
-)]
-mod tests;
+test_submod!("pthread_tests.rs" => tests);

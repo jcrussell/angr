@@ -730,11 +730,4 @@ pub struct StashManagerSnapshot {
     pub unconstrained_count: u64,
 }
 
-#[cfg(test)]
-#[path = "stash_tests.rs"]
-#[allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
-)]
-mod tests;
+test_submod!("stash_tests.rs" => tests);

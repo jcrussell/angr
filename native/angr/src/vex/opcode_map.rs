@@ -1279,11 +1279,4 @@ pub fn parse_jumpkind(jk_str: &str) -> super::ir::JumpKind {
     }
 }
 
-#[cfg(test)]
-#[path = "opcode_map_tests.rs"]
-#[allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
-)]
-mod opcode_map_tests;
+test_submod!("opcode_map_tests.rs" => opcode_map_tests);

@@ -44,13 +44,7 @@ mod multi;
 mod page;
 mod store;
 mod symbolic_objects;
-#[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` in the parent overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
-)]
-mod tests;
+test_submod!(tests);
 pub use address::Address;
 pub use multi::{MultiAlternative, MultiFlushed, MultiPayload};
 pub use page::{BITMAP_WORDS, MemoryPage, PAGE_MASK, PAGE_SIZE, Permission};

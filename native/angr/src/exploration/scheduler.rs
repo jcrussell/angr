@@ -460,11 +460,4 @@ impl ParallelScheduler {
 mod worker;
 use worker::{worker_loop, worker_session_loop};
 
-#[cfg(test)]
-#[path = "scheduler_tests.rs"]
-#[allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable"
-)]
-mod tests;
+test_submod!("scheduler_tests.rs" => tests);

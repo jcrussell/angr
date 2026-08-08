@@ -687,21 +687,7 @@ unsafe fn marshal_irsb(irsb: *const ffi::IRSB, addr: u64, arch: VexArch) -> IRSB
     }
 }
 
-#[cfg(test)]
-#[path = "libvex_lifter_tests.rs"]
-#[allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
-)]
-mod tests;
+test_submod!("libvex_lifter_tests.rs" => tests);
 
 // Corpus IRSB parity gate (native vs pyvex-serialized) — the real Stage-1 gate.
-#[cfg(test)]
-#[path = "libvex_corpus_tests.rs"]
-#[allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
-)]
-mod corpus_tests;
+test_submod!("libvex_corpus_tests.rs" => corpus_tests);

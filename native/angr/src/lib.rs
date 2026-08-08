@@ -89,6 +89,69 @@
 // pre-feature coverage rather than silencing the lint crate-wide.
 #![warn(unreachable_pub)]
 
+/// Declare a test-only submodule that lives in a sibling file.
+///
+/// Every `#[cfg(test)] mod tests;` in this crate points at an out-of-line
+/// `*_tests.rs` (or a `*_tests/` directory of scoped test files) and has to
+/// re-`allow` the two test-only clippy lints, because each test module's own
+/// `deny` overrides the crate-wide `cfg_attr(test, allow(..))` at the top of
+/// this file. That is four attributes of identical boilerplate per site,
+/// repeated ~120 times crate-wide (bd angr-12jjk.16); this macro is the single
+/// place the justification wording lives.
+///
+/// ```ignore
+/// test_submod!("stash_tests.rs" => tests);        // explicit `#[path]`
+/// test_submod!(tests_core);                       // default `tests_core.rs`
+/// // z3-only test files, so the no-z3 `cargo test` combos still compile:
+/// test_submod!(z3 "context_tests/constraints.rs" => context_tests_constraints);
+/// test_submod!(z3 tests_int_arith);
+/// ```
+///
+/// Defined before the crate's `mod` declarations so legacy textual macro scope
+/// reaches every module; invoke it unqualified.
+macro_rules! test_submod {
+    ($file:literal => $name:ident) => {
+        #[cfg(test)]
+        #[path = $file]
+        #[allow(
+            clippy::unwrap_used,
+            clippy::expect_used,
+            reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+        )]
+        mod $name;
+    };
+    ($name:ident) => {
+        #[cfg(test)]
+        #[allow(
+            clippy::unwrap_used,
+            clippy::expect_used,
+            reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+        )]
+        mod $name;
+    };
+    // Gated on vex-engine-z3 (bd angr-cagbn): test files that drive
+    // `SymContext::add_constraint` / Z3AstPtr, which only exist with z3.
+    (z3 $file:literal => $name:ident) => {
+        #[cfg(all(test, feature = "vex-engine-z3"))]
+        #[path = $file]
+        #[allow(
+            clippy::unwrap_used,
+            clippy::expect_used,
+            reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+        )]
+        mod $name;
+    };
+    (z3 $name:ident) => {
+        #[cfg(all(test, feature = "vex-engine-z3"))]
+        #[allow(
+            clippy::unwrap_used,
+            clippy::expect_used,
+            reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+        )]
+        mod $name;
+    };
+}
+
 // Dev-only public surface for the cargo-fuzz targets under `fuzz/`
 // (angr-qwyti.9). Re-exports the pure hostile-input parsers so a fuzz binary
 // can reach them without depending on `pub(super)` internals. Gated behind

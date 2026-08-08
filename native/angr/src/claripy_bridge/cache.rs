@@ -321,11 +321,4 @@ pub(crate) fn cache_stats() -> (usize, usize) {
     })
 }
 
-#[cfg(test)]
-#[path = "cache_tests.rs"]
-#[allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
-)]
-mod cache_tests;
+test_submod!("cache_tests.rs" => cache_tests);

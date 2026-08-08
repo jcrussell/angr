@@ -908,20 +908,6 @@ impl<'a> VEXInterpreter<'a> {
     }
 }
 
-#[cfg(test)]
-#[path = "interpreter_tests.rs"]
-#[allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
-)]
-mod interpreter_tests;
+test_submod!("interpreter_tests.rs" => interpreter_tests);
 
-#[cfg(test)]
-#[path = "smc_tests.rs"]
-#[allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
-)]
-mod smc_tests;
+test_submod!("smc_tests.rs" => smc_tests);

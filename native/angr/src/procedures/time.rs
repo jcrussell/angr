@@ -38,11 +38,4 @@ crate::declare_proc! {
     }
 }
 
-#[cfg(all(test, feature = "vex-engine-z3"))]
-#[path = "time_tests.rs"]
-#[allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
-)]
-mod tests;
+test_submod!(z3 "time_tests.rs" => tests);

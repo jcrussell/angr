@@ -913,51 +913,9 @@ pub(crate) mod merge_instrument {
 // Gated on vex-engine-z3 (bd angr-cagbn): every test here drives
 // `SymContext::add_constraint` / Z3AstPtr, which only exist with z3. Keeps the
 // no-z3 nightly `cargo test` combos compiling; default build runs them all.
-#[cfg(all(test, feature = "vex-engine-z3"))]
-#[path = "context_tests/constraints.rs"]
-#[allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
-)]
-mod context_tests_constraints;
-#[cfg(test)]
-#[path = "context_tests/lineage.rs"]
-#[allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
-)]
-mod context_tests_lineage;
-#[cfg(test)]
-#[path = "context_tests/merge_prefix.rs"]
-#[allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
-)]
-mod context_tests_merge_prefix;
-#[cfg(test)]
-#[path = "context_tests/merge_shape_spike.rs"]
-#[allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
-)]
-mod context_tests_merge_shape_spike;
-#[cfg(test)]
-#[path = "context_tests/smtlib2_snapshot.rs"]
-#[allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
-)]
-mod context_tests_smtlib2_snapshot;
-#[cfg(test)]
-#[path = "context_tests/solver.rs"]
-#[allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
-)]
-mod context_tests_solver;
+test_submod!(z3 "context_tests/constraints.rs" => context_tests_constraints);
+test_submod!("context_tests/lineage.rs" => context_tests_lineage);
+test_submod!("context_tests/merge_prefix.rs" => context_tests_merge_prefix);
+test_submod!("context_tests/merge_shape_spike.rs" => context_tests_merge_shape_spike);
+test_submod!("context_tests/smtlib2_snapshot.rs" => context_tests_smtlib2_snapshot);
+test_submod!("context_tests/solver.rs" => context_tests_solver);

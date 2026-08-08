@@ -990,11 +990,4 @@ pub(crate) fn arch_from_vex(arch: VexArch) -> Box<dyn Arch> {
     }
 }
 
-#[cfg(test)]
-#[path = "mod_tests.rs"]
-#[allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
-)]
-mod tests;
+test_submod!("mod_tests.rs" => tests);
