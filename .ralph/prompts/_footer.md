@@ -83,8 +83,10 @@ See the **Key Files** section in `CLAUDE.md` (already in your context).
 - If tests fail, investigate and fix before closing the task
 - Store findings in `bd remember`, not in markdown files
 - **Rename-sweep:** any commit that renames/moves a file or public symbol must
-  `bd memories <old-name>` (keyword search has recall gaps — grep a full
-  `bd memories` dump too) and repair stale citations in the SAME iteration.
+  `bd memories <old-name>` for every plausible old name (keyword search has
+  recall gaps; an argless `bd memories` dump is NOT a valid backstop — it
+  prints truncated summaries. Widen with `bd recall <key> </dev/null`
+  instead) and repair stale citations in the SAME iteration.
   See `refactor-memory-sweep-rule` + `bd-memory-citation-repair-pattern`.
 - **CHECKPOINT:** every ~30 minutes of work, commit any working changes (even
   partial) with a WIP commit message. This prevents losing work if you hit a

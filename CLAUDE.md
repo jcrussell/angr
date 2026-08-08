@@ -27,8 +27,11 @@ rules (full rationale in bd memory `refactor-memory-sweep-rule`):
 
 - **Rename-sweep:** any commit that renames or moves a file or public
   symbol must `bd memories <old-name>` and repair the hits in the **same
-  commit**. Keyword search has recall gaps, so also grep a full
-  `bd memories` dump. Repair per `bd-memory-citation-repair-pattern`.
+  commit**. Keyword search has recall gaps, so run it for *every* plausible
+  old name — and do **not** fall back to grepping an argless `bd memories`
+  dump, which prints truncated one-line summaries and misses tokens buried
+  mid-body. Widen instead with `bd recall <key> </dev/null` over the
+  candidate keys. Repair per `bd-memory-citation-repair-pattern`.
 - **Symbol-anchor convention:** when authoring a memory, anchor code
   references to symbol names (`fn`/`struct`/`method`) rather than raw line
   numbers. Audits find line refs drift 10–600 lines across refactors while
