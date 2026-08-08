@@ -1049,6 +1049,83 @@ class RustErrorRecord:
 DEFAULT_MAX_ACTIVE_STATES = 100_000
 
 
+# Single source of truth for the boilerplate stash accessors on
+# RustExplorationManager. Each entry is
+# ``stash -> (doc paragraph, emit `mgr.<stash>` property, emit
+# `mgr.<stash>_proxies()` method)``; ``_install_stash_accessors`` turns it into
+# the actual attributes at class-creation time. A ``False`` means the class
+# already defines that accessor by hand (``found``'s property also merges
+# predicate hits) or deliberately has none (``pruned`` has no proxy accessor —
+# ``docs/advanced-topics/rust_engine.rst`` documents exactly five). Adding a
+# stash here wires up both halves at once, which is the point: the accessors
+# used to be hand-written one-liners, so a new stash could reach one list and
+# be forgotten in the other.
+_STASH_ACCESSORS = {
+    "active": ("These are the states that the next :meth:`step` call will advance.", True, True),
+    "found": ("", False, True),
+    "avoid": ("These are the states that matched the ``avoid`` predicate.", True, True),
+    "deadended": ("These are the states that produced no successors.", True, True),
+    "unconstrained": (
+        "These are states where a symbolic jump target (e.g., ret instruction "
+        "with symbolic return address) had too many possible concrete values "
+        "to enumerate and fork.",
+        True,
+        True,
+    ),
+    "pruned": (
+        "These are states that were determined to be unsatisfiable during "
+        "exploration (e.g., both branches of a conditional were infeasible "
+        "given the current constraints).",
+        True,
+        False,
+    ),
+}
+
+
+def _install_stash_accessors(cls):
+    """Class decorator generating the per-stash accessors in ``_STASH_ACCESSORS``.
+
+    Both halves route through the hand-written ``_get_stash_states`` /
+    ``_stash_proxies`` chokepoints; only the wrapping property/method is
+    generated. Accessors the class defines itself are never overwritten, so a
+    hand-written body (``found``, ``errored``) always wins over the table.
+    """
+    for stash, (doc, emit_property, emit_proxies) in _STASH_ACCESSORS.items():
+        if emit_property and stash not in cls.__dict__:
+
+            def _states(self, _stash=stash):
+                return self._get_stash_states(_stash)
+
+            _states.__doc__ = (
+                f"Get states in the ``{stash}`` stash as angr SimStates.\n\n{doc}\n\n"
+                f"For SimulationManager API compatibility this returns full "
+                f"angr states."
+            )
+            setattr(cls, stash, property(_states))
+
+        name = f"{stash}_proxies"
+        if emit_proxies and name not in cls.__dict__:
+
+            def _proxies(self, _stash=stash):
+                return self._stash_proxies(_stash)
+
+            _proxies.__name__ = name
+            _proxies.__qualname__ = f"{cls.__qualname__}.{name}"
+            _proxies.__doc__ = (
+                f"Return the ``{stash}`` stash as ``list[RustStateProxy]``.\n\n"
+                f"Counterpart to :attr:`{stash}`, but returns lightweight "
+                f"proxies that delegate reads to Rust via PyO3 instead of "
+                f"materializing full angr ``SimState`` objects. Use this when "
+                f"querying many states cheaply (e.g. counting states matching "
+                f"``proxy.addr == X``); use :attr:`{stash}` when you need full "
+                f"SimState plugins (``posix.dumps``, ``solver.eval`` of complex "
+                f"claripy ASTs, etc.)."
+            )
+            setattr(cls, name, _proxies)
+    return cls
+
+
+@_install_stash_accessors
 class RustExplorationManager(
     RustCallbackDispatchMixin,
     RustStateSyncMixin,
@@ -5901,13 +5978,9 @@ class RustExplorationManager(
             count += len(self._predicate_found)
         return count
 
-    @property
-    def active(self) -> list:
-        """Get states in the active stash as angr SimStates.
-
-        For SimulationManager API compatibility, this returns full angr states.
-        """
-        return self._get_stash_states("active")
+    # ``active`` / ``avoid`` / ``deadended`` / ``unconstrained`` / ``pruned``
+    # are generated from ``_STASH_ACCESSORS`` by ``_install_stash_accessors``;
+    # only the stashes needing a non-trivial body are written out here.
 
     @property
     def found(self) -> list:
@@ -5925,16 +5998,6 @@ class RustExplorationManager(
                 if id(s) not in existing_ids:
                     states.append(s)
         return states
-
-    @property
-    def avoid(self) -> list:
-        """Get states in the avoid stash as angr SimStates."""
-        return self._get_stash_states("avoid")
-
-    @property
-    def deadended(self) -> list:
-        """Get states in the deadended stash as angr SimStates."""
-        return self._get_stash_states("deadended")
 
     @property
     def errored(self) -> list:
@@ -5966,26 +6029,6 @@ class RustExplorationManager(
             addr, message = error_lookup.get(state_id, (0, "unknown error"))
             records.append(RustErrorRecord(state, message, addr))
         return records
-
-    @property
-    def unconstrained(self) -> list:
-        """Get states in the unconstrained stash as angr SimStates.
-
-        These are states where a symbolic jump target (e.g., ret instruction
-        with symbolic return address) had too many possible concrete values
-        to enumerate and fork.
-        """
-        return self._get_stash_states("unconstrained")
-
-    @property
-    def pruned(self) -> list:
-        """Get states in the pruned stash as angr SimStates.
-
-        These are states that were determined to be unsatisfiable during
-        exploration (e.g., both branches of a conditional were infeasible
-        given the current constraints).
-        """
-        return self._get_stash_states("pruned")
 
     @property
     def proxy(self):
@@ -6037,38 +6080,9 @@ class RustExplorationManager(
             for sid in state_ids
         ]
 
-    def found_proxies(self) -> list:
-        """Return the ``found`` stash as ``list[RustStateProxy]``.
-
-        Counterpart to :attr:`found`, but returns lightweight proxies that
-        delegate reads to Rust via PyO3 instead of materializing full angr
-        ``SimState`` objects. Use this when querying many states cheaply
-        (e.g. counting states matching ``proxy.addr == X``); use
-        :attr:`found` when you need full SimState plugins (``posix.dumps``,
-        ``solver.eval`` of complex claripy ASTs, etc.).
-        """
-        return self._stash_proxies("found")
-
-    def active_proxies(self) -> list:
-        """Return the ``active`` stash as ``list[RustStateProxy]``. See
-        :meth:`found_proxies` for when to prefer proxies over full states."""
-        return self._stash_proxies("active")
-
-    def avoid_proxies(self) -> list:
-        """Return the ``avoid`` stash as ``list[RustStateProxy]``. See
-        :meth:`found_proxies` for when to prefer proxies over full states."""
-        return self._stash_proxies("avoid")
-
-    def deadended_proxies(self) -> list:
-        """Return the ``deadended`` stash as ``list[RustStateProxy]``. See
-        :meth:`found_proxies` for when to prefer proxies over full states."""
-        return self._stash_proxies("deadended")
-
-    def unconstrained_proxies(self) -> list:
-        """Return the ``unconstrained`` stash as ``list[RustStateProxy]``.
-        See :meth:`found_proxies` for when to prefer proxies over full
-        states."""
-        return self._stash_proxies("unconstrained")
+    # ``found_proxies`` / ``active_proxies`` / ``avoid_proxies`` /
+    # ``deadended_proxies`` / ``unconstrained_proxies`` are generated from
+    # ``_STASH_ACCESSORS`` by ``_install_stash_accessors``.
 
     def eval_register(self, state_id: int, name: str) -> int | None:
         """Evaluate a register from a Rust state.
