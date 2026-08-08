@@ -19,7 +19,13 @@
 //! ## Migration pattern (mirrors `memory/address.rs`)
 //!
 //! 1. Define the newtype with `Copy + Clone + Hash + Eq + Ord` derives and
-//!    `From<u64>` / `From<Self> for u64`.
+//!    `From<u64>` for ergonomic construction. Unwrapping goes through the
+//!    inherent [`StateId::raw`] accessor — unlike `Address`, this newtype
+//!    deliberately omits `From<StateId> for u64`, because the only unwrap
+//!    site is the `StashManager` boundary (step 3) and an inference-driven
+//!    `.into()` there would read as "some conversion" rather than "crossing
+//!    into raw-`u64` territory". Add the `From` impl only if a generic
+//!    `Into<u64>` caller actually appears.
 //! 2. Make the subsystem's accessor APIs take `impl Into<StateId>`. Rust's
 //!    literal-type inference and the blanket `T: Into<T>` mean existing
 //!    `u64` callers (e.g. the Python-boundary `_xxx(state_id: u64)` methods)
