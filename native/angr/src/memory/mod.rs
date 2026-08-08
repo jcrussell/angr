@@ -16,9 +16,14 @@
 //! **Panic policy (angr-9ke6b.212):** every address that reaches this module is
 //! guest-derived, so nothing here may panic on address shape — unresolvable
 //! addresses surface as [`MemoryError`] variants the caller routes to the
-//! Python memory model. The one surviving `expect` pair is in
-//! [`SymbolicMemory::merge`] and is guarded by the page bitmap read one line
-//! earlier, not by anything the guest controls.
+//! Python memory model. A handful of `expect`s do survive (in
+//! [`SymbolicMemory::merge`] and under `memory::multi`); rather than
+//! enumerate them here — an inventory that goes stale the moment one moves
+//! (angr-sqfj8.72) — the invariant is: every surviving `expect` sits under a
+//! reviewed `#[allow(clippy::expect_used, reason = "...")]` whose reason
+//! names the local guard proving it, and that guard is never guest input. If
+//! you cannot write such a reason, the code needs a [`MemoryError`], not an
+//! `expect`.
 //!
 //! **Enforcement (angr-qwyti.11):** this module carries
 //! `#![deny(clippy::unwrap_used, clippy::expect_used)]`, which also reaches the
