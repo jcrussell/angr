@@ -6,10 +6,11 @@
 //!
 //! # Variant matrix (angr-9ke6b.102)
 //!
-//! The `load_*` family is large and the `_lazy` / `_automap` / `_unified`
-//! suffixes do **not** consistently signal behavior (`load_concrete_automap`
-//! notably does *not* auto-map — the name is historical). Every row below is
-//! classified on four axes:
+//! The `load_*` family is large and the `_lazy` / `_unified` suffixes do
+//! **not** consistently signal behavior. (There used to be a
+//! `load_concrete_automap` that notably did *not* auto-map — the name was
+//! historical; angr-sqfj8.75 removed it as a byte-identical duplicate of
+//! `load_concrete_lazy`.) Every row below is classified on four axes:
 //!
 //! * **Perm** — does the path run `check_perms_range(.., Permission::R)`?
 //! * **Unmapped** — `Unmapped` hard error, or `UnmappedPageInRegion` for a page
@@ -27,7 +28,6 @@
 //! | [`SymbolicMemory::load_concrete`] | concrete | R | `Unmapped` | no | yes |
 //! | [`SymbolicMemory::load_concrete_lazy`] | concrete | R | `UnmappedPageInRegion` | no | yes |
 //! | `SymbolicMemory::load_concrete_lazy_inner` (`pub(super)`) | concrete | R | `UnmappedPageInRegion` | no | yes |
-//! | [`SymbolicMemory::load_concrete_automap`] | concrete | R | `UnmappedPageInRegion` | **no** (name is historical) | yes |
 //! | [`SymbolicMemory::load_concrete_or_unconstrained`] | concrete | R, but **result discarded** | *swallowed* → fresh `unc_mem_*` BVS | no | yes |
 //! | [`SymbolicMemory::load_symbolic`] | symbolic (concretizer) | R | `UnmappedPageInRegion` | no | yes |
 //! | [`SymbolicMemory::load_symbolic_unified`] | symbolic (concretizer) | R (leaf-dependent) | leaf-dependent | no (filters instead) | yes |
@@ -593,7 +593,7 @@ impl SymbolicMemory {
     ) -> Result<RustBV, MemoryError> {
         // Fast path: concrete address
         if let Some(concrete_addr) = addr.as_u64() {
-            return self.load_concrete_automap(Address(concrete_addr), size, ctx);
+            return self.load_concrete_lazy(Address(concrete_addr), size, ctx);
         }
         // Past the fast path the address is genuinely symbolic (angr-9ke6b.229).
         record_mem_load_symbolic_addr();
@@ -607,7 +607,7 @@ impl SymbolicMemory {
         // Try to concretize the address (read mode: falls back to Any single solution)
         let base_value = match concretizer.concretize_read(&addr, ctx) {
             ConcretizationResult::Single(concrete_addr) => {
-                self.load_concrete_automap(Address(concrete_addr), size, ctx)?
+                self.load_concrete_lazy(Address(concrete_addr), size, ctx)?
             }
             ConcretizationResult::Multiple(addrs) => {
                 let ready_addrs = self.prepare_addresses_for_ite(&addrs, size);
@@ -648,25 +648,6 @@ impl SymbolicMemory {
 
         // Apply any pending writes that might overlap this symbolic load
         Ok(self.apply_pending_writes_symbolic(&addr, size, base_value, ctx))
-    }
-
-    /// Load from a concrete address with lazy region support.
-    ///
-    /// # Deprecation Warning
-    ///
-    /// This function previously auto-mapped zero pages for unmapped regions,
-    /// but that behavior caused state divergence with Python's actual backer
-    /// data. Now it propagates the UnmappedPageInRegion error so callers can
-    /// fall back to Python callbacks to get correct data.
-    pub fn load_concrete_automap(
-        &mut self,
-        addr: impl Into<Address>,
-        size: u32,
-        ctx: &SymContext,
-    ) -> Result<RustBV, MemoryError> {
-        let addr = addr.into();
-        let base = self.load_concrete_lazy_inner(addr, size, ctx)?;
-        Ok(self.apply_pending_writes_concrete(addr, size, base, ctx))
     }
 
     /// Apply pending writes that might overlap a concrete load address.

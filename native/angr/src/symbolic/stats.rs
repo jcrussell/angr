@@ -1006,8 +1006,9 @@ pub fn record_mem_store(bytes: u64) {
 /// each after its concrete fast path — not by `SymbolicMemory::load`, which no
 /// production path calls (see `.228`). Disjoint from `mem_load_count`, not a
 /// subset of it: the counted `load_concrete` is not on the symbolic path
-/// (`load_symbolic_unified` reaches memory via `load_concrete_automap` /
-/// `load_concrete_lazy`, neither of which bumps the volume counter).
+/// (`load_symbolic_unified` reaches memory via `load_concrete_lazy` /
+/// `load_concrete_or_unconstrained`, neither of which bumps the volume
+/// counter).
 /// Counts *entries*, so the interpreter's `UnmappedPageInRegion` page-fetch
 /// retry in `try_rust_memory_load` ticks it twice for one guest load.
 #[inline]
