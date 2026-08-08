@@ -597,17 +597,37 @@ impl<'a> VEXInterpreter<'a> {
     ) -> Result<RustBV, CbExecutionError> {
         // Evaluate the index expression
         let ix_val = self.eval_expr_with_callbacks(callbacks, ix, tyenv)?;
+        let (offset, elem_size) = self.regarray_offset(&descr, &ix_val, bias, "GetI")?;
 
-        // GetI requires a concrete index to compute the register offset
+        // Read from the register file
+        Ok(self.registers.get(offset, elem_size, self.ctx))
+    }
+
+    /// Resolve a VEX register-array access (`GetI`/`PutI`) to a flat
+    /// register-file offset, returning `(offset, elem_size)`.
+    ///
+    /// Shared by `eval_geti` and the `IRStmt::PutI` arm in `statements.rs`:
+    /// both need the same rotating-offset formula and the same
+    /// concretize-and-pin treatment of a symbolic index, so a fix to either
+    /// must land for both. `site` names the caller for the
+    /// concretization-failure message.
+    pub(super) fn regarray_offset(
+        &self,
+        descr: &IRRegArray,
+        ix_val: &RustBV,
+        bias: u32,
+        site: &str,
+    ) -> Result<(u32, u32), CbExecutionError> {
+        // GetI/PutI require a concrete index to compute the register offset
         let idx = if let Some(idx) = ix_val.as_u64() {
             idx
         } else {
             // Symbolic index - concretize using the solver and pin the choice
             // with an equality constraint so a later solve cannot pick a
-            // different index, which would make this register read inconsistent
-            // with the path constraints (unsound).
-            self.concretize_and_pin(&ix_val).ok_or_else(|| {
-                CbExecutionError::Unsupported("GetI index concretization failed".to_string())
+            // different index, which would make this register access
+            // inconsistent with the path constraints (unsound).
+            self.concretize_and_pin(ix_val).ok_or_else(|| {
+                CbExecutionError::Unsupported(format!("{site} index concretization failed"))
             })?
         };
 
@@ -615,10 +635,7 @@ impl<'a> VEXInterpreter<'a> {
         // offset = base + ((idx + bias) % nElems) * elemTy.bytes()
         let elem_size = descr.elemTy.bytes();
         let index = ((idx as u32).wrapping_add(bias)) % descr.nElems;
-        let offset = descr.base + index * elem_size;
-
-        // Read from the register file
-        Ok(self.registers.get(offset, elem_size, self.ctx))
+        Ok((descr.base + index * elem_size, elem_size))
     }
 
     fn eval_triop(

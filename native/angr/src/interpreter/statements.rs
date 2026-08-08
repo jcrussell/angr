@@ -228,27 +228,7 @@ impl<'a> VEXInterpreter<'a> {
             } => {
                 // Evaluate the index expression
                 let ix_val = self.eval_expr_with_callbacks(callbacks, ix, &irsb.tyenv)?;
-
-                // PutI requires a concrete index to compute the register offset
-                let idx = if let Some(idx) = ix_val.as_u64() {
-                    idx
-                } else {
-                    // Symbolic index - concretize using the solver and pin the
-                    // choice with an equality constraint so a later solve cannot
-                    // pick a different index, which would make this register
-                    // write inconsistent with the path constraints (unsound).
-                    self.concretize_and_pin(&ix_val).ok_or_else(|| {
-                        CbExecutionError::Unsupported(
-                            "PutI index concretization failed".to_string(),
-                        )
-                    })?
-                };
-
-                // Calculate the rotating register offset:
-                // offset = base + ((idx + bias) % nElems) * elemTy.bytes()
-                let elem_size = descr.elemTy.bytes();
-                let index = ((idx as u32).wrapping_add(*bias)) % descr.nElems;
-                let offset = descr.base + index * elem_size;
+                let (offset, _elem_size) = self.regarray_offset(descr, &ix_val, *bias, "PutI")?;
 
                 // Evaluate the data to write
                 let data_val = self.eval_expr_with_callbacks(callbacks, data, &irsb.tyenv)?;
