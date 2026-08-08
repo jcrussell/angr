@@ -15,6 +15,11 @@
 //!
 //! Same pattern as `ProfilingCollector`: `pub(crate)` direct field access by
 //! design — callers read/write the inner fields through a thin delegation.
+//!
+//! **Panic policy (angr-qwyti.11, angr-sqfj8.58):** `import_python_constraints`
+//! takes a `Bound<'_, PyList>`, making this a Python-boundary module, so it
+//! carries `#![deny(clippy::unwrap_used, clippy::expect_used)]`.
+#![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use std::collections::HashSet;
 
