@@ -24,9 +24,25 @@ use crate::symbolic::{RustBV, SymContext, record_concretize_read, record_concret
 /// Max-store lands unconstrained, and guards after the access fork spuriously.
 /// Python's `AddressConcretizationMixin` always asserts `addr == chosen` for a
 /// non-trivial (symbolic) address; mirror that here at the point the fallback
-/// materializes the `Single`. A genuinely-unique-solution `Single` (concrete or
-/// single-satisfying) never routes through this path, matching Python's
-/// `trivial` skip.
+/// materializes the `Single`.
+///
+/// When it fires: every caller first tries `addr.as_u64()` and takes the
+/// unpinned path when that succeeds, so a *syntactically concrete* address never
+/// reaches here. Everything else does — including a symbolic address whose
+/// solver solution happens to be unique, e.g. `max_solution`'s `ctx.range`
+/// returning `min == max`, or its `ctx.eval` when the address is fully
+/// constrained. The pin is then a tautology (asserting an equality the path
+/// already forces), not a narrowing. That is deliberate parity, not an
+/// oversight: Python's `trivial` guard is the syntactic
+/// `(addr == concrete_addrs[0]).is_true()`, which is likewise false for a
+/// uniquely-satisfiable symbolic AST, so Python adds the same redundant
+/// constraint there.
+///
+/// Note also that `max_solution` — the biggest caller — is not reached only via
+/// a `TooLarge` fallback: `concretize_write_gated`'s no-Range branch calls it
+/// directly for every symbolic write address when `SYMBOLIC_WRITE_ADDRESSES` is
+/// off, so "fallback" in the name means the Any/Max *strategy*, not a
+/// last-resort code path.
 pub(crate) fn pin_fallback_addr(ctx: &SymContext, addr: &RustBV, chosen: u64) {
     let pin = addr.eq(&RustBV::concrete(chosen as u128, addr.width()), ctx);
     ctx.assume_true(&pin);
