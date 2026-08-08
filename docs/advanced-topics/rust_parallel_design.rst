@@ -895,9 +895,21 @@ Open questions
   past 8 cores but are an optimization, not a correctness concern.
 * **Cancellation.** A worker that finds the target while others are
   still stepping should be able to signal "stop". The shipped scheduler
-  (``exploration/scheduler.rs``) uses a shared ``AtomicBool``
-  (``CancelToken``) checked at task boundaries — the migration grain — so a
-  worker finishes its current task then stops. Z3-level mid-solve
+  (``exploration/scheduler.rs``) uses a shared ``CancelToken`` — an
+  ``Arc<AtomicU8>`` tri-state (``NOT_CANCELLED`` / ``BUDGET_CANCELLED`` /
+  ``FIND_CANCELLED``) — checked at task boundaries, the migration grain, so
+  a worker stops at its next boundary. The two cancel kinds differ in what
+  they do to a state a worker has *already* picked up:
+  ``CancelToken::cancel`` (find / finalize) sets ``FIND_CANCELLED`` with an
+  unconditional store and makes ``preempts_in_flight`` true, so peers drop
+  the state they just dispatched rather than burn speculative work past
+  ``num_find``; ``CancelToken::cancel_for_budget`` (a ``run(n)``
+  dispatch-budget stop) only CASes ``NOT_CANCELLED`` → ``BUDGET_CANCELLED``,
+  letting in-flight states finish their step — dropping one unstepped would
+  livelock a small ``run(n)``. It is one atomic rather than two independent
+  ``AtomicBool``s (``flag`` + ``budget``, angr-9ke6b.52 follow-up) because a
+  reader could otherwise observe the pair mid-update and let a racing budget
+  stop downgrade a genuine find cancel. Z3-level mid-solve
   interruption (``Context::handle().interrupt()``; ``ContextHandle`` is
   ``Send + Sync``) is available and is the right tool to abort a *long
   in-flight solve*, but fanning it out safely requires keeping each worker's
