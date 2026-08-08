@@ -20,6 +20,11 @@
 //! guard and is deliberately kept loud — a zero-length run would otherwise
 //! silently synthesize a wrong-width value.
 //!
+//! The same reasoning promotes `MultiAlternative::new`'s width-8 check to an
+//! always-on `assert_eq!` (angr-sqfj8.77): it guards the identical
+//! wrong-width-value failure mode from the producer side, and the constructor
+//! has no error channel to report through.
+//!
 //! **Enforcement (angr-qwyti.11):** the parent [`memory`](super) module's
 //! `#![deny(clippy::unwrap_used, clippy::expect_used)]` reaches this file; it is
 //! restated below so the guarantee is visible when reading this file alone.
@@ -57,8 +62,17 @@ pub struct MultiAlternative {
 }
 
 impl MultiAlternative {
+    /// # Panics
+    ///
+    /// Panics if `value` is not width 8. This is an `assert!`, not a
+    /// `debug_assert!`, on purpose (angr-sqfj8.77): the workspace release
+    /// profile leaves `debug-assertions` off, and this constructor has no
+    /// error channel to report through, so a debug-only check would let a
+    /// wrong-width byte reach `collapse`/`build_wider_value` and silently
+    /// synthesize a wrong-width value in the shipped `.so`. The check is a
+    /// `u32` field read — see the module `Panic policy` header.
     pub fn new(cond: RustBV, value: RustBV) -> Self {
-        debug_assert_eq!(
+        assert_eq!(
             value.width(),
             8,
             "MultiAlternative::value must be a single byte (width 8)"
@@ -204,9 +218,11 @@ impl MultiPayload {
         let alternatives = self
             .alternatives
             .iter()
-            .map(|alt| MultiAlternative {
-                cond: alt.cond.translate_into(target_ctx),
-                value: alt.value.translate_into(target_ctx),
+            .map(|alt| {
+                MultiAlternative::new(
+                    alt.cond.translate_into(target_ctx),
+                    alt.value.translate_into(target_ctx),
+                )
             })
             .collect();
         MultiPayload {
