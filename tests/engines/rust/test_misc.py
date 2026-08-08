@@ -1675,34 +1675,33 @@ class TestAvoidMultivaluedOptions:
     load_symbolic_addr / handle_symbolic_store) entry points.
     """
 
-    def test_configure_accepts_avoid_multivalued_kwargs(self):
+    def test_configure_accepts_avoid_multivalued_kwargs(self, amd64_mgr):
         """The Rust-side `_RustExplorationManager.configure_concretization_strategies`
         accepts the two new kwargs and stores them on the concretizer config.
         Positional ordering matches the PyO3 signature."""
-        mgr = _RustExplorationManager("amd64")
         # Positional call with all six params: (use_approximate, read_limit,
         # write_limit, symbolic_write_addresses, avoid_reads, avoid_writes).
-        mgr.configure_concretization_strategies(False, 1024, 128, False, True, True)
-        cfg = mgr.get_concretization_config()
+        amd64_mgr.configure_concretization_strategies(False, 1024, 128, False, True, True)
+        cfg = amd64_mgr.get_concretization_config()
         assert cfg["avoid_multivalued_reads"] == 1
         assert cfg["avoid_multivalued_writes"] == 1
         # Keyword call — reads on, writes off. A transposed/dropped kwarg at
         # the PyO3 boundary would flip these.
-        mgr.configure_concretization_strategies(
+        amd64_mgr.configure_concretization_strategies(
             False,
             avoid_multivalued_reads=True,
             avoid_multivalued_writes=False,
         )
-        cfg = mgr.get_concretization_config()
+        cfg = amd64_mgr.get_concretization_config()
         assert cfg["avoid_multivalued_reads"] == 1
         assert cfg["avoid_multivalued_writes"] == 0
         # Keyword call — reads off, writes on.
-        mgr.configure_concretization_strategies(
+        amd64_mgr.configure_concretization_strategies(
             False,
             avoid_multivalued_reads=False,
             avoid_multivalued_writes=True,
         )
-        cfg = mgr.get_concretization_config()
+        cfg = amd64_mgr.get_concretization_config()
         assert cfg["avoid_multivalued_reads"] == 0
         assert cfg["avoid_multivalued_writes"] == 1
 
@@ -1849,11 +1848,10 @@ class TestConcretizationOptionPropagation:
     this class.
     """
 
-    def test_get_concretization_config_defaults(self):
+    def test_get_concretization_config_defaults(self, amd64_mgr):
         """A fresh manager carries Python's default concretizer config:
         all flags off, read limit 1024, write limit 128."""
-        mgr = _RustExplorationManager("amd64")
-        cfg = mgr.get_concretization_config()
+        cfg = amd64_mgr.get_concretization_config()
         assert cfg["use_approximate"] == 0
         assert cfg["symbolic_write_addresses"] == 0
         assert cfg["avoid_multivalued_reads"] == 0

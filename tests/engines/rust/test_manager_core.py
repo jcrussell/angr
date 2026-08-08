@@ -32,110 +32,95 @@ pytestmark = pytest.mark.skipif(
 class TestRustExplorationManagerUnit:
     """Unit tests for RustExplorationManager Rust class."""
 
-    def test_creation(self):
+    def test_creation(self, amd64_mgr):
         """Test creating an exploration manager."""
-        mgr = _RustExplorationManager("amd64")
-        assert mgr.arch == "amd64"
-        assert mgr.step_count == 0
-        assert mgr.active_count() == 0
-        assert mgr.found_count() == 0
+        assert amd64_mgr.arch == "amd64"
+        assert amd64_mgr.step_count == 0
+        assert amd64_mgr.active_count() == 0
+        assert amd64_mgr.found_count() == 0
 
-    def test_create_state(self):
+    def test_create_state(self, amd64_mgr):
         """Test creating states in stashes."""
-        mgr = _RustExplorationManager("amd64")
-
         # Create a state
-        state_id = mgr.create_state("active")
+        state_id = amd64_mgr.create_state("active")
         assert isinstance(state_id, int)  # create_state returns a state id
-        assert mgr.active_count() == 1
+        assert amd64_mgr.active_count() == 1
 
         # Create another state
-        mgr.create_state("active")
+        amd64_mgr.create_state("active")
         # Note: Both states might have ID 0 since create_state creates fresh states
-        assert mgr.active_count() == 2
+        assert amd64_mgr.active_count() == 2
 
-    def test_stash_counts(self):
+    def test_stash_counts(self, amd64_mgr):
         """Test stash count reporting."""
-        mgr = _RustExplorationManager("amd64")
-
         # Create states in different stashes
-        mgr.create_state("active")
-        mgr.create_state("active")
-        mgr.create_state("found")
+        amd64_mgr.create_state("active")
+        amd64_mgr.create_state("active")
+        amd64_mgr.create_state("found")
 
-        counts = mgr.stash_counts()
+        counts = amd64_mgr.stash_counts()
         assert counts["active"] == 2
         assert counts["found"] == 1
 
-    def test_find_avoid_addresses(self):
+    def test_find_avoid_addresses(self, amd64_mgr):
         """Test setting find/avoid addresses."""
-        mgr = _RustExplorationManager("amd64")
-
         # Set find addresses
-        mgr.set_find_addrs([0x1000, 0x2000, 0x3000])
+        amd64_mgr.set_find_addrs([0x1000, 0x2000, 0x3000])
 
         # Set avoid addresses
-        mgr.set_avoid_addrs([0x4000, 0x5000])
+        amd64_mgr.set_avoid_addrs([0x4000, 0x5000])
 
-        stats = mgr.stats()
+        stats = amd64_mgr.stats()
         assert stats["find_addrs"] == 3
         assert stats["avoid_addrs"] == 2
 
-    def test_register_simprocedures(self):
+    def test_register_simprocedures(self, amd64_mgr):
         """Test registering SimProcedures."""
-        mgr = _RustExplorationManager("amd64")
-
         # Register some procedures
-        mgr.register_simprocedure(0x401000, "strlen", 1, False)
-        mgr.register_simprocedure(0x401100, "malloc", 1, False)
-        mgr.register_simprocedure(0x401200, "exit", 1, True)
+        amd64_mgr.register_simprocedure(0x401000, "strlen", 1, False)
+        amd64_mgr.register_simprocedure(0x401100, "malloc", 1, False)
+        amd64_mgr.register_simprocedure(0x401200, "exit", 1, True)
 
-        stats = mgr.stats()
+        stats = amd64_mgr.stats()
         assert stats["simprocedures"] == 3
         assert stats["hooks"] == 3
 
-    def test_dcas_unsupported_metric_exposed(self):
+    def test_dcas_unsupported_metric_exposed(self, amd64_mgr):
         """DCAS visibility counter is exposed via stats() and get_fallback_stats()."""
-        mgr = _RustExplorationManager("amd64")
-
-        stats = mgr.stats()
+        stats = amd64_mgr.stats()
         assert "dcas_unsupported_count" in stats
         assert stats["dcas_unsupported_count"] == 0
 
-        fb = mgr.get_fallback_stats()
+        fb = amd64_mgr.get_fallback_stats()
         assert "dcas_unsupported_count" in fb
         assert fb["dcas_unsupported_count"] == 0
 
-    def test_vecret_gsptr_fallback_counter_exposed(self):
+    def test_vecret_gsptr_fallback_counter_exposed(self, amd64_mgr):
         """angr-2iow: VECRET/GSPTR Python-fallback counter is wired through
         stats() and get_fallback_stats(). Starts at zero on a fresh manager
         and the reason marker is the shared `VECRET_GSPTR_REASON` constant
         in `native/angr/src/interpreter/execution_error.rs`.
         """
-        mgr = _RustExplorationManager("amd64")
-
-        stats = mgr.stats()
+        stats = amd64_mgr.stats()
         assert "vecret_gsptr_fallback_count" in stats
         assert stats["vecret_gsptr_fallback_count"] == 0
 
-        fb = mgr.get_fallback_stats()
+        fb = amd64_mgr.get_fallback_stats()
         assert "vecret_gsptr_fallback_count" in fb
         assert fb["vecret_gsptr_fallback_count"] == 0
 
-    def test_per_category_fallback_counters_exposed(self):
+    def test_per_category_fallback_counters_exposed(self, amd64_mgr):
         """Per-category fallback counters (angr-md0m) appear in stats() and
         get_fallback_stats(). All start at zero on a fresh manager.
         """
-        mgr = _RustExplorationManager("amd64")
-
-        stats = mgr.stats()
+        stats = amd64_mgr.stats()
         # Manager-side counters
         assert stats["simprocedure_python_fallback_count"] == 0
         assert stats["syscall_python_fallback_count"] == 0
 
         # Interpreter-side counters land under the rust_ prefix once the
         # ExecutionStats hashmap is merged. Before any run, they are zero.
-        exec_stats = mgr.get_execution_stats()
+        exec_stats = amd64_mgr.get_execution_stats()
         assert exec_stats["python_dirty_call_count"] == 0
         assert exec_stats["python_vex_op_fallback_count"] == 0
         # Op-family breakdown
@@ -146,25 +131,23 @@ class TestRustExplorationManagerUnit:
         # Silent fabricate-fresh-symbolic BYPASS visibility counter (angr-s6miz).
         assert exec_stats["vex_bypass_fabricate_count"] == 0
 
-        fb = mgr.get_fallback_stats()
+        fb = amd64_mgr.get_fallback_stats()
         assert fb["simprocedure_python_fallback_count"] == 0
         assert fb["syscall_python_fallback_count"] == 0
 
-    def test_simprocedure_fallback_by_name_empty(self):
+    def test_simprocedure_fallback_by_name_empty(self, amd64_mgr):
         """angr-97l8: simprocedure_fallback_by_name is an empty dict on a
         fresh manager and is exposed via both stats() and get_fallback_stats().
         """
-        mgr = _RustExplorationManager("amd64")
-
-        stats = mgr.stats()
+        stats = amd64_mgr.stats()
         assert "simprocedure_fallback_by_name" in stats
         assert stats["simprocedure_fallback_by_name"] == {}
 
-        fb = mgr.get_fallback_stats()
+        fb = amd64_mgr.get_fallback_stats()
         assert "simprocedure_fallback_by_name" in fb
         assert fb["simprocedure_fallback_by_name"] == {}
 
-    def test_claripy_ast_cache_counters_exposed(self):
+    def test_claripy_ast_cache_counters_exposed(self, amd64_mgr):
         """angr-op0dn.13.4: the claripy->Rust conversion-cache (AST_CACHE)
         hit/miss counters are wired through get_solver_stats() (alongside the
         other bridge-side counters like rustbv_commutative_canonicalize_count).
@@ -172,9 +155,7 @@ class TestRustExplorationManagerUnit:
         path depends on (each worker owns a cold thread-local AST_CACHE).
         Bumped from `claripy_bridge::import::claripy_to_rustbv`.
         """
-        mgr = _RustExplorationManager("amd64")
-
-        stats = mgr.get_solver_stats()
+        stats = amd64_mgr.get_solver_stats()
         assert "claripy_ast_cache_hit_count" in stats
         assert "claripy_ast_cache_miss_count" in stats
 
@@ -204,32 +185,28 @@ class TestRustExplorationManagerUnit:
             f"expected cache reuse hits, got {stats['claripy_ast_cache_hit_count']}"
         )
 
-    def test_add_rust_state(self):
+    def test_add_rust_state(self, amd64_mgr):
         """Test adding an existing RustSimState."""
-        mgr = _RustExplorationManager("amd64")
-
         # Create a RustSimState
         state = RustSimState("amd64")
         state.pc = 0x1000
 
         # Add to manager
-        mgr.add_state("active", state)
-        assert mgr.active_count() == 1
+        amd64_mgr.add_state("active", state)
+        assert amd64_mgr.active_count() == 1
 
         # Check PC
-        pc = mgr.get_state_pc("active", 0)
+        pc = amd64_mgr.get_state_pc("active", 0)
         assert pc == 0x1000
 
-    def test_state_ids(self):
+    def test_state_ids(self, amd64_mgr):
         """Test getting state IDs from stash."""
-        mgr = _RustExplorationManager("amd64")
-
         # Create states
-        id1 = mgr.create_state("active")
-        id2 = mgr.create_state("active")
+        id1 = amd64_mgr.create_state("active")
+        id2 = amd64_mgr.create_state("active")
 
         # Get IDs
-        ids = mgr.get_state_ids("active")
+        ids = amd64_mgr.get_state_ids("active")
         assert len(ids) == 2
         assert id1 in ids
         assert id2 in ids
@@ -245,20 +222,18 @@ class TestRustExplorationManagerUnit:
         with pytest.raises(ValueError):
             set_rust_log_level("invalid")
 
-    def test_max_active_states_get_set(self):
+    def test_max_active_states_get_set(self, amd64_mgr):
         """Test get/set for max_active_states limit."""
-        mgr = _RustExplorationManager("amd64")
-
         # Default is None (unlimited)
-        assert mgr.get_max_active_states() is None
+        assert amd64_mgr.get_max_active_states() is None
 
         # Set a limit
-        mgr.set_max_active_states(5)
-        assert mgr.get_max_active_states() == 5
+        amd64_mgr.set_max_active_states(5)
+        assert amd64_mgr.get_max_active_states() == 5
 
         # Clear the limit
-        mgr.set_max_active_states(None)
-        assert mgr.get_max_active_states() is None
+        amd64_mgr.set_max_active_states(None)
+        assert amd64_mgr.get_max_active_states() is None
 
     def test_max_active_states_enforced(self, fauxware_project):
         """max_active_states must cap the active stash *throughout* stepping,
@@ -440,7 +415,7 @@ class TestRustExplorationManagerUnit:
         assert stats["parallel_shadow_migration_bytes"] > 0, "no serialized bytes recorded"
 
     @pytest.mark.parametrize("prefer_library_hooks", [False, True])
-    def test_library_hook_dispatch_gate(self, prefer_library_hooks):
+    def test_library_hook_dispatch_gate(self, prefer_library_hooks, amd64_mgr):
         """`set_prefer_native_library_hooks` gates native dispatch for a hook
         inside a NON-main loaded object (angr-a8epx / angr-gorvf.3.2).
 
@@ -449,7 +424,6 @@ class TestRustExplorationManagerUnit:
         the gate off (default) the in-binary hook bounces to Python, so the
         native procedure never runs; with it on the native registry serves it.
         """
-        mgr = _RustExplorationManager("amd64")
         invocations = []
 
         def echo_args(args):
@@ -458,9 +432,9 @@ class TestRustExplorationManagerUnit:
 
         HOOK = 0x500500  # inside the "library" region
         EXIT_HOOK = 0x600500  # outside every region (extern-style stub)
-        mgr.register_simprocedure(EXIT_HOOK, "exit", num_args=1, no_return=True)
+        amd64_mgr.register_simprocedure(EXIT_HOOK, "exit", num_args=1, no_return=True)
         state = self._setup_amd64_python_proc_test(
-            mgr,
+            amd64_mgr,
             HOOK,
             "echo_proc",
             num_args=2,
@@ -469,14 +443,14 @@ class TestRustExplorationManagerUnit:
             arg_values=(0x1111, 0x2222),
             return_addr=EXIT_HOOK,
         )
-        mgr.load_binary_regions([(0x400000, bytes(0x1000)), (0x500000, bytes(0x1000))])
-        mgr.set_main_object_range(0x400000, 0x401000)
-        mgr.set_prefer_native_library_hooks(prefer_library_hooks)
+        amd64_mgr.load_binary_regions([(0x400000, bytes(0x1000)), (0x500000, bytes(0x1000))])
+        amd64_mgr.set_main_object_range(0x400000, 0x401000)
+        amd64_mgr.set_prefer_native_library_hooks(prefer_library_hooks)
 
-        mgr.add_state("active", state)
-        mgr.run(10)
+        amd64_mgr.add_state("active", state)
+        amd64_mgr.run(10)
 
-        native_calls = mgr.native_procedure_stats()["native_calls"]
+        native_calls = amd64_mgr.native_procedure_stats()["native_calls"]
         if prefer_library_hooks:
             assert invocations == [(0x1111, 0x2222)], f"library hook did not dispatch native; got {invocations}"
             assert native_calls >= 1, f"expected a native call with the gate on, got {native_calls}"
@@ -484,24 +458,23 @@ class TestRustExplorationManagerUnit:
             assert invocations == [], "library hook dispatched native with the gate off"
             assert native_calls == 0, f"expected no native calls with the gate off, got {native_calls}"
 
-    def test_register_python_procedure_appears_in_listing(self):
+    def test_register_python_procedure_appears_in_listing(self, amd64_mgr):
         """register_python_procedure adds the procedure to the registry."""
-        mgr = _RustExplorationManager("amd64")
-        assert not mgr.has_native_procedure("custom_widget_init")
+        assert not amd64_mgr.has_native_procedure("custom_widget_init")
 
         def widget_init(args):
             return 0
 
-        mgr.register_python_procedure(
+        amd64_mgr.register_python_procedure(
             "custom_widget_init",
             num_args=0,
             no_return=False,
             callable=widget_init,
         )
-        assert mgr.has_native_procedure("custom_widget_init")
-        assert "custom_widget_init" in mgr.list_native_procedures()
+        assert amd64_mgr.has_native_procedure("custom_widget_init")
+        assert "custom_widget_init" in amd64_mgr.list_native_procedures()
 
-    def test_register_python_procedure_invoked_via_simprocedure_hook(self):
+    def test_register_python_procedure_invoked_via_simprocedure_hook(self, amd64_mgr):
         """A Python-registered native procedure runs when its hook fires.
 
         Binds a hook address to a Python-registered native procedure, drives
@@ -509,8 +482,6 @@ class TestRustExplorationManagerUnit:
         (capturing its args) and wrote the return value to RAX — not merely
         that the procedure appears in the registry.
         """
-        mgr = _RustExplorationManager("amd64")
-
         # Track invocations from Rust into our Python procedure.
         invocations = []
 
@@ -520,9 +491,9 @@ class TestRustExplorationManagerUnit:
 
         HOOK = 0x500500
         EXIT_HOOK = 0x600500
-        mgr.register_simprocedure(EXIT_HOOK, "exit", num_args=1, no_return=True)
+        amd64_mgr.register_simprocedure(EXIT_HOOK, "exit", num_args=1, no_return=True)
         state = self._setup_amd64_python_proc_test(
-            mgr,
+            amd64_mgr,
             HOOK,
             "echo_proc",
             num_args=2,
@@ -533,20 +504,20 @@ class TestRustExplorationManagerUnit:
         )
 
         # Registration landed.
-        assert mgr.has_native_procedure("echo_proc")
-        assert "echo_proc" in mgr.list_native_procedures()
+        assert amd64_mgr.has_native_procedure("echo_proc")
+        assert "echo_proc" in amd64_mgr.list_native_procedures()
 
-        mgr.add_state("active", state)
-        mgr.run(10)
+        amd64_mgr.add_state("active", state)
+        amd64_mgr.run(10)
 
         # Dispatcher fired: the callable ran with the two SysV arg-register
         # values and its return value landed in RAX.
         assert invocations == [(0x1111, 0x2222)], f"echo_proc not invoked with expected args; got {invocations}"
-        stats = mgr.native_procedure_stats()
+        stats = amd64_mgr.native_procedure_stats()
         assert stats["native_calls"] >= 1, f"expected native_calls>=1 after dispatch, got {stats}"
-        deadended = mgr.get_state_ids("deadended")
-        assert len(deadended) == 1, f"expected one deadended state after exit hook; stashes={mgr.stash_counts()}"
-        rax = mgr.get_state_register(deadended[0], "rax")
+        deadended = amd64_mgr.get_state_ids("deadended")
+        assert len(deadended) == 1, f"expected one deadended state after exit hook; stashes={amd64_mgr.stash_counts()}"
+        rax = amd64_mgr.get_state_register(deadended[0], "rax")
         assert rax == 0xDEADBEEF, f"expected RAX=0xDEADBEEF from echo_proc return; got {rax:#x}"
 
     def test_x86_native_procedure_returns_to_eax_not_edx(self):
@@ -671,7 +642,7 @@ class TestRustExplorationManagerUnit:
         state.pc = hook_addr
         return state
 
-    def test_native_getopt_concrete_argv_end_to_end(self):
+    def test_native_getopt_concrete_argv_end_to_end(self, amd64_mgr):
         """Native getopt(3) runs end-to-end through the dispatcher (bhk0a.2).
 
         Lays out a concrete argv + optstring in a RustSimState, binds the
@@ -682,13 +653,11 @@ class TestRustExplorationManagerUnit:
         ``optarg`` points at the required-argument string — the observable
         contract the Python proc establishes.
         """
-        mgr = _RustExplorationManager("amd64")
-
         callbacks = PythonCallbacks()
         callbacks.set_memory_load(lambda a, s: (bytes(s), False, None))
         callbacks.set_memory_store(lambda a, d: None)
         callbacks.set_lift_block(lambda a: "{}")
-        mgr.set_callbacks(callbacks)
+        amd64_mgr.set_callbacks(callbacks)
 
         GETOPT_HOOK = 0x500500
         EXIT_HOOK = 0x600500
@@ -699,8 +668,8 @@ class TestRustExplorationManagerUnit:
         OPTOPT_ADDR = 0x3010
         STACK_BASE = 0x7FFF0000
 
-        mgr.register_simprocedure(GETOPT_HOOK, "getopt", num_args=3, no_return=False)
-        mgr.register_simprocedure(EXIT_HOOK, "exit", num_args=1, no_return=True)
+        amd64_mgr.register_simprocedure(GETOPT_HOOK, "getopt", num_args=3, no_return=False)
+        amd64_mgr.register_simprocedure(EXIT_HOOK, "exit", num_args=1, no_return=True)
 
         def make_state():
             state = RustSimState("amd64")
@@ -729,11 +698,11 @@ class TestRustExplorationManagerUnit:
             return state
 
         # --- call 1: "-a" (flag) -> returns 'a', optind advances to 2. ---
-        mgr.add_state("active", make_state())
-        mgr.run(10)
-        sid = mgr.get_state_ids("deadended")[0]
-        assert mgr.get_state_register(sid, "rax") == ord("a")
-        optind = int.from_bytes(bytes(mgr.get_state_memory(sid, OPTIND_ADDR, 4)), "little")
+        amd64_mgr.add_state("active", make_state())
+        amd64_mgr.run(10)
+        sid = amd64_mgr.get_state_ids("deadended")[0]
+        assert amd64_mgr.get_state_register(sid, "rax") == ord("a")
+        optind = int.from_bytes(bytes(amd64_mgr.get_state_memory(sid, OPTIND_ADDR, 4)), "little")
         assert optind == 2, f"expected optind=2 after -a, got {optind}"
 
         # --- a fresh state at "-b val": required arg pulled from next elem. ---
@@ -883,12 +852,11 @@ class TestRustExplorationManagerUnit:
             f"load_snapshot_bytes must clear pre-restore pending callbacks; still parked: {mgr.pending_callback_ids()}"
         )
 
-    def test_python_procedure_num_args_truncates_at_registered_count(self):
+    def test_python_procedure_num_args_truncates_at_registered_count(self, amd64_mgr):
         """The dispatcher extracts exactly `num_args` values from the calling
         convention. Extra args sitting in unused registers (e.g. RDX when
         num_args=2) must not leak into the callable.
         """
-        mgr = _RustExplorationManager("amd64")
         invocations = []
 
         def proc(args):
@@ -898,9 +866,9 @@ class TestRustExplorationManagerUnit:
         HOOK = 0x500100
         EXIT_HOOK = 0x600100
         # Two-arg procedure, but populate three arg regs.
-        mgr.register_simprocedure(EXIT_HOOK, "exit", num_args=1, no_return=True)
+        amd64_mgr.register_simprocedure(EXIT_HOOK, "exit", num_args=1, no_return=True)
         state = self._setup_amd64_python_proc_test(
-            mgr,
+            amd64_mgr,
             HOOK,
             "two_arg_proc",
             num_args=2,
@@ -910,8 +878,8 @@ class TestRustExplorationManagerUnit:
             return_addr=EXIT_HOOK,
         )
 
-        mgr.add_state("active", state)
-        mgr.run(10)
+        amd64_mgr.add_state("active", state)
+        amd64_mgr.run(10)
 
         assert len(invocations) == 1, f"expected one invocation, got {invocations}"
         assert invocations[0] == (0xAAAA, 0xBBBB), (
@@ -919,11 +887,10 @@ class TestRustExplorationManagerUnit:
             f"got {invocations[0]} (RDX={hex(0xCCCC)} should not appear)"
         )
 
-    def test_python_procedure_zero_args_passes_empty_list(self):
+    def test_python_procedure_zero_args_passes_empty_list(self, amd64_mgr):
         """num_args=0 must result in the callable receiving an empty list,
         regardless of what's sitting in the arg registers.
         """
-        mgr = _RustExplorationManager("amd64")
         invocations = []
 
         def proc(args):
@@ -932,9 +899,9 @@ class TestRustExplorationManagerUnit:
 
         HOOK = 0x500200
         EXIT_HOOK = 0x600200
-        mgr.register_simprocedure(EXIT_HOOK, "exit", num_args=1, no_return=True)
+        amd64_mgr.register_simprocedure(EXIT_HOOK, "exit", num_args=1, no_return=True)
         state = self._setup_amd64_python_proc_test(
-            mgr,
+            amd64_mgr,
             HOOK,
             "no_arg_proc",
             num_args=0,
@@ -944,8 +911,8 @@ class TestRustExplorationManagerUnit:
             return_addr=EXIT_HOOK,
         )
 
-        mgr.add_state("active", state)
-        mgr.run(10)
+        amd64_mgr.add_state("active", state)
+        amd64_mgr.run(10)
 
         assert invocations == [()]
 
@@ -958,13 +925,12 @@ class TestRustExplorationManagerUnit:
             (3.14, "float return"),
         ],
     )
-    def test_python_procedure_invalid_return_falls_back(self, bad_return, label):
+    def test_python_procedure_invalid_return_falls_back(self, bad_return, label, amd64_mgr):
         """Returning a value that won't fit u64 (negative, too large, or
         non-int) must surface as a Python fallback rather than corrupting
         RAX. The dispatcher's match arm catches ProcedureError::Other and
         bumps python_fallbacks.
         """
-        mgr = _RustExplorationManager("amd64")
         invocations = []
 
         def proc(args):
@@ -973,7 +939,7 @@ class TestRustExplorationManagerUnit:
 
         HOOK = 0x500300
         state = self._setup_amd64_python_proc_test(
-            mgr,
+            amd64_mgr,
             HOOK,
             "bad_ret_proc",
             num_args=0,
@@ -981,13 +947,13 @@ class TestRustExplorationManagerUnit:
             callable_=proc,
         )
 
-        mgr.add_state("active", state)
-        event = mgr.run(5)
+        amd64_mgr.add_state("active", state)
+        event = amd64_mgr.run(5)
 
         # The callable did run (extract_concrete_arg passed), but the return
         # extraction failed, so the dispatcher fell back.
         assert invocations == [()], f"({label}) expected one invocation, got {invocations}"
-        stats = mgr.native_procedure_stats()
+        stats = amd64_mgr.native_procedure_stats()
         assert stats["python_fallbacks"] >= 1, f"({label}) expected python_fallbacks>=1, got stats={stats}"
         assert stats["native_calls"] == 0, f"({label}) failed return must not count as a successful native call"
         assert event.event_type == "need_callback", f"({label}) expected need_callback fallback; got {event.event_type}"
@@ -1092,13 +1058,11 @@ class TestRustExplorationManagerUnit:
             f"after remove_python_override, native strlen must fire; native_procedure_stats={nstats2}"
         )
 
-    def test_python_procedure_re_registration_overrides_prior(self):
+    def test_python_procedure_re_registration_overrides_prior(self, amd64_mgr):
         """Registering a procedure under an existing name must replace the
         prior callable (HashMap.insert semantics). The dispatcher should
         invoke the most recently registered one.
         """
-        mgr = _RustExplorationManager("amd64")
-
         first_calls = []
         second_calls = []
 
@@ -1113,9 +1077,9 @@ class TestRustExplorationManagerUnit:
         HOOK = 0x500400
         EXIT_HOOK = 0x600400
         # First registration via the helper, then override.
-        mgr.register_simprocedure(EXIT_HOOK, "exit", num_args=1, no_return=True)
+        amd64_mgr.register_simprocedure(EXIT_HOOK, "exit", num_args=1, no_return=True)
         state = self._setup_amd64_python_proc_test(
-            mgr,
+            amd64_mgr,
             HOOK,
             "swap_proc",
             num_args=0,
@@ -1124,23 +1088,23 @@ class TestRustExplorationManagerUnit:
             return_addr=EXIT_HOOK,
         )
         # Re-register same name with a different callable.
-        mgr.register_python_procedure(
+        amd64_mgr.register_python_procedure(
             "swap_proc",
             num_args=0,
             no_return=False,
             callable=second,
         )
 
-        mgr.add_state("active", state)
-        mgr.run(10)
+        amd64_mgr.add_state("active", state)
+        amd64_mgr.run(10)
 
         assert first_calls == [], f"prior callable must not run; got {first_calls}"
         assert second_calls == [()], f"override callable must run once; got {second_calls}"
 
         # RAX should hold the override's return value (0x2222), not 0x1111.
-        deadended = mgr.get_state_ids("deadended")
-        assert len(deadended) == 1, f"stashes={mgr.stash_counts()}"
-        rax = mgr.get_state_register(deadended[0], "rax")
+        deadended = amd64_mgr.get_state_ids("deadended")
+        assert len(deadended) == 1, f"stashes={amd64_mgr.stash_counts()}"
+        rax = amd64_mgr.get_state_register(deadended[0], "rax")
         assert rax == 0x2222, f"expected RAX=0x2222 from override callable; got {rax:#x}"
 
 
@@ -2291,19 +2255,17 @@ class TestRustExplorationPython:
 class TestExplorationEvent:
     """Tests for ExplorationEvent class."""
 
-    def test_event_attributes(self):
+    def test_event_attributes(self, amd64_mgr):
         """Test event has expected attributes."""
-        mgr = _RustExplorationManager("amd64")
-
         # Set up minimal callbacks
         callbacks = PythonCallbacks()
         callbacks.set_memory_load(lambda a, s: (bytes(s), False, None))
         callbacks.set_memory_store(lambda a, d: None)
         callbacks.set_lift_block(lambda a: "{}")
-        mgr.set_callbacks(callbacks)
+        amd64_mgr.set_callbacks(callbacks)
 
         # Run should return an event
-        event = mgr.run(1)
+        event = amd64_mgr.run(1)
 
         # With no active states, run() deterministically takes the
         # empty-active termination branch and must return an `active_empty`

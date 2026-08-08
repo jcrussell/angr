@@ -615,13 +615,12 @@ class TestErrorRecovery:
         data = forked.memory_load(0x1000, 4)
         assert bytes(data) == b"\x41\x42\x43\x44"
 
-    def test_exploration_manager_empty_run(self):
+    def test_exploration_manager_empty_run(self, amd64_mgr):
         """Running with no callbacks set should raise, not crash silently."""
-        mgr = _RustExplorationManager("amd64")
-        mgr.set_find_addrs([0x1000])
+        amd64_mgr.set_find_addrs([0x1000])
         # No callbacks set — run should raise RuntimeError
         with pytest.raises(RuntimeError, match="callbacks not set"):
-            mgr.run(100)
+            amd64_mgr.run(100)
 
     # angr-2i4n: error path coverage — make the strict, user-facing failure
     # modes explicit so we notice if the engine ever starts silently

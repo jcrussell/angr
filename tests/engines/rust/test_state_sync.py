@@ -40,27 +40,24 @@ class TestMmapBaseSync:
     allocation would overlap a Rust-allocated region.
     """
 
-    def test_get_state_mmap_base_default(self):
+    def test_get_state_mmap_base_default(self, amd64_mgr):
         """The Rust manager's mmap_base getter returns the documented default
         (heap_base 0xC0000000 + heap_size 0x00800000 * 2 = 0xC1000000)."""
-        mgr = _RustExplorationManager("amd64")
-        sid = mgr.create_state("active")
-        assert mgr.get_state_mmap_base(sid) == 0xC100_0000
+        sid = amd64_mgr.create_state("active")
+        assert amd64_mgr.get_state_mmap_base(sid) == 0xC100_0000
 
-    def test_set_state_mmap_base_round_trips(self):
+    def test_set_state_mmap_base_round_trips(self, amd64_mgr):
         """Setter advances the value and getter reads it back — proves the
         FFI accessor pair is wired to the same RustSimState field that the
         native mmap syscall handler bumps."""
-        mgr = _RustExplorationManager("amd64")
-        sid = mgr.create_state("active")
-        mgr.set_state_mmap_base(sid, 0xC100_5000)
-        assert mgr.get_state_mmap_base(sid) == 0xC100_5000
+        sid = amd64_mgr.create_state("active")
+        amd64_mgr.set_state_mmap_base(sid, 0xC100_5000)
+        assert amd64_mgr.get_state_mmap_base(sid) == 0xC100_5000
 
-    def test_get_state_mmap_base_unknown_state_raises(self):
+    def test_get_state_mmap_base_unknown_state_raises(self, amd64_mgr):
         """Unknown state IDs surface a ValueError (matches the timeout API)."""
-        mgr = _RustExplorationManager("amd64")
         with pytest.raises(ValueError, match=r"state .* not found"):
-            mgr.get_state_mmap_base(999_999)
+            amd64_mgr.get_state_mmap_base(999_999)
 
     def test_export_path_syncs_rust_mmap_base_into_state_heap(self, fauxware_project):
         """End-to-end: a Rust-side mmap_base advance is visible on the angr
@@ -222,26 +219,23 @@ class TestPosixBrkSync:
     out heap addresses overlapping a Rust-allocated region.
     """
 
-    def test_get_state_posix_brk_default(self):
+    def test_get_state_posix_brk_default(self, amd64_mgr):
         """Default posix_brk matches Python's posix.brk default (0x1B00000)."""
-        mgr = _RustExplorationManager("amd64")
-        sid = mgr.create_state("active")
-        assert mgr.get_state_posix_brk(sid) == 0x1B0_0000
+        sid = amd64_mgr.create_state("active")
+        assert amd64_mgr.get_state_posix_brk(sid) == 0x1B0_0000
 
-    def test_set_state_posix_brk_round_trips(self):
+    def test_set_state_posix_brk_round_trips(self, amd64_mgr):
         """Setter advances the value and getter reads it back — proves the
         FFI accessor pair is wired to the same RustSimState field that
         NativeBrkSyscall mutates."""
-        mgr = _RustExplorationManager("amd64")
-        sid = mgr.create_state("active")
-        mgr.set_state_posix_brk(sid, 0x1B0_5000)
-        assert mgr.get_state_posix_brk(sid) == 0x1B0_5000
+        sid = amd64_mgr.create_state("active")
+        amd64_mgr.set_state_posix_brk(sid, 0x1B0_5000)
+        assert amd64_mgr.get_state_posix_brk(sid) == 0x1B0_5000
 
-    def test_get_state_posix_brk_unknown_state_raises(self):
+    def test_get_state_posix_brk_unknown_state_raises(self, amd64_mgr):
         """Unknown state IDs surface a ValueError (matches the mmap_base API)."""
-        mgr = _RustExplorationManager("amd64")
         with pytest.raises(ValueError, match=r"state .* not found"):
-            mgr.get_state_posix_brk(999_999)
+            amd64_mgr.get_state_posix_brk(999_999)
 
     def test_init_push_aligns_rust_posix_brk_with_python(self, fauxware_project):
         """At state creation, the angr loader sets state.posix.brk to a value
@@ -367,27 +361,24 @@ class TestHeapBrkSync:
     until angr-blq01 made native fopen/calloc/realloc actually run.
     """
 
-    def test_get_state_heap_brk_default(self):
+    def test_get_state_heap_brk_default(self, amd64_mgr):
         """Default heap_brk matches Python's heap.heap_location default
         (0xC0000000)."""
-        mgr = _RustExplorationManager("amd64")
-        sid = mgr.create_state("active")
-        assert mgr.get_state_heap_brk(sid) == 0xC000_0000
+        sid = amd64_mgr.create_state("active")
+        assert amd64_mgr.get_state_heap_brk(sid) == 0xC000_0000
 
-    def test_set_state_heap_brk_round_trips(self):
+    def test_set_state_heap_brk_round_trips(self, amd64_mgr):
         """Setter advances the value and getter reads it back — proves the
         FFI accessor pair is wired to the same RustSimState field that
         heap_alloc mutates."""
-        mgr = _RustExplorationManager("amd64")
-        sid = mgr.create_state("active")
-        mgr.set_state_heap_brk(sid, 0xC000_5000)
-        assert mgr.get_state_heap_brk(sid) == 0xC000_5000
+        sid = amd64_mgr.create_state("active")
+        amd64_mgr.set_state_heap_brk(sid, 0xC000_5000)
+        assert amd64_mgr.get_state_heap_brk(sid) == 0xC000_5000
 
-    def test_get_state_heap_brk_unknown_state_raises(self):
+    def test_get_state_heap_brk_unknown_state_raises(self, amd64_mgr):
         """Unknown state IDs surface a ValueError (matches the posix_brk API)."""
-        mgr = _RustExplorationManager("amd64")
         with pytest.raises(ValueError, match=r"state .* not found"):
-            mgr.get_state_heap_brk(999_999)
+            amd64_mgr.get_state_heap_brk(999_999)
 
     def test_init_push_aligns_rust_heap_brk_with_python(self, fauxware_project):
         """At state creation, _add_rust_state pushes Python's
@@ -857,15 +848,14 @@ class TestStateMetadataStorage:
         assert 0x2000 in out
         assert out[0x2000] is second[0x2000]
 
-    def test_unknown_state_returns_empty(self):
+    def test_unknown_state_returns_empty(self, amd64_mgr):
         """Reads for an unknown state ID return an empty dict — preserves the
         old ``_state_metadata.get(sid)`` falsy semantics that callbacks rely
         on with ``if md and md.X``.
         """
-        mgr = _RustExplorationManager("amd64")
-        assert dict(mgr.get_state_addr_to_ast(424242)) == {}
-        assert dict(mgr.get_state_hook_symbolic_memory(424242)) == {}
-        assert dict(mgr.get_state_symbolic_pages(424242)) == {}
+        assert dict(amd64_mgr.get_state_addr_to_ast(424242)) == {}
+        assert dict(amd64_mgr.get_state_hook_symbolic_memory(424242)) == {}
+        assert dict(amd64_mgr.get_state_symbolic_pages(424242)) == {}
 
     def test_setter_unknown_state_raises(self):
         """Unknown state IDs on the setter side surface ValueError — matches
@@ -894,26 +884,24 @@ class TestStateMetadataStorage:
         assert dict(mgr.get_state_hook_symbolic_memory(sid)) == {}
         assert dict(mgr.get_state_symbolic_pages(sid)) == {}
 
-    def test_clear_state_metadata_unknown_state_is_noop(self):
+    def test_clear_state_metadata_unknown_state_is_noop(self, amd64_mgr):
         """clear_state_metadata on a missing state returns silently — matches
         ``dict.pop(sid, None)`` semantics it replaces."""
-        mgr = _RustExplorationManager("amd64")
         # Should not raise.
-        mgr.clear_state_metadata(424242)
+        amd64_mgr.clear_state_metadata(424242)
 
-    def test_explicit_clear_after_state_drop_is_safe(self):
+    def test_explicit_clear_after_state_drop_is_safe(self, amd64_mgr):
         """``clear_state_metadata`` must tolerate a state ID that no longer
         matches any stash entry — a stale ID from a state that was already
         moved/dropped should be a no-op, not a panic.
         """
-        mgr = _RustExplorationManager("amd64")
-        sid = mgr.create_state("active")
+        sid = amd64_mgr.create_state("active")
         # Move the state out so the manager's stash lookup will miss it.
-        mgr.move_states("active", "deadended", None)
+        amd64_mgr.move_states("active", "deadended", None)
         # Stale ID — this is still in `deadended` so technically not stale,
         # but the API must accept any u64. Use a guaranteed-missing ID too.
-        mgr.clear_state_metadata(sid)
-        mgr.clear_state_metadata(0xDEAD_BEEF_DEAD_BEEF)
+        amd64_mgr.clear_state_metadata(sid)
+        amd64_mgr.clear_state_metadata(0xDEAD_BEEF_DEAD_BEEF)
 
     def test_fork_does_not_alias_metadata(self):
         """``RustSimState.fork`` clones the per-state metadata maps so that
@@ -1199,117 +1187,105 @@ class TestStateMetadataStorage:
 class TestStashOperations:
     """Tests for stash management operations."""
 
-    def test_move_states_all(self):
+    def test_move_states_all(self, amd64_mgr):
         """move_states without filter moves all states."""
-        mgr = _RustExplorationManager("amd64")
-        mgr.create_state("active")
-        mgr.create_state("active")
-        mgr.create_state("active")
-        assert mgr.active_count() == 3
+        amd64_mgr.create_state("active")
+        amd64_mgr.create_state("active")
+        amd64_mgr.create_state("active")
+        assert amd64_mgr.active_count() == 3
 
-        count = mgr.move_states("active", "found", None)
+        count = amd64_mgr.move_states("active", "found", None)
         assert count == 3
-        assert mgr.active_count() == 0
-        assert mgr.found_count() == 3
+        assert amd64_mgr.active_count() == 0
+        assert amd64_mgr.found_count() == 3
 
-    def test_move_states_empty_source(self):
+    def test_move_states_empty_source(self, amd64_mgr):
         """move_states from empty stash returns 0."""
-        mgr = _RustExplorationManager("amd64")
-        count = mgr.move_states("active", "found", None)
+        count = amd64_mgr.move_states("active", "found", None)
         assert count == 0
 
-    def test_move_state_by_id(self):
+    def test_move_state_by_id(self, amd64_mgr):
         """move_state moves a specific state by ID."""
-        mgr = _RustExplorationManager("amd64")
-        id1 = mgr.create_state("active")
-        id2 = mgr.create_state("active")
+        id1 = amd64_mgr.create_state("active")
+        id2 = amd64_mgr.create_state("active")
 
-        result = mgr.move_state(id1, "active", "found")
+        result = amd64_mgr.move_state(id1, "active", "found")
         assert result is True
-        assert mgr.active_count() == 1
-        assert mgr.found_count() == 1
+        assert amd64_mgr.active_count() == 1
+        assert amd64_mgr.found_count() == 1
 
         # The remaining state should be id2
-        remaining = mgr.get_state_ids("active")
+        remaining = amd64_mgr.get_state_ids("active")
         assert id2 in remaining
 
-    def test_move_state_nonexistent(self):
+    def test_move_state_nonexistent(self, amd64_mgr):
         """move_state returns False for nonexistent state ID."""
-        mgr = _RustExplorationManager("amd64")
-        mgr.create_state("active")
-        result = mgr.move_state(999999, "active", "found")
+        amd64_mgr.create_state("active")
+        result = amd64_mgr.move_state(999999, "active", "found")
         assert result is False
 
-    def test_clear_stash(self):
+    def test_clear_stash(self, amd64_mgr):
         """clear_stash removes all states from a stash."""
-        mgr = _RustExplorationManager("amd64")
-        mgr.create_state("found")
-        mgr.create_state("found")
-        assert mgr.found_count() == 2
+        amd64_mgr.create_state("found")
+        amd64_mgr.create_state("found")
+        assert amd64_mgr.found_count() == 2
 
-        mgr.clear_stash("found")
-        assert mgr.found_count() == 0
+        amd64_mgr.clear_stash("found")
+        assert amd64_mgr.found_count() == 0
 
-    def test_clear_empty_stash(self):
+    def test_clear_empty_stash(self, amd64_mgr):
         """clear_stash on empty stash is a no-op."""
-        mgr = _RustExplorationManager("amd64")
-        mgr.clear_stash("nonexistent")  # Should not raise
+        amd64_mgr.clear_stash("nonexistent")  # Should not raise
 
-    def test_stash_counts_multiple(self):
+    def test_stash_counts_multiple(self, amd64_mgr):
         """stash_counts includes all stash names."""
-        mgr = _RustExplorationManager("amd64")
-        mgr.create_state("active")
-        mgr.create_state("found")
-        mgr.create_state("deadended")
+        amd64_mgr.create_state("active")
+        amd64_mgr.create_state("found")
+        amd64_mgr.create_state("deadended")
 
-        counts = mgr.stash_counts()
+        counts = amd64_mgr.stash_counts()
         assert counts["active"] == 1
         assert counts["found"] == 1
         assert counts["deadended"] == 1
 
-    def test_get_state_ids_empty(self):
+    def test_get_state_ids_empty(self, amd64_mgr):
         """get_state_ids on empty stash returns empty list."""
-        mgr = _RustExplorationManager("amd64")
-        ids = mgr.get_state_ids("active")
+        ids = amd64_mgr.get_state_ids("active")
         assert ids == []
 
 
 class TestHooksAndProcedures:
     """Tests for hook and SimProcedure registration."""
 
-    def test_register_hook(self):
+    def test_register_hook(self, amd64_mgr):
         """Registering a hook at an address."""
-        mgr = _RustExplorationManager("amd64")
-        mgr.register_simprocedure(0x401000, "test_hook", 0, False)
-        stats = mgr.stats()
+        amd64_mgr.register_simprocedure(0x401000, "test_hook", 0, False)
+        stats = amd64_mgr.stats()
         assert stats["hooks"] == 1
 
-    def test_register_multiple_hooks(self):
+    def test_register_multiple_hooks(self, amd64_mgr):
         """Multiple hooks at different addresses."""
-        mgr = _RustExplorationManager("amd64")
-        mgr.register_simprocedure(0x401000, "hook1", 1, False)
-        mgr.register_simprocedure(0x402000, "hook2", 2, False)
-        mgr.register_simprocedure(0x403000, "hook3", 0, True)
-        stats = mgr.stats()
+        amd64_mgr.register_simprocedure(0x401000, "hook1", 1, False)
+        amd64_mgr.register_simprocedure(0x402000, "hook2", 2, False)
+        amd64_mgr.register_simprocedure(0x403000, "hook3", 0, True)
+        stats = amd64_mgr.stats()
         assert stats["simprocedures"] == 3
         assert stats["hooks"] == 3
 
-    def test_set_find_avoid_addrs(self):
+    def test_set_find_avoid_addrs(self, amd64_mgr):
         """Setting find and avoid addresses."""
-        mgr = _RustExplorationManager("amd64")
-        mgr.set_find_addrs([0x1000, 0x2000])
-        mgr.set_avoid_addrs([0x3000])
+        amd64_mgr.set_find_addrs([0x1000, 0x2000])
+        amd64_mgr.set_avoid_addrs([0x3000])
 
-        stats = mgr.stats()
+        stats = amd64_mgr.stats()
         assert stats["find_addrs"] == 2
         assert stats["avoid_addrs"] == 1
 
-    def test_empty_find_avoid(self):
+    def test_empty_find_avoid(self, amd64_mgr):
         """Empty find/avoid lists."""
-        mgr = _RustExplorationManager("amd64")
-        mgr.set_find_addrs([])
-        mgr.set_avoid_addrs([])
-        stats = mgr.stats()
+        amd64_mgr.set_find_addrs([])
+        amd64_mgr.set_avoid_addrs([])
+        stats = amd64_mgr.stats()
         assert stats["find_addrs"] == 0
         assert stats["avoid_addrs"] == 0
 
@@ -1380,47 +1356,42 @@ class TestHooksAndProcedures:
 class TestStateManagement:
     """Tests for state creation and management."""
 
-    def test_state_pc_get_set(self):
+    def test_state_pc_get_set(self, amd64_mgr):
         """Get and set PC on states via manager."""
-        mgr = _RustExplorationManager("amd64")
         state = RustSimState("amd64")
         state.pc = 0x401000
-        mgr.add_state("active", state)
+        amd64_mgr.add_state("active", state)
 
-        pc = mgr.get_state_pc("active", 0)
+        pc = amd64_mgr.get_state_pc("active", 0)
         assert pc == 0x401000
 
-    def test_multiple_states_different_pcs(self):
+    def test_multiple_states_different_pcs(self, amd64_mgr):
         """Multiple states with different PCs."""
-        mgr = _RustExplorationManager("amd64")
-
         for addr in [0x1000, 0x2000, 0x3000]:
             state = RustSimState("amd64")
             state.pc = addr
-            mgr.add_state("active", state)
+            amd64_mgr.add_state("active", state)
 
-        assert mgr.active_count() == 3
+        assert amd64_mgr.active_count() == 3
         # The "different PCs" claim is only meaningful if each PC round-trips
         # back distinctly — active_count alone passes even if every PC were
         # zeroed or collapsed. Read them back via get_state_pc.
-        assert [mgr.get_state_pc("active", i) for i in range(3)] == [0x1000, 0x2000, 0x3000]
+        assert [amd64_mgr.get_state_pc("active", i) for i in range(3)] == [0x1000, 0x2000, 0x3000]
 
-    def test_has_active_states(self):
+    def test_has_active_states(self, amd64_mgr):
         """has_active_states reflects stash contents."""
-        mgr = _RustExplorationManager("amd64")
-        assert not mgr.has_active_states()
+        assert not amd64_mgr.has_active_states()
 
-        mgr.create_state("active")
-        assert mgr.has_active_states()
+        amd64_mgr.create_state("active")
+        assert amd64_mgr.has_active_states()
 
-    def test_drop_terminal_states_toggle(self):
+    def test_drop_terminal_states_toggle(self, amd64_mgr):
         """set_drop_terminal_states flips the observable stats flag both ways."""
-        mgr = _RustExplorationManager("amd64")
-        assert mgr.stats()["drop_terminal_states"] is False  # default
-        mgr.set_drop_terminal_states(True)
-        assert mgr.stats()["drop_terminal_states"] is True
-        mgr.set_drop_terminal_states(False)
-        assert mgr.stats()["drop_terminal_states"] is False
+        assert amd64_mgr.stats()["drop_terminal_states"] is False  # default
+        amd64_mgr.set_drop_terminal_states(True)
+        assert amd64_mgr.stats()["drop_terminal_states"] is True
+        amd64_mgr.set_drop_terminal_states(False)
+        assert amd64_mgr.stats()["drop_terminal_states"] is False
 
 
 class TestWideConcreteMemoryRoundTrip:

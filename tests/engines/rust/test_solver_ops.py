@@ -716,9 +716,8 @@ class TestSolverOperations:
         assert v_a is not None and 100 <= v_a <= 200 and v_a != 150
         assert v_b is not None and 100 <= v_b <= 200 and v_b != 150
 
-    def test_solver_contradictory_find_avoid(self):
+    def test_solver_contradictory_find_avoid(self, amd64_mgr):
         """Same address in find and avoid should avoid (avoid takes priority)."""
-        mgr = _RustExplorationManager("amd64")
         # Stub callbacks so run() doesn't raise "callbacks not set". The
         # avoid/find classification happens at the top of the run loop
         # *before* any lift/step, so these are never actually invoked here.
@@ -726,13 +725,13 @@ class TestSolverOperations:
         callbacks.set_memory_load(lambda a, s: (bytes(s), False, None))
         callbacks.set_memory_store(lambda a, d: None)
         callbacks.set_lift_block(lambda a: "{}")
-        mgr.set_callbacks(callbacks)
-        mgr.set_find_addrs([0x1000])
-        mgr.set_avoid_addrs([0x1000])
+        amd64_mgr.set_callbacks(callbacks)
+        amd64_mgr.set_find_addrs([0x1000])
+        amd64_mgr.set_avoid_addrs([0x1000])
         state = RustSimState("amd64")
         state.pc = 0x1000
-        mgr.add_state("active", state)
-        assert mgr.active_count() == 1
+        amd64_mgr.add_state("active", state)
+        assert amd64_mgr.active_count() == 1
 
         # Step the manager so the run loop actually classifies the state.
         # run_loop.rs checks avoid_addrs (line ~162) *before* find_addrs
@@ -741,8 +740,8 @@ class TestSolverOperations:
         # resulting stash placement (not just no-crash) pins that priority:
         # swapping the two classification blocks, or no-op'ing
         # set_avoid_addrs, would flip the state into "found" and redden this.
-        mgr.run(5)
-        counts = mgr.stash_counts()
+        amd64_mgr.run(5)
+        counts = amd64_mgr.stash_counts()
         assert counts.get("avoid", 0) == 1, (
             f"State at 0x1000 (in both find and avoid) should land in 'avoid' "
             f"— avoid takes priority over find; stashes={counts}"

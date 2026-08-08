@@ -21,7 +21,6 @@ from tests.engines.conftest import (  # noqa: F401
     PythonCallbacks,
     RustExplorationManager,
     RustSimState,
-    _RustExplorationManager,
 )
 
 # All tests in this module require the Rust extension; skip the whole module
@@ -689,13 +688,12 @@ class TestCallStackTracking:
             depth = snapshot.get_call_stack_depth()
             assert depth == len(call_stack)
 
-    def test_call_stack_api_on_low_level_manager(self):
+    def test_call_stack_api_on_low_level_manager(self, amd64_mgr):
         """Test get_state_call_stack on the low-level Rust exploration manager."""
-        mgr = _RustExplorationManager("amd64")
-        state_id = mgr.create_state("active")
+        state_id = amd64_mgr.create_state("active")
         # New state should have empty call stack
-        call_stack = mgr.get_state_call_stack(state_id)
-        depth = mgr.get_state_call_stack_depth(state_id)
+        call_stack = amd64_mgr.get_state_call_stack(state_id)
+        depth = amd64_mgr.get_state_call_stack_depth(state_id)
         assert isinstance(call_stack, list)
         assert call_stack == []
         assert depth == 0
@@ -792,24 +790,22 @@ class TestDetailedHistory:
         # 1 = Ijk_Call
         assert 1 in jumpkinds, "History should contain at least one Ijk_Call"
 
-    def test_detailed_history_manager_api(self):
+    def test_detailed_history_manager_api(self, amd64_mgr):
         """Test get_state_detailed_history on the low-level manager."""
-        mgr = _RustExplorationManager("amd64")
-        state_id = mgr.create_state("active")
-        history = mgr.get_state_detailed_history(state_id)
+        state_id = amd64_mgr.create_state("active")
+        history = amd64_mgr.get_state_detailed_history(state_id)
         assert isinstance(history, list)
         assert history == []
 
-    def test_max_history_get_set_default(self):
+    def test_max_history_get_set_default(self, amd64_mgr):
         """Manager exposes a configurable per-state history cap (default 1000)."""
-        mgr = _RustExplorationManager("amd64")
-        assert mgr.get_max_history() == 1000
+        assert amd64_mgr.get_max_history() == 1000
 
-        mgr.set_max_history(50)
-        assert mgr.get_max_history() == 50
+        amd64_mgr.set_max_history(50)
+        assert amd64_mgr.get_max_history() == 50
 
-        mgr.set_max_history(0)
-        assert mgr.get_max_history() == 0
+        amd64_mgr.set_max_history(0)
+        assert amd64_mgr.get_max_history() == 0
 
     def test_max_history_caps_recorded_history(self, fauxware_project):
         """A tight max_history cap bounds detailed_history during exploration."""
@@ -939,28 +935,25 @@ class TestDetailedHistory:
 class TestNativeTechniques:
     """Tests for native exploration technique hooks in Rust."""
 
-    def test_register_length_limiter(self):
+    def test_register_length_limiter(self, amd64_mgr):
         """Test that LengthLimiter can be registered natively."""
-        mgr = _RustExplorationManager("amd64")
-        assert mgr.native_technique_count() == 0
-        mgr.register_length_limiter(100, False)
-        assert mgr.native_technique_count() == 1
-        mgr.register_length_limiter(200, True)
-        assert mgr.native_technique_count() == 2
-        mgr.clear_native_techniques()
-        assert mgr.native_technique_count() == 0
+        assert amd64_mgr.native_technique_count() == 0
+        amd64_mgr.register_length_limiter(100, False)
+        assert amd64_mgr.native_technique_count() == 1
+        amd64_mgr.register_length_limiter(200, True)
+        assert amd64_mgr.native_technique_count() == 2
+        amd64_mgr.clear_native_techniques()
+        assert amd64_mgr.native_technique_count() == 0
 
-    def test_register_timeout(self):
+    def test_register_timeout(self, amd64_mgr):
         """Test that Timeout can be registered natively."""
-        mgr = _RustExplorationManager("amd64")
-        mgr.register_timeout(10.0)
-        assert mgr.native_technique_count() == 1
+        amd64_mgr.register_timeout(10.0)
+        assert amd64_mgr.native_technique_count() == 1
 
-    def test_register_loop_bound(self):
+    def test_register_loop_bound(self, amd64_mgr):
         """Test that LoopBound can be registered natively."""
-        mgr = _RustExplorationManager("amd64")
-        mgr.register_loop_bound(5, "spinning")
-        assert mgr.native_technique_count() == 1
+        amd64_mgr.register_loop_bound(5, "spinning")
+        assert amd64_mgr.native_technique_count() == 1
 
     def test_length_limiter_via_use_technique(self, fauxware_project):
         """Test LengthLimiter registered through use_technique()."""
@@ -1005,13 +998,12 @@ class TestNativeTechniques:
         assert getattr(tech, "_native_timeout", False), "Timeout should be marked as native"
         assert mgr._rust_mgr.native_technique_count() == 1
 
-    def test_multiple_native_techniques(self):
+    def test_multiple_native_techniques(self, amd64_mgr):
         """Test that multiple native techniques can coexist."""
-        mgr = _RustExplorationManager("amd64")
-        mgr.register_length_limiter(100, False)
-        mgr.register_timeout(30.0)
-        mgr.register_loop_bound(10, "spinning")
-        assert mgr.native_technique_count() == 3
+        amd64_mgr.register_length_limiter(100, False)
+        amd64_mgr.register_timeout(30.0)
+        amd64_mgr.register_loop_bound(10, "spinning")
+        assert amd64_mgr.native_technique_count() == 3
 
     def test_remove_technique_disarms_length_limiter(self, fauxware_project):
         """remove_technique undoes the native effect, not just the dispatch (angr-w9zce)."""
@@ -1406,39 +1398,36 @@ class TestExplorationTechniqueStepHookDispatch:
 class TestVexOptLevel:
     """Tests for VEX optimization level control."""
 
-    def test_set_get_vex_opt_level(self):
+    def test_set_get_vex_opt_level(self, amd64_mgr):
         """Test setting and getting VEX optimization level."""
-        mgr = _RustExplorationManager("amd64")
-        assert mgr.get_vex_opt_level() is None
-        mgr.set_vex_opt_level(0)
-        assert mgr.get_vex_opt_level() == 0
-        mgr.set_vex_opt_level(2)
-        assert mgr.get_vex_opt_level() == 2
-        mgr.set_vex_opt_level(None)
-        assert mgr.get_vex_opt_level() is None
+        assert amd64_mgr.get_vex_opt_level() is None
+        amd64_mgr.set_vex_opt_level(0)
+        assert amd64_mgr.get_vex_opt_level() == 0
+        amd64_mgr.set_vex_opt_level(2)
+        assert amd64_mgr.get_vex_opt_level() == 2
+        amd64_mgr.set_vex_opt_level(None)
+        assert amd64_mgr.get_vex_opt_level() is None
 
-    def test_per_address_override(self):
+    def test_per_address_override(self, amd64_mgr):
         """Test per-address VEX optimization level overrides."""
-        mgr = _RustExplorationManager("amd64")
-        mgr.set_vex_opt_level(1)  # global level
+        amd64_mgr.set_vex_opt_level(1)  # global level
 
         # Per-address override
-        mgr.set_vex_opt_level_override(0x401000, 0)
-        assert mgr.resolve_vex_opt_level(0x401000) == 0  # override
-        assert mgr.resolve_vex_opt_level(0x402000) == 1  # global fallback
+        amd64_mgr.set_vex_opt_level_override(0x401000, 0)
+        assert amd64_mgr.resolve_vex_opt_level(0x401000) == 0  # override
+        assert amd64_mgr.resolve_vex_opt_level(0x402000) == 1  # global fallback
 
         # Remove override
-        mgr.remove_vex_opt_level_override(0x401000)
-        assert mgr.resolve_vex_opt_level(0x401000) == 1  # falls back to global
+        amd64_mgr.remove_vex_opt_level_override(0x401000)
+        assert amd64_mgr.resolve_vex_opt_level(0x401000) == 1  # falls back to global
 
-    def test_clear_overrides(self):
+    def test_clear_overrides(self, amd64_mgr):
         """Test clearing all per-address overrides."""
-        mgr = _RustExplorationManager("amd64")
-        mgr.set_vex_opt_level_override(0x401000, 0)
-        mgr.set_vex_opt_level_override(0x402000, 2)
-        mgr.clear_vex_opt_level_overrides()
-        assert mgr.resolve_vex_opt_level(0x401000) is None
-        assert mgr.resolve_vex_opt_level(0x402000) is None
+        amd64_mgr.set_vex_opt_level_override(0x401000, 0)
+        amd64_mgr.set_vex_opt_level_override(0x402000, 2)
+        amd64_mgr.clear_vex_opt_level_overrides()
+        assert amd64_mgr.resolve_vex_opt_level(0x401000) is None
+        assert amd64_mgr.resolve_vex_opt_level(0x402000) is None
 
     def test_opt_level_with_exploration(self, fauxware_project):
         """Test that opt_level doesn't break exploration."""
@@ -1454,52 +1443,47 @@ class TestVexOptLevel:
 class TestStateMerging:
     """Tests for state merging with symbolic merge conditions."""
 
-    def test_merge_states_basic(self):
+    def test_merge_states_basic(self, amd64_mgr):
         """Test merging two states produces a valid merged state."""
-        mgr = _RustExplorationManager("amd64")
-        sid1 = mgr.create_state("active")
-        sid2 = mgr.create_state("active")
+        sid1 = amd64_mgr.create_state("active")
+        sid2 = amd64_mgr.create_state("active")
 
-        merged_id = mgr.merge_states([sid1, sid2], "merged")
-        merged_ids = mgr.get_state_ids("merged")
+        merged_id = amd64_mgr.merge_states([sid1, sid2], "merged")
+        merged_ids = amd64_mgr.get_state_ids("merged")
         assert merged_id in merged_ids
 
-    def test_merge_states_requires_two(self):
+    def test_merge_states_requires_two(self, amd64_mgr):
         """Test that merge_states requires at least 2 states."""
-        mgr = _RustExplorationManager("amd64")
-        sid1 = mgr.create_state("active")
+        sid1 = amd64_mgr.create_state("active")
 
         with pytest.raises(ValueError, match="at least 2"):
-            mgr.merge_states([sid1], "merged")
+            amd64_mgr.merge_states([sid1], "merged")
 
-    def test_merge_states_invalid_id(self):
+    def test_merge_states_invalid_id(self, amd64_mgr):
         """Test that merge_states raises on invalid state IDs."""
-        mgr = _RustExplorationManager("amd64")
-        sid1 = mgr.create_state("active")
+        sid1 = amd64_mgr.create_state("active")
 
         with pytest.raises(ValueError, match=r"state .* not found"):
-            mgr.merge_states([sid1, 999999], "merged")
+            amd64_mgr.merge_states([sid1, 999999], "merged")
 
-    def test_merge_three_states(self):
+    def test_merge_three_states(self, amd64_mgr):
         """Test merging three states."""
-        mgr = _RustExplorationManager("amd64")
-        sid1 = mgr.create_state("active")
-        sid2 = mgr.create_state("active")
-        sid3 = mgr.create_state("active")
+        sid1 = amd64_mgr.create_state("active")
+        sid2 = amd64_mgr.create_state("active")
+        sid3 = amd64_mgr.create_state("active")
 
-        merged_id = mgr.merge_states([sid1, sid2, sid3], "merged")
-        merged_ids = mgr.get_state_ids("merged")
+        merged_id = amd64_mgr.merge_states([sid1, sid2, sid3], "merged")
+        merged_ids = amd64_mgr.get_state_ids("merged")
         assert merged_id in merged_ids
 
-    def test_merge_states_default_stash(self):
+    def test_merge_states_default_stash(self, amd64_mgr):
         """Test merge_states with default dest_stash."""
-        mgr = _RustExplorationManager("amd64")
-        sid1 = mgr.create_state("stash1")
-        sid2 = mgr.create_state("stash2")
+        sid1 = amd64_mgr.create_state("stash1")
+        sid2 = amd64_mgr.create_state("stash2")
 
-        merged_id = mgr.merge_states([sid1, sid2])
+        merged_id = amd64_mgr.merge_states([sid1, sid2])
         # Default dest_stash is "active"
-        active_ids = mgr.get_state_ids("active")
+        active_ids = amd64_mgr.get_state_ids("active")
         assert merged_id in active_ids
 
 

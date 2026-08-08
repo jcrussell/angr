@@ -80,6 +80,28 @@ def fauxware_project():
     return angr.Project(binary_path, auto_load_libs=False)
 
 
+@pytest.fixture
+def amd64_mgr():
+    """A bare, project-less ``_RustExplorationManager("amd64")`` (angr-12jjk.8).
+
+    The overwhelmingly common way a Rust-engine test starts is by constructing
+    the raw PyO3 manager for the default arch and poking at it directly. This
+    fixture is the single source of that construction.
+
+    Function-scoped on purpose: every test gets its own manager, matching the
+    per-test construction it replaces. Declare it **last** in a test's
+    parameter list so it is instantiated after the test's other
+    function-scoped fixtures, preserving the original ordering.
+
+    Deliberately NOT applied everywhere: a test that must construct the
+    manager *after* in-body setup — most often a ``monkeypatch.setenv`` of a
+    knob the Rust ``__new__`` reads once, e.g. ``RUST_PARALLEL_WORKERS`` —
+    keeps its explicit construction, because a fixture would run before the
+    test body and read the un-patched environment.
+    """
+    return _RustExplorationManager("amd64")
+
+
 # --- Factory monkey-patch -------------------------------------------------
 class RustFactoryPatch:
     """Route ``factory.simulation_manager(...)`` / ``simgr(...)`` to

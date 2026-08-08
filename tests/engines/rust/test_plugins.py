@@ -18,7 +18,6 @@ from tests.engines.conftest import (  # noqa: F401
     PythonCallbacks,
     RustExplorationManager,
     RustSimState,
-    _RustExplorationManager,
 )
 
 # All tests in this module require the Rust extension; skip the whole module
@@ -377,41 +376,37 @@ class TestAdversarial:
 
     # --- API misuse ---
 
-    def test_create_state_invalid_stash(self):
+    def test_create_state_invalid_stash(self, amd64_mgr):
         """Creating state in nonexistent stash should work (dynamic stash)."""
-        mgr = _RustExplorationManager("amd64")
-        mgr.create_state("nonexistent_stash_42")
-        counts = mgr.stash_counts()
+        amd64_mgr.create_state("nonexistent_stash_42")
+        counts = amd64_mgr.stash_counts()
         assert counts.get("nonexistent_stash_42", 0) == 1
 
-    def test_set_find_empty_list(self):
+    def test_set_find_empty_list(self, amd64_mgr):
         """Setting empty find/avoid lists clears any previously-set addrs."""
-        mgr = _RustExplorationManager("amd64")
         # Pre-seed non-empty lists so [] has something to clear; a regression
         # that early-returns on empty (skips clearing) would leave these stale.
-        mgr.set_find_addrs([0x1000, 0x2000])
-        mgr.set_avoid_addrs([0x3000])
-        assert mgr.stats()["find_addrs"] == 2
-        assert mgr.stats()["avoid_addrs"] == 1
-        mgr.set_find_addrs([])
-        mgr.set_avoid_addrs([])
-        assert mgr.stats()["find_addrs"] == 0
-        assert mgr.stats()["avoid_addrs"] == 0
+        amd64_mgr.set_find_addrs([0x1000, 0x2000])
+        amd64_mgr.set_avoid_addrs([0x3000])
+        assert amd64_mgr.stats()["find_addrs"] == 2
+        assert amd64_mgr.stats()["avoid_addrs"] == 1
+        amd64_mgr.set_find_addrs([])
+        amd64_mgr.set_avoid_addrs([])
+        assert amd64_mgr.stats()["find_addrs"] == 0
+        assert amd64_mgr.stats()["avoid_addrs"] == 0
 
-    def test_set_find_duplicate_addresses(self):
+    def test_set_find_duplicate_addresses(self, amd64_mgr):
         """Duplicate find/avoid addresses should be deduplicated."""
-        mgr = _RustExplorationManager("amd64")
-        mgr.set_find_addrs([0x1000, 0x1000, 0x1000])
-        mgr.set_avoid_addrs([0x2000, 0x2000])
+        amd64_mgr.set_find_addrs([0x1000, 0x1000, 0x1000])
+        amd64_mgr.set_avoid_addrs([0x2000, 0x2000])
         # find/avoid sets are HashSet<u64>; duplicates collapse to one each.
-        assert mgr.stats()["find_addrs"] == 1
-        assert mgr.stats()["avoid_addrs"] == 1
+        assert amd64_mgr.stats()["find_addrs"] == 1
+        assert amd64_mgr.stats()["avoid_addrs"] == 1
 
-    def test_run_with_no_callbacks(self):
+    def test_run_with_no_callbacks(self, amd64_mgr):
         """Running without callbacks set should raise RuntimeError."""
-        mgr = _RustExplorationManager("amd64")
         with pytest.raises(RuntimeError, match="callbacks not set"):
-            mgr.run(10)
+            amd64_mgr.run(10)
 
     # --- State operations ---
 
@@ -628,29 +623,26 @@ class TestAdversarial:
 
     # --- Exploration manager with states ---
 
-    def test_many_states_in_stash(self):
+    def test_many_states_in_stash(self, amd64_mgr):
         """Many states in a stash should work."""
-        mgr = _RustExplorationManager("amd64")
         for _ in range(50):
-            mgr.create_state("active")
-        assert mgr.active_count() == 50
+            amd64_mgr.create_state("active")
+        assert amd64_mgr.active_count() == 50
 
-    def test_stash_counts_empty(self):
+    def test_stash_counts_empty(self, amd64_mgr):
         """Empty manager should report zero counts."""
-        mgr = _RustExplorationManager("amd64")
-        counts = mgr.stash_counts()
+        counts = amd64_mgr.stash_counts()
         assert counts.get("active", 0) == 0
         assert counts.get("found", 0) == 0
 
-    def test_move_state_nonexistent(self):
+    def test_move_state_nonexistent(self, amd64_mgr):
         """Moving from an empty source stash is a no-op: counts stay zero, no raise."""
-        mgr = _RustExplorationManager("amd64")
-        before = mgr.stash_counts()
+        before = amd64_mgr.stash_counts()
         # Contract: moving from an empty source stash does nothing and must NOT
         # raise. No try/except — a raise here is now a genuine failure, and the
         # stash counts must be unchanged (both stay at zero).
-        mgr.move_states("active", "found", None)
-        after = mgr.stash_counts()
+        amd64_mgr.move_states("active", "found", None)
+        after = amd64_mgr.stash_counts()
         assert before.get("active", 0) == after.get("active", 0) == 0
         assert before.get("found", 0) == after.get("found", 0) == 0
 
