@@ -600,6 +600,66 @@ class TestRustInspectMarshalling:
         mgr.run(max_steps=10)
         assert mgr.stats["steps"] > 0
 
+    def test_constraints_and_vex_lift_ffi_entry_points_exposed(self):
+        """PythonCallbacks exposes the two newest call_inspect_* wrappers.
+
+        angr-sqfj8.13: every other inspect event has a `call_inspect_<evt>`
+        test entry point; constraints/vex_lift were the two gaps.
+        """
+        cbs = PythonCallbacks()
+        for name in ("call_inspect_constraints", "call_inspect_vex_lift"):
+            assert hasattr(cbs, name), f"PythonCallbacks missing {name}"
+
+    def test_ffi_call_inspect_constraints_marshals_guard(self, fauxware_project):
+        """call_inspect_constraints exports the guard and applies the polarity.
+
+        Drives the Rust `call_inspect_constraints` marshalling directly, the
+        way the native fork-guard add does: `is_true=False` must reach the BP
+        as `Not(guard)` in a one-element added_constraints list.
+        """
+        import claripy
+
+        mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
+        seen = []
+
+        mgr._get_inspect_proxy().b(
+            "constraints", when="before", action=lambda s: seen.append(list(s.inspect.added_constraints or []))
+        )
+
+        x = claripy.BVS("x", 32)
+        guard = x == 42
+        mgr._callbacks.call_inspect_constraints(sid, "before", guard, True)
+        mgr._callbacks.call_inspect_constraints(sid, "before", guard, False)
+
+        assert len(seen) == 2
+        assert all(len(cons) == 1 for cons in seen), seen
+        assert str(seen[0][0]) == str(guard)
+        # claripy folds Not(x == 42) to x != 42 on construction, so compare
+        # against the same folded form rather than asserting op == "Not".
+        assert str(seen[1][0]) == str(claripy.Not(guard))
+
+    def test_ffi_call_inspect_vex_lift_marshals_size_and_buff(self, fauxware_project):
+        """call_inspect_vex_lift passes size/buff through as the lift path does."""
+        mgr, _sid, _ = self._make_mgr_with_state_id(fauxware_project)
+        events = []
+
+        def on_lift(s):
+            events.append((s.inspect.vex_lift_addr, s.inspect.vex_lift_size, s.inspect.vex_lift_buff))
+
+        mgr._get_inspect_proxy().b("vex_lift", when="before", action=on_lift)
+        mgr._get_inspect_proxy().b("vex_lift", when="after", action=on_lift)
+
+        # BEFORE: no size, raw bytes. AFTER: lifted size, no bytes.
+        mgr._callbacks.call_inspect_vex_lift(-1, "before", 0x401234, None, b"\x90\x90")
+        mgr._callbacks.call_inspect_vex_lift(-1, "after", 0x401234, 2, None)
+
+        assert len(events) == 2
+        (_, before_size, before_buff), (_, after_size, after_buff) = events
+        assert before_size is None
+        assert before_buff == b"\x90\x90"
+        assert after_size == 2
+        assert after_buff is None
+
     def test_dispatch_vex_lift_fires_before_and_after(self, fauxware_project):
         """_cb_lift_block dispatches vex_lift BP_BEFORE then BP_AFTER (angr-4aach)."""
         import claripy

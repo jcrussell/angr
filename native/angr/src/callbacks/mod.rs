@@ -1048,6 +1048,49 @@ impl PythonCallbacks {
         self.call_inspect_fork(state_id, when)
     }
 
+    /// Test entry point: invoke the registered constraints callback directly.
+    ///
+    /// `guard_ast` is a claripy AST standing in for the branch guard the
+    /// production caller passes as the state's own `RustBV` — a type Python
+    /// cannot construct — so it is imported into a throwaway `SymContext`
+    /// first. What that leaves under test is the marshalling half of
+    /// `call_inspect_constraints`: the `assumed_guard_to_claripy` export
+    /// (including the `is_true == false` `claripy.Not(..)` wrap) and the
+    /// `(state_id, when, [constraint])` call shape.
+    #[pyo3(name = "call_inspect_constraints")]
+    #[pyo3(signature = (state_id, when, guard_ast, is_true))]
+    pub fn py_call_inspect_constraints(
+        &self,
+        py: Python<'_>,
+        state_id: i64,
+        when: &str,
+        guard_ast: &Bound<'_, PyAny>,
+        is_true: bool,
+    ) -> PyResult<()> {
+        let ctx = crate::symbolic::SymContext::new();
+        let guard = crate::claripy_bridge::claripy_to_rustbv(py, guard_ast, &ctx)
+            .map_err(|e| crate::claripy_bridge::ast_import_err("inspect constraints guard", e))?;
+        self.call_inspect_constraints(state_id, when, &guard, is_true)
+    }
+
+    /// Test entry point: invoke the registered vex_lift callback directly.
+    ///
+    /// Mirrors the native libVEX lift path's two fires: BEFORE passes
+    /// `size=None` plus the byte buffer handed to libVEX, AFTER passes the
+    /// lifted IRSB's size and no buffer.
+    #[pyo3(name = "call_inspect_vex_lift")]
+    #[pyo3(signature = (state_id, when, addr, size=None, buff=None))]
+    pub fn py_call_inspect_vex_lift(
+        &self,
+        state_id: i64,
+        when: &str,
+        addr: u64,
+        size: Option<u32>,
+        buff: Option<Vec<u8>>,
+    ) -> PyResult<()> {
+        self.call_inspect_vex_lift(state_id, when, addr, size, buff.as_deref())
+    }
+
     /// Whether the three *unconditionally invoked* callbacks are set:
     /// `memory_load`, `memory_store`, `lift_block`.
     ///
