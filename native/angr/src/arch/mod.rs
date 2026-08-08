@@ -305,6 +305,20 @@ impl From<RegisterFileData> for RegisterFile {
     }
 }
 
+/// Compose little-endian `bytes` (lowest index = LSB) into a `u128`.
+///
+/// Callers are responsible for passing at most 16 bytes; a longer slice would
+/// shift past the width of a `u128` and the excess is dropped. Every in-tree
+/// caller slices a register-sized span, which is at most 8 bytes on every
+/// supported arch (angr-sqfj8.7).
+fn le_bytes_to_u128(bytes: &[u8]) -> u128 {
+    let mut value: u128 = 0;
+    for (i, &byte) in bytes.iter().enumerate() {
+        value |= (byte as u128) << (i * 8);
+    }
+    value
+}
+
 impl RegisterFile {
     /// Create a new register file for the given architecture.
     pub(crate) fn new(arch: Box<dyn Arch>) -> Self {
@@ -427,12 +441,7 @@ impl RegisterFile {
             return RustBV::zero(size * 8);
         }
 
-        let mut value: u128 = 0;
-        for (i, &byte) in self.data[start..end].iter().enumerate() {
-            value |= (byte as u128) << (i * 8);
-        }
-
-        RustBV::concrete(value, size * 8)
+        RustBV::concrete(le_bytes_to_u128(&self.data[start..end]), size * 8)
     }
 
     /// Read an architectural register (at `offset`, full arch byte-width) to a
@@ -447,6 +456,34 @@ impl RegisterFile {
         ctx: &crate::symbolic::SymContext,
     ) -> Option<u64> {
         self.get(offset, self.arch.bytes(), ctx).as_u64()
+    }
+
+    /// Mirror a concrete `value` into the concrete backing bytes at `offset`,
+    /// little-endian, skipping any byte that falls past the end of `data`.
+    ///
+    /// No-op when `value` is not representable as a `u128` (i.e. symbolic or
+    /// wider than 128 bits) — the symbolic overlay is the authority in that
+    /// case and the stale concrete bytes are never consulted for it.
+    ///
+    /// Shared by both of [`Self::put`]'s sub-register-of-a-wider-symbolic
+    /// paths (angr-sqfj8.8). Deliberately *not* used by `put`'s plain concrete
+    /// store, which bounds-checks the whole range up front and skips the write
+    /// entirely when it does not fit, rather than truncating per byte.
+    fn mirror_concrete_bytes(&mut self, offset: u32, value: &RustBV) {
+        let Some(v) = value.as_u128() else {
+            // SILENT(cat-a): symbolic writes keep their value in the overlay;
+            // the concrete bytes for that span are shadowed and unread.
+            return;
+        };
+        let size = (value.width() / 8) as usize;
+        let start = offset as usize;
+        let len = self.data.len();
+        let data = Arc::make_mut(&mut self.data);
+        for i in 0..size {
+            if start + i < len {
+                data[start + i] = (v >> (i * 8)) as u8;
+            }
+        }
     }
 
     /// Write a register value by offset.
@@ -466,16 +503,7 @@ impl RegisterFile {
             let composed = upper.concat_no_ctx(&value);
             self.symbolic.insert(offset, composed);
             // Also update concrete data for the written portion if concrete
-            if let Some(v) = value.as_u128() {
-                let start = offset as usize;
-                let len = self.data.len();
-                let data = Arc::make_mut(&mut self.data);
-                for i in 0..size as usize {
-                    if start + i < len {
-                        data[start + i] = (v >> (i * 8)) as u8;
-                    }
-                }
-            }
+            self.mirror_concrete_bytes(offset, &value);
             return;
         }
         // Also check if writing to the middle/upper portion of a wider symbolic.
@@ -508,16 +536,7 @@ impl RegisterFile {
                 }
                 self.symbolic.insert(sym_offset, composed);
                 // Update concrete data for the written portion if concrete
-                if let Some(v) = value.as_u128() {
-                    let start = offset as usize;
-                    let len = self.data.len();
-                    let data = Arc::make_mut(&mut self.data);
-                    for i in 0..size as usize {
-                        if start + i < len {
-                            data[start + i] = (v >> (i * 8)) as u8;
-                        }
-                    }
-                }
+                self.mirror_concrete_bytes(offset, &value);
                 return;
             }
         }
@@ -831,16 +850,8 @@ impl RegisterFile {
                 if self_slice != other_slice {
                     // Concrete values differ — create ITE
                     let width = (reg_bytes * 8) as u32;
-                    let mut sv: u128 = 0;
-                    for (i, &byte) in self_slice.iter().enumerate() {
-                        sv |= (byte as u128) << (i * 8);
-                    }
-                    let mut ov: u128 = 0;
-                    for (i, &byte) in other_slice.iter().enumerate() {
-                        ov |= (byte as u128) << (i * 8);
-                    }
-                    let self_bv = RustBV::concrete(sv, width);
-                    let other_bv = RustBV::concrete(ov, width);
+                    let self_bv = RustBV::concrete(le_bytes_to_u128(self_slice), width);
+                    let other_bv = RustBV::concrete(le_bytes_to_u128(other_slice), width);
                     let ite_val = merge_cond_other.ite(&other_bv, &self_bv, ctx);
                     self.symbolic.insert(u32_off, ite_val);
                     merged = true;
