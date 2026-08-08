@@ -603,13 +603,8 @@ impl RustBV {
     /// Create a concrete bitvector from a value.
     #[inline]
     pub fn concrete(value: u128, width: u32) -> Self {
-        let mask = if width >= 128 {
-            u128::MAX
-        } else {
-            (1u128 << width) - 1
-        };
         RustBV::Concrete {
-            value: value & mask,
+            value: value & Self::all_ones_mask(width),
             width,
         }
     }
