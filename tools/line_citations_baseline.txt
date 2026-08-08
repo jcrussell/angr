@@ -76,18 +76,6 @@ docs/advanced-topics/rust_engine_characterization.rst	``angr/callable.py:88 (Cal
 docs/advanced-topics/rust_engine_flame_comparison.rst	(``factory.py:164``, 5.4 s cumulative), which builds a fresh state
 docs/advanced-topics/rust_engine_flame_comparison.rst	(``page_backer_mixins.py:240``) per-page backer scan come from
 docs/advanced-topics/rust_engine_flame_comparison.rst	``solve.py`` — ``callable.py:88 (Callable.__call__)`` is 88 % of
-docs/advanced-topics/rust_lazy_memory_design.rst	(``address_concretization_mixin.py:14``) is an opt-in annotation
-docs/advanced-topics/rust_lazy_memory_design.rst	(line 320).
-docs/advanced-topics/rust_lazy_memory_design.rst	(line 366), ``load_concrete_lazy_inner`` (line 517),
-docs/advanced-topics/rust_lazy_memory_design.rst	2. Teach ``load_concrete_lazy_inner`` (``memory/load.rs:517``) to
-docs/advanced-topics/rust_lazy_memory_design.rst	``angr/exploration/rust_manager.py:1619``).
-docs/advanced-topics/rust_lazy_memory_design.rst	``apply_pending_writes_{concrete,symbolic}`` (lines 474, 489 —
-docs/advanced-topics/rust_lazy_memory_design.rst	``memory/mod.rs:375``) to materialize Multi cells via the same
-docs/advanced-topics/rust_lazy_memory_design.rst	``store_conditional_multiple`` (line 363), ``store_with_concretization``
-docs/advanced-topics/rust_lazy_memory_design.rst	``store_symbolic_unified`` (line 261), ``store_strided`` (line 216),
-docs/advanced-topics/rust_lazy_memory_design.rst	base value unchanged (``memory/load.rs:474-499``). This was an earlier
-docs/advanced-topics/rust_lazy_memory_design.rst	lines 884-1130. Use the new helpers directly.
-docs/advanced-topics/rust_lazy_memory_design.rst	tests (lines 884-1130) to cover the Multi-cell path.
 docs/advanced-topics/rust_parallel_design.rst	* z3-patched Translate trait: ``native/z3-patched/src/translate/mod.rs:23-31``.
 docs/advanced-topics/rust_parallel_design.rst	``native/z3-patched/src/translate/mod.rs:23-31`` —
 docs/advanced-topics/rust_proxy_writes_design.rst	(``rust_state_proxy.py:240-425``), with ``memory.store`` raising

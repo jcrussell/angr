@@ -90,13 +90,12 @@ Current Rust architecture (eager)
 Relevant code:
 
 * ``native/angr/src/memory/store.rs`` —
-  ``store_symbolic_unified`` (line 261), ``store_strided`` (line 216),
-  ``store_conditional_multiple`` (line 363), ``store_with_concretization``
-  (line 320).
-* ``native/angr/src/memory/load.rs`` — ``load_symbolic_unified``
-  (line 366), ``load_concrete_lazy_inner`` (line 517),
-  ``apply_pending_writes_{concrete,symbolic}`` (lines 474, 489 —
-  *currently disabled*).
+  ``store_symbolic_unified``, ``store_strided``,
+  ``store_conditional_multiple`` (*since removed* — see the status note
+  at the top), ``store_with_concretization``.
+* ``native/angr/src/memory/load.rs`` — ``load_symbolic_unified``,
+  ``load_concrete_lazy_inner``,
+  ``apply_pending_writes_{concrete,symbolic}`` (*currently disabled*).
 * ``native/angr/src/memory/ite_builder.rs`` — balanced ITE tree
   builders.
 * ``native/angr/src/memory/mod.rs`` — page table (``pages``),
@@ -121,8 +120,9 @@ Store path (eager):
    layer.** This is the bottleneck.
 4. ``TooLarge`` / ``Failed`` → returns ``MemoryError::SymbolicAddress``
    so the interpreter falls back to a Python callback
-   (``memory_store_symbolic_full``, wired at
-   ``angr/exploration/rust_manager.py:1619``).
+   (``memory_store_symbolic_full``, wired by
+   ``angr/exploration/rust_manager.py``'s
+   ``_cb_memory_store_symbolic_full``).
 
 Load path (eager):
 
@@ -137,11 +137,13 @@ Load path (eager):
 
 Pending writes (scaffolded, **not active in execution**):
 
-The ``PendingWrite`` struct, ``add_pending_write``, ``drain_pending_writes``,
-and ``flush_pending_writes`` exist but are only exercised by tests.
-``apply_pending_writes_{concrete,symbolic}`` are stubs that return the
-base value unchanged (``memory/load.rs:474-499``). This was an earlier
-attempt at lazy memory that did not work — see memory
+The ``PendingWrite`` struct, ``add_pending_write``, the ``pending_writes``
+/ ``pending_writes_count`` accessors, and ``flush_pending_writes`` exist,
+but nothing outside the tests ever enqueues a write — the only production
+callers of ``flush_pending_writes`` (state export and snapshot) always
+drain an empty queue. ``apply_pending_writes_{concrete,symbolic}``
+(``memory/load.rs``) are stubs that return the base value unchanged.
+This was an earlier attempt at lazy memory that did not work — see memory
 ``lazy-memory-load-overlay-fails``: a per-load overlay forces every
 load to enumerate every pending write, which costs O(n) Z3 per load
 for symbolic-address pending writes, and loads outnumber stores in the
@@ -171,8 +173,9 @@ Two pieces in Python make the same workloads cheap:
    the bytes the load actually touches.
 
 3. ``MultiwriteAnnotation``
-   (``address_concretization_mixin.py:14``) is an opt-in annotation
-   used by a few SimProcedures (``libc/strchr.py``, ``libc/gets.py``,
+   (``angr/storage/memory_mixins/address_concretization_mixin.py``) is
+   an opt-in annotation used by a few SimProcedures
+   (``libc/strchr.py``, ``libc/gets.py``,
    ``libc/fgets.py``) to upgrade Range concretization on writes even
    when ``SYMBOLIC_WRITE_ADDRESSES`` is off. The annotation is *not*
    what makes the workload lazy — laziness comes from the page-level
@@ -340,8 +343,9 @@ roughly:
 * ``memory/store.rs`` — leave alone in Phase 1, gate on a new
   ``store_symbolic_multi`` API used only by the test rig and
   one annotated SimProcedure.
-* ``memory/tests.rs`` — extend the existing ``pending_writes``
-  tests (lines 884-1130) to cover the Multi-cell path.
+* ``memory/tests.rs`` (since split into the ``memory/tests/`` package) —
+  extend the existing ``test_pending_write*`` cases (now in
+  ``memory/tests/symbolic.rs``) to cover the Multi-cell path.
 
 Phase 2 expands ``memory/store.rs::store_symbolic_unified`` to
 prefer the Multi path for ``Multiple`` / ``Strided`` results.
@@ -378,7 +382,7 @@ Phase 1 — Multi cell LOAD path (angr-czph)
    pairwise distinct concretized address equalities (i.e. exactly
    one alternative is true under any model). Document this invariant
    in the type's doc comment.
-2. Teach ``load_concrete_lazy_inner`` (``memory/load.rs:517``) to
+2. Teach ``load_concrete_lazy_inner`` (``memory/load.rs``) to
    detect ``Multi`` cells in the range it touches, collapse them
    via the balanced ITE builder over the load's byte width, and
    merge the result into the returned BV. The existing wide-symbolic
@@ -391,8 +395,9 @@ Phase 1 — Multi cell LOAD path (angr-czph)
    ``MemoryPage::clone`` is shallow for ``Multi`` payloads (the
    ``RustBV`` ASTs are Z3-managed and refcounted).
 5. Tests: extend ``memory/tests.rs`` with a ``test_multi_cell_*``
-   suite that mirrors the existing ``pending_writes`` tests at
-   lines 884-1130. Use the new helpers directly.
+   suite that mirrors the existing ``test_pending_write*`` cases
+   (since split out into ``memory/tests/symbolic.rs``). Use the new
+   helpers directly.
 6. Wire a single Python SimProcedure path (probably ``strchr``) to
    the upgraded store via the existing
    ``memory_store_symbolic_full`` callback bypass, gated on the
@@ -413,7 +418,7 @@ Phase 2 — Multi cell STORE path (angr-qh5u)
    ``store_strided``. ``Single`` and ``TooLarge`` / ``Failed``
    paths unchanged.
 2. Update ``flush_pending_writes`` (already in
-   ``memory/mod.rs:375``) to materialize Multi cells via the same
+   ``memory/mod.rs``) to materialize Multi cells via the same
    collapse path Phase 1 introduced, so state export to Python
    stays correct.
 3. Adjust the
