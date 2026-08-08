@@ -153,12 +153,18 @@ impl HistoryEntry {
     }
 
     /// Convert jumpkind byte to string (for Python API).
+    ///
+    /// Delegates to `JumpKind::ijk_name` so the `Ijk_*` spellings live in one
+    /// place (angr-sqfj8.60). `JK_OTHER` is the lossy catch-all this byte
+    /// encoding adds on top of the enum — no `JumpKind` variant maps to it, so
+    /// its string stays local.
     pub fn jumpkind_str(jk: u8) -> &'static str {
+        use crate::vex::JumpKind;
         match jk {
-            Self::JK_BORING => "Ijk_Boring",
-            Self::JK_CALL => "Ijk_Call",
-            Self::JK_RET => "Ijk_Ret",
-            Self::JK_SYSCALL => "Ijk_Sys_syscall",
+            Self::JK_BORING => JumpKind::Boring.ijk_name(),
+            Self::JK_CALL => JumpKind::Call.ijk_name(),
+            Self::JK_RET => JumpKind::Ret.ijk_name(),
+            Self::JK_SYSCALL => JumpKind::Sys_syscall.ijk_name(),
             _ => "Ijk_Other",
         }
     }
