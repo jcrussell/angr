@@ -11,6 +11,33 @@ use serde::{Deserialize, Serialize};
 use crate::errors::MapPyErr;
 use crate::fuzzer::delegate::delegate_two_variant;
 
+/// Generate the postcard-backed `__getstate__` / `__setstate__` pickle pair.
+///
+/// `PyInMemoryCorpus` and `PyOnDiskCorpus` both pickle by round-tripping their
+/// single `inner` field through postcard, so hand-written the two copies are
+/// byte-identical and a change to the encoding (a version byte, a different
+/// error type) is easy to land in one and forget in the other (angr-12jjk.27).
+///
+/// The pair is emitted as its own `#[pymethods]` block — a `macro_rules!`
+/// invocation *inside* an existing block would be invisible to pyo3, which
+/// parses the impl before declarative macros expand. That relies on the
+/// `multiple-pymethods` feature (see `Cargo.toml`).
+macro_rules! postcard_pickle_methods {
+    ($ty:ty, $field:ident) => {
+        #[pymethods]
+        impl $ty {
+            fn __getstate__(&self) -> PyResult<Vec<u8>> {
+                postcard::to_stdvec(&self.$field).py_runtime_err()
+            }
+
+            fn __setstate__(&mut self, state: Vec<u8>) -> PyResult<()> {
+                self.$field = postcard::from_bytes(&state).py_runtime_err()?;
+                Ok(())
+            }
+        }
+    };
+}
+
 // A Send+Sync wrapper of InMemoryCorpus for use in PyInMemoryCorpus.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SerializedCorpus<I> {
@@ -119,16 +146,9 @@ impl PyInMemoryCorpus {
     fn __len__(&self) -> PyResult<usize> {
         Ok(InMemoryCorpus::<BytesInput>::try_from(self)?.count())
     }
-
-    fn __getstate__(&self) -> PyResult<Vec<u8>> {
-        postcard::to_stdvec(&self.inner).py_runtime_err()
-    }
-
-    fn __setstate__(&mut self, state: Vec<u8>) -> PyResult<()> {
-        self.inner = postcard::from_bytes(&state).py_runtime_err()?;
-        Ok(())
-    }
 }
+
+postcard_pickle_methods!(PyInMemoryCorpus, inner);
 
 // On DiskCorpus wrapper
 #[pyclass(
@@ -197,16 +217,9 @@ impl PyOnDiskCorpus {
         }
         Ok(result)
     }
-
-    fn __getstate__(&self) -> PyResult<Vec<u8>> {
-        postcard::to_stdvec(&self.inner).py_runtime_err()
-    }
-
-    fn __setstate__(&mut self, state: Vec<u8>) -> PyResult<()> {
-        self.inner = postcard::from_bytes(&state).py_runtime_err()?;
-        Ok(())
-    }
 }
+
+postcard_pickle_methods!(PyOnDiskCorpus, inner);
 
 // Dynamic Corpus that can encapsulate InMemoryCorpus and OnDiskCorpus at runtime
 #[derive(Debug, Clone, Serialize, Deserialize)]
