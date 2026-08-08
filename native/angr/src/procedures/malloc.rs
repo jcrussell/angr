@@ -3,8 +3,8 @@
 //! Uses a simple bump allocator (matching angr's SimHeapBrk).
 //! Symbolic sizes fall back to Python.
 
-use super::ProcedureError;
 use super::check_max;
+use super::{ProcedureError, arch_word};
 use crate::symbolic::RustBV;
 
 /// Maximum allocation size accepted by the native allocator procedures
@@ -19,8 +19,7 @@ crate::declare_proc! {
     args = [size: concrete],
     call |state| {
         let addr = state.heap_alloc(size);
-        let bits = state.arch().bits();
-        Ok(Some(RustBV::concrete(addr as u128, bits)))
+        Ok(Some(arch_word(state, addr)))
     }
 }
 
@@ -65,8 +64,7 @@ crate::declare_proc! {
             }
         }
 
-        let bits = state.arch().bits();
-        Ok(Some(RustBV::concrete(addr as u128, bits)))
+        Ok(Some(arch_word(state, addr)))
     }
 }
 
@@ -113,8 +111,7 @@ crate::declare_proc! {
             state.heap_free(ptr);
         }
 
-        let bits = state.arch().bits();
-        Ok(Some(RustBV::concrete(new_addr as u128, bits)))
+        Ok(Some(arch_word(state, new_addr)))
     }
 }
 
@@ -137,8 +134,7 @@ crate::declare_proc! {
         check_max(size, MAX_ALLOC_SIZE)?;
 
         let addr = state.heap_alloc_aligned(size, alignment);
-        let bits = state.arch().bits();
-        Ok(Some(RustBV::concrete(addr as u128, bits)))
+        Ok(Some(arch_word(state, addr)))
     }
 }
 
@@ -166,7 +162,7 @@ crate::declare_proc! {
 
         let addr = state.heap_alloc_aligned(size, alignment);
         // Store the allocated pointer at *memptr.
-        let ptr_bv = RustBV::concrete(addr as u128, bits);
+        let ptr_bv = arch_word(state, addr);
         state.memory_store(memptr, ptr_bv)?;
 
         Ok(Some(RustBV::concrete(0, 32)))

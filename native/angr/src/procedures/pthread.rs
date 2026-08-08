@@ -17,6 +17,7 @@
 //! natively: `pthread_create` (spawns a symbolic branch); it correctly falls
 //! through to its Python SimProcedure.
 
+use super::arch_word;
 use crate::procedures::{NativeSimProcedure, ProcOutcome, ProcedureError, extract_concrete_arg};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
@@ -27,7 +28,7 @@ crate::declare_proc! {
     struct = NativePthreadMutexLock,
     args = [_mutex: bv],
     call |state| {
-        Ok(Some(RustBV::concrete(0, state.arch().bits())))
+        Ok(Some(arch_word(state, 0u64)))
     }
 }
 
@@ -37,7 +38,7 @@ crate::declare_proc! {
     struct = NativePthreadMutexUnlock,
     args = [_mutex: bv],
     call |state| {
-        Ok(Some(RustBV::concrete(0, state.arch().bits())))
+        Ok(Some(arch_word(state, 0u64)))
     }
 }
 
@@ -87,7 +88,6 @@ impl NativeSimProcedure for NativePthreadOnce {
     ) -> Result<ProcOutcome, ProcedureError> {
         let control = extract_concrete_arg(&args[0], "pthread_once control")?;
         let func = extract_concrete_arg(&args[1], "pthread_once func")?;
-        let bits = state.arch().bits();
 
         // Read the 1-byte once-guard. A symbolic byte falls back to Python,
         // matching Python raising SimProcedureError on a symbolic control word.
@@ -97,7 +97,7 @@ impl NativeSimProcedure for NativePthreadOnce {
 
         // Already initialised: return 0 without invoking func.
         if guard & 2 != 0 {
-            return Ok(ProcOutcome::Return(Some(RustBV::concrete(0, bits))));
+            return Ok(ProcOutcome::Return(Some(arch_word(state, 0u64))));
         }
 
         // Guard-before-mutate: the sub-call setup writes the resume sentinel to
@@ -128,10 +128,7 @@ impl NativeSimProcedure for NativePthreadOnce {
         _resume_tag: u32,
         _saved_args: &[RustBV],
     ) -> Result<ProcOutcome, ProcedureError> {
-        Ok(ProcOutcome::Return(Some(RustBV::concrete(
-            0,
-            state.arch().bits(),
-        ))))
+        Ok(ProcOutcome::Return(Some(arch_word(state, 0))))
     }
 }
 

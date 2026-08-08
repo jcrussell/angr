@@ -4,6 +4,7 @@ use super::*;
 use crate::memory::Permission;
 use crate::procedures::NativeSimProcedure;
 use crate::state::RustSimState;
+use crate::symbolic::RustBV;
 
 #[test]
 fn test_write_stdout() {

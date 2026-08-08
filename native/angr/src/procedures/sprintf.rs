@@ -4,6 +4,7 @@
 //! with width, zero-padding, and left-alignment flags. Falls back to
 //! Python for symbolic format strings or arguments.
 
+use super::arch_word;
 use super::format_common::{MAX_FORMAT_LEN, parse_length_modifier, parse_width_digits};
 use super::strings::{scan_concrete_bounded, write_cstr};
 use super::{NativeSimProcedure, ProcedureError, extract_concrete_arg};
@@ -426,8 +427,7 @@ impl NativeSimProcedure for NativeSprintf {
         // Write output to destination, then the null terminator
         write_cstr(state, dest, &output)?;
 
-        let bits = state.arch().bits();
-        Ok(Some(RustBV::concrete(output.len() as u128, bits)))
+        Ok(Some(arch_word(state, output.len() as u64)))
     }
 }
 
@@ -470,10 +470,9 @@ impl NativeSimProcedure for NativeAsprintf {
         write_cstr(state, dst, &output)?;
 
         // Write the allocated buffer pointer back to *strp (honors mem endness).
-        let bits = state.arch().bits();
-        state.memory_store(strp, RustBV::concrete(dst as u128, bits))?;
+        state.memory_store(strp, arch_word(state, dst))?;
 
-        Ok(Some(RustBV::concrete(output.len() as u128, bits)))
+        Ok(Some(arch_word(state, output.len() as u64)))
     }
 }
 
@@ -514,8 +513,7 @@ impl NativeSimProcedure for NativeSnprintf {
         }
 
         // Return would-have-been length (not truncated)
-        let bits = state.arch().bits();
-        Ok(Some(RustBV::concrete(output.len() as u128, bits)))
+        Ok(Some(arch_word(state, output.len() as u64)))
     }
 }
 
@@ -552,14 +550,13 @@ impl NativeSimProcedure for NativeVsnprintf {
         let dest = extract_concrete_arg(&args[0], "str")?;
         let size = extract_concrete_arg(&args[1], "size")?;
 
-        let bits = state.arch().bits();
         if size == 0 {
-            return Ok(Some(RustBV::concrete(0u128, bits)));
+            return Ok(Some(arch_word(state, 0u64)));
         }
 
         // Match the Python stub: a single NUL terminator at `str`, return 1.
         write_cstr(state, dest, &[])?;
-        Ok(Some(RustBV::concrete(1u128, bits)))
+        Ok(Some(arch_word(state, 1u64)))
     }
 }
 
@@ -600,8 +597,7 @@ impl NativeSimProcedure for NativeVsprintf {
         let fmt = read_string(state, fmt_addr)?;
         write_cstr(state, dest, &fmt)?;
 
-        let bits = state.arch().bits();
-        Ok(Some(RustBV::concrete(fmt.len() as u128, bits)))
+        Ok(Some(arch_word(state, fmt.len() as u64)))
     }
 }
 

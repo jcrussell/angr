@@ -129,8 +129,9 @@ macro_rules! declare_proc {
 /// Thin wrapper over [`declare_proc!`] for the common "return a fixed word"
 /// shape — the POSIX identity getters (`getuid`/`geteuid`/`getgid`/`getegid`)
 /// each just `return 1000`. The `$value` expression is evaluated per call and
-/// widened to `state.arch().bits()` via `RustBV::concrete`, exactly as the
-/// expanded `declare_proc!` body would.
+/// widened to the architecture word width via
+/// [`arch_word`](crate::procedures::arch_word), exactly as the expanded
+/// `declare_proc!` body would.
 ///
 /// # Example
 ///
@@ -159,7 +160,7 @@ macro_rules! declare_const_proc {
             args = [],
             call |state| {
                 ::std::result::Result::Ok(::std::option::Option::Some(
-                    $crate::symbolic::RustBV::concrete($value, state.arch().bits())
+                    $crate::procedures::arch_word(state, $value)
                 ))
             }
         }

@@ -16,6 +16,7 @@
 //! contract, not an input check.
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
+use super::arch_word;
 use super::format_common::{MAX_FORMAT_LEN, parse_length_modifier, parse_width_digits};
 use super::stdin_common::{mint_stdin_bytes, stdin_seed_unconsumed};
 use super::strings::scan_concrete_bounded;
@@ -372,8 +373,7 @@ fn do_scanf(
     }
 
     // Return number of successful conversions
-    let bits = state.arch().bits();
-    Ok(Some(RustBV::concrete(conversions as u128, bits)))
+    Ok(Some(arch_word(state, conversions)))
 }
 
 /// Native scanf implementation.
@@ -470,10 +470,7 @@ fn do_fscanf(
 ) -> Result<Option<RustBV>, ProcedureError> {
     let fd = crate::procedures::fileops::read_fileno(state, file_ptr)?;
     if fd < 0 {
-        return Ok(Some(RustBV::concrete(
-            (-1i64 as u64) as u128,
-            state.arch().bits(),
-        )));
+        return Ok(Some(arch_word(state, -1i64 as u64)));
     }
     let (source, record_stdin) = if fd == 0 {
         ("stdin", true)

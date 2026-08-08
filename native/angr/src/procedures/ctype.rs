@@ -19,7 +19,7 @@
 //! `#![deny(clippy::unwrap_used, clippy::expect_used)]`.
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
-use super::ProcedureError;
+use super::{ProcedureError, arch_word};
 use crate::state::RustSimState;
 use crate::symbolic::{RustBV, SymContext};
 
@@ -69,7 +69,7 @@ fn case_shift(
         } else {
             b
         };
-        return Ok(Some(RustBV::concrete(result as u128, bits)));
+        return Ok(Some(arch_word(state, u64::from(result))));
     }
     let ctx = state.solver().borrow();
     let byte = arg_byte(arg, &ctx);
@@ -156,7 +156,7 @@ fn ctype_loc_ptr(
     name: &str,
 ) -> Result<Option<RustBV>, ProcedureError> {
     let addr = ptr.ok_or_else(|| ProcedureError::Other(format!("{name} table not initialized")))?;
-    Ok(Some(RustBV::concrete(addr as u128, state.arch().bits())))
+    Ok(Some(arch_word(state, addr)))
 }
 
 crate::declare_proc! {

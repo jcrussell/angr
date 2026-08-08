@@ -15,8 +15,7 @@
 //! all fall back to Python (same rule as the "Fd-table sync invariant"
 //! section of the `procedures::read` module doc).
 
-use super::ProcedureError;
-use crate::symbolic::RustBV;
+use super::{ProcedureError, arch_word};
 
 const MAX_WRITE_SIZE: u64 = 4096;
 
@@ -47,8 +46,7 @@ crate::declare_proc! {
         // Zero-length write: POSIX no-op — return 0 natively WITHOUT
         // demoting bounded symbolic content (angr-0xyq2 A3).
         if count == 0 {
-            let bits = state.arch().bits();
-            return Ok(Some(RustBV::concrete(0, bits)));
+            return Ok(Some(arch_word(state, 0u64)));
         }
         // Write-demotion (angr-0xyq2 Phase 2): a write to a file with bounded
         // symbolic content drops the content (all sibling fds + registry) and
@@ -95,8 +93,7 @@ crate::declare_proc! {
             )));
         }
 
-        let bits = state.arch().bits();
-        Ok(Some(RustBV::concrete(count as u128, bits)))
+        Ok(Some(arch_word(state, count)))
     }
 }
 

@@ -21,8 +21,8 @@
 //! `all(..)` check followed by a re-`unwrap`ping second pass.
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
-use super::ProcedureError;
 use super::ctype::is_c_space;
+use super::{ProcedureError, arch_word};
 use crate::state::RustSimState;
 use crate::symbolic::{RustBV, SymContext};
 
@@ -301,9 +301,9 @@ fn run_strtol(
                 && end != 0
             {
                 let end_addr = addr.wrapping_add(prefix_end as u64);
-                state.memory_store(end, RustBV::concrete(end_addr as u128, bits))?;
+                state.memory_store(end, arch_word(state, end_addr))?;
             }
-            return Ok(Some(RustBV::concrete(0, bits)));
+            return Ok(Some(arch_word(state, 0u64)));
         }
     };
 
@@ -348,7 +348,7 @@ fn run_strtol(
             } else {
                 addr.wrapping_add((prefix_end + consumed) as u64)
             };
-            state.memory_store(end, RustBV::concrete(end_addr as u128, bits))?;
+            state.memory_store(end, arch_word(state, end_addr))?;
         }
         return Ok(Some(RustBV::concrete(reg_val, bits)));
     }
@@ -375,7 +375,7 @@ fn run_strtol(
         && end != 0
     {
         let end_addr = addr.wrapping_add(bytes.len() as u64);
-        state.memory_store(end, RustBV::concrete(end_addr as u128, bits))?;
+        state.memory_store(end, arch_word(state, end_addr))?;
     }
 
     Ok(Some(result))

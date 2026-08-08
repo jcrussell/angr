@@ -22,6 +22,7 @@
 //! written to the low 64 bits of that register. The dispatcher's default
 //! integer-return store is suppressed by returning `Ok(None)`.
 
+use super::arch_word;
 use super::ctype::is_c_space;
 use super::strings::scan_concrete_bounded;
 use super::{ProcedureError, extract_concrete_arg};
@@ -338,9 +339,8 @@ crate::declare_proc! {
         // a pointer to the first byte past the parsed literal (or `nptr` if
         // nothing was consumed).
         if endptr != 0 {
-            let bits = state.arch().bits();
             let end_addr = nptr.wrapping_add(end_offset);
-            state.memory_store(endptr, RustBV::concrete(end_addr as u128, bits))?;
+            state.memory_store(endptr, arch_word(state, end_addr))?;
         }
 
         // Write the f64 bit pattern to the low 64 bits of the FP-return

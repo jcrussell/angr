@@ -7,10 +7,9 @@
 //!
 //! Concrete keys only — falls back to Python for symbolic arguments.
 
-use super::ProcedureError;
 use super::strings::{scan_concrete_bounded, write_cstr};
+use super::{ProcedureError, arch_word};
 use crate::state::RustSimState;
-use crate::symbolic::RustBV;
 
 const MAX_STR_LEN: usize = 4096;
 
@@ -33,7 +32,6 @@ crate::declare_proc! {
     args = [name_addr: concrete],
     call |state| {
         let key = read_cstring(state, name_addr)?;
-        let bits = state.arch().bits();
 
         match state.getenv(&key) {
             Some(value) => {
@@ -43,11 +41,11 @@ crate::declare_proc! {
                 // Write value bytes + NUL terminator
                 write_cstr(state, buf_addr, &value)?;
 
-                Ok(Some(RustBV::concrete(buf_addr as u128, bits)))
+                Ok(Some(arch_word(state, buf_addr)))
             }
             None => {
                 // Not found — return NULL
-                Ok(Some(RustBV::concrete(0, bits)))
+                Ok(Some(arch_word(state, 0u64)))
             }
         }
     }
@@ -71,8 +69,7 @@ crate::declare_proc! {
             state.setenv(key, value);
         }
 
-        let bits = state.arch().bits();
-        Ok(Some(RustBV::concrete(0, bits))) // success
+        Ok(Some(arch_word(state, 0u64))) // success
     }
 }
 
@@ -93,8 +90,7 @@ crate::declare_proc! {
         let key = read_cstring(state, name_addr)?;
         state.unsetenv(&key);
 
-        let bits = state.arch().bits();
-        Ok(Some(RustBV::concrete(0, bits))) // success
+        Ok(Some(arch_word(state, 0u64))) // success
     }
 }
 
@@ -109,8 +105,7 @@ crate::declare_proc! {
     args = [],
     call |state| {
         state.clearenv();
-        let bits = state.arch().bits();
-        Ok(Some(RustBV::concrete(0, bits))) // success
+        Ok(Some(arch_word(state, 0u64))) // success
     }
 }
 
@@ -134,8 +129,7 @@ crate::declare_proc! {
         }
         // If no '=', putenv behavior is implementation-defined — just ignore
 
-        let bits = state.arch().bits();
-        Ok(Some(RustBV::concrete(0, bits))) // success
+        Ok(Some(arch_word(state, 0u64))) // success
     }
 }
 

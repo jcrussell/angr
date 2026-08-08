@@ -2,6 +2,7 @@
 use super::*;
 use crate::memory::Permission;
 use crate::procedures::NativeSimProcedure;
+use crate::symbolic::RustBV;
 
 fn setup_state() -> RustSimState {
     // Two scratch pages plus the heap region.

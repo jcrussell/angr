@@ -3,6 +3,7 @@
 use super::*;
 use crate::procedures::NativeSimProcedure;
 use crate::state::RustSimState;
+use crate::symbolic::RustBV;
 
 #[test]
 fn test_sleep_returns_zero_word_sized() {

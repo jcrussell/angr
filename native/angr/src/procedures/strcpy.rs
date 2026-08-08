@@ -8,6 +8,7 @@
 //!   [`strncpy_symbolic`])
 //! - Maximum string length is 4096 bytes
 
+use super::arch_word;
 use super::mem_common::symbolic_size_conditional_store;
 use super::strings::{
     MAX_STRING_SCAN, ScanOutcome, build_strlen_chain, scan_concrete_bounded,
@@ -160,8 +161,7 @@ crate::declare_proc! {
         write_cstr(state, dest, &buf)?;
 
         // Return dest + strlen(src) (pointer to the written NUL).
-        let bits = state.arch().bits();
-        let len_bv = RustBV::concrete(buf.len() as u128, bits);
+        let len_bv = arch_word(state, buf.len() as u64);
         let ret = {
             let ctx = state.solver().borrow();
             dest_bv.add(&len_bv, &ctx)
@@ -230,8 +230,7 @@ crate::declare_proc! {
 
         write_cstr(state, new_addr, &buf)?;
 
-        let bits = state.arch().bits();
-        Ok(Some(RustBV::concrete(new_addr as u128, bits)))
+        Ok(Some(arch_word(state, new_addr)))
     }
 }
 
@@ -264,8 +263,7 @@ crate::declare_proc! {
         let new_addr = state.heap_alloc(buf.len() as u64 + 1);
         write_cstr(state, new_addr, &buf)?;
 
-        let bits = state.arch().bits();
-        Ok(Some(RustBV::concrete(new_addr as u128, bits)))
+        Ok(Some(arch_word(state, new_addr)))
     }
 }
 
@@ -302,8 +300,7 @@ crate::declare_proc! {
         out.resize(n_usize, 0);
         write_concrete_bytes(state, dest, &out)?;
 
-        let bits = state.arch().bits();
-        Ok(Some(RustBV::concrete(src_len as u128, bits)))
+        Ok(Some(arch_word(state, src_len as u64)))
     }
 }
 

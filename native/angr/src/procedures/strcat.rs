@@ -2,11 +2,10 @@
 //!
 //! Concrete string concatenation. Symbolic arguments fall back to Python.
 
-use super::check_max;
 use super::strings::{
     MAX_STRING_SCAN, find_null_addr, scan_concrete_bounded, scan_concrete_until_null, write_cstr,
 };
-use crate::symbolic::RustBV;
+use super::{arch_word, check_max};
 
 crate::declare_proc! {
     /// strcat: append src string to dest.
@@ -19,8 +18,7 @@ crate::declare_proc! {
 
         write_cstr(state, dest_end, &buf)?;
 
-        let bits = state.arch().bits();
-        Ok(Some(RustBV::concrete(dest as u128, bits)))
+        Ok(Some(arch_word(state, dest)))
     }
 }
 
@@ -47,8 +45,7 @@ crate::declare_proc! {
         // Always null-terminate after the copied bytes.
         write_cstr(state, dest_end, &buf)?;
 
-        let bits = state.arch().bits();
-        Ok(Some(RustBV::concrete(dest as u128, bits)))
+        Ok(Some(arch_word(state, dest)))
     }
 }
 

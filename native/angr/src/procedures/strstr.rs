@@ -4,8 +4,8 @@
 //!
 //! Symbolic arguments fall back to Python.
 
-use super::extract_concrete_arg;
 use super::strings::{MAX_STRING_SCAN, scan_concrete_predicate, scan_concrete_until_null};
+use super::{arch_word, extract_concrete_arg};
 use crate::symbolic::RustBV;
 
 crate::declare_proc! {
@@ -26,7 +26,7 @@ crate::declare_proc! {
 
         // Empty needle: return haystack
         if needle.is_empty() {
-            return Ok(Some(RustBV::concrete(haystack_addr as u128, bits)));
+            return Ok(Some(arch_word(state, haystack_addr)));
         }
 
         // Scan haystack. The shared helper handles the load/null/bound

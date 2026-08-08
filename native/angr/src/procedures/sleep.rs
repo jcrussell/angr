@@ -13,7 +13,7 @@
 //! The return BV is sized to `arch().bits()`, matching how angr's
 //! `SimProcedure.ret(0)` builds a `BVV(0, arch.bits)`.
 
-use crate::symbolic::RustBV;
+use super::arch_word;
 
 crate::declare_proc! {
     /// ```c
@@ -25,7 +25,7 @@ crate::declare_proc! {
     struct = NativeSleep,
     args = [_seconds: bv],
     call |state| {
-        Ok(Some(RustBV::concrete(0, state.arch().bits())))
+        Ok(Some(arch_word(state, 0u64)))
     }
 }
 
@@ -38,7 +38,7 @@ crate::declare_proc! {
     struct = NativeUsleep,
     args = [_usec: bv],
     call |state| {
-        Ok(Some(RustBV::concrete(0, state.arch().bits())))
+        Ok(Some(arch_word(state, 0u64)))
     }
 }
 

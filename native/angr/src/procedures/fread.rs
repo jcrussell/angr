@@ -37,11 +37,10 @@
 //! CONCRETE, so the same fread arrives with a concrete size and is served
 //! from `content_sym` — the license bench now passes in ~0.9s.
 
-use super::ProcedureError;
 use super::strings::{write_bv_bytes, write_concrete_bytes};
+use super::{ProcedureError, arch_word};
 use crate::procedures::fileops::read_fileno;
 use crate::state::MAX_SYMFILE_SERVE_SIZE;
-use crate::symbolic::RustBV;
 
 const MAX_FREAD_SIZE: u64 = 4096;
 
@@ -52,12 +51,11 @@ crate::declare_proc! {
     struct = NativeFread,
     args = [dst: concrete, size: concrete, nmemb: concrete, stream: bv],
     call |state| {
-        let bits = state.arch().bits();
 
         // size * nmemb; a zero count returns 0 items read.
         let total = size.saturating_mul(nmemb);
         if total == 0 {
-            return Ok(Some(RustBV::concrete(0, bits)));
+            return Ok(Some(arch_word(state, 0u64)));
         }
 
         // Resolve the backing fd from the FILE struct. Symbolic stream pointer
@@ -68,7 +66,7 @@ crate::declare_proc! {
         let fd = read_fileno(state, stream_ptr)?;
         if fd < 0 {
             // Invalid stream: 0 items read.
-            return Ok(Some(RustBV::concrete(0, bits)));
+            return Ok(Some(arch_word(state, 0u64)));
         }
         let fd_u32 = fd as u32;
 
@@ -99,7 +97,7 @@ crate::declare_proc! {
                 crate::symbolic::record_symfile_read_native();
             }
             let items = (n as u64) / size;
-            return Ok(Some(RustBV::concrete(items as u128, bits)));
+            return Ok(Some(arch_word(state, items)));
         }
         if total > MAX_FREAD_SIZE {
             return Err(ProcedureError::Other(format!(
@@ -127,7 +125,7 @@ crate::declare_proc! {
         write_concrete_bytes(state, dst, &bytes)?;
         // fread returns the number of complete items read.
         let items = (n as u64) / size;
-        Ok(Some(RustBV::concrete(items as u128, bits)))
+        Ok(Some(arch_word(state, items)))
     }
 }
 

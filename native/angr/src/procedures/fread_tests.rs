@@ -4,6 +4,7 @@ use super::*;
 use crate::memory::Permission;
 use crate::procedures::NativeSimProcedure;
 use crate::state::{FdFlags, RustSimState};
+use crate::symbolic::RustBV;
 
 // AMD64 _IO_FILE._fileno offset (mirrors io_file_for_arch in fileops.rs).
 const AMD64_FILENO_OFF: u64 = 112;

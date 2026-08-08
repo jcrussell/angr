@@ -5,6 +5,7 @@
 //! always return 0; fwrite resolves the FILE struct's `_fileno` field via
 //! an arch-specific offset and reuses the NativeWrite path for stdout/stderr.
 
+use super::arch_word;
 use super::{NativeSimProcedure, ProcedureError, extract_concrete_arg};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
@@ -63,10 +64,9 @@ impl NativeSimProcedure for NativeFwrite {
             }
         };
 
-        let bits = state.arch().bits();
         if fd_signed < 0 {
             // FILE not backed by a real fd — propagate -1 per fwrite spec.
-            return Ok(Some(RustBV::concrete((-1i64 as u64) as u128, bits)));
+            return Ok(Some(arch_word(state, -1i64 as u64)));
         }
         // Any non-negative fd is serviced via write_fd (FileSystem::write
         // appends to the fd's content buffer), matching NativeFputs and
@@ -84,7 +84,7 @@ impl NativeSimProcedure for NativeFwrite {
         if let (Ok(s), Ok(n)) = (&size, &nmemb)
             && s.saturating_mul(*n) == 0
         {
-            return Ok(Some(RustBV::concrete(0, bits)));
+            return Ok(Some(arch_word(state, 0u64)));
         }
 
         // Write-demotion (angr-0xyq2 Phase 2): a write to a file with
@@ -130,7 +130,7 @@ impl NativeSimProcedure for NativeFwrite {
             )));
         }
 
-        Ok(Some(RustBV::concrete(total as u128, bits)))
+        Ok(Some(arch_word(state, total)))
     }
 }
 
@@ -171,8 +171,7 @@ impl NativeSimProcedure for NativeFflush {
         state: &mut RustSimState,
         _args: &[RustBV],
     ) -> Result<Option<RustBV>, ProcedureError> {
-        let bits = state.arch().bits();
-        Ok(Some(RustBV::concrete(0, bits)))
+        Ok(Some(arch_word(state, 0u64)))
     }
 }
 
@@ -199,8 +198,7 @@ impl NativeSimProcedure for NativeSetvbuf {
         state: &mut RustSimState,
         _args: &[RustBV],
     ) -> Result<Option<RustBV>, ProcedureError> {
-        let bits = state.arch().bits();
-        Ok(Some(RustBV::concrete(0, bits)))
+        Ok(Some(arch_word(state, 0u64)))
     }
 }
 
@@ -294,9 +292,8 @@ impl NativeSimProcedure for NativeFeof {
     ) -> Result<Option<RustBV>, ProcedureError> {
         let file_ptr = extract_concrete_arg(&args[0], "stream")?;
         let fd = read_fileno_for_stream(state, file_ptr)?;
-        let bits = state.arch().bits();
         if fd < 0 {
-            return Ok(Some(RustBV::concrete(0, bits)));
+            return Ok(Some(arch_word(state, 0u64)));
         }
         // effective_len = max(concrete, symbolic content_sym length)
         // (angr-0xyq2 Phase 2) — identical to the concrete content length
@@ -306,7 +303,7 @@ impl NativeSimProcedure for NativeFeof {
             Some((pos, len)) => pos as usize >= len,
             None => false,
         };
-        Ok(Some(RustBV::concrete(u128::from(at_eof), bits)))
+        Ok(Some(arch_word(state, u64::from(at_eof))))
     }
 }
 
@@ -337,8 +334,7 @@ impl NativeSimProcedure for NativeFerror {
         state: &mut RustSimState,
         _args: &[RustBV],
     ) -> Result<Option<RustBV>, ProcedureError> {
-        let bits = state.arch().bits();
-        Ok(Some(RustBV::concrete(0, bits)))
+        Ok(Some(arch_word(state, 0u64)))
     }
 }
 
@@ -392,9 +388,8 @@ impl NativeSimProcedure for NativeFputs {
                 return Err(e);
             }
         };
-        let bits = state.arch().bits();
         if fd < 0 {
-            return Ok(Some(RustBV::concrete((-1i64 as u64) as u128, bits)));
+            return Ok(Some(arch_word(state, -1i64 as u64)));
         }
 
         // No pre-scan demote gate: a zero-length fputs("") must stay a
@@ -428,7 +423,7 @@ impl NativeSimProcedure for NativeFputs {
                 "fputs to fd={fd} with symbolic content falls back to Python (demoted)"
             )));
         }
-        Ok(Some(RustBV::concrete(1, bits)))
+        Ok(Some(arch_word(state, 1u64)))
     }
 }
 

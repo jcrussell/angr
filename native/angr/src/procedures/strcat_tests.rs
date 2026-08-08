@@ -5,6 +5,7 @@ use super::*;
 use crate::memory::Permission;
 use crate::procedures::{NativeSimProcedure, ProcedureError};
 use crate::state::RustSimState;
+use crate::symbolic::RustBV;
 
 #[test]
 fn test_strcat() {

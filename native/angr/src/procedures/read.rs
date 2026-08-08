@@ -33,6 +33,7 @@
 //! only fds in Rust's table; everything else falls back so the Python
 //! symbolic-file model can take over.
 
+use super::arch_word;
 use super::stdin_common::mint_stdin_bytes;
 use super::strings::{write_bv_bytes, write_concrete_bytes};
 use super::{ProcedureError, symbol_counter};
@@ -53,8 +54,7 @@ crate::declare_proc! {
     args = [fd: concrete, buf: concrete, count: concrete],
     call |state| {
         if count == 0 {
-            let bits = state.arch().bits();
-            return Ok(Some(RustBV::concrete(0, bits)));
+            return Ok(Some(arch_word(state, 0u64)));
         }
 
         if fd == 0 {
@@ -89,8 +89,7 @@ crate::declare_proc! {
             if n > 0 {
                 crate::symbolic::record_symfile_read_native();
             }
-            let bits = state.arch().bits();
-            return Ok(Some(RustBV::concrete(n as u128, bits)));
+            return Ok(Some(arch_word(state, n as u64)));
         }
         if count > MAX_READ_SIZE {
             return Err(ProcedureError::Other(format!(
@@ -117,8 +116,7 @@ crate::declare_proc! {
         let bytes = state.file_system().read(fd_u32, count as usize);
         let n = bytes.len();
         write_concrete_bytes(state, buf, &bytes)?;
-        let bits = state.arch().bits();
-        Ok(Some(RustBV::concrete(n as u128, bits)))
+        Ok(Some(arch_word(state, n as u64)))
     }
 }
 
@@ -153,8 +151,7 @@ fn read_file_symbolic(
     };
     write_bv_bytes(state, buf, sym_bytes)?;
     state.file_system().seek(fd, count as i64, 1); // SEEK_CUR
-    let bits = state.arch().bits();
-    Ok(Some(RustBV::concrete(count as u128, bits)))
+    Ok(Some(arch_word(state, count)))
 }
 
 fn read_stdin_symbolic(
@@ -192,7 +189,7 @@ fn read_stdin_symbolic(
             let ctx = state.solver().borrow();
             let real_size = RustBV::symbolic(&ctx, format!("read_realsize_{read_id}"), bits);
             // 0 <= real_size <= count (lower bound implicit for unsigned).
-            let bound = real_size.ule(&RustBV::concrete(count as u128, bits), &ctx);
+            let bound = real_size.ule(&arch_word(state, count), &ctx);
             (real_size, bound)
         };
         let (real_size, bound) = real_size;
@@ -200,7 +197,7 @@ fn read_stdin_symbolic(
         return Ok(Some(real_size));
     }
 
-    Ok(Some(RustBV::concrete(count as u128, bits)))
+    Ok(Some(arch_word(state, count)))
 }
 
 #[cfg(test)]

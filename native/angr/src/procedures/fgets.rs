@@ -32,6 +32,7 @@
 //!   -1 when the backing SimFileDescriptor is missing). A symbolic FILE* or
 //!   symbolic `_fileno` also falls back to Python.
 
+use super::arch_word;
 use super::stdin_common::mint_stdin_bytes;
 use super::{ProcedureError, symbol_counter};
 use crate::procedures::fileops::read_fileno;
@@ -84,7 +85,7 @@ pub(crate) fn store_symbolic_line(
 
         let mut constraints: Vec<RustBV> = Vec::with_capacity(read_count as usize + 1);
         // 0 <= real_size <= size-1 (lower bound is implicit for unsigned).
-        constraints.push(real_size.ule(&RustBV::concrete(read_count as u128, bits), &ctx));
+        constraints.push(real_size.ule(&arch_word(state, read_count), &ctx));
 
         // For each returned byte i:
         //   If(i+1 != real_size,            byte != '\n',
@@ -93,7 +94,7 @@ pub(crate) fn store_symbolic_line(
         // is justified by running out of space, EOF, or being the newline.
         for (i, byte) in sym_bytes.iter().enumerate() {
             let idx = i as u64;
-            let cond = RustBV::concrete((idx + 1) as u128, bits).ne(&real_size, &ctx);
+            let cond = arch_word(state, idx + 1).ne(&real_size, &ctx);
             let then_b = byte.ne(&nl, &ctx);
             let else_b = if idx + 2 == size {
                 // i+2 == size is a concrete tautology for the last byte.
@@ -108,7 +109,7 @@ pub(crate) fn store_symbolic_line(
         // dst+real_size: byte p is the NUL exactly when real_size == p.
         let mut store_bytes: Vec<RustBV> = Vec::with_capacity(read_count as usize + 1);
         for (p, byte) in sym_bytes.iter().enumerate() {
-            let at = RustBV::concrete(p as u128, bits).eq(&real_size, &ctx);
+            let at = arch_word(state, p as u64).eq(&real_size, &ctx);
             store_bytes.push(at.ite(&nul, byte, &ctx));
         }
         store_bytes.push(nul);
@@ -171,10 +172,9 @@ crate::declare_proc! {
     args = [buf: concrete, size: concrete, stream: concrete],
     aliases = ["fgets_unlocked"],
     call |state| {
-        let bits = state.arch().bits();
         if size == 0 {
             // fgets with size 0 returns NULL
-            return Ok(Some(RustBV::concrete(0, bits)));
+            return Ok(Some(arch_word(state, 0u64)));
         }
 
         if size > MAX_FGETS_SIZE {
@@ -187,7 +187,7 @@ crate::declare_proc! {
         let fd = resolve_stream_fd(state, stream)?;
         if fd < 0 {
             // Invalid stream: Python fgets returns -1 (missing SimFileDescriptor).
-            return Ok(Some(RustBV::concrete((-1i64 as u64) as u128, bits)));
+            return Ok(Some(arch_word(state, -1i64 as u64)));
         }
         if fd != 0 {
             return Err(ProcedureError::Other(format!(
@@ -257,7 +257,7 @@ crate::declare_proc! {
         state.memory_store(buf.wrapping_add(read_count), RustBV::concrete(0, 8))?;
 
         // Return buffer address
-        Ok(Some(RustBV::concrete(buf as u128, bits)))
+        Ok(Some(arch_word(state, buf)))
     }
 }
 
@@ -388,7 +388,6 @@ crate::declare_proc! {
     struct = NativeGets,
     args = [buf: concrete],
     call |state| {
-        let bits = state.arch().bits();
         let read_count = MAX_GETS_SIZE - 1;
         let read_id = symbol_counter("gets");
 
@@ -401,7 +400,7 @@ crate::declare_proc! {
         store_symbolic_line(state, buf, MAX_GETS_SIZE, &sym_bytes, "gets", read_id)?;
 
         // gets returns the destination buffer pointer.
-        Ok(Some(RustBV::concrete(buf as u128, bits)))
+        Ok(Some(arch_word(state, buf)))
     }
 }
 

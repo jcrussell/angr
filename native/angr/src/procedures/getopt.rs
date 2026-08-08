@@ -30,8 +30,8 @@
 //! cursor read already used a checked `arg.get(..)` (angr-qwyti.19).
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
-use super::ProcedureError;
 use super::strings::scan_concrete_until_null;
+use super::{ProcedureError, arch_word};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
@@ -101,8 +101,7 @@ fn store_ptr(
     value: u64,
 ) -> Result<(), ProcedureError> {
     if let Some(a) = addr {
-        let bits = state.arch().bits();
-        state.memory_store(a, RustBV::concrete(value as u128, bits))?;
+        state.memory_store(a, arch_word(state, value))?;
     }
     Ok(())
 }

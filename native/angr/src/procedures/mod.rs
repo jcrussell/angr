@@ -240,6 +240,27 @@ pub(crate) fn check_max(n: u64, max: usize) -> Result<(), ProcedureError> {
     Ok(())
 }
 
+/// Build a native procedure's return value at the architecture word width.
+///
+/// ~56 sites across `procedures/` hand-wrote
+/// `RustBV::concrete(v as u128, state.arch().bits())` — a heap pointer, an fd,
+/// a byte count, or an errno-style `-1` widened to the ABI return register.
+/// Funnelling them through one helper keeps the "sized to the **return
+/// register**, not to the value" convention visible at each use, and removes
+/// the chance of a call site sourcing the width from something else in scope (a
+/// literal `64`, a nearby `int_conv_bits(..)` result, a host `size_of`) —
+/// angr-12jjk.23.
+///
+/// `value` is a `u64` because every caller's payload already is one; a signed
+/// return passes the two's-complement pattern (`-1i64 as u64`) and
+/// [`RustBV::concrete`] truncates to `bits`, exactly as the hand-written form
+/// did. Sites whose width is *not* the word width — a `char` return, a scanf
+/// conversion sized by its length modifier, a symbolic BV — build their `RustBV`
+/// directly and must keep doing so.
+pub(crate) fn arch_word(state: &RustSimState, value: u64) -> RustBV {
+    RustBV::concrete(u128::from(value), state.arch().bits())
+}
+
 /// Reserved SimProcedure name for the native sub-call **resume sentinel**.
 ///
 /// A native proc that returns [`ProcOutcome::CallAndResume`] makes the guest

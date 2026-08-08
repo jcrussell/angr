@@ -8,11 +8,11 @@
 //! arch-specific `_fileno` offset; fclose/fseek/ftell/rewind dispatch off it.
 //! Only handles concrete arguments; symbolic arguments fall back to Python.
 
-use super::ProcedureError;
 use super::strings::{
     ScanOutcome, null_exists_constraint, scan_concrete_bounded, scan_concrete_until_null,
     scan_for_null_symbolic,
 };
+use super::{ProcedureError, arch_word};
 use crate::state::{FdFlags, RustSimState};
 use crate::symbolic::RustBV;
 
@@ -173,8 +173,7 @@ crate::declare_proc! {
         let fd_flags = FdFlags::from_posix(flags as u32);
         let fd = state.file_system().open(pathname, fd_flags);
 
-        let bits = state.arch().bits();
-        Ok(Some(RustBV::concrete(fd as u128, bits)))
+        Ok(Some(arch_word(state, u64::from(fd))))
     }
 }
 
@@ -191,13 +190,8 @@ crate::declare_proc! {
     args = [fd: concrete],
     call |state| {
         let success = state.file_system().close(fd as u32);
-        let bits = state.arch().bits();
-        let ret = if success {
-            0u128
-        } else {
-            (-1i64 as u64) as u128
-        };
-        Ok(Some(RustBV::concrete(ret, bits)))
+        let ret = if success { 0 } else { -1i64 as u64 };
+        Ok(Some(arch_word(state, ret)))
     }
 }
 
@@ -213,16 +207,12 @@ crate::declare_proc! {
     struct = NativeLseek,
     args = [fd: concrete, offset: concrete, whence: concrete],
     call |state| {
-        let bits = state.arch().bits();
         match state
             .file_system()
             .seek(fd as u32, offset as i64, whence as u32)
         {
-            Some(new_pos) => Ok(Some(RustBV::concrete(new_pos as u128, bits))),
-            None => {
-                let ret = (-1i64 as u64) as u128;
-                Ok(Some(RustBV::concrete(ret, bits)))
-            }
+            Some(new_pos) => Ok(Some(arch_word(state, new_pos))),
+            None => Ok(Some(arch_word(state, -1i64 as u64))),
         }
     }
 }
@@ -240,10 +230,9 @@ crate::declare_proc! {
     struct = NativeDup,
     args = [oldfd: concrete],
     call |state| {
-        let bits = state.arch().bits();
         match state.file_system().dup(oldfd as u32) {
-            Some(newfd) => Ok(Some(RustBV::concrete(newfd as u128, bits))),
-            None => Ok(Some(RustBV::concrete((-1i64 as u64) as u128, bits))),
+            Some(newfd) => Ok(Some(arch_word(state, u64::from(newfd)))),
+            None => Ok(Some(arch_word(state, -1i64 as u64))),
         }
     }
 }
@@ -261,10 +250,9 @@ crate::declare_proc! {
     struct = NativeDup2,
     args = [oldfd: concrete, newfd: concrete],
     call |state| {
-        let bits = state.arch().bits();
         match state.file_system().dup2(oldfd as u32, newfd as u32) {
-            Some(fd) => Ok(Some(RustBV::concrete(fd as u128, bits))),
-            None => Ok(Some(RustBV::concrete((-1i64 as u64) as u128, bits))),
+            Some(fd) => Ok(Some(arch_word(state, u64::from(fd)))),
+            None => Ok(Some(arch_word(state, -1i64 as u64))),
         }
     }
 }
@@ -311,8 +299,7 @@ crate::declare_proc! {
             )?;
         }
 
-        let bits = state.arch().bits();
-        Ok(Some(RustBV::concrete(0, bits)))
+        Ok(Some(arch_word(state, 0u64)))
     }
 }
 
@@ -354,8 +341,7 @@ crate::declare_proc! {
             RustBV::concrete(fd as u128, 32),
         )?;
 
-        let bits = state.arch().bits();
-        Ok(Some(RustBV::concrete(file_ptr as u128, bits)))
+        Ok(Some(arch_word(state, file_ptr)))
     }
 }
 
@@ -382,9 +368,8 @@ crate::declare_proc! {
             ))
         })?;
 
-        let bits = state.arch().bits();
         if fd < 0 || !state.file_system_ref().is_open(fd as u32) {
-            return Ok(Some(RustBV::concrete(0, bits)));
+            return Ok(Some(arch_word(state, 0u64)));
         }
 
         let arch_name = state.arch().name();
@@ -398,7 +383,7 @@ crate::declare_proc! {
             RustBV::concrete(fd as u32 as u128, 32),
         )?;
 
-        Ok(Some(RustBV::concrete(file_ptr as u128, bits)))
+        Ok(Some(arch_word(state, file_ptr)))
     }
 }
 
@@ -417,16 +402,15 @@ crate::declare_proc! {
     call |state| {
         let fd = read_fileno(state, file_ptr)?;
 
-        let bits = state.arch().bits();
         if fd < 0 {
-            return Ok(Some(RustBV::concrete((-1i64 as u64) as u128, bits)));
+            return Ok(Some(arch_word(state, -1i64 as u64)));
         }
         let ret = if state.file_system().close(fd as u32) {
-            0u128
+            0
         } else {
-            (-1i64 as u64) as u128
+            -1i64 as u64
         };
-        Ok(Some(RustBV::concrete(ret, bits)))
+        Ok(Some(arch_word(state, ret)))
     }
 }
 
@@ -447,13 +431,12 @@ crate::declare_proc! {
         let offset = offset_raw as i64;
         let whence = whence_raw as u32;
         let fd = read_fileno(state, file_ptr)?;
-        let bits = state.arch().bits();
         if fd < 0 {
-            return Ok(Some(RustBV::concrete((-1i64 as u64) as u128, bits)));
+            return Ok(Some(arch_word(state, -1i64 as u64)));
         }
         match state.file_system().seek(fd as u32, offset, whence) {
-            Some(_) => Ok(Some(RustBV::concrete(0, bits))),
-            None => Ok(Some(RustBV::concrete((-1i64 as u64) as u128, bits))),
+            Some(_) => Ok(Some(arch_word(state, 0u64))),
+            None => Ok(Some(arch_word(state, -1i64 as u64))),
         }
     }
 }
@@ -474,13 +457,12 @@ crate::declare_proc! {
     call |state| {
         let fd = read_fileno(state, file_ptr)?;
 
-        let bits = state.arch().bits();
         if fd < 0 {
-            return Ok(Some(RustBV::concrete((-1i64 as u64) as u128, bits)));
+            return Ok(Some(arch_word(state, -1i64 as u64)));
         }
         match state.file_system_ref().fd_info(fd as u32) {
-            Some((_, pos, _, _, _)) => Ok(Some(RustBV::concrete(pos as u128, bits))),
-            None => Ok(Some(RustBV::concrete((-1i64 as u64) as u128, bits))),
+            Some((_, pos, _, _, _)) => Ok(Some(arch_word(state, pos))),
+            None => Ok(Some(arch_word(state, -1i64 as u64))),
         }
     }
 }

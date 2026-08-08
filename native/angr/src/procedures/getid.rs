@@ -12,7 +12,7 @@
 
 /// Angr's default uid/gid return value (mirrors `DEFAULT_UID_GID` in
 /// `syscalls/identity.rs` and `procedures/posix/getuid.py`).
-const DEFAULT_UID_GID: u128 = 1000;
+const DEFAULT_UID_GID: u64 = 1000;
 
 crate::declare_const_proc! {
     /// ```c
