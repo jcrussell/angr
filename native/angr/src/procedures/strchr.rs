@@ -381,22 +381,15 @@ fn build_ite_chain_forward(
     seed: &RustBV,
     ctx: &SymContext,
 ) -> RustBV {
-    let zero_byte = RustBV::concrete(0u128, 8);
     let mut result = seed.clone();
+    // No explicit null-terminator guard is needed here. Positions past the
+    // terminator never reach this chain: scan_for_byte_last stops collecting
+    // loads at the first concrete null. And at the null byte itself,
+    // `match_cond` already yields the right answer for target == 0 (C
+    // standard: strrchr(s, '\0') → pointer to the null terminator).
     for (byte_addr, byte_val) in byte_loads.iter() {
         let addr_bv = RustBV::concrete(*byte_addr as u128, arch_bits);
-        // Past a null terminator the position is unreachable; treat it as
-        // "no match" so the chain doesn't promote bytes beyond end-of-string.
-        let is_null = byte_val.eq(&zero_byte, ctx);
         let match_cond = byte_val.eq(target_byte, ctx);
-        // If null AND target == 0, we still want the null address to be the
-        // result (C standard: strrchr(s, '\0') → pointer to null terminator).
-        // The match_cond above already covers target == 0 at the null byte,
-        // so just respect match_cond and ignore later positions when null.
-        // Implementation detail: we stop collecting loads after the first
-        // concrete null in scan_for_byte_last, so positions past that point
-        // are never on the chain.
-        let _ = is_null;
         result = match_cond.ite(&addr_bv, &result, ctx);
     }
     result
