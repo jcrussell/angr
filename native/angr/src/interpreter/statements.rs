@@ -1,4 +1,4 @@
-use super::bv_utils::{bv_to_bytes, reject_symbolic_byte_store};
+use super::bv_utils::{bv_to_bytes, bytes_to_bv, reject_symbolic_byte_store};
 use super::statements_cas::CasArgs;
 use super::*;
 
@@ -893,15 +893,8 @@ impl<'a> VEXInterpreter<'a> {
                 // Create a symbolic value for the result
                 RustBV::symbolic(self.ctx, format!("dirty_{}", dirty.cee.name), ret_ty_bits)
             } else {
-                // Convert bytes to concrete value
-                let mut value: u128 = 0;
-                for (i, &byte) in data.iter().enumerate() {
-                    if (i * 8) as u32 >= ret_ty_bits {
-                        break;
-                    }
-                    value |= (byte as u128) << (i * 8);
-                }
-                RustBV::concrete(value, ret_ty_bits)
+                // Convert the little-endian callback bytes to a concrete value.
+                bytes_to_bv(&data, ret_ty_bits)
             };
 
             self.write_tmp(tmp, result)?;
