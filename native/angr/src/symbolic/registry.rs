@@ -549,35 +549,50 @@ impl SymbolicIdentityRegistry {
     ///   only `name_to_info` / `py_hash_to_rust_id` (the cheap, purely-Rust
     ///   half) would recover almost nothing; `rust_id_to_py` is the one that
     ///   matters.
-    /// - This implementation is O(removed × live): each removed id rescans
-    ///   `py_hash_to_rust_id` and `name_to_info` in full. Fine at the 8k scale
-    ///   above, quadratic at the 100k threshold — invert to a per-id index
-    ///   before wiring a caller that collects at that size.
+    /// - This implementation is O(live) per call regardless of how many ids are
+    ///   pruned: removals are batched, so `py_hash_to_rust_id` and
+    ///   `name_to_info` are each rescanned exactly once. That is cheap for a
+    ///   collect-at-quiescence caller, but still a full scan — a caller that
+    ///   wants to collect *often* at the 100k threshold should invert these two
+    ///   maps to a per-id index first.
     pub fn retain(&self, active_ids: &std::collections::HashSet<u64>) {
+        // Same lock discipline as `remove` (angr-zi35f.12): the id→py primary
+        // guard is held for the whole prune so the removal is serialized, and
+        // each secondary map is scoped so its write guard drops before the next
+        // map's is taken — no two secondary write locks are ever co-held. The
+        // maps are also visited in `remove`'s order (id→py, id→name, hash→id,
+        // name→info), so the two mutators can never deadlock against each other.
+        //
+        // Removals are batched per map rather than per id, which is what makes
+        // the one-lock-at-a-time shape affordable: each secondary lock is taken
+        // exactly once regardless of how many ids are pruned.
         let mut id_to_py = self.rust_id_to_py.write();
-        let mut hash_to_id = self.py_hash_to_rust_id.write();
-        let mut name_to_info = self.name_to_info.write();
-        let mut id_to_name = self.rust_id_to_name.write();
 
-        // Collect IDs to remove
-        let to_remove: Vec<u64> = id_to_py
+        let to_remove: std::collections::HashSet<u64> = id_to_py
             .keys()
             .filter(|id| !active_ids.contains(id))
             .copied()
             .collect();
+        if to_remove.is_empty() {
+            return;
+        }
+        id_to_py.retain(|id, _| !to_remove.contains(id));
 
-        for id in to_remove {
-            id_to_py.remove(&id);
+        // Drop the id→Rust-name entries too (angr-4xaga.3): keep all four maps
+        // symmetric so a wired GC caller cannot leak this map.
+        {
+            let mut id_to_name = self.rust_id_to_name.write();
+            id_to_name.retain(|id, _| !to_remove.contains(id));
+        }
 
-            // Remove corresponding hash entries
-            hash_to_id.retain(|_, &mut v| v != id);
+        {
+            let mut hash_to_id = self.py_hash_to_rust_id.write();
+            hash_to_id.retain(|_, id| !to_remove.contains(id));
+        }
 
-            // Remove corresponding name entries
-            name_to_info.retain(|_, info| info.rust_id != id);
-
-            // Drop the id→Rust-name entry too (angr-4xaga.3): keep all four
-            // maps symmetric so a wired GC caller cannot leak this map.
-            id_to_name.remove(&id);
+        {
+            let mut name_to_info = self.name_to_info.write();
+            name_to_info.retain(|_, info| !to_remove.contains(&info.rust_id));
         }
     }
 }

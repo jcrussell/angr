@@ -81,6 +81,58 @@ fn test_registry_retain_prunes_name_map() {
 }
 
 #[test]
+fn test_registry_retain_prunes_all_four_maps_in_one_pass() {
+    // retain() batches removals per map (one write-lock acquisition each)
+    // instead of rescanning per id, so pin that pruning *several* ids at once
+    // still clears every one of them out of all four maps (angr-sqfj8.106).
+    let registry = SymbolicIdentityRegistry::new();
+
+    Python::initialize();
+    Python::attach(|py| {
+        for id in 1u64..=4 {
+            registry.register(
+                100 + id as i64,
+                id,
+                &format!("s{id}"),
+                32,
+                SymbolKind::BitVector,
+                py.None(),
+            );
+        }
+
+        // Keep only the odd ids.
+        let active: std::collections::HashSet<u64> = [1u64, 3].into_iter().collect();
+        registry.retain(&active);
+
+        for id in [1u64, 3] {
+            assert!(registry.has_original(id), "id {id} dropped from id→py");
+            assert_eq!(
+                registry.lookup_name_by_id(id).as_deref(),
+                Some(format!("s{id}").as_str())
+            );
+            assert_eq!(registry.lookup_by_hash(100 + id as i64), Some(id));
+            assert_eq!(
+                registry
+                    .lookup_by_name_and_width(&format!("s{id}"), 32, SymbolKind::BitVector)
+                    .map(|info| info.rust_id),
+                Some(id)
+            );
+        }
+        for id in [2u64, 4] {
+            assert!(!registry.has_original(id), "id {id} left in id→py");
+            assert!(registry.lookup_name_by_id(id).is_none());
+            assert!(registry.lookup_by_hash(100 + id as i64).is_none());
+            assert!(
+                registry
+                    .lookup_by_name_and_width(&format!("s{id}"), 32, SymbolKind::BitVector)
+                    .is_none()
+            );
+        }
+        assert_eq!(registry.len(), 2);
+    });
+}
+
+#[test]
 fn test_registry_allocate_id() {
     let registry = SymbolicIdentityRegistry::new();
 
