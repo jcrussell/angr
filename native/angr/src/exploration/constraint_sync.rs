@@ -65,78 +65,90 @@ impl RustExplorationManager {
         // Extract list items - we need to convert each to RustBV
         let len = constraints.len();
         for i in 0..len {
-            // Use get_item with usize index
-            if let Ok(constraint) = constraints.get_item(i) {
-                // Convert claripy AST to RustBV
-                match claripy_to_rustbv(py, &constraint, ctx_ref) {
-                    Ok(bv) => {
-                        // Add constraint to solver
-                        #[cfg(feature = "vex-engine-z3")]
-                        {
-                            if bv.width() == 1 {
-                                sym_ctx.assume_true(&bv);
-                                success_count += 1;
-                            } else {
-                                // For wider values, interpret as "value != 0"
-                                let zero = RustBV::concrete(0, bv.width());
-                                let neq = bv.ne(&zero, ctx_ref);
-                                sym_ctx.assume_true(&neq);
-                                success_count += 1;
-                            }
-                        }
-                        #[cfg(not(feature = "vex-engine-z3"))]
-                        {
-                            // Without Z3, constraints are tracked but not solved
+            // Use get_item with usize index. An in-bounds `PyList::get_item`
+            // essentially never fails, but a failure here must still be
+            // counted and logged like every other failure branch below —
+            // otherwise the `failed_count + success_count` total logged at the
+            // end silently undercounts the list length (angr-sqfj8.57).
+            let constraint = match constraints.get_item(i) {
+                Ok(c) => c,
+                Err(e) => {
+                    failed_count += 1;
+                    log::warn!(
+                        "Constraint {i} could not be read from the Python list: {e}. \
+                         Solver state may diverge."
+                    );
+                    continue;
+                }
+            };
+
+            // Convert claripy AST to RustBV
+            match claripy_to_rustbv(py, &constraint, ctx_ref) {
+                Ok(bv) => {
+                    // Add constraint to solver
+                    #[cfg(feature = "vex-engine-z3")]
+                    {
+                        if bv.width() == 1 {
+                            sym_ctx.assume_true(&bv);
+                            success_count += 1;
+                        } else {
+                            // For wider values, interpret as "value != 0"
+                            let zero = RustBV::concrete(0, bv.width());
+                            let neq = bv.ne(&zero, ctx_ref);
+                            sym_ctx.assume_true(&neq);
                             success_count += 1;
                         }
                     }
-                    Err(e) => {
-                        // Fallback: extract the constraint's underlying Z3 AST
-                        // pointer via claripy.backends.z3 and assert it on the
-                        // solver directly. claripy and the Rust solver share a
-                        // Z3 context, so the pointer is valid here. This rescues
-                        // constraints that use ops claripy_to_rustbv doesn't
-                        // model (e.g. FP), keeping the round-trip lossless.
-                        #[cfg(feature = "vex-engine-z3")]
-                        {
-                            let backend = match z3_backend.as_ref() {
-                                Some(b) => Some(b.clone()),
-                                None => match Self::resolve_claripy_z3_backend(py) {
-                                    Ok(b) => {
-                                        z3_backend = Some(b.clone());
-                                        Some(b)
-                                    }
-                                    Err(import_err) => {
-                                        log::debug!(
-                                            "claripy.backends.z3 unavailable for fallback: {import_err}"
-                                        );
-                                        None
-                                    }
-                                },
-                            };
-
-                            let z3_ast = backend.as_ref().and_then(|b| {
-                                Self::extract_z3_ptr_from_claripy(b, &constraint)
-                                    .ok()
-                                    .flatten()
-                            });
-
-                            if let Some(ast) = z3_ast {
-                                sym_ctx.add_constraint_raw(ast);
-                                z3_ptr_fallback_count += 1;
-                                success_count += 1;
-                                log::debug!(
-                                    "Constraint {i} fell back to Z3 ptr (claripy_to_rustbv: {e})"
-                                );
-                                continue;
-                            }
-                        }
-
-                        failed_count += 1;
-                        log::warn!(
-                            "Constraint {i} conversion failed: {e}. Solver state may diverge."
-                        );
+                    #[cfg(not(feature = "vex-engine-z3"))]
+                    {
+                        // Without Z3, constraints are tracked but not solved
+                        success_count += 1;
                     }
+                }
+                Err(e) => {
+                    // Fallback: extract the constraint's underlying Z3 AST
+                    // pointer via claripy.backends.z3 and assert it on the
+                    // solver directly. claripy and the Rust solver share a
+                    // Z3 context, so the pointer is valid here. This rescues
+                    // constraints that use ops claripy_to_rustbv doesn't
+                    // model (e.g. FP), keeping the round-trip lossless.
+                    #[cfg(feature = "vex-engine-z3")]
+                    {
+                        let backend = match z3_backend.as_ref() {
+                            Some(b) => Some(b.clone()),
+                            None => match Self::resolve_claripy_z3_backend(py) {
+                                Ok(b) => {
+                                    z3_backend = Some(b.clone());
+                                    Some(b)
+                                }
+                                Err(import_err) => {
+                                    log::debug!(
+                                        "claripy.backends.z3 unavailable for fallback: {import_err}"
+                                    );
+                                    None
+                                }
+                            },
+                        };
+
+                        let z3_ast = backend.as_ref().and_then(|b| {
+                            Self::extract_z3_ptr_from_claripy(b, &constraint)
+                                .ok()
+                                .flatten()
+                        });
+
+                        if let Some(ast) = z3_ast {
+                            sym_ctx.add_constraint_raw(ast);
+                            z3_ptr_fallback_count += 1;
+                            success_count += 1;
+                            log::debug!(
+                                "Constraint {i} fell back to Z3 ptr (claripy_to_rustbv: {e})"
+                            );
+                            continue;
+                        }
+                    }
+
+                    failed_count += 1;
+                    log::warn!("Constraint {i} conversion failed: {e}. Solver state may diverge.");
                 }
             }
         }
