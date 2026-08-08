@@ -239,7 +239,7 @@ fn test_unmapped_opcode() {
 #[test]
 fn test_widening_vector_multiply_routing() {
     // angr-ph300.78: the widening vector-multiply families now map to
-    // IROp::VMull (implemented in ops_vec_permute_mul::vec_mull). Real libVEX
+    // IROp::VMull (implemented in ops::vec_permute_mul::vec_mull). Real libVEX
     // names put S/U AFTER the size (e.g. Iop_Mull32Sx2); the former phantom
     // "Iop_MullS32x4" arm libVEX never emits still routes to Unmapped.
     //
