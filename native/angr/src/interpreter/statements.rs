@@ -12,7 +12,74 @@ pub(super) struct LoadGArgs<'s> {
     pub(super) cvt: &'s IRLoadGOp,
 }
 
+/// Tristate classification of a guarded statement's guard expression.
+///
+/// `Exit`, `StoreG`, `LoadG` and `Dirty` all ask the same two questions of
+/// their guard — can it be true, can it be false — and each used to re-derive
+/// the answer its own way (angr-12jjk.22). The rule now lives here once, so a
+/// fix to it lands in every handler instead of in one copy out of four.
+///
+/// `Exit` shares the two decision rules (`GuardClass::concrete` /
+/// `GuardClass::from_feasibility`) but not the `classify_guard` wrapper: it
+/// must not query the solver at all in non-deferred mode, and in deferred mode
+/// it needs the raw feasibility pair after its own incremental-assertion
+/// preamble — see `handle_exit_stmt`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum GuardClass {
+    /// The guard cannot be true: a concrete zero, or a symbolic guard the
+    /// solver proves always-false. A doubly-infeasible guard (neither
+    /// direction sat, i.e. an already-unsat state) also lands here — the
+    /// state is dead, so the arm it picks is immaterial.
+    Never,
+    /// The guard must be true: a concrete non-zero, or a symbolic guard the
+    /// solver proves always-true. The statement runs unconditionally, exactly
+    /// as its unguarded counterpart would.
+    Always,
+    /// Both directions are feasible — the guard is genuinely symbolic and the
+    /// handler must model both outcomes (an ITE, or a fork).
+    Symbolic,
+}
+
+impl GuardClass {
+    /// Decide a guard without consulting the solver, or `None` when it is
+    /// genuinely symbolic and only the solver can answer.
+    pub(super) fn concrete(guard_val: &RustBV) -> Option<Self> {
+        // A `Constrained` value is still `is_symbolic()` even when it carries a
+        // concrete value, so test both before deciding.
+        if guard_val.is_symbolic() {
+            return None;
+        }
+        guard_val
+            .as_u64()
+            .map(|g| if g != 0 { Self::Always } else { Self::Never })
+    }
+
+    /// Fold a `(can_be_true, can_be_false)` feasibility pair into the tristate.
+    pub(super) fn from_feasibility(can_be_true: bool, can_be_false: bool) -> Self {
+        match (can_be_true, can_be_false) {
+            (false, _) => Self::Never,
+            (true, false) => Self::Always,
+            (true, true) => Self::Symbolic,
+        }
+    }
+}
+
 impl<'a> VEXInterpreter<'a> {
+    /// Classify a guard value into [`GuardClass`], asking the solver only when
+    /// the guard is not concretely decidable.
+    ///
+    /// The solver query is `check_branch_feasibility`, which answers both
+    /// directions under a single solver acquisition — cheaper than the
+    /// `can_be_true()` + `can_be_false()` pair the guarded-load/store handlers
+    /// used to call (each of which is itself a full `check_branch_feasibility`).
+    pub(super) fn classify_guard(&self, guard_val: &RustBV) -> GuardClass {
+        if let Some(class) = GuardClass::concrete(guard_val) {
+            return class;
+        }
+        let (can_be_true, can_be_false) = self.ctx.check_branch_feasibility(guard_val);
+        GuardClass::from_feasibility(can_be_true, can_be_false)
+    }
+
     /// Write `value` into VEX temp slot `tmp`, erroring when the index is out
     /// of range for the temps vector sized from this IRSB's tyenv.
     ///
@@ -299,18 +366,19 @@ impl<'a> VEXInterpreter<'a> {
         let guard_val = self.eval_expr_with_callbacks(callbacks, guard, &irsb.tyenv)?;
         self.dispatch_exit_inspect(callbacks, dst, jk, &guard_val);
 
-        // Check if guard is symbolic first (Constrained has concrete value but is still symbolic)
-        if !guard_val.is_symbolic() {
-            // Truly concrete guard - simple check
-            if let Some(g) = guard_val.as_u64() {
-                if g != 0 {
-                    return Ok(StmtResult::Exit {
-                        target: dst,
-                        jumpkind: jk,
-                    });
-                }
-                return Ok(StmtResult::Continue);
+        // Decide the guard without the solver where possible (note that a
+        // Constrained value has a concrete value but is still symbolic, so
+        // `GuardClass::concrete` declines it).
+        match GuardClass::concrete(&guard_val) {
+            Some(GuardClass::Always) => {
+                return Ok(StmtResult::Exit {
+                    target: dst,
+                    jumpkind: jk,
+                });
             }
+            Some(GuardClass::Never) => return Ok(StmtResult::Continue),
+            // Not concretely decidable — fall through to the symbolic path.
+            Some(GuardClass::Symbolic) | None => {}
         }
 
         // Guard is symbolic — handle based on deferred fork mode
@@ -387,98 +455,101 @@ impl<'a> VEXInterpreter<'a> {
             }
             self.ctx.check_branch_feasibility(&guard_val)
         };
-        if can_be_true && can_be_false {
-            // The unexplored path (guard=false) should resume at the
-            // next instruction after this conditional jump, NOT the
-            // block's default exit. When a VEX IRSB contains multiple
-            // Ist_Exit statements, using the block fallthrough would
-            // skip all code between this exit and the end of the block.
-            let false_target = self.current_insn_addr + self.current_insn_len as u64;
+        match GuardClass::from_feasibility(can_be_true, can_be_false) {
+            GuardClass::Symbolic => {
+                // The unexplored path (guard=false) should resume at the
+                // next instruction after this conditional jump, NOT the
+                // block's default exit. When a VEX IRSB contains multiple
+                // Ist_Exit statements, using the block fallthrough would
+                // skip all code between this exit and the end of the block.
+                let false_target = self.current_insn_addr + self.current_insn_len as u64;
 
-            // Skip expensive rustbv_to_claripy conversion for the condition.
-            // The condition is stored in stored_conditions (below) as a RustBV,
-            // which is the primary lookup path in fork processing. The claripy
-            // AST was only a P11 fallback for missing stored_conditions entries.
-            let condition_ast: Option<Py<PyAny>> = None;
+                // Skip expensive rustbv_to_claripy conversion for the condition.
+                // The condition is stored in stored_conditions (below) as a RustBV,
+                // which is the primary lookup path in fork processing. The claripy
+                // AST was only a P11 fallback for missing stored_conditions entries.
+                let condition_ast: Option<Py<PyAny>> = None;
 
-            // Take the "true" path (jump to dst), defer the "false" path
-            let cond_id = self.next_cond_id();
-            // Store the Rust condition for later retrieval when processing forks
-            self.stored_conditions.insert(cond_id, guard_val);
+                // Take the "true" path (jump to dst), defer the "false" path
+                let cond_id = self.next_cond_id();
+                // Store the Rust condition for later retrieval when processing forks
+                self.stored_conditions.insert(cond_id, guard_val);
 
-            // Flush pending stores before snapshotting so the memory
-            // snapshot includes all writes up to this branch point.
-            self.flush_stores_to_rust_memory();
+                // Flush pending stores before snapshotting so the memory
+                // snapshot includes all writes up to this branch point.
+                self.flush_stores_to_rust_memory();
 
-            // Snapshot full state BEFORE adding the branch constraint.
-            // This enables correct alternate-path forking with solver,
-            // registers, and memory from the branch point.
-            self.fork_snapshots.insert(
-                cond_id,
-                BranchSnapshot {
-                    solver: self.ctx.fork(),
-                    registers: self.registers.fork(),
-                    memory: self
-                        .rust_memory
-                        .as_ref()
-                        .map(super::super::memory::SymbolicMemory::fork),
-                },
-            );
+                // Snapshot full state BEFORE adding the branch constraint.
+                // This enables correct alternate-path forking with solver,
+                // registers, and memory from the branch point.
+                self.fork_snapshots.insert(
+                    cond_id,
+                    BranchSnapshot {
+                        solver: self.ctx.fork(),
+                        registers: self.registers.fork(),
+                        memory: self
+                            .rust_memory
+                            .as_ref()
+                            .map(super::super::memory::SymbolicMemory::fork),
+                    },
+                );
 
-            // Decide which path to take based on branch direction.
-            // For backward branches (loops), take the exit (loop back)
-            // and defer the fall-through (loop exit). For forward branches,
-            // take the fall-through and defer the exit. VEX often inverts
-            // forward branch conditions (e.g., `jne target` becomes
-            // `if (eq) goto exit; NEXT: target`), so fall-through follows
-            // the natural execution flow for forward branches.
-            let is_backward_branch = dst < self.current_insn_addr;
+                // Decide which path to take based on branch direction.
+                // For backward branches (loops), take the exit (loop back)
+                // and defer the fall-through (loop exit). For forward branches,
+                // take the fall-through and defer the exit. VEX often inverts
+                // forward branch conditions (e.g., `jne target` becomes
+                // `if (eq) goto exit; NEXT: target`), so fall-through follows
+                // the natural execution flow for forward branches.
+                let is_backward_branch = dst < self.current_insn_addr;
 
-            let deferred = if is_backward_branch {
-                DeferredFork {
-                    branch_addr: self.current_insn_addr,
-                    path_taken: true, // we took the exit (guard=true) path
-                    unexplored_target: false_target, // fall-through deferred
-                    condition_id: cond_id,
-                    push_level: self.push_level,
-                    condition_ast,
+                let deferred = if is_backward_branch {
+                    DeferredFork {
+                        branch_addr: self.current_insn_addr,
+                        path_taken: true, // we took the exit (guard=true) path
+                        unexplored_target: false_target, // fall-through deferred
+                        condition_id: cond_id,
+                        push_level: self.push_level,
+                        condition_ast,
+                    }
+                } else {
+                    DeferredFork {
+                        branch_addr: self.current_insn_addr,
+                        path_taken: false, // we took the fallthrough (guard=false) path
+                        unexplored_target: dst, // the exit target is deferred
+                        condition_id: cond_id,
+                        push_level: self.push_level,
+                        condition_ast,
+                    }
+                };
+                self.deferred_forks.push(deferred);
+                self.deferred_fork_this_step = true;
+
+                // NOTE: We intentionally do NOT call assume_true/false() permanently.
+                // The solver stays clean so snapshots capture unconstrained state.
+                // Taken-path constraints are temporarily added via push/pop for
+                // check_branch_feasibility() (above), then applied permanently
+                // during fork processing in exploration.rs after the step completes.
+
+                if is_backward_branch {
+                    // Take the exit path (loop back to target)
+                    Ok(StmtResult::Exit {
+                        target: dst,
+                        jumpkind: jk,
+                    })
+                } else {
+                    // Continue execution on the fallthrough path
+                    Ok(StmtResult::Continue)
                 }
-            } else {
-                DeferredFork {
-                    branch_addr: self.current_insn_addr,
-                    path_taken: false, // we took the fallthrough (guard=false) path
-                    unexplored_target: dst, // the exit target is deferred
-                    condition_id: cond_id,
-                    push_level: self.push_level,
-                    condition_ast,
-                }
-            };
-            self.deferred_forks.push(deferred);
-            self.deferred_fork_this_step = true;
-
-            // NOTE: We intentionally do NOT call assume_true/false() permanently.
-            // The solver stays clean so snapshots capture unconstrained state.
-            // Taken-path constraints are temporarily added via push/pop for
-            // check_branch_feasibility() (above), then applied permanently
-            // during fork processing in exploration.rs after the step completes.
-
-            if is_backward_branch {
-                // Take the exit path (loop back to target)
-                return Ok(StmtResult::Exit {
-                    target: dst,
-                    jumpkind: jk,
-                });
-            } else {
-                // Continue execution on the fallthrough path
-                return Ok(StmtResult::Continue);
             }
-        } else if can_be_true {
-            return Ok(StmtResult::Exit {
+            // Guard must be true — take the exit unconditionally.
+            GuardClass::Always => Ok(StmtResult::Exit {
                 target: dst,
                 jumpkind: jk,
-            });
+            }),
+            // Guard must be false — fall through past the exit.
+            GuardClass::Never => Ok(StmtResult::Continue),
         }
-        Ok(StmtResult::Continue)
     }
 
     /// Execute an `IRStmt::StoreG` (guarded store): guard tristate handling
@@ -496,132 +567,114 @@ impl<'a> VEXInterpreter<'a> {
         // Evaluate guard condition
         let guard_val = self.eval_expr_with_callbacks(callbacks, guard, &irsb.tyenv)?;
 
-        // Check if guard is symbolic
-        if guard_val.is_symbolic() {
-            // Symbolic guard: need to handle conditional store
-            // For now, check if guard can be true at all
-            if !self.ctx.can_be_true(&guard_val) {
-                // Guard is always false - skip store
-                return Ok(StmtResult::Continue);
-            }
-            if !self.ctx.can_be_false(&guard_val) {
-                // Guard is always true - perform store unconditionally, which is
-                // semantically a plain Store. Route through the shared
-                // dispatcher so it gets code-cache invalidation and symbolic-
-                // shadow eviction (and handles symbolic addresses, which the old
-                // inline path silently dropped) — angr-myzjx.26.
+        match self.classify_guard(&guard_val) {
+            // Guard is false - skip the store.
+            GuardClass::Never => return Ok(StmtResult::Continue),
+            GuardClass::Always => {
+                // Guard is true - the store is semantically identical to a plain
+                // IRStmt::Store of data_val at addr_val. Route through the shared
+                // dispatcher (angr-myzjx.26): this replaces a near-verbatim clone of
+                // handle_symbolic_store's concretization ladder that (a) never
+                // invalidated the code cache or evicted overlapping symbolic
+                // shadows, and (b) stored concrete data at a symbolic address via
+                // call_memory_store(0, ..) — a hard-coded address 0.
                 let addr_val = self.eval_expr_with_callbacks(callbacks, addr, &irsb.tyenv)?;
                 let data_val = self.eval_expr_with_callbacks(callbacks, data, &irsb.tyenv)?;
                 let data_size = data_val.width().div_ceil(8) as usize;
                 self.store_value(callbacks, &addr_val, data_val, data_size)?;
                 return Ok(StmtResult::Continue);
             }
-            // Both paths possible with symbolic guard - use ITE for conditional store
-            // Store ITE(guard, new_data, current_data)
-            let addr_val = self.eval_expr_with_callbacks(callbacks, addr, &irsb.tyenv)?;
-            let data_val = self.eval_expr_with_callbacks(callbacks, data, &irsb.tyenv)?;
-            let data_size = data_val.width().div_ceil(8) as usize;
+            GuardClass::Symbolic => {
+                // Both paths possible with symbolic guard - use ITE for conditional store
+                // Store ITE(guard, new_data, current_data)
+                let addr_val = self.eval_expr_with_callbacks(callbacks, addr, &irsb.tyenv)?;
+                let data_val = self.eval_expr_with_callbacks(callbacks, data, &irsb.tyenv)?;
+                let data_size = data_val.width().div_ceil(8) as usize;
 
-            if let Some(addr_concrete) = addr_val.as_u64() {
-                // Load current value at address
-                let current = self.load_from_callback(callbacks, addr_concrete, data_size)?;
-                // Create ITE: if guard then new_data else current
-                let ite_result = guard_val.ite(&data_val, &current, self.ctx);
-                // The ITE captured `current` above; now that we're about to
-                // overwrite this range, invalidate stale cached code and evict
-                // overlapping symbolic shadows (angr-myzjx.26).
-                self.invalidate_and_evict_concrete_store(addr_concrete, data_size);
-                // ITE result is symbolic if guard or either operand is symbolic
-                if ite_result.is_symbolic() && callbacks.has_memory_store_symbolic_value() {
-                    self.flush_stores(callbacks)?;
-                    callbacks
-                        .call_memory_store_symbolic_value(addr_concrete, &ite_result)
-                        .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
-                } else {
-                    reject_symbolic_byte_store(&ite_result, addr_concrete, "StoreG")?;
-                    let ite_bytes = bv_to_bytes(&ite_result);
-                    self.pending_stores.push(addr_concrete, ite_bytes);
-                    if self.pending_stores.len() >= self.max_pending_stores {
+                if let Some(addr_concrete) = addr_val.as_u64() {
+                    // Load current value at address
+                    let current = self.load_from_callback(callbacks, addr_concrete, data_size)?;
+                    // Create ITE: if guard then new_data else current
+                    let ite_result = guard_val.ite(&data_val, &current, self.ctx);
+                    // The ITE captured `current` above; now that we're about to
+                    // overwrite this range, invalidate stale cached code and evict
+                    // overlapping symbolic shadows (angr-myzjx.26).
+                    self.invalidate_and_evict_concrete_store(addr_concrete, data_size);
+                    // ITE result is symbolic if guard or either operand is symbolic
+                    if ite_result.is_symbolic() && callbacks.has_memory_store_symbolic_value() {
                         self.flush_stores(callbacks)?;
-                    }
-                }
-            } else {
-                // Symbolic address with symbolic guard - concretize for write.
-                // Invalidate cached code at the concretized target(s) before
-                // dispatching (self-modifying-code support), mirroring
-                // handle_symbolic_store (angr-myzjx.26).
-                let concret_result = self.concretize_cached_write(&addr_val);
-                self.invalidate_code_on_store(&concret_result, data_size);
-                match &*concret_result {
-                    ConcretizationResult::Single(addr_concrete) => {
-                        let addr_concrete = *addr_concrete;
-                        // Load current value and use ITE
-                        let current =
-                            self.load_from_callback(callbacks, addr_concrete, data_size)?;
-                        let ite_result = guard_val.ite(&data_val, &current, self.ctx);
-                        // ITE captured `current`; evict stale overlapping
-                        // symbolic shadows before storing the new value.
-                        self.evict_overlapping_symbolic_stores(addr_concrete, data_size);
-                        self.flush_stores(callbacks)?;
-                        // ITE result is symbolic - use symbolic store callback
-                        if ite_result.is_symbolic() && callbacks.has_memory_store_symbolic_value() {
-                            callbacks
-                                .call_memory_store_symbolic_value(addr_concrete, &ite_result)
-                                .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
-                        } else {
-                            reject_symbolic_byte_store(
-                                &ite_result,
-                                addr_concrete,
-                                "StoreG (concretized addr)",
-                            )?;
-                            let ite_bytes = bv_to_bytes(&ite_result);
-                            callbacks
-                                .call_memory_store(addr_concrete, &ite_bytes)
-                                .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+                        callbacks
+                            .call_memory_store_symbolic_value(addr_concrete, &ite_result)
+                            .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+                    } else {
+                        reject_symbolic_byte_store(&ite_result, addr_concrete, "StoreG")?;
+                        let ite_bytes = bv_to_bytes(&ite_result);
+                        self.pending_stores.push(addr_concrete, ite_bytes);
+                        if self.pending_stores.len() >= self.max_pending_stores {
+                            self.flush_stores(callbacks)?;
                         }
                     }
-                    _ => {
-                        // Symbolic guard + non-Single address solutions
-                        // (Multiple/Strided/TooLarge/Failed). Combining the
-                        // guard-ITE with per-address ITEs requires a per-
-                        // address load and is brittle, so delegate to Python's
-                        // full symbolic store callback which has access to
-                        // angr's address concretization strategies.
-                        self.flush_stores(callbacks)?;
-                        if callbacks.has_memory_store_symbolic_full() {
-                            callbacks
-                                .call_memory_store_symbolic_full(&addr_val, &data_val)
-                                .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
-                        } else {
-                            return Err(CbExecutionError::Unsupported(
-                                "guarded store with symbolic address: \
+                } else {
+                    // Symbolic address with symbolic guard - concretize for write.
+                    // Invalidate cached code at the concretized target(s) before
+                    // dispatching (self-modifying-code support), mirroring
+                    // handle_symbolic_store (angr-myzjx.26).
+                    let concret_result = self.concretize_cached_write(&addr_val);
+                    self.invalidate_code_on_store(&concret_result, data_size);
+                    match &*concret_result {
+                        ConcretizationResult::Single(addr_concrete) => {
+                            let addr_concrete = *addr_concrete;
+                            // Load current value and use ITE
+                            let current =
+                                self.load_from_callback(callbacks, addr_concrete, data_size)?;
+                            let ite_result = guard_val.ite(&data_val, &current, self.ctx);
+                            // ITE captured `current`; evict stale overlapping
+                            // symbolic shadows before storing the new value.
+                            self.evict_overlapping_symbolic_stores(addr_concrete, data_size);
+                            self.flush_stores(callbacks)?;
+                            // ITE result is symbolic - use symbolic store callback
+                            if ite_result.is_symbolic()
+                                && callbacks.has_memory_store_symbolic_value()
+                            {
+                                callbacks
+                                    .call_memory_store_symbolic_value(addr_concrete, &ite_result)
+                                    .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+                            } else {
+                                reject_symbolic_byte_store(
+                                    &ite_result,
+                                    addr_concrete,
+                                    "StoreG (concretized addr)",
+                                )?;
+                                let ite_bytes = bv_to_bytes(&ite_result);
+                                callbacks
+                                    .call_memory_store(addr_concrete, &ite_bytes)
+                                    .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+                            }
+                        }
+                        _ => {
+                            // Symbolic guard + non-Single address solutions
+                            // (Multiple/Strided/TooLarge/Failed). Combining the
+                            // guard-ITE with per-address ITEs requires a per-
+                            // address load and is brittle, so delegate to Python's
+                            // full symbolic store callback which has access to
+                            // angr's address concretization strategies.
+                            self.flush_stores(callbacks)?;
+                            if callbacks.has_memory_store_symbolic_full() {
+                                callbacks
+                                    .call_memory_store_symbolic_full(&addr_val, &data_val)
+                                    .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+                            } else {
+                                return Err(CbExecutionError::Unsupported(
+                                    "guarded store with symbolic address: \
                                          no memory_store_symbolic_full callback"
-                                    .to_string(),
-                            ));
+                                        .to_string(),
+                                ));
+                            }
                         }
                     }
                 }
             }
-            return Ok(StmtResult::Continue);
         }
-
-        // Concrete guard: simple check
-        if let Some(g) = guard_val.as_u64()
-            && g != 0
-        {
-            // Guard is true - the store is semantically identical to a plain
-            // IRStmt::Store of data_val at addr_val. Route through the shared
-            // dispatcher (angr-myzjx.26): this replaces a near-verbatim clone of
-            // handle_symbolic_store's concretization ladder that (a) never
-            // invalidated the code cache or evicted overlapping symbolic
-            // shadows, and (b) stored concrete data at a symbolic address via
-            // call_memory_store(0, ..) — a hard-coded address 0.
-            let addr_val = self.eval_expr_with_callbacks(callbacks, addr, &irsb.tyenv)?;
-            let data_val = self.eval_expr_with_callbacks(callbacks, data, &irsb.tyenv)?;
-            let data_size = data_val.width().div_ceil(8) as usize;
-            self.store_value(callbacks, &addr_val, data_val, data_size)?;
-        }
-        // Guard is false - skip the store
 
         Ok(StmtResult::Continue)
     }
@@ -668,74 +721,35 @@ impl<'a> VEXInterpreter<'a> {
             }
         };
 
-        // Check if guard is symbolic
-        if guard_val.is_symbolic() {
-            // Check if guard can be true/false
-            let can_be_true = self.ctx.can_be_true(&guard_val);
-            let can_be_false = self.ctx.can_be_false(&guard_val);
-
-            if can_be_true && !can_be_false {
-                // Guard is always true - perform load unconditionally
+        let result = match self.classify_guard(&guard_val) {
+            // Guard is false - the load never happens; take the alt value.
+            GuardClass::Never => alt_val,
+            GuardClass::Always => {
+                // Guard is true - perform the load unconditionally.
                 let addr_val = self.eval_expr_with_callbacks(callbacks, addr, &irsb.tyenv)?;
-                let loaded = self.resolve_loadg_load(
-                    callbacks,
-                    &addr_val,
-                    load_size,
-                    "LoadG (always-true guard)",
-                )?;
-
-                // Apply conversion
-                let result = self.apply_loadg_conversion(*cvt, loaded, dst_ty.bits());
-
-                self.write_tmp(*dst, result)?;
-                return Ok(StmtResult::Continue);
-            }
-
-            if !can_be_true && can_be_false {
-                // Guard is always false - use alt value
-                self.write_tmp(*dst, alt_val)?;
-                return Ok(StmtResult::Continue);
-            }
-
-            // Both paths possible - evaluate address and load, then ITE
-            let addr_val = self.eval_expr_with_callbacks(callbacks, addr, &irsb.tyenv)?;
-            let loaded =
-                self.resolve_loadg_load(callbacks, &addr_val, load_size, "LoadG (symbolic guard)")?;
-
-            // Apply conversion to loaded value
-            let converted = self.apply_loadg_conversion(*cvt, loaded, dst_ty.bits());
-
-            // Create ITE: if guard then loaded else alt
-            let result = guard_val.ite(&converted, &alt_val, self.ctx);
-
-            self.write_tmp(*dst, result)?;
-            return Ok(StmtResult::Continue);
-        }
-
-        // Concrete guard
-        if let Some(g) = guard_val.as_u64() {
-            let result = if g != 0 {
-                // Guard is true - perform the load
-                let addr_val = self.eval_expr_with_callbacks(callbacks, addr, &irsb.tyenv)?;
-                let loaded = self.resolve_loadg_load(
-                    callbacks,
-                    &addr_val,
-                    load_size,
-                    "LoadG (concrete-true guard)",
-                )?;
+                let loaded =
+                    self.resolve_loadg_load(callbacks, &addr_val, load_size, "LoadG (true guard)")?;
                 self.apply_loadg_conversion(*cvt, loaded, dst_ty.bits())
-            } else {
-                // Guard is false - use alternative value
-                alt_val
-            };
+            }
+            GuardClass::Symbolic => {
+                // Both paths possible - evaluate address and load, then ITE
+                let addr_val = self.eval_expr_with_callbacks(callbacks, addr, &irsb.tyenv)?;
+                let loaded = self.resolve_loadg_load(
+                    callbacks,
+                    &addr_val,
+                    load_size,
+                    "LoadG (symbolic guard)",
+                )?;
 
-            self.write_tmp(*dst, result)?;
-        } else {
-            // This shouldn't happen if guard_val is concrete
-            return Err(CbExecutionError::InvalidIR(
-                "LoadG guard evaluation failed".to_string(),
-            ));
-        }
+                // Apply conversion to loaded value
+                let converted = self.apply_loadg_conversion(*cvt, loaded, dst_ty.bits());
+
+                // Create ITE: if guard then loaded else alt
+                guard_val.ite(&converted, &alt_val, self.ctx)
+            }
+        };
+
+        self.write_tmp(*dst, result)?;
 
         Ok(StmtResult::Continue)
     }
@@ -752,31 +766,21 @@ impl<'a> VEXInterpreter<'a> {
         // Check guard if present
         if let Some(guard) = &dirty.guard {
             let guard_val = self.eval_expr_with_callbacks(callbacks, guard, &irsb.tyenv)?;
-            if guard_val.is_symbolic() {
-                // Symbolic guard: pick the taken branch if feasible,
-                // otherwise skip. We can't fork mid-block, so we
-                // concretize-to-taken (lossy but unblocks execution).
-                let (cb_true, cb_false) = self.ctx.check_branch_feasibility(&guard_val);
-                if !cb_true {
-                    // Guard must be false — skip the dirty call.
-                    return Ok(StmtResult::Continue);
-                }
-                if cb_false {
-                    // Both feasible: pin guard true so the dirty call
-                    // runs. Loses the not-taken branch but matches
-                    // angr's existing dirty-helper concretization.
+            match self.classify_guard(&guard_val) {
+                // Guard is false - skip the dirty call.
+                GuardClass::Never => return Ok(StmtResult::Continue),
+                // Guard must be true - fall through and execute it.
+                GuardClass::Always => {}
+                GuardClass::Symbolic => {
+                    // Both feasible: we can't fork mid-block, so pin the guard
+                    // true and run the call. Loses the not-taken branch but
+                    // matches angr's existing dirty-helper concretization.
                     log::debug!(
                         "dirty call '{}': symbolic guard concretized to taken branch",
                         dirty.cee.name
                     );
                     self.ctx.assume_true(&guard_val);
                 }
-                // Fall through and execute the dirty call.
-            } else if let Some(g) = guard_val.as_u64()
-                && g == 0
-            {
-                // Guard is false - skip the dirty call
-                return Ok(StmtResult::Continue);
             }
         }
 
