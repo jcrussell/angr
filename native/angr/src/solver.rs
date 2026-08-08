@@ -14,7 +14,8 @@
 //! - [`z3_ptr`]: raw `Z3_ast`-pointer extraction and evaluation, i.e. every
 //!   `unsafe` in the solver surface;
 //! - [`handle_api`]: the handle-based claripy-bypass API (symbol-table
-//!   lifecycle plus the ~25 `op_*` arithmetic wrappers).
+//!   lifecycle plus the 33 `op_*` arithmetic wrappers — 25 of which route
+//!   through its shared `binop` helper, the rest through `opt_op`).
 //!
 //! Both submodules add their items to *this* type, so the split is purely
 //! about where the source lives — the Python-visible surface is unchanged.

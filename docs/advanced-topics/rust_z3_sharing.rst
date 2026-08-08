@@ -30,12 +30,25 @@ heap memory the Rust-side ``z3::Context`` knows nothing about,
 producing memory corruption or silent assertion drops the moment the
 pointer is dereferenced.
 
-The native fast paths in ``native/angr/src/solver.rs`` (e.g.
-``RustSolverContext::add_constraint_ast``) extract the raw ``Z3_ast``
-out of claripy's ``z3`` backend and call ``Z3_solver_assert`` on the
-Rust side. This is sound only because the build pipeline guarantees
-both sides resolve ``libz3.so`` to the same on-disk file at process
-startup.
+The native fast paths (e.g. ``RustSolverContext::add_constraint_ast``)
+extract the raw ``Z3_ast`` out of claripy's ``z3`` backend via
+``native/angr/src/solver/z3_ptr.rs::extract_z3_ast_ptr`` and call
+``Z3_solver_assert`` on the Rust side. This is sound only because the
+build pipeline guarantees both sides resolve ``libz3.so`` to the same
+on-disk file at process startup.
+
+The solver surface is split across three files (angr-9ke6b.205), all
+contributing ``#[pymethods]`` to the same ``RustSolverContext``:
+
+* ``native/angr/src/solver.rs`` — the Python-boundary error mapping and
+  the claripy-AST API (``add_constraint_ast``, ``eval*``, ``min``,
+  ``max``, ``push``/``pop``, ``fork``).
+* ``native/angr/src/solver/z3_ptr.rs`` — raw ``Z3_ast``-pointer
+  extraction and evaluation; every ``unsafe`` on this surface lives
+  here.
+* ``native/angr/src/solver/handle_api.rs`` — the handle-based
+  claripy-bypass API (symbol-table lifecycle plus the ``op_*``
+  arithmetic wrappers), which never builds a claripy AST at all.
 
 How the link is wired (build.rs + venv)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

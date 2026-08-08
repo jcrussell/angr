@@ -6,7 +6,8 @@
 //! claripy-AST API in the parent `solver` module pays, and is the path the
 //! interpreter's callback returns use.
 //!
-//! Split out of `solver.rs` (angr-9ke6b.205): the ~35 wrappers here are one
+//! Split out of `solver.rs` (angr-9ke6b.205): the 43 `#[pymethods]` here (33
+//! `op_*` arithmetic wrappers plus the symbol-table lifecycle) are one
 //! self-contained concern, and the parent module keeps the claripy-AST API
 //! plus the Python-boundary error mapping they share via
 //! [`invalid_handle_id`].
