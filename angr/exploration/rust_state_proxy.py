@@ -316,14 +316,23 @@ class RustSolverProxyBase(_SolutionCountMixin):
       * ``_forked_ctx()`` — return the already-forked context, or ``None`` if
         nothing has been forked yet (used by the timeout setter to propagate
         to a live fork).
+      * ``_prepare_expr()`` — normalize an expression before it reaches the
+        solver (the plugin unwraps ``SimActionObject``; the standalone proxy
+        does nothing).
 
-    Everything that is identical modulo that access — ``satisfiable`` /
+    Everything that is identical modulo those hooks — ``satisfiable`` /
     ``min`` / ``max`` / ``min_int`` / ``max_int`` / ``symbolic`` /
-    ``constraints`` / ``timeout`` and the ``_cast_result`` helper — lives
-    here. ``eval`` / ``eval_upto`` / ``is_true`` / ``is_false`` / ``solution``
-    stay on the subclasses because their bodies genuinely differ (the plugin
-    munges the ``eval`` signature, unwraps ``SimActionObject`` constraints, and
-    shortcuts concrete ``BoolV`` expressions; the standalone proxy does not).
+    ``constraints`` / ``timeout`` / ``is_true`` / ``is_false`` / ``solution``
+    plus the ``_cast_result`` and ``_eval_one`` helpers — lives here.
+
+    Only ``eval`` and ``eval_upto`` stay on the subclasses. ``eval`` differs
+    solely in *signature* handling (the plugin reinterprets a positional
+    second argument as ``cast_to``), so both bodies are one call to the shared
+    ``_eval_one``. ``eval_upto`` genuinely differs: the standalone proxy
+    returns a tuple, always casts, and routes ``n == 1`` through a single
+    ``eval``; the plugin returns a list, casts only when ``cast_to`` is given,
+    and shortcuts concrete expressions. Unifying those would change return
+    types on one side or the other, so they remain separate (angr-12jjk.32).
     """
 
     _cast_result = staticmethod(_cast_eval_result)
@@ -337,6 +346,16 @@ class RustSolverProxyBase(_SolutionCountMixin):
 
     def _forked_ctx(self):
         raise NotImplementedError
+
+    @staticmethod
+    def _prepare_expr(expr):
+        """Normalize ``expr`` before handing it to the Rust solver.
+
+        Base default: identity. ``RustSolverProxyPlugin`` overrides this with
+        ``_unwrap_constraint`` because SimProcedures hand it
+        ``SimActionObject``-wrapped expressions.
+        """
+        return expr
 
     # ---------------------------------------------------------------
     # Shared delegation
@@ -376,6 +395,44 @@ class RustSolverProxyBase(_SolutionCountMixin):
             signed,
             lambda: self.satisfiable(extra_constraints=extra_constraints),
         )
+
+    def _eval_one(self, expr, cast_to=None, extra_constraints=()):
+        """Single-solution eval — the shared body of both proxies' ``eval``."""
+        if hasattr(expr, "concrete") and expr.concrete:
+            val = expr.concrete_value if hasattr(expr, "concrete_value") else expr.args[0]
+            return self._cast_result(expr, val, cast_to)
+        ctx = self._query_ctx()
+        result = _with_extra_constraints(ctx, ctx.eval, expr, extra=extra_constraints)
+        if result is None:
+            raise claripy.errors.UnsatError("unsat")
+        return self._cast_result(expr, result, cast_to)
+
+    # ``extra_constraints`` is accepted for SimSolver signature compatibility
+    # on the three predicates below but deliberately not applied: each maps to
+    # a Rust ``is_true``/``is_false``/``solution`` call that takes no extras,
+    # and both proxies have always dropped it.
+
+    def is_true(self, expr, extra_constraints=(), **kwargs):
+        """Check if expression is definitely true."""
+        expr = self._prepare_expr(expr)
+        if isinstance(expr, bool):
+            return expr
+        if isinstance(expr, claripy.ast.Base) and expr.op == "BoolV":
+            return bool(expr.args[0])
+        return self._query_ctx().is_true(expr)
+
+    def is_false(self, expr, extra_constraints=(), **kwargs):
+        """Check if expression is definitely false."""
+        expr = self._prepare_expr(expr)
+        if isinstance(expr, bool):
+            return not expr
+        if isinstance(expr, claripy.ast.Base) and expr.op == "BoolV":
+            return not bool(expr.args[0])
+        return self._query_ctx().is_false(expr)
+
+    def solution(self, expr, value, extra_constraints=(), **kwargs):
+        """Check if value is a valid solution for expr."""
+        return self._query_ctx().solution(self._prepare_expr(expr), value)
 
     def symbolic(self, expr):
         """Check if expression contains symbolic variables."""
@@ -442,10 +499,10 @@ class RustSolverProxy(RustSolverProxyBase):
     directly to the Rust Z3 solver — no claripy frontend sync needed.
 
     Shared solver-query methods (satisfiable / min / max / symbolic /
-    constraints / timeout) live on ``RustSolverProxyBase``; this subclass adds
-    the lazy single-fork strategy (``_ensure_solver`` → ``self._solver_ctx``)
-    and the methods whose bodies differ from the plugin's (eval / eval_upto /
-    add / is_true / is_false / solution).
+    constraints / timeout / is_true / is_false / solution) live on
+    ``RustSolverProxyBase``; this subclass adds the lazy single-fork strategy
+    (``_ensure_solver`` → ``self._solver_ctx``) and the methods whose bodies
+    differ from the plugin's (eval's signature, eval_upto, add).
     """
 
     def __init__(self, rust_mgr, state_id, shared_ctx_getter=None):
@@ -487,16 +544,9 @@ class RustSolverProxy(RustSolverProxyBase):
         """Evaluate a symbolic expression to a concrete value.
 
         Matches angr SimSolver.eval: returns a single value (not a tuple).
+        ``n`` is accepted (and ignored) for callers that pass it positionally.
         """
-        self._ensure_solver()
-        # Fast path: concrete expression
-        if hasattr(expr, "concrete") and expr.concrete:
-            val = expr.concrete_value if hasattr(expr, "concrete_value") else expr.args[0]
-            return self._cast_result(expr, val, cast_to)
-        result = _with_extra_constraints(self._solver_ctx, self._solver_ctx.eval, expr, extra=extra_constraints)
-        if result is None:
-            raise claripy.errors.UnsatError("unsat")
-        return self._cast_result(expr, result, cast_to)
+        return self._eval_one(expr, cast_to, extra_constraints)
 
     def _eval_inner(self, expr, n, cast_to):
         if n == 1:
@@ -532,21 +582,6 @@ class RustSolverProxy(RustSolverProxyBase):
         # ``self.constraints`` misses them — union in the tracked adds so the
         # width>128 fallback matches what the primary Rust min/max path saw.
         return [*self.constraints, *self._added_constraints]
-
-    def is_true(self, expr, **kwargs):
-        """Check if expression is definitely true."""
-        self._ensure_solver()
-        return self._solver_ctx.is_true(expr)
-
-    def is_false(self, expr, **kwargs):
-        """Check if expression is definitely false."""
-        self._ensure_solver()
-        return self._solver_ctx.is_false(expr)
-
-    def solution(self, expr, value, **kwargs):
-        """Check if value is a valid solution for expr."""
-        self._ensure_solver()
-        return self._solver_ctx.solution(expr, value)
 
     def __del__(self):
         # angr-87e56: release an *owned* fork on its owning thread (or defer to
@@ -720,6 +755,10 @@ class RustSolverProxyPlugin(_ProxyStatePluginMixin, RustSolverProxyBase):
             return c.ast
         return c
 
+    # ``RustSolverProxyBase`` query hook: every solver query made through this
+    # plugin arrives from a SimProcedure, so unwrap before handing it to Rust.
+    _prepare_expr = _unwrap_constraint
+
     def add(self, *constraints):
         """Add constraint(s) to the underlying Rust state's solver.
 
@@ -824,14 +863,7 @@ class RustSolverProxyPlugin(_ProxyStatePluginMixin, RustSolverProxyBase):
         """
         if cast_to is None and n_or_cast is not None and not isinstance(n_or_cast, int):
             cast_to = n_or_cast
-        if hasattr(expr, "concrete") and expr.concrete:
-            val = expr.concrete_value if hasattr(expr, "concrete_value") else expr.args[0]
-            return self._cast_result(expr, val, cast_to)
-        ctx = self._get_rust_ctx()
-        result = _with_extra_constraints(ctx, ctx.eval, expr, extra=extra_constraints)
-        if result is None:
-            raise claripy.errors.UnsatError("unsat")
-        return self._cast_result(expr, result, cast_to)
+        return self._eval_one(expr, cast_to, extra_constraints)
 
     def eval_upto(self, expr, n, cast_to=None, extra_constraints=(), exact=None, **kwargs):
         ctx = self._get_rust_ctx()
@@ -843,28 +875,8 @@ class RustSolverProxyPlugin(_ProxyStatePluginMixin, RustSolverProxyBase):
             results = [self._cast_result(expr, r, cast_to) for r in results]
         return list(results)
 
-    def is_true(self, expr, extra_constraints=(), **kwargs):
-        expr = self._unwrap_constraint(expr)
-        if isinstance(expr, bool):
-            return expr
-        if isinstance(expr, claripy.ast.Base) and expr.op == "BoolV":
-            return bool(expr.args[0])
-        ctx = self._get_rust_ctx()
-        return ctx.is_true(expr)
-
-    def is_false(self, expr, extra_constraints=(), **kwargs):
-        expr = self._unwrap_constraint(expr)
-        if isinstance(expr, bool):
-            return not expr
-        if isinstance(expr, claripy.ast.Base) and expr.op == "BoolV":
-            return not bool(expr.args[0])
-        ctx = self._get_rust_ctx()
-        return ctx.is_false(expr)
-
-    def solution(self, expr, value, extra_constraints=(), **kwargs):
-        expr = self._unwrap_constraint(expr)
-        ctx = self._get_rust_ctx()
-        return ctx.solution(expr, value)
+    # is_true / is_false / solution come from ``RustSolverProxyBase`` — the
+    # ``SimActionObject`` unwrap they need is supplied by ``_prepare_expr``.
 
     def unique(self, expr, **kwargs):
         results = self.eval_upto(expr, 2, **kwargs)
