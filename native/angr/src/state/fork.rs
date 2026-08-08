@@ -598,8 +598,21 @@ impl RustSimState {
         // `inspection` warn from their generated `merge_field_*` body (their
         // divergence test is a plain `!=`); this one compares enabled masks, so
         // it carries `#[merge_manual]` and warns by hand.
+        //
+        // angr-sqfj8.89: that comparison covers `InspectionManager::enabled`
+        // and *nothing else*. The whole manager is dropped down to `self`'s
+        // copy below, so a diverging branch's recorded `events` ring buffer,
+        // its `event_counts` totals, and even a differing `max_events`
+        // capacity are all discarded with no warning. That is deliberate, not
+        // an oversight: events/event_counts are per-path *data* — every merge
+        // of two branches that touched different memory diverges on them — so
+        // warning would fire on essentially every merge and say nothing.
+        // `enabled_mask` is the only init-time-config sliver of the field, and
+        // it is the only sliver this check defends. Anyone reading
+        // `get_inspection_counts` on a merged state gets `self`'s branch's
+        // tallies, not a sum across arms.
         warn_config_divergence(
-            "inspection",
+            "inspection (enabled_mask only)",
             others
                 .iter()
                 .any(|o| o.inspection.enabled_mask() != self.inspection.enabled_mask()),
@@ -690,6 +703,9 @@ impl RustSimState {
                 }
                 hm
             },
+            // Whole manager from `self`: only `enabled_mask` divergence is
+            // warned about above; the events/event_counts payload of every
+            // other branch is dropped silently by design (angr-sqfj8.89).
             inspection: self.inspection.clone(),
             environment: merged_environment,
             // Fresh baseline going forward — see `removed_hooks` above.

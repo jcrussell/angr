@@ -216,6 +216,11 @@ impl ExplorationStateSnapshot {
     }
 
     /// Get inspection event counts as list of (event_name, count) tuples.
+    ///
+    /// On a state produced by `RustSimState::merge` these are the counts of
+    /// the *first* branch only — the other branches' tallies are dropped, not
+    /// summed (angr-sqfj8.89; see the `warn_config_divergence("inspection
+    /// ...")` block in `fork.rs::merge`).
     pub fn get_inspection_counts(&self) -> Vec<(String, u64)> {
         self.inspection_counts.clone()
     }

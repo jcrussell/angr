@@ -497,8 +497,13 @@ pub struct RustSimState {
     heap_metadata: HeapMetadata,
     /// Inspection/breakpoint system for tracking memory and register access.
     /// Only records events when enabled (single bitmask check per operation).
+    ///
+    /// On merge only `enabled_mask()` is compared for divergence; the
+    /// recorded `events` / `event_counts` payload is per-path data and is
+    /// dropped down to `self`'s copy with no warning — see the
+    /// `warn_config_divergence("inspection ...")` block in `fork.rs::merge`.
     #[merge_policy = "warn_on_diverge"]
-    #[merge_manual = "divergence compares enabled_mask(), not the whole manager"]
+    #[merge_manual = "divergence compares enabled_mask() only; events/event_counts are dropped unwarned"]
     inspection: InspectionManager,
     /// Environment variables map for native getenv/setenv.
     /// Keys and values are byte vectors (no NUL terminator in storage).
