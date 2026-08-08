@@ -249,16 +249,20 @@ plane, which ``VEXOps`` deliberately does not have (its inputs are
 
 The dispatch site is in
 ``native/angr/src/interpreter/expressions.rs`` (search
-``IRExpr::Load {``):
+``IRExpr::Load {``); the arm itself only delegates to the
+``eval_load`` helper in the same file, which does the work:
 
 .. code-block:: rust
 
-   IRExpr::Load { addr, ty, .. } => {
-       let addr_val = self.eval_expr_with_callbacks(py, callbacks, addr, tyenv)?;
-       let size = ty.bytes() as usize;
-       // … profiling counter increment …
-       // hand off to the symbolic memory plane on `self.state`
+   IRExpr::Load { addr, ty, endness } => {
+       self.eval_load(callbacks, addr, *ty, *endness, tyenv)
    }
+
+   // … in `eval_load`:
+   let addr_val = self.eval_expr_with_callbacks(callbacks, addr, tyenv)?;
+   let size = ty.bytes() as usize;
+   // … profiling counter increment …
+   // hand off to the symbolic memory plane on `self.state`
 
 If you're adding a *new* memory-access shape (e.g. a guarded load,
 load-linked, gather), the corresponding ``IRStmt`` / ``IRExpr``
@@ -289,11 +293,11 @@ The dispatch site is in
 
 .. code-block:: rust
 
-   IRStmt::Store { addr, data, .. } => {
-       let addr_val = self.eval_expr_with_callbacks(py, callbacks, addr, &irsb.tyenv)?;
-       let data_val = self.eval_expr_with_callbacks(py, callbacks, data, &irsb.tyenv)?;
-       let data_size = ((data_val.width() + 7) / 8) as usize;
-       // … profiling, callback, store …
+   IRStmt::Store { addr, data, endness } => {
+       let addr_val = self.eval_expr_with_callbacks(callbacks, addr, &irsb.tyenv)?;
+       let mut data_val = self.eval_expr_with_callbacks(callbacks, data, &irsb.tyenv)?;
+       let data_size = data_val.width().div_ceil(8) as usize;
+       // … profiling, `mem_write` inspect dispatch, callback, store …
    }
 
 A new store-shaped statement (CAS, LL/SC, guarded store) goes the same
@@ -741,10 +745,13 @@ are emitted by VEX only on dirty-helper call edges. The Rust
 interpreter routes both to a Python VEX fallback via
 ``CbExecutionError::NeedPythonFallback`` rather than implementing
 native handlers
-(``native/angr/src/interpreter/expressions.rs::eval_expr_with_callbacks``).
+(the ``IRExpr::VECRET | IRExpr::GSPTR`` arm of
+``native/angr/src/interpreter/expressions.rs::eval_expr_with_callbacks_inner``
+— the public ``eval_expr_with_callbacks`` wrapper only adds profiling and
+``inspect`` dispatch before delegating to it).
 The error reason carries the shared ``VECRET_GSPTR_REASON`` marker
 from ``native/angr/src/interpreter/execution_error.rs``; the manager scans
-fallback reasons in ``exploration::run_loop`` and bumps
+fallback reasons in ``exploration::run_loop_single::callback_event`` and bumps
 ``vecret_gsptr_fallback_count`` so future regressions are
 visible via ``mgr.stats()`` / ``mgr.get_fallback_stats()``.
 
