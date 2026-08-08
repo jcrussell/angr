@@ -31,7 +31,7 @@
 //!     states it must terminate its key with the *front index* `i` so ties are
 //!     broken by insertion order (`Fifo`/`Lifo` are trivially positional;
 //!     `CoverageGuided`/`FindDirected`/`LoopHeadRoundRobin` front-scan;
-//!     `DirectedCfgDistance` ranks by `(distance, i)`; `RandomState` draws from
+//!     `DirectedCfgDistance` ranks by `(distance, i)`; `RandomSelection` draws from
 //!     a seeded SplitMix64). No policy may leave a tie unresolved.
 //!   * **The fork-insertion chokepoint** — `policy.on_fork` is the only place
 //!     forks enter `active` (`helpers.rs::push_to_active_or_drop` →
@@ -44,7 +44,10 @@
 //! fields (`CoverageGuided::seen`, `FindDirected::seen`,
 //! `LoopHeadRoundRobin::{dispatched, key_cache}`, `DirectedCfgDistance::{distances,
 //! dispatched}`) are *only ever indexed* (`get`/`contains`/`entry`) — never
-//! iterated. Rust's `HashMap` seeds a fresh `RandomState` hasher per instance,
+//! iterated. Rust's `HashMap` seeds a fresh
+//! `std::collections::hash_map::RandomState` hasher per instance (spelled in
+//! full here because it is std's type, unrelated to this module's
+//! `RandomSelection` policy),
 //! so a single `for (k, v) in map` in a `select` path would make the dispatch
 //! order vary between runs *within the same process*. The
 //! `test_<policy>_selection_trace_deterministic` guards below drive a scripted
@@ -177,14 +180,14 @@ impl SelectionPolicy for Lifo {
 /// self-contained within the two-hook seam (no run-loop plumbing).
 ///
 /// Opt-in only via `set_state_selection_random`; never a default.
-pub(crate) struct RandomState {
+pub(crate) struct RandomSelection {
     /// SplitMix64 state behind a `Mutex` for interior mutability under the
     /// `&self` `select` hook. `Mutex` (not `Cell`) keeps the `Send + Sync`
     /// supertrait bound so a parallel scheduler can share the policy `Arc`.
     rng: Mutex<u64>,
 }
 
-impl RandomState {
+impl RandomSelection {
     /// Construct with an explicit seed. Any `u64` (including 0) is a valid,
     /// deterministic seed — SplitMix64 does not degenerate at zero.
     pub(crate) fn new(seed: u64) -> Self {
@@ -197,10 +200,10 @@ impl RandomState {
     /// crate pulled in for a prototype policy.
     #[allow(
         clippy::expect_used,
-        reason = "`RandomState::rng` poison guard: poison requires a thread to unwind out of a live `MutexGuard`, which `panic = \"abort\"` forecloses — see the module Panic policy header"
+        reason = "`RandomSelection::rng` poison guard: poison requires a thread to unwind out of a live `MutexGuard`, which `panic = \"abort\"` forecloses — see the module Panic policy header"
     )]
     fn next_u64(&self) -> u64 {
-        let mut state = self.rng.lock().expect("RandomState rng poisoned");
+        let mut state = self.rng.lock().expect("RandomSelection rng poisoned");
         *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
         let mut z = *state;
         // Release the RNG mutex before the pure-arithmetic mix — nothing below
@@ -213,7 +216,7 @@ impl RandomState {
     }
 }
 
-impl SelectionPolicy for RandomState {
+impl SelectionPolicy for RandomSelection {
     fn select(&self, active: &mut VecDeque<RustSimState>) -> Option<RustSimState> {
         let len = active.len();
         if len == 0 {
@@ -712,7 +715,7 @@ impl SelectionPolicy for FindDirected {
 mod tests {
     use super::{
         CoverageGuided, DirectedCfgDistance, Fifo, FindDirected, Lifo, LoopHeadRoundRobin,
-        RandomState, SelectionPolicy,
+        RandomSelection, SelectionPolicy,
     };
     use crate::state::RustSimState;
     use std::collections::{HashMap, VecDeque};
@@ -725,13 +728,13 @@ mod tests {
         st
     }
 
-    /// Run a full drain under `RandomState(seed)` over `n` fresh states and
+    /// Run a full drain under `RandomSelection(seed)` over `n` fresh states and
     /// return the dispatch order expressed as *insertion indices* (0..n). Two
     /// runs with the same seed must return the same index sequence even though
     /// absolute `state_id`s differ between runs.
     fn drain_order(seed: u64, n: usize) -> Vec<usize> {
         let _ctx = Context::thread_local();
-        let policy = RandomState::new(seed);
+        let policy = RandomSelection::new(seed);
         let mut active: VecDeque<RustSimState> = VecDeque::new();
         let mut id_to_idx: HashMap<u64, usize> = HashMap::new();
         for i in 0..n {
@@ -781,14 +784,14 @@ mod tests {
 
     #[test]
     fn test_random_select_empty_is_none() {
-        let policy = RandomState::new(7);
+        let policy = RandomSelection::new(7);
         let mut active: VecDeque<RustSimState> = VecDeque::new();
         assert!(policy.select(&mut active).is_none());
     }
 
     #[test]
     fn test_random_policy_name() {
-        assert_eq!(RandomState::new(0).name(), "random");
+        assert_eq!(RandomSelection::new(0).name(), "random");
     }
 
     /// Drain a `CoverageGuided` policy over states parked at the given `pcs`
@@ -1359,7 +1362,7 @@ mod tests {
         match name {
             "fifo" => Box::new(Fifo),
             "lifo" => Box::new(Lifo),
-            "random" => Box::new(RandomState::new(0x0D15_EA5E)),
+            "random" => Box::new(RandomSelection::new(0x0D15_EA5E)),
             "coverage" => Box::new(CoverageGuided::new()),
             "loop_head" => Box::new(LoopHeadRoundRobin::new()),
             "directed" => Box::new(DirectedCfgDistance::new(distances.clone(), 2)),

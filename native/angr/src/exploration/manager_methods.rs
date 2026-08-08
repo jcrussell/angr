@@ -296,7 +296,7 @@ impl RustExplorationManager {
     /// byte-reproducible.
     #[angr_macros::steady_guarded]
     pub fn set_state_selection_random(&mut self, seed: u64) {
-        self.policy = Arc::new(selection_policy::RandomState::new(seed));
+        self.policy = Arc::new(selection_policy::RandomSelection::new(seed));
         log::debug!("State selection set to RANDOM (seed={seed})");
     }
 
