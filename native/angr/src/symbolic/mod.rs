@@ -22,7 +22,7 @@
 //!
 //! | File | Holds |
 //! |------|-------|
-//! | `value.rs` | The `RustBV` enum itself (`Concrete` / `Symbolic` / `Expression`) plus `BVOp`, `BitWidth`, `FloatPrec`, `FloatOpKind`, and the constructor / accessor `impl` block. |
+//! | `value.rs` | The `RustBV` enum itself (`Concrete` / `Symbolic` / `Expression`) plus `BVOp`, `FloatPrec`, `FloatOpKind`, and the constructor / accessor `impl` block. |
 //! | `value_ops.rs` | Slice .2: arithmetic, bitwise, shift/rotate, comparison and structural (`extract` / `concat` / `reverse` / extend) ops, and the construction-time canonicalization rules they run. |
 //! | `value_z3.rs` | Slice .2: Z3 AST construction — `to_z3_ast*` / `to_z3_bool*`, the memoized integer builder, and the FP builders. **(z3)** |
 //! | `bv_concrete.rs` | Z3-independent concrete folds over raw `u128`. Deliberately Z3-free so concrete paths still build with no z3. |
@@ -151,6 +151,6 @@ pub use stats::{
     record_zext_cmp_trivial_decide, reset_solver_stats,
 };
 pub use table::{BinaryOpError, RustSymbolTable};
-pub use value::{BVOp, BitWidth, FloatOpKind, FloatPrec, RustBV};
+pub use value::{BVOp, FloatOpKind, FloatPrec, RustBV};
 #[cfg(feature = "vex-engine-z3")]
 pub use z3_ast_ptr::Z3AstPtr;

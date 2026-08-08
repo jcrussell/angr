@@ -303,54 +303,6 @@ impl BVOp {
     }
 }
 
-/// Bit width for parameterized operations.
-/// This reduces ~200 VEX ops to ~30 parameterized variants.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum BitWidth {
-    W1 = 1,
-    W8 = 8,
-    W16 = 16,
-    W32 = 32,
-    W64 = 64,
-    W128 = 128,
-}
-
-impl BitWidth {
-    #[inline]
-    pub fn bits(&self) -> u32 {
-        *self as u32
-    }
-
-    #[inline]
-    pub fn bytes(&self) -> u32 {
-        self.bits() / 8
-    }
-
-    pub fn from_bits(bits: u32) -> Option<Self> {
-        match bits {
-            1 => Some(BitWidth::W1),
-            8 => Some(BitWidth::W8),
-            16 => Some(BitWidth::W16),
-            32 => Some(BitWidth::W32),
-            64 => Some(BitWidth::W64),
-            128 => Some(BitWidth::W128),
-            _ => None,
-        }
-    }
-
-    #[inline]
-    pub fn mask(&self) -> u128 {
-        match self {
-            BitWidth::W1 => 0x1,
-            BitWidth::W8 => 0xFF,
-            BitWidth::W16 => 0xFFFF,
-            BitWidth::W32 => 0xFFFF_FFFF,
-            BitWidth::W64 => 0xFFFF_FFFF_FFFF_FFFF,
-            BitWidth::W128 => u128::MAX,
-        }
-    }
-}
-
 /// A bitvector value that can be concrete or symbolic.
 ///
 /// This is the core value type for the VEX execution engine. All register
