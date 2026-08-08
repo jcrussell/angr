@@ -182,14 +182,19 @@ impl RustExplorationManager {
             ));
         }
 
-        // Look up all states by ID via the state_index fast-path, forking each
+        // Look up all states by ID via the state_index fast-path, copying each
         // (the sources stay in place for Python's _merge_drop). Was an O(n^2)
         // nested all-stash scan that ignored state_index entirely
         // (angr-ph300.27).
+        //
+        // `clone_for_merge`, not `fork`: fork resets the removal tombstones, so
+        // forking here threw away the very sets `merge` needs to keep a
+        // branch's `remove_hook`/`set_option(_, false)`/`unsetenv` from being
+        // resurrected (angr-sqfj8.33).
         let mut states: Vec<RustSimState> = Vec::new();
         for &sid in &state_ids {
             match self.sm.find_state(sid) {
-                Some(state) => states.push(state.fork()),
+                Some(state) => states.push(state.clone_for_merge()),
                 None => return Err(PyValueError::new_err(format!("state {sid} not found"))),
             }
         }

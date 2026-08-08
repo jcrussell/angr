@@ -465,3 +465,177 @@ fn drop_state_from_copies_does_not_notify() {
         "dropping a non-active copy must not notify the policy",
     );
 }
+
+// =============================================================================
+// _merge_states — removal-tombstone survival through the manager-level path
+// =============================================================================
+//
+// `RustSimState::merge` grew removal tombstones in the angr-9ke6b.121 follow-up
+// so one branch's explicit `remove_hook` / `set_option(_, false)` / `unsetenv`
+// can't be resurrected by a sibling that never touched the item, and
+// `state_tests.rs` covers that on `merge` directly. `_merge_states` is the
+// entry point `register_merge_point`'s `NativeTechnique::MergePoint` actually
+// reaches in a real run; it takes its own copy of each input first, and taking
+// that copy with `fork` (which resets the tombstones by design) silently undid
+// the whole fix on that path — hence `clone_for_merge` (angr-sqfj8.33).
+//
+// These drive `_merge_states` rather than a full `register_merge_point`
+// exploration: the merge-point technique's only merge action *is* this call, so
+// a run would add scheduler noise without covering anything more.
+
+/// Seed a state carrying a hook, a sim option and an env var into `active`,
+/// returning `(mgr, ancestor_id)`.
+fn merge_tombstone_mgr() -> (RustExplorationManager, u64) {
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+
+    let mut ancestor = RustSimState::new("amd64").expect("state");
+    ancestor.add_hook(0x400000);
+    ancestor.set_option("SHORT_READS", true);
+    ancestor.setenv(b"PATH".to_vec(), b"/a".to_vec());
+    let ancestor_id = ancestor.state_id();
+    mgr.sm.push(STASH_ACTIVE, ancestor);
+    mgr.rebuild_state_index();
+
+    (mgr, ancestor_id)
+}
+
+/// Regression for angr-sqfj8.33: a branch that explicitly removed a hook /
+/// option / env var must keep it removed after `_merge_states`, even though a
+/// sibling branch still has it live. `_merge_states` forking its inputs reset
+/// the tombstones before `merge` could consult them, so every removal was
+/// resurrected on this path.
+#[test]
+fn merge_states_removal_wins_over_untouched_sibling() {
+    let (mut mgr, ancestor_id) = merge_tombstone_mgr();
+
+    let a_id = mgr
+        ._fork_state_to_stash(ancestor_id, STASH_ACTIVE)
+        .expect("fork a");
+    let b_id = mgr
+        ._fork_state_to_stash(ancestor_id, STASH_ACTIVE)
+        .expect("fork b");
+
+    // `a` removes all three; `b` never touches any of them.
+    {
+        let a = mgr.find_state_mut(a_id).expect("state a");
+        a.remove_hook(0x400000);
+        a.set_option("SHORT_READS", false);
+        a.unsetenv(b"PATH");
+    }
+
+    let merged_id = mgr
+        ._merge_states(vec![a_id, b_id], STASH_ACTIVE)
+        .expect("merge a+b");
+    let merged = mgr.find_state(merged_id).expect("merged state");
+
+    assert!(
+        !merged.is_hooked(0x400000),
+        "a's remove_hook must survive _merge_states, not be resurrected by b"
+    );
+    assert!(
+        !merged.has_option("SHORT_READS"),
+        "a's set_option(false) must survive _merge_states"
+    );
+    assert!(
+        merged.environment().get(b"PATH".as_slice()).is_none(),
+        "a's unsetenv must survive _merge_states"
+    );
+}
+
+/// The tombstone carry must not regress the addition direction: an item only
+/// one branch added is still unioned into the `_merge_states` result.
+#[test]
+fn merge_states_still_unions_additions_alongside_removals() {
+    let (mut mgr, ancestor_id) = merge_tombstone_mgr();
+
+    let a_id = mgr
+        ._fork_state_to_stash(ancestor_id, STASH_ACTIVE)
+        .expect("fork a");
+    let b_id = mgr
+        ._fork_state_to_stash(ancestor_id, STASH_ACTIVE)
+        .expect("fork b");
+
+    {
+        let a = mgr.find_state_mut(a_id).expect("state a");
+        a.remove_hook(0x400000);
+    }
+    {
+        let b = mgr.find_state_mut(b_id).expect("state b");
+        b.add_hook(0x500000);
+        b.set_option("OTHER_ONLY", true);
+        b.setenv(b"HOME".to_vec(), b"/root".to_vec());
+    }
+
+    let merged_id = mgr
+        ._merge_states(vec![a_id, b_id], STASH_ACTIVE)
+        .expect("merge a+b");
+    let merged = mgr.find_state(merged_id).expect("merged state");
+
+    assert!(
+        !merged.is_hooked(0x400000),
+        "a's removal still wins alongside an unrelated addition from b"
+    );
+    assert!(
+        merged.is_hooked(0x500000),
+        "b's brand-new hook is still unioned in"
+    );
+    assert!(
+        merged.has_option("OTHER_ONLY"),
+        "b's brand-new option is still unioned in"
+    );
+    assert_eq!(
+        merged
+            .environment()
+            .get(b"HOME".as_slice())
+            .map(|v| v.as_slice()),
+        Some(b"/root".as_slice()),
+        "b's brand-new env var is still unioned in"
+    );
+}
+
+/// A branch that removes and then re-adds on its own before the merge must end
+/// up with the item live: `clone_for_merge` carries the tombstone *set*, and
+/// the re-add has to have already cleared its entry.
+#[test]
+fn merge_states_reinstated_item_survives_own_tombstone() {
+    let (mut mgr, ancestor_id) = merge_tombstone_mgr();
+
+    let a_id = mgr
+        ._fork_state_to_stash(ancestor_id, STASH_ACTIVE)
+        .expect("fork a");
+    let b_id = mgr
+        ._fork_state_to_stash(ancestor_id, STASH_ACTIVE)
+        .expect("fork b");
+
+    {
+        let a = mgr.find_state_mut(a_id).expect("state a");
+        a.remove_hook(0x400000);
+        a.add_hook(0x400000);
+        a.set_option("SHORT_READS", false);
+        a.set_option("SHORT_READS", true);
+        a.unsetenv(b"PATH");
+        a.setenv(b"PATH".to_vec(), b"/a2".to_vec());
+    }
+
+    let merged_id = mgr
+        ._merge_states(vec![a_id, b_id], STASH_ACTIVE)
+        .expect("merge a+b");
+    let merged = mgr.find_state(merged_id).expect("merged state");
+
+    assert!(
+        merged.is_hooked(0x400000),
+        "re-added hook must be live after _merge_states"
+    );
+    assert!(
+        merged.has_option("SHORT_READS"),
+        "re-enabled option must be live after _merge_states"
+    );
+    assert_eq!(
+        merged
+            .environment()
+            .get(b"PATH".as_slice())
+            .map(|v| v.as_slice()),
+        Some(b"/a2".as_slice()),
+        "re-setenv value must win after _merge_states"
+    );
+}

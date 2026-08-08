@@ -261,6 +261,32 @@ impl RustSimState {
         )
     }
 
+    /// Copy of this state for use as a **merge input** (`_merge_states`).
+    ///
+    /// `_merge_states` must not consume the states it merges — Python's
+    /// `_merge_drop` still owns the originals in their stashes — so it works
+    /// off copies. [`Self::fork`] is the wrong copy to take there: it declares
+    /// a fresh divergence point and therefore *clears* the removal tombstones
+    /// (`removed_hooks` / `removed_sim_options` / `removed_env_keys`), which
+    /// are exactly the sets [`Self::merge`] consults to stop one branch's
+    /// explicit `remove_hook` / `set_option(_, false)` / `unsetenv` from being
+    /// resurrected by a sibling that never touched the item (see the
+    /// module-level note above). Forking first silently defeated that fix on
+    /// the entire manager-level merge path — `RustSimState::merge` was correct,
+    /// but nothing reached it with tombstones intact (angr-sqfj8.33).
+    ///
+    /// So: the same copy `fork` makes (fresh `state_id`, CoW everything), but
+    /// the tombstones carry over unchanged as they do in
+    /// [`Self::translate_state`] — a merge input is the same logical branch
+    /// observed one step later, not a new path.
+    pub fn clone_for_merge(&self) -> Self {
+        let mut copy = self.fork();
+        copy.removed_hooks = self.removed_hooks.clone();
+        copy.removed_sim_options = self.removed_sim_options.clone();
+        copy.removed_env_keys = self.removed_env_keys.clone();
+        copy
+    }
+
     /// Cross-context twin of [`Self::fork`] (angr-ahypj): produce a copy of
     /// this state whose every context-bound `RustBV` — register overlays,
     /// symbolic memory (`symbolic_objects` / `multi_objects` / pending
