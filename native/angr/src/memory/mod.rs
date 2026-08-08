@@ -62,15 +62,12 @@ pub struct PendingWrite {
     pub size: u32,
     /// Optional condition (for conditional stores).
     pub condition: Option<RustBV>,
-    /// Hint: page range that this write could touch (min_page, max_page).
-    /// If None, the write could be to any address.
-    pub page_hint: Option<(u64, u64)>,
 }
 
 impl PendingWrite {
     /// Deep-translate the symbolic `addr`/`value`/`condition` BVs into
-    /// `target_ctx` (angr-ahypj). Size and page-hint metadata are
-    /// context-independent and copied verbatim.
+    /// `target_ctx` (angr-ahypj). `size` is context-independent and copied
+    /// verbatim.
     #[cfg(feature = "vex-engine-z3")]
     pub fn translate_into(&self, target_ctx: &z3::Context) -> PendingWrite {
         PendingWrite {
@@ -81,7 +78,6 @@ impl PendingWrite {
                 .condition
                 .as_ref()
                 .map(|c| c.translate_into(target_ctx)),
-            page_hint: self.page_hint,
         }
     }
 }
@@ -1349,7 +1345,6 @@ impl SymbolicMemory {
             value: pw.value.clone(),
             size: pw.size,
             condition,
-            page_hint: pw.page_hint,
         }
     }
 }

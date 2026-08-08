@@ -158,7 +158,6 @@ fn test_pending_writes_are_merge_guarded() {
         value: RustBV::symbolic(&ctx, "wa_val", 8),
         size: 1,
         condition: None,
-        page_hint: None,
     });
 
     let mut b = SymbolicMemory::new(Endness::Little);
@@ -167,7 +166,6 @@ fn test_pending_writes_are_merge_guarded() {
         value: RustBV::symbolic(&ctx, "wb_val", 8),
         size: 1,
         condition: Some(RustBV::concrete(1, 1)),
-        page_hint: None,
     });
 
     assert!(a.merge(&b, &RustBV::concrete(1, 1), &ctx));

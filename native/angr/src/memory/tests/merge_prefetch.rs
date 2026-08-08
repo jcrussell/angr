@@ -157,7 +157,6 @@ fn test_merge_extends_pending_writes_from_other() {
         value: RustBV::concrete(0x99, 8),
         size: 1,
         condition: None,
-        page_hint: None,
     });
 
     assert_eq!(self_mem.pending_writes_count(), 0);

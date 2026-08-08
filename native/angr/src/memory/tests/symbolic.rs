@@ -750,7 +750,6 @@ fn test_fork_pending_writes_isolation() {
         value: p_val,
         size: 2,
         condition: None,
-        page_hint: Some((1, 1)),
     });
     assert_eq!(parent.pending_writes_count(), 1);
 
@@ -769,7 +768,6 @@ fn test_fork_pending_writes_isolation() {
         value: c_val,
         size: 2,
         condition: None,
-        page_hint: Some((2, 2)),
     });
 
     assert_eq!(
@@ -1036,7 +1034,6 @@ fn test_pending_write_visible_after_flush() {
         value: new_val,
         size: 2,
         condition: None,
-        page_hint: Some((1, 1)),
     });
     assert_eq!(mem.pending_writes_count(), 1);
 
@@ -1081,7 +1078,6 @@ fn test_fork_pending_writes_visible_in_both_after_flush() {
         value: RustBV::concrete(0xBBBB, 16),
         size: 2,
         condition: None,
-        page_hint: Some((1, 1)),
     });
 
     let mut child = parent.fork();
@@ -1149,7 +1145,6 @@ fn test_pending_write_flush_signals_lazy_unmapped_candidate() {
         value: RustBV::concrete(0xBBBB, 16),
         size: 2,
         condition: None,
-        page_hint: None,
     });
 
     let err = mem
@@ -1196,7 +1191,6 @@ fn test_pending_write_flush_never_mapped_candidate_is_plain_unmapped() {
         value: RustBV::concrete(0xBBBB, 16),
         size: 2,
         condition: None,
-        page_hint: None,
     });
 
     let err = mem
