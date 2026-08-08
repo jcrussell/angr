@@ -76,10 +76,11 @@ macro_rules! scheduler_counters {
         /// Counters accumulated across all workers during a run. Shared as
         /// atomics, read back into a [`SchedulerStats`] after the pool joins.
         ///
-        /// `pub(crate)` so the coordinator's forthcoming duplex-protocol
-        /// `RunSession` (run_loop_steady.rs) can own one directly (angr-vh834
-        /// steady-state redesign, Phase 1). The scheduler still constructs and
-        /// reads it here.
+        /// `pub(crate)` so the coordinator's duplex-protocol `RunSession`
+        /// (scheduler_pool.rs) can own one directly (angr-vh834 steady-state
+        /// redesign, Phase 1); run_loop_steady.rs's `SteadySession` reaches it
+        /// through an `Arc<RunSession>`. The scheduler still constructs and
+        /// reads it here, so every *field* stays `pub(super)`.
         #[derive(Default)]
         pub(crate) struct SchedulerCounters {
             $(
@@ -153,7 +154,7 @@ scheduler_counters! {
     pub(super) reattaches: count,
     /// Bounce states that made a full worker->coordinator->worker round trip.
     /// Wired by the steady-state coordinator (run_loop_steady.rs); 0 in wave mode.
-    pub(crate) bounce_roundtrips: count,
+    pub(super) bounce_roundtrips: count,
     /// States re-injected after a Python resume callback
     /// ([`RunSession::inject_resumed`]); 0 in wave mode.
     pub(super) resume_reinjects: count,
@@ -206,10 +207,10 @@ scheduler_counters! {
     /// (`worker::offload_is_affordable`, angr-8shhe). Surfaced on the snapshot so
     /// a migration-dominated frontier is diagnosable from the wave log rather
     /// than from a flamegraph (angr-faorh/8shhe).
-    pub(crate) serde_ns: nanos,
+    pub(super) serde_ns: nanos,
     /// Nanoseconds all workers spent inside the step function itself — the useful
     /// work the serde is a tax on.
-    pub(crate) step_ns: nanos,
+    pub(super) step_ns: nanos,
 }
 
 impl SchedulerCounters {
