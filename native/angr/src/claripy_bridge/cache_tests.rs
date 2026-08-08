@@ -132,7 +132,7 @@ fn test_expression_by_operands_miss_returns_none() {
 // C5 width-mismatch guard, which evicts a stale (aliased) AST before re-minting
 // under the correct width.
 #[test]
-fn test_evict_claripy_ast_clears_both_stores() {
+fn test_evict_claripy_ast_clears_registry() {
     const SYMBOL_ID: u64 = 0x54AB_CDEF_0123;
 
     Python::initialize();

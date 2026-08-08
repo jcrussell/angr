@@ -51,6 +51,13 @@ fn ensure_claripy_ast(
             return Ok(obj.clone_ref(py));
         }
         Ok(false) => true,
+        // SILENT(cat-a): a `hasattr` that itself errors (a `__getattr__` that
+        // raises) answers `false` here, but this flag only gates the debug log
+        // below — it changes no control flow, and claiming "missing 'op' attr"
+        // for an object we could not interrogate would be the misleading half.
+        // The object still falls through to the type dispatch and, being
+        // neither `bool` nor `int`, lands on the tagged unknown-type fallback
+        // at the end of this function, which warns on its own (angr-sqfj8.23).
         Err(e) => {
             log::warn!("ensure_claripy_ast: hasattr('op') failed: {e}");
             false
@@ -85,6 +92,13 @@ fn ensure_claripy_ast(
     // If it's an int, wrap in BVV with the provided width hint
     // Try i128 first for larger values, then fall back to i64
     if type_name == "int" {
+        // SILENT(cat-b): a bare Python int carries no width, so an absent
+        // `width_hint` is defaulted to 64 rather than refused. Both call sites
+        // (`rustbv_to_claripy_memo`'s symbolic-cache-hit arm and its
+        // `RustBV::Expression` operand loop) always pass a `Some` derived from
+        // the corresponding `RustBV::width()`, so the default is currently
+        // unreachable; if a future caller omits the hint, a narrower operand
+        // widens to 64 bits instead of erroring (angr-sqfj8.23).
         let width = width_hint.unwrap_or(64);
         // Try to extract as i128 for larger values
         if let Ok(int_val) = bound.extract::<i128>() {
@@ -108,7 +122,16 @@ fn ensure_claripy_ast(
             .map(std::convert::Into::into);
     }
 
-    // Otherwise return as-is and hope for the best
+    // SILENT(cat-c): anything that is neither an AST (no `op` attr) nor a
+    // `bool`/`int` we know how to wrap is handed back untouched. Both callers
+    // feed the result straight into claripy op construction, so a genuinely
+    // wrong object (a `str`, a `float`, `None`) becomes either a `TypeError`
+    // or the `NotImplemented` singleton one frame later rather than a raised
+    // error here — the wrong-answer-risk class. Not upgraded to an `Err`
+    // because the reachable case is the opposite one: an object whose
+    // `hasattr('op')` raised above is very likely a real AST, and returning it
+    // unchanged is correct. Warns unconditionally so the two are
+    // distinguishable in a log (angr-sqfj8.23).
     log::warn!("ensure_claripy_ast: unknown type {type_name}, returning as-is");
     Ok(obj.clone_ref(py))
 }
@@ -405,6 +428,13 @@ fn rustbv_to_claripy_memo(
         // id-level aliasing bug (e.g. id:0 collisions, angr-owr37) could
         // otherwise hand back a wrong-width AST silently. Bool ASTs have
         // length=None and are represented as width-1, matching import.
+        //
+        // SILENT(cat-b): a `.length` read that *raises* is conflated with the
+        // legitimate `length is None` (Bool) case and also yields 1. The loss
+        // is bounded: a non-1 `*width` then takes the eviction path below and
+        // re-mints the symbol, dropping only the cached AST's identity and any
+        // annotations on it, never producing a wrong-width AST — which is the
+        // outcome this guard exists to prevent (angr-sqfj8.23).
         let cached_width: u32 = cached
             .bind(py)
             .getattr("length")

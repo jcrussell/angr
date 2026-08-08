@@ -177,6 +177,13 @@ fn claripy_to_rustbv_depth(
             // already include length, so collisions are exceedingly rare, but
             // returning a wrong-width BV would silently corrupt downstream ops.
             // Bool ASTs have length=None and we represent them as width-1 BVs.
+            //
+            // SILENT(cat-b): mirror of the export-side guard in
+            // `rustbv_to_claripy_memo` — a `.length` read that raises is
+            // conflated with the `length is None` (Bool) case and yields 1. A
+            // wider `cached_bv` then takes the eviction path below and is
+            // reconverted from scratch, costing the cached conversion but
+            // never returning a wrong-width BV (angr-sqfj8.23).
             let expected_width: u32 = ast
                 .getattr("length")
                 .ok()
