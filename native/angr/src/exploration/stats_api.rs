@@ -5,12 +5,14 @@
 //! and `native_procedure_stats`. The pyclass-facing thin wrappers live in
 //! `mod.rs` and forward to the `pub(crate)` bodies in this module.
 //!
-//! PyO3 0.27.2 in this project does not enable `multiple-pymethods`, so each
-//! pyclass is limited to a single `#[pymethods]` impl block — see
-//! `invariant-pyo3-single-pymethods-impl`. This module mirrors the
-//! `helpers.rs` / `stepping.rs` / `run_loop.rs` / `resume.rs` /
-//! `pending_api.rs` / `state_api.rs` extension-impl pattern used elsewhere in
-//! `exploration/`.
+//! The extension-impl split here predates PyO3's `multiple-pymethods`
+//! feature, which is now enabled (angr-9ke6b.50, see
+//! `invariant-pyo3-multiple-pymethods-enabled`), so the single-block rule no
+//! longer forces it. It is kept as a style choice: thin `#[pyo3]` wrappers
+//! stay next to their siblings while the substantial bodies live here. This
+//! module mirrors the `helpers.rs` / `stepping.rs` / `run_loop.rs` /
+//! `resume.rs` / `pending_api.rs` / `state_api.rs` extension-impl pattern used
+//! elsewhere in `exploration/`.
 //!
 //! This is a Python-boundary module; `unwrap`/`expect` are denied here so a
 //! future panic-on-input landmine cannot be reintroduced without a reviewed,
