@@ -363,6 +363,16 @@ impl PythonCallbacks {
                 is_true,
             ) {
                 Ok(c) => c,
+                // SILENT(cat-b): a guard that will not export to claripy costs
+                // the user this one `constraints` BP fire and nothing else —
+                // the guard itself is already lowered into the state's `RustBV`
+                // constraint set, and this native path never honors a BP's
+                // mutated `added_constraints` anyway (see the doc comment), so
+                // the analysis result is unaffected. Loud failure is the wrong
+                // trade: an observability hook must not abort exploration.
+                // Stays at `debug!` rather than `warn!` because the fork-guard
+                // add site is hot and a systematically-unexportable guard shape
+                // would repeat the message per fork.
                 Err(e) => {
                     log::debug!("constraints inspect export failed (state {state_id}): {e}");
                     return Ok(());
