@@ -233,7 +233,17 @@ pub(super) fn worker_session_loop(
         // requested by a peer/coordinator while this step was in flight — the
         // work is speculative (its products are drained back on the next
         // iteration's cancel check).
-        if t.cancel.is_cancelled() && !outcome.request_cancel {
+        //
+        // Uses `preempts_in_flight`, not `is_cancelled`, for the same reason as
+        // the twin in `worker_loop`: a budget stop charges the step to `run(n)`
+        // and keeps its products, so it is not waste. Today that is a no-op
+        // here — `set_max_dispatches` lives on `WaveJob` only, so a session
+        // transport keeps `max_dispatches == None`, nothing calls
+        // `cancel_for_budget`, and a session `CancelToken` never reaches
+        // `BUDGET_CANCELLED`. Keeping the two predicates identical means adding
+        // budget cancellation to the steady path later cannot silently
+        // misclassify charged steps as speculative (angr-sqfj8.47).
+        if t.cancel.preempts_in_flight() && !outcome.request_cancel {
             t.counters.post_cancel_steps.fetch_add(1, Ordering::SeqCst);
         }
 
