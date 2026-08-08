@@ -195,8 +195,12 @@ fn extract_int_value(obj: Bound<'_, PyAny>) -> Result<u128, BridgeError> {
         return Ok(v);
     }
 
-    // For larger values, use Python's int.to_bytes
-    let bit_length: usize = obj.call_method0("bit_length")?.extract().unwrap_or(128);
+    // For larger values, use Python's int.to_bytes. Propagate an extract
+    // failure rather than assuming some width: guessing here would either
+    // truncate a wide value or spuriously trip the >128 rejection below, and
+    // both are the silently-wrong-answer outcome the angr-cxw7 comment exists
+    // to prevent (angr-sqfj8.24).
+    let bit_length: usize = obj.call_method0("bit_length")?.extract()?;
 
     // RustBV::Concrete stores its value in a u128, so any integer that needs
     // more than 128 significant bits cannot be represented exactly. Silently
@@ -228,6 +232,15 @@ fn extract_int_value(obj: Bound<'_, PyAny>) -> Result<u128, BridgeError> {
 }
 
 /// Check if a Python object is a claripy AST.
+///
+/// SILENT(cat-a): a `hasattr` that itself errors (a `__getattr__` that raises)
+/// is treated as "attribute absent", i.e. "not an AST". This is a dispatch
+/// gate only — both call sites (`load_from_callback` in `interpreter/mod.rs`
+/// and `try_convert_symbolic_value` in `interpreter/expressions.rs`) answer
+/// `false` by falling through to a fresh symbolic BV, which is exactly what a
+/// failed
+/// `claripy_to_rustbv` on such an object would have produced anyway. Nothing
+/// downstream can observe the difference, so there is no error to propagate.
 pub(crate) fn is_claripy_ast(obj: &Bound<'_, PyAny>) -> bool {
     obj.hasattr("op").unwrap_or(false) && obj.hasattr("args").unwrap_or(false)
 }
