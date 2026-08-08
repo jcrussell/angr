@@ -2729,7 +2729,10 @@ The supported-event table above is derived from
 ``_INSPECT_EVENT_SPECS`` in ``angr/exploration/rust_state_proxy.py`` —
 the single source of truth for which inspect events the Rust engine
 dispatches, what attributes each populates, and which bit they occupy
-in the Rust callbacks ``inspect_enabled`` u8 bitmask. The
+in the Rust callbacks ``inspect_enabled`` atomic bitmask — currently
+``AtomicU32`` (widened twice; see the decision history below), with the
+bit-to-event mapping declared by the ``inspect_events!`` invocation that
+defines ``InspectBit`` in ``native/angr/src/callbacks/inspect_bits.rs``. The
 manager-side registry (``_inspect_breakpoints``, ``_INSPECT_EVENT_BITS``
 in ``rust_manager.py``) and the registration-time rejection in
 ``RustInspectProxy._check_event`` both read from this table; the

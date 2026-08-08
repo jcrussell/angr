@@ -785,7 +785,13 @@ impl PythonCallbacks {
     /// 5 exit, 6/7 custom for instruction/irsb, 8/9 call/return,
     /// 10..=12 Python-dispatched (simprocedure/syscall/dirty),
     /// 13/14 tmp_read/tmp_write, 15 statement, 16 expr,
-    /// 17 address_concretization, 18 symbolic_variable.
+    /// 17 address_concretization, 18 symbolic_variable,
+    /// 19 constraints, 20 vex_lift.
+    ///
+    /// That layout is a reader's summary, not the source of truth — the
+    /// canonical table is the `inspect_events!` invocation defining
+    /// `InspectBit` in `callbacks/inspect_bits.rs`; extend this comment
+    /// whenever a row is added there.
     #[pyo3(name = "set_inspect_enabled")]
     pub fn py_set_inspect_enabled(&self, mask: u32) {
         self.inspect_enabled
