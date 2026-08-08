@@ -26,7 +26,6 @@ docs/advanced-topics/rust_engine.rst	(``symbolic/registry.rs:310``) and holds ``
 docs/advanced-topics/rust_engine.rst	(``veritesting.py:256``) against the Python engine, so a
 docs/advanced-topics/rust_engine.rst	(line 466). Per-Callable ``map_loader`` dropped from several ms
 docs/advanced-topics/rust_engine.rst	(see ``z3-rs 0.19+`` note at ``native/angr/src/solver.rs:99``).
-docs/advanced-topics/rust_engine.rst	* ``StashManager`` (``native/angr/src/stash.rs:51``) — straightforward:
 docs/advanced-topics/rust_engine.rst	* ``check_branch_feasibility`` (``context.rs:2304–2383``) — outer
 docs/advanced-topics/rust_engine.rst	**1. ``Rc<RefCell<SymContext>>`` in ``RustSimState`` (state.rs:960).**
 docs/advanced-topics/rust_engine.rst	- ``ExplorationEvent`` (``native/angr/src/exploration/mod.rs:124``) —

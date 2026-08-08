@@ -4953,10 +4953,11 @@ What lives OUTSIDE ``RustSimState``
 For a "load and continue exploration" experience (vs. "load and
 inspect a single state"), the snapshot would also need:
 
-* ``StashManager`` (``native/angr/src/stash.rs:51``) — straightforward:
-  ``HashMap<String, VecDeque<RustSimState>>`` plus a few counters and
-  the state_index ``HashMap<u64, String>`` mirror. Reuse the same
-  per-state codec.
+* ``StashManager`` (``struct StashManager`` in
+  ``native/angr/src/stash.rs``) — straightforward:
+  ``HashMap<String, VecDeque<RustSimState>>`` plus a few terminal-state
+  counters and the ``state_index`` / ``state_roots``
+  ``FxHashMap<u64, ...>`` mirrors. Reuse the same per-state codec.
 * ``RustExplorationManager`` Python wrapper — find/avoid callbacks,
   inspection breakpoints, simoption mirrors. These are
   user-supplied closures; a useful snapshot would record their
