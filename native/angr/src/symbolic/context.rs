@@ -359,12 +359,17 @@ pub struct SymContext {
     /// a fresh merged context — Arc::make_mut works because the merged
     /// SymContext is freshly created with a unique Arc.
     pub(super) symbol_table: Arc<HashMap<String, u64>>,
-    /// Transaction push level, read by `fork()`'s `in_transaction` gate
-    /// (`snapshot_fork_ops`) and exposed for diagnostics via `debug_push_level`.
+    /// Transaction push level, read **only** by `fork()`'s `in_transaction`
+    /// gate (`snapshot_fork_ops`).
     /// The only incrementer was `transaction_begin`, removed in angr-ph300.44
     /// (dead API + latent corruption), so this is now always 0 and the fork
     /// gate consequently always sees no transaction. Kept as a field so the
-    /// gate and `debug_push_level` stay structurally intact.
+    /// gate stays structurally intact. Deliberately **not** exposed as a
+    /// diagnostic: the `debug_push_level` accessor that did so reported a
+    /// constant 0 as if it were live scoping state, which misled anyone
+    /// debugging solver scopes, and was removed in angr-sqfj8.94. Live scope
+    /// depth is [`scope_savepoint_depth`](Self::scope_savepoint_depth) /
+    /// [`bare_z3_push_depth`](Self::bare_z3_push_depth) instead.
     pub(super) push_level: AtomicUsize,
     /// Local-constraint savepoints for **bare** `push()`/`pop()` (angr-ph300.41/.42).
     ///
@@ -739,12 +744,6 @@ impl SymContext {
             ptrs.push(constraint.get_z3_ast().as_ptr() as usize);
         }
         ptrs
-    }
-
-    /// Debug: get the Z3 solver's internal push level.
-    #[cfg(feature = "vex-engine-z3")]
-    pub fn debug_push_level(&self) -> usize {
-        self.push_level.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     // Constraint-mutation &self methods (add_constraint / add_constraint_raw /

@@ -195,12 +195,20 @@ impl RustExplorationManager {
         self.with_state(state_id, |state| {
             let solver_ref = state.solver();
             let ctx = solver_ref.borrow();
-            let push_level = ctx.debug_push_level();
+            // Live scope depth: `scope_savepoint_depth` covers the
+            // shared-lineage branch, `bare_z3_push_depth` the None-lineage
+            // one (exactly one of them is non-zero). The old `push_level`
+            // key reported a permanently-dead transaction counter
+            // (angr-sqfj8.94).
+            let scope_depth = ctx.scope_savepoint_depth();
+            let bare_push_depth = ctx.bare_z3_push_depth();
             let n_constraints = ctx.num_constraints();
             let ptrs = ctx.export_z3_assertion_ptrs();
             Ok(format!(
-                "push_level={}, num_constraints={}, exported_ptrs={}",
-                push_level,
+                "scope_savepoint_depth={}, bare_z3_push_depth={}, \
+                 num_constraints={}, exported_ptrs={}",
+                scope_depth,
+                bare_push_depth,
                 n_constraints,
                 ptrs.len()
             ))
