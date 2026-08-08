@@ -412,6 +412,10 @@ impl RustExplorationManager {
     }
 
     /// Move states between stashes.
+    ///
+    /// `filter_fn` is called with the state id and its return value is tested
+    /// for truth the way Python's `if` would; an exception it raises (directly
+    /// or from `__bool__`) propagates rather than counting as "no match".
     /// See `state_lifecycle::_move_states` for the body.
     pub fn move_states(
         &mut self,

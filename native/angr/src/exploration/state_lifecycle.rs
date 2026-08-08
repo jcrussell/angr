@@ -293,7 +293,13 @@ impl RustExplorationManager {
         Python::attach(|py| -> PyResult<()> {
             for (i, state) in from.iter().enumerate() {
                 let result = filter_fn.call1(py, (state.state_id(),))?;
-                if result.extract::<bool>(py).unwrap_or(false) {
+                // Python predicates are conventionally truthy/falsy rather than
+                // strictly `bool`, so mirror `if filter_fn(sid):`. The former
+                // `extract::<bool>(py).unwrap_or(false)` both mis-read a truthy
+                // non-bool return as "no match" and swallowed an error raised
+                // from `__bool__`; `is_truthy()?` propagates instead of
+                // silently matching nothing (angr-sqfj8.31).
+                if result.bind(py).is_truthy()? {
                     move_indices.push(i);
                 }
             }

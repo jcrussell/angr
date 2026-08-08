@@ -347,6 +347,85 @@ fn move_states_filtered_from_active_notifies_moved_only() {
     );
 }
 
+/// angr-sqfj8.31: a `filter_fn` returning a *truthy non-bool* (the Python
+/// predicate convention) must count as a match. The old
+/// `extract::<bool>(py).unwrap_or(false)` read a non-empty string as "no
+/// match" and moved nothing.
+#[test]
+fn move_states_filter_accepts_truthy_non_bool() {
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    for v in [0x10u128, 0x20] {
+        let mut s = RustSimState::new("amd64").expect("state");
+        s.set_register("rax", RustBV::concrete(v, 64));
+        mgr.sm.push(STASH_ACTIVE, s);
+    }
+
+    Python::initialize();
+    let moved = Python::attach(|py| {
+        // Returns a non-empty `str` — truthy, but not a `bool` or an `int`.
+        let filter = pyo3::types::PyCFunction::new_closure(
+            py,
+            None,
+            None,
+            |_args, _kwargs| -> pyo3::PyResult<String> { Ok("yes".to_owned()) },
+        )
+        .expect("closure")
+        .into_any()
+        .unbind();
+        mgr._move_states(STASH_ACTIVE, "found", Some(filter))
+            .expect("filtered move")
+    });
+
+    assert_eq!(moved, 2, "truthy non-bool filter results count as matches");
+    assert_eq!(mgr.sm.stashes().get("found").map(VecDeque::len), Some(2));
+    assert_eq!(
+        mgr.sm.stashes().get(STASH_ACTIVE).map(VecDeque::len),
+        Some(0)
+    );
+}
+
+/// angr-sqfj8.31: an exception raised while evaluating the filter's return
+/// value for truth must surface as `Err`, not be swallowed into "no match".
+#[test]
+fn move_states_filter_bool_error_propagates() {
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    let mut s = RustSimState::new("amd64").expect("state");
+    s.set_register("rax", RustBV::concrete(0x10, 64));
+    mgr.sm.push(STASH_ACTIVE, s);
+
+    Python::initialize();
+    Python::attach(|py| {
+        // `__bool__` raises, so `call1` succeeds but the truth test does not.
+        let module = pyo3::types::PyModule::from_code(
+            py,
+            &std::ffi::CString::new(
+                "class Boom:\n    def __bool__(self):\n        raise ValueError('boom')\n\ndef f(sid):\n    return Boom()\n",
+            )
+            .expect("cstring"),
+            &std::ffi::CString::new("boom.py").expect("cstring"),
+            &std::ffi::CString::new("boom").expect("cstring"),
+        )
+        .expect("module");
+        let filter = module.getattr("f").expect("f").unbind();
+
+        let err = mgr
+            ._move_states(STASH_ACTIVE, "found", Some(filter))
+            .expect_err("__bool__ raising must propagate");
+        assert!(err.to_string().contains("boom"), "got: {err}");
+    });
+
+    // Nothing moved, and the source stash is untouched.
+    assert_eq!(
+        mgr.sm.stashes().get(STASH_ACTIVE).map(VecDeque::len),
+        Some(1)
+    );
+    assert_eq!(
+        mgr.sm.stashes().get("found").map_or(0, VecDeque::len),
+        0,
+        "no state reached the destination stash",
+    );
+}
+
 /// `_move_state` (single) out of STASH_ACTIVE notifies; out of another stash
 /// does not.
 #[test]
