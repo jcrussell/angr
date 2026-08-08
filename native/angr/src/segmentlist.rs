@@ -1,3 +1,28 @@
+//! Sorted, non-overlapping address-range bookkeeping.
+//!
+//! A [`SegmentList`] tracks which byte ranges of an address space are occupied
+//! and, optionally, what *sort* of thing occupies each one. It is backed by a
+//! `RangeMap<u64, Option<String>>`, so adjacent ranges carrying the same sort
+//! coalesce automatically and lookups are logarithmic rather than a linear
+//! walk. [`Segment`] is the `[start, end)` + sort value type handed back to
+//! Python, and [`SegmentListIter`] iterates a *snapshot* of the segments so
+//! Python can mutate the list while iterating.
+//!
+//! Two consumers drive the design, both on the Python side:
+//!
+//! * `CFGFast` (`angr/analyses/cfg/cfg_fast.py`) keeps a `SegmentList` of the
+//!   binary regions it has already recovered, tagged with sorts like `"code"`
+//!   / `"data"`, and asks it for the next unscanned address. This is the hot
+//!   path: a CFG recovery performs many thousands of occupy/query calls, which
+//!   is why the structure lives in Rust at all.
+//! * `HistoryTrackingMixin`
+//!   (`angr/storage/memory_mixins/paged_memory/pages/history_tracking_mixin.py`)
+//!   uses sort-less lists to record which offsets of a page changed.
+//!
+//! See the "pure value types" entry for this file in
+//! `docs/advanced-topics/rust_engine.rst` for how it fits the Send+Sync
+//! export surface.
+
 use std::cmp::{max, min};
 use std::collections::HashSet;
 
@@ -76,7 +101,7 @@ impl Segment {
             "[{:#x}-{:#x}, {}]",
             self.start,
             self.end,
-            self.sort.clone().unwrap_or("None".to_string())
+            self.sort.as_deref().unwrap_or("None")
         )
     }
 }

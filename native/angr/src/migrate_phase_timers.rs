@@ -63,8 +63,9 @@ pub(crate) static MIGRATE_RAW_CONSTRAINT_COUNT: AtomicU64 = AtomicU64::new(0);
 /// not). Reported as `migrate_roundtrip_ns`.
 pub(crate) static MIGRATE_ROUNDTRIP_NS: AtomicU64 = AtomicU64::new(0);
 
-/// Read `ANGR_MIGRATE_PHASE_TIMERS` exactly once. Any non-empty value (the
-/// var merely being present) enables the timers.
+/// Read `ANGR_MIGRATE_PHASE_TIMERS` exactly once. The timers are enabled by
+/// the var merely being *present*, whatever its value — including the empty
+/// string (`ANGR_MIGRATE_PHASE_TIMERS=`) and `0`. Unset it to turn them off.
 #[inline]
 pub(crate) fn enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
