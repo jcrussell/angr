@@ -599,18 +599,22 @@ impl SymbolicMemory {
         // `check_perms_range` skips pages that aren't mapped yet, so only
         // pre-existing pages are consulted — matching `store_concrete`, which
         // only ever sees already-mapped pages.
+        // The page range is loop-invariant across the two passes, so compute it
+        // once here and reuse it below (angr-0h6hm). Building the Vec inside
+        // this loop rather than in a separate pre-pass keeps the original
+        // interleaving of `end_page_inclusive` and permission errors.
+        let mut page_ranges: Vec<(u64, u64)> = Vec::with_capacity(addrs.len());
         for &cand in addrs {
             let start_page = cand >> 12;
             let end_page = end_page_inclusive(cand, size as u64)?;
             self.check_perms_range(start_page, end_page, Permission::W)?;
+            page_ranges.push((start_page, end_page));
         }
 
         // Auto-map all candidate byte addresses before installing — matches
         // what set_multi_alternatives does per-byte, but we batch it so the
         // permission check happens up-front for every page.
-        for &cand in addrs {
-            let start_page = cand >> 12;
-            let end_page = end_page_inclusive(cand, size as u64)?;
+        for (start_page, end_page) in page_ranges {
             for page_num in start_page..=end_page {
                 self.pages
                     .entry(page_num)
