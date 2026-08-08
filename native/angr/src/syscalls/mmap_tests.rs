@@ -737,3 +737,106 @@ fn mmap2_handler_metadata() {
     assert_eq!(h.name(), "mmap2");
     assert_eq!(h.num_args(), 6);
 }
+
+// --- Oversized-request cap (angr-c7xno.80) -------------------------------
+//
+// `length` is fully guest-controlled and each mapped page costs a real eager
+// heap allocation, so `do_mmap` refuses anything above `MAX_MMAP_SIZE`. These
+// tests pin the reject (rather than allocate-or-fall-back) behavior; they only
+// ever exercise the *rejected* side, since mapping a full 256 MiB just to
+// prove the boundary would make the unit suite allocate 65536 pages.
+
+#[test]
+fn oversized_length_returns_neg_one_without_mapping() {
+    let h = NativeMmapSyscall;
+    let mut state = fresh_state();
+    // The DoS shape from the audit: mmap(NULL, 0x7ffffffff000, RW, ANON|PRIVATE).
+    let outcome = h
+        .call(
+            &mut state,
+            &args(0, 0x7FFF_FFFF_F000, 0x3, ANON_PRIVATE, ANON_FD, 0),
+        )
+        .expect("must complete natively, not fall back");
+    match outcome {
+        SyscallOutcome::Continue { ret } => assert_eq!(ret, u64::MAX, "expected MAP_FAILED"),
+        other => panic!("expected Continue, got {other:?}"),
+    }
+    assert!(
+        state
+            .memory()
+            .page_permissions(DEFAULT_MMAP_BASE >> 12)
+            .is_none(),
+        "no page may be mapped for a rejected request",
+    );
+    assert_eq!(
+        state.mmap_base(),
+        DEFAULT_MMAP_BASE,
+        "mmap_base must not advance on a rejected request",
+    );
+}
+
+#[test]
+fn length_one_byte_over_cap_is_rejected() {
+    let h = NativeMmapSyscall;
+    let mut state = fresh_state();
+    let outcome = h
+        .call(
+            &mut state,
+            &args(0, MAX_MMAP_SIZE + 1, 0x3, ANON_PRIVATE, ANON_FD, 0),
+        )
+        .expect("must complete natively");
+    match outcome {
+        SyscallOutcome::Continue { ret } => assert_eq!(ret, u64::MAX),
+        other => panic!("expected Continue, got {other:?}"),
+    }
+    assert_eq!(state.mmap_base(), DEFAULT_MMAP_BASE);
+}
+
+#[test]
+fn oversized_map_fixed_is_rejected_before_unmapping() {
+    let h = NativeMmapSyscall;
+    let mut state = fresh_state();
+    let target = 0x5000_0000_u64;
+    state.memory_mut().map(target, 0x1000, Permission::RW);
+
+    let outcome = h
+        .call(
+            &mut state,
+            &args(
+                target,
+                0x7FFF_FFFF_F000,
+                0x3,
+                ANON_PRIVATE | MAP_FIXED,
+                ANON_FD,
+                0,
+            ),
+        )
+        .expect("must complete natively");
+    match outcome {
+        SyscallOutcome::Continue { ret } => assert_eq!(ret, u64::MAX),
+        other => panic!("expected Continue, got {other:?}"),
+    }
+    // The cap is checked before the MAP_FIXED unmap, so the pre-existing
+    // mapping survives a rejected request.
+    assert!(
+        state.memory().page_permissions(target >> 12).is_some(),
+        "rejected MAP_FIXED must not discard the existing mapping",
+    );
+}
+
+#[test]
+fn mmap2_oversized_length_is_rejected() {
+    let h = NativeMmap2Syscall;
+    let mut state = fresh_state();
+    let outcome = h
+        .call(
+            &mut state,
+            &args(0, MAX_MMAP_SIZE + 0x1000, 0x3, ANON_PRIVATE, ANON_FD, 0),
+        )
+        .expect("must complete natively");
+    match outcome {
+        SyscallOutcome::Continue { ret } => assert_eq!(ret, u64::MAX),
+        other => panic!("expected Continue, got {other:?}"),
+    }
+    assert_eq!(state.mmap_base(), DEFAULT_MMAP_BASE);
+}

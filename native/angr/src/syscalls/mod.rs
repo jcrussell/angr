@@ -96,6 +96,24 @@ use crate::symbolic::RustBV;
 /// site still reads in its own vocabulary.
 pub(crate) const MAX_IO_SIZE: u64 = 4096;
 
+/// Shared cap (bytes) on how much address space a single native syscall will
+/// *map* before refusing the request (angr-c7xno.80).
+///
+/// Unlike `MAX_IO_SIZE` this is a host-safety bound, not a fallback threshold:
+/// `Memory::map` walks the requested range page-by-page and `MemoryPage::new`
+/// eagerly heap-allocates a full `PAGE_SIZE` buffer per page, so a guest
+/// calling `mmap(NULL, 0x7fffffff000, ...)` (or an equally large `brk` jump)
+/// with *concrete* args would drive the angr host process into OOM — or spin
+/// for minutes in the collision scan first. Bouncing to Python does not help;
+/// Python's `map_region` has the same shape. So the handlers reject the
+/// request the way Linux does (`mmap` → MAP_FAILED, `brk` → break unchanged)
+/// instead of falling back.
+///
+/// 256 MiB matches `syscalls::cgc`'s `CGC_MAX_ALLOCATION`, which already
+/// applied this exact defense to `allocate`; that is ~65536 pages, large
+/// enough that no realistic analysis workload hits it.
+pub(crate) const MAX_MAP_SIZE: u64 = 0x1000_0000;
+
 /// Failure during native syscall dispatch.
 ///
 /// Returning `Err` falls back to the Python `_handle_syscall_callback`

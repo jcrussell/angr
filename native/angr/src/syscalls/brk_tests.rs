@@ -180,3 +180,51 @@ fn fork_preserves_posix_brk() {
     state.set_posix_brk(0x1B0_9000);
     assert_eq!(forked.posix_brk(), 0x1B0_5000);
 }
+
+// --- Oversized-growth cap (angr-c7xno.80) --------------------------------
+//
+// `new_brk` is fully guest-controlled and every new page costs a real eager
+// heap allocation, so growth beyond `MAX_BRK_GROWTH` is refused. Linux signals
+// a failed brk by returning the unchanged break, which is what we mirror.
+
+#[test]
+fn oversized_growth_returns_current_break_without_mapping() {
+    let h = NativeBrkSyscall;
+    let mut state = fresh_state();
+    // The DoS shape from the audit: a multi-terabyte brk jump.
+    let outcome = h
+        .call(&mut state, &[RustBV::concrete(0x7FFF_FFFF_F000, 64)])
+        .expect("must complete natively, not fall back");
+    match outcome {
+        SyscallOutcome::Continue { ret } => assert_eq!(ret, DEFAULT_BRK, "break must not move"),
+        other => panic!("expected Continue, got {other:?}"),
+    }
+    assert_eq!(state.posix_brk(), DEFAULT_BRK, "posix_brk unchanged");
+    assert!(
+        state
+            .memory()
+            .page_permissions((DEFAULT_BRK >> 12) + 1)
+            .is_none(),
+        "no page may be mapped for a rejected brk",
+    );
+}
+
+#[test]
+fn growth_one_byte_over_cap_is_rejected() {
+    let h = NativeBrkSyscall;
+    let mut state = fresh_state();
+    let outcome = h
+        .call(
+            &mut state,
+            &[RustBV::concrete(
+                (DEFAULT_BRK + MAX_BRK_GROWTH + 1) as u128,
+                64,
+            )],
+        )
+        .expect("must complete natively");
+    match outcome {
+        SyscallOutcome::Continue { ret } => assert_eq!(ret, DEFAULT_BRK),
+        other => panic!("expected Continue, got {other:?}"),
+    }
+    assert_eq!(state.posix_brk(), DEFAULT_BRK);
+}

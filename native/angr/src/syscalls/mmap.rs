@@ -48,6 +48,11 @@
 //!    would silently map the containing page instead. See
 //!    angr-sqfj8.110 and the check in `do_mmap`.
 //!
+//! Oversized-request fast path: a `length` above `MAX_MAP_SIZE` is
+//! rejected with -1 (MAP_FAILED) rather than mapped or bounced to
+//! Python. Host-safety bound, not Python parity — see `MAX_MAP_SIZE`
+//! in `syscalls::mod` and the check in `do_mmap` (angr-c7xno.80).
+//!
 //! Bad-flags fast path: when `(flags & (MAP_SHARED|MAP_PRIVATE)) == 0`
 //! or both bits are set, Python returns -1 outright. Mirror that here
 //! so the syscall completes natively (still in the concrete-args path)
@@ -61,7 +66,10 @@
 
 use super::page::{PAGE_MASK, PAGE_SIZE, linux_prot_to_permission};
 use super::require_syscall_args;
-use super::{NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg};
+use super::{
+    MAX_MAP_SIZE as MAX_MMAP_SIZE, NativeSyscall, SyscallError, SyscallOutcome,
+    extract_concrete_arg,
+};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
@@ -138,6 +146,17 @@ fn do_mmap(
     if length == 0 {
         let ret = if addr == 0 { state.mmap_base() } else { addr };
         return Ok(SyscallOutcome::Continue { ret });
+    }
+
+    // Host-safety cap. `length` is fully guest-controlled and every page of
+    // the request costs a real eager heap allocation (`MemoryPage::new`), so
+    // an absurd size must be refused *before* the collision scan — that loop
+    // is itself O(pages) and would hang long before the OOM. Linux rejects
+    // oversized requests too, with MAP_FAILED/-ENOMEM; return -1 rather than
+    // falling back, since Python's `map_region` would allocate just as
+    // eagerly. See `MAX_MAP_SIZE` in `syscalls::mod` (angr-c7xno.80).
+    if length > MAX_MMAP_SIZE {
+        return Ok(SyscallOutcome::Continue { ret: u64::MAX });
     }
 
     // Choose a candidate address. addr=0 ⇒ use mmap_base.

@@ -7,7 +7,11 @@
 //!   2. Concrete `new_brk < current_brk` → no-op, return current brk.
 //!      This includes `brk(0)` → return current brk (Linux convention),
 //!      since the default brk (0x1B00000) is always > 0.
-//!   3. Otherwise: set posix_brk = new_brk; if it grew across a page
+//!   3. Growth beyond `MAX_MAP_SIZE` → refuse and return the *current*
+//!      break unchanged, matching how Linux signals a failed brk. This
+//!      is a host-safety bound, not a Python-parity rule; see
+//!      `MAX_MAP_SIZE` in `syscalls::mod` (angr-c7xno.80).
+//!   4. Otherwise: set posix_brk = new_brk; if it grew across a page
 //!      boundary, map the new pages with RWX permissions; return
 //!      new_brk.
 //!
@@ -20,7 +24,10 @@
 
 use super::page::{PAGE_MASK, PAGE_SIZE};
 use super::require_syscall_args;
-use super::{NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg};
+use super::{
+    MAX_MAP_SIZE as MAX_BRK_GROWTH, NativeSyscall, SyscallError, SyscallOutcome,
+    extract_concrete_arg,
+};
 use crate::memory::Permission;
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
@@ -50,6 +57,19 @@ impl NativeSyscall for NativeBrkSyscall {
         // current break. brk(0) is the canonical "query" form and is
         // covered here since posix_brk default 0x1B00000 > 0.
         if new_brk < current {
+            return Ok(SyscallOutcome::Continue { ret: current });
+        }
+
+        // Host-safety cap on the *growth*, not the absolute break: a guest
+        // can pass any concrete new_brk, and each new page costs a real eager
+        // heap allocation (`MemoryPage::new`), with the collision scan below
+        // walking the range page-by-page before that. Refuse an absurd jump
+        // instead of OOM-ing (or hanging) the host process. Linux signals brk
+        // failure by leaving the break where it was and returning it, which is
+        // exactly the `new_brk < current` no-op above; falling back to Python
+        // would only move the same unbounded `map_region` there. See
+        // `MAX_MAP_SIZE` in `syscalls::mod` (angr-c7xno.80).
+        if new_brk - current > MAX_BRK_GROWTH {
             return Ok(SyscallOutcome::Continue { ret: current });
         }
 
