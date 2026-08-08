@@ -3975,7 +3975,7 @@ backlog as P4 spikes, gated on a counter landing first:
   ``RustSolverContext::add_constraint_ast`` (``native/angr/src/solver.rs``)
   runs ``claripy_to_rustbv`` + ``assumed_constraints_push`` for export
   tracking *after* the cheap raw-Z3 assert. The batch path
-  (``add_constraints``) was peer-reviewed and **also** converts per entry,
+  (``add_constraints_ast``) was peer-reviewed and **also** converts per entry,
   so it is not a free alternative. Candidate: defer the RustBV
   materialization (``OnceCell`` / derive-from-Z3 on demand). Sound for
   snapshot/restore because ``assumed_constraints`` is best-effort, but it

@@ -231,7 +231,7 @@ fn test_min_max_no_cached_model_still_correct() {
 
 /// Helper: build a `(Z3AstPtr, RustBV, bool)` tuple from a width-1 cond
 /// for use with `add_constraints_raw_batch`. Mirrors what the
-/// `RustSolverContext::add_constraints` fast path does with claripy ASTs.
+/// `RustSolverContext::add_constraints_ast` fast path does with claripy ASTs.
 /// The typed `Z3AstPtr` does proper refcounting via `Z3_inc_ref` —
 /// no `mem::forget` leak required.
 #[cfg(feature = "vex-engine-z3")]

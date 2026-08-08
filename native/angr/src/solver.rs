@@ -282,7 +282,7 @@ impl RustSolverContext {
     /// AST and everything after it drops to the per-constraint slow path.
     /// Constraint order is unchanged, so behavior stays identical to the
     /// unbatched loop.
-    pub fn add_constraints(&self, py: Python<'_>, asts: &Bound<'_, PyList>) -> PyResult<()> {
+    pub fn add_constraints_ast(&self, py: Python<'_>, asts: &Bound<'_, PyList>) -> PyResult<()> {
         // Index of the first AST not yet asserted. The raw fast path below
         // advances it past every AST it manages to batch; the remainder goes
         // through `add_constraint_ast` one at a time.

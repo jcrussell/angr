@@ -157,7 +157,7 @@ class TestSolverOperations:
         does, not silently drop it.
 
         Regression for angr-d01qu: unlike its siblings add_constraint_ast
-        and add_constraints, add_constraint_tracked_ast used to skip the
+        and add_constraints_ast, add_constraint_tracked_ast used to skip the
         is_bool() gate on the raw-fast-path Z3 AST it extracts from
         claripy, unsafely wrapping a BV-sorted Z3_ast as z3::ast::Bool and
         handing it to Z3_solver_assert_and_track. Because our context
@@ -254,8 +254,8 @@ class TestSolverOperations:
         assert ctx.satisfiable() is True
         assert ctx.unsat_core() == []
 
-    def test_add_constraints_mixed_batch_applies_every_entry(self):
-        """add_constraints() with a non-Bool AST in the middle of the batch
+    def test_add_constraints_ast_mixed_batch_applies_every_entry(self):
+        """add_constraints_ast() with a non-Bool AST in the middle of the batch
         still applies every constraint, in order.
 
         angr-9ke6b.206: the raw fast path used to abandon the whole batch
@@ -275,25 +275,25 @@ class TestSolverOperations:
 
         # All three hold together: x < 10, y != 0, y < 3.
         ctx = RustSolverContext()
-        ctx.add_constraints([x < 10, y, y < 3])
+        ctx.add_constraints_ast([x < 10, y, y < 3])
         assert ctx.satisfiable() is True
         assert set(ctx.eval_upto(y, 5)) == {1, 2}, "y != 0 AND y < 3 not both applied"
         assert max(ctx.eval_upto(x, 20)) < 10, "the batched prefix constraint was lost"
 
         # The post-failure entry really is asserted: contradict it.
         ctx2 = RustSolverContext()
-        ctx2.add_constraints([x < 10, y, y < 3])
+        ctx2.add_constraints_ast([x < 10, y, y < 3])
         ctx2.add_constraint_ast(y == 5)
         assert ctx2.satisfiable() is False
 
         # ...and so is the pre-failure (batched) prefix.
         ctx3 = RustSolverContext()
-        ctx3.add_constraints([x < 10, y, y < 3])
+        ctx3.add_constraints_ast([x < 10, y, y < 3])
         ctx3.add_constraint_ast(x == 200)
         assert ctx3.satisfiable() is False
 
-    def test_add_constraints_leading_failure_still_applies_rest(self):
-        """add_constraints() whose *first* entry fails the raw fast path
+    def test_add_constraints_ast_leading_failure_still_applies_rest(self):
+        """add_constraints_ast() whose *first* entry fails the raw fast path
         applies an empty prefix batch and routes everything through the
         slow path -- no constraint is dropped.
 
@@ -307,7 +307,7 @@ class TestSolverOperations:
         x = claripy.BVS("x", 8)
 
         ctx = RustSolverContext()
-        ctx.add_constraints([x, x < 10])
+        ctx.add_constraints_ast([x, x < 10])
         assert ctx.satisfiable() is True
         assert set(ctx.eval_upto(x, 20)) == set(range(1, 10))
 
