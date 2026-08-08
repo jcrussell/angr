@@ -128,11 +128,24 @@ pub(crate) fn assumed_guard_to_claripy(
 ) -> PyResult<Py<PyAny>> {
     let ast = rustbv_to_claripy(py, bv, claripy_mod)?;
     let bound = ast.bind(py);
-    // Bool ASTs have `length is None`; BV ASTs carry their bit width.
-    let is_bv = bound
+    // Bool ASTs have `length is None`; BV ASTs carry their bit width. A failed
+    // read leaves the two indistinguishable, and both guesses are wrong-answer
+    // outcomes: the Bool branch on a BV re-creates the `NotImplemented`
+    // constraint this function exists to prevent, and the BV branch on a Bool
+    // builds a `Bool == BVV(_, 1)` comparison. Propagate instead — both callers
+    // (`push_assumed_constraint_or_log` in `exploration/state_api.rs` and
+    // `call_inspect_constraints` in `callbacks/inspect.rs`) already log and drop
+    // a conversion `Err`, which beats handing the solver a bogus constraint
+    // (angr-sqfj8.22).
+    let is_bv = !bound
         .getattr("length")
-        .map(|l| !l.is_none())
-        .unwrap_or(false);
+        .map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!(
+                "assumed_guard_to_claripy: could not read `.length` on the exported guard \
+                 (cannot tell a Bool guard from a 1-bit BV guard): {e}"
+            ))
+        })?
+        .is_none();
     if is_bv {
         let bit = u64::from(is_true);
         let bvv = claripy_mod.call_method1("BVV", (bit, 1u32))?;
