@@ -458,18 +458,22 @@ fn test_bare_z3_push_depth_some_branch_inert() {
     assert_eq!(ctx.bare_z3_push_depth(), 0);
 }
 
-/// angr-3ms1 step 1a: `fork()` copies the parent's
-/// `bare_z3_push_depth` into the child. The slice-1c materialization
-/// gate inspects the parent's value at fork time, but copying the
-/// value into the child keeps the post-fork accounting consistent
-/// for any future code path that threads bare pushes across fork.
+/// angr-c7xno.75: `fork()` hands the child a **zero** `bare_z3_push_depth`
+/// regardless of the parent's — reversing the angr-3ms1 step 1a inheritance.
+/// The counter means "open bare pushes on *this* context's per-context Z3
+/// solver" (`invariant-bare-z3-push-depth`), and a child has none: its
+/// `bare_local_savepoints` starts empty and its lazily-rebuilt solver replays
+/// the frozen set as flat `assert()`s, never `push()`es. Inheriting a
+/// non-zero value let `try_pop()` (gated solely on this counter) forward a
+/// `pop(1)` to a never-pushed solver, and locked the child out of lineage
+/// minting via gate (b) forever.
 #[cfg(feature = "vex-engine-z3")]
 #[test]
-fn test_bare_z3_push_depth_inherited_on_fork() {
+fn test_bare_z3_push_depth_reset_on_fork() {
     let parent = SymContext::new();
     assert_eq!(parent.bare_z3_push_depth(), 0);
 
-    // A fork before any push: child inherits the 0.
+    // A fork before any push: child is 0, same as before.
     let child_zero = parent.fork();
     assert_eq!(
         child_zero.bare_z3_push_depth(),
@@ -477,8 +481,8 @@ fn test_bare_z3_push_depth_inherited_on_fork() {
         "fork before any push must hand the child a 0 depth"
     );
 
-    // After two bare pushes, the parent's counter is 2; a fork at
-    // that point hands the child the same depth.
+    // After two bare pushes the parent's counter is 2 — but a fork taken
+    // at that point still starts the child at 0.
     parent.scope_savepoint_push();
     parent.scope_savepoint_push();
     assert_eq!(parent.bare_z3_push_depth(), 2);
@@ -486,20 +490,22 @@ fn test_bare_z3_push_depth_inherited_on_fork() {
     let child_two = parent.fork();
     assert_eq!(
         child_two.bare_z3_push_depth(),
-        2,
-        "child must inherit the parent's bare_z3_push_depth at fork time"
+        0,
+        "child owns no bare Z3 push scopes, so it must start at 0"
+    );
+    // Consequently a stray pop on the child is refused rather than
+    // forwarded to a solver with no matching push.
+    assert!(
+        !child_two.try_pop(),
+        "child must refuse an unbalanced pop it never pushed for"
     );
 
-    // Drain the parent's pushes; the child's copy stays at 2 — it's
-    // a per-context counter, not a shared cell.
+    // Draining the parent's pushes leaves the child untouched — it's a
+    // per-context counter, not a shared cell.
     parent.scope_savepoint_pop();
     parent.scope_savepoint_pop();
     assert_eq!(parent.bare_z3_push_depth(), 0);
-    assert_eq!(
-        child_two.bare_z3_push_depth(),
-        2,
-        "child's counter is independent of parent's post-fork mutations"
-    );
+    assert_eq!(child_two.bare_z3_push_depth(), 0);
 }
 
 /// angr-3ms1 step 1b: a freshly constructed context has

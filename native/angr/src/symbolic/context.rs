@@ -42,12 +42,17 @@
 //!   `Arc::clone` would give the child a stale base. Regression guard:
 //!   `tests/engines/rust/ :: test_lineage_minted_only_when_opted_in`
 //!   and `test_lineage_not_minted_under_bare_push`.
-//! - **fork-freeze under push**:
-//!   [`fork`](SymContext::fork) only drains local→shared in place when
-//!   `push_level == 0`. Inside an open scope a `pop()` truncates `local`
-//!   back to its pre-push length; draining would leak popped constraints
-//!   into `shared`. (`push_level` is now always 0 — the transaction API that
-//!   raised it was removed in angr-ph300.44 — but the guard is retained.)
+//! - **fork-freeze under push** (angr-c7xno.75):
+//!   [`fork`](SymContext::fork) only drains local→shared in place when NO
+//!   bare push scope is open (`bare_local_savepoints` is empty). Inside an
+//!   open scope a `pop()` truncates `local` back to its pre-push length;
+//!   draining would leak popped constraints into `shared`, which has no
+//!   removal path — a later fork then inherits a constraint the parent
+//!   itself no longer believes, and gets spuriously pruned as UNSAT. The
+//!   child still sees the in-scope constraints (freeze returns the merged
+//!   set either way); only the parent's ability to retract them survives.
+//!   Regression guard:
+//!   `context_tests::constraints::test_fork_under_bare_push_does_not_freeze_popped_constraints`.
 //! - **Z3 construction canonicalization** (`invariant-z3-construction-canonicalization`):
 //!   Z3 hash-cons applies at construction time, but commutative operands
 //!   are NOT normalized (`mk_bvadd(x, y)` and `mk_bvadd(y, x)` produce
@@ -362,18 +367,6 @@ pub struct SymContext {
     /// a fresh merged context — Arc::make_mut works because the merged
     /// SymContext is freshly created with a unique Arc.
     pub(super) symbol_table: Arc<HashMap<String, u64>>,
-    /// Transaction push level, read **only** by `fork()`'s `in_transaction`
-    /// gate (`snapshot_fork_ops`).
-    /// The only incrementer was `transaction_begin`, removed in angr-ph300.44
-    /// (dead API + latent corruption), so this is now always 0 and the fork
-    /// gate consequently always sees no transaction. Kept as a field so the
-    /// gate stays structurally intact. Deliberately **not** exposed as a
-    /// diagnostic: the `debug_push_level` accessor that did so reported a
-    /// constant 0 as if it were live scoping state, which misled anyone
-    /// debugging solver scopes, and was removed in angr-sqfj8.94. Live scope
-    /// depth is [`scope_savepoint_depth`](Self::scope_savepoint_depth) /
-    /// [`bare_z3_push_depth`](Self::bare_z3_push_depth) instead.
-    pub(super) push_level: AtomicUsize,
     /// Local-constraint savepoints for **bare** `push()`/`pop()` (angr-ph300.41/.42).
     ///
     /// Each entry records `(z3_assertions.len(), assumed.len(),
@@ -586,7 +579,6 @@ impl SymContext {
         SymContext {
             constraint_count: AtomicUsize::new(0),
             symbol_table: Arc::new(HashMap::new()),
-            push_level: AtomicUsize::new(0),
             assumed_constraints_shared: Mutex::new(Arc::new(Vec::new())),
             assume_class_reconstructible: AtomicBool::new(true),
             local_constraints: Mutex::new(LocalConstraints::new()),
@@ -624,7 +616,6 @@ impl SymContext {
         let solver = build_solver(timeout_ms);
 
         SymContext {
-            push_level: AtomicUsize::new(0),
             bare_local_savepoints: Mutex::new(Vec::new()),
             constraint_count: AtomicUsize::new(0),
             symbol_table: Arc::new(HashMap::new()),
@@ -835,27 +826,31 @@ impl Clone for SymContext {
 
 /// Freeze a local additions vector into the shared `Arc<Vec<T>>`.
 ///
-/// Outside an open push/pop scope (when `in_transaction` is false) this drains
+/// Outside an open push/pop scope (when `scope_open` is false) this drains
 /// `local` into `shared` in place — when shared has unique ownership the move
 /// avoids the per-element clones (e.g. each `z3::ast::Bool::clone` is a
-/// `Z3_inc_ref` FFI call). When `in_transaction` is true we must preserve
+/// `Z3_inc_ref` FFI call). When `scope_open` is true we must preserve
 /// `local` so a later `pop()` can truncate it; in that case we fall back to
 /// allocating a fresh Vec by cloning shared and copying local's elements.
 ///
-/// (Callers derive `in_transaction` from `push_level > 0`, which is always 0
-/// since the transaction API was removed in angr-ph300.44 — so the copy branch
-/// is currently unreachable, but retained as generic fork infrastructure.)
+/// The returned Arc is the child's constraint set either way, so a fork taken
+/// *inside* an open scope still sees the in-scope constraints — only the
+/// parent's ability to retract them later is preserved. Callers derive
+/// `scope_open` from `bare_local_savepoints` (see `SymContext::fork`); the
+/// pre-angr-c7xno.75 gate read the long-dead `push_level` instead, which made
+/// the preserve branch unreachable and let in-scope constraints leak
+/// permanently into `shared`.
 pub(super) fn freeze_into_shared<T: Clone>(
     shared: &Mutex<Arc<Vec<T>>>,
     local: &mut Vec<T>,
-    in_transaction: bool,
+    scope_open: bool,
 ) -> Arc<Vec<T>> {
     if local.is_empty() {
         return Arc::clone(&shared.lock());
     }
     let mut shared_guard = shared.lock();
-    if in_transaction {
-        // Cannot mutate local — rollback expects it intact.
+    if scope_open {
+        // Cannot mutate local — the matching `pop()` expects it intact.
         let mut merged = Vec::with_capacity(shared_guard.len() + local.len());
         merged.extend_from_slice(&shared_guard);
         merged.extend_from_slice(local);

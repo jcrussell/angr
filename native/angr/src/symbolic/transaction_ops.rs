@@ -11,6 +11,9 @@
 //! lifecycle (plus `current_push_level` / `in_transaction`) was removed in
 //! angr-ph300.44 — it had zero callers and a latent corruption bug (commit
 //! popped only one of the three aux stacks and never released the Z3 frame).
+//! Its last vestige, the `push_level` counter, was deleted in angr-c7xno.75:
+//! nothing had incremented it since that removal, yet `fork()` still read it
+//! as its "is a scope open?" gate and so never took the preserve branch.
 //!
 //! Unlike the fully Z3-gated `constraint_ops`, this slice carries both the
 //! `#[cfg(feature = "vex-engine-z3")]` implementations and their non-Z3 mock
@@ -18,9 +21,8 @@
 //! `solving_ops` / `lineage_ops`).
 //!
 //! Lives as a second `impl SymContext` block in a child module of `symbolic`;
-//! the transaction-bookkeeping fields it mutates (`push_level`,
-//! `push_constraint_counts`, `push_local_cache_lengths`,
-//! `push_assumed_local_lengths`, `solver`, `timeout_ms`) are promoted to
+//! the scope-bookkeeping fields it mutates (`solver`, `timeout_ms`) are
+//! promoted to
 //! `pub(super)` (== `pub(in crate::symbolic)`) so this sibling module can reach
 //! them without a public API leak. The caches `sat_cache`/`model_cache` and the
 //! `constraint_count`/`local_constraints`/`constraint_trackers` fields were

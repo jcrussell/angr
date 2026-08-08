@@ -12,7 +12,7 @@
 //! reads the process-global `NEXT_SYMBOL_ID` static below, for the aliasing
 //! reason its own doc gives. `new_bv` routes construction through
 //! `RustBV::symbolic`. None of these touch the constraint-mutation/transaction
-//! path (`local_constraints` / `solver` / `push_level` / lineage), which the
+//! path (`local_constraints` / `solver` / `bare_local_savepoints` / lineage), which the
 //! design defers to a separate, higher-coupling slice 9. See bead angr-a2br.2.4
 //! for the slice plan.
 //!

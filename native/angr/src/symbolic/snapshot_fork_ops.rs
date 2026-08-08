@@ -597,8 +597,8 @@ impl SymContext {
     /// replay cost for forked states that are pruned/avoided/deadended
     /// without ever querying the solver.
     ///
-    /// When local additions exist and we are not inside a push/pop transaction,
-    /// fork "freezes self": the local additions are drained into self's shared
+    /// When local additions exist and no bare push scope is open, fork
+    /// "freezes self": the local additions are drained into self's shared
     /// Arc so subsequent forks of self with empty local become O(1) Arc::clone.
     /// When self.shared is uniquely owned, this avoids cloning every Bool
     /// (each Bool::clone is a Z3_inc_ref FFI call).
@@ -606,17 +606,23 @@ impl SymContext {
     /// **Cross-cutting invariants enforced here** (see module-level
     /// "Lineage + solver invariants" for the full set):
     ///
-    /// - **fork-freeze under push**: freeze only fires when
-    ///   `push_level == 0` (`in_transaction == false`). Inside a transaction,
-    ///   draining local would leak rolled-back constraints into shared.
+    /// - **fork-freeze under push** (angr-c7xno.75): freeze only fires when
+    ///   `bare_local_savepoints` is empty. Inside an open bare `push()`
+    ///   scope, draining local would leak constraints the matching `pop()`
+    ///   is about to retract into `shared` — which is append-only, so they
+    ///   would outlive the pop forever and make a later fork spuriously
+    ///   UNSAT. The child forked inside the scope still receives them (the
+    ///   preserve branch returns shared+local merged); only the parent keeps
+    ///   the right to retract.
     /// - **Three-gate mint semantics**: the three-gate check
     ///   (`use_shared_lineage_solver` opt-in, zero bare pushes, not
     ///   dismantled) is load-bearing. Each gate guards a different failure
     ///   mode — see inline comments below.
     /// - `invariant-bare-z3-push-depth`: gate (b) reads the **parent's**
-    ///   counter, not the child's. The child inherits the parent's value
-    ///   but `fork()` resets `push_level` to 0, so any future push
-    ///   accounting on the child starts fresh.
+    ///   counter. The child's is reset to 0 (angr-c7xno.75) — it starts with
+    ///   an empty `bare_local_savepoints` and a `None` solver whose cold-start
+    ///   replay only ever emits flat `assert()`s, never `push()`es, so it
+    ///   genuinely owns zero open Z3 scopes.
     /// - `invariant-v5ht-dismantle-child-none`: when dismantled, child
     ///   gets `None` (NOT `Arc::clone(parent.lineage)`). Cloning would
     ///   give the child a stale base — see the inline comment for the
@@ -630,18 +636,24 @@ impl SymContext {
     // non-Send, breaking the Arc<Mutex<...>> sharing contract. See `arc_shared` in lib.rs.
     #[cfg(feature = "vex-engine-z3")]
     pub fn fork(&self) -> Self {
-        let in_transaction = self.push_level.load(Ordering::Relaxed) > 0;
+        // angr-c7xno.75: freeze must not drain `local` while a bare
+        // `push()` scope is open — the matching `pop()` truncates `local`,
+        // but `*_shared` is append-only, so anything drained early outlives
+        // its scope permanently. Read (and release) the savepoint lock
+        // BEFORE taking `local_constraints`: `scope_savepoint_push` acquires
+        // them in that order, and holding both at once would invert it.
+        let scope_open = !self.bare_local_savepoints.lock().is_empty();
         let (frozen_shared, frozen_assumed, frozen_non_bv) = {
             let mut local = self.local_constraints.lock();
             let frozen_shared = freeze_into_shared(
                 &self.z3_assertions_shared,
                 &mut local.z3_assertions,
-                in_transaction,
+                scope_open,
             );
             let frozen_assumed = freeze_into_shared(
                 &self.assumed_constraints_shared,
                 &mut local.assumed,
-                in_transaction,
+                scope_open,
             );
             // angr-t3l5o Phase 1: the residual log follows the IDENTICAL
             // shared/local freeze lifecycle as `z3_assertions` so fork/merge
@@ -649,7 +661,7 @@ impl SymContext {
             let frozen_non_bv = freeze_into_shared(
                 &self.non_bv_assertions_shared,
                 &mut local.non_bv_assertions,
-                in_transaction,
+                scope_open,
             );
             (frozen_shared, frozen_assumed, frozen_non_bv)
         };
@@ -750,7 +762,6 @@ impl SymContext {
             // keeping the `state_constraint_count` round-trip contract intact.
             constraint_count: AtomicUsize::new(self.num_constraints()),
             symbol_table: Arc::clone(&self.symbol_table),
-            push_level: AtomicUsize::new(0),
             bare_local_savepoints: Mutex::new(Vec::new()),
             assumed_constraints_shared: Mutex::new(frozen_assumed),
             z3_assertions_shared: Mutex::new(frozen_shared),
@@ -786,17 +797,18 @@ impl SymContext {
             lineage: Mutex::new(child_lineage),
             scope_path: Mutex::new(super::lineage::ScopePath::new()),
             scope_savepoints: Mutex::new(Vec::new()),
-            // angr-3ms1 step 1a: child inherits parent's bare-push depth
-            // so a fork inside a `push()` region keeps a consistent
-            // accounting of outstanding bare pushes. The slice-1c
-            // materialization gate reads the *parent's* value at the
-            // moment of fork to decide whether to mint a lineage; copying
-            // it into the child also keeps post-fork pop accounting
-            // consistent if a child somehow inherits a pushed region
-            // (today's fork semantics reset push_level, so in practice
-            // the child observes 0 unless future code threads bare pushes
-            // through fork).
-            bare_z3_push_depth: AtomicUsize::new(self.bare_z3_push_depth.load(Ordering::Relaxed)),
+            // angr-c7xno.75: the child starts at 0, NOT the parent's depth
+            // (the angr-3ms1 step 1a behavior). The counter means "open bare
+            // push scopes on *this* context's per-context Z3 solver"
+            // (`invariant-bare-z3-push-depth`), and the child has none: its
+            // `bare_local_savepoints` is empty above, and its solver is
+            // `None` until `solver()` rebuilds it by replaying the frozen
+            // set as flat `assert()`s — that cold start never calls
+            // `push()`. Inheriting a non-zero value made `try_pop()` (gated
+            // solely on this counter) hand a `pop(1)` to a solver that was
+            // never pushed, and permanently disqualified the child from
+            // lineage minting via gate (b).
+            bare_z3_push_depth: AtomicUsize::new(0),
             // angr-3ms1 step 1b: inherit the opt-in flag from parent so
             // a lineage opt-in on a seed state propagates to every
             // descendant without per-fork plumbing on the Python side.
@@ -897,14 +909,12 @@ impl SymContext {
 
     #[cfg(not(feature = "vex-engine-z3"))]
     pub fn fork(&self) -> Self {
-        let in_transaction = self.push_level.load(Ordering::Relaxed) > 0;
         let frozen_assumed = {
             let mut local = self.local_constraints.lock();
-            freeze_into_shared(
-                &self.assumed_constraints_shared,
-                &mut local.assumed,
-                in_transaction,
-            )
+            // Always false here: the mock `push()`/`pop()` are no-ops that
+            // record no savepoint, so no scope can be open to preserve
+            // `local` for (angr-c7xno.75).
+            freeze_into_shared(&self.assumed_constraints_shared, &mut local.assumed, false)
         };
 
         SymContext {
@@ -918,7 +928,6 @@ impl SymContext {
             // non-Z3 write site ever appears.
             constraint_count: AtomicUsize::new(self.num_constraints()),
             symbol_table: Arc::clone(&self.symbol_table),
-            push_level: AtomicUsize::new(0),
             assumed_constraints_shared: Mutex::new(frozen_assumed),
             assume_class_reconstructible: AtomicBool::new(
                 self.assume_class_reconstructible.load(Ordering::Relaxed),

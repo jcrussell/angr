@@ -978,3 +978,91 @@ fn test_fork_preserves_num_constraints_after_raw_constraint() {
          constraint"
     );
 }
+
+/// angr-c7xno.75: a `fork()` taken inside a bare `push()` scope must NOT
+/// drain the in-scope local constraints into the parent's append-only
+/// `*_shared` Arcs — `*_shared` has no removal path, so anything frozen
+/// there outlives the matching `pop()` forever and poisons every LATER
+/// fork of the parent with a constraint the parent itself no longer
+/// believes (a silent spurious-UNSAT prune, not an error).
+///
+/// This is the exact repro from the bead: push, assume `y == 5`, fork,
+/// pop, fork again, and assert the second child is free to take `y == 6`.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_fork_under_bare_push_does_not_freeze_popped_constraints() {
+    let parent = SymContext::new();
+    let y = RustBV::symbolic(&parent, "test_fork_under_bare_push_y", 8);
+    let five = RustBV::concrete(5, 8);
+    let six = RustBV::concrete(6, 8);
+
+    parent.push();
+    parent.assume_true(&y.eq(&five, &parent));
+
+    // The child forked INSIDE the scope still inherits the in-scope
+    // constraint — freeze returns the merged shared+local set either way;
+    // only the parent's right to retract is what the preserve branch buys.
+    let child_a = parent.fork();
+    assert!(child_a.solution(&y, 5));
+    assert!(
+        !child_a.solution(&y, 6),
+        "a fork taken inside the scope must still see the in-scope constraint"
+    );
+
+    // The pop must genuinely retract it from the parent.
+    parent.pop();
+    assert!(
+        parent.solution(&y, 6),
+        "pop must retract the in-scope constraint from the parent"
+    );
+
+    // ...and from every fork taken after the pop. Before the fix this
+    // child silently inherited `y == 5` out of `z3_assertions_shared`.
+    let child_b = parent.fork();
+    assert!(
+        child_b.solution(&y, 6),
+        "a fork taken after the pop must not inherit the popped constraint"
+    );
+    child_b.assume_true(&y.eq(&six, &child_b));
+    assert!(
+        child_b.is_sat(),
+        "child_b must be SAT under y == 6 — inheriting the popped y == 5 \
+         would prune a reachable state as spurious UNSAT"
+    );
+}
+
+/// angr-c7xno.75 companion: forking inside a bare scope must leave the
+/// parent's own scope bookkeeping intact, so the matching `pop()` still
+/// truncates. Guards the preserve branch of `freeze_into_shared` against a
+/// future "optimization" that drains local and merely defers the append.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_fork_under_bare_push_leaves_parent_poppable() {
+    let parent = SymContext::new();
+    let x = RustBV::symbolic(&parent, "test_fork_under_push_poppable_x", 8);
+    let one = RustBV::concrete(1, 8);
+    let two = RustBV::concrete(2, 8);
+
+    parent.push();
+    parent.assume_true(&x.eq(&one, &parent));
+    // Two forks inside the same scope: the first must not drain the local
+    // log out from under the second.
+    let first = parent.fork();
+    let second = parent.fork();
+    assert!(!first.solution(&x, 2));
+    assert!(
+        !second.solution(&x, 2),
+        "the second in-scope fork must see the same constraint as the first"
+    );
+
+    parent.pop();
+    assert!(parent.solution(&x, 2), "parent must be free after the pop");
+
+    // A fresh scope on the now-clean parent behaves normally.
+    parent.push();
+    parent.assume_true(&x.eq(&two, &parent));
+    assert!(!parent.solution(&x, 1));
+    parent.pop();
+    assert!(parent.solution(&x, 1));
+    assert!(parent.solution(&x, 2));
+}
