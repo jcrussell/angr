@@ -24,6 +24,51 @@
 use super::*;
 use crate::errors::MapPyErr;
 
+/// Define the state-keyed accessors whose whole body is a `with_state` /
+/// `with_state_mut` wrap around one infallible `RustSimState` getter or setter
+/// (angr-12jjk.7). Two entry forms, freely interleaved so a get/set pair stays
+/// adjacent:
+///
+/// ```ignore
+/// state_accessors! {
+///     get _get_state_mmap_base -> u64 = mmap_base;
+///     set _set_state_mmap_base(addr: u64) = set_mmap_base;
+/// }
+/// ```
+///
+/// Deliberately narrow: an accessor with an extra lookup argument, a chained
+/// call (`state.solver().borrow().timeout_ms()`), a non-`u64` state key, or any
+/// body beyond the single call stays hand-written. Widening this macro to cover
+/// those would hide the part a reader actually needs to see.
+macro_rules! state_accessors {
+    () => {};
+    (
+        $(#[$attr:meta])*
+        get $name:ident -> $ret:ty = $getter:ident;
+        $($rest:tt)*
+    ) => {
+        $(#[$attr])*
+        pub(crate) fn $name(&self, state_id: u64) -> PyResult<$ret> {
+            self.with_state(state_id, |state| Ok(state.$getter()))
+        }
+        state_accessors! { $($rest)* }
+    };
+    (
+        $(#[$attr:meta])*
+        set $name:ident ($($arg:ident : $ty:ty),* $(,)?) = $setter:ident;
+        $($rest:tt)*
+    ) => {
+        $(#[$attr])*
+        pub(crate) fn $name(&mut self, state_id: u64 $(, $arg: $ty)*) -> PyResult<()> {
+            self.with_state_mut(state_id, |state| {
+                state.$setter($($arg),*);
+                Ok(())
+            })
+        }
+        state_accessors! { $($rest)* }
+    };
+}
+
 /// Convert one `(bv, is_true)` assumed-constraint pair to a claripy AST and
 /// push it into `results`, logging (rather than silently dropping) a failed
 /// conversion — mirrors `pending_api.rs::_export_pending_constraints`'s
@@ -282,37 +327,13 @@ impl RustExplorationManager {
         self.with_state(state_id, |state| Ok(state.solver().borrow().timeout_ms()))
     }
 
-    pub(crate) fn _get_state_mmap_base(&self, state_id: u64) -> PyResult<u64> {
-        self.with_state(state_id, |state| Ok(state.mmap_base()))
-    }
-
-    pub(crate) fn _set_state_mmap_base(&mut self, state_id: u64, addr: u64) -> PyResult<()> {
-        self.with_state_mut(state_id, |state| {
-            state.set_mmap_base(addr);
-            Ok(())
-        })
-    }
-
-    pub(crate) fn _get_state_posix_brk(&self, state_id: u64) -> PyResult<u64> {
-        self.with_state(state_id, |state| Ok(state.posix_brk()))
-    }
-
-    pub(crate) fn _set_state_posix_brk(&mut self, state_id: u64, addr: u64) -> PyResult<()> {
-        self.with_state_mut(state_id, |state| {
-            state.set_posix_brk(addr);
-            Ok(())
-        })
-    }
-
-    pub(crate) fn _get_state_heap_brk(&self, state_id: u64) -> PyResult<u64> {
-        self.with_state(state_id, |state| Ok(state.heap_brk()))
-    }
-
-    pub(crate) fn _set_state_heap_brk(&mut self, state_id: u64, addr: u64) -> PyResult<()> {
-        self.with_state_mut(state_id, |state| {
-            state.set_heap_brk(addr);
-            Ok(())
-        })
+    state_accessors! {
+        get _get_state_mmap_base -> u64 = mmap_base;
+        set _set_state_mmap_base(addr: u64) = set_mmap_base;
+        get _get_state_posix_brk -> u64 = posix_brk;
+        set _set_state_posix_brk(addr: u64) = set_posix_brk;
+        get _get_state_heap_brk -> u64 = heap_brk;
+        set _set_state_heap_brk(addr: u64) = set_heap_brk;
     }
 
     // -------------------------------------------------------------------------
@@ -361,17 +382,9 @@ impl RustExplorationManager {
         Ok(dict)
     }
 
-    pub(crate) fn _set_state_hook_symbolic_memory(
-        &mut self,
-        state_id: u64,
-        addr: u64,
-        ast: Py<PyAny>,
-        size: u32,
-    ) -> PyResult<()> {
-        self.with_state_mut(state_id, |state| {
-            state.set_hook_symbolic_memory(addr, ast, size);
-            Ok(())
-        })
+    state_accessors! {
+        set _set_state_hook_symbolic_memory(addr: u64, ast: Py<PyAny>, size: u32)
+            = set_hook_symbolic_memory;
     }
 
     pub(crate) fn _get_state_hook_symbolic_memory<'py>(
@@ -388,17 +401,8 @@ impl RustExplorationManager {
         Ok(dict)
     }
 
-    pub(crate) fn _set_state_addr_to_ast(
-        &mut self,
-        state_id: u64,
-        addr: u64,
-        ast: Py<PyAny>,
-        size: u32,
-    ) -> PyResult<()> {
-        self.with_state_mut(state_id, |state| {
-            state.set_addr_to_ast(addr, ast, size);
-            Ok(())
-        })
+    state_accessors! {
+        set _set_state_addr_to_ast(addr: u64, ast: Py<PyAny>, size: u32) = set_addr_to_ast;
     }
 
     pub(crate) fn _get_state_addr_to_ast<'py>(
@@ -540,28 +544,13 @@ impl RustExplorationManager {
         })
     }
 
-    pub(crate) fn _state_satisfiable(&self, state_id: u64) -> PyResult<bool> {
-        self.with_state(state_id, |state| Ok(state.satisfiable()))
-    }
-
-    pub(crate) fn _state_enforce_permissions(&self, state_id: u64) -> PyResult<bool> {
-        self.with_state(state_id, |state| Ok(state.enforce_permissions()))
-    }
-
-    pub(crate) fn _state_enforce_nx(&self, state_id: u64) -> PyResult<bool> {
-        self.with_state(state_id, |state| Ok(state.enforce_nx()))
-    }
-
-    pub(crate) fn _state_no_ip_concretization(&self, state_id: u64) -> PyResult<bool> {
-        self.with_state(state_id, |state| Ok(state.no_ip_concretization()))
-    }
-
-    pub(crate) fn _state_no_symbolic_jump_resolution(&self, state_id: u64) -> PyResult<bool> {
-        self.with_state(state_id, |state| Ok(state.no_symbolic_jump_resolution()))
-    }
-
-    pub(crate) fn _state_keep_ip_symbolic(&self, state_id: u64) -> PyResult<bool> {
-        self.with_state(state_id, |state| Ok(state.keep_ip_symbolic()))
+    state_accessors! {
+        get _state_satisfiable -> bool = satisfiable;
+        get _state_enforce_permissions -> bool = enforce_permissions;
+        get _state_enforce_nx -> bool = enforce_nx;
+        get _state_no_ip_concretization -> bool = no_ip_concretization;
+        get _state_no_symbolic_jump_resolution -> bool = no_symbolic_jump_resolution;
+        get _state_keep_ip_symbolic -> bool = keep_ip_symbolic;
     }
 
     /// Whether the named symex-relevant SimOption is active on the state
