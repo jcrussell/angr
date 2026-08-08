@@ -613,9 +613,14 @@ impl SymContext {
         // Strict-deterministic mode (angr-op0dn.10.7): minimize the parts in
         // order under each other's pinned values, so the joint witness is a
         // function of the constraints alone instead of whatever model Z3 built.
-        // Parts wider than 128 bits keep the arbitrary-model path — `bsearch_min`
-        // tracks its bounds in a u128 and has nothing canonical to return there
-        // (angr-cxw7), same carve-out `eval_upto` makes. Skips the model cache
+        // The width gate is all-or-nothing at the *batch* level, not a per-part
+        // carve-out: one part wider than 128 bits drops the whole call to the
+        // arbitrary-model path, narrow parts included. `bsearch_min` tracks its
+        // bounds in a u128 and has nothing canonical to return for the wide part
+        // (angr-cxw7, the same carve-out `eval_upto` makes on its single BV), and
+        // the parts must all come off one witness, so they cannot be split across
+        // the two paths — a mixed batch loses strict determinism wholesale. Skips
+        // the model cache
         // below for the reason `eval` does: a cached model is an arbitrary,
         // history-dependent witness.
         if self.is_deterministic() && bvs.iter().all(|bv| bv.width() <= 128) {

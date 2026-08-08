@@ -8,9 +8,13 @@
 //! ## Lineage + solver invariants
 //!
 //! The shared-lineage Z3 solver path (angr-v5a5 / angr-3ms1 / angr-v5ht)
-//! introduces several cross-cutting invariants that future refactors must
-//! preserve when splitting this module (see angr-a2br for the planned
-//! split). Invariants that have a bd memory carrying the long-form
+//! introduces several cross-cutting invariants that cut across the slice files
+//! this module was split into (angr-a2br: `bv_id_ops.rs`, `constraint_ops.rs`,
+//! `solving_ops.rs`, `transaction_ops.rs`, `snapshot_fork_ops.rs`,
+//! `lineage_ops.rs` — see the file index in `symbolic/mod.rs` for what landed
+//! where). The split preserved all of them, and any further refactor must too;
+//! because no single slice owns them, they stay documented here beside the
+//! struct definition. Invariants that have a bd memory carrying the long-form
 //! rationale cite its key (recall via `bd recall <key>`); the rest are
 //! stated in full here.
 //!

@@ -1,8 +1,14 @@
 //! Symbolic bitvector values for VEX execution.
 //!
-//! The `RustBV` type represents a bitvector that can be either:
+//! The `RustBV` type represents a bitvector that is one of four variants:
 //! - Concrete: A known fixed value
 //! - Symbolic: Represents an unknown value (with optional Z3 backing)
+//! - Constrained: A symbolic leaf whose value is already pinned to a concrete
+//!   one. Not interchangeable with `Concrete` — it keeps the symbol's `id`, and
+//!   the identity-preservation invariant that a *no-op* fold (a width-identity
+//!   extend/truncate, a full-width extract) must not rebuild it as `Concrete`
+//!   and drop that id (angr-9ke6b.128) is cited throughout this file and
+//!   `value_ops.rs`.
 //! - Expression: A compound expression with operation tree for reconstruction
 
 use std::fmt;

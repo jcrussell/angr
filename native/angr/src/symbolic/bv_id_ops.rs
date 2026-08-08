@@ -6,9 +6,11 @@
 //! count accessor (`num_constraints`), and the symbolic-bitvector factory pair
 //! (`new_bv` / `unique_name`).
 //!
-//! Coupling is minimal: the only private fields these touch are the two atomics
-//! `next_id` and `constraint_count` — promoted to `pub(super)` so this sibling
-//! module can reach them. `new_bv` routes construction through
+//! Coupling is minimal: the only `SymContext` field these touch is the
+//! `constraint_count` atomic — promoted to `pub(super)` so this sibling module
+//! can reach it. Ids do **not** come from a context field at all: `next_id`
+//! reads the process-global `NEXT_SYMBOL_ID` static below, for the aliasing
+//! reason its own doc gives. `new_bv` routes construction through
 //! `RustBV::symbolic`. None of these touch the constraint-mutation/transaction
 //! path (`local_constraints` / `solver` / `push_level` / lineage), which the
 //! design defers to a separate, higher-coupling slice 9. See bead angr-a2br.2.4

@@ -31,12 +31,12 @@
 //!
 //! ## `SymContext` — the solver context
 //!
-//! `context.rs` keeps only the struct and its construction; each `&self` `impl`
-//! block became its own slice file.
+//! `context.rs` keeps the struct, its construction, and the `&self` methods no
+//! slice claimed; every other `&self` `impl` block became its own slice file.
 //!
 //! | File | Holds |
 //! |------|-------|
-//! | `context.rs` | The `SymContext` struct and `SymContextSnapshot`, `new` / `Default`, `DEFAULT_SOLVER_TIMEOUT_MS`, and the `#[path]` wiring for `context_tests/`. |
+//! | `context.rs` | The `SymContext` struct and `SymContextSnapshot`, `new` / `with_timeout` / `new_mock` / `Default` / `Clone`, `DEFAULT_SOLVER_TIMEOUT_MS`, and the `#[path]` wiring for `context_tests/`. Plus the unsliced `&self` surface: the lazily-materializing `solver()` accessor, the assumed-constraint export log (`assumed_constraints_push`, `assumed_local_len`, `truncate_assumed_local`, `get_assumed_constraints`, `assumed_constraint_count`, `export_z3_assertion_ptrs`, `debug_push_level`), the **non-z3** mock twins of `assume_true` / `assume_false` / `check_branch_feasibility` (their z3 halves live in `constraint_ops.rs` / `solving_ops.rs`), the `LocalConstraints` type, and the `freeze_into_shared` helper. |
 //! | `bv_id_ops.rs` | Slice 8: unique-id allocation (`next_id`), the symbolic-BV factories, `num_constraints`, and the `SymbolIdRebase` watermark helpers. |
 //! | `constraint_ops.rs` | Slice 9: constraint mutation — `add_constraint*`, `add_bv_constraint`, `assume_true`. **(z3)** |
 //! | `solving_ops.rs` | Slice 7: the read path — `is_sat`, branch feasibility, `eval*` / `eval_upto*`, extrema queries. |
