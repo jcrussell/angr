@@ -264,7 +264,7 @@ pub(crate) fn run_interpreter_step_core(
     // Register the native sub-call resume sentinel (S2, bead angr-5gf0s):
     // a reserved hook address that a proc returning ProcOutcome::CallAndResume
     // makes the guest routine return to. Recognized by name in
-    // handle_simprocedure; never lifted (is_hooked fires first).
+    // `handle_simprocedure_core`; never lifted (is_hooked fires first).
     let resume_sentinel = crate::procedures::native_resume_sentinel(ctx.pointer_size);
     interp.register_simprocedure(
         resume_sentinel,

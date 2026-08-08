@@ -385,7 +385,15 @@ pub(super) fn handle_symbolic_branch_core(
     }
 }
 
-/// Mirror of `handle_symbolic_jump_target`.
+/// Symbolic-IP resolution: constrain (or keep symbolic, under
+/// `keep_ip_symbolic`) the jump expression to each concretized target, forking
+/// once per target beyond the first; an empty target list deadends.
+///
+/// Unlike the sibling arms below there is no serial counterpart to stay in
+/// sync with — `RunResult::SymbolicJumpTarget` is only ever classified here,
+/// and *both* step paths reach it through `run_post_step_core`: the serial one
+/// via `stepping.rs`'s `step_state_with_skip`, the parallel one via
+/// `run_loop_worker.rs` (angr-vh834).
 pub(super) fn handle_symbolic_jump_target_core(
     cc: &CoreCtx,
     state: RustSimState,
@@ -519,16 +527,24 @@ pub(super) fn handle_symbolic_jump_target_core(
     }
 }
 
-// The proc-dispatch decision itself lives in `helpers.rs` so `step_one`'s
-// serial arm and this parallel one cannot drift (angr-ph300.73).
+// The proc-dispatch decision itself lives in `native_proc_dispatch.rs` so
+// `step_one`'s serial arm and this one cannot drift (angr-ph300.73).
 #[cfg(test)]
 pub(super) use super::super::native_proc_dispatch::segfault_message;
 use super::super::native_proc_dispatch::{
     NativeProcCounters, NativeProcDisposition, dispatch_native_proc,
 };
 
-/// Mirror of `handle_simprocedure` (native fast path + native resume; Python
-/// fallback bounces).
+/// Classify a `RunResult::SimProcedure` — the interpreter stopped on a hook it
+/// was handed by `run_interpreter_step_core` (native fast path, native sub-call
+/// resume sentinel, else a Python bounce). Both step paths land here through
+/// `run_post_step_core`, so this is not a parallel-only arm.
+///
+/// Its serial sibling is the pre-step block in `run_loop_single.rs`'s
+/// `step_one`, which catches the case where the state's *entry* pc is already
+/// hooked and so never reaches the interpreter. The two share the dispatch
+/// decision (`dispatch_native_proc`) but deliberately not the return-address
+/// landing — see `NativeProcDisposition` in `native_proc_dispatch.rs`.
 pub(super) fn handle_simprocedure_core(
     cc: &CoreCtx,
     counters: &mut CoreCounters,

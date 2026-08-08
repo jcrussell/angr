@@ -42,7 +42,7 @@ pub(crate) fn effective_pc(state: &RustSimState) -> u64 {
 /// procedure registry is released.
 ///
 /// Both proc dispatch sites consume this: `step_one`'s serial arm
-/// (`run_loop.rs`) and `handle_simprocedure_core`'s parallel arm
+/// (`run_loop_single.rs`) and `handle_simprocedure_core`'s post-step arm
 /// (`core_outcome_handlers.rs`). The landing itself is deliberately NOT shared
 /// — the serial path resolves the return address through the calling
 /// convention (`get_return_addr` + `pops_return_addr`, so LR/X30/$ra arches
