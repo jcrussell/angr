@@ -120,6 +120,40 @@ def drain_solver_graveyard() -> int:
     return drained
 
 
+def _rust_state_get(mgr, getter: str, state_id: int, *args, default=None, warn: bool = False, who: str | None = None):
+    """Call ``mgr.<getter>(state_id, *args)``, returning ``default`` on failure.
+
+    Shared body for the read-only per-state accessors on the proxies below
+    (heap mmap_base/metadata, scratch pc/history, posix fd buffers, callstack
+    frames, ``RustStateProxy.addr``). Every one of them wrapped the same
+    try/except around one PyO3 getter, logged the same
+    ``"<getter>(sid=N) failed: <ExcType>: <msg>"`` line and returned a
+    per-site default; only the getter name, the extra args and the default
+    ever differed (angr-12jjk.30).
+
+    The FFI call is the whole ``try`` body on purpose: post-processing of a
+    successful result (unpacking, ``list()``/``bytes()`` conversion,
+    reversing) stays at the call site so a bug there raises instead of being
+    swallowed as "the Rust state is gone".
+
+    All failures are ``cat-(b)`` FALLBACK WITH LOSS: the caller cannot tell a
+    dropped/never-created state from a genuinely empty result except via this
+    log line. Pass ``warn=True`` where the default is also a *plausible* real
+    value (``RustStateProxy.addr``'s 0 can spuriously match a find/avoid
+    predicate) so the failure is loud. ``who`` prefixes the log with a class
+    or method name where the getter alone doesn't identify the caller — e.g.
+    the callstack mixin, shared by the view and the plugin proxy.
+    """
+    try:
+        return getattr(mgr, getter)(state_id, *args)
+    except Exception as e:
+        prefix = f"{who}." if who else ""
+        extra = "".join(f", {a!r}" for a in args)
+        log = l.warning if warn else l.debug
+        log("%s%s(sid=%d%s) failed: %s: %s", prefix, getter, state_id, extra, type(e).__name__, e)
+        return default
+
+
 _REGISTER_OVERLAP_CACHE: dict[str, dict[str, frozenset[str]]] = {}
 
 
@@ -2028,13 +2062,9 @@ class RustHeapProxy:
     @property
     def mmap_base(self):
         """Current mmap base pointer (mirrors `state.heap.mmap_base`)."""
-        try:
-            return self._mgr.get_state_mmap_base(self._state_id)
-        except Exception as e:
-            # cat-(b) FALLBACK WITH LOSS: returning None on FFI error mirrors
-            # angr's behavior when state.heap is unavailable.
-            l.debug("get_state_mmap_base(sid=%d) failed: %s: %s", self._state_id, type(e).__name__, e)
-            return None
+        # cat-(b) FALLBACK WITH LOSS via _rust_state_get: returning None on FFI
+        # error mirrors angr's behavior when state.heap is unavailable.
+        return _rust_state_get(self._mgr, "get_state_mmap_base", self._state_id)
 
     @mmap_base.setter
     def mmap_base(self, value):
@@ -2043,14 +2073,11 @@ class RustHeapProxy:
     @property
     def allocations(self):
         """List of (addr, size) for currently-live heap allocations."""
-        try:
-            allocated, _freed = self._mgr.get_state_heap_metadata(self._state_id)
-            return list(allocated)
-        except Exception as e:
-            # cat-(b) FALLBACK WITH LOSS: empty list when heap metadata is
-            # unavailable (e.g., state already cleaned up).
-            l.debug("get_state_heap_metadata(sid=%d) failed: %s: %s", self._state_id, type(e).__name__, e)
-            return []
+        # cat-(b) FALLBACK WITH LOSS via _rust_state_get: the ((), ()) default
+        # unpacks to an empty list when heap metadata is unavailable (e.g.
+        # state already cleaned up).
+        allocated, _freed = _rust_state_get(self._mgr, "get_state_heap_metadata", self._state_id, default=((), ()))
+        return list(allocated)
 
     @property
     def freed(self):
@@ -2060,14 +2087,9 @@ class RustHeapProxy:
         (matching what a state merge does with a free both branches
         inherited), so this list never contains duplicates.
         """
-        try:
-            _allocated, freed = self._mgr.get_state_heap_metadata(self._state_id)
-            return list(freed)
-        except Exception as e:
-            # cat-(b) FALLBACK WITH LOSS: empty list when heap metadata is
-            # unavailable (e.g., state already cleaned up).
-            l.debug("get_state_heap_metadata(sid=%d) failed: %s: %s", self._state_id, type(e).__name__, e)
-            return []
+        # cat-(b) FALLBACK WITH LOSS via _rust_state_get: see ``allocations``.
+        _allocated, freed = _rust_state_get(self._mgr, "get_state_heap_metadata", self._state_id, default=((), ()))
+        return list(freed)
 
 
 class RustScratchProxy:
@@ -2103,13 +2125,9 @@ class RustScratchProxy:
     @property
     def bbl_addr(self):
         """Address of the most recently entered block (mirrors state.pc)."""
-        try:
-            return self._mgr.get_state_pc_by_id(self._state_id)
-        except Exception as e:
-            # cat-(b) FALLBACK WITH LOSS: best-effort read; None mirrors
-            # SimStateScratch's pre-block default.
-            l.debug("get_state_pc_by_id(sid=%d) failed: %s: %s", self._state_id, type(e).__name__, e)
-            return None
+        # cat-(b) FALLBACK WITH LOSS via _rust_state_get: best-effort read;
+        # None mirrors SimStateScratch's pre-block default.
+        return _rust_state_get(self._mgr, "get_state_pc_by_id", self._state_id)
 
     @property
     def ins_addr(self):
@@ -2129,13 +2147,12 @@ class RustScratchProxy:
         Pulled from the last entry of detailed_history. Returns None for a
         freshly-created state with no recorded transitions.
         """
-        try:
-            history = self._mgr.get_state_detailed_history(self._state_id)
-        except (RuntimeError, AttributeError, KeyError) as e:
-            # cat-(b) FALLBACK WITH LOSS: history fetch failed; caller sees
-            # jumpkind=None as if there were no recorded transitions.
-            l.debug("get_state_detailed_history(sid=%d) failed: %s: %s", self._state_id, type(e).__name__, e)
-            return None
+        # cat-(b) FALLBACK WITH LOSS via _rust_state_get: history fetch failed;
+        # caller sees jumpkind=None as if there were no recorded transitions.
+        # The helper catches Exception where this site used to catch only
+        # (RuntimeError, AttributeError, KeyError) — same widening every other
+        # per-state getter on these proxies already had.
+        history = _rust_state_get(self._mgr, "get_state_detailed_history", self._state_id)
         if not history:
             return None
         _addr, kind_u8, _target = history[-1]
@@ -2230,16 +2247,12 @@ class RustPosixProxy:
         if fd == 1:
             # stdout — return accumulated output (cached on proxy init)
             return self._stdout_data
-        # Other fds (stderr, opened files) — query Rust engine
-        try:
-            return bytes(self._mgr.get_state_fd_output(self._state_id, fd))
-        except Exception as e:
-            # cat-(b) FALLBACK WITH LOSS: empty bytes when the requested
-            # fd has no Rust-side buffer. Tools that expect specific
-            # output should distinguish "no buffer" from "empty buffer";
-            # log so they're visible under --debug.
-            l.debug("get_state_fd_output(sid=%d, fd=%d) failed: %s: %s", self._state_id, fd, type(e).__name__, e)
-            return b""
+        # Other fds (stderr, opened files) — query Rust engine.
+        # cat-(b) FALLBACK WITH LOSS via _rust_state_get: empty bytes when the
+        # requested fd has no Rust-side buffer. Tools that expect specific
+        # output should distinguish "no buffer" from "empty buffer"; the
+        # helper logs so they're visible under --debug.
+        return bytes(_rust_state_get(self._mgr, "get_state_fd_output", self._state_id, fd, default=b""))
 
     def _eval_stdin(self):
         """Evaluate stdin symbolic variables to concrete bytes."""
@@ -2358,19 +2371,11 @@ class _RustCallStackFramesMixin:
 
     @property
     def _frames(self):
-        try:
-            raw = self._mgr.get_state_call_stack(self._state_id)
-        except Exception as e:
-            # cat-(b) FALLBACK WITH LOSS: empty callstack when FFI fails.
-            # Distinguishable from a real empty stack only via the log.
-            l.debug(
-                "%s.get_state_call_stack(sid=%d) failed: %s: %s",
-                type(self).__name__,
-                self._state_id,
-                type(e).__name__,
-                e,
-            )
-            return []
+        # cat-(b) FALLBACK WITH LOSS via _rust_state_get: empty callstack when
+        # FFI fails, distinguishable from a real empty stack only via the log.
+        # ``who`` names the concrete subclass (view vs plugin), which share
+        # this mixin body.
+        raw = _rust_state_get(self._mgr, "get_state_call_stack", self._state_id, default=(), who=type(self).__name__)
         # Rust pushes onto the end → most recent is last → reverse.
         return list(reversed(raw))
 
@@ -3225,17 +3230,12 @@ class RustStateProxy:
         """Current program counter (O(1) via state index, no full export)."""
         if hasattr(self, "_override_addr") and self._override_addr is not None:
             return self._override_addr
-        try:
-            pc = self._mgr.get_state_pc_by_id(self._state_id)
-            if pc is not None:
-                return pc
-        except Exception as e:
-            # cat-(c) WRONG-ANSWER RISK: returning 0 when PC lookup fails can
-            # spuriously match a find/avoid predicate that includes addr 0.
-            # Log at warn so the failure is loud; callers reading proxy.addr
-            # in critical paths will see the silent zero behavior in stderr.
-            l.warning("RustStateProxy.addr(sid=%d) lookup failed: %s: %s", self._state_id, type(e).__name__, e)
-        return 0
+        # cat-(c) WRONG-ANSWER RISK: returning 0 when PC lookup fails can
+        # spuriously match a find/avoid predicate that includes addr 0. Hence
+        # warn=True — the failure is loud, so callers reading proxy.addr in
+        # critical paths see the silent-zero behavior in stderr.
+        pc = _rust_state_get(self._mgr, "get_state_pc_by_id", self._state_id, warn=True, who="RustStateProxy")
+        return pc if pc is not None else 0
 
     @property
     def ip(self):
