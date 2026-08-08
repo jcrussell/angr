@@ -106,7 +106,20 @@ impl Segment {
     }
 }
 
-/// Should be called a SegmentMap!
+/// A sorted, non-overlapping set of occupied address ranges, each optionally
+/// tagged with a *sort* string.
+///
+/// The name is historical and list-flavored: `SegmentList` is the public name
+/// Python imports (`from angr.rustylib import SegmentList`, used by `CFGFast`
+/// and declared in `angr/rustylib/__init__.pyi`), and the surface it exposes is
+/// list-shaped — `__len__`, `__iter__`, and positional `__getitem__`. Internally
+/// it is a *map*: a `RangeMap<u64, Option<String>>` that coalesces adjacent
+/// same-sort ranges and answers containment queries in logarithmic time. The
+/// two shapes only diverge where the list API forces a positional scan
+/// (`__getitem__`, `search`), which is why `CFGFast` avoids indexing in a loop.
+/// Renaming to something map-flavored would break every Python importer for no
+/// behavioral gain, so the list name stays; see the module doc for the two
+/// Python consumers that drive the design.
 #[derive(Clone, Default)]
 #[pyclass(module = "angr.rustylib.segmentlist", from_py_object)]
 #[allow(
