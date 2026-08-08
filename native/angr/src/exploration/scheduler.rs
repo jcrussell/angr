@@ -381,6 +381,10 @@ pub(crate) use transport::{ProcessFn, WaveJob, WorkTransport};
 mod pool;
 pub(crate) use pool::{PersistentPool, RunSession, WorkerUp};
 
+#[path = "scheduler_worker.rs"]
+mod worker;
+use worker::{worker_loop, worker_session_loop};
+
 /// A thin compatibility wrapper over a one-shot [`PersistentPool`], preserving
 /// the old `ParallelScheduler` surface for the byte-stable scheduler unit tests
 /// (`#[cfg(test)]` below). The run loop drives a long-lived `PersistentPool`
@@ -455,9 +459,5 @@ impl ParallelScheduler {
         // `pool` drops here → Shutdown broadcast + join of the one-shot workers.
     }
 }
-
-#[path = "scheduler_worker.rs"]
-mod worker;
-use worker::{worker_loop, worker_session_loop};
 
 test_submod!("scheduler_tests.rs" => tests);
