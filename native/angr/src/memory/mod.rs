@@ -154,6 +154,22 @@ pub(super) fn end_page_inclusive(addr: u64, size: u64) -> Result<u64, MemoryErro
     Ok((addr + size - 1) >> 12)
 }
 
+/// Exclusive page number one past the last page touched by
+/// `[addr, addr + size)` — i.e. the upper bound of a `start_page..end_page`
+/// half-open range.
+///
+/// The exclusive sibling of [`end_page_inclusive`], centralized per
+/// angr-sqfj8.76 (the formula was copy-pasted at six sites). Unlike the
+/// inclusive form this only ever *adds*, so `size == 0` cannot underflow —
+/// it simply yields `ceil(addr / PAGE_SIZE)`, an empty range for a
+/// page-aligned `addr`. Callers that must reject a zero-size access do so
+/// themselves (`map` / `unmap` early-return; the store wrappers inherit
+/// `store_concrete`'s `end_page_inclusive` check), so no error channel is
+/// needed here.
+pub(super) fn end_page_exclusive(addr: u64, size: u64) -> u64 {
+    (addr + size + PAGE_SIZE - 1) >> 12
+}
+
 impl ConcretizationResult {
     /// Map a *failed* concretization (`TooLarge` / `Failed`) onto the
     /// `MemoryError::SymbolicAddress` it should surface, so callers can fall
@@ -520,7 +536,7 @@ impl SymbolicMemory {
         }
         let addr = addr.into();
         let start_page = addr.page_num();
-        let end_page = (addr.raw() + size + PAGE_SIZE - 1) >> 12;
+        let end_page = end_page_exclusive(addr.raw(), size);
 
         for page_num in start_page..end_page {
             let base = page_num << 12;
@@ -563,7 +579,7 @@ impl SymbolicMemory {
         }
         let addr = addr.into();
         let start_page = addr.page_num();
-        let end_page = (addr.raw() + size + PAGE_SIZE - 1) >> 12;
+        let end_page = end_page_exclusive(addr.raw(), size);
 
         for page_num in start_page..end_page {
             self.pages.remove(&page_num);
@@ -904,7 +920,7 @@ impl SymbolicMemory {
     pub fn add_lazy_region(&mut self, start_addr: impl Into<Address>, size: u64) {
         let start_addr = start_addr.into();
         let start_page = start_addr.page_num();
-        let end_page = (start_addr.raw() + size + PAGE_SIZE - 1) >> 12;
+        let end_page = end_page_exclusive(start_addr.raw(), size);
         self.lazy_regions.push((start_page, end_page));
     }
 

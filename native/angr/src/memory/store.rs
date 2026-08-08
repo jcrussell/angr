@@ -48,7 +48,8 @@
 //!   names record intended caller class, not differing behavior.
 //! * `store_concrete` uses an **inclusive** end-page range
 //!   (`end_page_inclusive`); the two lazy wrappers use an exclusive ceil-div
-//!   range via `check_pages_mapped_lazy`. Both cover the accessed bytes.
+//!   range (`end_page_exclusive`) via `check_pages_mapped_lazy`. Both cover
+//!   the accessed bytes.
 //! * The bare vs. `_safe` Multi installer is the whole auto-map distinction:
 //!   `install_multi_for_candidates` maps every candidate page RW, while
 //!   `install_multi_for_candidates_safe` returns `UnmappedPageInRegion` for a
@@ -84,7 +85,7 @@ use crate::vex::Endness;
 
 use super::multi::{MultiAlternative, MultiPayload};
 use super::page::{MemoryPage, PAGE_SIZE, Permission};
-use super::{Address, MemoryError, SymbolicMemory, end_page_inclusive};
+use super::{Address, MemoryError, SymbolicMemory, end_page_exclusive, end_page_inclusive};
 
 impl SymbolicMemory {
     /// Store a value to memory.
@@ -868,7 +869,7 @@ impl SymbolicMemory {
 
         // Check if pages are mapped
         let start_page = addr.page_num();
-        let end_page = (addr.raw() + size as u64 + PAGE_SIZE - 1) >> 12;
+        let end_page = end_page_exclusive(addr.raw(), size as u64);
         self.check_pages_mapped_lazy(start_page, end_page)?;
 
         // Permission checks live in store_concrete; this wrapper only adds
@@ -924,7 +925,7 @@ impl SymbolicMemory {
         let addr = addr.into();
         let size = value.width() / 8;
         let start_page = addr.page_num();
-        let end_page = (addr.raw() + size as u64 + PAGE_SIZE - 1) >> 12;
+        let end_page = end_page_exclusive(addr.raw(), size as u64);
 
         // Check all pages are mapped - do NOT auto-map
         self.check_pages_mapped_lazy(start_page, end_page)?;
@@ -946,7 +947,7 @@ impl SymbolicMemory {
         let addr = addr.into();
         let size = value.width() / 8;
         let start_page = addr.page_num();
-        let end_page = (addr.raw() + size as u64 + PAGE_SIZE - 1) >> 12;
+        let end_page = end_page_exclusive(addr.raw(), size as u64);
 
         // Auto-map any missing pages in lazy regions
         for page_num in start_page..end_page {
