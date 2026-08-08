@@ -217,3 +217,19 @@ fn test_loadg_op_handles_every_vendored_variant() {
     // INVALID is the one vendored tag that legitimately has no mapping.
     assert_eq!(loadg_op(ffi::IRLoadGOp::ILGop_INVALID), IRLoadGOp::Unknown);
 }
+
+/// Pins the drift fallbacks of `c_endness` / `c_jumpkind` / `c_type_parse`
+/// (angr-sqfj8.119). Unlike `c_op`, none of the three has a sentinel variant
+/// that can carry the raw tag, so an out-of-range discriminant collapses to a
+/// plausible-but-possibly-wrong default; the contract is that it does so
+/// *predictably* and with a `log::warn!`. A future variant that reaches these
+/// helpers as a real tag must be added to the `enum_names` table, not left to
+/// land here.
+#[test]
+fn test_unknown_discriminants_fall_back_predictably() {
+    // 0 is not a valid tag for any of the three enums (libVEX bases them at
+    // 0x1100 / 0x1200 / 0x1A00-style offsets), so it exercises the miss path.
+    assert_eq!(c_endness(ffi::IREndness(0)), Endness::Little);
+    assert_eq!(c_jumpkind(ffi::IRJumpKind(0)), JumpKind::Boring);
+    assert_eq!(c_type_parse(ffi::IRType(0)), IRType::I64);
+}

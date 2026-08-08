@@ -206,27 +206,62 @@ impl VEXLifter for NativeLibVEXLifter {
 // LIFT_LOCK is held. Structural target shape matches pyvex_bridge::convert_*.
 
 /// Endness discriminant -> Rust `Endness` (via pyvex `Iend_*` name).
+///
+/// A lookup miss means the generated `enum_names` table has drifted from the
+/// linked `libpyvex.so`; there is no `Endness` sentinel to carry the raw tag
+/// the way `c_op` does, so the raw discriminant goes to the log instead.
 fn c_endness(end: ffi::IREndness) -> Endness {
     match enum_names::iend_name(end.0) {
         Some(name) => parse_endness(name),
-        None => Endness::Little,
+        // SILENT(cat-c): defaulting to LE on an unknown tag can silently
+        // byte-swap a BE load/store — warn so the table drift is traceable.
+        None => {
+            log::warn!(
+                "Unknown libVEX IREndness discriminant {}; assuming Iend_LE",
+                end.0
+            );
+            Endness::Little
+        }
     }
 }
 
 /// Jumpkind discriminant -> Rust `JumpKind` (via pyvex `Ijk_*` name).
+///
+/// As with [`c_endness`], a lookup miss is table drift and has no sentinel
+/// variant to preserve the raw tag, so it is logged.
 fn c_jumpkind(jk: ffi::IRJumpKind) -> JumpKind {
     match enum_names::ijk_name(jk.0) {
         Some(name) => parse_jumpkind(name),
-        None => JumpKind::Boring,
+        // SILENT(cat-c): defaulting to Boring turns a call/ret/syscall exit
+        // into a plain jump — warn so the table drift is traceable.
+        None => {
+            log::warn!(
+                "Unknown libVEX IRJumpKind discriminant {}; assuming Ijk_Boring",
+                jk.0
+            );
+            JumpKind::Boring
+        }
     }
 }
 
 /// Type discriminant -> Rust `IRType` (via pyvex `Ity_*` name), defaulting to
 /// `I64` on an unknown tag (mirrors `pyvex_bridge`'s `unwrap_or(IRType::I64)`).
+///
+/// Both miss paths (no name for the discriminant, and a name [`parse_type`]
+/// does not know) are logged for the same reason as [`c_endness`].
 fn c_type_parse(ty: ffi::IRType) -> IRType {
+    // SILENT(cat-c): defaulting to I64 mis-sizes the value at every use site —
+    // warn so the table drift is traceable.
+    let warn_default = || {
+        log::warn!(
+            "Unknown libVEX IRType discriminant {}; assuming Ity_I64",
+            ty.0
+        );
+        IRType::I64
+    };
     match enum_names::irtype_name(ty.0) {
-        Some(name) => parse_type(name).unwrap_or(IRType::I64),
-        None => IRType::I64,
+        Some(name) => parse_type(name).unwrap_or_else(warn_default),
+        None => warn_default(),
     }
 }
 
