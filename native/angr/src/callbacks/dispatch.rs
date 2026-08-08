@@ -70,6 +70,70 @@ fn extract_page_tuple(tuple: &Bound<'_, pyo3::types::PyTuple>) -> PyResult<(Vec<
     Ok((data, permissions, is_mapped))
 }
 
+/// One-shot latch for the `python_servable_pages` poison warning.
+///
+/// See [`page_set_contains`] for why the warning is latched rather than
+/// emitted per call. Each snapshot gets its own latch so a poisoned
+/// `python_servable_pages` never masks a later poisoned `python_page_universe`.
+static SERVABLE_POISON_WARNED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// One-shot latch for the `python_page_universe` poison warning.
+static UNIVERSE_POISON_WARNED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Ask a page-set snapshot whether it contains `page_addr`, failing *open*.
+///
+/// Shared by [`PythonCallbacks::python_can_serve_page`] and
+/// [`PythonCallbacks::python_has_page`], which differ only in which snapshot
+/// they consult (angr-sqfj8.14). Both are pure *optimizations* — a `true`
+/// answer only means "cross to Python and ask", which is the behaviour that
+/// predates the snapshots — so every uncertain case answers `true`.
+///
+/// The two uncertain cases are deliberately told apart:
+///
+/// - **no snapshot installed** (`None`) is the normal steady state whenever
+///   Python cannot prove a verdict for every page; it is not an error.
+/// - **poisoned lock** means a thread panicked while holding the write side.
+///   That is impossible in a production wheel (`panic = "abort"`, workspace
+///   `Cargo.toml`) but reachable in an unwinding test build, and nothing else
+///   on this path would ever reveal it — hence the warning.
+///
+/// The warning is latched via `warned` because both callers sit in the
+/// per-candidate-page prefetch loop (`prefetch::fetch_page` and
+/// `prefetch::fetch_pages_batch`): a lock
+/// stays poisoned forever, so an unlatched `log::warn!` would emit one line
+/// per page probe for the rest of the process.
+fn page_set_contains(
+    lock: &std::sync::RwLock<Option<std::collections::HashSet<u64>>>,
+    which: &str,
+    warned: &std::sync::atomic::AtomicBool,
+    page_addr: u64,
+) -> bool {
+    match lock.read() {
+        // SILENT(cat-a): `None` is the documented "Python installed no
+        // snapshot" state, not a lost value — fail open and ask Python.
+        Ok(guard) => guard
+            .as_ref()
+            .is_none_or(|pages| pages.contains(&page_addr)),
+        // SILENT(cat-b): the fallback costs at most a needless GIL crossing
+        // (the answer degrades to the pre-snapshot behaviour, never to a wrong
+        // one), but it is a real fault, so it is logged rather than folded
+        // into the `None` case above.
+        Err(_) => {
+            if !warned.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                log::warn!(
+                    "{which} lock is poisoned (a thread panicked holding the write side); \
+                     page-serve filtering is disabled for the rest of this process — \
+                     every page probe (first: {page_addr:#x}) now crosses to Python as it \
+                     did before the snapshot existed"
+                );
+            }
+            true
+        }
+    }
+}
+
 impl PythonCallbacks {
     /// Call the memory load callback.
     ///
@@ -302,13 +366,12 @@ impl PythonCallbacks {
     /// crossing entirely rather than pay a GIL attach to be told no. True when
     /// no snapshot was installed (unknown → ask Python, the legacy behaviour).
     pub(crate) fn python_can_serve_page(&self, page_addr: u64) -> bool {
-        match self.python_servable_pages.read() {
-            Ok(guard) => match &*guard {
-                Some(pages) => pages.contains(&page_addr),
-                None => true,
-            },
-            Err(_) => true,
-        }
+        page_set_contains(
+            &self.python_servable_pages,
+            "python_servable_pages",
+            &SERVABLE_POISON_WARNED,
+            page_addr,
+        )
     }
 
     /// Whether Python holds any page object at `page_addr` (angr-gorvf.4.7).
@@ -318,13 +381,12 @@ impl PythonCallbacks {
     /// concrete bytes. Fails open (assume Python has it) when no snapshot is
     /// installed, so an unknown page keeps crossing exactly as before.
     pub(crate) fn python_has_page(&self, page_addr: u64) -> bool {
-        match self.python_page_universe.read() {
-            Ok(guard) => match &*guard {
-                Some(pages) => pages.contains(&page_addr),
-                None => true,
-            },
-            Err(_) => true,
-        }
+        page_set_contains(
+            &self.python_page_universe,
+            "python_page_universe",
+            &UNIVERSE_POISON_WARNED,
+            page_addr,
+        )
     }
 
     /// Call the page fetch callback to load a single 4KB page.

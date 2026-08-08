@@ -410,6 +410,36 @@ fn page_predicates_fail_open_without_snapshot() {
     assert!(cb.python_has_page(0xdead_0000));
 }
 
+/// With snapshots installed, each predicate must consult *its own* snapshot.
+///
+/// Both share `page_set_contains` (angr-sqfj8.14), so the one way that
+/// refactor could go wrong is wiring a predicate to the other's lock — which
+/// only shows up when the two sets disagree, as they do here.
+#[test]
+fn page_predicates_consult_their_own_snapshot() {
+    Python::initialize();
+    let cb = PythonCallbacks::new();
+    cb.py_set_python_servable_pages(vec![0x1000]);
+    cb.py_set_python_page_universe(vec![0x1000, 0x2000]);
+
+    assert!(cb.python_can_serve_page(0x1000));
+    assert!(cb.python_has_page(0x1000));
+
+    // 0x2000 is in the universe (Python holds data) but not servable as a
+    // whole concrete page.
+    assert!(!cb.python_can_serve_page(0x2000));
+    assert!(cb.python_has_page(0x2000));
+
+    // A page in neither snapshot is declined by both.
+    assert!(!cb.python_can_serve_page(0x3000));
+    assert!(!cb.python_has_page(0x3000));
+
+    // Clearing one snapshot restores fail-open for that predicate only.
+    cb.py_clear_python_servable_pages();
+    assert!(cb.python_can_serve_page(0x3000));
+    assert!(!cb.python_has_page(0x3000));
+}
+
 /// The `has_*` predicates gate whole dispatch paths; they must track the
 /// setters they name.
 #[test]
