@@ -814,17 +814,13 @@ impl PythonCallbacks {
     /// `batch_fetch_pages` GIL cost to zero.
     #[pyo3(name = "set_python_servable_pages")]
     pub fn py_set_python_servable_pages(&self, pages: Vec<u64>) {
-        if let Ok(mut guard) = self.python_servable_pages.write() {
-            *guard = Some(pages.into_iter().collect());
-        }
+        self.store_servable_pages(Some(pages.into_iter().collect()));
     }
 
     /// Drop the servable-page snapshot: every fetch crosses into Python again.
     #[pyo3(name = "clear_python_servable_pages")]
     pub fn py_clear_python_servable_pages(&self) {
-        if let Ok(mut guard) = self.python_servable_pages.write() {
-            *guard = None;
-        }
+        self.store_servable_pages(None);
     }
 
     /// Install the snapshot of every page Python holds a page object for
@@ -832,17 +828,13 @@ impl PythonCallbacks {
     /// are served natively with an unconstrained filler instead of crossing.
     #[pyo3(name = "set_python_page_universe")]
     pub fn py_set_python_page_universe(&self, pages: Vec<u64>) {
-        if let Ok(mut guard) = self.python_page_universe.write() {
-            *guard = Some(pages.into_iter().collect());
-        }
+        self.store_page_universe(Some(pages.into_iter().collect()));
     }
 
     /// Drop the page-universe snapshot: every unbacked load crosses again.
     #[pyo3(name = "clear_python_page_universe")]
     pub fn py_clear_python_page_universe(&self) {
-        if let Ok(mut guard) = self.python_page_universe.write() {
-            *guard = None;
-        }
+        self.store_page_universe(None);
     }
 
     /// Read the inspect-enabled bitmask (Python-side, mostly for tests).

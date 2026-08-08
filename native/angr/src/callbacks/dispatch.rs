@@ -72,15 +72,71 @@ fn extract_page_tuple(tuple: &Bound<'_, pyo3::types::PyTuple>) -> PyResult<(Vec<
 
 /// One-shot latch for the `python_servable_pages` poison warning.
 ///
-/// See [`page_set_contains`] for why the warning is latched rather than
+/// See [`warn_page_set_poisoned`] for why the warning is latched rather than
 /// emitted per call. Each snapshot gets its own latch so a poisoned
 /// `python_servable_pages` never masks a later poisoned `python_page_universe`.
-static SERVABLE_POISON_WARNED: std::sync::atomic::AtomicBool =
+pub(super) static SERVABLE_POISON_WARNED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
 /// One-shot latch for the `python_page_universe` poison warning.
-static UNIVERSE_POISON_WARNED: std::sync::atomic::AtomicBool =
+pub(super) static UNIVERSE_POISON_WARNED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
+
+/// Report — at most once per snapshot per process — that a page-set lock is
+/// poisoned, i.e. a thread panicked while holding its write side.
+///
+/// Poison is impossible in a production wheel (`panic = "abort"`, workspace
+/// `Cargo.toml`) but reachable in an unwinding test build, and nothing else on
+/// these paths would ever reveal it — hence the warning.
+///
+/// Latched via `warned` because the reader ([`page_set_contains`]) sits in the
+/// per-candidate-page prefetch loop (`prefetch::fetch_page` and
+/// `prefetch::fetch_pages_batch`): a lock stays poisoned forever, so an
+/// unlatched `log::warn!` would emit one line per page probe for the rest of
+/// the process.
+///
+/// The read and write paths ([`page_set_contains`] and [`store_page_set`])
+/// share one latch per snapshot: they report the same underlying fault and the
+/// same degradation, so whichever side notices first is the one that speaks.
+fn warn_page_set_poisoned(
+    which: &str,
+    warned: &std::sync::atomic::AtomicBool,
+    detail: impl FnOnce() -> String,
+) {
+    if !warned.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        log::warn!(
+            "{which} lock is poisoned (a thread panicked holding the write side); \
+             page-serve filtering is disabled for the rest of this process — {}",
+            detail()
+        );
+    }
+}
+
+/// Install (`Some`) or drop (`None`) a page-set snapshot.
+///
+/// Write-side twin of [`page_set_contains`] (angr-sqfj8.148), shared by the
+/// four `py_{set,clear}_python_{servable_pages,page_universe}` setters in
+/// `callbacks/mod.rs`, which differ only in which snapshot they write.
+pub(super) fn store_page_set(
+    lock: &std::sync::RwLock<Option<std::collections::HashSet<u64>>>,
+    which: &str,
+    warned: &std::sync::atomic::AtomicBool,
+    value: Option<std::collections::HashSet<u64>>,
+) {
+    match lock.write() {
+        Ok(mut guard) => *guard = value,
+        // SILENT(cat-b): the update is dropped, but it cannot strand a *stale*
+        // snapshot in front of the reader: `page_set_contains` sees the same
+        // poison and fails open, so a snapshot that failed to install or clear
+        // is never consulted again. The loss is the optimization, not the
+        // answer — still a real fault, so it is logged.
+        Err(_) => warn_page_set_poisoned(which, warned, || {
+            "this update was dropped, and every page probe now crosses to Python \
+             as it did before the snapshot existed"
+                .to_string()
+        }),
+    }
+}
 
 /// Ask a page-set snapshot whether it contains `page_addr`, failing *open*.
 ///
@@ -94,16 +150,8 @@ static UNIVERSE_POISON_WARNED: std::sync::atomic::AtomicBool =
 ///
 /// - **no snapshot installed** (`None`) is the normal steady state whenever
 ///   Python cannot prove a verdict for every page; it is not an error.
-/// - **poisoned lock** means a thread panicked while holding the write side.
-///   That is impossible in a production wheel (`panic = "abort"`, workspace
-///   `Cargo.toml`) but reachable in an unwinding test build, and nothing else
-///   on this path would ever reveal it — hence the warning.
-///
-/// The warning is latched via `warned` because both callers sit in the
-/// per-candidate-page prefetch loop (`prefetch::fetch_page` and
-/// `prefetch::fetch_pages_batch`): a lock
-/// stays poisoned forever, so an unlatched `log::warn!` would emit one line
-/// per page probe for the rest of the process.
+/// - **poisoned lock** means a thread panicked while holding the write side —
+///   see [`warn_page_set_poisoned`] for why that is worth a (latched) log line.
 fn page_set_contains(
     lock: &std::sync::RwLock<Option<std::collections::HashSet<u64>>>,
     which: &str,
@@ -121,14 +169,12 @@ fn page_set_contains(
         // one), but it is a real fault, so it is logged rather than folded
         // into the `None` case above.
         Err(_) => {
-            if !warned.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                log::warn!(
-                    "{which} lock is poisoned (a thread panicked holding the write side); \
-                     page-serve filtering is disabled for the rest of this process — \
-                     every page probe (first: {page_addr:#x}) now crosses to Python as it \
+            warn_page_set_poisoned(which, warned, || {
+                format!(
+                    "every page probe (first: {page_addr:#x}) now crosses to Python as it \
                      did before the snapshot existed"
-                );
-            }
+                )
+            });
             true
         }
     }
@@ -387,6 +433,30 @@ impl PythonCallbacks {
             &UNIVERSE_POISON_WARNED,
             page_addr,
         )
+    }
+
+    /// Write side of [`Self::python_can_serve_page`]'s snapshot: `Some` installs,
+    /// `None` drops it. Backs `py_set_python_servable_pages` /
+    /// `py_clear_python_servable_pages`.
+    pub(super) fn store_servable_pages(&self, value: Option<std::collections::HashSet<u64>>) {
+        store_page_set(
+            &self.python_servable_pages,
+            "python_servable_pages",
+            &SERVABLE_POISON_WARNED,
+            value,
+        );
+    }
+
+    /// Write side of [`Self::python_has_page`]'s snapshot: `Some` installs,
+    /// `None` drops it. Backs `py_set_python_page_universe` /
+    /// `py_clear_python_page_universe`.
+    pub(super) fn store_page_universe(&self, value: Option<std::collections::HashSet<u64>>) {
+        store_page_set(
+            &self.python_page_universe,
+            "python_page_universe",
+            &UNIVERSE_POISON_WARNED,
+            value,
+        );
     }
 
     /// Call the page fetch callback to load a single 4KB page.

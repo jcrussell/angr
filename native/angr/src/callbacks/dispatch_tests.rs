@@ -412,8 +412,9 @@ fn page_predicates_fail_open_without_snapshot() {
 
 /// With snapshots installed, each predicate must consult *its own* snapshot.
 ///
-/// Both share `page_set_contains` (angr-sqfj8.14), so the one way that
-/// refactor could go wrong is wiring a predicate to the other's lock — which
+/// Both share `page_set_contains` (angr-sqfj8.14), and the four setters behind
+/// them share `store_page_set` (angr-sqfj8.148), so the one way either refactor
+/// could go wrong is wiring a predicate or a setter to the other's lock — which
 /// only shows up when the two sets disagree, as they do here.
 #[test]
 fn page_predicates_consult_their_own_snapshot() {
@@ -438,6 +439,13 @@ fn page_predicates_consult_their_own_snapshot() {
     cb.py_clear_python_servable_pages();
     assert!(cb.python_can_serve_page(0x3000));
     assert!(!cb.python_has_page(0x3000));
+
+    // ...and clearing the other restores it there too, without resurrecting
+    // the servable snapshot that is already gone.
+    cb.py_set_python_servable_pages(vec![0x1000]);
+    cb.py_clear_python_page_universe();
+    assert!(!cb.python_can_serve_page(0x3000));
+    assert!(cb.python_has_page(0x3000));
 }
 
 /// The `has_*` predicates gate whole dispatch paths; they must track the
