@@ -251,7 +251,14 @@ impl<'a> VEXInterpreter<'a> {
             && let Some(value) = self.try_rust_memory_load(callbacks, addr_val, size, load_start)?
         {
             // SymbolicMemory::load_concrete already bumped record_mem_load.
+            if self.profiling_enabled {
+                self.stats.rust_memory_load_count += 1;
+            }
             return Ok(value);
+        }
+
+        if self.profiling_enabled {
+            self.stats.fallback_memory_load_count += 1;
         }
 
         // angr-obrm: callback-path loads bypass SymbolicMemory, so bump

@@ -117,10 +117,17 @@ impl<'a> VEXInterpreter<'a> {
                     )?
                 {
                     // SymbolicMemory::store_concrete already bumped record_mem_store.
+                    if self.profiling_enabled {
+                        self.stats.rust_memory_store_count += 1;
+                    }
                     self.dispatch_mem_write_inspect(
                         callbacks, &addr_val, &data_val, data_size, *endness, "after",
                     );
                     return Ok(StmtResult::Continue);
+                }
+
+                if self.profiling_enabled {
+                    self.stats.fallback_memory_store_count += 1;
                 }
 
                 // angr-obrm: callback-path stores bypass SymbolicMemory, so
@@ -135,193 +142,13 @@ impl<'a> VEXInterpreter<'a> {
             }
 
             IRStmt::Exit { guard, dst, jk, .. } => {
-                let guard_val = self.eval_expr_with_callbacks(callbacks, guard, &irsb.tyenv)?;
-                self.dispatch_exit_inspect(callbacks, *dst, *jk, &guard_val);
-
-                // Check if guard is symbolic first (Constrained has concrete value but is still symbolic)
-                if !guard_val.is_symbolic() {
-                    // Truly concrete guard - simple check
-                    if let Some(g) = guard_val.as_u64() {
-                        if g != 0 {
-                            return Ok(StmtResult::Exit {
-                                target: *dst,
-                                jumpkind: *jk,
-                            });
-                        }
-                        return Ok(StmtResult::Continue);
-                    }
+                let exit_start = profile_start!(self);
+                if self.profiling_enabled {
+                    self.stats.exit_stmt_count += 1;
                 }
-
-                // Guard is symbolic — handle based on deferred fork mode
-                if !self.config.use_deferred_forks {
-                    // Non-deferred mode: return to Python immediately for forking.
-                    // Skip can_be_true/can_be_false Z3 checks — Python's
-                    // resume_after_symbolic_branch will add constraints and the
-                    // sat_cache optimization avoids redundant checks there.
-                    let fallthrough = self.eval_next_addr(callbacks, irsb)?;
-                    // Store condition for Rust-side constraint addition during resume
-                    let cond_id = self.next_cond_id();
-                    self.stored_conditions.insert(cond_id, guard_val.clone());
-                    let result_cond = guard_val.clone();
-                    self.last_branch_condition = Some(guard_val);
-                    return Ok(StmtResult::SymbolicBranch {
-                        condition: result_cond,
-                        true_target: *dst,
-                        false_target: fallthrough,
-                    });
-                }
-
-                // Deferred fork mode: check feasibility to decide which paths to explore.
-                // Determine branch feasibility. When lazy_solves is active,
-                // skip Z3 queries entirely and assume both paths are feasible.
-                let (can_be_true, can_be_false) = if self.lazy_solves {
-                    (true, true)
-                } else {
-                    // Incremental assertion: push once per block, assert new fork
-                    // conditions incrementally. This avoids re-asserting all N prior
-                    // conditions for the N-th Exit (O(N) → O(1) per check).
-                    if !self.deferred_forks.is_empty() {
-                        // These prev-fork assumes exist ONLY to make
-                        // `check_branch_feasibility` accurate inside the bare
-                        // block-solver `push()` scope. Their Z3 assertions are
-                        // discarded by the matching `pop()` at block end, but
-                        // `pop()` does not truncate the `assumed` export log, so
-                        // without an explicit truncate they would leak into the
-                        // log that a wave migration re-asserts verbatim — the
-                        // ype54 poison (angr-ype54). Bracket every assume with a
-                        // savepoint + truncate so the log stays clean while the
-                        // Z3 solver still sees the constraints for feasibility.
-                        #[cfg(feature = "vex-engine-z3")]
-                        let assumed_savepoint = self.ctx.assumed_local_len();
-                        if !self.block_solver_pushed {
-                            // First time in this block with prior forks: push and assert all
-                            self.ctx.push();
-                            self.block_solver_pushed = true;
-                            for prev_fork in &self.deferred_forks {
-                                if let Some(cond) =
-                                    self.stored_conditions.get(&prev_fork.condition_id)
-                                {
-                                    if prev_fork.path_taken {
-                                        self.ctx.assume_true(cond);
-                                    } else {
-                                        self.ctx.assume_false(cond);
-                                    }
-                                }
-                            }
-                            self.block_forks_asserted = self.deferred_forks.len();
-                        } else {
-                            // Subsequent Exits: only assert NEW fork conditions
-                            while self.block_forks_asserted < self.deferred_forks.len() {
-                                let prev_fork = &self.deferred_forks[self.block_forks_asserted];
-                                if let Some(cond) =
-                                    self.stored_conditions.get(&prev_fork.condition_id)
-                                {
-                                    if prev_fork.path_taken {
-                                        self.ctx.assume_true(cond);
-                                    } else {
-                                        self.ctx.assume_false(cond);
-                                    }
-                                }
-                                self.block_forks_asserted += 1;
-                            }
-                        }
-                        #[cfg(feature = "vex-engine-z3")]
-                        self.ctx.truncate_assumed_local(assumed_savepoint);
-                    }
-                    self.ctx.check_branch_feasibility(&guard_val)
-                };
-                if can_be_true && can_be_false {
-                    // The unexplored path (guard=false) should resume at the
-                    // next instruction after this conditional jump, NOT the
-                    // block's default exit. When a VEX IRSB contains multiple
-                    // Ist_Exit statements, using the block fallthrough would
-                    // skip all code between this exit and the end of the block.
-                    let false_target = self.current_insn_addr + self.current_insn_len as u64;
-
-                    // Skip expensive rustbv_to_claripy conversion for the condition.
-                    // The condition is stored in stored_conditions (below) as a RustBV,
-                    // which is the primary lookup path in fork processing. The claripy
-                    // AST was only a P11 fallback for missing stored_conditions entries.
-                    let condition_ast: Option<Py<PyAny>> = None;
-
-                    // Take the "true" path (jump to dst), defer the "false" path
-                    let cond_id = self.next_cond_id();
-                    // Store the Rust condition for later retrieval when processing forks
-                    self.stored_conditions.insert(cond_id, guard_val);
-
-                    // Flush pending stores before snapshotting so the memory
-                    // snapshot includes all writes up to this branch point.
-                    self.flush_stores_to_rust_memory();
-
-                    // Snapshot full state BEFORE adding the branch constraint.
-                    // This enables correct alternate-path forking with solver,
-                    // registers, and memory from the branch point.
-                    self.fork_snapshots.insert(
-                        cond_id,
-                        BranchSnapshot {
-                            solver: self.ctx.fork(),
-                            registers: self.registers.fork(),
-                            memory: self
-                                .rust_memory
-                                .as_ref()
-                                .map(super::super::memory::SymbolicMemory::fork),
-                        },
-                    );
-
-                    // Decide which path to take based on branch direction.
-                    // For backward branches (loops), take the exit (loop back)
-                    // and defer the fall-through (loop exit). For forward branches,
-                    // take the fall-through and defer the exit. VEX often inverts
-                    // forward branch conditions (e.g., `jne target` becomes
-                    // `if (eq) goto exit; NEXT: target`), so fall-through follows
-                    // the natural execution flow for forward branches.
-                    let is_backward_branch = *dst < self.current_insn_addr;
-
-                    let deferred = if is_backward_branch {
-                        DeferredFork {
-                            branch_addr: self.current_insn_addr,
-                            path_taken: true, // we took the exit (guard=true) path
-                            unexplored_target: false_target, // fall-through deferred
-                            condition_id: cond_id,
-                            push_level: self.push_level,
-                            condition_ast,
-                        }
-                    } else {
-                        DeferredFork {
-                            branch_addr: self.current_insn_addr,
-                            path_taken: false, // we took the fallthrough (guard=false) path
-                            unexplored_target: *dst, // the exit target is deferred
-                            condition_id: cond_id,
-                            push_level: self.push_level,
-                            condition_ast,
-                        }
-                    };
-                    self.deferred_forks.push(deferred);
-                    self.deferred_fork_this_step = true;
-
-                    // NOTE: We intentionally do NOT call assume_true/false() permanently.
-                    // The solver stays clean so snapshots capture unconstrained state.
-                    // Taken-path constraints are temporarily added via push/pop for
-                    // check_branch_feasibility() (above), then applied permanently
-                    // during fork processing in exploration.rs after the step completes.
-
-                    if is_backward_branch {
-                        // Take the exit path (loop back to target)
-                        return Ok(StmtResult::Exit {
-                            target: *dst,
-                            jumpkind: *jk,
-                        });
-                    } else {
-                        // Continue execution on the fallthrough path
-                        return Ok(StmtResult::Continue);
-                    }
-                } else if can_be_true {
-                    return Ok(StmtResult::Exit {
-                        target: *dst,
-                        jumpkind: *jk,
-                    });
-                }
-                Ok(StmtResult::Continue)
+                let result = self.handle_exit_stmt(callbacks, irsb, guard, *dst, *jk);
+                profile_add!(exit_start, self.stats.exit_stmt_time_ns);
+                result
             }
 
             IRStmt::MBE(_) => Ok(StmtResult::Continue),
@@ -452,6 +279,206 @@ impl<'a> VEXInterpreter<'a> {
             }
             IRStmt::Dirty(dirty) => self.handle_dirty_call(callbacks, dirty, irsb),
         }
+    }
+
+    /// `IRStmt::Exit` — the conditional-branch statement.
+    ///
+    /// Split out of `execute_stmt_with_callbacks`'s match arm (angr-sqfj8.64)
+    /// so the caller can bracket the whole handler with `profile_start!` /
+    /// `profile_add!` and finally feed `exit_stmt_time_ns`. The handler has
+    /// six `return` sites plus a `?`, so timing it in place would have meant a
+    /// `profile_add!` before every one of them.
+    fn handle_exit_stmt(
+        &mut self,
+        callbacks: &PythonCallbacks,
+        irsb: &IRSB,
+        guard: &IRExpr,
+        dst: u64,
+        jk: JumpKind,
+    ) -> Result<StmtResult, CbExecutionError> {
+        let guard_val = self.eval_expr_with_callbacks(callbacks, guard, &irsb.tyenv)?;
+        self.dispatch_exit_inspect(callbacks, dst, jk, &guard_val);
+
+        // Check if guard is symbolic first (Constrained has concrete value but is still symbolic)
+        if !guard_val.is_symbolic() {
+            // Truly concrete guard - simple check
+            if let Some(g) = guard_val.as_u64() {
+                if g != 0 {
+                    return Ok(StmtResult::Exit {
+                        target: dst,
+                        jumpkind: jk,
+                    });
+                }
+                return Ok(StmtResult::Continue);
+            }
+        }
+
+        // Guard is symbolic — handle based on deferred fork mode
+        if !self.config.use_deferred_forks {
+            // Non-deferred mode: return to Python immediately for forking.
+            // Skip can_be_true/can_be_false Z3 checks — Python's
+            // resume_after_symbolic_branch will add constraints and the
+            // sat_cache optimization avoids redundant checks there.
+            let fallthrough = self.eval_next_addr(callbacks, irsb)?;
+            // Store condition for Rust-side constraint addition during resume
+            let cond_id = self.next_cond_id();
+            self.stored_conditions.insert(cond_id, guard_val.clone());
+            let result_cond = guard_val.clone();
+            self.last_branch_condition = Some(guard_val);
+            return Ok(StmtResult::SymbolicBranch {
+                condition: result_cond,
+                true_target: dst,
+                false_target: fallthrough,
+            });
+        }
+
+        // Deferred fork mode: check feasibility to decide which paths to explore.
+        // Determine branch feasibility. When lazy_solves is active,
+        // skip Z3 queries entirely and assume both paths are feasible.
+        let (can_be_true, can_be_false) = if self.lazy_solves {
+            (true, true)
+        } else {
+            // Incremental assertion: push once per block, assert new fork
+            // conditions incrementally. This avoids re-asserting all N prior
+            // conditions for the N-th Exit (O(N) → O(1) per check).
+            if !self.deferred_forks.is_empty() {
+                // These prev-fork assumes exist ONLY to make
+                // `check_branch_feasibility` accurate inside the bare
+                // block-solver `push()` scope. Their Z3 assertions are
+                // discarded by the matching `pop()` at block end, but
+                // `pop()` does not truncate the `assumed` export log, so
+                // without an explicit truncate they would leak into the
+                // log that a wave migration re-asserts verbatim — the
+                // ype54 poison (angr-ype54). Bracket every assume with a
+                // savepoint + truncate so the log stays clean while the
+                // Z3 solver still sees the constraints for feasibility.
+                #[cfg(feature = "vex-engine-z3")]
+                let assumed_savepoint = self.ctx.assumed_local_len();
+                if !self.block_solver_pushed {
+                    // First time in this block with prior forks: push and assert all
+                    self.ctx.push();
+                    self.block_solver_pushed = true;
+                    for prev_fork in &self.deferred_forks {
+                        if let Some(cond) = self.stored_conditions.get(&prev_fork.condition_id) {
+                            if prev_fork.path_taken {
+                                self.ctx.assume_true(cond);
+                            } else {
+                                self.ctx.assume_false(cond);
+                            }
+                        }
+                    }
+                    self.block_forks_asserted = self.deferred_forks.len();
+                } else {
+                    // Subsequent Exits: only assert NEW fork conditions
+                    while self.block_forks_asserted < self.deferred_forks.len() {
+                        let prev_fork = &self.deferred_forks[self.block_forks_asserted];
+                        if let Some(cond) = self.stored_conditions.get(&prev_fork.condition_id) {
+                            if prev_fork.path_taken {
+                                self.ctx.assume_true(cond);
+                            } else {
+                                self.ctx.assume_false(cond);
+                            }
+                        }
+                        self.block_forks_asserted += 1;
+                    }
+                }
+                #[cfg(feature = "vex-engine-z3")]
+                self.ctx.truncate_assumed_local(assumed_savepoint);
+            }
+            self.ctx.check_branch_feasibility(&guard_val)
+        };
+        if can_be_true && can_be_false {
+            // The unexplored path (guard=false) should resume at the
+            // next instruction after this conditional jump, NOT the
+            // block's default exit. When a VEX IRSB contains multiple
+            // Ist_Exit statements, using the block fallthrough would
+            // skip all code between this exit and the end of the block.
+            let false_target = self.current_insn_addr + self.current_insn_len as u64;
+
+            // Skip expensive rustbv_to_claripy conversion for the condition.
+            // The condition is stored in stored_conditions (below) as a RustBV,
+            // which is the primary lookup path in fork processing. The claripy
+            // AST was only a P11 fallback for missing stored_conditions entries.
+            let condition_ast: Option<Py<PyAny>> = None;
+
+            // Take the "true" path (jump to dst), defer the "false" path
+            let cond_id = self.next_cond_id();
+            // Store the Rust condition for later retrieval when processing forks
+            self.stored_conditions.insert(cond_id, guard_val);
+
+            // Flush pending stores before snapshotting so the memory
+            // snapshot includes all writes up to this branch point.
+            self.flush_stores_to_rust_memory();
+
+            // Snapshot full state BEFORE adding the branch constraint.
+            // This enables correct alternate-path forking with solver,
+            // registers, and memory from the branch point.
+            self.fork_snapshots.insert(
+                cond_id,
+                BranchSnapshot {
+                    solver: self.ctx.fork(),
+                    registers: self.registers.fork(),
+                    memory: self
+                        .rust_memory
+                        .as_ref()
+                        .map(super::super::memory::SymbolicMemory::fork),
+                },
+            );
+
+            // Decide which path to take based on branch direction.
+            // For backward branches (loops), take the exit (loop back)
+            // and defer the fall-through (loop exit). For forward branches,
+            // take the fall-through and defer the exit. VEX often inverts
+            // forward branch conditions (e.g., `jne target` becomes
+            // `if (eq) goto exit; NEXT: target`), so fall-through follows
+            // the natural execution flow for forward branches.
+            let is_backward_branch = dst < self.current_insn_addr;
+
+            let deferred = if is_backward_branch {
+                DeferredFork {
+                    branch_addr: self.current_insn_addr,
+                    path_taken: true, // we took the exit (guard=true) path
+                    unexplored_target: false_target, // fall-through deferred
+                    condition_id: cond_id,
+                    push_level: self.push_level,
+                    condition_ast,
+                }
+            } else {
+                DeferredFork {
+                    branch_addr: self.current_insn_addr,
+                    path_taken: false, // we took the fallthrough (guard=false) path
+                    unexplored_target: dst, // the exit target is deferred
+                    condition_id: cond_id,
+                    push_level: self.push_level,
+                    condition_ast,
+                }
+            };
+            self.deferred_forks.push(deferred);
+            self.deferred_fork_this_step = true;
+
+            // NOTE: We intentionally do NOT call assume_true/false() permanently.
+            // The solver stays clean so snapshots capture unconstrained state.
+            // Taken-path constraints are temporarily added via push/pop for
+            // check_branch_feasibility() (above), then applied permanently
+            // during fork processing in exploration.rs after the step completes.
+
+            if is_backward_branch {
+                // Take the exit path (loop back to target)
+                return Ok(StmtResult::Exit {
+                    target: dst,
+                    jumpkind: jk,
+                });
+            } else {
+                // Continue execution on the fallthrough path
+                return Ok(StmtResult::Continue);
+            }
+        } else if can_be_true {
+            return Ok(StmtResult::Exit {
+                target: dst,
+                jumpkind: jk,
+            });
+        }
+        Ok(StmtResult::Continue)
     }
 
     /// Execute an `IRStmt::StoreG` (guarded store): guard tristate handling

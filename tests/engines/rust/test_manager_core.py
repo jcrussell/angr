@@ -1879,6 +1879,60 @@ class TestRustExplorationPython:
             f"solver-fork block must have run on a branching binary; got {exec_stats['solver_fork_time_ns']}"
         )
 
+    def test_exit_and_memory_routing_counters_populate(self, fauxware_project):
+        """angr-sqfj8.64: `exit_stmt_count` / `exit_stmt_time_ns` and the
+        four memory-routing counters are wired to real increment sites.
+
+        All six were declared in `define_execution_stats!` with doc comments
+        promising real tracking but never incremented anywhere in the crate,
+        so they reported 0 forever. They are now tallied by:
+
+        - the `IRStmt::Exit` arm of `execute_stmt_with_callbacks`, which
+          brackets `handle_exit_stmt` with `profile_start!`/`profile_add!`;
+        - the two branches of `expressions::load_layered` (Rust-native memory
+          hit vs. everything else), and
+        - the two branches of the `IRStmt::Store` arm (`try_rust_memory_store`
+          returning true vs. `fallback_to_python_store`).
+
+        Every site is profiling-gated, so this exercises `enable_profiling()`.
+        fauxware executes conditional branches, loads and stores, so each
+        pair must be non-empty; the split between the Rust and fallback sides
+        is a property of the workload's memory layout, not of the wiring, and
+        is deliberately not asserted.
+        """
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        mgr.enable_profiling()
+        mgr.explore(find=0x4006ED, num_find=1)
+
+        exec_stats = mgr._rust_mgr.get_execution_stats()
+        for key in (
+            "exit_stmt_count",
+            "exit_stmt_time_ns",
+            "rust_memory_load_count",
+            "fallback_memory_load_count",
+            "rust_memory_store_count",
+            "fallback_memory_store_count",
+        ):
+            assert key in exec_stats, f"missing key {key}"
+            assert isinstance(exec_stats[key], int), f"{key} not int"
+
+        assert exec_stats["exit_stmt_count"] > 0, "fauxware executes guarded IRStmt::Exit statements"
+        assert exec_stats["exit_stmt_time_ns"] > 0, "the Exit handler must be timed, not just counted"
+
+        loads = exec_stats["rust_memory_load_count"] + exec_stats["fallback_memory_load_count"]
+        assert loads > 0, f"load_layered must route every load to exactly one side; got {loads}"
+
+        stores = exec_stats["rust_memory_store_count"] + exec_stats["fallback_memory_store_count"]
+        assert stores > 0, f"the Store arm must route every store to exactly one side; got {stores}"
+        # The two store counters partition the plain-Store arm, which bumps
+        # store_stmt_count first, so their sum can only fall short of it when a
+        # store propagates an error out of try_rust_memory_store.
+        assert stores <= exec_stats["store_stmt_count"], (
+            f"store routing counters ({stores}) cannot exceed store_stmt_count ({exec_stats['store_stmt_count']})"
+        )
+
     def test_reconvergence_counters_populate_on_forking_workload(self, fauxware_project):
         """angr-11djq.16 (DS-instr): the state-reconvergence counters are
         exposed via ``stats()`` and populate on a forking workload.

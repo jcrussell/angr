@@ -70,9 +70,15 @@ define_execution_stats! {
     store_stmt_count: sum,
     /// Time spent in store statements (nanoseconds).
     store_stmt_time_ns: sum,
-    /// Number of exit statements executed.
+    /// Number of `IRStmt::Exit` statements executed. Tallied by the `Exit` arm
+    /// of `statements::VEXInterpreter::execute_stmt_with_callbacks`, counting
+    /// every guarded exit *reached*, including the ones whose guard evaluates
+    /// false and fall through.
     exit_stmt_count: sum,
-    /// Time spent in exit statements (nanoseconds).
+    /// Time spent in exit statements (nanoseconds) — the whole of
+    /// `statements::VEXInterpreter::handle_exit_stmt`, so it includes guard
+    /// evaluation, `check_branch_feasibility` solver work, and the fork
+    /// snapshot taken when both paths are satisfiable.
     exit_stmt_time_ns: sum,
     /// Number of Python callback invocations.
     python_callback_count: sum,
@@ -96,13 +102,30 @@ define_execution_stats! {
     cache_eviction_count: sum,
     /// Time spent lifting blocks (nanoseconds).
     lift_time_ns: sum,
-    /// Number of Rust memory loads (vs callback fallback).
+    /// Number of loads served by the Rust-native memory layer — the
+    /// `try_rust_memory_load` branch of `expressions::VEXInterpreter::load_layered`
+    /// returning `Some`. Zero when `use_rust_memory` is off.
     rust_memory_load_count: sum,
-    /// Number of Python fallback memory loads.
+    /// Number of loads that did NOT come from the Rust-native memory layer, i.e.
+    /// the tail of `expressions::VEXInterpreter::load_layered`. Note this is
+    /// wider than "Python callback": it also covers pending-store buffer hits,
+    /// prefetch-cache hits and `concrete_memory` hits, which are the same
+    /// layers `record_mem_load` is bumped for there. Together with
+    /// `rust_memory_load_count` it partitions every `load_layered` call.
     fallback_memory_load_count: sum,
-    /// Number of Rust memory stores.
+    /// Number of stores committed by the Rust-native memory layer — the
+    /// `try_rust_memory_store` branch of the `Store` arm of
+    /// `statements::VEXInterpreter::execute_stmt_with_callbacks` returning
+    /// `true`. Zero when `use_rust_memory` is off. Only plain `IRStmt::Store`
+    /// is counted; `StoreG` / `CAS` / `LLSC` go through their own handlers.
     rust_memory_store_count: sum,
-    /// Number of Python fallback memory stores.
+    /// Number of `IRStmt::Store`s that fell through to
+    /// `statements_store::VEXInterpreter::fallback_to_python_store`. As on the
+    /// load side this is wider than "Python callback": that helper may instead
+    /// park the write in the pending-store buffer
+    /// (`handle_concrete_store` / `handle_symbolic_store`) to be flushed later.
+    /// Together with `rust_memory_store_count` it partitions every plain
+    /// `IRStmt::Store`.
     fallback_memory_store_count: sum,
     /// Number of expression evaluations.
     expr_eval_count: sum,
