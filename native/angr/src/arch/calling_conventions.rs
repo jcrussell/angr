@@ -1,12 +1,16 @@
-//! Calling convention implementations for argument extraction.
+//! Per-ABI calling convention tables.
 //!
-//! This module provides calling convention support for extracting function
-//! arguments from registers and stack. This is used to pre-extract arguments
-//! before returning to Python for SimProcedure execution.
+//! Each [`CallingConvention`] impl is a table of ABI facts — argument /
+//! syscall-argument register windows, pointer size, stack-spill offsets,
+//! return and link registers. The extraction *logic* that consumes them lives
+//! once in
+//! [`extract_args_with_abi`](crate::exploration::helpers::extract_args_with_abi),
+//! which walks a `RustSimState`; this module deliberately holds no second copy
+//! of that walk (angr-9iny6).
 
 use crate::arch::RegisterFile;
 use crate::memory::SymbolicMemory;
-use crate::symbolic::{RustBV, SymContext};
+use crate::symbolic::SymContext;
 
 // Every ABI register table below is expressed as named VEX guest-state
 // constants rather than bare integers. The per-arch `offsets` modules carry
@@ -19,26 +23,17 @@ use super::arm64::offsets as arm64_off;
 use super::mips::{offsets32 as mips32_off, offsets64 as mips64_off};
 use super::x86::offsets as x86_off;
 
-/// Errors produced by [`CallingConvention::extract_args`] when the stack
-/// portion of the argument list cannot be read.
+/// Errors produced by
+/// [`extract_args_with_abi`](crate::exploration::helpers::extract_args_with_abi)
+/// when the stack portion of the argument list cannot be read.
 ///
-/// Procedures previously relied on silent fabrication (the trait method
-/// would mint a fresh `RustBV::symbolic("stack_arg_N", …)` whenever
-/// `mem.load_concrete_lazy` failed). That made real stack-setup bugs
-/// indistinguishable from intentional symbolic input. Returning an
-/// explicit error variant forces callers to decide policy.
+/// Argument extraction previously relied on silent fabrication (it would mint
+/// a fresh `RustBV::symbolic("stack_arg_N", …)` whenever the stack load
+/// failed). That made real stack-setup bugs indistinguishable from intentional
+/// symbolic input. Returning an explicit error variant forces callers to
+/// decide policy.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum ExtractionError {
-    /// The caller asked for stack-resident arguments but did not supply a
-    /// memory view. The trait method has no way to materialise stack
-    /// arguments without it.
-    ///
-    /// Only [`CallingConvention::extract_args`] produces it, and that method
-    /// has no production caller today (see its own note), so outside `cfg(test)`
-    /// the variant is unconstructed (angr-9ke6b.214).
-    #[cfg_attr(not(test), allow(dead_code))]
-    #[error("extract_args: stack argument requested without a memory view")]
-    MemoryUnavailable,
     /// The stack pointer is symbolic. We cannot compute the stack-slot
     /// addresses without committing to a concrete SP, which would silently
     /// pin the value of a symbol the caller may want to reason about.
@@ -61,7 +56,8 @@ pub(crate) enum ExtractionError {
     RegisterOverflow { requested: usize, available: usize },
 }
 
-/// Calling convention trait for extracting function arguments.
+/// Calling convention trait: the per-ABI facts argument extraction, native
+/// sub-calls and return-value stores need.
 pub(crate) trait CallingConvention: Send + Sync {
     /// Get the name of this calling convention.
     ///
@@ -195,67 +191,6 @@ pub(crate) trait CallingConvention: Send + Sync {
     /// installs as the PC (bead angr-9ke6b.3).
     fn link_register(&self) -> Option<u32> {
         None
-    }
-
-    /// Extract up to N arguments from registers and memory.
-    ///
-    /// Arguments are extracted in order: first from registers, then from
-    /// stack. Returns a vector of extracted argument values on success.
-    ///
-    /// If the request can be satisfied entirely from registers (i.e.
-    /// `num_args <= arg_registers().len()`), this always succeeds — `memory`
-    /// is unused. Otherwise the trait reads the stack-resident slots from
-    /// `memory`; any failure (no memory view, symbolic SP, unmapped slot)
-    /// produces a structured [`ExtractionError`] so the caller can decide
-    /// whether to abort, retry, or fabricate placeholders explicitly.
-    ///
-    /// Production argument extraction now runs through
-    /// `exploration::core_outcome_cc` / `exploration::helpers`, which
-    /// reimplement this over `RustSimState` rather than a bare `RegisterFile`.
-    /// Only `calling_conventions_tests` still drives this copy
-    /// (angr-9ke6b.214).
-    #[cfg_attr(not(test), allow(dead_code))]
-    fn extract_args(
-        &self,
-        regs: &RegisterFile,
-        memory: Option<&SymbolicMemory>,
-        ctx: &SymContext,
-        num_args: usize,
-    ) -> Result<Vec<RustBV>, ExtractionError> {
-        let mut args = Vec::with_capacity(num_args);
-        let arg_regs = self.arg_registers();
-        let ptr_size = self.pointer_size();
-
-        for &offset in arg_regs.iter() {
-            if args.len() >= num_args {
-                break;
-            }
-            args.push(regs.get(offset, ptr_size, ctx));
-        }
-
-        if args.len() >= num_args {
-            return Ok(args);
-        }
-
-        let mem = memory.ok_or(ExtractionError::MemoryUnavailable)?;
-        let sp = regs.get(regs.arch().sp_offset(), ptr_size, ctx);
-        let sp_val = sp.as_u64().ok_or(ExtractionError::SpSymbolic)?;
-        let stack_start = sp_val + self.stack_arg_offset();
-        let already = args.len();
-        let remaining = num_args - already;
-
-        for i in 0..remaining {
-            let addr = stack_start + (i as u64 * ptr_size as u64);
-            let value = mem.load_concrete_lazy(addr, ptr_size, ctx).map_err(|_| {
-                ExtractionError::StackUnmapped {
-                    arg_index: already + i,
-                    addr,
-                }
-            })?;
-            args.push(value);
-        }
-
-        Ok(args)
     }
 
     /// Get the return address at a call boundary.

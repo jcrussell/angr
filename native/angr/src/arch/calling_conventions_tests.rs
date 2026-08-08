@@ -1,9 +1,10 @@
-//! Tests for calling convention argument extraction.
+//! Tests for the per-ABI calling convention tables.
 //!
 //! Extracted from `calling_conventions.rs` (see bd `rust-mod-tests-sibling-extraction`).
 
 use super::*;
-use crate::arch::{ALL_ARCHES, AMD64, Arch, MIPS32, MIPS64};
+use crate::arch::{ALL_ARCHES, Arch, MIPS32, MIPS64};
+use crate::symbolic::RustBV;
 
 #[test]
 fn test_systemv_amd64_args() {
@@ -404,57 +405,11 @@ fn test_link_register_matches_get_return_addr_register() {
     }
 }
 
-#[test]
-fn test_extract_args_from_regs() {
-    let ctx = SymContext::new_mock();
-    let cc = SystemVAMD64;
-    let mut regs = RegisterFile::new(Box::new(AMD64));
-
-    // Set up some argument values
-    // RDI (arg1) = 0x1000
-    regs.put(72, RustBV::concrete(0x1000, 64));
-    // RSI (arg2) = 0x2000
-    regs.put(64, RustBV::concrete(0x2000, 64));
-    // RDX (arg3) = 0x3000
-    regs.put(32, RustBV::concrete(0x3000, 64));
-
-    let args = cc.extract_args(&regs, None, &ctx, 3).expect("regs-only");
-    assert_eq!(args.len(), 3);
-    assert_eq!(args[0].as_u64(), Some(0x1000));
-    assert_eq!(args[1].as_u64(), Some(0x2000));
-    assert_eq!(args[2].as_u64(), Some(0x3000));
-}
-
-#[test]
-fn test_extract_args_stack_without_memory_errors() {
-    // amd64 SystemV has 6 register slots; asking for a 7th forces the
-    // trait to consult memory. With no memory view supplied, it must
-    // return MemoryUnavailable rather than silently fabricate a
-    // placeholder.
-    let ctx = SymContext::new_mock();
-    let cc = SystemVAMD64;
-    let regs = RegisterFile::new(Box::new(AMD64));
-    let err = cc
-        .extract_args(&regs, None, &ctx, 7)
-        .expect_err("no memory => should fail");
-    assert!(
-        matches!(err, ExtractionError::MemoryUnavailable),
-        "expected MemoryUnavailable, got {err:?}",
-    );
-}
-
-#[test]
-fn test_extract_args_register_only_path_ignores_missing_memory() {
-    // The reverse: 6 register args with no memory view must succeed —
-    // no stack slot is ever consulted.
-    let ctx = SymContext::new_mock();
-    let cc = SystemVAMD64;
-    let regs = RegisterFile::new(Box::new(AMD64));
-    let args = cc
-        .extract_args(&regs, None, &ctx, 6)
-        .expect("6 args fit in registers; memory unused");
-    assert_eq!(args.len(), 6);
-}
+// Argument extraction itself is not tested here: the one implementation lives
+// in `exploration::helpers::extract_args_with_abi` and is pinned by
+// `exploration/helpers_tests.rs` (register window, stack spill, SpSymbolic,
+// StackUnmapped, RegisterOverflow). The register *tables* this module owns are
+// pinned by the per-ABI tests above and below (angr-9iny6).
 
 // --- fp_arg_registers provenance pins (angr-9ke6b.218 item 7) ---------------
 //
