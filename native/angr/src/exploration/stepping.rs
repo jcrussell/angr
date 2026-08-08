@@ -1,3 +1,30 @@
+//! Single-threaded step driver: everything between "the run loop picked a
+//! state" and "here are its successors".
+//!
+//! [`RustExplorationManager::step_state_inner`] is the entry point. It builds a
+//! [`StepContext`](super::step_core::StepContext) from `&self`, runs
+//! [`run_interpreter_step_core`](super::step_core::run_interpreter_step_core),
+//! and hands the resulting [`CoreOutcome`] to `apply_core_outcome`, which
+//! either returns successors, terminates the state via [`StepError`], or
+//! forwards a `NeedsPython` outcome to `dispatch_bounce`.
+//!
+//! `dispatch_bounce` is the Python-bouncing arm: it turns a [`PendingBounce`]
+//! into the exact [`PendingCallback`] the caller must service (SimProcedure,
+//! hook, syscall, symbolic branch, error), with `handle_unmodeled_call` /
+//! `unmodeled_call_generic_skip` covering the unresolved-call path. The
+//! matching re-entry points live in `resume.rs`.
+//!
+//! Also here: the native sub-call ABI setup shared with the parallel path
+//! ([`SubcallAbi`] / [`setup_native_subcall_with_abi`]), deferred-fork
+//! materialization into a successor list (`process_deferred_forks_into`), core
+//! counter folding (`fold_core_counters`), and the out-of-band
+//! `_step_state` pymethod body.
+//!
+//! The parallel drivers do not call into this module: they run the same core
+//! through `run_loop_worker` and re-implement the `&mut self` tails against
+//! their own snapshots. Anything both arms must agree on belongs in
+//! `core_outcome.rs` or `step_core.rs`, not here.
+
 use super::core_outcome::{
     BounceKind, CoreCounters, CoreCtx, CoreOutcome, CoreReturn, NativeSubcall, ParallelProfiling,
     PendingBounce, PostStepInputs, run_post_step_core,

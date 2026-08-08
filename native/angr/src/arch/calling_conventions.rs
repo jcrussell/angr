@@ -121,8 +121,15 @@ pub(crate) trait CallingConvention: Send + Sync {
     /// Byte offset of the register slot carrying a scalar `double` return
     /// value, or `None` when this ABI has no single-register FP-return slot we
     /// model (x86 returns in the x87 `st0` stack; ARM EABI soft-float returns
-    /// a double in the `r0:r1` integer pair; MIPS O32/N64 use `$f0`, which our
-    /// register files do not expose yet).
+    /// a double in the `r0:r1` integer pair; MIPS O32/N64 return in `$f0`
+    /// *only* for hard-float binaries — a `-msoft-float` build returns the
+    /// double in the `$v0`/`$v1` integer pair, and nothing in a `RegisterFile`
+    /// tells the two apart, so picking `$f0` would silently write the wrong
+    /// slot for half the corpus). The MIPS offsets themselves are exposed
+    /// (`mips32_off::F0`/`mips64_off::F0`, aliased `f0`/`$f0`); the blocker is
+    /// the same float-ABI-variant ambiguity that keeps
+    /// [`MipsO32::fp_arg_registers`] deliberately empty, not a missing
+    /// register (angr-sqfj8.9).
     ///
     /// The value is written as the 64-bit IEEE-754 bit pattern into the low 64
     /// bits of that offset (both AMD64 `xmm0` and AArch64 `v0` are 128-bit

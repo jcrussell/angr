@@ -15,7 +15,8 @@
 //! convention has no modelled FP-return slot — fall back to Python. The slot
 //! comes from `CallingConvention::fp_return_register()`: amd64 (`xmm0`) and
 //! AArch64 (`v0`) provide one; x86 (x87 `st0`), ARM EABI soft-float (`r0:r1`)
-//! and MIPS (`$f0`) do not, so those still defer.
+//! and MIPS (`$f0` for hard-float builds, `$v0`/`$v1` for `-msoft-float` ones,
+//! indistinguishable from the register file) do not, so those still defer.
 //!
 //! Return value is the 64-bit IEEE-754 bit-pattern of the parsed double,
 //! written to the low 64 bits of that register. The dispatcher's default
@@ -290,7 +291,8 @@ crate::declare_proc! {
     args = [nptr: bv, endptr: bv],
     call |state| {
         // Without a modelled FP-return register (x86 st0, ARM soft-float
-        // r0:r1, MIPS $f0) we have nowhere to put the double — defer to Python.
+        // r0:r1, MIPS hard-float $f0 vs soft-float $v0) we have nowhere to put
+        // the double — defer to Python.
         let fp_ret = cc_for_arch(state.arch().name())
             .and_then(|cc| cc.fp_return_register())
             .ok_or(ProcedureError::NotImplemented)?;
