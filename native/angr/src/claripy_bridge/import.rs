@@ -262,28 +262,14 @@ fn claripy_to_rustbv_depth(
         // Only the SMod op-name maps to signed srem (claripy SMod == z3 bvsrem).
         "__mod__" | "URem" => import_binary_op(py, &args, ctx, depth, "URem", RustBV::urem),
 
-        "__neg__" => {
-            let args_list: Vec<Bound<'_, PyAny>> = args.extract()?;
-            if args_list.is_empty() {
-                return Err(BridgeError::InvalidArgs("__neg__ requires 1 arg".into()));
-            }
-            let val = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
-            Ok(val.neg(ctx))
-        }
+        "__neg__" => import_unary_op(py, &args, ctx, depth, "__neg__", RustBV::neg),
 
         // Bitwise operations
         "__and__" => import_binary_op(py, &args, ctx, depth, "__and__", RustBV::and),
         "__or__" => import_binary_op(py, &args, ctx, depth, "__or__", RustBV::or),
         "__xor__" => import_binary_op(py, &args, ctx, depth, "__xor__", RustBV::xor),
 
-        "__invert__" => {
-            let args_list: Vec<Bound<'_, PyAny>> = args.extract()?;
-            if args_list.is_empty() {
-                return Err(BridgeError::InvalidArgs("__invert__ requires 1 arg".into()));
-            }
-            let val = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
-            Ok(val.not(ctx))
-        }
+        "__invert__" => import_unary_op(py, &args, ctx, depth, "__invert__", RustBV::not),
 
         // Shift operations
         "__lshift__" => import_binary_op(py, &args, ctx, depth, "__lshift__", RustBV::shl),
@@ -447,15 +433,8 @@ fn claripy_to_rustbv_depth(
             Ok(result)
         }
 
-        "Not" => {
-            let args_list: Vec<Bound<'_, PyAny>> = args.extract()?;
-            if args_list.is_empty() {
-                return Err(BridgeError::InvalidArgs("Not requires 1 arg".into()));
-            }
-            let val = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
-            // Boolean Not: invert 1-bit value
-            Ok(val.not(ctx))
-        }
+        // Boolean Not: invert 1-bit value — same `RustBV::not` as `__invert__`.
+        "Not" => import_unary_op(py, &args, ctx, depth, "Not", RustBV::not),
 
         // Reverse bytes
         "Reverse" => {
@@ -529,6 +508,38 @@ fn import_binary_op(
     let left = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
     let right = claripy_to_rustbv_depth(py, &args_list[1], ctx, depth + 1)?;
     Ok(apply(&left, &right, ctx))
+}
+
+/// Arity-1 counterpart of [`import_binary_op`] (angr-12jjk.15).
+///
+/// `__neg__`, `__invert__` and `Not` had each kept a verbatim copy of the
+/// same shape the binary helper already collapsed — extract `args`, reject a
+/// missing operand, recurse at `depth + 1`, apply the `RustBV` method — which
+/// left the identical typo classes (wrong op-name in the error, a dropped
+/// `depth + 1`) three places to hide.
+///
+/// The arity check is `is_empty()` rather than `len() != 1` because that is
+/// what all three arms did: claripy only ever emits one operand for these
+/// ops, and extra trailing args are ignored rather than rejected.
+///
+/// Like the binary helper, `apply` is a plain `fn` pointer so every call site
+/// shares one instantiation.
+fn import_unary_op(
+    py: Python<'_>,
+    args: &Bound<'_, PyAny>,
+    ctx: &SymContext,
+    depth: u32,
+    op_name: &str,
+    apply: fn(&RustBV, &SymContext) -> RustBV,
+) -> Result<RustBV, BridgeError> {
+    let args_list: Vec<Bound<'_, PyAny>> = args.extract()?;
+    if args_list.is_empty() {
+        return Err(BridgeError::InvalidArgs(format!(
+            "{op_name} requires 1 arg"
+        )));
+    }
+    let val = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
+    Ok(apply(&val, ctx))
 }
 
 /// Import a symbolic *leaf* (`BVS` / `BoolS`) while preserving symbol identity
