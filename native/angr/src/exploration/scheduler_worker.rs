@@ -11,11 +11,16 @@
 //! `dispatch_next` are re-exported into the parent (`pub(super)`); see the parent
 //! module for the transport invariant and panic-policy rationale.
 //!
-//! **Panic policy / enforcement (angr-qwyti.11, angr-9ke6b.212):** the two
-//! `.expect` sites here are both `job.results.lock()` poison guards, covered
-//! verbatim by the "Mutex poisoning cannot happen" bullet of the parent
-//! [`scheduler`](super) Panic policy — `panic = "abort"` means no thread can
-//! unwind out of a live guard to flag the lock. The parent's
+//! **Panic policy / enforcement (angr-qwyti.11, angr-9ke6b.212, angr-c7xno.37):**
+//! every surviving `.expect` here is a `Mutex::lock()` poison guard on one of
+//! the wave transport's own mutexes (`job.results`, `job.summaries`), sitting
+//! under a reviewed `#[allow(clippy::expect_used, reason = "...")]` that names
+//! the guard. Each is covered verbatim by the "Mutex poisoning cannot happen"
+//! bullet of the parent [`scheduler`](super) Panic policy — `panic = "abort"`
+//! means no thread can unwind out of a live guard to flag the lock. No literal
+//! count is stated on purpose: one of the sites is `#[cfg(test)]`-gated, so a
+//! naive grep disagrees with any number written here (see bd memory
+//! `avoid-enumerating-expect-sites-in-module-docs`). The parent's
 //! `#![deny(clippy::unwrap_used, clippy::expect_used)]` already reaches this
 //! file (it is a `#[path]` child module); the deny is restated below so the
 //! guarantee is visible to anyone reading this file on its own.
@@ -42,7 +47,7 @@ use std::time::Instant;
 #[allow(clippy::significant_drop_tightening)]
 #[allow(
     clippy::expect_used,
-    reason = "`job.results` poison guard: poison requires a thread to unwind out of a live `MutexGuard`, which `panic = \"abort\"` forecloses — see the parent scheduler module Panic policy"
+    reason = "`job.results` and (under `#[cfg(test)]`) `job.summaries` poison guards: poison requires a thread to unwind out of a live `MutexGuard`, which `panic = \"abort\"` forecloses — see the parent scheduler module Panic policy"
 )]
 pub(super) fn worker_loop(
     worker_id: usize,
