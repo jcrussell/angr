@@ -796,9 +796,25 @@ pub enum IROp {
     Unmapped(&'static str),
 
     // =========================================================================
-    // Raw VEX opcode (for unhandled operations)
+    // Transcendental tag (x87 / AArch64-FRECPX only)
     // =========================================================================
-    /// Fallback for operations not yet implemented.
+    /// Internal token for the handful of transcendental ops evaluated by
+    /// the libm fast paths in [`crate::vex::transcendentals`] (x87
+    /// `Iop_SinF64`/`CosF64`/`TanF64`/`2xm1F64`/`AtanF64`/… plus AArch64
+    /// `Iop_RecpExpF32`/`F64`).
+    ///
+    /// **This is not a generic escape hatch.** `opcode_map::parse_transcendental`
+    /// is the *only* producer, and the `IROp::Raw` arms of `VEXOps::binop`
+    /// (via its private `binop_misc` helper) and `VEXOps::binop_with_rm` —
+    /// both of which route straight into `transcendentals` — are the only
+    /// consumers. An opcode with no mapping becomes
+    /// [`IROp::Unmapped`](Self::Unmapped), which fails loud; adding a new op
+    /// means adding a real variant, not a `Raw` tag. See the "what not to do"
+    /// section of `docs/extending-angr/rust_vex_ops.rst`.
+    ///
+    /// The payload happens to be the libVEX `Iop_*` discriminant, but nothing
+    /// compares it against libVEX any more: it only has to agree with the
+    /// `IOP_*` consts in `transcendentals.rs`.
     Raw(u32),
 }
 
