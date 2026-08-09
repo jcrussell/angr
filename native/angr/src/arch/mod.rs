@@ -196,33 +196,34 @@ pub(crate) type RegEntry = (&'static str, u32, u32);
 
 /// Look up a register's byte offset by name in the canonical or alias table.
 ///
-/// Names are matched case-insensitively. The canonical table is searched
-/// first; aliases (sub-register names sharing an offset) are searched as a
-/// fallback.
+/// Names are matched ASCII-case-insensitively (every table entry is an
+/// ASCII-lowercase register name). The canonical table is searched first;
+/// aliases (sub-register names sharing an offset) are searched as a fallback.
 pub(crate) fn lookup_register_offset(
     name: &str,
     canonical: &[RegEntry],
     aliases: &[RegEntry],
 ) -> Option<u32> {
-    let lc = name.to_lowercase();
     canonical
         .iter()
         .chain(aliases.iter())
-        .find(|(n, _, _)| *n == lc.as_str())
+        .find(|(n, _, _)| n.eq_ignore_ascii_case(name))
         .map(|(_, off, _)| *off)
 }
 
 /// Look up a register's size in bytes by name in the canonical or alias table.
+///
+/// Matching follows `lookup_register_offset`: ASCII-case-insensitive, canonical
+/// table before aliases.
 pub(crate) fn lookup_register_size(
     name: &str,
     canonical: &[RegEntry],
     aliases: &[RegEntry],
 ) -> Option<u32> {
-    let lc = name.to_lowercase();
     canonical
         .iter()
         .chain(aliases.iter())
-        .find(|(n, _, _)| *n == lc.as_str())
+        .find(|(n, _, _)| n.eq_ignore_ascii_case(name))
         .map(|(_, _, sz)| *sz)
 }
 

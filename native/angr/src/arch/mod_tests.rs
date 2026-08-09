@@ -311,6 +311,61 @@ fn test_all_arches_resolve_their_alias_spellings() {
     }
 }
 
+/// `lookup_register_offset`/`lookup_register_size` promise case-insensitive
+/// matching, but every caller in-tree passes an already-lowercase name, so
+/// nothing else would notice if a refactor dropped the property (it was an
+/// allocating `to_lowercase()` before angr-c7xno.4 swapped in
+/// `eq_ignore_ascii_case`).
+#[test]
+fn test_all_arches_resolve_register_names_case_insensitively() {
+    for desc in ALL_ARCHES {
+        let arch = (desc.make_arch)();
+        let expect = arch_expect(desc.name);
+        let name = expect.name;
+        for spelling in [expect.ip_name.to_uppercase(), mixed_case(expect.ip_name)] {
+            assert_eq!(
+                arch.register_offset(&spelling),
+                Some(expect.ip_offset),
+                "{name}: register_offset({spelling:?})",
+            );
+            assert_eq!(
+                arch.register_size(&spelling),
+                arch.register_size(expect.ip_name),
+                "{name}: register_size({spelling:?})",
+            );
+        }
+        // Aliases live in the second table searched, so cover that arm too.
+        for &(alias, offset, size) in expect.aliases {
+            let spelling = alias.to_uppercase();
+            assert_eq!(
+                arch.register_offset(&spelling),
+                Some(offset),
+                "{name}: register_offset({spelling:?})",
+            );
+            assert_eq!(
+                arch.register_size(&spelling),
+                Some(size),
+                "{name}: register_size({spelling:?})",
+            );
+        }
+    }
+}
+
+/// "rip" -> "RiP": alternate the case so neither the all-lower nor the
+/// all-upper spelling can pass by accident.
+fn mixed_case(name: &str) -> String {
+    name.chars()
+        .enumerate()
+        .map(|(i, c)| {
+            if i % 2 == 0 {
+                c.to_ascii_uppercase()
+            } else {
+                c.to_ascii_lowercase()
+            }
+        })
+        .collect()
+}
+
 #[test]
 #[should_panic(expected = "Rust engine does not support")]
 fn test_arch_from_vex_ppc32_panics() {
