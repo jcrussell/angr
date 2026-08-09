@@ -67,8 +67,8 @@
 use super::page::{PAGE_MASK, PAGE_SIZE, linux_prot_to_permission};
 use super::require_syscall_args;
 use super::{
-    MAX_MAP_SIZE as MAX_MMAP_SIZE, NativeSyscall, SyscallError, SyscallOutcome,
-    extract_concrete_arg,
+    BoundedArg, MAX_MAP_SIZE as MAX_MMAP_SIZE, NativeSyscall, SyscallError, SyscallOutcome,
+    bounded_value, extract_concrete_arg,
 };
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
@@ -154,9 +154,14 @@ fn do_mmap(
     // is itself O(pages) and would hang long before the OOM. Linux rejects
     // oversized requests too, with MAP_FAILED/-ENOMEM; return -1 rather than
     // falling back, since Python's `map_region` would allocate just as
-    // eagerly. See `MAX_MAP_SIZE` in `syscalls::mod` (angr-c7xno.80).
-    if length > MAX_MMAP_SIZE {
-        return Ok(SyscallOutcome::Continue { ret: u64::MAX });
+    // eagerly. See `MAX_MAP_SIZE` in `syscalls::mod` (angr-c7xno.80). All
+    // three flavors funnel through here, and `old_mmap` reads its length out
+    // of a guest struct rather than a register, so the check goes through
+    // `bounded_value` on the already-extracted length; the `BoundedArg` match
+    // is what makes the refusal arm mandatory (angr-91vj9.1).
+    match bounded_value("mmap length", length, MAX_MMAP_SIZE) {
+        BoundedArg::Within(_) => {}
+        BoundedArg::Exceeds => return Ok(SyscallOutcome::Continue { ret: u64::MAX }),
     }
 
     // Choose a candidate address. addr=0 ⇒ use mmap_base.

@@ -1218,3 +1218,58 @@ fn fresh_byte_names_empty_batch_still_bumps_the_counter() {
         vec!["sys_probe_1_0"]
     );
 }
+
+/// angr-91vj9.1: `bounded_value` is the single boundary definition every
+/// bounded syscall arg funnels through, so pin `<= max` as inclusive here
+/// rather than re-deriving it at each handler (an at-cap `mmap`/`mprotect`
+/// would need 65536 eagerly-allocated pages to observe the same edge).
+#[test]
+fn bounded_value_cap_is_inclusive() {
+    assert_eq!(
+        bounded_value("probe", MAX_MAP_SIZE, MAX_MAP_SIZE),
+        BoundedArg::Within(MAX_MAP_SIZE)
+    );
+    assert_eq!(
+        bounded_value("probe", MAX_MAP_SIZE - 1, MAX_MAP_SIZE),
+        BoundedArg::Within(MAX_MAP_SIZE - 1)
+    );
+    assert_eq!(
+        bounded_value("probe", MAX_MAP_SIZE + 1, MAX_MAP_SIZE),
+        BoundedArg::Exceeds
+    );
+    assert_eq!(
+        bounded_value("probe", u64::MAX, MAX_MAP_SIZE),
+        BoundedArg::Exceeds
+    );
+}
+
+#[test]
+fn extract_bounded_concrete_arg_bounds_and_still_falls_back_on_symbolic() {
+    let ctx = crate::symbolic::SymContext::new();
+
+    assert_eq!(
+        extract_bounded_concrete_arg(&RustBV::concrete(0x1000, 64), "probe", MAX_MAP_SIZE)
+            .expect("concrete"),
+        BoundedArg::Within(0x1000)
+    );
+    assert_eq!(
+        extract_bounded_concrete_arg(
+            &RustBV::concrete(u128::from(MAX_MAP_SIZE) + 1, 64),
+            "probe",
+            MAX_MAP_SIZE
+        )
+        .expect("concrete"),
+        BoundedArg::Exceeds
+    );
+
+    // A symbolic arg is neither Within nor Exceeds — the cap must not turn a
+    // Python fallback into a silent refusal.
+    match extract_bounded_concrete_arg(
+        &RustBV::symbolic(&ctx, "probe_sym", 64),
+        "probe",
+        MAX_MAP_SIZE,
+    ) {
+        Err(SyscallError::SymbolicArgument(name)) => assert_eq!(name, "probe"),
+        other => panic!("expected SymbolicArgument, got {other:?}"),
+    }
+}

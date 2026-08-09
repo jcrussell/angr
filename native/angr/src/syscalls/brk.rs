@@ -25,8 +25,8 @@
 use super::page::{PAGE_MASK, PAGE_SIZE};
 use super::require_syscall_args;
 use super::{
-    MAX_MAP_SIZE as MAX_BRK_GROWTH, NativeSyscall, SyscallError, SyscallOutcome,
-    extract_concrete_arg,
+    BoundedArg, MAX_MAP_SIZE as MAX_BRK_GROWTH, NativeSyscall, SyscallError, SyscallOutcome,
+    bounded_value, extract_concrete_arg,
 };
 use crate::memory::Permission;
 use crate::state::RustSimState;
@@ -68,9 +68,14 @@ impl NativeSyscall for NativeBrkSyscall {
         // failure by leaving the break where it was and returning it, which is
         // exactly the `new_brk < current` no-op above; falling back to Python
         // would only move the same unbounded `map_region` there. See
-        // `MAX_MAP_SIZE` in `syscalls::mod` (angr-c7xno.80).
-        if new_brk - current > MAX_BRK_GROWTH {
-            return Ok(SyscallOutcome::Continue { ret: current });
+        // `MAX_MAP_SIZE` in `syscalls::mod` (angr-c7xno.80). The bounded
+        // quantity is derived, not a raw argument, so this goes through
+        // `bounded_value` rather than `extract_bounded_concrete_arg` — the
+        // `BoundedArg` match is what makes the refusal arm mandatory
+        // (angr-91vj9.1).
+        match bounded_value("brk growth", new_brk - current, MAX_BRK_GROWTH) {
+            BoundedArg::Within(_) => {}
+            BoundedArg::Exceeds => return Ok(SyscallOutcome::Continue { ret: current }),
         }
 
         // Compute the page range that needs mapping. Python checks

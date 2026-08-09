@@ -240,6 +240,45 @@ fn set_page_permissions_reports_failure_for_unmapped_page() {
     assert_eq!(state.memory().page_permissions(0x2), None);
 }
 
+/// angr-c7xno.81: the `length` cap. This is the case that actually
+/// distinguishes capped from uncapped — a range with a *hole* returns -1
+/// either way, because the mapped-range walk bails at the first unmapped
+/// page. So map the whole over-cap range: without the cap `call` walks all
+/// 65537 pages twice and reports success, with it the request is refused
+/// untouched.
+///
+/// The setup eagerly allocates one `MemoryPage` buffer per page (~256 MiB,
+/// ~0.2s) — deliberate, and the reason there is exactly one test of this
+/// shape rather than one per boundary. The at-cap/over-cap edge itself is
+/// pinned cheaply by `bounded_value_cap_is_inclusive` in `mod_tests`.
+#[test]
+fn oversized_length_is_refused_even_when_the_whole_range_is_mapped() {
+    let h = NativeMprotectSyscall;
+    let mut state = RustSimState::new("amd64").expect("amd64 state");
+    let length = MAX_MPROTECT_RANGE + PAGE_SIZE;
+    state.map_memory(0x1000, length, Permission::RW);
+    assert_eq!(state.memory().page_permissions(0x1), Some(Permission::RW));
+
+    let args = vec![
+        RustBV::concrete(0x1000, 64),
+        RustBV::concrete(u128::from(length), 64),
+        RustBV::concrete(0x5, 64), // PROT_READ | PROT_EXEC
+    ];
+    let outcome = h.call(&mut state, &args).expect("ok");
+    match outcome {
+        SyscallOutcome::Continue { ret } => assert_eq!(ret, u64::MAX),
+        _ => panic!("expected Continue"),
+    }
+    // Refused before the update loop, not partway through it.
+    assert_eq!(state.memory().page_permissions(0x1), Some(Permission::RW));
+    assert_eq!(
+        state
+            .memory()
+            .page_permissions((0x1000 + MAX_MPROTECT_RANGE) >> 12),
+        Some(Permission::RW),
+    );
+}
+
 #[test]
 fn handler_metadata() {
     let h = NativeMprotectSyscall;

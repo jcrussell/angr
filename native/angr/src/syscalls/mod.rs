@@ -143,6 +143,60 @@ pub(crate) fn extract_concrete_arg(arg: &RustBV, name: &str) -> Result<u64, Sysc
         .ok_or_else(|| SyscallError::SymbolicArgument(name.to_string()))
 }
 
+/// A guest-controlled integer paired with the cap it was checked against.
+///
+/// Handlers that size an allocation or a page-walk from a syscall argument get
+/// this instead of a bare `u64`, so the over-cap case cannot be forgotten: the
+/// value is only reachable through a `match`, which means a new bounded call
+/// site does not compile until its author writes the refusal arm. Six round-3
+/// findings (angr-c7xno.67/.80/.81/.92/.93/.94) shared one root cause — the
+/// extraction and the bound check were two separate, independently-forgettable
+/// steps (angr-91vj9.1).
+///
+/// The cap itself is a host-safety bound, not a Python-parity rule: see
+/// [`MAX_MAP_SIZE`] for why refusing beats falling back to Python.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use]
+pub(crate) enum BoundedArg {
+    /// Concrete and within the cap; carries the value.
+    Within(u64),
+    /// Concrete but above the cap. The caller must refuse the request with
+    /// whatever failure value its syscall uses (`mmap`/`mprotect` → -1, `brk`
+    /// → the unchanged break). Deferring to Python is *not* a fix — the Python
+    /// handler has the same unbounded shape. `bounded_value` has already
+    /// logged the offending value, so the arm does not need to log again.
+    Exceeds,
+}
+
+/// Check an already-extracted value against `max`, logging the refusal.
+///
+/// Split out from [`extract_bounded_concrete_arg`] for the handlers whose
+/// bounded quantity is *derived* rather than a raw argument — `brk` caps the
+/// growth `new_brk - current`, and `mmap`'s three flavors funnel a length that
+/// `old_mmap` reads out of a guest struct rather than a register.
+pub(crate) fn bounded_value(name: &str, value: u64, max: u64) -> BoundedArg {
+    if value > max {
+        log::warn!("{name}: {value:#x} exceeds the {max:#x} host-safety cap — refusing");
+        BoundedArg::Exceeds
+    } else {
+        BoundedArg::Within(value)
+    }
+}
+
+/// Extract a concrete u64 syscall argument *and* bound it in one step.
+///
+/// The bound is a required parameter, so unlike `extract_concrete_arg` +
+/// a follow-up `if value > max` there is no shape in which the check is
+/// silently absent. Symbolic args still fall back to Python via
+/// `SymbolicArgument`, exactly as [`extract_concrete_arg`] does.
+pub(crate) fn extract_bounded_concrete_arg(
+    arg: &RustBV,
+    name: &str,
+    max: u64,
+) -> Result<BoundedArg, SyscallError> {
+    Ok(bounded_value(name, extract_concrete_arg(arg, name)?, max))
+}
+
 /// Mint a fresh symbolic bitvector with a per-invocation unique name.
 ///
 /// Native syscall handlers that return (or store) symbolic values must not

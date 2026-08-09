@@ -9,6 +9,13 @@
 //!   4. Otherwise set permissions on every page to `prot & 7` and
 //!      return 0.
 //!
+//! Oversized-range fast path: a `length` above `MAX_MAP_SIZE` is refused
+//! with -1 before either page-walk runs, so the cost of the walk is capped
+//! independently of how much contiguous memory is mapped. Host-safety
+//! bound, not Python parity — see `MAX_MAP_SIZE` in `syscalls::mod` and the
+//! comment on the check itself in `NativeMprotectSyscall::call`
+//! (angr-c7xno.81).
+//!
 //! Permission encoding gotcha: Linux mprotect uses `PROT_READ=0x1`,
 //! `PROT_WRITE=0x2`, `PROT_EXEC=0x4`, but `Permission::from_bits` uses
 //! `read=0x4, write=0x2, execute=0x1` (reversed). We translate the
@@ -16,7 +23,10 @@
 
 use super::page::{PAGE_MASK, PAGE_SIZE, linux_prot_to_permission};
 use super::require_syscall_args;
-use super::{NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg};
+use super::{
+    BoundedArg, MAX_MAP_SIZE as MAX_MPROTECT_RANGE, NativeSyscall, SyscallError, SyscallOutcome,
+    extract_bounded_concrete_arg, extract_concrete_arg,
+};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
@@ -38,7 +48,27 @@ impl NativeSyscall for NativeMprotectSyscall {
     ) -> Result<SyscallOutcome, SyscallError> {
         require_syscall_args!(self, args);
         let addr = extract_concrete_arg(&args[0], "mprotect addr")?;
-        let length = extract_concrete_arg(&args[1], "mprotect length")?;
+        // Host-safety cap, the same `MAX_MAP_SIZE` bound `mmap` and `brk`
+        // already apply to their guest-controlled length (angr-c7xno.81).
+        //
+        // Both loops below step one page at a time over the guest-named range.
+        // The mapped-range check does bail at the first hole, so the walk is
+        // bounded by the *contiguously mapped* prefix rather than by `length`
+        // itself — the round-3 finding's "O(requested pages)" framing is
+        // stronger than what the code does. The cap still earns its place:
+        // it makes the bound independent of how much memory happens to be
+        // mapped (successive anonymous `mmap`s are contiguous, so the prefix
+        // is not structurally capped at `MAX_MAP_SIZE`), and it keeps the
+        // three range-taking handlers on one number. A legitimate range this
+        // wide would mean the host had already eagerly allocated 256 MiB of
+        // `MemoryPage` buffers, which is the same reasoning that sets
+        // `MAX_MAP_SIZE`. Refuse rather than fall back: `mprotect.py` walks
+        // the same range with the same shape.
+        let length =
+            match extract_bounded_concrete_arg(&args[1], "mprotect length", MAX_MPROTECT_RANGE)? {
+                BoundedArg::Within(v) => v,
+                BoundedArg::Exceeds => return Ok(SyscallOutcome::Continue { ret: u64::MAX }),
+            };
         let prot = extract_concrete_arg(&args[2], "mprotect prot")?;
 
         // Linux: misaligned addr → EINVAL. Python returns -1 here too.
