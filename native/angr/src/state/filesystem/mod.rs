@@ -21,7 +21,7 @@ mod persist;
 mod query;
 mod symbolic;
 
-pub use fd::{FdFlags, FileDescriptor, MAX_SYMFILE_SERVE_SIZE};
+pub use fd::{FdFlags, FileDescriptor, MAX_FS_FILE_SIZE, MAX_SYMFILE_SERVE_SIZE};
 pub use persist::FileSystemData;
 
 /// File system state tracking.

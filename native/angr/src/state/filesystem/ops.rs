@@ -214,7 +214,12 @@ impl FileSystem {
     /// an `EBADF` that never reaches file content, so native serving of the
     /// file's sibling fds must stay intact. See
     /// `write_closed`.
-    #[must_use = "false means the write was refused (closed fd, or symbolic content demoted); bounce to Python"]
+    ///
+    /// **Size cap (angr-c7xno.67):** a write whose end offset would push the
+    /// content buffer past [`MAX_FS_FILE_SIZE`] is refused (`false`) rather
+    /// than resized into, since `position` comes from an unbounded guest
+    /// `lseek`.
+    #[must_use = "false means the write was refused (closed fd, symbolic content demoted, or past MAX_FS_FILE_SIZE); bounce to Python"]
     pub fn write(&mut self, fd: u32, data: &[u8]) -> bool {
         if data.is_empty() {
             return true;
@@ -224,6 +229,22 @@ impl FileSystem {
         }
         if self.write_refused(fd) {
             self.demote_symbolic_content(fd);
+            return false;
+        }
+        // Host-safety cap (angr-c7xno.67). `position` is guest-controlled and
+        // unbounded (`lseek(fd, huge, SEEK_SET)`), so the `resize` below would
+        // otherwise be a multi-exabyte allocation → `panic = "abort"`. Checked
+        // AFTER the demotion gate so an oversized write on a symbolic-content
+        // fd still hands ownership to Python (refusing first would leave Rust
+        // serving stale content while Python performs the write), but BEFORE
+        // `Arc::make_mut` so a refusal costs no CoW. See `MAX_FS_FILE_SIZE`.
+        let position = self.fds.get(&fd).map_or(0, |d| d.position);
+        if position.saturating_add(data.len() as u64) > MAX_FS_FILE_SIZE {
+            log::warn!(
+                "FileSystem::write on fd={fd} refused: position {position} + {} bytes exceeds \
+                 MAX_FS_FILE_SIZE ({MAX_FS_FILE_SIZE}); falling back to Python",
+                data.len()
+            );
             return false;
         }
         let desc = Arc::make_mut(&mut self.fds)
@@ -313,8 +334,10 @@ impl FileSystem {
     ///
     /// Same choke-point contract as [`write`](Self::write): closed fds are
     /// refused without demotion, symbolic-content fds are demoted and refused
-    /// (`false`), zero-length writes are a no-demotion no-op (`true`).
-    #[must_use = "false means the write was refused (closed fd, or symbolic content demoted); bounce to Python"]
+    /// (`false`), zero-length writes are a no-demotion no-op (`true`), and an
+    /// `offset` + length past [`MAX_FS_FILE_SIZE`] is refused rather than
+    /// resized into (angr-c7xno.67).
+    #[must_use = "false means the write was refused (closed fd, symbolic content demoted, or past MAX_FS_FILE_SIZE); bounce to Python"]
     pub fn write_at(&mut self, fd: u32, offset: u64, data: &[u8]) -> bool {
         if data.is_empty() {
             return true;
@@ -324,6 +347,16 @@ impl FileSystem {
         }
         if self.write_refused(fd) {
             self.demote_symbolic_content(fd);
+            return false;
+        }
+        // Host-safety cap (angr-c7xno.67) — `offset` is the raw, unbounded
+        // `pwrite64` offset argument. Same ordering rationale as `write`.
+        if offset.saturating_add(data.len() as u64) > MAX_FS_FILE_SIZE {
+            log::warn!(
+                "FileSystem::write_at on fd={fd} refused: offset {offset} + {} bytes exceeds \
+                 MAX_FS_FILE_SIZE ({MAX_FS_FILE_SIZE}); falling back to Python",
+                data.len()
+            );
             return false;
         }
         let desc = Arc::make_mut(&mut self.fds)

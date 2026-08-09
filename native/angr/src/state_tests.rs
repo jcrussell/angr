@@ -795,6 +795,55 @@ fn test_write_choke_point_refuses_and_demotes() {
     assert_eq!(fs.fd_content(fd2), b"");
 }
 
+/// angr-c7xno.67: a guest-controlled write offset past `MAX_FS_FILE_SIZE`
+/// must be refused (bounce to Python) instead of driving a multi-exabyte
+/// `Vec::resize` — which, under `panic = "abort"`, aborts the whole process.
+#[test]
+fn test_write_offset_past_size_cap_is_refused() {
+    let mut fs = FileSystem::default();
+    let fd = fs.open("/tmp/huge".to_string(), FdFlags::ReadWrite);
+    assert!(fs.write(fd, b"seed"));
+
+    // The `lseek(fd, huge, SEEK_SET); write(fd, buf, 1)` chain.
+    assert_eq!(fs.seek(fd, i64::MAX, 0), Some(i64::MAX as u64));
+    assert!(!fs.write(fd, b"x"), "oversized write must be refused");
+    assert_eq!(fs.fd_content(fd), b"seed", "refused write must not mutate");
+
+    // The `pwrite64(fd, buf, 1, huge)` chain.
+    assert!(!fs.write_at(fd, u64::MAX, b"x"));
+    assert!(!fs.write_at(fd, MAX_FS_FILE_SIZE, b"x"));
+    assert_eq!(fs.fd_content(fd), b"seed");
+
+    // Exactly at the cap is still allowed; one byte past is not. Checked on
+    // a fresh fd so the multi-MiB buffer is dropped with it.
+    let fd2 = fs.open("/tmp/atcap".to_string(), FdFlags::ReadWrite);
+    assert!(fs.write_at(fd2, MAX_FS_FILE_SIZE - 1, b"x"));
+    assert_eq!(fs.fd_content(fd2).len(), MAX_FS_FILE_SIZE as usize);
+    assert!(!fs.write_at(fd2, MAX_FS_FILE_SIZE - 1, b"xy"));
+    assert_eq!(fs.fd_content(fd2).len(), MAX_FS_FILE_SIZE as usize);
+}
+
+/// angr-c7xno.67 companion: an oversized write on a bounded-symbolic-content
+/// fd must still DEMOTE before refusing. Refusing first would leave Rust
+/// serving the registered symbolic content while the Python fallback performs
+/// the write — the exact divergence the angr-0xyq2 Phase 2 choke point exists
+/// to prevent.
+#[test]
+fn test_write_offset_cap_still_demotes_symbolic_content() {
+    let mut fs = FileSystem::default();
+    fs.register_file_content("/tmp/capsym", sym_file_bytes(2, "capsym"));
+    let fd = fs.open("/tmp/capsym".to_string(), FdFlags::ReadWrite);
+    assert!(fs.has_content_sym(fd));
+
+    assert!(!fs.write_at(fd, MAX_FS_FILE_SIZE, b"x"));
+    assert!(
+        fs.fd_content_sym(fd).is_none(),
+        "oversized write must demote before refusing"
+    );
+    assert!(fs.file_content_for_path("/tmp/capsym").is_none());
+    assert_eq!(fs.fd_content(fd), b"", "refused write must not mutate");
+}
+
 /// B2 (angr-0xyq2): `close` only flips the flag — `content_sym` stays
 /// attached — but a closed fd must not serve.
 #[test]

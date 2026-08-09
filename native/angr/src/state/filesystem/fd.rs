@@ -179,3 +179,22 @@ impl FileDescriptor {
 /// `read_sym`/`read_sym_at` clamp to the remaining content anyway; this cap
 /// only bounds the per-call `Vec` allocation for absurd guest counts.
 pub const MAX_SYMFILE_SERVE_SIZE: u64 = 65536;
+
+/// Host-safety cap on the *total* size of an fd's concrete content buffer
+/// (`FileDescriptor::content`), enforced by [`FileSystem::write`] and
+/// [`FileSystem::write_at`](super::FileSystem::write_at) (angr-c7xno.67).
+///
+/// Unlike `MAX_SYMFILE_SERVE_SIZE` (a per-call serve clamp) and
+/// `syscalls::MAX_IO_SIZE` (a per-call *length* threshold before a legitimate
+/// Python fallback), this bounds the write *destination*: `content` is an
+/// eagerly-allocated `Vec<u8>` that both write paths grow with
+/// `resize(end, 0)`, and `end` derives from a guest-controlled offset —
+/// `lseek(fd, huge, SEEK_SET)` for `write`, the `pwrite64` offset argument for
+/// `write_at`, neither of which any caller bounds. The crate builds with
+/// `panic = "abort"`, so an unbounded `resize` is a whole-process abort
+/// (killing every parallel worker), not a per-state error. Same bug class as
+/// `MAX_MAP_SIZE`; see the `invariant-guest-size-host-allocation-cap` memory.
+///
+/// 16 MiB is far above any file a symbolically-executed test binary writes and
+/// far below anything that threatens the host.
+pub const MAX_FS_FILE_SIZE: u64 = 0x100_0000;
