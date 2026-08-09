@@ -3,8 +3,12 @@
 //! Bodies for the pyclass-exposed methods that create, add, merge, and move
 //! `RustSimState` instances across stashes — `create_state`, `add_state`,
 //! `merge_states`, `move_states`, `move_state`, and `reset_for_stage`. The
-//! pyclass-facing thin wrappers live in `mod.rs` and forward to the
-//! `pub(crate)` bodies in this module.
+//! pyclass-facing thin wrappers live in the `manager_methods_*.rs` family —
+//! split between `manager_methods_state.rs` and
+//! `manager_methods_constraints.rs` — and forward to the `pub(crate)` bodies
+//! in this module. (They were in `mod.rs` until the `#[pymethods]` surface
+//! was split out of it per angr-nbim4.1 / angr-9ke6b.50; see `mod.rs`'s own
+//! module doc.)
 //!
 //! The extension-impl split here predates PyO3's `multiple-pymethods`
 //! feature, which is now enabled (angr-9ke6b.50, see

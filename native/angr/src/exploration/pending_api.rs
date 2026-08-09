@@ -3,8 +3,12 @@
 //! Bodies for the cluster of pyclass-exposed methods that read or mutate the
 //! `pending_callback` state — registers, memory, history, jumpkind, dirty
 //! pages, constraints, snapshots, and solver fork/borrow helpers — plus the
-//! related skip-hook stack. The pyclass-facing thin wrappers live in `mod.rs`
-//! and forward to the `pub(crate)` bodies in this module.
+//! related skip-hook stack. The pyclass-facing thin wrappers live in the
+//! `manager_methods_*.rs` family — split between `manager_methods_state.rs`
+//! and `manager_methods_constraints.rs` — and forward to the `pub(crate)`
+//! bodies in this module. (They were in `mod.rs` until the `#[pymethods]`
+//! surface was split out of it per angr-nbim4.1 / angr-9ke6b.50; see
+//! `mod.rs`'s own module doc.)
 //!
 //! The extension-impl split here predates PyO3's `multiple-pymethods`
 //! feature, which is now enabled (angr-9ke6b.50, see

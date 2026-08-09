@@ -6,8 +6,10 @@
 //! `deadend_pending_callback` methods to apply state changes, process
 //! deferred forks, and route the resulting states into the right stashes.
 //!
-//! The pyclass-facing thin wrappers live in `mod.rs` and forward to the
-//! `pub(crate)` bodies in this module.
+//! The pyclass-facing thin wrappers live in `manager_methods_run.rs` and
+//! forward to the `pub(crate)` bodies in this module. (They were in `mod.rs`
+//! until the `#[pymethods]` surface was split out of it per angr-nbim4.1 /
+//! angr-9ke6b.50; see `mod.rs`'s own module doc.)
 //!
 //! The extension-impl split here predates PyO3's `multiple-pymethods`
 //! feature, which is now enabled (angr-9ke6b.50, see

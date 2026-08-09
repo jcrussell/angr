@@ -5,8 +5,12 @@
 //! constraint export/import, mmap/brk pointer plumbing, per-state Python-AST
 //! metadata (`symbolic_pages` / `hook_symbolic_memory` / `addr_to_ast`),
 //! state export, eval, history/heap/fd inspection, and inspection events.
-//! The pyclass-facing thin wrappers live in `mod.rs` and forward to the
-//! `pub(crate)` bodies in this module.
+//! The pyclass-facing thin wrappers live in the `manager_methods_*.rs`
+//! family — mostly `manager_methods_export.rs`, with the constraint
+//! export/import ones in `manager_methods_constraints.rs` — and forward to
+//! the `pub(crate)` bodies in this module. (They were in `mod.rs` until the
+//! `#[pymethods]` surface was split out of it per angr-nbim4.1 /
+//! angr-9ke6b.50; see `mod.rs`'s own module doc.)
 //!
 //! The extension-impl split here predates PyO3's `multiple-pymethods`
 //! feature, which is now enabled (angr-9ke6b.50, see
