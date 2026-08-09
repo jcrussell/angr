@@ -220,3 +220,5 @@ pub(crate) struct ConstraintTracker {
     /// State IDs to skip the avoid predicate check for on next pop.
     pub(crate) skip_avoid_predicate_states: HashSet<u64>,
 }
+
+test_submod!("constraints_tests.rs" => tests);
