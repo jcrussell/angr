@@ -354,7 +354,11 @@ ANGR_EXAMPLES_DIR=/path/to/angr-examples/examples python tests/benchmarks/run_re
 - **`.github/workflows/ci.yml::benchmark_regression`** (PR-time): runs the
   fast-tier suite with `--rust-only --skip-bimodal --threshold 0.15`, capped at
   5-minute timeout. Fails a PR when any non-bimodal fast-tier bench is more than
-  15% slower than `baseline_timings.json`. Warns (but does not fail) when the
+  15% slower than `baseline_timings.json` **and** more than `--regression-floor`
+  (default 50ms) slower in absolute terms — at a 0.16s baseline 15% is ~24ms,
+  inside the host noise floor, which failed the ralph gate twice on
+  `sharif7_rev50` alone (angr-z8p3x). Benches above ~0.33s are unaffected by the
+  floor; a suppressed excursion still prints a `noise-floor:` line. Warns (but does not fail) when the
   Rust-vs-Python speedup, computed against cached `python_time`, slips into the
   0.5x–1.0x band.
 - **`.github/workflows/nightly-ci.yml::benchmark_regression`** (nightly): runs

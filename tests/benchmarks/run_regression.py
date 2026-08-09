@@ -3,7 +3,10 @@
 
 Runs fast-tier benchmarks with both engines and checks:
 1. Rust engine produces correct output (matches Python)
-2. Rust engine is not slower than baseline threshold
+2. Rust engine is not slower than baseline threshold — a timing failure must
+   clear both a relative bar (--threshold) and an absolute one
+   (--regression-floor), so host noise on the sub-second benches does not
+   fail the gate (see ``timing_regression_pct``)
 3. Rust engine meets the speedup SLA vs Python (fails below 0.5x by default,
    warns below 1.0x). Uses cached python_time from baseline when this run
    skipped Python (e.g. rust_only entries).
@@ -12,6 +15,7 @@ Usage:
     python tests/benchmarks/run_regression.py              # Run all fast benchmarks
     python tests/benchmarks/run_regression.py --update      # Update baseline timings
     python tests/benchmarks/run_regression.py --threshold 0.2  # 20% regression threshold
+    python tests/benchmarks/run_regression.py --regression-floor 0.1  # 100ms absolute floor
     python tests/benchmarks/run_regression.py --sla-fail-threshold 0.7  # Tighter SLA
     python tests/benchmarks/run_regression.py --no-sla       # Disable SLA check
     python tests/benchmarks/run_regression.py --memory-threshold 0.4  # Tighter peak-RSS gate
@@ -382,6 +386,47 @@ BIMODAL_BENCHMARKS = frozenset(
 )
 
 
+# Absolute-delta floor for the timing gate, in seconds. A relative-only
+# threshold is meaningless on the sub-second benches: at sharif7_rev50's 0.16s
+# baseline, 15% is ~24ms, which is inside the process-startup / OS-scheduling
+# noise floor when the box is loaded. That bench failed the ralph gate twice
+# (iters 165 and 021, both times including every in-gate retry) at 0.19s while
+# standalone re-runs immediately afterward landed at 0.16s, and the counter
+# diff showed run_wall_time_ns *down* — i.e. the extra ~30ms was never engine
+# work. The gate's retries cannot help, because they run under the same load
+# that caused the excursion. See bd bead angr-z8p3x.
+DEFAULT_REGRESSION_FLOOR_S = 0.05
+
+
+def timing_regression_pct(baseline_time, rust_time, threshold, floor_s=DEFAULT_REGRESSION_FLOOR_S):
+    """Return the over-threshold timing regression percent, or ``None``.
+
+    Pure decision helper for the rust_time gate, mirroring
+    ``memory_regression_pct``. A regression must clear BOTH bars to count:
+
+    * relative — ``rust_time > baseline_time * (1 + threshold)``
+    * absolute — ``rust_time - baseline_time > floor_s``
+
+    The absolute floor is what keeps sub-second benches out of the failure
+    set for deltas that are pure host noise (see
+    ``DEFAULT_REGRESSION_FLOOR_S``). It is deliberately a floor and not a
+    per-bench threshold override: every bench above ``floor_s / threshold``
+    (~0.33s at the defaults) keeps its previous behaviour exactly, so slow
+    benches are not silently loosened.
+
+    Returns ``None`` when there is nothing to compare (no baseline, a
+    non-positive baseline, or a missing measurement) or when either bar is
+    unmet. Otherwise returns the positive percent over baseline.
+    """
+    if baseline_time is None or baseline_time <= 0 or rust_time is None:
+        return None
+    if rust_time <= baseline_time * (1 + threshold):
+        return None
+    if rust_time - baseline_time <= floor_s:
+        return None
+    return ((rust_time / baseline_time) - 1) * 100
+
+
 def memory_regression_pct(baseline_mem, rust_peak_mem, threshold):
     """Return the over-threshold peak-RSS regression percent, or ``None``.
 
@@ -563,6 +608,16 @@ def main():
     )
     parser.add_argument(
         "--threshold", type=float, default=0.15, help="Regression threshold (default: 0.15 = 15%% slower)"
+    )
+    parser.add_argument(
+        "--regression-floor",
+        type=float,
+        default=DEFAULT_REGRESSION_FLOOR_S,
+        help="Absolute-delta floor for the timing gate, in seconds "
+        f"(default: {DEFAULT_REGRESSION_FLOOR_S} = {DEFAULT_REGRESSION_FLOOR_S * 1000:.0f}ms). A bench must be "
+        "both --threshold%% slower AND this many seconds slower than "
+        "baseline to fail. Keeps sub-second benches from failing on host "
+        "noise; set to 0 to restore the relative-only behaviour.",
     )
     parser.add_argument("--mem-limit", type=int, default=DEFAULT_MEM_LIMIT_MB)
     parser.add_argument("--rust-only", action="store_true", help="Only run Rust engine (skip Python comparison)")
@@ -793,8 +848,17 @@ def main():
         # Check timing regression against baseline
         if baseline_key in baseline and not args.update:
             bl = baseline[baseline_key]["rust_time"]
-            if rust_time > bl * (1 + args.threshold):
-                pct = ((rust_time / bl) - 1) * 100
+            pct = timing_regression_pct(bl, rust_time, args.threshold, args.regression_floor)
+            if pct is None and bl > 0 and rust_time > bl * (1 + args.threshold):
+                # Over the relative bar but under the absolute floor. Never
+                # suppress this silently — a quiet floor reads as "no
+                # regression" when it is really "too small to trust".
+                print(
+                    f"  noise-floor: {rust_time:.2f}s vs baseline {bl:.2f}s "
+                    f"(+{((rust_time / bl) - 1) * 100:.0f}%, "
+                    f"{(rust_time - bl) * 1000:.0f}ms < {args.regression_floor * 1000:.0f}ms floor) — not failed"
+                )
+            if pct is not None:
                 print(f"  REGRESSION: {rust_time:.2f}s vs baseline {bl:.2f}s (+{pct:.0f}%)")
                 failure_msg = f"{name}: {pct:.0f}% regression ({rust_time:.2f}s vs {bl:.2f}s)"
                 failures.append(failure_msg)
@@ -983,7 +1047,9 @@ def main():
                 if "timing_msg" in pending:
                     bl = rec["bl"]
                     pct = ((retry_time / bl) - 1) * 100
-                    if retry_time <= bl * (1 + args.threshold):
+                    # Same two-bar decision as the first pass, so a retry that
+                    # lands inside the absolute floor clears the failure.
+                    if timing_regression_pct(bl, retry_time, args.threshold, args.regression_floor) is None:
                         print(f"  attempt {attempt}: timing {retry_time:.2f}s vs {bl:.2f}s ({pct:+.0f}%) — cleared")
                         pending.discard("timing_msg")
                     else:
