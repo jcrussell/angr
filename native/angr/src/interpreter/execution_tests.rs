@@ -1,7 +1,7 @@
 // Unit tests for interpreter/execution.rs (VEXInterpreter block exec / memory / cache).
 // Split out per rust-mod-tests-sibling-extraction; included via #[cfg(test)] #[path].
 use super::*;
-use crate::callbacks::RunErrorKind;
+use crate::callbacks::{ErrorRoute, RunErrorKind};
 
 fn new_interp(ctx: &SymContext) -> VEXInterpreter<'_> {
     VEXInterpreter::new(VexArch::AMD64, ctx)
@@ -170,6 +170,35 @@ fn run_error_kind_other_panic_variants_are_fatal() {
     ] {
         assert_eq!(e.run_error_kind(), RunErrorKind::Fatal);
     }
+}
+
+// angr-c7xno.30: `run_error_kind`'s doc used to read as if Fatal meant the
+// errored stash unconditionally, but `RunErrorKind::route` downgrades a Fatal
+// at pc 0 to a deadend for *every* Fatal-producing variant, not just the
+// lift-adjacent ones. Compose the two so the end-to-end classification is
+// pinned from a real `CbExecutionError`, non-LiftError included.
+#[test]
+fn fatal_variants_at_null_pc_route_to_null_address_deadend() {
+    for e in [
+        CbExecutionError::InvalidIR("IRSB deserialization failed: bad json".to_string()),
+        CbExecutionError::Memory(MemoryError::Unmapped { addr: 0, size: 0 }),
+        CbExecutionError::UnknownTemp(3),
+        CbExecutionError::Callback("py raised".to_string()),
+    ] {
+        let kind = e.run_error_kind();
+        assert_eq!(kind, RunErrorKind::Fatal);
+        assert_eq!(kind.route(0), ErrorRoute::NullAddressDeadend);
+        // Same variant at a real pc is still an errored state.
+        assert_eq!(kind.route(0x40_1000), ErrorRoute::Errored);
+    }
+    // A LiftError deadends at pc 0 too, but by the *other* route — the two
+    // must stay distinguishable.
+    assert_eq!(
+        CbExecutionError::LiftError("empty IRSB sentinel".to_string())
+            .run_error_kind()
+            .route(0),
+        ErrorRoute::UnliftableDeadend
+    );
 }
 
 // angr-sqfj8.111: a block whose default exit is a VEX trap (Ijk_Sig*,

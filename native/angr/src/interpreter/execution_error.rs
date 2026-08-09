@@ -45,9 +45,11 @@ pub(crate) enum FallbackStrategy {
     /// (e.g. unsupported CCalls, VECRET/GSPTR, oversized symbolic addresses).
     PythonCallback,
     /// Surface the error to the caller as `RunResult::Error`. The state
-    /// moves to the errored stash; no recovery is attempted. Used for
-    /// genuine bugs (TypeMismatch, UnknownTemp, InvalidIR, lifter errors,
-    /// callback-side failures).
+    /// normally moves to the errored stash; no recovery is attempted. Used
+    /// for genuine bugs (TypeMismatch, UnknownTemp, InvalidIR, lifter errors,
+    /// callback-side failures). "Normally" because the final stash is picked
+    /// by `RunErrorKind::route`, not by this strategy — see
+    /// [`CbExecutionError::run_error_kind`] for the two exceptions.
     ///
     /// NOTE: `Op` / `TypeMismatch` / `InvalidIR` are exactly the failures
     /// that Python's `HeavyResilienceMixin` would catch and substitute a
@@ -136,6 +138,13 @@ impl CbExecutionError {
     /// Every other `Panic`-strategy variant — including `InvalidIR`, which a
     /// genuinely malformed IRSB now maps to — is a real error that moves the
     /// state to the errored stash.
+    ///
+    /// This kind is not the last word on the stash, though: `RunErrorKind`
+    /// alone does not decide routing. `RunErrorKind::route` also takes the pc
+    /// the error was reported at, and downgrades a `Fatal` at pc 0 to
+    /// `ErrorRoute::NullAddressDeadend` — a deadend, not an errored state —
+    /// regardless of which variant produced the `Fatal` (angr-c7xno.30).
+    /// See the `ErrorRoute` docs for that carve-out's rationale.
     pub(crate) fn run_error_kind(&self) -> RunErrorKind {
         match self {
             CbExecutionError::LiftError(_) => RunErrorKind::Deadend,

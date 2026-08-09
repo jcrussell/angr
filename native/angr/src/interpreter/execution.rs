@@ -148,6 +148,15 @@ impl<'a> VEXInterpreter<'a> {
                             // through as if it were an ordinary jump. The PC is
                             // advanced first so the errored state points at the
                             // trap target, matching the Python successor.
+                            //
+                            // angr-c7xno.30: this is one of the two sites that
+                            // builds a `Fatal` without going through
+                            // `run_error_kind`, so it inherits the same pc-0
+                            // carve-out — a trap exit whose target is 0 routes
+                            // to `ErrorRoute::NullAddressDeadend` (deadended),
+                            // not errored. That is the intended reading here
+                            // too: a jump to null is a null-jump deadend
+                            // whatever jumpkind carried it there.
                             if jumpkind.is_trap() {
                                 self.pc = next_addr;
                                 let forks = self.take_deferred_forks();
