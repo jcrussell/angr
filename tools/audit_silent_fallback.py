@@ -59,7 +59,15 @@ BASELINE_PATH = REPO_ROOT / "tools" / "silent_fallback_baseline.txt"
 LOOKBACK = 20
 LOOKAHEAD = 12
 
-TAG_RE = re.compile(r"//\s*SILENT\(cat-[abc]\):")
+# Either the `// SILENT(cat-x): <rationale>` comment, or an invocation of the
+# `silent_default!` macro (`lib.rs`), whose category argument *is* the tag —
+# requiring a redundant comment beside it would push contributors back toward
+# the hand-written form the macro exists to replace (angr-91vj9.6). The macro
+# arm matches on the category, so an invocation cannot compile without one;
+# that makes the bare `silent_default!(` enough, and it keeps matching when
+# rustfmt wraps the category onto its own line (this regex is applied one line
+# at a time, so anchoring on `silent_default!(\s*cat_c` would miss that shape).
+TAG_RE = re.compile(r"//\s*SILENT\(cat-[abc]\):|silent_default!\(")
 
 # Each shape: (name, compiled matcher over the *stripped* line).
 SHAPES: list[tuple[str, re.Pattern[str]]] = [

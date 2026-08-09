@@ -84,10 +84,13 @@ fn push_assumed_constraint_or_log(
     results: &mut Vec<Py<PyAny>>,
     context: &str,
 ) {
-    match crate::claripy_bridge::assumed_guard_to_claripy(py, bv, claripy, is_true) {
-        Ok(c) => results.push(c),
-        Err(e) => log::debug!("{context}: could not convert assumed constraint to claripy: {e}"),
-    }
+    let converted = silent_default!(
+        cat_b,
+        crate::claripy_bridge::assumed_guard_to_claripy(py, bv, claripy, is_true),
+        return,
+        |err| "{context}: could not convert assumed constraint to claripy: {err}"
+    );
+    results.push(converted);
 }
 
 impl RustExplorationManager {

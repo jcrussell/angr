@@ -66,7 +66,27 @@ with a degraded result (the `.100`/`.172`/`.144`/`.194`-class "silently wrong
 instead of loud error" bugs from the angr-9ke6b audit) must carry a
 `// SILENT(cat-a|b|c): <rationale>` comment above them — `cat-a` = expected
 control flow, `cat-b` = fallback with loss, `cat-c` = wrong-answer risk (must
-also `log::warn!`). `tools/audit_silent_fallback.py` gates the currently-narrow
+also `log::warn!`).
+
+For the two *logged* categories, reach for the `silent_default!` macro
+(defined in `native/angr/src/lib.rs`, textual scope so it needs no import)
+rather than hand-writing the `unwrap_or_else` + `log::warn!` boilerplate — the
+whole reason the silent form kept winning is that it was the shorter one
+(angr-91vj9.6). The category argument picks the level (`cat_b` → `log::debug!`,
+`cat_c` → `log::warn!`) and *is* the tag, so no separate comment is needed;
+`audit_silent_fallback.py` accepts an invocation in place of one. There is
+deliberately no `cat_a` arm — expected control flow needs no log, so it stays a
+plain `match`/`unwrap_or` with the comment. Both fallible shapes are supported:
+`silent_default!(cat_c, opt_expr, default, "msg {ctx}")` for `Option`, and
+`silent_default!(cat_b, res_expr, default, |err| "msg {err}")` for `Result`
+(the binder must be named by the caller — macro hygiene would hide a
+macro-defined one from the message). `$default` sits in tail position, so
+`return`/`continue` are legal defaults. Canonical call sites:
+`VEXInterpreter::get_stack_pointer_or_log`, both `get_return_addr_or_log`s,
+`vex::opcode_map::parse_type_or_log`, and the `Result` form in
+`exploration/state_api.rs::push_assumed_constraint_or_log`.
+
+`tools/audit_silent_fallback.py` gates the currently-narrow
 `return Ok(None)` / `.ok();` shapes in CI (`rust_check`) against
 `tools/silent_fallback_baseline.txt`, same baseline-audit pattern as the
 line-citation check above. The noisier `.unwrap_or*`/`let _ =`/wildcard

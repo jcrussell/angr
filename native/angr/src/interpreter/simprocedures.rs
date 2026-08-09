@@ -124,13 +124,13 @@ impl<'a> VEXInterpreter<'a> {
     // this single logged fallback rather than a bare `.unwrap_or(0)`
     // (angr-sqfj8.62).
     pub(crate) fn get_return_addr_or_log(&self, context: &str) -> u64 {
-        self.get_return_addr().unwrap_or_else(|| {
-            log::warn!(
-                "get_return_addr() returned None ({context}); using return_addr=0 \
-                 — likely a symbolic or unavailable return address collapsed to a wrong value"
-            );
-            0
-        })
+        silent_default!(
+            cat_c,
+            self.get_return_addr(),
+            0,
+            "get_return_addr() returned None ({context}); using return_addr=0 \
+             — likely a symbolic or unavailable return address collapsed to a wrong value"
+        )
     }
 }
 

@@ -152,6 +152,75 @@ macro_rules! test_submod {
     };
 }
 
+/// Take a fallible value's success payload, or log the failure and fall back to
+/// `$default` — the one-line spelling of the `SILENT(cat-x)` convention.
+///
+/// CLAUDE.md's silent-fallback rules say a site that discards an error and
+/// continues with a degraded result must carry a `// SILENT(cat-a|b|c)` tag,
+/// and that `cat-c` (wrong-answer risk) must *also* `log::warn!`. Writing that
+/// out by hand is four lines of `unwrap_or_else` boilerplate, so the tempting
+/// silent form (`.unwrap_or(0)`, `let _ = ...`) keeps winning — three fresh
+/// instances landed in one review round (angr-91vj9.6). This macro makes the
+/// correct form the shorter one: the category picks the log level, and the
+/// invocation itself is the greppable tag (`tools/audit_silent_fallback.py`
+/// accepts `silent_default!(cat_x, ...)` in place of the comment).
+///
+/// `cat_b` logs at `debug` (fallback with loss), `cat_c` at `warn`
+/// (wrong-answer risk). There is deliberately no `cat_a` arm: expected control
+/// flow needs no log, so it stays a plain `match`/`unwrap_or` with a comment.
+/// An unrecognized category is a compile error rather than a silent downgrade.
+///
+/// ```ignore
+/// // Option<T>: `None` is the failure, and there is nothing to `Display`.
+/// silent_default!(cat_c, self.get_stack_pointer(), 0, "no SP ({context})");
+///
+/// // Result<T, E>: `|err|` names a binding for the error, in scope for the
+/// // message. Not mentioning it is an unused-variable error under the crate's
+/// // `-D warnings`, so the cause cannot be dropped. (The binder must be
+/// // written by the caller rather than injected by the macro: macro_rules
+/// // hygiene would put a macro-defined `err` out of the message's scope.)
+/// silent_default!(cat_b, parse(s), Default::default(), |err| "bad input: {err}");
+/// ```
+///
+/// Defined before the crate's `mod` declarations so legacy textual macro scope
+/// reaches every module; invoke it unqualified.
+#[allow(
+    unused_macros,
+    reason = "every current call site sits behind `vex-engine`, so the \
+              `--no-default-features` combos `make check-no-z3` gates compile \
+              the definition with no user. Defining it unconditionally keeps \
+              the convention reachable from feature-independent modules too"
+)]
+macro_rules! silent_default {
+    // `Result<T, E>` form. Listed first: its `|err|` prefix would otherwise be
+    // swallowed by the `$($msg:tt)+` of the `Option` arm below.
+    ($cat:ident, $fallible:expr, $default:expr, |$err:ident| $($msg:tt)+) => {
+        match $fallible {
+            Ok(value) => value,
+            Err($err) => {
+                silent_default!(@log $cat, $($msg)+);
+                $default
+            }
+        }
+    };
+    // `Option<T>` form.
+    ($cat:ident, $fallible:expr, $default:expr, $($msg:tt)+) => {
+        match $fallible {
+            Some(value) => value,
+            None => {
+                silent_default!(@log $cat, $($msg)+);
+                $default
+            }
+        }
+    };
+    // Internal: the category selects the log level. Keep in sync with the
+    // cat-a/b/c definitions in CLAUDE.md's "Silent-fallback tagging" section.
+    (@log cat_b, $($msg:tt)+) => { log::debug!($($msg)+) };
+    (@log cat_c, $($msg:tt)+) => { log::warn!($($msg)+) };
+}
+
+test_submod!("silent_default_tests.rs" => silent_default_tests);
+
 // Dev-only public surface for the cargo-fuzz targets under `fuzz/`
 // (angr-qwyti.9). Re-exports the pure hostile-input parsers so a fuzz binary
 // can reach them without depending on `pub(super)` internals. Gated behind

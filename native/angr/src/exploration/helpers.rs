@@ -631,13 +631,13 @@ impl RustExplorationManager {
     // literal 0 is a wrong-answer risk; route through this single logged
     // fallback rather than a bare `.unwrap_or(0)`.
     pub(crate) fn get_return_addr_or_log(&self, state: &RustSimState, context: &str) -> u64 {
-        self.get_return_addr(state).unwrap_or_else(|| {
-            log::warn!(
-                "get_return_addr() returned None ({context}); using return_addr=0 \
-                 — likely a symbolic or unavailable return address collapsed to a wrong value"
-            );
-            0
-        })
+        silent_default!(
+            cat_c,
+            self.get_return_addr(state),
+            0,
+            "get_return_addr() returned None ({context}); using return_addr=0 \
+             — likely a symbolic or unavailable return address collapsed to a wrong value"
+        )
     }
 }
 

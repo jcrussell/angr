@@ -1234,13 +1234,13 @@ pub fn parse_type(ty_str: &str) -> Option<IRType> {
 // bare `.unwrap_or(IRType::I64)`, so table drift is traceable on whichever
 // path a block happens to take (angr-c7xno.90).
 pub fn parse_type_or_log(ty_str: &str, context: &str) -> IRType {
-    parse_type(ty_str).unwrap_or_else(|| {
-        log::warn!(
-            "Unknown pyvex IR type string {ty_str:?} ({context}); assuming Ity_I64 \
-             — the value is mis-sized wherever it is used"
-        );
-        IRType::I64
-    })
+    silent_default!(
+        cat_c,
+        parse_type(ty_str),
+        IRType::I64,
+        "Unknown pyvex IR type string {ty_str:?} ({context}); assuming Ity_I64 \
+         — the value is mis-sized wherever it is used"
+    )
 }
 
 /// Parse an endianness string from pyvex.

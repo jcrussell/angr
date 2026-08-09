@@ -203,13 +203,13 @@ impl<'a> VEXInterpreter<'a> {
     // from a genuine SP of 0. Callers must go through this single logged
     // fallback rather than a bare `.unwrap_or(0)` (angr-sqfj8.63).
     pub(crate) fn get_stack_pointer_or_log(&self, context: &str) -> u64 {
-        self.get_stack_pointer().unwrap_or_else(|| {
-            log::warn!(
-                "get_stack_pointer() returned None ({context}); using stack_ptr=0 \
-                 — likely a symbolic or unavailable stack pointer collapsed to a wrong value"
-            );
-            0
-        })
+        silent_default!(
+            cat_c,
+            self.get_stack_pointer(),
+            0,
+            "get_stack_pointer() returned None ({context}); using stack_ptr=0 \
+             — likely a symbolic or unavailable stack pointer collapsed to a wrong value"
+        )
     }
 
     /// Check if an address is in the stack region (near current RSP).
