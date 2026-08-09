@@ -112,3 +112,33 @@ fn test_register_with_registry() {
         assert_eq!(result.unwrap().as_u64(), Some(42));
     });
 }
+
+/// angr-91vj9.10: `name()` must hand back the *same* leaked pointer on every
+/// call. The pre-fix implementation `Box::leak`ed a fresh clone per call, so
+/// repeated `name()` calls grew the heap without bound; only the fact that
+/// nothing called it twice kept that harmless.
+#[test]
+fn test_name_is_leaked_once_not_per_call() {
+    Python::initialize();
+    Python::attach(|py| {
+        let locals = pyo3::types::PyDict::new(py);
+        py.run(
+            std::ffi::CString::new("f = lambda args: None")
+                .unwrap()
+                .as_c_str(),
+            None,
+            Some(&locals),
+        )
+        .unwrap();
+        let callable: Py<PyAny> = locals.get_item("f").unwrap().unwrap().unbind();
+
+        let proc = PythonNativeProcedure::new("py_stable_name".to_string(), 0, true, callable);
+        let first = proc.name();
+        let second = proc.name();
+        assert_eq!(first, "py_stable_name");
+        assert!(
+            std::ptr::eq(first, second),
+            "name() leaked a second allocation instead of returning the stored one"
+        );
+    });
+}

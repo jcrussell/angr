@@ -25,7 +25,14 @@ use crate::symbolic::RustBV;
 
 /// Wraps a Python callable so it can act as a native SimProcedure.
 pub(crate) struct PythonNativeProcedure {
-    name: String,
+    /// Dispatch name. Leaked once in `new` so the trait's
+    /// `name(&self) -> &'static str` is a field read; one leak per
+    /// registered procedure per process. Storing the `String` and leaking
+    /// inside `name()` instead would leak afresh on *every* call
+    /// (angr-91vj9.10) — the type, not a doc comment, is what pins the
+    /// "leak once" invariant here, matching
+    /// `stub.rs::NativeReturnUnconstrained`.
+    name: &'static str,
     num_args: usize,
     no_return: bool,
     callable: Py<PyAny>,
@@ -34,26 +41,20 @@ pub(crate) struct PythonNativeProcedure {
 impl PythonNativeProcedure {
     pub(crate) fn new(name: String, num_args: usize, no_return: bool, callable: Py<PyAny>) -> Self {
         Self {
-            name,
+            // The registry holds an Arc<Self> for the lifetime of the
+            // manager, so the leak is bounded: one heap allocation per
+            // registered procedure, live for the rest of the process.
+            name: Box::leak(name.into_boxed_str()),
             num_args,
             no_return,
             callable,
         }
     }
-
-    /// Leaked &'static str for the trait's name() method. Stored once at
-    /// registration time so successive calls return the same pointer.
-    fn leaked_name(&self) -> &'static str {
-        // Box the name into a heap allocation that lives for the rest of
-        // the process. The registry holds an Arc<Self> for the lifetime
-        // of the manager; leaking once per registered procedure is OK.
-        Box::leak(self.name.clone().into_boxed_str())
-    }
 }
 
 impl NativeSimProcedure for PythonNativeProcedure {
     fn name(&self) -> &'static str {
-        self.leaked_name()
+        self.name
     }
 
     fn num_args(&self) -> usize {
