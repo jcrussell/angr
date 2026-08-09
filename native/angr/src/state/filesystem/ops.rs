@@ -221,6 +221,26 @@ impl FileSystem {
     /// `lseek`.
     #[must_use = "false means the write was refused (closed fd, symbolic content demoted, or past MAX_FS_FILE_SIZE); bounce to Python"]
     pub fn write(&mut self, fd: u32, data: &[u8]) -> bool {
+        // Read the position before the shared body runs: none of the gates it
+        // applies mutate `position` on a path that goes on to copy bytes
+        // (`demote_symbolic_content` only runs on a refusal).
+        let position = self.fds.get(&fd).map_or(0, |d| d.position);
+        self.write_bytes_at(fd, position, data, true)
+    }
+
+    /// Shared body of [`write`](Self::write) and [`write_at`](Self::write_at):
+    /// the refusal gates plus the compute/resize/copy sequence. `start` is the
+    /// absolute byte offset to write at (the fd's `position` for `write`, the
+    /// caller-supplied offset for `write_at`); `advance_position` distinguishes
+    /// `write(2)` (moves the offset to the end of the data) from `pwrite(2)`
+    /// (leaves it untouched).
+    ///
+    /// Kept as one function so the choke-point contract documented on `write`
+    /// — and in particular the [`MAX_FS_FILE_SIZE`] cap — has a single
+    /// enforcement point rather than two copies that can drift
+    /// (angr-c7xno.71).
+    #[must_use = "false means the write was refused; bounce to Python"]
+    fn write_bytes_at(&mut self, fd: u32, start: u64, data: &[u8], advance_position: bool) -> bool {
         if data.is_empty() {
             return true;
         }
@@ -231,17 +251,22 @@ impl FileSystem {
             self.demote_symbolic_content(fd);
             return false;
         }
-        // Host-safety cap (angr-c7xno.67). `position` is guest-controlled and
-        // unbounded (`lseek(fd, huge, SEEK_SET)`), so the `resize` below would
+        // Host-safety cap (angr-c7xno.67). `start` is guest-controlled and
+        // unbounded (`lseek(fd, huge, SEEK_SET)` for `write`, the raw
+        // `pwrite64` offset for `write_at`), so the `resize` below would
         // otherwise be a multi-exabyte allocation → `panic = "abort"`. Checked
         // AFTER the demotion gate so an oversized write on a symbolic-content
         // fd still hands ownership to Python (refusing first would leave Rust
         // serving stale content while Python performs the write), but BEFORE
         // `Arc::make_mut` so a refusal costs no CoW. See `MAX_FS_FILE_SIZE`.
-        let position = self.fds.get(&fd).map_or(0, |d| d.position);
-        if position.saturating_add(data.len() as u64) > MAX_FS_FILE_SIZE {
+        if start.saturating_add(data.len() as u64) > MAX_FS_FILE_SIZE {
+            let op = if advance_position {
+                "write"
+            } else {
+                "write_at"
+            };
             log::warn!(
-                "FileSystem::write on fd={fd} refused: position {position} + {} bytes exceeds \
+                "FileSystem::{op} on fd={fd} refused: start offset {start} + {} bytes exceeds \
                  MAX_FS_FILE_SIZE ({MAX_FS_FILE_SIZE}); falling back to Python",
                 data.len()
             );
@@ -250,13 +275,15 @@ impl FileSystem {
         let desc = Arc::make_mut(&mut self.fds)
             .entry(fd)
             .or_insert_with(|| FileDescriptor::new(String::new(), FdFlags::WriteOnly));
-        let start = desc.position as usize;
+        let start = start as usize;
         let end = start + data.len();
         if end > desc.content.len() {
             desc.content.resize(end, 0);
         }
         desc.content[start..end].copy_from_slice(data);
-        desc.position = end as u64;
+        if advance_position {
+            desc.position = end as u64;
+        }
         true
     }
 
@@ -339,36 +366,7 @@ impl FileSystem {
     /// resized into (angr-c7xno.67).
     #[must_use = "false means the write was refused (closed fd, symbolic content demoted, or past MAX_FS_FILE_SIZE); bounce to Python"]
     pub fn write_at(&mut self, fd: u32, offset: u64, data: &[u8]) -> bool {
-        if data.is_empty() {
-            return true;
-        }
-        if self.write_closed(fd) {
-            return false;
-        }
-        if self.write_refused(fd) {
-            self.demote_symbolic_content(fd);
-            return false;
-        }
-        // Host-safety cap (angr-c7xno.67) — `offset` is the raw, unbounded
-        // `pwrite64` offset argument. Same ordering rationale as `write`.
-        if offset.saturating_add(data.len() as u64) > MAX_FS_FILE_SIZE {
-            log::warn!(
-                "FileSystem::write_at on fd={fd} refused: offset {offset} + {} bytes exceeds \
-                 MAX_FS_FILE_SIZE ({MAX_FS_FILE_SIZE}); falling back to Python",
-                data.len()
-            );
-            return false;
-        }
-        let desc = Arc::make_mut(&mut self.fds)
-            .entry(fd)
-            .or_insert_with(|| FileDescriptor::new(String::new(), FdFlags::WriteOnly));
-        let start = offset as usize;
-        let end = start + data.len();
-        if end > desc.content.len() {
-            desc.content.resize(end, 0);
-        }
-        desc.content[start..end].copy_from_slice(data);
-        true
+        self.write_bytes_at(fd, offset, data, false)
     }
 
     /// Replace the current working directory bytes. `chdir(2)` semantics —
