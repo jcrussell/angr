@@ -597,8 +597,11 @@ Push/pop frame discipline
 
 The Rust engine never uses ``Z3_solver_push`` / ``Z3_solver_pop`` to
 inherit a parent state's frames across a fork. ``SymContext::fork``
-(``native/angr/src/symbolic/context.rs:3739``) constructs a child with
-``solver: Mutex::new(None)`` and ``push_level: 0``. The Z3 solver is
+(``native/angr/src/symbolic/snapshot_fork_ops.rs``) constructs a child
+with ``solver: Mutex::new(None)`` and a fresh, empty scope state
+(``bare_z3_push_depth: 0``, empty ``bare_local_savepoints`` /
+``scope_savepoints`` / ``scope_path`` — see the "Push/pop discipline"
+section of :doc:`rust_z3_sharing`). The Z3 solver is
 re-built **lazily** on the child's first solver query
 (``z3_materialize_count``); the parent's accumulated assertions
 propagate via the ``z3_assertions_shared: Arc<Vec<z3::ast::Bool>>``

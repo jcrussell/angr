@@ -172,29 +172,42 @@ uses ``Z3_solver_translate`` to fork a solver.
 Push/pop discipline
 -------------------
 
-Two distinct push/pop systems coexist on a ``SymContext`` and must
-not be confused:
+Scope save/restore on a ``SymContext`` is a **single** system today:
+``push()`` / ``pop()`` / ``try_pop()``
+(``native/angr/src/symbolic/transaction_ops.rs``), layered over the
+``scope_savepoint_push`` / ``scope_savepoint_pop`` helpers
+(``native/angr/src/symbolic/lineage_ops.rs``). ``push()`` calls
+``scope_savepoint_push()`` then invalidates ``sat_cache`` /
+``model_cache``; ``pop()`` is symmetric.
 
-1. **Transactional pushes** (``push_level``, ``transaction_begin`` /
-   ``transaction_commit`` / ``transaction_rollback``). Used by the
-   Python-side ``RustStateProxy`` and the constraint-sync pipeline
-   to roll back tentative changes when sync fails. The level is
-   tracked separately from the Z3 stack.
-2. **Scope-path savepoints** (``scope_savepoint_push`` /
-   ``scope_savepoint_pop``). Used by ``push()``/``pop()`` and by the
-   ``SharedLineageSolver`` integration to save and restore the
-   per-state Z3 solver scope.
+.. note::
 
-``push()`` calls ``scope_savepoint_push()`` then invalidates
-``sat_cache`` / ``model_cache``; ``pop()`` is symmetric. The
-dispatch inside ``scope_savepoint_*`` keys on whether this
-``SymContext`` has a lineage (``self.lineage`` is ``Some``):
+   A second, higher-level ``transaction_begin`` /
+   ``transaction_commit`` / ``transaction_rollback`` lifecycle used to
+   coexist with this one, tracked by its own ``push_level`` counter.
+   It was **removed** in ``angr-ph300.44`` — it had zero callers and a
+   latent corruption bug (commit popped one of the three aux stacks and
+   never released the Z3 frame) — and the ``push_level`` field itself
+   was deleted in ``angr-c7xno.75``. No Rust or Python code calls or
+   reads any of them; the names survive only in historical comments on
+   ``SymContext`` and in ``transaction_ops.rs``'s module doc. A future
+   feature needing transactional scoping should build on bare
+   ``push()``/``pop()`` rather than resurrect a ``push_level``-style
+   counter — see the ``invariant-transaction-api-removed`` bd memory.
+
+Every ``push()`` records the current ``(z3_assertions, assumed,
+non_bv_assertions)`` lengths on ``bare_local_savepoints`` so the
+matching ``pop()`` truncates everything logged inside the scope, and
+clears the dedup side-table so a re-assert after the pop is not
+falsely suppressed (``angr-ph300.41`` / ``.42``). Beyond that
+bookkeeping, the dispatch inside ``scope_savepoint_*`` keys on whether
+this ``SymContext`` has a lineage (``self.lineage`` is ``Some``):
 
 * **None branch (production today).** Directly issues
   ``solver.push()`` / ``solver.pop(1)`` against the per-context Z3
   solver, and bumps ``bare_z3_push_depth`` in lockstep. This is the
   pre-lineage behavior that ``RustSolverContext::push()`` /
-  ``::pop()`` and ``transaction_begin`` rely on.
+  ``::pop()`` rely on.
 * **Some branch (opt-in only).** Records a depth marker on
   ``scope_savepoints`` (an in-memory ``Vec<usize>``) and defers the
   Z3-side push to the lazy ``SharedLineageSolver::switch_to`` the
@@ -204,13 +217,26 @@ dispatch inside ``scope_savepoint_*`` keys on whether this
 Symmetry rules:
 
 * Every ``push()`` MUST be balanced by exactly one ``pop()``. In the
-  None branch z3-rs panics on under-pop; in the Some branch the
-  ``scope_savepoints`` vector silently no-ops on an empty pop.
-* ``fork()`` resets ``push_level`` to 0 on the child but copies the
-  parent's ``bare_z3_push_depth`` value forward. Under today's fork
-  semantics a child observes ``bare_z3_push_depth == 0`` unless
-  future code threads bare pushes across fork; see the
-  ``invariant-bare-z3-push-depth`` bd memory.
+  None branch z3-rs panics on under-pop, so the Python-facing
+  ``RustSolverContext::pop()`` / ``::pop_to_level()`` route through
+  ``try_pop()``, which refuses the pop (returning ``false``, which
+  those methods turn into a Python exception) when
+  ``bare_z3_push_depth == 0`` (``angr-ph300.48``). In the Some branch
+  the ``scope_savepoints`` vector silently no-ops on an empty pop.
+* ``fork()`` gives the child a *fresh* scope state — empty
+  ``bare_local_savepoints`` / ``scope_savepoints`` / ``scope_path``
+  and ``bare_z3_push_depth == 0`` — regardless of the parent's depth
+  (``angr-c7xno.75``: inheriting a non-zero depth let ``try_pop()``
+  hand a ``pop(1)`` to a child solver that was never pushed, and
+  permanently disqualified the child from lineage minting). The
+  counter means "open bare push scopes on *this* context's solver";
+  see the ``invariant-bare-z3-push-depth`` bd memory.
+* Forking *while* a bare scope is open is safe but deliberately does
+  not freeze: ``fork()`` reads ``bare_local_savepoints`` before taking
+  ``local_constraints`` and skips draining the local logs into the
+  append-only ``*_shared`` Arcs, so a constraint added inside the
+  scope cannot outlive the parent's matching ``pop()``
+  (``angr-c7xno.75``).
 
 Interaction with ``SharedLineageSolver``
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -228,16 +254,22 @@ A bare ``RustSolverContext.push()`` followed by a Python ``fork()``
 call interacts subtly with lineage minting. ``SymContext::fork``
 refuses to mint a fresh lineage when ``bare_z3_push_depth > 0`` —
 exposing the unbalanced Z3-stack frame to a sibling that took over
-ownership of the shared solver would corrupt the parent's transaction.
+ownership of the shared solver would corrupt the parent's scope.
 The counter is consulted in three places:
 
-* The fork-time materialization gate
-  (``SymContext::fork``, line ~3400) reads the parent counter.
-* The ``test_fork_inside_push_isolation`` unit test exercises the
-  guard.
-* ``bare_z3_push_depth()`` is exposed publicly for telemetry; the
-  invariants on the public reader are tracked in the
+* The fork-time materialization gate in ``SymContext::fork``
+  (``native/angr/src/symbolic/snapshot_fork_ops.rs``) reads the parent
+  counter.
+* ``SymContext::try_pop`` (``transaction_ops.rs``) uses it as the
+  under-pop guard described above.
+* ``bare_z3_push_depth()`` is exposed publicly for telemetry (read by
+  ``exploration/state_api.rs::_debug_solver_info``); the invariants on
+  the public reader are tracked in the
   ``invariant-bare-z3-push-depth`` bd memory.
+
+``test_fork_skips_mint_when_bare_push_outstanding``
+(``symbolic/context_tests/smtlib2_snapshot.rs``) exercises the
+fork-time guard.
 
 See the "Shared-lineage Z3 solver — rejected" section of
 :doc:`rust_engine` for the full design verdict, BFS-thrash measurements,

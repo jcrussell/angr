@@ -18,7 +18,6 @@ docs/advanced-topics/rust_engine.rst	(``identifier/runner.py:72`` / ``:82``) bui
 docs/advanced-topics/rust_engine.rst	(``native/angr/src/memory/load.rs:384-394``) already falls back to a
 docs/advanced-topics/rust_engine.rst	(``native/angr/src/memory/load.rs:384-394``) returns a fresh
 docs/advanced-topics/rust_engine.rst	(``native/angr/src/symbolic/context.rs:360``) applies when the env var
-docs/advanced-topics/rust_engine.rst	(``native/angr/src/symbolic/context.rs:3739``) constructs a child with
 docs/advanced-topics/rust_engine.rst	(``rust_state_sync.py:235``) returns ``False``. Each manager then
 docs/advanced-topics/rust_engine.rst	(``symbolic/context.rs:1784``) requires each pointer to be a valid,
 docs/advanced-topics/rust_engine.rst	(``symbolic/registry.rs:310``) and holds ``Py<PyAny>`` values keyed by
@@ -85,7 +84,6 @@ docs/advanced-topics/rust_proxy_writes_design.rst	``NotImplementedError`` at ``r
 docs/advanced-topics/rust_proxy_writes_design.rst	``rust_callback_dispatch.py:1025-1035`` are battle-tested.
 docs/advanced-topics/rust_proxy_writes_design.rst	``rust_callback_dispatch.py:989-997``).
 docs/advanced-topics/rust_proxy_writes_design.rst	regions via ``_group_changed_bytes`` (``rust_state_sync.py:1402``).
-docs/advanced-topics/rust_z3_sharing.rst	(``SymContext::fork``, line ~3400) reads the parent counter.
 native/angr/src/callbacks/mod.rs	/// Matches Python's callstack.py:430/432 semantics.
 native/angr/src/callbacks/mod.rs	/// pushed). Matches Python's callstack.py:386/419 semantics.
 native/angr/src/interpreter/execution.rs	// mirror Python callstack.py:386/419 (BEFORE
