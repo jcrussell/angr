@@ -3365,3 +3365,130 @@ fn apply_changes_continues_past_a_failed_memory_write() {
         "PC update must survive the failed write"
     );
 }
+
+// angr-c7xno.70: direct coverage for the two process.rs allocators that had
+// none. `cgc_take_max_sinkhole` was only reached transitively through
+// `syscalls/cgc.rs`'s allocate handler, and `heap_alloc_aligned` only through
+// `procedures/malloc.rs`'s memalign/posix_memalign — neither exercised the
+// documented split / alignment-fallback edges at the state layer.
+
+/// `cgc_take_max_sinkhole` returns `None` (caller bumps `allocation_base`) when
+/// no sinkhole is large enough, and leaves the freelist untouched.
+#[test]
+fn test_cgc_take_max_sinkhole_returns_none_when_nothing_fits() {
+    let mut s = RustSimState::new("amd64").unwrap();
+    s.cgc_add_sinkhole(0x1000, 0x40);
+    s.cgc_add_sinkhole(0x2000, 0x80);
+
+    assert_eq!(s.cgc_take_max_sinkhole(0x100), None);
+    let mut remaining = s.cgc_sinkholes().to_vec();
+    remaining.sort_unstable();
+    assert_eq!(
+        remaining,
+        vec![(0x1000, 0x40), (0x2000, 0x80)],
+        "a failed take must not consume anything"
+    );
+}
+
+/// The scan is by *descending address among the sinkholes that fit*, not by
+/// insertion order and not by size: the highest-address fitting entry wins even
+/// when a lower-address entry is bigger and was inserted first.
+#[test]
+fn test_cgc_take_max_sinkhole_prefers_highest_fitting_address() {
+    let mut s = RustSimState::new("amd64").unwrap();
+    s.cgc_add_sinkhole(0x1000, 0x400); // bigger, but lower
+    s.cgc_add_sinkhole(0x3000, 0x100); // highest, still fits
+    s.cgc_add_sinkhole(0x9000, 0x10); // highest overall, too small
+
+    // Exact fit on the 0x3000 entry: it is consumed whole, nothing is pushed back.
+    assert_eq!(s.cgc_take_max_sinkhole(0x100), Some(0x3000));
+    let mut remaining = s.cgc_sinkholes().to_vec();
+    remaining.sort_unstable();
+    assert_eq!(
+        remaining,
+        vec![(0x1000, 0x400), (0x9000, 0x10)],
+        "an exact fit must be removed outright, and the too-small entry kept"
+    );
+}
+
+/// Split invariant: when the chosen sinkhole is larger than the request, the
+/// leftover at the LOW end stays on the freelist and the HIGH end is returned.
+/// Taking twice from the same region must therefore walk downward.
+#[test]
+fn test_cgc_take_max_sinkhole_splits_low_end_stays_high_end_returned() {
+    let mut s = RustSimState::new("amd64").unwrap();
+    s.cgc_add_sinkhole(0x4000, 0x1000);
+
+    // 0x4000 + (0x1000 - 0x200) == 0x4E00, leftover [0x4000, 0x4E00).
+    assert_eq!(s.cgc_take_max_sinkhole(0x200), Some(0x4E00));
+    assert_eq!(s.cgc_sinkholes(), &[(0x4000, 0xE00)]);
+
+    // Second take carves the next-highest slice out of the leftover.
+    assert_eq!(s.cgc_take_max_sinkhole(0x200), Some(0x4C00));
+    assert_eq!(s.cgc_sinkholes(), &[(0x4000, 0xC00)]);
+}
+
+/// `heap_alloc_aligned` with `alignment` 0 or 1 is exactly `heap_alloc`: the
+/// address is the unmodified brk even when that brk is oddly aligned.
+#[test]
+fn test_heap_alloc_aligned_falls_back_to_heap_alloc_for_alignment_0_and_1() {
+    let mut s = RustSimState::new("amd64").unwrap();
+    s.set_heap_brk(0xC000_0003);
+
+    let a0 = s.heap_alloc_aligned(8, 0);
+    assert_eq!(a0, 0xC000_0003, "alignment 0 must not move the address");
+    // Size bump is still rounded up to 16.
+    assert_eq!(s.heap_brk(), 0xC000_0013);
+
+    let a1 = s.heap_alloc_aligned(8, 1);
+    assert_eq!(a1, 0xC000_0013, "alignment 1 must not move the address");
+    assert_eq!(s.heap_brk(), 0xC000_0023);
+}
+
+/// A misaligned brk is rounded UP to the requested power-of-2 alignment, and
+/// the bump from there is the 16-rounded size, so the next allocation stays
+/// 16-aligned relative to the new base.
+#[test]
+fn test_heap_alloc_aligned_rounds_brk_up_and_bumps_by_rounded_size() {
+    let mut s = RustSimState::new("amd64").unwrap();
+    s.set_heap_brk(0xC000_0008);
+
+    let addr = s.heap_alloc_aligned(24, 0x100);
+    assert_eq!(addr, 0xC000_0100, "brk must round up to the next 0x100");
+    assert_eq!(
+        s.heap_brk(),
+        0xC000_0120,
+        "size 24 rounds up to 32 for the bump"
+    );
+
+    // Already aligned: the address must not skip a whole alignment unit.
+    let addr2 = s.heap_alloc_aligned(1, 0x20);
+    assert_eq!(addr2, 0xC000_0120, "an already-aligned brk stays put");
+    assert_eq!(s.heap_brk(), 0xC000_0130);
+}
+
+/// Alignment does not change the *metadata* bookkeeping: `record_alloc` stores
+/// the requested size (not the 16-rounded bump) against the aligned address,
+/// and the allocation is freeable at exactly that address.
+#[test]
+fn test_heap_alloc_aligned_records_requested_size_at_aligned_address() {
+    let mut s = RustSimState::new("amd64").unwrap();
+    s.set_heap_brk(0xC000_0001);
+
+    let addr = s.heap_alloc_aligned(24, 0x40);
+    assert_eq!(addr, 0xC000_0040);
+    assert!(s.heap_metadata().is_allocated(addr));
+    assert_eq!(
+        s.heap_metadata().alloc_size(addr),
+        Some(24),
+        "the requested size is recorded, not the 16-rounded bump"
+    );
+    assert_eq!(s.heap_metadata().alloc_count(), 1);
+    assert!(
+        !s.heap_metadata().is_allocated(0xC000_0001),
+        "the pre-alignment brk is not a live allocation"
+    );
+
+    assert_eq!(s.heap_free(addr), Some(24));
+    assert_eq!(s.heap_metadata().free_count(), 1);
+}
