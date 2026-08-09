@@ -24,6 +24,20 @@
 //! through `run_loop_worker` and re-implement the `&mut self` tails against
 //! their own snapshots. Anything both arms must agree on belongs in
 //! `core_outcome.rs` or `step_core.rs`, not here.
+//!
+//! **Test-file naming (angr-c7xno.34):** there is deliberately no
+//! `stepping_tests.rs`. Every entry point here (`step_state_inner`,
+//! `dispatch_bounce`, `handle_unmodeled_call`) needs a lifted `IRSB` and a
+//! live Python callback to reach, so a Rust unit test would be a mock of the
+//! thing under test; that surface is covered end-to-end by the Python suite in
+//! `tests/engines/rust/`. The two `#[path]` submodules cover the slices that
+//! *are* reachable without a lift and are named for what they test rather than
+//! for this file: `sizes_tests.rs` (the `StepError` / `PendingCallback` size
+//! probe backing the `result_large_err` suppression) and `subcall_tests.rs`
+//! (`setup_native_subcall` / `handle_native_resume_core`, which stand in for
+//! the guest `ret` instead of lifting one). The lift-free routing prefix of
+//! the *caller* — `step_one`'s find/avoid and SimProcedure-fallback arms — is
+//! covered in `run_loop_single_tests.rs`.
 
 use super::core_outcome::{
     BounceKind, CoreCounters, CoreCtx, CoreOutcome, CoreReturn, NativeSubcall, ParallelProfiling,

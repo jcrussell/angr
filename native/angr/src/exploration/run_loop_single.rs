@@ -714,3 +714,5 @@ impl RustExplorationManager {
         }
     }
 }
+
+test_submod!(z3 "run_loop_single_tests.rs" => tests);
