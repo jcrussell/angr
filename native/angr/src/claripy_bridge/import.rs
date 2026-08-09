@@ -10,7 +10,9 @@ use std::sync::Arc;
 use pyo3::prelude::*;
 use pyo3::types::PyTuple;
 
-use crate::symbolic::{RustBV, RustBVHandle, RustSymbolTable, SymContext, SymbolKind};
+use crate::symbolic::{
+    RustBV, RustBVHandle, RustSymbolTable, SymContext, SymbolKind, check_extract_bounds,
+};
 
 use super::cache::{
     evict_bv_by_ast_hash, get_bv_by_ast_hash, lookup_symbol_by_hash,
@@ -316,19 +318,12 @@ fn claripy_to_rustbv_depth(
             let high: u32 = args_list[0].extract()?;
             let low: u32 = args_list[1].extract()?;
             let val = claripy_to_rustbv_depth(py, &args_list[2], ctx, depth + 1)?;
-            let val_width = val.width();
-
-            // Validate Extract bounds to prevent runtime errors.
-            if high >= val_width {
-                return Err(BridgeError::InvalidArgs(format!(
-                    "Extract high={high} >= width={val_width}"
-                )));
-            }
-            if low > high {
-                return Err(BridgeError::InvalidArgs(format!(
-                    "Extract low={low} > high={high}"
-                )));
-            }
+            // Validate Extract bounds to prevent runtime errors. Shared with
+            // the handle API's `op_extract`, which guards the same
+            // `Z3_mk_extract` precondition at the other trust boundary
+            // (angr-c7xno.92).
+            check_extract_bounds("Extract", high, low, val.width())
+                .map_err(BridgeError::InvalidArgs)?;
 
             Ok(val.extract(high, low, ctx))
         }

@@ -10,11 +10,14 @@
 //! handle API is pure Rust, so these run in a plain `cargo test`.
 
 use super::*;
+// `MAX_BV_WIDTH` is a `#[cfg(doc)]`-only import in the parent (it appears
+// there in doc links, not in code), so the width-cap tests name it directly.
+use crate::symbolic::MAX_BV_WIDTH;
 
 /// Intern a concrete value and return just its handle id — the form every
 /// `op_*` wrapper takes.
 fn c(ctx: &RustSolverContext, value: u128, width: u32) -> u64 {
-    ctx.create_concrete(value, width).id()
+    ctx.create_concrete(value, width).unwrap().id()
 }
 
 /// A handle id that is provably absent from a fresh table.
@@ -39,7 +42,7 @@ fn err_msg(result: PyResult<RustBVHandle>) -> String {
 #[test]
 fn test_create_concrete_roundtrips_through_eval_handle() {
     let ctx = RustSolverContext::new();
-    let h = ctx.create_concrete(0xdead_beef, 32);
+    let h = ctx.create_concrete(0xdead_beef, 32).unwrap();
     assert_eq!(h.width(), 32);
     assert_eq!(h.concrete(), Some(0xdead_beef));
     assert_eq!(ctx.eval_handle(h.id()), Some(0xdead_beef));
@@ -49,11 +52,11 @@ fn test_create_concrete_roundtrips_through_eval_handle() {
 fn test_create_symbolic_is_not_concrete_and_counts() {
     let ctx = RustSolverContext::new();
     assert_eq!(ctx.handle_count(), 0);
-    let x = ctx.create_symbolic("hapi_x", 64);
+    let x = ctx.create_symbolic("hapi_x", 64).unwrap();
     assert_eq!(x.width(), 64);
     assert!(!x.is_concrete());
     assert_eq!(ctx.handle_count(), 1);
-    let _ = ctx.create_concrete(1, 64);
+    let _ = ctx.create_concrete(1, 64).unwrap();
     assert_eq!(ctx.handle_count(), 2);
 }
 
@@ -291,6 +294,73 @@ fn test_extend_rejects_narrowing_width() {
     assert!(ctx.op_sign_extend(word, 16).is_ok());
 }
 
+/// angr-c7xno.92: `op_extract` must reject a bit range outside the source
+/// instead of building the invalid Z3 `Extract` the release profile's
+/// compiled-out `debug_assert!`s no longer catch. `low > high` is the nastier
+/// half — the result width `high - low + 1` wraps to near-`u32::MAX`.
+#[test]
+fn test_op_extract_rejects_out_of_range_bounds() {
+    let ctx = RustSolverContext::new();
+    let word = c(&ctx, 0xabcd, 16);
+
+    let msg = err_msg(ctx.op_extract(word, 16, 0));
+    assert!(msg.contains("high=16"), "{msg}");
+    assert!(msg.contains("width=16"), "{msg}");
+
+    let msg = err_msg(ctx.op_extract(word, 2, 5));
+    assert!(msg.contains("low=5"), "{msg}");
+    assert!(msg.contains("high=2"), "{msg}");
+
+    // The widest valid range is still accepted.
+    assert!(ctx.op_extract(word, 15, 0).is_ok());
+}
+
+/// angr-c7xno.93: the mirror of `test_extend_rejects_narrowing_width` —
+/// `op_truncate` asked to *widen* would extract past the end of the source,
+/// and `to_width == 0` wraps that extract's high bit to `u32::MAX`.
+#[test]
+fn test_truncate_rejects_widening_and_zero_width() {
+    let ctx = RustSolverContext::new();
+    let word = c(&ctx, 0xabcd, 16);
+
+    for to_width in [17u32, 32, u32::MAX, 0] {
+        let msg = err_msg(ctx.op_truncate(word, to_width));
+        assert!(msg.contains("op_truncate"), "{to_width}: {msg}");
+        assert!(msg.contains("1..=16"), "{to_width}: {msg}");
+    }
+
+    // Narrowing and the same-width no-op both stay legal.
+    assert!(ctx.op_truncate(word, 8).is_ok());
+    assert!(ctx.op_truncate(word, 16).is_ok());
+}
+
+/// angr-c7xno.94: a Python-chosen width above `MAX_BV_WIDTH` must be refused
+/// at the boundary rather than deferred to a multi-gigabit Z3 sort allocation.
+#[test]
+fn test_creation_and_extends_reject_absurd_widths() {
+    let ctx = RustSolverContext::new();
+    let byte = c(&ctx, 0xff, 8);
+    let huge = MAX_BV_WIDTH + 1;
+
+    for (name, msg) in [
+        (
+            "create_symbolic",
+            err_msg(ctx.create_symbolic("hapi_huge", huge)),
+        ),
+        ("create_concrete", err_msg(ctx.create_concrete(1, huge))),
+        ("op_zero_extend", err_msg(ctx.op_zero_extend(byte, huge))),
+        ("op_sign_extend", err_msg(ctx.op_sign_extend(byte, huge))),
+    ] {
+        assert!(msg.contains(name), "{name}: {msg}");
+        assert!(msg.contains(&huge.to_string()), "{name}: {msg}");
+    }
+
+    // The cap itself is still constructible, and so is the zero-width
+    // degenerate concrete the Python suite round-trips.
+    assert!(ctx.create_symbolic("hapi_at_cap", MAX_BV_WIDTH).is_ok());
+    assert!(ctx.create_concrete(0, 0).is_ok());
+}
+
 // =============================================================================
 // Constraint + query methods (need a real solver)
 // =============================================================================
@@ -301,7 +371,7 @@ fn test_extend_rejects_narrowing_width() {
 #[test]
 fn test_add_constraint_handle_1bit_pins_symbolic_value() {
     let ctx = RustSolverContext::new();
-    let x = ctx.create_symbolic("hapi_pin_x", 32).id();
+    let x = ctx.create_symbolic("hapi_pin_x", 32).unwrap().id();
     let five = c(&ctx, 5, 32);
     let eq = ctx.op_eq(x, five).unwrap();
     assert_eq!(eq.width(), 1);
@@ -323,7 +393,7 @@ fn test_add_constraint_handle_1bit_pins_symbolic_value() {
 #[test]
 fn test_add_constraint_handle_wide_asserts_nonzero() {
     let ctx = RustSolverContext::new();
-    let x = ctx.create_symbolic("hapi_nz_x", 8).id();
+    let x = ctx.create_symbolic("hapi_nz_x", 8).unwrap().id();
     ctx.add_constraint_handle(x).unwrap();
     assert!(ctx.satisfiable());
     assert!(!ctx.solution_handle(x, 0), "0 must be excluded by != 0");
@@ -338,7 +408,7 @@ fn test_add_constraint_handle_wide_asserts_nonzero() {
 #[test]
 fn test_min_max_handle_respect_signedness() {
     let ctx = RustSolverContext::new();
-    let x = ctx.create_symbolic("hapi_minmax_x", 8).id();
+    let x = ctx.create_symbolic("hapi_minmax_x", 8).unwrap().id();
     // No constraints: the full 8-bit range is open.
     assert_eq!(ctx.min_handle(x, false), Some(0));
     assert_eq!(ctx.max_handle(x, false), Some(0xff));
@@ -353,7 +423,7 @@ fn test_min_max_handle_respect_signedness() {
 #[test]
 fn test_eval_upto_handle_enumerates_and_caps() {
     let ctx = RustSolverContext::new();
-    let x = ctx.create_symbolic("hapi_upto_x", 8).id();
+    let x = ctx.create_symbolic("hapi_upto_x", 8).unwrap().id();
     let three = c(&ctx, 3, 8);
     ctx.add_constraint_handle(ctx.op_ult(x, three).unwrap().id())
         .unwrap();
@@ -370,7 +440,7 @@ fn test_eval_upto_handle_enumerates_and_caps() {
 #[test]
 fn test_fork_keeps_handles_and_isolates_constraints() {
     let parent = RustSolverContext::new();
-    let x = parent.create_symbolic("hapi_fork_x", 8).id();
+    let x = parent.create_symbolic("hapi_fork_x", 8).unwrap().id();
     let seven = c(&parent, 7, 8);
 
     let child = parent.fork();

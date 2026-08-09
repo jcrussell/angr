@@ -55,6 +55,7 @@
 //! | `table.rs` | `RustSymbolTable` — the handle-id to `RustBV` store behind those handles, plus `BinaryOpError`. |
 //! | `registry.rs` | `SymbolicIdentityRegistry` — maps symbols back to their originating Python objects so a claripy -> RustBV -> claripy round trip returns the same AST. |
 //! | `z3_ast_ptr.rs` | `Z3AstPtr` — typed, refcounted wrapper over a raw `Z3_ast` at the claripy FFI boundary. **(z3)** |
+//! | `width_guards.rs` | `MAX_BV_WIDTH` / `check_bv_width` / `check_extract_bounds` — the bound checks both external trust boundaries (`claripy_bridge::import`, `solver::handle_api`) run before an externally-chosen width reaches a `RustBV` constructor. |
 //!
 //! ## Instrumentation and analysis
 //!
@@ -128,6 +129,7 @@ mod value;
 mod value_ops;
 #[cfg(feature = "vex-engine-z3")]
 mod value_z3;
+mod width_guards;
 #[cfg(feature = "vex-engine-z3")]
 mod z3_ast_ptr;
 
@@ -152,5 +154,6 @@ pub use stats::{
 };
 pub use table::{BinaryOpError, RustSymbolTable};
 pub use value::{BVOp, FloatOpKind, FloatPrec, RustBV};
+pub use width_guards::{MAX_BV_WIDTH, check_bv_width, check_extract_bounds};
 #[cfg(feature = "vex-engine-z3")]
 pub use z3_ast_ptr::Z3AstPtr;

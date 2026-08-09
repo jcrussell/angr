@@ -16,7 +16,11 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 use crate::claripy_bridge::claripy_to_rustbv;
-use crate::symbolic::{BinaryOpError, RustBVHandle, RustSymbolTable, SymContext};
+#[cfg(doc)]
+use crate::symbolic::MAX_BV_WIDTH;
+use crate::symbolic::{
+    BinaryOpError, RustBVHandle, RustSymbolTable, SymContext, check_bv_width, check_extract_bounds,
+};
 // Only `add_constraint_handle`'s Z3-gated block builds a `RustBV` directly
 // (angr-sqfj8.139).
 #[cfg(feature = "vex-engine-z3")]
@@ -39,16 +43,20 @@ impl RustSolverContext {
     /// Create a new symbolic bitvector and return a handle.
     ///
     /// This bypasses claripy.BVS() for native Rust symbolic value creation.
-    pub fn create_symbolic(&self, name: &str, width: u32) -> RustBVHandle {
+    /// Widths above [`MAX_BV_WIDTH`] are rejected (angr-c7xno.94).
+    pub fn create_symbolic(&self, name: &str, width: u32) -> PyResult<RustBVHandle> {
+        Self::check_width("create_symbolic", width)?;
         let ctx = self.i().ctx();
-        self.i().symbol_table.create_symbolic(&ctx, name, width)
+        Ok(self.i().symbol_table.create_symbolic(&ctx, name, width))
     }
 
     /// Create a new concrete bitvector and return a handle.
     ///
     /// This bypasses claripy.BVV() for native Rust concrete value creation.
-    pub fn create_concrete(&self, value: u128, width: u32) -> RustBVHandle {
-        self.i().symbol_table.create_concrete(value, width)
+    /// Widths above [`MAX_BV_WIDTH`] are rejected (angr-c7xno.94).
+    pub fn create_concrete(&self, value: u128, width: u32) -> PyResult<RustBVHandle> {
+        Self::check_width("create_concrete", width)?;
+        Ok(self.i().symbol_table.create_concrete(value, width))
     }
 
     /// Evaluate a handle to get a concrete value.
@@ -301,6 +309,7 @@ impl RustSolverContext {
 
     /// Zero-extend to a wider width.
     pub fn op_zero_extend(&self, a_id: u64, to_width: u32) -> PyResult<RustBVHandle> {
+        Self::check_width("op_zero_extend", to_width)?;
         self.reject_extend_narrowing("op_zero_extend", a_id, to_width)?;
         self.opt_op(&[a_id], |table, ctx| {
             table.op_zero_extend(a_id, to_width, ctx)
@@ -309,6 +318,7 @@ impl RustSolverContext {
 
     /// Sign-extend to a wider width.
     pub fn op_sign_extend(&self, a_id: u64, to_width: u32) -> PyResult<RustBVHandle> {
+        Self::check_width("op_sign_extend", to_width)?;
         self.reject_extend_narrowing("op_sign_extend", a_id, to_width)?;
         self.opt_op(&[a_id], |table, ctx| {
             table.op_sign_extend(a_id, to_width, ctx)
@@ -317,11 +327,15 @@ impl RustSolverContext {
 
     /// Truncate to a narrower width.
     pub fn op_truncate(&self, a_id: u64, to_width: u32) -> PyResult<RustBVHandle> {
+        self.reject_truncate_widening(a_id, to_width)?;
         self.opt_op(&[a_id], |table, ctx| table.op_truncate(a_id, to_width, ctx))
     }
 
     /// Extract bits \[high:low\] (inclusive).
     pub fn op_extract(&self, a_id: u64, high: u32, low: u32) -> PyResult<RustBVHandle> {
+        if let Some(width) = self.source_width(a_id) {
+            check_extract_bounds("op_extract", high, low, width).map_err(PyValueError::new_err)?;
+        }
         self.opt_op(&[a_id], |table, ctx| table.op_extract(a_id, high, low, ctx))
     }
 
@@ -391,6 +405,47 @@ impl RustSolverContext {
         let inner = self.i();
         let ctx = inner.ctx();
         op(&inner.symbol_table, &ctx).ok_or_else(|| invalid_handle_id(ids))
+    }
+
+    /// Width of the value behind `a_id`, or `None` if the handle is unknown.
+    ///
+    /// A `None` is deliberately *not* an error here: the op's own
+    /// [`opt_op`](Self::opt_op) dispatch reports the missing handle through
+    /// [`invalid_handle_id`], and blaming the width instead would hide that.
+    pub(super) fn source_width(&self, a_id: u64) -> Option<u32> {
+        self.i().symbol_table.with_value(a_id, |bv| bv.width())
+    }
+
+    /// Reject a width above [`MAX_BV_WIDTH`] at the Python boundary.
+    ///
+    /// Nothing below this point validates a width: `RustSymbolTable`'s
+    /// constructors hand it straight to `RustBV::symbolic` / `RustBV::concrete`,
+    /// and an absurd width only surfaces at first Z3 materialization as an
+    /// attempt to allocate a multi-gigabit bitvector sort — a hang/OOM rather
+    /// than a catchable error (angr-c7xno.94).
+    pub(super) fn check_width(op: &str, width: u32) -> PyResult<()> {
+        check_bv_width(op, width).map_err(PyValueError::new_err)
+    }
+
+    /// Reject a widening width passed to `op_truncate` at the Python boundary.
+    ///
+    /// The mirror of [`reject_extend_narrowing`](Self::reject_extend_narrowing):
+    /// `to_width > source_width` sends `value_ops::truncate_into` into
+    /// `Extract(to_width - 1, 0)` — an extract past the end of the source — and
+    /// `to_width == 0` wraps that `to_width - 1` to `u32::MAX`. Either way the
+    /// bogus range reaches `Z3_mk_extract` as an invalid-argument call, which
+    /// aborts the process under `panic="abort"` (angr-c7xno.93). A missing
+    /// handle is left to the op's own `invalid_handle_id` path.
+    pub(super) fn reject_truncate_widening(&self, a_id: u64, to_width: u32) -> PyResult<()> {
+        if let Some(width) = self.source_width(a_id)
+            && (to_width > width || (to_width == 0 && width > 0))
+        {
+            return Err(PyValueError::new_err(format!(
+                "op_truncate: to_width {to_width} is not in 1..={width} (source width); \
+                 use op_zero_extend/op_sign_extend to widen"
+            )));
+        }
+        Ok(())
     }
 
     /// Reject a narrowing width passed to an extend op at the Python boundary.
