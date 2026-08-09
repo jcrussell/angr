@@ -1,31 +1,39 @@
 //! S5a — memory-merge cost-shape spike (angr-op0dn.11.1.1).
 //!
-//! Contingent moonshot spike (parent angr-op0dn.11.1, human-GO 2026-07-15,
-//! decoupled from S6). Prototype/measurement code — may be throwaway; it exists
-//! to answer the M3 merge GO/NO-GO's *cost shape* question, not to ship an impl
-//! (that is angr-op0dn.11.2.x).
+//! **Status: the spike's recommendation SHIPPED.** This file is kept as the
+//! measurement record behind that decision; the shipped optimization and its
+//! behavioural tests live in the sibling `merge_divergence.rs`
+//! (angr-op0dn.11.2.1). Read that file for what production does *today* — the
+//! "before" shape described below no longer exists in `memory/mod.rs::merge`.
 //!
-//! Question: on a diamond CFG, does `SymbolicMemory::merge` cost scale with the
-//! *divergence* between the two arms, or with their *total* size?
+//! Question it answered: on a diamond CFG, does `SymbolicMemory::merge` cost
+//! scale with the *divergence* between the two arms, or with their *total* size?
 //!
-//! Answer, established here:
-//!   * The production merge (`memory/mod.rs::merge`) walks EVERY shared page:
-//!     it `load_concrete(0, PAGE_SIZE)`s both sides (materializing 4 KB each)
-//!     and byte-compares all `PAGE_SIZE` bytes, even for pages neither arm
-//!     touched since the fork. Cost ∝ total shared pages.
-//!   * The primitives for a divergence-proportional merge ALREADY SHIP: pages
+//! Answer, established here (state of the world as of 2026-07-15):
+//!   * The merge *then* walked EVERY shared page: it
+//!     `load_concrete(0, PAGE_SIZE)`d both sides (materializing 4 KB each) and
+//!     byte-compared all `PAGE_SIZE` bytes, even for pages neither arm touched
+//!     since the fork. Cost ∝ total shared pages.
+//!   * The primitives for a divergence-proportional merge ALREADY SHIPPED: pages
 //!     live in an `im::OrdMap<u64, MemoryPage>` (O(1) structural-sharing clone
 //!     on `fork`) and each page's `data: Arc<Vec<u8>>` is CoW via
 //!     `Arc::make_mut` in `store_concrete`. So an untouched page's `data` Arc
 //!     stays ptr-equal across both arms all the way to the merge point; only a
-//!     page a arm actually wrote breaks sharing.
+//!     page an arm actually wrote breaks sharing.
 //!   * A prototype skip keyed on `MemoryPage::shares_data_with` (Arc::ptr_eq +
 //!     bitmap match, added for this spike) makes the merge walk exactly the
 //!     divergent pages and emit exactly the divergent-byte ITE cells.
 //!
-//! The tests below MEASURE both cost shapes on a synthetic diamond and record
-//! the OrdMap/Arc-sharing-survives-to-reconvergence finding (which retires the
-//! risk premise behind angr-op0dn.11.2.1).
+//! What shipped from that third bullet is `MemoryPage::is_shared_identical` —
+//! a *stricter* predicate than the prototyped `shares_data_with`, because the
+//! latter would wrongly skip two arms whose symbolic bitmaps match but whose
+//! `symbolic_objects` differ (see `merge_divergence.rs`'s soundness test).
+//!
+//! The tests below MEASURE both cost shapes on a synthetic diamond — both walks
+//! are simulated locally here, so they keep passing independently of what
+//! production merge does — and record the
+//! OrdMap/Arc-sharing-survives-to-reconvergence finding (which retired the risk
+//! premise behind angr-op0dn.11.2.1).
 
 use super::super::*;
 
@@ -51,9 +59,11 @@ fn build_base() -> SymbolicMemory {
     mem
 }
 
-/// Cost of the *production* merge shape: every page present in both arms is
-/// walked (load_concrete ×2 + full PAGE_SIZE byte compare).
-fn current_merge_cost(a: &SymbolicMemory, b: &SymbolicMemory) -> (u64, u64) {
+/// Cost of the *pre-CoW-skip* merge shape (what production did before
+/// angr-op0dn.11.2.1): every page present in both arms is walked
+/// (load_concrete ×2 + full PAGE_SIZE byte compare). Simulated here, not read
+/// off `SymbolicMemory::merge`.
+fn pre_cow_merge_cost(a: &SymbolicMemory, b: &SymbolicMemory) -> (u64, u64) {
     let mut pages_walked = 0u64;
     for (&page_num, ap) in a.pages.iter() {
         if let Some(bp) = b.pages.get(&page_num) {
@@ -128,41 +138,45 @@ fn test_ordmap_sharing_survives_to_merge_point() {
     );
 }
 
-/// FINDING 2 — cost shape. Prints a before/after table and asserts the prototype
+/// FINDING 2 — cost shape. Prints a before/after table and asserts the CoW-skip
 /// merge is divergence-proportional (pages_walked == divergent-page count) while
-/// the production merge is total-size-proportional (walks all shared pages).
+/// the pre-skip merge was total-size-proportional (walks all shared pages).
+/// Both walks are simulated here; the skip itself now ships as
+/// `is_shared_identical` and is covered by `merge_divergence.rs`.
 #[test]
 fn test_merge_cost_shape_divergence_proportional() {
     let (a, b) = diamond_arms();
 
-    let (cur_pages, cur_bytes) = current_merge_cost(&a, &b);
+    let (cur_pages, cur_bytes) = pre_cow_merge_cost(&a, &b);
     let (cow_pages, cow_bytes) = cow_merge_cost(&a, &b);
 
     eprintln!(
         "\n=== S5a memory-merge cost shape (diamond: {DIAMOND_PAGES} pages, 1 divergent) ==="
     );
     eprintln!("                    pages_walked   bytes_walked");
-    eprintln!("  current (prod)  : {cur_pages:>12}   {cur_bytes:>12}");
-    eprintln!("  cow-skip (proto): {cow_pages:>12}   {cow_bytes:>12}");
+    eprintln!("  pre-skip        : {cur_pages:>12}   {cur_bytes:>12}");
+    eprintln!("  cow-skip        : {cow_pages:>12}   {cow_bytes:>12}");
     eprintln!(
         "  reduction       : {:>11.1}x   {:>11.1}x\n",
         cur_pages as f64 / cow_pages.max(1) as f64,
         cur_bytes as f64 / cow_bytes.max(1) as f64
     );
 
-    // Production shape: walks every shared page.
+    // Pre-skip shape: walks every shared page.
     assert_eq!(
         cur_pages, DIAMOND_PAGES,
-        "production merge walks all shared pages"
+        "pre-skip merge walks all shared pages"
     );
-    // Prototype shape: walks only the divergent page → divergence-proportional.
+    // CoW-skip shape: walks only the divergent page → divergence-proportional.
     assert_eq!(cow_pages, 1, "cow-skip merge walks only the divergent page");
     assert!(cow_bytes < cur_bytes, "cow-skip walks strictly fewer bytes");
 }
 
-/// FINDING 3 — the real `merge` emits ITE cells for the divergent bytes only,
-/// and the prototype skip would leave exactly those cells (nothing on the shared
-/// pages changes). Confirms ITE-cell count == divergent-byte count.
+/// FINDING 3 — the real `merge` emits ITE cells for the divergent bytes only, so
+/// a page-skip leaves exactly those cells (nothing on the shared pages changes).
+/// Confirms ITE-cell count == divergent-byte count. This is the semantics-
+/// preservation argument the shipped `is_shared_identical` skip rests on;
+/// `merge_divergence.rs` asserts it against the production skip directly.
 #[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_merge_ite_cells_equal_divergent_bytes() {

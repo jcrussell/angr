@@ -10,6 +10,20 @@
 //! - `multi`: `MultiPayload` data structure and Phase 1–4.2 multi-cell
 //!   collapse/coalesce behavior.
 //! - `ite_dedup`: ITE deduplication on loads + address-disjunction hoisting.
+//! - `merge_cost_shape`: S5a measurement record for the merge cost-shape
+//!   question (spike; the optimization it recommended has since shipped).
+//! - `merge_divergence`: the shipped divergence-proportional merge — the
+//!   `is_shared_identical` CoW page skip, its walk count, and its soundness
+//!   against the symbolic-overlay trap.
+//! - `merge_multi`: merging a byte that is Multi on both arms into one lazy
+//!   Multi cell, plus merge-condition guarding of deferred `pending_writes`.
+//! - `merge_prefetch`: soundness-critical paths no integration test reaches —
+//!   per-byte merge ITE selection, `load_concrete_or_unconstrained`'s Err
+//!   fallback, and `get_region_prefetch_list`.
+//! - `merge_sidecars`: every `SymbolicMemory` sidecar field is merged per its
+//!   declared `#[merge_policy]` (behavioural half of the `MergePolicy` derive).
+//! - `page_boundary_property_tests`: property-based concrete round-trips for
+//!   stores/loads straddling a page boundary.
 
 mod basic;
 mod ite_dedup;
