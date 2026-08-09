@@ -5673,7 +5673,8 @@ Static-lifetime registries
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 ``SymbolicIdentityRegistry`` lives in a ``OnceLock`` static
-(``symbolic/registry.rs:310``) and holds ``Py<PyAny>`` values keyed by
+(``GLOBAL_REGISTRY``, in ``symbolic/registry.rs``) and holds
+``Py<PyAny>`` values keyed by
 Rust symbol IDs. Rust statics do not run ``Drop`` at process exit, so
 the ``Py<PyAny>`` handles inside leak rather than running a non-GIL
 decref. This is intentional: the registry is process-global by design

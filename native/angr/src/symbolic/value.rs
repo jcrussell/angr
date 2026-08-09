@@ -324,9 +324,16 @@ impl BVOp {
 pub enum RustBV {
     /// A known concrete value.
     Concrete {
-        /// The value, masked to `width` bits.
+        /// The value, masked to `width` bits (or to its low 128 bits when
+        /// `width > 128`).
         value: u128,
-        /// Width in bits (1, 8, 16, 32, 64, or 128).
+        /// Width in bits. The common widths are 1/8/16/32/64/128, but this is
+        /// not an exhaustive list: wider values (AVX/YMM-scale, up to 256) are
+        /// deliberately supported and exercised by `WIDE_WIDTHS` in
+        /// `value_ops_property_tests.rs`. Because the payload is a `u128`,
+        /// such a value only stores its low 128 bits — see the `width.min(128)`
+        /// branches in `value_ops.rs`'s `shl_into` / `lshr_into` / `ashr_into`
+        /// and `solving_ops.rs`'s `max_val_for_width`.
         width: u32,
     },
     /// A symbolic value (backed by Z3 when available, otherwise just a name).

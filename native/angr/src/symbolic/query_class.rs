@@ -17,7 +17,6 @@
 //! element of a set whose length was checked on the line above; the
 //! `#[cfg(test)]` `tests` child opts out of the deny wholesale, so count
 //! non-test sites only when checking that claim.
-#![deny(clippy::unwrap_used, clippy::expect_used)]
 //!
 //! Two protocol rules from the bead, both load-bearing for the >=30% gate:
 //!
@@ -40,6 +39,7 @@
 //! default and enabled per-process with `ANGR_RUST_QUERY_CLASS=1`; when off,
 //! every check lands in [`QueryClass::Unclassified`] and the query entry
 //! points do no IR walking at all.
+#![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use super::{BVOp, RustBV};
 use std::cell::Cell;

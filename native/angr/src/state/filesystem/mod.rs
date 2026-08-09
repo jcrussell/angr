@@ -1,6 +1,6 @@
 //! FileSystem subsystem (POSIX fd model) for `RustSimState`.
 //!
-//! Split across four submodules (angr-nbim4.4), all operating on the one
+//! Split across five submodules (angr-nbim4.4), all operating on the one
 //! [`FileSystem`] struct defined here:
 //!
 //! - [`fd`] — [`FdFlags`] / [`FileDescriptor`] and the symbolic-serve cap.

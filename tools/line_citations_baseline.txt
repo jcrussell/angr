@@ -20,7 +20,6 @@ docs/advanced-topics/rust_engine.rst	(``native/angr/src/memory/load.rs:384-394``
 docs/advanced-topics/rust_engine.rst	(``native/angr/src/symbolic/context.rs:360``) applies when the env var
 docs/advanced-topics/rust_engine.rst	(``rust_state_sync.py:235``) returns ``False``. Each manager then
 docs/advanced-topics/rust_engine.rst	(``symbolic/context.rs:1784``) requires each pointer to be a valid,
-docs/advanced-topics/rust_engine.rst	(``symbolic/registry.rs:310``) and holds ``Py<PyAny>`` values keyed by
 docs/advanced-topics/rust_engine.rst	(``veritesting.py:256``) against the Python engine, so a
 docs/advanced-topics/rust_engine.rst	(line 466). Per-Callable ``map_loader`` dropped from several ms
 docs/advanced-topics/rust_engine.rst	(see ``z3-rs 0.19+`` note at ``native/angr/src/solver.rs:99``).
