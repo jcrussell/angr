@@ -27,6 +27,14 @@
 //! from the per-cache docs by number so enforcement-site comments do not
 //! duplicate the rationale.
 //!
+//! The numbering is deliberately non-contiguous: **C2** ("`CLARIPY_AST_CACHE`
+//! ⊆ global_registry") and **C6** ("`CLARIPY_AST_CACHE` uses `std::HashMap`")
+//! both described the `CLARIPY_AST_CACHE` thread-local, which was dropped as
+//! dead in angr-4xaga.2. The survivors kept their original numbers so that the
+//! existing `C3`/`C4`/`C5` citations — in `cache.rs`, `export.rs`,
+//! `cache_tests.rs` and `docs/advanced-topics/rust_engine.rst` — stayed valid;
+//! renumber only if every one of those is swept in the same commit.
+//!
 //! - **C1. EXPRESSION_ID sentinel boundary.** The `SymbolicIdentityRegistry`
 //!   leaf-AST keys are real leaf-symbol ids allocated by
 //!   `SymbolicIdentityRegistry::allocate_id`; compound `RustBV::Expression`
@@ -229,11 +237,24 @@ fn extract_int_value(obj: Bound<'_, PyAny>) -> Result<u128, BridgeError> {
     let bytes_obj = obj.call_method1("to_bytes", (byte_length, "little"))?;
     let bytes: Vec<u8> = bytes_obj.extract()?;
 
+    // `int.to_bytes(byte_length, ..)` returns exactly `byte_length` bytes and
+    // `byte_length <= 16` follows from the `bit_length > 128` rejection above,
+    // so this is unreachable for a well-behaved `int`. Check it anyway rather
+    // than skipping the excess bytes inside the loop: `obj` is caller-supplied
+    // Python, so a `to_bytes` override can hand back a wider buffer, and
+    // masking that to the low 128 bits is the silently-wrong-answer outcome
+    // the `bit_length > 128` rejection exists to prevent (angr-cxw7).
+    if bytes.len() > 16 {
+        return Err(BridgeError::InvalidArgs(format!(
+            "to_bytes returned {} bytes for a {bit_length}-bit integer; \
+             RustBV::Concrete holds at most 16",
+            bytes.len()
+        )));
+    }
+
     let mut value: u128 = 0;
     for (i, &b) in bytes.iter().enumerate() {
-        if i < 16 {
-            value |= (b as u128) << (i * 8);
-        }
+        value |= (b as u128) << (i * 8);
     }
 
     Ok(value)
