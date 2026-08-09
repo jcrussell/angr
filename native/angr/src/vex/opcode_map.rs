@@ -190,7 +190,7 @@ macro_rules! fcmp_scalar_arms {
 ///
 /// Returns `IROp::Unmapped(name)` (interned `&'static str`) for opcodes
 /// with no entry in the parse_* dispatch. Dispatch in
-/// `VEXOps::unop`/`binop`/`ternop`/`qop` surfaces this as
+/// `VEXOps::unop`/`binop`/`qop`/`binop_with_rm` surfaces this as
 /// `OpError::UnsupportedVexOp { op_name }`. On the test-only path that
 /// maps to a typed `RustUnsupportedVexOpError(op_name, arch)`; in live
 /// exploration it is stringified into the errored stash (see the
@@ -581,7 +581,8 @@ fn parse_float(op_str: &str) -> Option<IROp> {
 /// [`crate::vex::transcendentals`].
 ///
 /// These map to `IROp::Raw(tag)`, which is the *only* producer of that
-/// variant — `VEXOps::binop_misc` and `VEXOps::triop` are its only
+/// variant — the `IROp::Raw` arms of `VEXOps::binop` (in its private
+/// `binop_misc` helper) and `VEXOps::binop_with_rm` are its only
 /// consumers, and both route straight into `transcendentals`. The tag
 /// values are the libVEX `Iop_*` discriminants, but nothing compares them
 /// against libVEX any more: they are an internal token that only has to

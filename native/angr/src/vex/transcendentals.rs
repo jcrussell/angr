@@ -3,8 +3,9 @@
 //! Iop_Yl2xp1F64, Iop_ScaleF64) and ARM AArch64 FRECPX (Iop_RecpExpF64,
 //! Iop_RecpExpF32). We expose no named `IROp` variant for these, so
 //! `opcode_map::parse_transcendental` maps the pyvex name to
-//! `IROp::Raw(<one of the IOP_* consts below>)` and `VEXOps::binop_misc` /
-//! `VEXOps::triop` dispatch that straight here.
+//! `IROp::Raw(<one of the IOP_* consts below>)`, and the `IROp::Raw` arms
+//! of `VEXOps::binop` (in its private `binop_misc` helper) and
+//! `VEXOps::binop_with_rm` dispatch that straight here.
 //!
 //! When all value operands are concrete f32/f64, this module computes the
 //! result via Rust's libm bindings. Symbolic operands fall back to

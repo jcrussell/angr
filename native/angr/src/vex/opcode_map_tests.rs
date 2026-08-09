@@ -249,7 +249,7 @@ fn test_jumpkind_syscall_and_trap_classification() {
 #[test]
 fn test_unmapped_opcode() {
     // Unknown opcodes now route through IROp::Unmapped (angr-tkbr.2).
-    // Dispatch in VEXOps::unop/binop/triop/qop surfaces this as
+    // Dispatch in VEXOps::unop/binop/qop/binop_with_rm surfaces this as
     // OpError::UnsupportedVexOp, which the engine maps to
     // RustUnsupportedVexOpError.
     match parse_opcode("Iop_UnknownOp") {
