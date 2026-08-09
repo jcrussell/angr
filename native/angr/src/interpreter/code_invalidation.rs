@@ -11,7 +11,8 @@ impl<'a> VEXInterpreter<'a> {
     /// variant (angr-9ke6b.214).
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn is_code_page_dirtied(&self, addr: u64) -> bool {
-        self.dirtied_code_pages.contains(&(addr >> 12))
+        self.dirtied_code_pages
+            .contains(&crate::memory::PageIndex::of(addr))
     }
 
     /// Whether any page intersecting `[addr, addr + len)` has been written.
@@ -19,14 +20,8 @@ impl<'a> VEXInterpreter<'a> {
         if self.dirtied_code_pages.is_empty() || len == 0 {
             return false;
         }
-        let first_page = addr >> 12;
-        let last_page = (addr.saturating_add(len - 1)) >> 12;
-        for page_num in first_page..=last_page {
-            if self.dirtied_code_pages.contains(&page_num) {
-                return true;
-            }
-        }
-        false
+        crate::memory::PageIndex::range_covering(addr, len)
+            .any(|page| self.dirtied_code_pages.contains(&page))
     }
 
     /// Mark code pages overlapping `[addr, addr + size)` as dirtied and
@@ -37,11 +32,8 @@ impl<'a> VEXInterpreter<'a> {
             return;
         }
         let end = addr.saturating_add(size as u64 - 1);
-        let first_page = addr >> 12;
-        let last_page = end >> 12;
-        for page_num in first_page..=last_page {
-            self.dirtied_code_pages.insert(page_num);
-        }
+        self.dirtied_code_pages
+            .extend(crate::memory::PageIndex::range_covering(addr, size as u64));
         // Find cached IRSBs whose [start, start + irsb.size()) overlaps the
         // write. LruCache::iter is O(N) but N <= BLOCK_CACHE_CAPACITY and this
         // fires only on rare in-binary stores, so the cost is bounded.

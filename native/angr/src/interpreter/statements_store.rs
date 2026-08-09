@@ -166,18 +166,14 @@ impl<'a> VEXInterpreter<'a> {
                     self.block_cache.clear();
                     // Mark all binary pages as dirtied so native lift skips
                     // them until they're re-lifted via Python.
-                    let pages: Vec<u64> = self
+                    let pages: Vec<crate::memory::PageIndex> = self
                         .concrete_memory
                         .iter()
                         .flat_map(|region| {
-                            let first = region.base >> 12;
-                            let last = (region.base + region.size - 1) >> 12;
-                            first..=last
+                            crate::memory::PageIndex::range_covering(region.base, region.size)
                         })
                         .collect();
-                    for page in pages {
-                        self.dirtied_code_pages.insert(page);
-                    }
+                    self.dirtied_code_pages.extend(pages);
                 }
             }
             ConcretizationResult::Failed(_) => {

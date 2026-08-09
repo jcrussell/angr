@@ -52,7 +52,7 @@ mod symbolic_objects;
 test_submod!(tests);
 pub use address::Address;
 pub use multi::{MultiAlternative, MultiFlushed, MultiPayload};
-pub use page::{BITMAP_WORDS, MemoryPage, PAGE_MASK, PAGE_SIZE, Permission};
+pub use page::{BITMAP_WORDS, MemoryPage, PAGE_MASK, PAGE_SIZE, PageIndex, Permission};
 
 /// A deferred symbolic store. Instead of eagerly concretizing symbolic addresses
 /// and building ITE chains at store time (275 Z3 calls for sym-write), we record

@@ -13,6 +13,72 @@ pub const PAGE_SIZE: u64 = 4096;
 /// Page mask for address calculation.
 pub const PAGE_MASK: u64 = PAGE_SIZE - 1;
 
+/// A page *number* — `addr >> 12`, not a byte address.
+///
+/// Both are bare `u64` otherwise, and every audit round has turned up a site
+/// that open-codes the shift (angr-c7xno.49 found `PAGE_SIZE` expressed three
+/// incompatible ways in `interpreter/` alone; angr-sqfj8.140 found
+/// `syscalls/page.rs` redefining the constants). The wrapper makes the two
+/// layers distinct types wherever a *collection* is keyed by page number, so
+/// handing it an address — or a page number where an address belongs — stops
+/// compiling instead of silently addressing page 0x1000-ish.
+///
+/// The `pages` / `dirty_pages` / `lazy_regions` structures inside `memory/`
+/// deliberately stay raw `u64`: see the `invariant-address-vs-page-number`
+/// note on `Address`. `PageIndex` is for callers *above* that layer, which
+/// convert once at the boundary via [`PageIndex::get`].
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize)]
+pub struct PageIndex(u64);
+
+impl PageIndex {
+    /// Bits of in-page byte offset — the shift between an address and a page
+    /// number. Derived from `PAGE_SIZE` so the two can never disagree.
+    pub const SHIFT: u32 = PAGE_SIZE.trailing_zeros();
+
+    /// The page containing byte address `addr`.
+    #[inline]
+    pub fn of(addr: u64) -> Self {
+        Self(addr >> Self::SHIFT)
+    }
+
+    /// Wrap an already-shifted page number (e.g. one that arrived from the raw
+    /// `u64` page API inside `memory/`).
+    #[inline]
+    pub fn from_raw(page_num: u64) -> Self {
+        Self(page_num)
+    }
+
+    /// The raw page number, for the raw-`u64` page API inside `memory/`.
+    #[inline]
+    pub fn get(self) -> u64 {
+        self.0
+    }
+
+    /// First byte address of this page.
+    #[inline]
+    pub fn base_addr(self) -> u64 {
+        self.0 << Self::SHIFT
+    }
+
+    /// Every page touched by `[addr, addr + len)`, inclusive of both ends.
+    ///
+    /// Empty when `len == 0` — a zero-length access touches no page, whereas
+    /// the open-coded `first..=last` form the call sites used returns one.
+    /// `addr + len` is saturating, so a range running off the top of the
+    /// address space clamps rather than wrapping to page 0.
+    pub fn range_covering(addr: u64, len: u64) -> impl Iterator<Item = PageIndex> + Clone {
+        let first = Self::of(addr).get();
+        // `len - 1` is safe: `len == 0` is filtered out below, and `.max(1)`
+        // only keeps the expression well-defined until it is.
+        let last = Self::of(addr.saturating_add(len.max(1) - 1)).get();
+        (len != 0)
+            .then_some(first..=last)
+            .into_iter()
+            .flatten()
+            .map(PageIndex)
+    }
+}
+
 /// Number of u64 words in the per-page symbolic bitmap.
 /// One bit per byte: PAGE_SIZE bytes / 64 bits per u64 = PAGE_SIZE / 64 words.
 pub const BITMAP_WORDS: usize = (PAGE_SIZE / 64) as usize;
@@ -509,3 +575,4 @@ impl From<MemoryPageData> for MemoryPage {
     }
 }
 test_submod!("serde_tests.rs" => serde_tests);
+test_submod!("page_index_tests.rs" => page_index_tests);

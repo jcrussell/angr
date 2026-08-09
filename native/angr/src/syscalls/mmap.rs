@@ -87,21 +87,19 @@ fn range_collides(state: &RustSimState, addr: u64, size: u64) -> bool {
     if size == 0 {
         return false;
     }
-    let start_page = addr >> 12;
-    // last byte covered, then its page; matches Python's
-    // `((addr + length - 1) & ~0xFFF) + 0x1000` end calculation.
-    let last_byte = match addr.checked_add(size - 1) {
-        Some(v) => v,
-        None => return true, // overflow → treat as collision (fall back)
-    };
-    let end_page = (last_byte >> 12) + 1;
-    let memory = state.memory();
-    for page_num in start_page..end_page {
-        if memory.page_permissions(page_num).is_some() {
-            return true;
-        }
+    // Overflow → treat as collision (fall back). Checked here rather than
+    // leaning on `range_covering`'s saturating add: a wrapping request is a
+    // caller error, not a range clamped to the top page.
+    if addr.checked_add(size - 1).is_none() {
+        return true;
     }
-    false
+    // `range_covering` is inclusive of the page holding the last byte, matching
+    // Python's `((addr + length - 1) & ~0xFFF) + 0x1000` end calculation.
+    let memory = state.memory();
+    crate::memory::PageIndex::range_covering(addr, size)
+        // `.get()` is the one boundary crossing: `page_permissions` is part of
+        // the raw-`u64` page API inside `memory/`.
+        .any(|page| memory.page_permissions(page.get()).is_some())
 }
 
 /// Shared mmap implementation, called by all three flavors.

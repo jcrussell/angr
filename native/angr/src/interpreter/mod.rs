@@ -319,11 +319,11 @@ pub(crate) struct VEXInterpreter<'a> {
     /// Per-address VEX optimization level overrides.
     /// Arc-shared on fork (O(1) clone). Setters replace the Arc wholesale.
     pub vex_opt_level_overrides: Arc<FxHashMap<u64, i32>>,
-    /// Page numbers (addr >> 12) inside loaded binary regions that have
-    /// been overwritten by a store. Used to invalidate cached IRSBs and
-    /// to redirect the Python lift callback to read fresh bytes from
-    /// `rust_memory` instead of the original (now stale) binary image.
-    dirtied_code_pages: FxHashSet<u64>,
+    /// Pages inside loaded binary regions that have been overwritten by a
+    /// store. Used to invalidate cached IRSBs and to redirect the Python lift
+    /// callback to read fresh bytes from `rust_memory` instead of the original
+    /// (now stale) binary image.
+    dirtied_code_pages: FxHashSet<crate::memory::PageIndex>,
     /// State id of the state currently being stepped. Forwarded to
     /// `PythonCallbacks::call_inspect_mem_*` so the Python dispatcher can
     /// build a `RustStateProxy` for the BP action. -1 means "unknown" —

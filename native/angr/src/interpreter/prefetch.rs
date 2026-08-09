@@ -231,7 +231,7 @@ impl<'a> VEXInterpreter<'a> {
     /// Returns `prefetch_count` unmapped pages, prioritizing stack growth direction
     /// (downward) when the access is in the stack region.
     fn get_nearby_prefetch_list(&self, page_addr: u64, prefetch_count: u32) -> Vec<u64> {
-        let page_size = 0x1000u64;
+        let page_size = crate::memory::PAGE_SIZE;
         let mut pages_to_fetch = Vec::with_capacity(1 + 2 * prefetch_count as usize);
 
         // Add main page first
