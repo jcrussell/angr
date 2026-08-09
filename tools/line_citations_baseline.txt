@@ -91,8 +91,6 @@ native/angr/src/interpreter/exits.rs	// NO_IP_CONCRETIZATION (engines/successors
 native/angr/src/interpreter/exits.rs	// NO_SYMBOLIC_JUMP_RESOLUTION (engines/successors.py:234-239) both
 native/angr/src/interpreter/exits.rs	// _eval_target_brutal behaviour (engines/successors.py:308-323):
 native/angr/src/interpreter/exits.rs	// engines/successors.py:327-328, which skips
-native/angr/src/interpreter/expressions.rs	/// `solver.py:432-439`'s BP_AFTER signature.
-native/angr/src/interpreter/expressions.rs	/// `when="before"`). Mirrors `address_concretization_mixin.py:156-180`'s
 native/angr/src/interpreter/mod.rs	// BVS minting. Mirrors Python's `solver.py:432-439` BP_AFTER
 native/angr/src/interpreter/mod.rs	/// NO_IP_CONCRETIZATION option (engines/successors.py:292-296).
 native/angr/src/interpreter/mod.rs	/// NO_SYMBOLIC_JUMP_RESOLUTION option (engines/successors.py:234-239).

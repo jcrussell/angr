@@ -6,7 +6,7 @@
 //! test per statement. The value-injection contract (a BP that overrides
 //! `state.inspect.*_expr` returns `Some(bv)` for the caller to substitute) is
 //! documented per function. The read-side counterparts live in
-//! `expressions.rs`.
+//! `expressions_inspect.rs`.
 
 use super::*;
 

@@ -118,6 +118,7 @@ mod execution_error;
 mod execution_stats;
 mod exits;
 mod expressions;
+mod expressions_inspect;
 mod fork_state;
 mod pending_store;
 mod prefetch;
