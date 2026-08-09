@@ -91,6 +91,17 @@ impl DeferredFork {
 /// here but never consulted by the fork path, so it was removed rather than
 /// left as a silent no-op.
 ///
+/// Third instance, same shape (angr-c7xno.5): an `enable_stride_detection`
+/// knob lived here as a `#[pyo3(get, set)]` field wholly separate from
+/// [`AddressConcretizer::enable_stride_detection`](crate::concretize::AddressConcretizer),
+/// which is the field the concretizer actually reads. `AddressConcretizer` is
+/// built without ever seeing an `ExecutionConfig` (see
+/// `VEXInterpreter::with_config` and `RustSimState::with_solver_endian`), and
+/// `VEXInterpreter::set_config` only assigns `self.config`, so setting the
+/// knob from Python was a silent no-op. Removed rather than wired: nothing in
+/// `angr/` ever set it, and stride detection is unconditionally on. Toggle it
+/// on `AddressConcretizer` directly if a caller ever needs it off.
+///
 /// `#[non_exhaustive]` per angr-irwe: minor versions may add new
 /// `#[pyo3(get, set)]` knob fields. Construction outside this crate
 /// must go through `ExecutionConfig::py_new` (the PyO3 `__init__`)
@@ -117,9 +128,6 @@ pub struct ExecutionConfig {
     /// Maximum pages to prefetch in a single batch (default: 256 = 1MB).
     #[pyo3(get, set)]
     pub max_prefetch_batch: usize,
-    /// Enable stride detection for array access patterns (default: true).
-    #[pyo3(get, set)]
-    pub enable_stride_detection: bool,
     /// Maximum symbolic IP targets before marking unconstrained (default: 257).
     /// When a symbolic jump target (e.g., ret from symbolic return address)
     /// concretizes to more than this many targets, the state is marked
@@ -176,7 +184,6 @@ impl Default for ExecutionConfig {
             // Individual pages are fetched on demand instead.
             enable_eager_prefetch: false,
             max_prefetch_batch: 256, // 256 pages = 1MB (unused when eager disabled)
-            enable_stride_detection: true,
             max_symbolic_ip_targets: 257, // Match Python angr default
         }
     }

@@ -44,7 +44,6 @@ fn test_execution_config_py_new_overrides_only_two_args() {
     assert_eq!(cfg.enable_eager_prefetch, def.enable_eager_prefetch);
     assert!(!cfg.enable_eager_prefetch, "inherited from Default (off)");
     assert_eq!(cfg.max_prefetch_batch, def.max_prefetch_batch);
-    assert_eq!(cfg.enable_stride_detection, def.enable_stride_detection);
     assert_eq!(cfg.max_symbolic_ip_targets, def.max_symbolic_ip_targets);
 }
 
@@ -64,7 +63,6 @@ fn test_execution_config_py_new_defaults_match_default_trait() {
         "Default disables eager prefetch (per-page on demand)"
     );
     assert_eq!(cfg.max_prefetch_batch, def.max_prefetch_batch);
-    assert_eq!(cfg.enable_stride_detection, def.enable_stride_detection);
     assert_eq!(cfg.max_symbolic_ip_targets, def.max_symbolic_ip_targets);
 }
 

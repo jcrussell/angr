@@ -88,6 +88,9 @@ fn test_default_config() {
     assert_eq!(concretizer.write_range_limit, 128); // Match Python default
     assert_eq!(concretizer.max_solutions, 256);
     assert_eq!(concretizer.max_stride_count, 16384);
+    // This is the *only* stride-detection switch (angr-c7xno.5 removed the
+    // disconnected `ExecutionConfig::enable_stride_detection` twin): a caller
+    // that wants stride detection off must clear it here.
     assert!(concretizer.enable_stride_detection);
     assert!(!concretizer.use_approximate);
     assert!(!concretizer.symbolic_write_addresses);
