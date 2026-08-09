@@ -57,7 +57,13 @@ cites the bd bead id (`angr-xxxxx`, optionally `angr-xxxxx Phase N` for a
 multi-phase bead) and nothing else. The pre-bd review-round labels (`P5 fix`,
 `D2 Fix`, bare `Phase 2 Fix`) that came in with the v2 port resolved to
 nothing a reader could look up and were stripped in angr-9ke6b.46 — do not
-reintroduce a second numbering scheme.
+reintroduce a second numbering scheme. A bead id is provenance for what *was*
+done, so never write `angr-xxxxx tracks <future work>` — the bead closes,
+usually having done something else, and the comment silently becomes a lie a
+reader will trust (angr-c7xno.35 found two of these pointing at angr-ph300.73).
+When the comment's job is to explain why the duplication/divergence *stays*,
+cite the invariant — the bd memory key or the sibling symbol's doc — not a
+bead.
 
 ### Silent-fallback tagging (Rust)
 
