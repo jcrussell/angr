@@ -439,7 +439,7 @@ Per-arch matrix
      - ✓
      - ✓
      - —
-     - ⚠ (number 4210; needs stack-arg traversal)
+     - ✓ (number 4210; args 5–6 read from the O32 stack)
      - —
    * - ``mprotect`` / ``munmap``
      - ✓
@@ -594,7 +594,7 @@ Per-arch matrix
      - ✓
      - ✓
      - ✓ (no legacy ``epoll_create`` / ``epoll_wait``;
-       ``epoll_pwait`` not yet registered)
+       ``epoll_pwait`` (22) covers both)
      - ✓
      - ✓
    * - ``arch_prctl``
@@ -605,14 +605,22 @@ Per-arch matrix
      - —
      - —
 
-Counts (current registrations):
+Counts (``register_syscalls!`` entries per dispatch key, as of
+2026-08-09):
 
-* AMD64: 72 ``(arch, num)`` entries.
-* X86: 75 entries.
-* ARM: 74 entries.
-* ARM64: 50 entries (asm-generic ABI drops legacy variants).
-* MIPS32: 67 entries.
-* MIPS64: 65 entries.
+* AMD64: ~83 ``(arch, num)`` entries.
+* X86: ~91 entries.
+* ARM: ~89 entries.
+* ARM64: ~63 entries (asm-generic ABI drops legacy variants).
+* MIPS32: ~82 entries.
+* MIPS64: ~75 entries.
+* CGC: 7 entries (the complete CGC syscall set — this one *is* exact).
+
+Treat the Linux numbers as an order of magnitude, not a checksum —
+``syscalls/mod.rs``'s own module doc says the same, and every round of
+new handlers drifts them. The registry itself is authoritative; to
+re-derive a count, count the ``(num, ...)`` tuples inside the relevant
+``register_syscalls!`` block in ``syscalls/mod.rs``.
 
 Bench fallback rate: **zero**. Across the 19 baseline benchmarks
 measured 2026-06-02 (bd memory ``bench-syscall-fallback-zero-coverage``,
@@ -627,14 +635,6 @@ Stubbed / incomplete
 * **``mremap``** — number registered on every arch but the handler
   models only the simplest case (no full page-table coordination
   beyond stub parity). Tracked as ``angr-uahs``.
-* **MIPS32 ``mmap2`` (4210)** — six register args, O32 only passes
-  four in ``$a0``–``$a3``; the remaining offset/fd args live on the
-  stack which ``extract_syscall_args`` does not currently traverse.
-  Falls back to Python; tracked indirectly by the comment in
-  ``syscalls/mod.rs``.
-* **AArch64 ``epoll_pwait``** — asm-generic ABI replaces the legacy
-  ``epoll_wait``; ``epoll_pwait`` (22) is not yet a registered slot.
-  Small follow-up after ``angr-0hif.7``.
 * **Symbolic-rax dispatch** — when ``rax`` is symbolic the dispatcher
   records the fallback under ``syscall_python_fallback_by_num`` key
   ``-1`` and hands the state to Python. The counter is at zero on the
