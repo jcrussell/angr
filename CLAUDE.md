@@ -78,6 +78,22 @@ code review instead: a "shouldn't happen" case at a trust boundary
 (`unreachable!()`, `Err(...)`, or a logged warning), not silently return a
 default value.
 
+### Steady-guard coverage (Rust)
+
+`#[angr_macros::steady_guarded]` is opt-in per function, so a *new*
+`RustExplorationManager` config mutator silently inherits the bug the macro
+exists to prevent (round-3 audit caught `set_max_history` this way —
+angr-c7xno.21). `tools/audit_steady_guard_coverage.py` gates
+`native/angr/src/exploration/manager_methods*.rs` in CI (`rust_check`) against
+`tools/steady_guard_baseline.txt`, same baseline-audit pattern as the two
+checks above. Eligible = `pub fn` + `&mut self` + a mutator name prefix
+(`set_`/`clear_`/`register_`/`add_`/… — see `MUTATOR_PREFIXES`). Exempt =
+carries the attribute, **or** documents the exception with a doc line matching
+`NOT ... steady_guarded` (the convention `load_snapshot_bytes` and
+`set_parallel_frontier_residency` already use, for the cases where the guard
+cannot be the unconditional first statement the macro injects). Fixing a
+baselined gap means deleting its line, not just adding the attribute.
+
 ### Where context lives
 
 When you need background that isn't in CLAUDE.md, look here first, then

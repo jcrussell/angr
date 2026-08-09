@@ -60,6 +60,12 @@ jobs:
         run: python3 tools/audit_silent_fallback.py
       - name: Stale line-number-citation check
         run: python3 tools/check_line_citations.py
+      # angr-91vj9.2: `#[angr_macros::steady_guarded]` is opt-in per function,
+      # so a newly added RustExplorationManager config mutator silently
+      # inherits the bug the macro exists to prevent (angr-c7xno.21 /
+      # set_max_history). Baseline-gated like the two checks above.
+      - name: Steady-guard coverage audit
+        run: python3 tools/audit_steady_guard_coverage.py
 
   rust_test:
     strategy:
