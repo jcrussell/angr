@@ -453,7 +453,7 @@ directly.
    Python→Rust mirror actually threads it.
 
 Sub-calls (``ProcOutcome::CallAndResume``)
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 A few procedures must invoke a *guest* routine and continue afterwards —
 the native equivalent of Python's
@@ -675,60 +675,96 @@ Things to take away from this example:
   truly unbounded inputs go back to Python rather than producing a
   4096-deep ITE chain inside Z3.
 
-Worked example 2: concrete + symbolic-arg fallback — ``memcpy``
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Worked example 2: graded symbolic fallback — ``memcpy``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-``memcpy`` is the canonical example of "three concrete arguments,
-bail out on any symbolic one." Source:
+``memcpy`` is the canonical example of a procedure that *does not*
+bail out on the first symbolic argument. It declares all three args as
+``bv`` and picks a tier based on which of them the solver can pin down,
+falling back to Python only when a tier's work budget is blown. Source:
 ``native/angr/src/procedures/memcpy.rs``.
 
 .. code-block:: rust
 
-   impl NativeSimProcedure for NativeMemcpy {
-       fn name(&self) -> &'static str { "memcpy" }
-       fn num_args(&self) -> usize { 3 }
+   crate::declare_proc! {
+       /// Native memcpy: `void *memcpy(void *dest, const void *src, size_t n)`.
+       name = "memcpy",
+       struct = NativeMemcpy,
+       args = [dst_bv: bv, src_bv: bv, size_bv: bv],
+       call |state| {
+           // Tier 3: symbolic dst and/or src -> bounded candidate pairs.
+           let (dst, src) = match (
+               extract_concrete_arg(&dst_bv, "dst"),
+               extract_concrete_arg(&src_bv, "src"),
+           ) {
+               (Ok(d), Ok(s)) => (d, s),
+               _ => return copy_symbolic_addr(state, &dst_bv, &src_bv, &size_bv),
+           };
+           let ret = dst_bv;
 
-       fn call(
-           &self,
-           state: &mut RustSimState,
-           args: &[RustBV],
-       ) -> Result<Option<RustBV>, ProcedureError> {
-           let dst  = extract_concrete_arg(&args[0], "dst")?;
-           let src  = extract_concrete_arg(&args[1], "src")?;
-           let size = extract_concrete_arg(&args[2], "size")? as usize;
+           // Tier 2: concrete pointers, symbolic size -> ITE(i < n, ...).
+           let Some(size) = size_bv.as_u64() else {
+               copy_symbolic_size(state, src, dst, &size_bv)?;
+               return Ok(Some(ret));
+           };
 
-           check_max(size as u64, MAX_COPY_SIZE)?;
-           if size == 0 {
-               return Ok(Some(args[0].clone()));
-           }
-           copy_forward(state, src, dst, size)?;
-           Ok(Some(args[0].clone()))
+           // Tier 1: everything concrete -> straight 8-byte-chunk copy.
+           check_max(size, MAX_COPY_SIZE)?;
+           // ... zero-size short-circuit, then copy_forward(state, src, dst, size)
+           Ok(Some(ret))
        }
    }
 
-This is the long-hand form of what ``declare_proc!`` generates for
-``args = [dst: concrete, src: concrete, size: concrete]`` — both
-styles are accepted; pick whichever reads better for the procedure.
-The propagation of ``ProcedureError::SymbolicArgument`` via the ``?``
-operator is the engine's fallback signal: any symbolic argument turns
-into ``Err(SymbolicArgument(name))`` and the dispatcher hands the call
-off to Python.
+The three tiers, from cheapest to most expensive:
+
+1. **All concrete** — ``copy_forward`` moves the bytes in 8-byte
+   chunks. ``check_max(size, MAX_COPY_SIZE)`` (1MB) rejects
+   pathological sizes.
+2. **Concrete pointers, symbolic size** — ``copy_symbolic_size`` asks
+   the solver for an upper bound on ``n`` and writes byte ``i`` of
+   ``dst`` as ``ITE(i < n, src[i], dst[i])`` for ``i`` up to that
+   bound, so positions past the length keep their prior contents.
+3. **Symbolic pointer(s), concrete size** — ``copy_symbolic_addr``
+   enumerates the bounded candidate sets for ``dst`` and ``src`` and,
+   per ``(d, s)`` pair, stores
+   ``ITE(dst == d && src == s, src_byte, original)``. Guards across
+   pairs are mutually exclusive, so at most one is ever true at a given
+   physical address.
+
+Both symbolic tiers snapshot *every* source byte they might read before
+issuing a single store, which is what makes the shared helpers correct
+for overlapping regions — ``NativeMemmove`` reuses them for exactly
+that reason.
 
 Things to take away from this example:
 
-* ``extract_concrete_arg(&args[i], "name")?`` is the verbose form of
-  the ``concrete`` declaration. The ``name`` string lands in the
-  ``ProcedureError`` message and is purely diagnostic.
-* The return value is ``Ok(Some(args[0].clone()))`` — POSIX
-  ``memcpy`` returns ``dst``, which is exactly the first argument
-  bitvector. Cloning a ``RustBV`` is cheap (it's an ``Arc`` under
-  the hood).
+* ``extract_concrete_arg(&bv, "name")?`` is the verbose form of the
+  ``concrete`` arg declaration, but here it is used as a *probe*
+  rather than a bail: the ``Err`` arm selects a symbolic tier instead
+  of propagating with ``?``. Reach for ``args = [x: concrete]`` only
+  when there is genuinely no symbolic path worth writing.
+* Every fallback to Python is a **budget** decision, not an
+  "argument is symbolic" decision: an unbounded candidate set, a
+  ``|dst| * |src| * size`` product over ``MAX_SYMBOLIC_ADDR_STORES``,
+  a symbolic-size bound over ``MAX_SYMBOLIC_BYTEWISE_SIZE``, or a
+  concrete size over ``MAX_COPY_SIZE``. All of these surface as
+  ``Err(ProcedureError::SymbolicArgument(name))`` /
+  ``MaxIterations`` and the dispatcher hands the call to Python.
+  Deferring at a cap is correct, not a bug — a 100MB concrete-size
+  memcpy would lock the engine inside Rust for minutes, and an
+  unbounded candidate set would do worse inside Z3.
+* The return value is the ``dst`` bitvector itself — POSIX ``memcpy``
+  returns ``dst``, and cloning a ``RustBV`` is cheap (it's an ``Arc``
+  under the hood). The symbolic-address tier returns ``dst_bv``
+  unchanged, so the caller gets back the symbolic pointer it passed in.
 * Bulk memory motion goes through ``state.memory_load`` /
   ``state.memory_store``, which preserves symbolic byte values
   end-to-end (the memcpy of a symbolic buffer is itself symbolic).
-* ``MAX_COPY_SIZE`` is a guard against pathological inputs: a 100MB
-  concrete-size memcpy would lock the engine inside Rust for minutes.
-  Falling back to Python at the size cap is correct, not a bug.
+* The tier helpers live in ``procedures/mem_common.rs``
+  (``enumerate_addr_candidates``, ``bounded_symbolic_size``,
+  ``symbolic_size_conditional_store``) so ``memset`` / ``memmove`` /
+  ``strcpy``-family procedures share one implementation of each tier.
+  A new buffer procedure should call them, not re-derive them.
 
 Worked example 3: allocator state — ``malloc``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
