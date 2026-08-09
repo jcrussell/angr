@@ -84,6 +84,28 @@ pub(crate) fn invalid_handle_id(ids: &[u64]) -> PyErr {
     }
 }
 
+/// Coerce a bitvector into the boolean constraint it stands for.
+///
+/// A 1-bit BV *is* the constraint, so it is returned borrowed; anything wider
+/// is a truthiness test and lowers to `bv != 0`. This mirrors
+/// `SymContext::assume_true`'s own symbolic path, and is shared by the three
+/// sites that used to open-code it (angr-c7xno.95): `add_constraint_ast`'s and
+/// `add_constraint_tracked_ast`'s slow paths here, plus
+/// `add_constraint_handle` in [`handle_api`]. Callers either hand the result
+/// to `assume_true` or take `.to_z3_bool()` of it.
+///
+/// `Cow` rather than a plain `RustBV` so the (common) 1-bit case stays
+/// clone-free — an `Expression` BV clones its whole operand `Arc` tree.
+#[cfg(feature = "vex-engine-z3")]
+fn bool_constraint_bv<'a>(bv: &'a RustBV, ctx: &SymContext) -> std::borrow::Cow<'a, RustBV> {
+    if bv.width() == 1 {
+        std::borrow::Cow::Borrowed(bv)
+    } else {
+        let zero = RustBV::concrete(0, bv.width());
+        std::borrow::Cow::Owned(bv.ne(&zero, ctx))
+    }
+}
+
 /// Map a two-operand table failure to a `PyValueError`. Owns the pyo3
 /// conversion so `symbolic::table` stays Python-agnostic (angr-ph300.32).
 /// Reuses `invalid_handle_id` for the missing-handle case so its message
@@ -257,13 +279,7 @@ impl RustSolverContext {
 
         #[cfg(feature = "vex-engine-z3")]
         {
-            if bv.width() == 1 {
-                ctx.assume_true(&bv);
-            } else {
-                let zero = RustBV::concrete(0, bv.width());
-                let neq = bv.ne(&zero, &ctx);
-                ctx.assume_true(&neq);
-            }
+            ctx.assume_true(&bool_constraint_bv(&bv, &ctx));
         }
 
         Ok(())
@@ -380,14 +396,9 @@ impl RustSolverContext {
 
             // Slow path: build the Z3 Bool from a RustBV. Mirrors
             // assume_true's symbolic path (BV width 1 → bool via to_z3_bool;
-            // wider BV → ne(0) bool).
+            // wider BV → ne(0) bool) — see `bool_constraint_bv`.
             let bv = claripy_to_rustbv(py, ast, &ctx)?;
-            let constraint = if bv.width() == 1 {
-                bv.to_z3_bool()
-            } else {
-                let zero = RustBV::concrete(0, bv.width());
-                bv.ne(&zero, &ctx).to_z3_bool()
-            };
+            let constraint = bool_constraint_bv(&bv, &ctx).to_z3_bool();
             let idx = ctx.add_constraint_tracked_indexed(constraint);
             ctx.assumed_constraints_push(bv, true);
             Ok(idx)

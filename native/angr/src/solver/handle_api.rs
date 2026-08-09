@@ -15,18 +15,13 @@
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
+use super::{RustSolverContext, invalid_handle_id};
 use crate::claripy_bridge::claripy_to_rustbv;
 #[cfg(doc)]
 use crate::symbolic::MAX_BV_WIDTH;
 use crate::symbolic::{
     BinaryOpError, RustBVHandle, RustSymbolTable, SymContext, check_bv_width, check_extract_bounds,
 };
-// Only `add_constraint_handle`'s Z3-gated block builds a `RustBV` directly
-// (angr-sqfj8.139).
-#[cfg(feature = "vex-engine-z3")]
-use crate::symbolic::RustBV;
-
-use super::{RustSolverContext, invalid_handle_id};
 
 /// A handle-based binary op on the symbol table, as taken by
 /// [`RustSolverContext::binop`].
@@ -107,13 +102,7 @@ impl RustSolverContext {
         #[cfg(feature = "vex-engine-z3")]
         {
             let ctx = self.i().ctx();
-            if bv.width() == 1 {
-                ctx.assume_true(&bv);
-            } else {
-                let zero = RustBV::concrete(0, bv.width());
-                let neq = bv.ne(&zero, &ctx);
-                ctx.assume_true(&neq);
-            }
+            ctx.assume_true(&super::bool_constraint_bv(&bv, &ctx));
         }
 
         Ok(())
