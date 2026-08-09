@@ -146,7 +146,35 @@ if (( CARGO_ONLY == 1 )); then
             echo "using Z3_LIBRARY_PATH_OVERRIDE=$Z3_LIBRARY_PATH_OVERRIDE"
         fi
     fi
-    cargo build --manifest-path "$MANIFEST" "${CARGO_PROFILE_FLAG[@]}"
+    # `libvex-ffi` is default-ON in the pip path (setup.py::_rust_features), but
+    # cargo-default-OFF, so a bare `cargo build` silently produces a .so that
+    # lifts every cold block through the slower pyvex-callback path. That shows
+    # up as a uniform ~20% slowdown across the whole fast-tier bench suite —
+    # i.e. a fake benchmark regression, not a code one. Mirror setup.py's
+    # feature resolution here (same ANGR_LIBVEX_FFI=0 escape hatch, same
+    # degrade-when-no-libpyvex behaviour) so both build paths agree.
+    CARGO_FEATURE_FLAG=()
+    case "$(printf '%s' "${ANGR_LIBVEX_FFI:-}" | tr '[:upper:]' '[:lower:]')" in
+        0|false|off|no) echo "libvex-ffi: disabled via ANGR_LIBVEX_FFI" ;;
+        *)
+            # build.rs's own fallback resolves pyvex via the SYSTEM python3, not
+            # the venv — same trap as libz3 above. Pin it to the venv's pyvex.
+            if [[ -z "${PYVEX_FFI_LIB_DIR:-}" ]]; then
+                VENV_PYVEX_LIB="$VENV/lib/python3.12/site-packages/pyvex/lib"
+                if [[ -f "$VENV_PYVEX_LIB/libpyvex.so" || -f "$VENV_PYVEX_LIB/libpyvex.dylib" ]]; then
+                    export PYVEX_FFI_LIB_DIR="$VENV_PYVEX_LIB"
+                fi
+            fi
+            if [[ -n "${PYVEX_FFI_LIB_DIR:-}" ]]; then
+                CARGO_FEATURE_FLAG=(--features libvex-ffi)
+                echo "using PYVEX_FFI_LIB_DIR=$PYVEX_FFI_LIB_DIR (--features libvex-ffi)"
+            else
+                echo "note: no libpyvex.so found next to the venv's pyvex; building" \
+                     "without libvex-ffi (set ANGR_LIBVEX_FFI=0 to silence)." >&2
+            fi
+            ;;
+    esac
+    cargo build --manifest-path "$MANIFEST" "${CARGO_PROFILE_FLAG[@]}" "${CARGO_FEATURE_FLAG[@]+"${CARGO_FEATURE_FLAG[@]}"}"
     SRC="$REPO_DIR/target/$CARGO_PROFILE_DIR/librustylib.so"
     if [[ ! -f "$SRC" ]]; then
         echo "ERROR: cargo build did not produce $SRC" >&2
@@ -168,7 +196,7 @@ if (( ${#NEW_SO[@]} == 0 )); then
     exit 1
 fi
 echo "built: ${NEW_SO[*]}"
-"$VENV/bin/python" -c "import angr; from angr.rustylib import vex_engine; print('angr at', angr.__file__)"
+"$VENV/bin/python" -c "import angr; from angr.rustylib import vex_engine; print('angr at', angr.__file__); print('libvex-ffi:', vex_engine.libvex_ffi_enabled())"
 
 echo
 echo "rebuild complete"

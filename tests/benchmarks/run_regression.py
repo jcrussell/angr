@@ -27,6 +27,8 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import glob
+import importlib.util
 import json
 import multiprocessing
 import os
@@ -41,6 +43,43 @@ from run_single import (
     EXAMPLES_DIR,
     _resolve_examples_dir,
     _run_in_child,
+)
+
+
+def libvex_ffi_enabled() -> bool | None:
+    """Whether the installed rustylib .so was built with the ``libvex-ffi`` feature.
+
+    ``baseline_timings.json`` is recorded against a stock ``pip install -e .``,
+    where ``setup.py::_rust_features`` turns ``libvex-ffi`` ON. A .so built
+    without it lifts every cold block through the slower pyvex-callback path,
+    which reads as a uniform ~20% slowdown across the whole suite — a fake
+    regression that costs a debugging session to attribute. Probe it up front
+    so the run says so instead.
+
+    Loads the extension module directly rather than via ``import angr`` — the
+    package import is far heavier and this runs in the gate's parent process.
+    Returns None when the .so can't be found or probed.
+    """
+    repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    sos = glob.glob(os.path.join(repo_root, "angr", "rustylib*.so"))
+    if not sos:
+        return None
+    try:
+        spec = importlib.util.spec_from_file_location("rustylib", sos[0])
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return bool(mod.vex_engine.libvex_ffi_enabled())
+    except Exception:
+        return None
+
+
+LIBVEX_OFF_NOTE = (
+    "the installed rustylib .so was built WITHOUT the libvex-ffi feature, but "
+    "baseline_timings.json was recorded WITH it (default-ON in setup.py). Cold "
+    "blocks lift through the slower pyvex-callback path, which inflates every "
+    "bench by roughly 20%. Rebuild with `make rebuild` (or "
+    "`tools/rebuild-rust.sh --cargo-only`, which now passes the feature too) "
+    "before trusting these timings."
 )
 
 BASELINE_FILE = os.path.join(os.path.dirname(__file__), "baseline_timings.json")
@@ -653,6 +692,10 @@ def main():
         print(f"Expected at: {EXAMPLES_DIR}", file=sys.stderr)
         sys.exit(2)
 
+    libvex_on = libvex_ffi_enabled()
+    if libvex_on is False:
+        print(f"\nWARNING: {LIBVEX_OFF_NOTE}\n", file=sys.stderr)
+
     baseline = load_baseline()
     baseline_counters = load_baseline_counters()
     # Per-bench counter dict captured this run. Used to refresh
@@ -994,6 +1037,8 @@ def main():
         print("\nFAILURES:")
         for f in failures:
             print(f"  - {f}")
+        if libvex_on is False:
+            print(f"\nNOTE: {LIBVEX_OFF_NOTE}")
         sys.exit(1)
     else:
         print("\nAll benchmarks passed.")
