@@ -671,3 +671,121 @@ fn test_rust_minted_leaf_exports_under_its_rust_name() {
         );
     });
 }
+
+/// angr-c7xno.20: direct coverage for `assumed_guard_to_claripy`, which had
+/// none — its callers (`push_assumed_constraint_or_log` in
+/// `exploration/state_api.rs`, `call_inspect_constraints` in
+/// `callbacks/inspect.rs`) only exercised it indirectly, from outside this
+/// module's test visibility.
+///
+/// Pins all four branch combinations (Bool guard / 1-bit-BV guard x
+/// `is_true` true / false). The invariant that matters in every one of them:
+/// the result is a claripy **Bool**, never the `NotImplemented` singleton —
+/// `claripy.Not()` on a BV returns `NotImplemented` rather than raising, which
+/// is the angr-op0dn.14.4.1 bug the BV branch exists to prevent.
+#[test]
+fn test_assumed_guard_to_claripy_all_four_branches() {
+    pyo3::Python::initialize();
+    Python::attach(|py| {
+        let claripy = match py.import("claripy") {
+            Ok(m) => m,
+            Err(_) => return, // claripy not importable in this env — skip
+        };
+        let ctx = SymContext::new_mock();
+        let x = RustBV::symbolic(&ctx, "c7xno20_x", 32);
+
+        // A comparison exports as a claripy Bool (`length is None`); a 1-bit
+        // Extract exports as a 1-bit BV. Those are the two shapes the
+        // `.length` probe in `assumed_guard_to_claripy` discriminates.
+        let bool_guard = x.eq(&RustBV::concrete(5, 32), &ctx);
+        let bv_guard = x.extract(0, 0, &ctx);
+        assert!(
+            rustbv_to_claripy(py, &bool_guard, claripy.as_any())
+                .unwrap()
+                .bind(py)
+                .getattr("length")
+                .unwrap()
+                .is_none(),
+            "precondition: an eq guard must export as a Bool"
+        );
+        assert!(
+            !rustbv_to_claripy(py, &bv_guard, claripy.as_any())
+                .unwrap()
+                .bind(py)
+                .getattr("length")
+                .unwrap()
+                .is_none(),
+            "precondition: a 1-bit extract guard must export as a BV"
+        );
+
+        // Pin x = 5 so every result below evaluates to a single concrete bit:
+        // the Bool guard holds, and x's bit 0 is 1.
+        #[cfg(feature = "vex-engine-z3")]
+        ctx.add_constraint(x.to_z3_ast().eq(z3::ast::BV::from_u64(5, 32)));
+
+        // `_want_eval` is underscore-named because the block that reads it is
+        // compiled out in the no-z3 build; the name is still usable there.
+        // `want_op` is a set, not a single name: claripy's simplifier folds
+        // `Not(a == b)` down to `a != b`, so the Bool/false branch is allowed
+        // to surface either spelling. The semantic check below is what actually
+        // pins the truth value.
+        for (guard, shape, is_true, want_op, _want_eval) in [
+            (&bool_guard, "Bool", true, &["__eq__"][..], 1u128),
+            (&bool_guard, "Bool", false, &["Not", "__ne__"][..], 0),
+            (&bv_guard, "BV", true, &["__eq__"][..], 1),
+            (&bv_guard, "BV", false, &["__eq__"][..], 0),
+        ] {
+            let label = format!("{shape} guard, is_true={is_true}");
+            let out = assumed_guard_to_claripy(py, guard, claripy.as_any(), is_true)
+                .unwrap_or_else(|e| panic!("{label}: conversion failed: {e}"));
+            let out = out.bind(py);
+
+            // The NotImplemented singleton is not an AST: it has no `.length`.
+            // Every branch must produce a claripy Bool instead.
+            let length = out
+                .getattr("length")
+                .unwrap_or_else(|e| panic!("{label}: result is not an AST ({e})"));
+            assert!(length.is_none(), "{label}: result must be a Bool, not a BV");
+
+            let op: String = out.getattr("op").unwrap().extract().unwrap();
+            assert!(
+                want_op.contains(&op.as_str()),
+                "{label}: unexpected top-level op {op}, want one of {want_op:?}"
+            );
+
+            // The BV branch must compare against `BVV(is_true as u64, 1)` —
+            // `guard != 0` semantics — rather than reaching for `Not`.
+            if shape == "BV" {
+                let rhs = out.getattr("args").unwrap().get_item(1).unwrap();
+                assert_eq!(
+                    rhs.getattr("length").unwrap().extract::<u32>().unwrap(),
+                    1,
+                    "{label}: rhs must be a 1-bit BVV"
+                );
+                assert_eq!(
+                    rhs.getattr("args")
+                        .unwrap()
+                        .get_item(0)
+                        .unwrap()
+                        .extract::<u64>()
+                        .unwrap(),
+                    u64::from(is_true),
+                    "{label}: rhs bit must encode is_true"
+                );
+            }
+
+            // Semantic check under the pinned x: a true-assumed guard must
+            // evaluate to 1 and a false-assumed one to 0, in both shapes.
+            #[cfg(feature = "vex-engine-z3")]
+            {
+                let back = claripy_to_rustbv(py, out, &ctx)
+                    .unwrap_or_else(|e| panic!("{label}: re-import failed: {e}"));
+                assert_eq!(
+                    ctx.eval(&back),
+                    Some(_want_eval),
+                    "{label}: wrong truth value under pinned x = 5"
+                );
+            }
+        }
+    });
+}
