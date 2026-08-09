@@ -152,6 +152,113 @@ fn test_f64_to_f32_nan() {
     assert!(f.is_nan(), "NaN must remain NaN after F64→F32");
 }
 
+// =========================================================================
+// F64→F32 with an explicit rounding mode (angr-c7xno.85)
+//
+// The binop form `Iop_F64toF32(rm, value)` is the one the interpreter
+// actually reaches (`eval_binop` → `VEXOps::binop`); the unop form above is
+// the RNE-implicit stub. The concrete path used to ignore `rm` entirely
+// (Rust's `as f32` cast is hard-wired to round-nearest-ties-to-even), so
+// every assertion below that names a directed mode is a regression test.
+// =========================================================================
+
+/// Drive the real dispatch path: `binop(F64toF32, rm, value)`.
+fn f64_to_f32_with_rm(v: f64, rm: u32, ctx: &SymContext) -> f32 {
+    let result = VEXOps::binop(
+        IROp::F64toF32,
+        RustBV::concrete(rm as u128, 32),
+        RustBV::concrete(v.to_bits() as u128, 64),
+        ctx,
+    )
+    .unwrap();
+    assert_eq!(result.width(), 32);
+    f32::from_bits(result.as_u64().unwrap() as u32)
+}
+
+/// A value 3/4 of the way from one f32 to its successor: RNE rounds *up* to
+/// the successor, so RZ/RD (which must round down) disagree with the cast.
+#[test]
+fn test_f64_to_f32_rm_straddles_boundary() {
+    let ctx = SymContext::new_mock();
+    let lo = 1.0f32;
+    let hi = lo.next_up();
+    let v = f64::from(lo) + 0.75 * (f64::from(hi) - f64::from(lo));
+
+    assert_eq!(f64_to_f32_with_rm(v, 0, &ctx), hi, "RNE picks the nearer hi");
+    assert_eq!(f64_to_f32_with_rm(v, 1, &ctx), lo, "toward -inf must give lo");
+    assert_eq!(f64_to_f32_with_rm(v, 2, &ctx), hi, "toward +inf must give hi");
+    assert_eq!(f64_to_f32_with_rm(v, 3, &ctx), lo, "toward zero must give lo");
+}
+
+/// Same boundary, negated: toward-zero now means rounding *up* (toward -lo),
+/// which is the opposite ULP step from the positive case.
+#[test]
+fn test_f64_to_f32_rm_straddles_boundary_negative() {
+    let ctx = SymContext::new_mock();
+    let lo = 1.0f32;
+    let hi = lo.next_up();
+    let v = -(f64::from(lo) + 0.75 * (f64::from(hi) - f64::from(lo)));
+
+    assert_eq!(f64_to_f32_with_rm(v, 0, &ctx), -hi, "RNE picks the nearer -hi");
+    assert_eq!(f64_to_f32_with_rm(v, 1, &ctx), -hi, "toward -inf must give -hi");
+    assert_eq!(f64_to_f32_with_rm(v, 2, &ctx), -lo, "toward +inf must give -lo");
+    assert_eq!(f64_to_f32_with_rm(v, 3, &ctx), -lo, "toward zero must give -lo");
+}
+
+/// Exactly-representable values are rounding-mode independent.
+#[test]
+fn test_f64_to_f32_rm_exact_is_mode_independent() {
+    let ctx = SymContext::new_mock();
+    for rm in 0..4 {
+        assert_eq!(f64_to_f32_with_rm(0.5f64, rm, &ctx), 0.5f32, "rm={rm}");
+        assert_eq!(f64_to_f32_with_rm(-0.0f64, rm, &ctx), -0.0f32, "rm={rm}");
+        assert!(
+            f64_to_f32_with_rm(f64::NAN, rm, &ctx).is_nan(),
+            "NaN stays NaN under rm={rm}"
+        );
+        assert_eq!(
+            f64_to_f32_with_rm(f64::NEG_INFINITY, rm, &ctx),
+            f32::NEG_INFINITY,
+            "rm={rm}"
+        );
+    }
+}
+
+/// IEEE-754 overflow: the directed modes that round toward the finite side
+/// must saturate at f32::MAX instead of producing infinity.
+#[test]
+fn test_f64_to_f32_rm_overflow_saturates() {
+    let ctx = SymContext::new_mock();
+    assert_eq!(f64_to_f32_with_rm(1e300, 0, &ctx), f32::INFINITY);
+    assert_eq!(f64_to_f32_with_rm(1e300, 1, &ctx), f32::MAX, "toward -inf");
+    assert_eq!(f64_to_f32_with_rm(1e300, 2, &ctx), f32::INFINITY, "toward +inf");
+    assert_eq!(f64_to_f32_with_rm(1e300, 3, &ctx), f32::MAX, "toward zero");
+    assert_eq!(f64_to_f32_with_rm(-1e300, 3, &ctx), f32::MIN, "toward zero");
+    assert_eq!(f64_to_f32_with_rm(-1e300, 2, &ctx), f32::MIN, "toward +inf");
+}
+
+/// IEEE-754 underflow: rounding away from zero must reach the smallest
+/// subnormal rather than flushing to zero.
+#[test]
+fn test_f64_to_f32_rm_underflow() {
+    let ctx = SymContext::new_mock();
+    let tiny = 1e-60f64; // far below f32's smallest subnormal (~1.4e-45)
+    let min_subnormal = f32::from_bits(1);
+    assert_eq!(f64_to_f32_with_rm(tiny, 0, &ctx), 0.0f32);
+    assert_eq!(f64_to_f32_with_rm(tiny, 1, &ctx), 0.0f32, "toward -inf");
+    assert_eq!(
+        f64_to_f32_with_rm(tiny, 2, &ctx),
+        min_subnormal,
+        "toward +inf"
+    );
+    assert_eq!(f64_to_f32_with_rm(tiny, 3, &ctx), 0.0f32, "toward zero");
+    assert_eq!(
+        f64_to_f32_with_rm(-tiny, 1, &ctx),
+        -min_subnormal,
+        "toward -inf"
+    );
+}
+
 /// F64→F32 of -infinity: preserved as -infinity.
 #[test]
 fn test_f64_to_f32_neg_infinity() {

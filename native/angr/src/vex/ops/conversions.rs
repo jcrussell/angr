@@ -324,16 +324,50 @@ impl VEXOps {
         ))
     }
 
+    /// Narrow an f64 to f32 under an explicit VEX rounding mode.
+    ///
+    /// Rust's `as f32` cast is hard-wired to round-nearest-ties-to-even, so it
+    /// only implements `rm & 0x3 == 0`. For the directed modes we start from
+    /// that nearest result and, when it landed on the wrong side of the exact
+    /// value, step one ULP toward the requested direction. `next_up`/
+    /// `next_down` also give the IEEE-754 overflow behaviour for free
+    /// (`+inf.next_down() == f32::MAX`, so RZ/RD saturate rather than
+    /// overflowing to infinity) and the underflow behaviour (`0.0.next_up()`
+    /// is the smallest subnormal, so RU on a tiny positive value does not
+    /// flush to zero).
+    fn narrow_f64_to_f32_rm(v: f64, rm: u32) -> f32 {
+        let nearest = v as f32;
+        // NaN and exactly-representable values are rounding-mode independent.
+        // `f64::from(nearest) == v` also covers infinities.
+        if rm & 0x3 == 0 || v.is_nan() || f64::from(nearest) == v {
+            return nearest;
+        }
+        let toward_neg_inf = match rm & 0x3 {
+            1 => true,    // toward -infinity
+            2 => false,   // toward +infinity
+            _ => v > 0.0, // toward zero: down when positive, up when negative
+        };
+        if toward_neg_inf {
+            if f64::from(nearest) > v {
+                nearest.next_down()
+            } else {
+                nearest
+            }
+        } else if f64::from(nearest) < v {
+            nearest.next_up()
+        } else {
+            nearest
+        }
+    }
+
     // --- Rounding-mode float conversions (binop variants) ---
     pub(super) fn f64_to_f32_rm(
         rm: RustBV,
         arg: RustBV,
         _ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
-        // Note: concrete path ignores rounding mode (uses direct cast); the
-        // symbolic path correctly threads rm through Z3 FP.
-        Self::float_to_float_rm(rm, arg, FloatPrec::F64, FloatPrec::F32, |v, _rm| {
-            (f64::from_bits(v as u64) as f32).to_bits() as u128
+        Self::float_to_float_rm(rm, arg, FloatPrec::F64, FloatPrec::F32, |v, rm| {
+            Self::narrow_f64_to_f32_rm(f64::from_bits(v as u64), rm).to_bits() as u128
         })
     }
     pub(super) fn f32_to_i32s_rm(
