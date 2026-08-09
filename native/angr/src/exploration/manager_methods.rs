@@ -387,14 +387,6 @@ impl RustExplorationManager {
         self.parallel_real_workers = n.max(1);
     }
 
-    /// Read-back of the effective real-worker count (env override or the
-    /// programmatic `set_parallel_workers` value). Lets the Python driver
-    /// observe the engaged worker count without duplicating the env-precedence
-    /// logic.
-    pub fn parallel_workers(&self) -> usize {
-        self.parallel_real_workers
-    }
-
     /// Set maximum steps per run iteration.
     #[angr_macros::steady_guarded]
     pub fn set_max_steps_per_run(&mut self, n: u32) {
@@ -478,11 +470,18 @@ impl RustExplorationManager {
 
     /// Cumulative number of loop-exit deferred forks dropped at an
     /// `UnconstrainedJump` while deferred-fork mode was active (angr-ckdy).
-    /// Non-resetting: a step-driven `explore()`-bypassing loop (CADET solve.py
-    /// phase 3) polls this after `active_empty` to decide whether the stash
-    /// collapsed because egg-reaching forks were discarded — if so the Python
-    /// wrapper re-seeds in eager mode. Returns 0 when no forks were ever
-    /// dropped (genuine exhaustion), so a spurious eager re-run is avoided.
+    /// Non-resetting.
+    ///
+    /// Diagnostic-only: nothing in `angr/` or `tests/` reads this today. It
+    /// distinguishes "the active stash collapsed because egg-reaching forks
+    /// were discarded" (non-zero) from genuine exhaustion (zero), which is
+    /// what a step-driven `explore()`-bypassing driver would need to decide on
+    /// an eager re-seed — but the shipped path never asks:
+    /// `rust_manager.py::_maybe_phase2_eager_retry` retries unconditionally on
+    /// `active_empty`, and CADET's `solve.py` opts into
+    /// `set_materialize_unconstrained_forks(true)` instead of polling. Kept as
+    /// a debugging read-out for that mode; do not document a consumer that
+    /// does not exist (angr-c7xno.24).
     pub fn deferred_forks_dropped(&self) -> u64 {
         self.deferred_forks_dropped
     }

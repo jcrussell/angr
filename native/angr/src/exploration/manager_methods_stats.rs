@@ -1,7 +1,22 @@
-//! `#[pymethods]` for [`RustExplorationManager`]: solver profiling stats.
+//! `#[pymethods]` for [`RustExplorationManager`]: introspection —
+//! solver profiling stats, constraint-sharing analysis, and stash snapshots.
 //!
 //! One of several `#[pymethods]` blocks for the pyclass; see the
 //! `manager_methods` module doc for the split rationale (angr-9ke6b.50).
+//!
+//! Three unrelated function groups live here, so — following the
+//! `manager_methods_constraints` precedent — they are spelled out rather
+//! than summarised by the one-liner above:
+//!
+//! - **Solver profiling**: `get_solver_stats`, `reset_solver_stats` (static,
+//!   process-global Z3 counters).
+//! - **Constraint-sharing analysis**: `analyze_constraint_sharing` — walks
+//!   every stash's assumed-constraint DAG and reports pointer- vs
+//!   structural-identity sharing (angr-zdho).
+//! - **Snapshot serialize/restore**: `dump_snapshot_bytes` /
+//!   `load_snapshot_bytes` — versioned `StashManager` byte envelopes, both
+//!   finalizing a live steady session first (see their docs for the
+//!   finalize-then-capture contract).
 //!
 //! This is a Python-boundary module; `unwrap`/`expect` are denied here so a
 //! future panic-on-input landmine cannot be reintroduced without a reviewed,
