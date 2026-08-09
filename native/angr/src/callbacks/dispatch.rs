@@ -617,9 +617,15 @@ impl PythonCallbacks {
             // Hard-error rather than silently no-op (module invariant 1,
             // `avoid-silent-no-op-callback-fallbacks`): a silent Ok(()) here
             // would drop the store and diverge Rust↔Python memory. Every
-            // production call site guards with has_memory_store_symbolic_full(),
-            // so this is only reachable if a future unguarded caller (or a
-            // teardown that nulls the callback) hits it — surface it loudly.
+            // *direct* production call site guards with
+            // has_memory_store_symbolic_full(); the one indirect path, via
+            // `call_memory_store_symbolic`, is deliberately unguarded because
+            // rust_manager.py::_setup_callbacks wires this callback
+            // unconditionally (rationale in that method's body comment). So
+            // this is only
+            // reachable under Python/.so version skew, from a future unguarded
+            // caller, or from a teardown that nulls the callback — surface it
+            // loudly.
             let cb = require_callback!(self.memory_store_symbolic_full);
 
             let claripy_mod = py.import("claripy")?;

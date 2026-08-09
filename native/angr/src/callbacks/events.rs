@@ -1,4 +1,5 @@
-//! Run-loop wire types: results and memory-load payloads.
+//! Run-loop wire types: [`RunResult`] and the [`RunErrorKind`] /
+//! [`ErrorRoute`] pair that classifies and routes its error variant.
 //!
 //! Split out of `callbacks.rs` (god-module decomposition, angr-zel8z.2).
 
