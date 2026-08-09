@@ -188,103 +188,113 @@ pub(super) fn copy_forward(
     Ok(())
 }
 
+/// Outcome of `resolve_copy_args` — the argument-resolution preamble shared by
+/// `NativeMemcpy` and `NativeMemmove`.
+enum CopyPlan {
+    /// Nothing is left for the caller to do: the copy was either already
+    /// performed by one of the symbolic paths or was a zero-byte no-op. The
+    /// payload is the procedure's return value.
+    Done(Option<RustBV>),
+    /// All three arguments resolved to concrete values and the (non-empty) copy
+    /// still has to be made — the one step where `memcpy` and `memmove` differ.
+    Concrete { dst: u64, src: u64, size: usize },
+}
+
+/// Resolve `memcpy`/`memmove`'s three arguments, handling every case the two
+/// procedures share and leaving only the direction-specific concrete copy to
+/// the caller.
+///
+/// The cases handled here — symbolic `dst`/`src` (via `copy_symbolic_addr`),
+/// symbolic `size` (via `copy_symbolic_size`), the `MAX_COPY_SIZE` cap and the
+/// zero-size short-circuit — are identical for both procedures: both symbolic
+/// helpers snapshot every source byte before storing, so they already satisfy
+/// the memmove overlap contract and need no backward-copy special case. Only
+/// the concrete-size copy differs, which is why that is the one variant handed
+/// back rather than performed here.
+fn resolve_copy_args(
+    state: &mut RustSimState,
+    dst_bv: &RustBV,
+    src_bv: &RustBV,
+    size_bv: &RustBV,
+) -> Result<CopyPlan, ProcedureError> {
+    // A symbolic `dst` and/or `src` takes the bounded candidate-pair path.
+    let (dst, src) = match (
+        extract_concrete_arg(dst_bv, "dst"),
+        extract_concrete_arg(src_bv, "src"),
+    ) {
+        (Ok(d), Ok(s)) => (d, s),
+        _ => return copy_symbolic_addr(state, dst_bv, src_bv, size_bv).map(CopyPlan::Done),
+    };
+    // `dst` is concrete here, so the returned dest pointer is the
+    // value-equivalent BV (the manual impl returned args[0]).
+    let ret = dst_bv.clone();
+
+    // --- Symbolic size: bounded conditional stores. ---
+    let Some(size) = size_bv.as_u64() else {
+        copy_symbolic_size(state, src, dst, size_bv)?;
+        return Ok(CopyPlan::Done(Some(ret)));
+    };
+    let size = size as usize;
+
+    check_max(size as u64, MAX_COPY_SIZE)?;
+
+    // Handle zero-size copy
+    if size == 0 {
+        return Ok(CopyPlan::Done(Some(ret)));
+    }
+
+    Ok(CopyPlan::Concrete { dst, src, size })
+}
+
 crate::declare_proc! {
     /// Native memcpy: `void *memcpy(void *dest, const void *src, size_t n)`.
     ///
-    /// Copies n bytes from src to dest. Returns dest.
+    /// Copies n bytes from src to dest. Returns dest. Everything but the final
+    /// copy is shared with `NativeMemmove` via `resolve_copy_args`.
     name = "memcpy",
     struct = NativeMemcpy,
     args = [dst_bv: bv, src_bv: bv, size_bv: bv],
     call |state| {
-        // A symbolic `dst` and/or `src` takes the bounded candidate-pair path.
-        let (dst, src) = match (
-            extract_concrete_arg(&dst_bv, "dst"),
-            extract_concrete_arg(&src_bv, "src"),
-        ) {
-            (Ok(d), Ok(s)) => (d, s),
-            _ => return copy_symbolic_addr(state, &dst_bv, &src_bv, &size_bv),
-        };
-        // `dst` is concrete here, so the returned dest pointer is the
-        // value-equivalent BV (the manual impl returned args[0]).
-        let ret = dst_bv;
-
-        // --- Symbolic size: bounded conditional stores. ---
-        let Some(size) = size_bv.as_u64() else {
-            copy_symbolic_size(state, src, dst, &size_bv)?;
-            return Ok(Some(ret));
-        };
-        let size = size as usize;
-
-        check_max(size as u64, MAX_COPY_SIZE)?;
-
-        // Handle zero-size copy
-        if size == 0 {
-            return Ok(Some(ret));
+        match resolve_copy_args(state, &dst_bv, &src_bv, &size_bv)? {
+            CopyPlan::Done(ret) => Ok(ret),
+            CopyPlan::Concrete { dst, src, size } => {
+                copy_forward(state, src, dst, size)?;
+                Ok(Some(dst_bv))
+            }
         }
-
-        copy_forward(state, src, dst, size)?;
-        Ok(Some(ret))
     }
 }
 
 crate::declare_proc! {
     /// Native memmove: `void *memmove(void *dest, const void *src, size_t n)`.
     ///
-    /// Like memcpy, but handles overlapping regions correctly.
+    /// Like memcpy, but handles overlapping regions correctly. Only that final
+    /// concrete copy differs; the argument preamble is shared with
+    /// `NativeMemcpy` via `resolve_copy_args` (whose symbolic paths are already
+    /// overlap-safe, so they need no backward-copy special case).
     name = "memmove",
     struct = NativeMemmove,
     args = [dst_bv: bv, src_bv: bv, size_bv: bv],
     call |state| {
-        // A symbolic `dst` and/or `src` takes the bounded candidate-pair path,
-        // which snapshots source bytes before storing and so is overlap-safe.
-        let (dst, src) = match (
-            extract_concrete_arg(&dst_bv, "dst"),
-            extract_concrete_arg(&src_bv, "src"),
-        ) {
-            (Ok(d), Ok(s)) => (d, s),
-            _ => return copy_symbolic_addr(state, &dst_bv, &src_bv, &size_bv),
-        };
-        // `dst` is concrete here, so the returned dest pointer is the
-        // value-equivalent BV (the manual impl returned args[0]).
-        let ret = dst_bv;
-
-        // --- Symbolic size: bounded conditional stores. ---
-        //
-        // `copy_symbolic_size` snapshots all source bytes before storing, so it
-        // handles overlapping regions correctly without the backward-copy
-        // special case the concrete path uses below.
-        let Some(size) = size_bv.as_u64() else {
-            copy_symbolic_size(state, src, dst, &size_bv)?;
-            return Ok(Some(ret));
-        };
-        let size = size as usize;
-
-        check_max(size as u64, MAX_COPY_SIZE)?;
-
-        // Handle zero-size copy
-        if size == 0 {
-            return Ok(Some(ret));
-        }
-
-        // For overlapping regions, we need to copy to a temporary buffer
-        // or copy in reverse order if dst > src
-        if memmove_copies_backward(dst, src, size as u64) {
-            // Overlapping: copy backwards
-            for i in (0..size).rev() {
-                let src_addr = src.wrapping_add(i as u64);
-                let dst_addr = dst.wrapping_add(i as u64);
-
-                let value = state.memory_load(src_addr, 1)?;
-
-                state.memory_store(dst_addr, value)?;
+        match resolve_copy_args(state, &dst_bv, &src_bv, &size_bv)? {
+            CopyPlan::Done(ret) => Ok(ret),
+            CopyPlan::Concrete { dst, src, size } => {
+                if memmove_copies_backward(dst, src, size as u64) {
+                    // Overlapping with dst inside [src, src + size): copy
+                    // backwards so we never clobber a source byte before
+                    // reading it.
+                    for i in (0..size).rev() {
+                        let value = state.memory_load(src.wrapping_add(i as u64), 1)?;
+                        state.memory_store(dst.wrapping_add(i as u64), value)?;
+                    }
+                } else {
+                    // Non-overlapping or dst < src: copy forwards
+                    copy_forward(state, src, dst, size)?;
+                }
+                // Return dest pointer
+                Ok(Some(dst_bv))
             }
-        } else {
-            // Non-overlapping or dst < src: copy forwards
-            copy_forward(state, src, dst, size)?;
         }
-
-        // Return dest pointer
-        Ok(Some(ret))
     }
 }
 
