@@ -223,26 +223,63 @@ impl ConcretizationResult {
 /// - Endianness-aware loads and stores
 /// - Dirty page tracking for efficient sync
 /// - Lazy page regions for on-demand fetching
+///
+/// # Merge coverage (angr-91vj9.3)
+///
+/// `RustSimState` labels `memory` `#[merge_policy = "delegate"]`, which stops
+/// the top-level derive at this struct's boundary — and the same
+/// "field-added-without-a-merge-line" bug family promptly recurred one level
+/// deeper (angr-c7xno.50: [`Self::merge`] adopted an other-only page's
+/// `multi_bitmap` but never copied the matching `multi_objects` payloads,
+/// because that sidecar is a flat map here rather than nested in
+/// [`MemoryPage`]). Deriving [`angr_macros::MergePolicy`] here extends the
+/// guarantee: a new field — especially a new address-keyed sidecar map — does
+/// not compile until it declares how [`Self::merge`] treats it. The behavioural
+/// half lives in `memory/tests/merge_sidecars.rs`, which exercises every
+/// address-keyed sidecar across the other-only-page adoption path.
+///
+/// `in_place_self` is the common label here because [`Self::merge`] mutates
+/// `self` rather than building a new struct, so "self wins" means "never
+/// assigned" and has no line to generate.
+#[derive(angr_macros::MergePolicy)]
 pub struct SymbolicMemory {
     /// Pages indexed by page number (addr >> 12).
+    #[merge_policy = "joint"]
     pages: OrdMap<u64, MemoryPage>,
     /// Symbolic objects (for values that span multiple bytes).
+    #[merge_policy = "joint"]
     symbolic_objects: FxHashMap<Address, RustBV>,
     /// Default permissions for new pages.
+    ///
+    /// Merge-invariant: merge arms are fork siblings, which inherit this from
+    /// the common ancestor and have no API that reassigns it mid-branch.
+    #[merge_policy = "in_place_self"]
     default_permissions: Permission,
     /// Endianness for this memory.
+    ///
+    /// Merge-invariant: fixed at construction from the arch, never reassigned.
+    #[merge_policy = "in_place_self"]
     endness: Endness,
     /// Pages that have been modified since last clear.
     /// Stores page numbers (addr >> 12) for efficient tracking.
+    ///
+    /// Merged as a set union — see the accumulating-sidecar block at the end
+    /// of [`Self::merge`].
+    #[merge_policy = "joint"]
     dirty_pages: FxHashSet<u64>,
     /// Lazy regions: page ranges that CAN have pages fetched on-demand.
     /// Stores (start_page_num, end_page_num) pairs.
     /// When a load hits an unmapped page in a lazy region, the interpreter
     /// should fetch it from Python rather than failing.
+    ///
+    /// Merged as a deduplicated union — see the accumulating-sidecar block at
+    /// the end of [`Self::merge`].
+    #[merge_policy = "joint"]
     lazy_regions: Vec<(u64, u64)>,
     /// Reverse index for symbolic objects: maps each byte offset within a
     /// symbolic object to (base_addr, width_bits). Enables O(1) lookup when
     /// loading a byte that falls inside a wider symbolic object.
+    #[merge_policy = "joint"]
     symbolic_spans: FxHashMap<Address, (Address, u32)>,
     /// Multi-cell side table indexed by byte address. A byte is "Multi"
     /// (has an entry here) when a symbolic-address store emitted lazy
@@ -255,28 +292,44 @@ pub struct SymbolicMemory {
     /// stale Symbolic entry before installing a Multi.
     ///
     /// See `memory/multi.rs` for the `MultiPayload` invariants.
+    #[merge_policy = "joint"]
     multi_objects: FxHashMap<Address, MultiPayload>,
     /// Deferred symbolic stores. Instead of eagerly concretizing symbolic
     /// addresses at store time, we append here and materialize on load.
+    #[merge_policy = "joint"]
     pending_writes: Vec<PendingWrite>,
     /// If true, fill unconstrained memory with zeros instead of symbolic values.
     /// Corresponds to angr's ZERO_FILL_UNCONSTRAINED_MEMORY option.
+    ///
+    /// Merge-invariant: a SimOption mirror, pushed from Python at state setup
+    /// and identical across fork siblings.
+    #[merge_policy = "in_place_self"]
     zero_fill_unconstrained: bool,
     /// Addresses of symbolic values imported from Python.
     /// Used to filter get_state_symbolic_z3_asts: even if the binary modifies
     /// an imported value (turning Symbolic→Expression), the address should be
     /// excluded from export since Python already has the correct original value.
+    ///
+    /// Merged as a set union — see the accumulating-sidecar block at the end
+    /// of [`Self::merge`].
+    #[merge_policy = "joint"]
     imported_addrs: FxHashSet<Address>,
     /// If true, enforce per-page R/W permissions on load and store. Mirrors
     /// angr's STRICT_PAGE_ACCESS option. Default is false to keep existing
     /// callers (which often map all memory as RWX or rely on Python perms)
     /// working unchanged.
+    ///
+    /// Merge-invariant: a SimOption mirror, see `zero_fill_unconstrained`.
+    #[merge_policy = "in_place_self"]
     enforce_permissions: bool,
     /// If true (and `enforce_permissions` is also true), reject instruction
     /// fetches from mapped pages without the X bit. Mirrors angr's ENABLE_NX
     /// option: Python's heavy VEX engine only fires the non-executable check
     /// when BOTH STRICT_PAGE_ACCESS and ENABLE_NX are in state.options
     /// (angr/engines/vex/heavy/heavy.py:115-124). Default false.
+    ///
+    /// Merge-invariant: a SimOption mirror, see `zero_fill_unconstrained`.
+    #[merge_policy = "in_place_self"]
     enforce_nx: bool,
     /// Per-byte monotonic version counter for Multi cells. Bumped on every
     /// `set_multi_alternatives` and `clear_multi_at` so the Phase 4.1
@@ -285,6 +338,10 @@ pub struct SymbolicMemory {
     /// Versions persist across flush/reinstall so the fingerprint of a
     /// post-flush Multi byte differs from the cached pre-flush snapshot
     /// even when both happen to have the same alternative count.
+    ///
+    /// Merged implicitly but genuinely: every merge-installed Multi cell goes
+    /// through `set_multi_alternatives`, which bumps the version at that byte.
+    #[merge_policy = "joint"]
     pub(super) multi_versions: FxHashMap<Address, u64>,
     /// Phase 4.1 (angr-mmdh.1): cached results from
     /// `assemble_load_with_multi`, keyed by `(addr, size)`. Each entry
@@ -294,6 +351,13 @@ pub struct SymbolicMemory {
     /// matches — skipping the per-byte concat + ITE-rebuild that
     /// dominated Phase 2 gate-on cost. RefCell because the cache lives
     /// on the load path (`&self`).
+    ///
+    /// Not merged, and does not need to be: entries are validated against a
+    /// freshly recomputed fingerprint on every hit, and
+    /// `compute_wider_load_fingerprint` returns `None` for any range holding a
+    /// plain-Symbolic byte — which is exactly what a merged byte becomes. A
+    /// merge therefore cannot leave a stale entry reachable.
+    #[merge_policy = "in_place_self"]
     wider_load_cache: RefCell<FxHashMap<(Address, u32), CachedWiderLoad>>,
 }
 
@@ -1310,8 +1374,21 @@ impl SymbolicMemory {
         for (&addr, other_obj) in &other.symbolic_objects {
             if let std::collections::hash_map::Entry::Vacant(e) = self.symbolic_objects.entry(addr)
             {
+                let width = other_obj.width();
                 e.insert(other_obj.clone());
-                self.symbolic_spans.insert(addr, (addr, other_obj.width()));
+                // `symbolic_spans` is the *reverse* index: an object wider than
+                // one byte owns an entry per covered byte, not just its base
+                // (see `import_symbolic_value`). Adopting the object while
+                // indexing only the base left every interior byte of an
+                // other-only wide object symbolic in the page bitmap but
+                // unresolvable through either sidecar, so a load of `addr + 1`
+                // fell through to the page's concrete placeholder — the same
+                // adopt-the-bitmap-forget-the-sidecar shape as angr-c7xno.50,
+                // one map over (angr-91vj9.3).
+                self.symbolic_spans.insert(addr, (addr, width));
+                for i in 1..u64::from(width / 8) {
+                    self.symbolic_spans.insert(addr + i, (addr, width));
+                }
                 merged = true;
             }
         }
@@ -1343,6 +1420,34 @@ impl SymbolicMemory {
             );
             merged = true;
         }
+
+        // Accumulating sidecars (angr-91vj9.3). None of these are keyed off
+        // the page bitmaps, so the byte walk above cannot reconstruct them —
+        // each grows monotonically over a branch's life, which makes a union
+        // the only treatment consistent with its meaning:
+        //
+        // * `dirty_pages`: a page `other` wrote — including an other-only page
+        //   adopted wholesale just above — is dirty in the merged state too.
+        //   Dropping it strands the write: `_replay_rust_dirty_pages` never
+        //   pushes the page to the Python mirror, which then reads stale bytes.
+        // * `lazy_regions`: `RustSimState::add_memory_lazy_region` runs
+        //   mid-branch from the callback memory proxy, so `other` can hold a
+        //   region `self` lacks; dropping it turns a later store there into a
+        //   spurious `Unmapped` instead of an auto-map.
+        // * `imported_addrs`: `store_symbolic_from_python` likewise runs
+        //   mid-branch. The set only suppresses re-export of a value Python
+        //   already has, so a union is safe in both directions.
+        //
+        // They deliberately do not flip `merged`, which reports whether any
+        // stored *value* differed between the arms.
+        self.dirty_pages.extend(other.dirty_pages.iter().copied());
+        for region in &other.lazy_regions {
+            if !self.lazy_regions.contains(region) {
+                self.lazy_regions.push(*region);
+            }
+        }
+        self.imported_addrs
+            .extend(other.imported_addrs.iter().copied());
 
         merged
     }

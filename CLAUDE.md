@@ -451,7 +451,11 @@ Caveats:
   carry a documented `#[merge_policy = "..."]` (validation-only — the actual
   merge logic stays hand-written in `state/fork.rs`, since several fields
   need whole-slice/cross-field logic a per-field derive can't express
-  safely). See bd memory `angr-macros-call-site-invariants`.
+  safely). Since angr-91vj9.3 the same derive also guards `SymbolicMemory`,
+  whose `delegate` label at the `RustSimState` level used to end the
+  guarantee one level above where the bug family kept recurring; its
+  behavioural half is `memory/tests/merge_sidecars.rs`. See bd memory
+  `angr-macros-call-site-invariants`.
 - **Rust exploration**: `angr/exploration/rust_manager.py`, `native/angr/src/exploration/` (entry point `mod.rs` — struct def + module wiring only; the `#[pymethods] impl RustExplorationManager` surface lives in sibling `manager_methods.rs` plus its `manager_methods_{hooks,state,constraints,procedures,techniques,export,run,stats}.rs` blocks — one file per former section banner, enabled by PyO3's `multiple-pymethods` feature, angr-nbim4.1 / angr-9ke6b.50 — plus run_loop.rs, stepping.rs, resume.rs, helpers.rs, state_api.rs, stats_api.rs, pending_api.rs, constraints.rs, execution_env.rs, memory_config.rs, profiling.rs, state_lifecycle.rs, state_id.rs, scheduler.rs (work-stealing parallel pool, angr-1ilq.3 — root keeps `CancelToken` / `TaskOutcome` / `TerminalSummary`; the angr-9ke6b.59 split put metrics in `scheduler_stats.rs`, wave-mode `WorkTransport`/`WaveJob` in `scheduler_transport.rs`, the session protocol + `PersistentPool`/`worker_thread` in `scheduler_pool.rs`, and the per-worker loop in `scheduler_worker.rs`), step_core.rs (Send+Sync StepContext + run_interpreter_step_core, angr-1ilq.3 increment 2b-i), and the angr-zel8z.3 data-model split: event.rs (ExplorationEvent pyclass), callback_types.rs (CallbackReason + PendingCallback), native_technique.rs (NativeTechnique enum))
 - **Z3 solver**: `native/angr/src/symbolic/context.rs`, `native/angr/src/solver.rs`
   (parent keeps the Python error mapping + claripy-AST API; `solver/z3_ptr.rs`

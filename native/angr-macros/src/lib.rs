@@ -43,6 +43,13 @@ const VALID_MERGE_POLICIES: &[&str] = &[
     // Carried from `self` unchanged; the field is not expected to diverge
     // across merge branches (e.g. `arch`, `pc`).
     "self_wins",
+    // `self_wins` for an *in-place* merge — one that mutates `self` rather
+    // than building a fresh struct (e.g. `SymbolicMemory::merge`). Such a
+    // merge keeps `self`'s value by simply never assigning the field, so
+    // there is no line for a generated `merge_field_<name>()` to replace and
+    // the policy is non-mechanical by construction. Use `self_wins` (+
+    // `#[merge_manual]` if needed) for struct-literal merges instead.
+    "in_place_self",
     // Freshly computed for the merged state, not derived from any branch's
     // prior value (e.g. `state_id`, `parent_id`).
     "computed",

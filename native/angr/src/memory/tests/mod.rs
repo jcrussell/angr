@@ -17,6 +17,7 @@ mod merge_cost_shape;
 mod merge_divergence;
 mod merge_multi;
 mod merge_prefetch;
+mod merge_sidecars;
 mod multi;
 mod page_boundary_property_tests;
 mod symbolic;
