@@ -252,7 +252,7 @@ fn test_little_endian_128bit_wide_symbolic_store() {
 /// addresses, then loads 4 bytes back. This bypasses both the
 /// exact-address fast path (no width-32 entry at base) and the
 /// symbolic_spans path (8-bit stores have no span entries), forcing
-/// the per-byte concat fallback (~lines 642-680 of memory.rs).
+/// the per-byte concat fallback in `load_concrete_common`.
 ///
 /// Before the fix, the LE concat order was hardcoded for both
 /// endiannesses: parts[N-1] :: ... :: parts[0]. For BE that put byte 0
@@ -309,7 +309,7 @@ fn test_per_byte_symbolic_concat_big_endian() {
 /// angr-76mo: wider-symbolic linear-scan fallback in load_concrete
 /// must honour memory endianness when extracting a sub-range.
 ///
-/// The linear scan at lines 672-680 is reached when no per-byte
+/// The linear scan inside `containing_wider_sym` is reached when no per-byte
 /// reconstruction succeeds but a containing wider BV exists. Direct
 /// manipulation of `symbolic_objects` (without populating
 /// `symbolic_spans`) is the surest way to force this path: the
@@ -466,8 +466,9 @@ fn test_containing_wider_sym_spans_first() {
 }
 
 /// angr-uwtj: end-to-end load_concrete via the spans-first slow path.
-/// Setup forces `has_inner_overlap=true` (bypassing the fast spans
-/// check at line ~95) and removes a single spans entry so
+/// Setup forces `has_inner_overlap=true` (bypassing the
+/// `symbolic_spans` fast path in `load_concrete_common`) and removes
+/// a single spans entry so
 /// `try_byte_merge_load` fails on that byte. The slow-path
 /// reconstruction then calls `containing_wider_sym`, which finds the
 /// wider sym via spans path 1 and extracts the load range
@@ -1062,7 +1063,7 @@ fn test_pending_write_visible_after_flush() {
 /// by both halves and must be observable in BOTH after each calls
 /// `flush_pending_writes` independently. Regression guard against
 /// drift in the fork pending_writes clone path
-/// (memory/mod.rs:298) and the flush pipeline.
+/// (`SymbolicMemory::fork`) and the flush pipeline.
 #[test]
 fn test_fork_pending_writes_visible_in_both_after_flush() {
     let ctx = SymContext::new_mock();
@@ -1431,8 +1432,9 @@ fn test_record_mem_ite_depth_helper() {
 
 /// angr-jvjf (case 1): a concrete byte store into the middle of a
 /// wider symbolic object based at the same load address must not be
-/// shadowed by the original wider sym. Pre-fix the load fast path at
-/// load.rs:74 returns `symbolic_objects[addr]` entire because its
+/// shadowed by the original wider sym. Pre-fix the exact-address
+/// `symbolic_objects` fast path in `load_concrete_common` returns
+/// `symbolic_objects[addr]` entire because its
 /// width still matches the requested size — the concrete byte we
 /// wrote at addr+3 is silently lost.
 #[cfg(feature = "vex-engine-z3")]
@@ -1472,8 +1474,9 @@ fn test_concrete_overwrite_inner_byte_of_wider_sym_at_base() {
 /// angr-jvjf (case 2): a concrete byte store into the middle of a
 /// wider symbolic object based at an earlier address must not leave
 /// the `symbolic_spans` entry stale. Pre-fix a 1-byte load at the
-/// overwritten offset hits the span fast path at load.rs:95 and
-/// returns the now-stale extract of the wider sym.
+/// overwritten offset hits the `symbolic_spans` fast path in
+/// `load_concrete_common` and returns the now-stale extract of the
+/// wider sym.
 #[test]
 fn test_concrete_overwrite_clears_stale_symbolic_spans() {
     let ctx = SymContext::new_mock();
@@ -1508,7 +1511,8 @@ fn test_concrete_overwrite_clears_stale_symbolic_spans() {
 /// angr-7qon (case 1): a concrete write at the base of a wider sym
 /// that doesn't cover the full sym width must not leave orphaned
 /// page-bitmap bits for the surviving trailing bytes. Pre-fix,
-/// store.rs:154 removes the wider sym entirely (and the spans),
+/// `store_concrete`'s `symbolic_objects.remove(&addr)` cleanup
+/// removes the wider sym entirely (and the spans),
 /// but page.store_concrete only cleared the bitmap bits within the
 /// concrete write range — so byte 0x1001 (the survivor) still has
 /// its symbolic bit set with no symbolic_objects entry covering it,

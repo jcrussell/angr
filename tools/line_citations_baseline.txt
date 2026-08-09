@@ -111,14 +111,6 @@ native/angr/src/interpreter/statements_store.rs	// Mirrors `address_concretizati
 native/angr/src/memory/mod.rs	/// (angr/engines/vex/heavy/heavy.py:115-124). Default false.
 native/angr/src/memory/store.rs	// early `return` at `address_concretization_mixin.py:327-329`.
 native/angr/src/memory/store.rs	/// address_concretization_mixin.py:292-294, 342-344) does the same for
-native/angr/src/memory/tests/multi.rs	/// `load_concrete_lazy_inner` at line 548) checks `multi_objects.contains_key`
-native/angr/src/memory/tests/symbolic.rs	/// (memory/mod.rs:298) and the flush pipeline.
-native/angr/src/memory/tests/symbolic.rs	/// The linear scan at lines 672-680 is reached when no per-byte
-native/angr/src/memory/tests/symbolic.rs	/// check at line ~95) and removes a single spans entry so
-native/angr/src/memory/tests/symbolic.rs	/// load.rs:74 returns `symbolic_objects[addr]` entire because its
-native/angr/src/memory/tests/symbolic.rs	/// overwritten offset hits the span fast path at load.rs:95 and
-native/angr/src/memory/tests/symbolic.rs	/// store.rs:154 removes the wider sym entirely (and the spans),
-native/angr/src/memory/tests/symbolic.rs	/// the per-byte concat fallback (~lines 642-680 of memory.rs).
 native/angr/src/procedures/sprintf_tests.rs	// format_parser.py masks each concretized int arg to `size*8` bits (line 96)
 native/angr/src/state/mod.rs	/// before enumeration is attempted. See engines/successors.py:234-239.
 native/angr/src/state/mod.rs	/// the next block lift. See engines/successors.py:297-307,326-331.

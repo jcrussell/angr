@@ -1544,7 +1544,8 @@ fn test_phase42_flush_run_length_cap() {
 /// Multi alternative. Pre-fix, `SymbolicMemory::store_concrete` cleared the
 /// page-level `multi_bitmap` bit but left the `multi_objects` entry (and the
 /// `multi_versions` counter) untouched. The next load's dispatcher (see
-/// `load_concrete_lazy_inner` at line 548) checks `multi_objects.contains_key`
+/// `range_has_multi`, the shared gate `load_concrete_common` consults ahead
+/// of every symbolic fast path) checks `multi_objects.contains_key`
 /// and hands the load to `assemble_load_with_multi`, which folds the orphaned
 /// alternatives over the new page-byte default — returning the old Multi
 /// value when the original cond is satisfiable.
