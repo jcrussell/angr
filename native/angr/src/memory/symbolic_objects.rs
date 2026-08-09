@@ -66,7 +66,7 @@ impl SymbolicMemory {
             let byte_addr = addr + i as u64;
             let page_num = byte_addr.page_num();
             let offset = byte_addr.page_offset();
-            let page_addr = page_num << 12;
+            let page_addr = byte_addr.page_base();
 
             // Get or create page
             let page = self

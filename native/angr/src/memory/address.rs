@@ -23,7 +23,7 @@
 //! 4. Error variants keep `u64` so existing `Display` formatting and
 //!    `{addr:x}` interpolation continue to work.
 
-use crate::memory::page::PAGE_MASK;
+use crate::memory::page::{PAGE_MASK, PageIndex};
 
 /// A 64-bit byte address.
 #[derive(
@@ -55,9 +55,23 @@ impl Address {
     }
 
     /// Page number this address belongs to (`addr >> 12`).
+    ///
+    /// Shift comes from [`PageIndex::SHIFT`], which derives it from
+    /// `PAGE_SIZE`, so this cannot drift from the page size the rest of
+    /// `memory/` uses (angr-c7xno.49).
     #[inline]
     pub const fn page_num(self) -> u64 {
-        self.0 >> 12
+        self.0 >> PageIndex::SHIFT
+    }
+
+    /// First byte address of the page this address belongs to.
+    ///
+    /// The inverse of [`page_num`](Self::page_num); exists so call sites that
+    /// need to get back from a page number to its base address do not
+    /// open-code the `<< 12` (angr-c7xno.49).
+    #[inline]
+    pub const fn page_base(self) -> u64 {
+        self.page_num() << PageIndex::SHIFT
     }
 
     /// Offset within the page (`addr & PAGE_MASK`).

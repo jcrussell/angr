@@ -21,7 +21,7 @@
 //! `read=0x4, write=0x2, execute=0x1` (reversed). We translate the
 //! Linux bits explicitly here rather than going through `from_bits`.
 
-use super::page::{PAGE_MASK, PAGE_SIZE, linux_prot_to_permission};
+use super::page::{PAGE_MASK, PAGE_SIZE, PageIndex, linux_prot_to_permission};
 use super::require_syscall_args;
 use super::{
     BoundedArg, MAX_MAP_SIZE as MAX_MPROTECT_RANGE, NativeSyscall, SyscallError, SyscallOutcome,
@@ -94,7 +94,7 @@ impl NativeSyscall for NativeMprotectSyscall {
         let memory = state.memory();
         let mut page_addr = addr;
         while page_addr < page_end {
-            let page_num = page_addr >> 12;
+            let page_num = PageIndex::of(page_addr).get();
             if memory.page_permissions(page_num).is_none() {
                 return Ok(SyscallOutcome::Continue { ret: u64::MAX });
             }
@@ -105,7 +105,7 @@ impl NativeSyscall for NativeMprotectSyscall {
         let memory = state.memory_mut();
         let mut page_addr = addr;
         while page_addr < page_end {
-            let page_num = page_addr >> 12;
+            let page_num = PageIndex::of(page_addr).get();
             // angr-sqfj8.109: the loop above confirmed every page is mapped, so
             // this cannot fail today. Guard it in *every* profile anyway: a
             // debug_assert! here compiled out in release, where a failed update
