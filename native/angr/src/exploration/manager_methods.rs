@@ -22,6 +22,23 @@
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 use super::*;
 
+/// Parse a boolean opt-in env var: set to `1` or `true` (any case) enables it,
+/// anything else (including unset) leaves it off.
+///
+/// The two flags [`RustExplorationManager::new`] reads —
+/// `RUST_PARALLEL_SHADOW_PROBE` and `RUST_PARALLEL_STEADY` — used to spell this
+/// two different ways, the latter accepting only an exact `1`, so
+/// `RUST_PARALLEL_STEADY=true` silently did nothing (angr-c7xno.26). Route any
+/// new boolean flag through here rather than hand-rolling a third rule.
+///
+/// Not used for `ANGR_RUST_FABRICATE_UNSUPPORTED_IROP` (see
+/// `interpreter::expressions::fabricate_unsupported_irop`): that escape hatch
+/// deliberately treats *any* non-empty, non-`0` value as on, and narrowing it
+/// to this rule would turn documented spellings off.
+fn env_flag(name: &str) -> bool {
+    std::env::var(name).is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+}
+
 #[allow(
     unreachable_pub,
     reason = "pyo3 `#[pymethods]`/`#[pyclass]` surface: these items are reached from Python, not from Rust. See the `unreachable_pub` note in lib.rs (angr-9ke6b.50)."
@@ -110,10 +127,7 @@ impl RustExplorationManager {
             parallel_worker_dispatch: Vec::new(),
             parallel_worker_dispatch_folded: 0,
             parallel_worker_of: HashMap::new(),
-            shadow_probe: std::env::var("RUST_PARALLEL_SHADOW_PROBE")
-                .ok()
-                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-                .unwrap_or(false),
+            shadow_probe: env_flag("RUST_PARALLEL_SHADOW_PROBE"),
             parallel_shadow_migration_ns: 0,
             parallel_shadow_migration_states: 0,
             parallel_shadow_migration_bytes: 0,
@@ -126,9 +140,7 @@ impl RustExplorationManager {
             #[cfg(feature = "vex-engine-z3")]
             parallel_session: None,
             parallel_frontier_residency: false,
-            parallel_steady_env: std::env::var("RUST_PARALLEL_STEADY")
-                .map(|v| v == "1")
-                .unwrap_or(false),
+            parallel_steady_env: env_flag("RUST_PARALLEL_STEADY"),
             parallel_residual_drains: 0,
             parallel_steady_budget_yields: 0,
             parallel_post_cancel_steps: 0,
@@ -154,20 +166,21 @@ impl RustExplorationManager {
     }
 
     /// Get active state count.
+    ///
+    /// Named shorthand for
+    /// [`stash_count`](RustExplorationManager::stash_count), which is the one
+    /// place the stash → length lookup lives (angr-c7xno.28).
     pub fn active_count(&self) -> usize {
-        self.sm
-            .get(STASH_ACTIVE)
-            .map(std::collections::VecDeque::len)
-            .unwrap_or(0)
+        self.stash_count(STASH_ACTIVE)
     }
 
     /// Get found state count.
+    ///
+    /// Named shorthand for
+    /// [`stash_count`](RustExplorationManager::stash_count); see
+    /// [`active_count`](RustExplorationManager::active_count).
     pub fn found_count(&self) -> usize {
-        self.sm
-            .stashes()
-            .get(STASH_FOUND)
-            .map(std::collections::VecDeque::len)
-            .unwrap_or(0)
+        self.stash_count(STASH_FOUND)
     }
 
     /// Get stash counts as a dictionary.
