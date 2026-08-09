@@ -78,6 +78,16 @@ jobs:
         run: |
           python3 tools/audit_rounding_mode_threading.py --self-test
           python3 tools/audit_rounding_mode_threading.py
+      # angr-91vj9.4: "silently default a symbolic/unreadable stack pointer or
+      # return address to 0" has been found and fixed three separate times
+      # (angr-sqfj8.62, angr-sqfj8.63, angr-c7xno.29) because the raw accessor
+      # and the logged `_or_log` helper are equally easy to reach for. Same
+      # baseline + `--self-test`-first shape as the rounding-mode audit above;
+      # the baseline is empty and should stay so.
+      - name: SP/return-address default-to-zero audit
+        run: |
+          python3 tools/audit_sp_default_zero.py --self-test
+          python3 tools/audit_sp_default_zero.py
 
   rust_test:
     strategy:

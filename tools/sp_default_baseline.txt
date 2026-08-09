@@ -1,0 +1,8 @@
+# SP / return-address default-to-zero baseline -- see tools/audit_sp_default_zero.py
+# One key per known raw-default site: <relpath>\t<fn>\t<normalized shape>.
+# Regenerate with: tools/audit_sp_default_zero.py --update-baseline
+# This file should stay EMPTY. Routing through the logged helpers
+# (VEXInterpreter::get_stack_pointer_or_log / get_return_addr_or_log,
+# RustExplorationManager::get_return_addr_or_log) or documenting the
+# exception with an `sp-default-ok:` comment are both preferable;
+# growing it needs a reason in the commit message.

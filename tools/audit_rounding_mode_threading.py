@@ -54,6 +54,9 @@ import re
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from rust_source_utils import blank_noise, is_test_file
+
 # Repo layout: this file lives at <repo>/tools/audit_rounding_mode_threading.py
 REPO_ROOT = Path(__file__).resolve().parent.parent
 VEX_DIR = REPO_ROOT / "native" / "angr" / "src" / "vex"
@@ -72,56 +75,7 @@ CLOSURE_RE = re.compile(r"\|\s*(?P<params>[A-Za-z_][A-Za-z0-9_]*(?:\s*,\s*[A-Za-
 
 def _iter_source_files() -> list[Path]:
     """Non-test Rust sources under native/angr/src/vex/."""
-    files = []
-    for p in sorted(VEX_DIR.rglob("*.rs")):
-        name = p.name
-        if name.startswith("tests_") or name.endswith("_tests.rs") or name in ("test_helpers.rs", "property_tests.rs"):
-            continue
-        files.append(p)
-    return files
-
-
-def _blank_noise(src: str) -> str:
-    """Replace comments and string/char literals with spaces, preserving offsets.
-
-    Keeps line/column arithmetic intact so reported line numbers stay true,
-    while stopping a ``//`` comment or a doc block from being parsed as code.
-    """
-    out = list(src)
-    i, n = 0, len(src)
-    while i < n:
-        c = src[i]
-        if c == "/" and i + 1 < n and src[i + 1] == "/":
-            while i < n and src[i] != "\n":
-                out[i] = " "
-                i += 1
-        elif c == "/" and i + 1 < n and src[i + 1] == "*":
-            depth, start = 1, i
-            i += 2
-            while i < n and depth:
-                if src.startswith("/*", i):
-                    depth += 1
-                    i += 2
-                elif src.startswith("*/", i):
-                    depth -= 1
-                    i += 2
-                else:
-                    i += 1
-            for j in range(start, i):
-                if src[j] != "\n":
-                    out[j] = " "
-        elif c == '"':
-            start = i
-            i += 1
-            while i < n and src[i] != '"':
-                i += 2 if src[i] == "\\" else 1
-            i = min(i + 1, n)
-            for j in range(start, i):
-                if src[j] != "\n":
-                    out[j] = " "
-        else:
-            i += 1
-    return "".join(out)
+    return [p for p in sorted(VEX_DIR.rglob("*.rs")) if not is_test_file(p)]
 
 
 def _enclosing_fn(src: str, pos: int) -> str | None:
@@ -172,7 +126,7 @@ def scan_text(rel: str, raw: str) -> list[tuple[str, int, str, str, bool, bool]]
     hits: list[tuple[str, int, str, str, bool, bool]] = []
     if "_rm" not in raw:
         return hits
-    src = _blank_noise(raw)
+    src = blank_noise(raw)
     raw_lines = raw.splitlines()
 
     for m in CLOSURE_RE.finditer(src):

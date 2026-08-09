@@ -114,6 +114,34 @@ offers RNE); prefer that over `--update-baseline`. `--self-test` classifies a
 synthetic threaded/dropped/exempt trio and runs ahead of the real check in CI —
 same reasoning as the valgrind gate's self-test.
 
+### SP / return-address default-to-zero (Rust)
+
+Reading the stack pointer or the return address can fail (symbolic register,
+unreadable `[sp]` slot), and collapsing that failure to the literal `0` is a
+wrong-answer risk: the value is exported verbatim (e.g. as
+`CallStackEntry.stack_ptr`) and downstream code cannot tell it from a genuine
+SP of 0. Three logged `SILENT(cat-c)` helpers exist for it —
+`VEXInterpreter::get_stack_pointer_or_log`, `VEXInterpreter::get_return_addr_or_log`,
+`RustExplorationManager::get_return_addr_or_log` — plus
+`exploration::helpers::advance_sp_past_return_addr` for the native-proc return
+path, which bumps a symbolic SP *symbolically* instead of concretizing it. The
+helpers were still bypassed three separate times (angr-sqfj8.62, angr-sqfj8.63,
+angr-c7xno.29), because the raw accessor and the helper are equally easy to
+reach for. `tools/audit_sp_default_zero.py` gates the shape in CI
+(`rust_check`) against `tools/sp_default_baseline.txt` — same baseline-audit
+pattern as the checks above, and like the rounding-mode one the baseline is
+**empty** and should stay so. Flags an SP/return-address accessor
+(`get_sp`/`get_sp_value`/`get_stack_pointer`/`get_return_addr`, plus
+`get_offset_u64` when its args are SP-ish) followed by a method chain ending in
+`.unwrap_or(0)`/`.unwrap_or_default()`. Exempt by documenting the reason with
+an `sp-default-ok: <why>` comment on the line above; prefer that over
+`--update-baseline`. `--self-test` runs ahead of the real check in CI, same
+reasoning as the rounding-mode gate.
+
+The four audit scripts share comment/string blanking, test-file filtering and
+`fn`-name resolution via `tools/rust_source_utils.py` — put new helpers there
+rather than copying a fifth blanker.
+
 ### Where context lives
 
 When you need background that isn't in CLAUDE.md, look here first, then
