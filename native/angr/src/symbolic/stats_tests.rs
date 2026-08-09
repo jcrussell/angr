@@ -382,7 +382,7 @@ fn test_simplify_sample_ticker_is_not_emitted() {
 
 // NOTE: this file deliberately does NOT call `reset_solver_stats()`. Sibling
 // tests (`context_tests/constraints.rs`, `syscalls/fd_io_tests.rs`,
-// `memory/tests/symbolic.rs`, `context_tests/solver.rs`, ...) delta-assert
+// `memory/tests/symbolic_counters.rs`, `context_tests/solver.rs`, ...) delta-assert
 // process-global counters with a plain `after - before` or `after > before`,
 // any of which a reset landing inside their window would break — and they are
 // spread across six files, so no lock short of a crate-wide one would make it

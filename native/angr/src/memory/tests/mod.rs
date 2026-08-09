@@ -5,8 +5,19 @@
 //!
 //! - `basic`: core ops (concrete load/store, endianness, fork, map_data,
 //!   fast-path symbolic, permission/check-executable).
-//! - `symbolic`: symbolic stores/loads, partial overlap, wide-store paths,
-//!   cross-page concretization, fork isolation, counters/metrics.
+//! - `symbolic_load_store`: core symbolic store/load paths — per-byte concat
+//!   fallback, `import_symbolic_value` width contract, load-path resolution
+//!   order.
+//! - `symbolic_wide`: byte ordering for wide (128-bit) symbolic stores and
+//!   the wider-symbolic linear-scan fallback, both endiannesses.
+//! - `symbolic_overlap`: a later symbolic store partially covering an earlier
+//!   one, and concrete/narrower stores truncating a wider symbolic entry.
+//! - `symbolic_cross_page`: symbolic-address concretization across a page
+//!   boundary and permission enforcement for page-straddling accesses.
+//! - `symbolic_fork`: fork isolation of the symbolic sidecars plus the
+//!   `pending_writes` deferred-write lifecycle.
+//! - `symbolic_counters`: memory ITE depth, load/store volume,
+//!   concretization, lazy-page-fault and symbolic-address counters.
 //! - `multi`: `MultiPayload` data structure and Phase 1–4.2 multi-cell
 //!   collapse/coalesce behavior.
 //! - `ite_dedup`: ITE deduplication on loads + address-disjunction hoisting.
@@ -34,7 +45,12 @@ mod merge_prefetch;
 mod merge_sidecars;
 mod multi;
 mod page_boundary_property_tests;
-mod symbolic;
+mod symbolic_counters;
+mod symbolic_cross_page;
+mod symbolic_fork;
+mod symbolic_load_store;
+mod symbolic_overlap;
+mod symbolic_wide;
 
 /// Test-only instrumentation for `SymbolicMemory::merge`'s page-walk count
 /// (angr-op0dn.11.2.1). The production merge increments this each time it falls

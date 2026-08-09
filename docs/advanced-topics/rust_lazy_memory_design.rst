@@ -345,7 +345,7 @@ roughly:
   one annotated SimProcedure.
 * ``memory/tests.rs`` (since split into the ``memory/tests/`` package) —
   extend the existing ``test_pending_write*`` cases (now in
-  ``memory/tests/symbolic.rs``) to cover the Multi-cell path.
+  ``memory/tests/symbolic_fork.rs``) to cover the Multi-cell path.
 
 Phase 2 expands ``memory/store.rs::store_symbolic_unified`` to
 prefer the Multi path for ``Multiple`` / ``Strided`` results.
@@ -396,7 +396,7 @@ Phase 1 — Multi cell LOAD path (angr-czph)
    ``RustBV`` ASTs are Z3-managed and refcounted).
 5. Tests: extend ``memory/tests.rs`` with a ``test_multi_cell_*``
    suite that mirrors the existing ``test_pending_write*`` cases
-   (since split out into ``memory/tests/symbolic.rs``). Use the new
+   (since split out into ``memory/tests/symbolic_fork.rs``). Use the new
    helpers directly.
 6. Wire a single Python SimProcedure path (probably ``strchr``) to
    the upgraded store via the existing
