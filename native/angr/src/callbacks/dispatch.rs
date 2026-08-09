@@ -56,6 +56,61 @@ fn extract_data_tuple(tuple: &Bound<'_, pyo3::types::PyTuple>) -> PyResult<Batch
     Ok((data, is_symbolic, symbolic_ast))
 }
 
+/// Run a "batch callback, else per-item fallback" dispatch that yields one
+/// decoded value per input item.
+///
+/// Shared by [`PythonCallbacks::call_memory_load_batch`] and
+/// [`PythonCallbacks::call_batch_fetch_pages`], whose outer control flow is
+/// otherwise identical: empty-input fast path, hand the whole slice to the
+/// batch callback and decode its returned list element-wise, else loop the
+/// singular callback per item (angr-c7xno.8). Keeping the skeleton here means a
+/// change to the fallback semantics — mid-loop error handling, say — lands on
+/// both at once instead of one of two.
+///
+/// `call_batch` stays a caller-supplied closure rather than a generic
+/// `IntoPyObject` bound on the slice: PyO3's blanket `&T` impl makes
+/// `&[A]: IntoPyObject` overflow the trait solver here, and the closure costs
+/// each caller one line while still sharing the control flow that matters.
+///
+/// [`PythonCallbacks::call_memory_store_batch`] deliberately does *not* route
+/// through here: it returns unit rather than a per-item result and has to
+/// materialize a `PyBytes` for every element on the way out, so the only piece
+/// it shares is the empty-input check.
+fn call_list_batch<A, T>(
+    py: Python<'_>,
+    batch_cb: Option<&Py<PyAny>>,
+    items: &[A],
+    call_batch: impl FnOnce(&Py<PyAny>) -> PyResult<Py<PyAny>>,
+    extract: fn(&Bound<'_, pyo3::types::PyTuple>) -> PyResult<T>,
+    per_item: impl Fn(&A) -> PyResult<T>,
+) -> PyResult<Vec<T>> {
+    if items.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Try batch callback first
+    if let Some(cb) = batch_cb {
+        let result = call_batch(cb)?;
+
+        let result_list = result.cast_bound::<pyo3::types::PyList>(py)?;
+        let mut results = Vec::with_capacity(items.len());
+
+        for item in result_list.iter() {
+            let tuple = item.cast::<pyo3::types::PyTuple>()?;
+            results.push(extract(tuple)?);
+        }
+
+        return Ok(results);
+    }
+
+    // Fallback: call the singular callback once per item
+    let mut results = Vec::with_capacity(items.len());
+    for item in items {
+        results.push(per_item(item)?);
+    }
+    Ok(results)
+}
+
 /// Decode a `(page_data, permissions, is_mapped)` tuple returned by a Python
 /// page-fetch callback.
 ///
@@ -219,6 +274,11 @@ impl PythonCallbacks {
     ///
     /// This sends multiple stores in a single callback for efficiency.
     /// Falls back to individual stores if batch callback is not set.
+    ///
+    /// Unlike its two read-side siblings this does not go through
+    /// `call_list_batch` — there is no per-item result to collect, and each
+    /// element needs a `PyBytes` materialized on the way out, so only the
+    /// empty-input check is common.
     pub(crate) fn call_memory_store_batch(&self, stores: &[(u64, Vec<u8>)]) -> PyResult<()> {
         Python::attach(|py| {
             let _gil = crate::gil_profile::GilWorkGuard::enter_site(
@@ -262,35 +322,17 @@ impl PythonCallbacks {
             let _gil = crate::gil_profile::GilWorkGuard::enter_site(
                 crate::gil_profile::CallbackSite::MemoryLoadBatch,
             );
-            if loads.is_empty() {
-                return Ok(Vec::new());
-            }
-
-            // Try batch callback first
-            if let Some(cb) = &self.memory_load_batch {
-                // Converted to a Python list of tuples by PyO3's `IntoPyObject for &[T]`,
-                // so the slice goes straight across without an intermediate `Vec` copy.
-                let result = cb.call1(py, (loads,))?;
-
-                // Parse the result list
-                let result_list = result.cast_bound::<pyo3::types::PyList>(py)?;
-                let mut results = Vec::with_capacity(loads.len());
-
-                for item in result_list.iter() {
-                    let tuple = item.cast::<pyo3::types::PyTuple>()?;
-                    results.push(extract_data_tuple(tuple)?);
-                }
-
-                return Ok(results);
-            }
-
-            // Fallback: call individual loads
-            let mut results = Vec::with_capacity(loads.len());
-            for &(addr, size) in loads {
-                let (data, is_sym, ast) = self.call_memory_load(addr, size)?;
-                results.push((data, is_sym, ast));
-            }
-            Ok(results)
+            call_list_batch(
+                py,
+                self.memory_load_batch.as_ref(),
+                loads,
+                // Converted to a Python list of tuples by PyO3's
+                // `IntoPyObject for &[T]`, so the slice goes straight across
+                // without an intermediate `Vec` copy.
+                |cb| cb.call1(py, (loads,)),
+                extract_data_tuple,
+                |&(addr, size)| self.call_memory_load(addr, size),
+            )
         })
     }
 
@@ -489,33 +531,16 @@ impl PythonCallbacks {
             let _gil = crate::gil_profile::GilWorkGuard::enter_site(
                 crate::gil_profile::CallbackSite::BatchFetchPages,
             );
-            if page_addrs.is_empty() {
-                return Ok(Vec::new());
-            }
-
-            // Try batch callback first
-            if let Some(cb) = &self.batch_fetch_pages {
-                // `IntoPyObject for &[T]` builds the Python list directly from the slice.
-                let result = cb.call1(py, (page_addrs,))?;
-
-                let result_list = result.cast_bound::<pyo3::types::PyList>(py)?;
-                let mut results = Vec::with_capacity(page_addrs.len());
-
-                for item in result_list.iter() {
-                    let tuple = item.cast::<pyo3::types::PyTuple>()?;
-                    results.push(extract_page_tuple(tuple)?);
-                }
-
-                return Ok(results);
-            }
-
-            // Fallback: call individual fetches
-            let mut results = Vec::with_capacity(page_addrs.len());
-            for &page_addr in page_addrs {
-                let (data, perms, mapped) = self.call_fetch_page(page_addr)?;
-                results.push((data, perms, mapped));
-            }
-            Ok(results)
+            call_list_batch(
+                py,
+                self.batch_fetch_pages.as_ref(),
+                page_addrs,
+                // `IntoPyObject for &[T]` builds the Python list directly from
+                // the slice.
+                |cb| cb.call1(py, (page_addrs,)),
+                extract_page_tuple,
+                |&page_addr| self.call_fetch_page(page_addr),
+            )
         })
     }
 
