@@ -56,7 +56,7 @@ use super::ir::{
 use super::libvex_ffi as ffi;
 use super::libvex_ffi::enum_names;
 use super::lifter::{LiftError, VEXLifter};
-use super::opcode_map::{parse_endness, parse_jumpkind, parse_opcode, parse_type};
+use super::opcode_map::{parse_endness, parse_jumpkind, parse_opcode, parse_type_or_log};
 
 /// VEX's `IRTemp_INVALID` sentinel (an absent temp, e.g. the `oldHi` slot of a
 /// single-width CAS or an untyped Dirty result).
@@ -247,21 +247,22 @@ fn c_jumpkind(jk: ffi::IRJumpKind) -> JumpKind {
 /// Type discriminant -> Rust `IRType` (via pyvex `Ity_*` name), defaulting to
 /// `I64` on an unknown tag (mirrors `pyvex_bridge`'s `unwrap_or(IRType::I64)`).
 ///
-/// Both miss paths (no name for the discriminant, and a name [`parse_type`]
-/// does not know) are logged for the same reason as [`c_endness`].
+/// Both miss paths (no name for the discriminant, and a name
+/// [`parse_type_or_log`] does not know) are logged for the same reason as
+/// [`c_endness`]; the latter shares its fallback with the JSON marshalling
+/// path in `pyvex_bridge` so both stay equally observable (angr-c7xno.90).
 fn c_type_parse(ty: ffi::IRType) -> IRType {
-    // SILENT(cat-c): defaulting to I64 mis-sizes the value at every use site —
-    // warn so the table drift is traceable.
-    let warn_default = || {
-        log::warn!(
-            "Unknown libVEX IRType discriminant {}; assuming Ity_I64",
-            ty.0
-        );
-        IRType::I64
-    };
     match enum_names::irtype_name(ty.0) {
-        Some(name) => parse_type(name).unwrap_or_else(warn_default),
-        None => warn_default(),
+        Some(name) => parse_type_or_log(name, "libVEX IRType"),
+        // SILENT(cat-c): defaulting to I64 mis-sizes the value at every use
+        // site — warn so the table drift is traceable.
+        None => {
+            log::warn!(
+                "Unknown libVEX IRType discriminant {}; assuming Ity_I64",
+                ty.0
+            );
+            IRType::I64
+        }
     }
 }
 

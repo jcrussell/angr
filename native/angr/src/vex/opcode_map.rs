@@ -1203,9 +1203,9 @@ pub fn parse_type(ty_str: &str) -> Option<IRType> {
         // `bytes()` report 10 rather than 16.
         //
         // Returning `None` here would be worse, not safer: every `parse_type`
-        // caller in `pyvex_bridge.rs` and `libvex_lifter.rs` finishes with
-        // `.unwrap_or(IRType::I64)`, so an unmapped type silently becomes 64
-        // bits. A real fix needs `IRType::{D32, D64, D128, F128}` variants plus
+        // caller in `pyvex_bridge.rs` and `libvex_lifter.rs` goes through
+        // `parse_type_or_log`, which defaults to `IRType::I64`, so an unmapped
+        // type becomes 64 bits (loudly, but still wrongly). A real fix needs `IRType::{D32, D64, D128, F128}` variants plus
         // evaluator support, which is only worth doing alongside PowerPC /
         // S390X — the only architectures that emit these types, and both listed
         // as unsupported in docs/advanced-topics/rust_engine.rst. Until then no
@@ -1219,6 +1219,28 @@ pub fn parse_type(ty_str: &str) -> Option<IRType> {
         "Ity_V256" => Some(IRType::V256),
         _ => None,
     }
+}
+
+/// [`parse_type`], substituting `Ity_I64` and logging when the type string is
+/// one this engine has no [`IRType`] for.
+///
+/// `context` should identify the call site (the IR field being typed) so the
+/// warning is actionable.
+// SILENT(cat-c): `IRType` is a width tag, so defaulting to `I64` mis-sizes the
+// value at every use site — a 32-bit temp read back as 64 bits, or a load that
+// fetches twice the bytes it should. Every caller on both marshalling paths
+// (`pyvex_bridge`'s JSON deserializer and `libvex_lifter`'s FFI
+// `c_type_parse`) must go through this single logged fallback rather than a
+// bare `.unwrap_or(IRType::I64)`, so table drift is traceable on whichever
+// path a block happens to take (angr-c7xno.90).
+pub fn parse_type_or_log(ty_str: &str, context: &str) -> IRType {
+    parse_type(ty_str).unwrap_or_else(|| {
+        log::warn!(
+            "Unknown pyvex IR type string {ty_str:?} ({context}); assuming Ity_I64 \
+             — the value is mis-sized wherever it is used"
+        );
+        IRType::I64
+    })
 }
 
 /// Parse an endianness string from pyvex.

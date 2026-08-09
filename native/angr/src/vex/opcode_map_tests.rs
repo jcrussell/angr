@@ -100,6 +100,16 @@ fn test_parse_type() {
     assert_eq!(parse_type("Unknown"), None);
 }
 
+/// The logged wrapper both marshalling paths use must pass known types through
+/// unchanged and land on the documented `I64` default for an unknown one.
+#[test]
+fn test_parse_type_or_log_defaults_to_i64() {
+    assert_eq!(parse_type_or_log("Ity_I32", "test"), IRType::I32);
+    assert_eq!(parse_type_or_log("Ity_V256", "test"), IRType::V256);
+    assert_eq!(parse_type_or_log("Ity_D64", "test"), IRType::I64);
+    assert_eq!(parse_type_or_log("Ity_Nonsense", "test"), IRType::I64);
+}
+
 /// Decimal/quad float types have no dedicated `IRType` variant; the fallback
 /// arms in `parse_type` must at least preserve the declared bit width. See the
 /// comment on those arms for why an approximation beats `None` here.

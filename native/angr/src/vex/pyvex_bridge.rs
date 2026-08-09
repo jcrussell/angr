@@ -9,7 +9,7 @@ use super::ir::{
     DirtyFx, IRCallee, IRConst, IRDirty, IRExpr, IRLoadGOp, IRRegArray, IRSB, IRStmt, IRType,
     MBusEvent, TypeEnv, VexArch,
 };
-use super::opcode_map::{parse_endness, parse_jumpkind, parse_opcode, parse_type};
+use super::opcode_map::{parse_endness, parse_jumpkind, parse_opcode, parse_type_or_log};
 
 /// Error type for IRSB deserialization.
 #[derive(Debug, thiserror::Error)]
@@ -357,7 +357,7 @@ fn convert_expr(e: &PyVexExpr) -> IRExpr {
 
         PyVexExpr::Get { offset, ty } => IRExpr::Get {
             offset: *offset,
-            ty: parse_type(ty).unwrap_or(IRType::I64),
+            ty: parse_type_or_log(ty, "IRExpr::Get.ty"),
         },
 
         PyVexExpr::GetI { descr, ix, bias } => IRExpr::GetI {
@@ -368,7 +368,7 @@ fn convert_expr(e: &PyVexExpr) -> IRExpr {
 
         PyVexExpr::Load { addr, ty, end } => IRExpr::Load {
             addr: Box::new(convert_expr(addr)),
-            ty: parse_type(ty).unwrap_or(IRType::I64),
+            ty: parse_type_or_log(ty, "IRExpr::Load.ty"),
             endness: parse_endness(end),
         },
 
@@ -410,7 +410,7 @@ fn convert_expr(e: &PyVexExpr) -> IRExpr {
 
         PyVexExpr::CCall { cee, retty, args } => IRExpr::CCall {
             cee: convert_callee(cee),
-            retty: parse_type(retty).unwrap_or(IRType::I64),
+            retty: parse_type_or_log(retty, "IRExpr::CCall.retty"),
             args: args.iter().map(convert_expr).collect(),
         },
 
@@ -423,7 +423,7 @@ fn convert_expr(e: &PyVexExpr) -> IRExpr {
 fn convert_reg_array(r: &PyVexRegArray) -> IRRegArray {
     IRRegArray {
         base: r.base,
-        elemTy: parse_type(&r.elem_ty).unwrap_or(IRType::I64),
+        elemTy: parse_type_or_log(&r.elem_ty, "IRRegArray.elemTy"),
         nElems: r.n_elems,
     }
 }
@@ -621,7 +621,7 @@ fn convert_tyenv(tyenv: &PyVexTypeEnv) -> TypeEnv {
     let types: Vec<IRType> = tyenv
         .types
         .iter()
-        .map(|t| parse_type(t).unwrap_or(IRType::I64))
+        .map(|t| parse_type_or_log(t, "IRSB tyenv entry"))
         .collect();
     TypeEnv { types }
 }
