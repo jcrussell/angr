@@ -393,13 +393,17 @@ impl<'a> VEXInterpreter<'a> {
             if !self.deferred_forks.is_empty() {
                 // These prev-fork assumes exist ONLY to make
                 // `check_branch_feasibility` accurate inside the bare
-                // block-solver `push()` scope. Their Z3 assertions are
-                // discarded by the matching `pop()` at block end, but
-                // `pop()` does not truncate the `assumed` export log, so
-                // without an explicit truncate they would leak into the
-                // log that a wave migration re-asserts verbatim — the
-                // ype54 poison (angr-ype54). Bracket every assume with a
-                // savepoint + truncate so the log stays clean while the
+                // block-solver `push()` scope. The matching `pop()` at
+                // block end does discard both their Z3 assertions and
+                // their `assumed` export-log entries (`scope_savepoint_pop`
+                // truncates `local.assumed`, angr-ph300.41/.42) — but that
+                // pop only runs at block teardown, while the `self.ctx.fork()`
+                // taken for the `BranchSnapshot` below happens mid-scope,
+                // right here. A snapshot forked with these assumes still in
+                // the log would carry them into a wave migration that
+                // re-asserts the log verbatim — the ype54 poison
+                // (angr-ype54). Bracket every assume with a savepoint +
+                // truncate so the log is clean before that fork while the
                 // Z3 solver still sees the constraints for feasibility.
                 #[cfg(feature = "vex-engine-z3")]
                 let assumed_savepoint = self.ctx.assumed_local_len();
