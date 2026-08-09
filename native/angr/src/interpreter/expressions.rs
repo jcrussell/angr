@@ -24,8 +24,10 @@ fn is_dispatch_fabricate_family(op: &IROp) -> bool {
 }
 
 /// Opt-in escape hatch (`ANGR_RUST_FABRICATE_UNSUPPORTED_IROP`) for the
-/// symbolic-operand arm of [`VEXInterpreter::vex_op_fallback`] and for the
-/// condition-flag arm of [`VEXInterpreter::eval_ccall`]. When set (to any
+/// symbolic-operand arm of [`VEXInterpreter::vex_op_fallback`], the
+/// condition-flag arm of [`VEXInterpreter::eval_ccall`], and the
+/// no-handler-anywhere arm of `VEXInterpreter::handle_dirty_call`
+/// (`statements.rs`). When set (to any
 /// non-empty, non-`"0"` value) an unsupported op with a symbolic operand
 /// fabricates a fresh unconstrained symbolic (the pre-angr-oyzvj behavior)
 /// instead of routing the block to Python. Default (unset): route to Python —
@@ -36,7 +38,7 @@ fn is_dispatch_fabricate_family(op: &IROp) -> bool {
 /// Named `FABRICATE_*`, deliberately NOT `BYPASS_*`: the existing
 /// `BYPASS_UNSUPPORTED_IROP` SimOption means the opposite (route to Python's
 /// resilience mixin), so reusing that name would invert its sense.
-fn fabricate_unsupported_irop() -> bool {
+pub(super) fn fabricate_unsupported_irop() -> bool {
     static FLAG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *FLAG.get_or_init(|| {
         std::env::var("ANGR_RUST_FABRICATE_UNSUPPORTED_IROP")

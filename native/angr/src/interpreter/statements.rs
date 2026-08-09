@@ -1,4 +1,5 @@
 use super::bv_utils::{bv_to_bytes, bytes_to_bv, reject_symbolic_byte_store};
+use super::expressions::fabricate_unsupported_irop;
 use super::statements_cas::CasArgs;
 use super::*;
 
@@ -825,17 +826,29 @@ impl<'a> VEXInterpreter<'a> {
             return Ok(StmtResult::Continue);
         }
 
-        // No native handler matched. If Python also has no callback
-        // registered, treat the dirty call as a stub: write a fresh
-        // symbolic value into the result tmp (if any) and continue.
-        // This avoids hard-erroring on long-tail dirty helpers that
-        // neither Rust nor Python explicitly model.
+        // No native handler matched and Python has no `dirty_call` callback
+        // registered either, so nobody in this process models the helper.
+        // Follow the same policy as `vex_op_fallback` / `eval_ccall`
+        // (angr-c7xno.44): route the block to Python's VEX engine by default,
+        // and only fabricate a fresh unconstrained symbolic under the opt-in
+        // `ANGR_RUST_FABRICATE_UNSUPPORTED_IROP` gate. Fabricating by default
+        // silently diverges — an unconstrained tmp makes every downstream
+        // condition over it explore both branches regardless of what the
+        // helper really computes.
         if !callbacks.has_dirty_call() {
+            if !fabricate_unsupported_irop() {
+                return Err(CbExecutionError::NeedPythonFallback(format!(
+                    "dirty call '{}': no native handler and no Python callback",
+                    dirty.cee.name
+                )));
+            }
             log::warn!(
                 "dirty call '{}': no native handler and no Python callback; \
-                         stubbing with a fresh symbolic tmp",
+                         stubbing with a fresh symbolic tmp \
+                         (ANGR_RUST_FABRICATE_UNSUPPORTED_IROP)",
                 dirty.cee.name
             );
+            self.stats.vex_bypass_fabricate_count += 1;
             if let Some(tmp) = dirty.tmp {
                 let bits = if ret_ty_bits == 0 { 64 } else { ret_ty_bits };
                 let stub =

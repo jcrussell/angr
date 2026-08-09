@@ -971,3 +971,56 @@ def store_cb(addr, data):
         );
     });
 }
+
+/// angr-c7xno.44: a dirty helper that neither Rust nor Python models must
+/// route the block to Python (`NeedPythonFallback`), not fabricate a fresh
+/// unconstrained symbolic into the result tmp. Same policy — and same opt-in
+/// `ANGR_RUST_FABRICATE_UNSUPPORTED_IROP` escape hatch — as
+/// `VEXInterpreter::vex_op_fallback` / `eval_ccall`. Default (gate unset)
+/// behavior: fabricating silently diverges, because every downstream
+/// condition over the unconstrained tmp explores both branches.
+#[test]
+fn unmodelled_dirty_call_routes_to_python_not_fabricate() {
+    use crate::vex::ir::{DirtyFx, IRCallee, IRDirty};
+    let ctx = SymContext::new_mock();
+    let mut interp = new_interp(&ctx);
+    let irsb = make_irsb_with_temps(0x3000, &[IRType::I64]);
+    let dirty = IRDirty {
+        cee: IRCallee {
+            name: "amd64g_dirtyhelper_NOT_A_REAL_HELPER".to_string(),
+            addr: 0,
+            mcx_mask: 0,
+        },
+        guard: None,
+        tmp: Some(0),
+        mFx: DirtyFx::None,
+        mAddr: None,
+        mSize: 0,
+        nFxState: 0,
+        args: vec![],
+    };
+    with_python(|cb| {
+        // `with_python` builds a bare PythonCallbacks: no dirty_call callback,
+        // which is the branch under test (production always registers one via
+        // rust_manager.py::_setup_callbacks).
+        assert!(!cb.has_dirty_call());
+        let res = interp.execute_stmt_with_callbacks(cb, &IRStmt::Dirty(dirty), &irsb);
+        // `StmtResult` is not `Debug`, so describe the outcome by hand.
+        assert!(
+            matches!(res, Err(CbExecutionError::NeedPythonFallback(_))),
+            "unmodelled dirty call must route to Python, got {}",
+            match &res {
+                Ok(_) => "Ok(..)".to_string(),
+                Err(e) => format!("{e:?}"),
+            }
+        );
+        assert_eq!(
+            interp.stats.vex_bypass_fabricate_count, 0,
+            "unmodelled dirty call fabricated instead of routing to Python"
+        );
+        assert!(
+            interp.temps.first().is_none_or(Option::is_none),
+            "no fabricated value may be written into the result tmp"
+        );
+    });
+}

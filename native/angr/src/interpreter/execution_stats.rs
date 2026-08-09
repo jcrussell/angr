@@ -225,7 +225,10 @@ define_execution_stats! {
     /// propagates a typed error). It ALSO counts the condition-flag arm of
     /// `eval_ccall` (angr-9ke6b.88), which fabricates under the same opt-in
     /// gate but does not bump `python_vex_op_fallback_count` — so the subset
-    /// relation holds per-arm, not in aggregate. Since
+    /// relation holds per-arm, not in aggregate. Likewise the
+    /// no-handler-anywhere arm of `VEXInterpreter::handle_dirty_call`
+    /// (angr-c7xno.44): same gate, same counter, no
+    /// `python_vex_op_fallback_count` bump. Since
     /// angr-oyzvj this BYPASS is OPT-IN — it fires only when
     /// `ANGR_RUST_FABRICATE_UNSUPPORTED_IROP` is set; by default the symbolic arm
     /// routes to Python (`NeedPythonFallback`), so this counter stays 0 unless
