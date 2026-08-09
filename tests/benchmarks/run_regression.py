@@ -36,6 +36,7 @@ import importlib.util
 import json
 import multiprocessing
 import os
+import statistics
 import subprocess
 import sys
 import time
@@ -427,6 +428,85 @@ def timing_regression_pct(baseline_time, rust_time, threshold, floor_s=DEFAULT_R
     return ((rust_time / baseline_time) - 1) * 100
 
 
+# Suite-wide host-slowdown normalization for the timing gate.
+#
+# The absolute floor above only covers sub-second benches. It does nothing for
+# the other failure mode: the whole BOX being slow for the duration of the run.
+# ralph iter24 went red on `cow_fork_scaling: 24% regression (3.09s vs 2.50s)`
+# with both in-gate retries also failing, while standalone re-runs immediately
+# afterward landed at 2.45-2.48s and a full gate re-run was 22/22. That run took
+# 47.4s total against a normal 31-35s, and the per-bench ratios were uniformly
+# shifted: median current/baseline was 1.083x, so cow_fork_scaling's 1.236x is
+# only 1.14x of the suite median — under the 15% bar. At a 2.50s baseline the
+# 50ms floor is irrelevant (15% is 375ms), and retries cannot help because they
+# run inside the same contention window. See bd bead angr-mc8pw.
+#
+# So: divide out the suite median before deciding. The cap is the anti-masking
+# guard — past it we refuse to explain the slowdown away, because a uniform
+# shift that large is equally consistent with a genuine global regression, and
+# silently normalizing it would turn the gate into a no-op exactly when it
+# matters most.
+DEFAULT_HOST_FACTOR_CAP = 1.25
+
+# Minimum number of benches that must have a usable baseline before a median is
+# meaningful. Below this the "suite median" is one or two benches, which is just
+# the failing bench itself wearing a disguise.
+MIN_HOST_FACTOR_SAMPLES = 5
+
+# Dead-band below which a median is treated as "the host was fine". A quiet run
+# still medians a percent or so off 1.0 just from run-to-run wobble, and
+# normalizing by that would loosen every gate run slightly for no reason. With
+# the dead-band, a quiet host decides byte-for-byte identically to the
+# unnormalized gate — the same property angr-z8p3x's floor tests pin for benches
+# above the floor.
+HOST_FACTOR_DEAD_BAND = 1.02
+
+
+def suite_median_ratio(ratios, min_samples=MIN_HOST_FACTOR_SAMPLES):
+    """Return the median ``current / baseline`` timing ratio for a run.
+
+    ``ratios`` is every bench in the run that had a usable baseline —
+    passing and failing alike. Including the passing ones is the whole
+    point: they are the control group that says whether the box was slow.
+
+    This estimates the *common-mode* shift only, and deliberately so. The
+    suite mixes two populations — sub-second benches, whose ratios are
+    startup-noise-dominated and can sit well below 1.0 against a
+    conservative baseline, and the multi-second ones that are the only
+    benches able to clear the absolute floor in the first place. So the
+    median under-reads a slowdown that scales with bench duration: on the
+    angr-mc8pw run it explained 1.083x of cow_fork_scaling's 1.236x, not all
+    of it. That is the intended bias — under-correcting leaves the gate
+    strict, and a duration-weighted estimator would buy ~0.004x on that run
+    (1.079x over just the >=0.33s benches) for a lot more machinery.
+
+    Returns ``None`` when there are fewer than ``min_samples`` usable
+    ratios, i.e. when no honest median exists.
+    """
+    usable = [r for r in ratios if r is not None and r > 0]
+    if len(usable) < min_samples:
+        return None
+    return statistics.median(usable)
+
+
+def host_scale_factor(median_ratio, cap=DEFAULT_HOST_FACTOR_CAP):
+    """Return the factor to scale timing baselines by, given a suite median.
+
+    Returns ``1.0`` (i.e. no normalization, previous behaviour exactly) when:
+
+    * there is no median (``None`` — too few samples), or
+    * the median is within ``HOST_FACTOR_DEAD_BAND`` — the host was fine (or
+      faster than baseline, in which case tightening the gate would invent
+      failures), or
+    * the median is above ``cap`` — see ``DEFAULT_HOST_FACTOR_CAP``. A
+      slowdown that big is not explained away; the caller reports the run as
+      suite-wide-suspect and the failures stand.
+    """
+    if median_ratio is None or median_ratio < HOST_FACTOR_DEAD_BAND or median_ratio > cap:
+        return 1.0
+    return median_ratio
+
+
 def memory_regression_pct(baseline_mem, rust_peak_mem, threshold):
     """Return the over-threshold peak-RSS regression percent, or ``None``.
 
@@ -619,6 +699,25 @@ def main():
         "baseline to fail. Keeps sub-second benches from failing on host "
         "noise; set to 0 to restore the relative-only behaviour.",
     )
+    parser.add_argument(
+        "--host-factor-cap",
+        type=float,
+        default=DEFAULT_HOST_FACTOR_CAP,
+        metavar="X",
+        help="Largest suite-wide slowdown that may be normalized away, as a "
+        f"ratio (default: {DEFAULT_HOST_FACTOR_CAP}). Timing failures are "
+        "re-checked against a baseline scaled by the median "
+        "current/baseline ratio across every bench with a baseline, so a "
+        "uniformly slow host does not red the gate on its worst bench. "
+        "Past this cap nothing is normalized and the run is reported as "
+        "suite-wide-suspect instead.",
+    )
+    parser.add_argument(
+        "--no-host-normalize",
+        action="store_true",
+        help="Disable the suite-wide host-slowdown normalization described "
+        "under --host-factor-cap, restoring the raw per-bench comparison.",
+    )
     parser.add_argument("--mem-limit", type=int, default=DEFAULT_MEM_LIMIT_MB)
     parser.add_argument("--rust-only", action="store_true", help="Only run Rust engine (skip Python comparison)")
     parser.add_argument("--full", action="store_true", help="Run full suite (fast + medium tier)")
@@ -769,6 +868,15 @@ def main():
     #    "timing_msg", "sla_msg", "mem_msg"}  — the *_msg keys are present only
     #   for the dimensions that actually failed.
     retry_info = {}
+    # Suite-wide host-slowdown normalization (angr-mc8pw). `timing_ratios`
+    # collects current/baseline for EVERY bench with a usable baseline —
+    # the passing ones are the control group — and `timing_failures` holds
+    # one record per timing failure so the normalization pass below can
+    # re-decide it. Kept independent of `retry_info`, which only exists when
+    # --retry-failures > 0: the PR-time CI gate runs without retries and must
+    # still get the normalization.
+    timing_ratios = []
+    timing_failures = []
     total_start = time.perf_counter()
 
     def _retry_record(name, timeout, strategy, baseline_key):
@@ -848,6 +956,8 @@ def main():
         # Check timing regression against baseline
         if baseline_key in baseline and not args.update:
             bl = baseline[baseline_key]["rust_time"]
+            if bl and bl > 0 and rust_time:
+                timing_ratios.append(rust_time / bl)
             pct = timing_regression_pct(bl, rust_time, args.threshold, args.regression_floor)
             if pct is None and bl > 0 and rust_time > bl * (1 + args.threshold):
                 # Over the relative bar but under the absolute floor. Never
@@ -882,10 +992,21 @@ def main():
                         # Diff helper is best-effort; never let it mask
                         # the underlying timing failure.
                         print(f"  (counter diff failed: {exc})")
+                rec = None
                 if args.retry_failures > 0:
                     rec = _retry_record(name, timeout, strategy, baseline_key)
                     rec["bl"] = bl
                     rec["timing_msg"] = failure_msg
+                timing_failures.append(
+                    {
+                        "name": name,
+                        "label": label,
+                        "bl": bl,
+                        "rust_time": rust_time,
+                        "msg": failure_msg,
+                        "retry_rec": rec,
+                    }
+                )
 
             # Check algorithmic metric regressions
             if args.check_counts and baseline_key not in COUNT_EXEMPT:
@@ -1013,6 +1134,60 @@ def main():
             entry["peak_memory_mb"] = round(rust_peak_mem, 1)
         results[baseline_key] = entry
 
+    # Host-slowdown normalization pass. Runs BEFORE the retry pass on purpose:
+    # a failure that the suite median already explains needs no re-run at all,
+    # and re-running it inside the same contention window is precisely what
+    # failed to help on ralph iter24. See `host_scale_factor` (angr-mc8pw).
+    if timing_failures and not args.no_host_normalize:
+        median = suite_median_ratio(timing_ratios)
+        factor = host_scale_factor(median, args.host_factor_cap)
+        if factor > 1.0:
+            print(f"\n{'=' * 50}")
+            print(
+                f"Host-slowdown normalization: suite median {median:.3f}x over "
+                f"{len(timing_ratios)} benches — re-checking "
+                f"{len(timing_failures)} timing failure(s) against scaled baselines"
+            )
+            for failure in list(timing_failures):
+                scaled_bl = failure["bl"] * factor
+                rust_time = failure["rust_time"]
+                norm_pct = ((rust_time / scaled_bl) - 1) * 100
+                if timing_regression_pct(scaled_bl, rust_time, args.threshold, args.regression_floor) is None:
+                    print(
+                        f"  {failure['label']}: {rust_time:.2f}s vs "
+                        f"{failure['bl']:.2f}s x {factor:.3f} = {scaled_bl:.2f}s "
+                        f"({norm_pct:+.0f}%) — cleared, host-wide slowdown"
+                    )
+                    failures.remove(failure["msg"])
+                    timing_failures.remove(failure)
+                    rec = failure["retry_rec"]
+                    if rec is not None:
+                        rec.pop("timing_msg", None)
+                        if not any(k in rec for k in ("sla_msg", "mem_msg")):
+                            retry_info.pop(failure["name"], None)
+                else:
+                    print(
+                        f"  {failure['label']}: {rust_time:.2f}s vs "
+                        f"{failure['bl']:.2f}s x {factor:.3f} = {scaled_bl:.2f}s "
+                        f"(+{norm_pct:.0f}%) — still regressed"
+                    )
+                    # Keep the retry pass consistent with the bar just applied:
+                    # a retry judged against the raw baseline would be STRICTER
+                    # than the check this bench just survived.
+                    if failure["retry_rec"] is not None:
+                        failure["retry_rec"]["bl_scaled"] = scaled_bl
+        elif median is not None and median > args.host_factor_cap:
+            # Refuse to normalize, but never let that refusal be silent — the
+            # numbers below are not trustworthy either way.
+            print(f"\n{'=' * 50}")
+            print(
+                f"SUITE-WIDE SLOWDOWN: median {median:.3f}x over "
+                f"{len(timing_ratios)} benches exceeds the "
+                f"{args.host_factor_cap:.2f}x cap — NOT normalized. Either the "
+                "host is unusable for benchmarking or every bench regressed; "
+                "the failures below stand."
+            )
+
     # Optional retry pass for timing-regression failures. Sub-second benches are
     # noise-dominated; the same diff can flip pass/fail across consecutive runs.
     # We re-run each candidate up to N times and clear the failure on the first
@@ -1045,7 +1220,11 @@ def main():
                 # and drift the gate downward over time (see bd memory
                 # `avoid-update-baseline-without-verification`).
                 if "timing_msg" in pending:
-                    bl = rec["bl"]
+                    # `bl_scaled` is present only when the host-normalization
+                    # pass ran and did not clear this bench; comparing against
+                    # the raw baseline here would apply a stricter bar than the
+                    # check it just survived (angr-mc8pw).
+                    bl = rec.get("bl_scaled") or rec["bl"]
                     pct = ((retry_time / bl) - 1) * 100
                     # Same two-bar decision as the first pass, so a retry that
                     # lands inside the absolute floor clears the failure.

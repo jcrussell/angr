@@ -358,7 +358,18 @@ ANGR_EXAMPLES_DIR=/path/to/angr-examples/examples python tests/benchmarks/run_re
   (default 50ms) slower in absolute terms — at a 0.16s baseline 15% is ~24ms,
   inside the host noise floor, which failed the ralph gate twice on
   `sharif7_rev50` alone (angr-z8p3x). Benches above ~0.33s are unaffected by the
-  floor; a suppressed excursion still prints a `noise-floor:` line. Warns (but does not fail) when the
+  floor; a suppressed excursion still prints a `noise-floor:` line. A second,
+  independent bar covers the case the floor cannot (angr-mc8pw): before any
+  retry, timing failures are re-checked against a baseline scaled by the
+  **suite median** `current/baseline` ratio, so a uniformly slow host no longer
+  reds the gate on whichever bench it hit hardest — iter24 failed on
+  `cow_fork_scaling` at +24% while the whole 22-bench suite ran 1.083x slow and
+  took 47.4s against a normal 31-35s. Normalization is inert inside a 1.02x
+  dead-band (quiet hosts decide exactly as before) and refuses to engage past
+  `--host-factor-cap` (default 1.25), where a uniform shift is equally
+  consistent with a global regression; that case prints `SUITE-WIDE SLOWDOWN`
+  and keeps the failures. `--no-host-normalize` restores the raw comparison.
+  Warns (but does not fail) when the
   Rust-vs-Python speedup, computed against cached `python_time`, slips into the
   0.5x–1.0x band.
 - **`.github/workflows/nightly-ci.yml::benchmark_regression`** (nightly): runs
