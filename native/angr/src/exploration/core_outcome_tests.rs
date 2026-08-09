@@ -688,6 +688,468 @@ fn flush_parked_bounce_recovers_reenterable_state_to_active() {
     );
 }
 
+// --- angr-c7xno.33: handle_syscall_core, all four dispatch outcomes ---
+
+/// A syscall number outside every production table in
+/// `NativeSyscallRegistry::new()`, so registering [`StubSyscall`] under it
+/// cannot shadow (or be shadowed by) a real handler.
+const STUB_SYSCALL_NUM: u64 = 0xdead_beef;
+const SYSCALL_PC: u64 = 0x40_7000;
+
+/// What [`StubSyscall`] does when `handle_syscall_core` dispatches it.
+enum StubSyscallBehavior {
+    /// Native success with a concrete return value.
+    Continue(u64),
+    /// Native success writing a fresh symbolic return value.
+    ContinueSymbolic,
+    /// Native success that deadends the state (exit / exit_group).
+    Exit,
+    /// Registered handler that declines — falls through to Python.
+    Decline,
+}
+
+/// Stands in for any registered native syscall handler, with the outcome and
+/// the declared arity both under test control (a `num_args` past the ABI's
+/// register window is how the arg-extraction-failure arm is reached).
+struct StubSyscall {
+    behavior: StubSyscallBehavior,
+    num_args: usize,
+}
+
+impl crate::syscalls::NativeSyscall for StubSyscall {
+    fn name(&self) -> &'static str {
+        "stub_syscall_test"
+    }
+    fn num_args(&self) -> usize {
+        self.num_args
+    }
+    fn call(
+        &self,
+        state: &mut RustSimState,
+        _args: &[crate::symbolic::RustBV],
+    ) -> Result<crate::syscalls::SyscallOutcome, crate::syscalls::SyscallError> {
+        use crate::syscalls::SyscallOutcome;
+        match self.behavior {
+            StubSyscallBehavior::Continue(ret) => Ok(SyscallOutcome::Continue { ret }),
+            StubSyscallBehavior::ContinueSymbolic => Ok(SyscallOutcome::ContinueSymbolic {
+                ret: crate::symbolic::RustBV::symbolic(
+                    &state.solver().borrow(),
+                    "stub_syscall_ret",
+                    state.arch().bits(),
+                ),
+            }),
+            StubSyscallBehavior::Exit => Ok(SyscallOutcome::Exit),
+            StubSyscallBehavior::Decline => Err(crate::syscalls::SyscallError::Other(
+                "declined by stub".to_string(),
+            )),
+        }
+    }
+}
+
+/// Drive one `RunResult::Syscall { num, pc: SYSCALL_PC }` through
+/// `run_post_step_core`, optionally with `stub` registered for AMD64 at
+/// [`STUB_SYSCALL_NUM`]. Returns `(outcome, state_id)`.
+fn dispatch_syscall(num: Option<u64>, stub: Option<StubSyscall>) -> (CoreOutcome, u64) {
+    let mgr = RustExplorationManager::new("amd64", None).unwrap();
+    let ctx = mgr.step_context();
+    let prof = ParallelProfiling::default();
+    let procs = NativeProcedureRegistry::new();
+    let mut syscalls = NativeSyscallRegistry::new();
+    if let Some(stub) = stub {
+        syscalls.register("AMD64", STUB_SYSCALL_NUM, std::sync::Arc::new(stub));
+    }
+
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.set_pc(0x40_0000);
+    let sid = state.state_id();
+
+    let outcome = run_post_step_core(
+        &CoreCtx {
+            ctx: &ctx,
+            prof: &prof,
+            native_procs: &procs,
+            native_syscalls: &syscalls,
+            callbacks: None,
+        },
+        state,
+        PostStepInputs {
+            result: RunResult::Syscall {
+                num,
+                pc: SYSCALL_PC,
+            },
+            deferred_forks: Vec::new(),
+            last_condition: None,
+            stored_conditions: FxHashMap::default(),
+            fork_snapshots: FxHashMap::default(),
+        },
+        sid,
+    );
+    (outcome, sid)
+}
+
+/// The native fast path: `SyscallOutcome::Continue` writes the concrete return
+/// value to the ABI return register (rax on amd64), leaves the state at the
+/// syscall pc, and counts one native dispatch keyed by the syscall number.
+#[test]
+fn syscall_native_continue_writes_return_register_and_counts() {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|_py| {
+        let (outcome, sid) = dispatch_syscall(
+            Some(STUB_SYSCALL_NUM),
+            Some(StubSyscall {
+                behavior: StubSyscallBehavior::Continue(0x2a),
+                num_args: 0,
+            }),
+        );
+
+        assert_eq!(outcome.counters.syscall_native_count, 1);
+        assert_eq!(
+            outcome.counters.syscall_native_by_num[&(STUB_SYSCALL_NUM as i64)],
+            1
+        );
+        assert_eq!(outcome.counters.syscall_python_fallback_count, 0);
+        assert!(outcome.terminal_pushes.is_empty());
+
+        let CoreReturn::Continue(succ) = outcome.ret else {
+            panic!("expected Continue for a native syscall");
+        };
+        assert_eq!(succ.len(), 1, "main state only");
+        assert_eq!(succ[0].0.state_id(), sid);
+        assert!(!succ[0].1.is_fork);
+        assert_eq!(succ[0].0.pc(), SYSCALL_PC, "state parked at the syscall pc");
+        assert_eq!(
+            succ[0].0.get_register("rax").and_then(|bv| bv.as_u64()),
+            Some(0x2a),
+            "return value landed in the amd64 syscall return register"
+        );
+    });
+}
+
+/// `SyscallOutcome::ContinueSymbolic` takes the same tail but writes the BV
+/// straight through, so the return register must come out *symbolic* rather
+/// than concretized.
+#[test]
+fn syscall_native_continue_symbolic_writes_symbolic_return() {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|_py| {
+        let (outcome, _) = dispatch_syscall(
+            Some(STUB_SYSCALL_NUM),
+            Some(StubSyscall {
+                behavior: StubSyscallBehavior::ContinueSymbolic,
+                num_args: 0,
+            }),
+        );
+        assert_eq!(outcome.counters.syscall_native_count, 1);
+        let CoreReturn::Continue(succ) = outcome.ret else {
+            panic!("expected Continue");
+        };
+        let rax = succ[0].0.get_register("rax").expect("rax exists");
+        assert!(
+            rax.as_u64().is_none(),
+            "symbolic syscall return must not be concretized, got {rax:?}"
+        );
+    });
+}
+
+/// `SyscallOutcome::Exit` deadends: the state leaves via `terminal_pushes`
+/// (STASH_DEADENDED) and is NOT also returned as a successor.
+#[test]
+fn syscall_native_exit_pushes_state_to_deadended() {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|_py| {
+        let (outcome, sid) = dispatch_syscall(
+            Some(STUB_SYSCALL_NUM),
+            Some(StubSyscall {
+                behavior: StubSyscallBehavior::Exit,
+                num_args: 0,
+            }),
+        );
+        assert_eq!(outcome.counters.syscall_native_count, 1);
+        assert_eq!(outcome.terminal_pushes.len(), 1);
+        assert_eq!(outcome.terminal_pushes[0].0.state_id(), sid);
+        assert_eq!(outcome.terminal_pushes[0].1, crate::stash::STASH_DEADENDED);
+        let CoreReturn::Continue(succ) = outcome.ret else {
+            panic!("expected Continue (with no successors)");
+        };
+        assert!(succ.is_empty(), "exiting state must not also continue");
+    });
+}
+
+/// A registered handler that *declines* falls through to the Python syscall
+/// implementation, counted as a fallback (not as a native dispatch).
+#[test]
+fn syscall_native_decline_bounces_to_python() {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|_py| {
+        let (outcome, _) = dispatch_syscall(
+            Some(STUB_SYSCALL_NUM),
+            Some(StubSyscall {
+                behavior: StubSyscallBehavior::Decline,
+                num_args: 0,
+            }),
+        );
+        assert_eq!(outcome.counters.syscall_native_count, 0);
+        assert_eq!(outcome.counters.syscall_python_fallback_count, 1);
+        assert_eq!(
+            outcome.counters.syscall_python_fallback_by_num[&(STUB_SYSCALL_NUM as i64)],
+            1
+        );
+        match outcome.ret {
+            CoreReturn::NeedsPython(bounce) => match bounce.kind {
+                BounceKind::SyscallPython { num } => assert_eq!(num, Some(STUB_SYSCALL_NUM)),
+                other => panic!("expected SyscallPython bounce, got {other:?}"),
+            },
+            _ => panic!("expected NeedsPython"),
+        }
+    });
+}
+
+/// Arg-extraction failure takes an *earlier* fallback path than the decline
+/// above — the handler never runs. amd64 exposes six syscall arg registers and
+/// no stack path, so a handler declaring seven args is a guaranteed
+/// `ExtractionError::RegisterOverflow`.
+#[test]
+fn syscall_arg_extraction_failure_bounces_before_calling_handler() {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|_py| {
+        let (outcome, _) = dispatch_syscall(
+            Some(STUB_SYSCALL_NUM),
+            Some(StubSyscall {
+                // Would deadend the state if it ever ran; it must not.
+                behavior: StubSyscallBehavior::Exit,
+                num_args: 7,
+            }),
+        );
+        assert_eq!(outcome.counters.syscall_native_count, 0);
+        assert_eq!(outcome.counters.syscall_python_fallback_count, 1);
+        assert!(
+            outcome.terminal_pushes.is_empty(),
+            "the handler must not have run"
+        );
+        assert!(matches!(
+            outcome.ret,
+            CoreReturn::NeedsPython(PendingBounce {
+                kind: BounceKind::SyscallPython {
+                    num: Some(STUB_SYSCALL_NUM)
+                },
+                ..
+            })
+        ));
+    });
+}
+
+/// No registered handler at all (and an unknown syscall number) bounces to
+/// Python, with the `None` number folded into the `-1` fallback bucket.
+#[test]
+fn syscall_without_native_handler_bounces_to_python() {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|_py| {
+        let (outcome, _) = dispatch_syscall(None, None);
+        assert_eq!(outcome.counters.syscall_native_count, 0);
+        assert_eq!(outcome.counters.syscall_python_fallback_count, 1);
+        assert_eq!(
+            outcome.counters.syscall_python_fallback_by_num[&-1],
+            1,
+            "an unknown syscall number is bucketed as -1"
+        );
+        assert!(matches!(
+            outcome.ret,
+            CoreReturn::NeedsPython(PendingBounce {
+                kind: BounceKind::SyscallPython { num: None },
+                ..
+            })
+        ));
+    });
+}
+
+// --- angr-c7xno.33: handle_symbolic_jump_target_core, both arms ---
+
+const JUMP_COND_ID: u64 = 77;
+
+/// Drive one `RunResult::SymbolicJumpTarget` through `run_post_step_core` with
+/// a fresh symbolic jump expression stored under [`JUMP_COND_ID`] (unless
+/// `with_expr` is false, which models the id-missing path).
+///
+/// Returns `(outcome, state_id, jump_expr)` — the expression comes back so each
+/// successor's solver can be asked what it pinned the jump to.
+fn dispatch_symbolic_jump(
+    targets: Vec<u64>,
+    with_expr: bool,
+    keep_ip_symbolic: bool,
+) -> (CoreOutcome, u64, crate::symbolic::RustBV) {
+    let mgr = RustExplorationManager::new("amd64", None).unwrap();
+    let ctx = mgr.step_context();
+    let prof = ParallelProfiling::default();
+    let procs = NativeProcedureRegistry::new();
+    let syscalls = NativeSyscallRegistry::new();
+
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.set_pc(0x40_0000);
+    state.set_keep_ip_symbolic(keep_ip_symbolic);
+    let sid = state.state_id();
+    let bits = state.arch().bits();
+    let expr = crate::symbolic::RustBV::symbolic(&state.solver().borrow(), "jump_target", bits);
+
+    let mut stored_conditions = FxHashMap::default();
+    if with_expr {
+        stored_conditions.insert(JUMP_COND_ID, expr.clone());
+    }
+
+    let outcome = run_post_step_core(
+        &CoreCtx {
+            ctx: &ctx,
+            prof: &prof,
+            native_procs: &procs,
+            native_syscalls: &syscalls,
+            callbacks: None,
+        },
+        state,
+        PostStepInputs {
+            result: RunResult::SymbolicJumpTarget {
+                targets,
+                condition_id: JUMP_COND_ID,
+                jumpkind: "Ijk_Ret".to_string(),
+            },
+            deferred_forks: Vec::new(),
+            last_condition: None,
+            stored_conditions,
+            fork_snapshots: FxHashMap::default(),
+        },
+        sid,
+    );
+    (outcome, sid, expr)
+}
+
+/// Concretization that produced no targets at all deadends the state rather
+/// than continuing it somewhere arbitrary.
+#[test]
+fn symbolic_jump_no_targets_deadends() {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|_py| {
+        let (outcome, sid, _) = dispatch_symbolic_jump(Vec::new(), true, false);
+        match outcome.ret {
+            CoreReturn::Deadended(s) => assert_eq!(s.state_id(), sid),
+            _ => panic!("expected Deadended for an empty target list"),
+        }
+        assert!(outcome.fork_ids.is_empty());
+        assert!(outcome.terminal_pushes.is_empty());
+    });
+}
+
+/// Single target: the state moves in place (no fork) and the jump expression is
+/// constrained to the concretized address.
+#[test]
+fn symbolic_jump_single_target_constrains_in_place() {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|_py| {
+        const TARGET: u64 = 0x40_9000;
+        let (outcome, sid, expr) = dispatch_symbolic_jump(vec![TARGET], true, false);
+        assert!(outcome.fork_ids.is_empty(), "a lone target must not fork");
+        let CoreReturn::Continue(succ) = outcome.ret else {
+            panic!("expected Continue");
+        };
+        assert_eq!(succ.len(), 1);
+        assert_eq!(succ[0].0.state_id(), sid, "moved, not forked");
+        assert!(!succ[0].1.is_fork);
+        assert_eq!(succ[0].0.pc(), TARGET);
+        assert_eq!(
+            succ[0].0.eval(&expr),
+            Some(TARGET as u128),
+            "jump expression pinned to the target"
+        );
+        assert!(
+            !matches!(succ[0].0.get_ip(), crate::symbolic::RustBV::Symbolic { .. }),
+            "default mode concretizes IP"
+        );
+    });
+}
+
+/// Under `keep_ip_symbolic` the same arm keeps the symbolic IP and adds NO
+/// constraint — the whole point of the option is that the jump stays open.
+#[test]
+fn symbolic_jump_single_target_keep_ip_symbolic_adds_no_constraint() {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|_py| {
+        const TARGET: u64 = 0x40_9000;
+        let (outcome, _, _) = dispatch_symbolic_jump(vec![TARGET], true, true);
+        let CoreReturn::Continue(succ) = outcome.ret else {
+            panic!("expected Continue");
+        };
+        assert_eq!(succ[0].0.pc(), TARGET, "pc still advances to the target");
+        assert!(
+            matches!(succ[0].0.get_ip(), crate::symbolic::RustBV::Symbolic { .. }),
+            "IP register must stay symbolic"
+        );
+        assert_eq!(
+            succ[0].0.solver().borrow().num_constraints(),
+            0,
+            "keep_ip_symbolic must not pin the jump expression"
+        );
+    });
+}
+
+/// A condition id absent from `stored_conditions` still advances the pc — there
+/// is simply nothing to constrain.
+#[test]
+fn symbolic_jump_missing_condition_sets_pc_without_constraining() {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|_py| {
+        const TARGET: u64 = 0x40_a000;
+        let (outcome, _, _) = dispatch_symbolic_jump(vec![TARGET], false, false);
+        let CoreReturn::Continue(succ) = outcome.ret else {
+            panic!("expected Continue");
+        };
+        assert_eq!(succ.len(), 1);
+        assert_eq!(succ[0].0.pc(), TARGET);
+        assert_eq!(succ[0].0.solver().borrow().num_constraints(), 0);
+    });
+}
+
+/// Multi-target: one successor per concretized address. Each fork is minted
+/// from the UNCONSTRAINED original, so every child must pin the jump expression
+/// to its own target — a fork taken off the already-constrained first state
+/// would come back UNSAT (or evaluate to the first target).
+#[test]
+fn symbolic_jump_multiple_targets_fork_from_unconstrained_base() {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|_py| {
+        const TARGETS: [u64; 3] = [0x40_b000, 0x40_c000, 0x40_d000];
+        let (outcome, sid, expr) = dispatch_symbolic_jump(TARGETS.to_vec(), true, false);
+        let CoreReturn::Continue(succ) = outcome.ret else {
+            panic!("expected Continue");
+        };
+        assert_eq!(succ.len(), TARGETS.len());
+
+        // First successor is the moved original; the rest are forks stamped
+        // with the lineage root. Symbolic-jump forks deliberately do NOT go
+        // through `dispatch_fork_inspect`, so `fork_ids` stays empty.
+        assert_eq!(succ[0].0.state_id(), sid);
+        assert!(!succ[0].1.is_fork);
+        assert!(outcome.fork_ids.is_empty());
+        assert!(outcome.pruned.is_empty());
+
+        let mut seen_ids = vec![succ[0].0.state_id()];
+        for (i, (state, tag)) in succ.iter().enumerate() {
+            assert_eq!(state.pc(), TARGETS[i], "successor {i} pc");
+            assert_eq!(
+                state.eval(&expr),
+                Some(TARGETS[i] as u128),
+                "successor {i} pinned the jump expression to its own target"
+            );
+            assert!(state.satisfiable(), "successor {i} must be SAT");
+            if i > 0 {
+                assert!(tag.is_fork, "successor {i} is a fork");
+                assert_eq!(tag.root_hint, Some(sid));
+                assert!(
+                    !seen_ids.contains(&state.state_id()),
+                    "fork {i} reuses a state id"
+                );
+                seen_ids.push(state.state_id());
+            }
+        }
+    });
+}
+
 /// A native proc's unmapped-page error becomes a Python-identical
 /// SimSegfaultException message — but only with STRICT_PAGE_ACCESS on, since
 /// Python otherwise lazily initializes the page and keeps going (angr-gorvf.13).
