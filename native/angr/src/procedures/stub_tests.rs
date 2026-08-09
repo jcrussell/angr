@@ -19,6 +19,39 @@ fn test_stub_returns_symbolic_of_prototype_width() {
 }
 
 #[test]
+fn test_stub_returns_concrete_zero_without_symbolic_initial_values() {
+    // Parity with `SimSolver::Unconstrained` (angr-c7xno.61): with the option
+    // cleared, Python returns `BVV(0, bits)` — not a symbol.
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.set_option(crate::state::SYMBOLIC_INITIAL_VALUES, false);
+    let proc = NativeReturnUnconstrained::new("operator.new", 64);
+    let ret = proc.call(&mut state, &[]).unwrap().unwrap();
+    assert_eq!(ret.as_u64(), Some(0), "must be concrete NULL, not a symbol");
+    assert_eq!(ret.width(), 64);
+}
+
+#[test]
+fn test_stub_option_gate_flips_both_ways() {
+    // The gate reads the option per call, so toggling it mid-exploration
+    // (Python mirrors option edits onto the Rust state) changes the result.
+    let mut state = RustSimState::new("amd64").unwrap();
+    let proc = NativeReturnUnconstrained::new("toggle", 32);
+    state.set_option(crate::state::SYMBOLIC_INITIAL_VALUES, false);
+    assert_eq!(proc.call(&mut state, &[]).unwrap().unwrap().as_u64(), Some(0));
+    state.set_option(crate::state::SYMBOLIC_INITIAL_VALUES, true);
+    assert!(proc.call(&mut state, &[]).unwrap().unwrap().as_u64().is_none());
+}
+
+#[test]
+fn test_stub_default_state_has_symbolic_initial_values() {
+    // A `RustSimState` that never went through the Python option mirror must
+    // still behave like stock angr (every mode bundle ships the option), so
+    // the fail-safe direction is "symbolic", never "silently concrete 0".
+    let state = RustSimState::new("amd64").unwrap();
+    assert!(state.has_option(crate::state::SYMBOLIC_INITIAL_VALUES));
+}
+
+#[test]
 fn test_stub_is_unconstrained_not_zero() {
     // "Unconstrained" means every value stays feasible — the Python stub adds
     // no constraint at all.

@@ -19,6 +19,11 @@
 //! instances, and registers one `NativeReturnUnconstrained` per display name.
 //!
 //! Parity notes:
+//! - "Unconstrained" is gated on the `SYMBOLIC_INITIAL_VALUES` SimOption, the
+//!   same way `SimSolver::Unconstrained` gates it: symbol when set, concrete
+//!   `BVV(0, ret_bits)` when not. Every stock angr mode bundle ships the
+//!   option, so the symbol is the common case; a user who passes
+//!   `remove_options={SYMBOLIC_INITIAL_VALUES}` gets zeros here too.
 //! - The symbol width is the prototype's `returnty.size`, matching Python's
 //!   `state.solver.Unconstrained(..., size)`. Python then stores it through
 //!   `SimCC.return_val(ty)`, which *refines* the return register to that many
@@ -66,6 +71,15 @@ impl NativeSimProcedure for NativeReturnUnconstrained {
         state: &mut RustSimState,
         _args: &[RustBV],
     ) -> Result<Option<RustBV>, ProcedureError> {
+        // Parity gate (angr-c7xno.61): Python's `ReturnUnconstrained` goes
+        // through `SimSolver::Unconstrained`, which returns `BVV(0, bits)`
+        // unless `SYMBOLIC_INITIAL_VALUES` is in `state.options`. Minting a
+        // symbol unconditionally is the angr-8mjd regression shape — a
+        // symbolic pointer out of a C++-ABI stub feeds null-checks and
+        // store/load addresses, forking or paying concretization at each.
+        if !state.has_option(crate::state::SYMBOLIC_INITIAL_VALUES) {
+            return Ok(Some(RustBV::concrete(0, self.ret_bits)));
+        }
         let id = symbol_counter("unconstrained_ret");
         let sym = format!("unconstrained_ret_{}_{id}", self.name);
         let ctx = state.solver().borrow();

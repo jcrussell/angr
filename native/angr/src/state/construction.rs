@@ -119,7 +119,18 @@ impl RustSimState {
             force_eager_forks: false,
             cgc_allocation_base: 0xB800_0000,
             cgc_sinkholes: Vec::new(),
-            sim_options: Arc::new(HashSet::new()),
+            // `SYMBOLIC_INITIAL_VALUES` is seeded ON because every stock angr
+            // mode bundle ships it (`sim_options::modes` — symbolic, static,
+            // fastpath, tracing all include it), so a state that never went
+            // through the Python option mirror in
+            // `rust_manager._add_rust_state` still matches angr's default.
+            // The mirror explicitly clears it (`set_option(opt, false)`) when
+            // the user removed it. Direction matters: the consumer
+            // (`procedures/stub.rs::NativeReturnUnconstrained`) mints a fresh
+            // symbol when set and concrete 0 when not, so defaulting OFF would
+            // make a missed sync silently prune paths, while defaulting ON only
+            // over-approximates.
+            sim_options: Arc::new(HashSet::from([SYMBOLIC_INITIAL_VALUES.to_string()])),
             removed_sim_options: Arc::new(HashSet::new()),
         })
     }

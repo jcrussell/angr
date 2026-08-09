@@ -173,6 +173,18 @@ state_flags! {
     }
 }
 
+/// angr's `SYMBOLIC_INITIAL_VALUES` SimOption string (angr-c7xno.61).
+///
+/// Gates whether an "unconstrained" value is a fresh symbol or a concrete
+/// zero — `SimSolver::Unconstrained` in `angr/state_plugins/solver.py` returns
+/// `BVV(0, bits)` unless this is in `state.options`. The native consumer is
+/// `procedures/stub.rs::NativeReturnUnconstrained`; the Python mirror is
+/// `_NATIVE_SIMOPTIONS` in `angr/exploration/rust_manager.py`.
+///
+/// Unlike the other threaded options this one is seeded ON by
+/// `RustSimState::with_solver_endian` — see the comment there for why.
+pub const SYMBOLIC_INITIAL_VALUES: &str = "SYMBOLIC_INITIAL_VALUES";
+
 impl RustSimState {
     /// Add or remove a symex-relevant SimOption flag (angr-kzjv6). CoW via
     /// `Arc::make_mut` so unforked siblings keep sharing the original set.

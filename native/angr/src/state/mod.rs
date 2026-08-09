@@ -193,6 +193,7 @@ pub use filesystem::*;
 pub use inspection::*;
 #[cfg(feature = "vex-engine-z3")]
 pub use migration::StateMigrationPayload;
+pub use options::SYMBOLIC_INITIAL_VALUES;
 pub use snapshot::*;
 pub use types::*;
 

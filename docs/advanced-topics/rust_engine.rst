@@ -1785,6 +1785,9 @@ Inherited (option works because the code path runs in Python)
        claripy/Python-side SimProcedures to behave symbolically.
    * - ``SYMBOLIC_INITIAL_VALUES``
      - claripy AST creation honors this; Rust receives ASTs from Python.
+       Mirrored onto the Rust state as well (``_NATIVE_SIMOPTIONS``) so the
+       native ``ReturnUnconstrained`` stub returns a concrete zero rather
+       than a fresh symbol when the option is removed.
    * - ``TRACK_CONSTRAINTS``
      - Constraints are stored in claripy on the Python side via the
        constraint sync; the Rust solver mirrors them.

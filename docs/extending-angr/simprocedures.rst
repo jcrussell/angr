@@ -430,18 +430,27 @@ directly.
    ctors — the bulk of C++ ABI stubs). Python's ``ReturnUnconstrained``
    calls ``state.solver.Unconstrained(name, size, key=...)``, and
    ``SimSolver.Unconstrained`` returns a **concrete ``BVV(0)``** unless
-   ``sim_options.SYMBOLIC_INITIAL_VALUES`` is in ``state.options`` (off by
-   default — see ``angr/state_plugins/solver.py``'s ``Unconstrained``).
+   ``sim_options.SYMBOLIC_INITIAL_VALUES`` is in ``state.options`` (see
+   ``angr/state_plugins/solver.py``'s ``Unconstrained``). Every stock mode
+   bundle in ``sim_options.modes`` ships that option, so the symbolic branch
+   is the common case — but a caller that passes
+   ``remove_options={SYMBOLIC_INITIAL_VALUES}`` must get zeros, and an
+   ungated native stub silently ignores them.
    A native fast path that unconditionally writes a fresh symbolic value
    diverges: the symbolic pointer feeds downstream null-checks and is used
    as a store/load address, each of which forks or pays the symbolic-address
    concretization cost, exploding the state space. An end-to-end attempt at
    such a fast path (angr-8mjd, reverted) regressed ``csaw_wyvern`` from
    2.7s to 86s for exactly this reason. The correct contract: when
-   ``SYMBOLIC_INITIAL_VALUES`` is absent (the common case), return
+   ``SYMBOLIC_INITIAL_VALUES`` is absent, return
    ``Ok(Some(BVV(0, returnty_bits)))``; only mint a symbolic value when the
    option is set. ``void``-return stubs (``returnty == None`` →
    ``Ok(None)``) are always safe.
+   ``procedures/stub.rs::NativeReturnUnconstrained`` is the reference
+   implementation of the gate; it reads the option through
+   ``RustSimState::has_option``, which requires the option name to be listed
+   in ``_NATIVE_SIMOPTIONS`` (``angr/exploration/rust_manager.py``) so the
+   Python→Rust mirror actually threads it.
 
 Sub-calls (``ProcOutcome::CallAndResume``)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

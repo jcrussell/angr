@@ -177,7 +177,12 @@ _DBG = l.isEnabledFor(logging.DEBUG)  # Module-level guard for hot-path debug ca
 # avoid an import-order dependency. Add an entry here only when a native proc
 # actually consults the option; the full per-state option set otherwise stays
 # Python-side (``rust_state_proxy.options``).
-_NATIVE_SIMOPTIONS = frozenset({"SHORT_READS"})
+# ``SYMBOLIC_INITIAL_VALUES`` (angr-c7xno.61) gates whether
+# ``procedures/stub.rs::NativeReturnUnconstrained`` mints a symbol or returns a
+# concrete 0, matching ``SimSolver.Unconstrained``. It is present in every stock
+# mode bundle, so the Rust state seeds it ON and the mirror below exists mostly
+# to *clear* it for a user who passed ``remove_options=``.
+_NATIVE_SIMOPTIONS = frozenset({"SHORT_READS", "SYMBOLIC_INITIAL_VALUES"})
 
 
 def _is_rust_memory_proxy(plugin) -> bool:
@@ -4419,9 +4424,12 @@ class RustExplorationManager(
                 # (e.g. SHORT_READS gates faithful fgets short-read/EOF). Only
                 # options a native proc actually consults are mirrored; the full
                 # option set stays Python-side (rust_state_proxy.options).
+                # Mirrored in BOTH directions: a Rust state seeds
+                # SYMBOLIC_INITIAL_VALUES ON (stock-angr default), so absence
+                # on the SimState has to be pushed across as an explicit
+                # clear, not merely "not set".
                 for _opt in _NATIVE_SIMOPTIONS:
-                    if _opt in angr_state.options:
-                        rust_state.set_option(_opt, True)
+                    rust_state.set_option(_opt, _opt in angr_state.options)
             except Exception as e:
                 # cat-(b) FALLBACK WITH LOSS: option detection failed; Rust
                 # permission/NX enforcement and IP-handling gating stay off —
