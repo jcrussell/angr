@@ -110,6 +110,10 @@ criterion = "0.5"
 [[bench]]
 name = "vex_engine"
 harness = false
+# Same required-features guard as the examples below (angr-c7xno.99): the bench
+# drives `SymContext::add_constraint`, `bench_parse_smtlib2` and the z3 `Ast`
+# API directly, so it only compiles with z3 present.
+required-features = ["vex-engine-z3"]
 
 # Examples gated behind engine features (bd angr-cagbn): both pull in
 # feature-gated modules (`vex`, `memory`, `state`, z3 solver), so the no-z3

@@ -65,6 +65,20 @@
 // crate-wide. Production code still gets the lint's full force: `--all-targets`
 // also compiles the plain (non-test) lib target, where `cfg(test)` is false.
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+// Test-support rot in the no-z3 combos (angr-c7xno.99). Dozens of `#[test]` fns
+// are individually `#[cfg(feature = "vex-engine-z3")]`-gated because they drive
+// `add_constraint` / `to_z3_ast`; compiling the test harness *without* z3
+// therefore strands their shared helpers, fixture consts and imports as
+// unused. Those are not real rot — they are live in every build anyone ships
+// or benchmarks — so gating each helper individually would be ~30 `cfg`s that
+// must be re-audited whenever a test moves. Scope the two lints off for
+// test-cfg no-z3 builds only: the default (z3) build, which is what CI's
+// `rust_check` clippy gate and `cargo test` run, keeps their full force over
+// the exact same code.
+#![cfg_attr(
+    all(test, not(feature = "vex-engine-z3")),
+    allow(dead_code, unused_imports)
+)]
 // Keep the crate's `pub` surface honest (angr-9ke6b.214).
 //
 // `[lib] crate-type = ["cdylib", "rlib"]` means rustc treats every `pub` item

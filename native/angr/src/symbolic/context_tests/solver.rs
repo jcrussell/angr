@@ -1,5 +1,19 @@
 #![allow(clippy::arc_with_non_send_sync)]
 use super::*;
+// The instrumentation-counter tests below (`test_record_*_counters`) call
+// `stats.rs` directly, and `stats` itself is not feature-gated — but the glob
+// that pulls it into `context`'s scope is (`use super::stats::*` in
+// `context.rs` sits behind `vex-engine-z3`). Reaching them through
+// `use super::*` therefore only compiles in a z3 build, which is how the
+// no-z3 `--all-targets` build rotted unnoticed. Import them explicitly so the
+// counter tests build and run in every feature combo (angr-c7xno.99); an
+// explicit `use` shadows the glob, so this is a no-op for the z3 build.
+use super::super::stats::{
+    VexOpFamily, get_solver_stats, record_bvop_concat, record_bvop_extract, record_bvop_reverse,
+    record_concretize_read, record_concretize_write, record_mem_lazy_page_fault, record_mem_load,
+    record_mem_load_symbolic_addr, record_mem_store, record_mem_store_symbolic_addr,
+    record_vex_binop, record_vex_qop, record_vex_triop, record_vex_unop,
+};
 #[cfg(feature = "vex-engine-z3")]
 use crate::symbolic::Z3AstPtr;
 

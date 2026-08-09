@@ -683,6 +683,10 @@ fn test_vec_bit_mtx_xpose_concrete_matches_be_spec_replay() {
 /// A transpose is its own inverse, so applying the op twice must be the
 /// identity — proved over a fully symbolic operand, which exercises the
 /// per-bit extract/concat path rather than the u128 fold.
+///
+/// z3-gated (angr-c7xno.99): `SymContext::add_constraint` / `RustBV::to_z3_ast`
+/// only exist under `vex-engine-z3`.
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_vec_bit_mtx_xpose_symbolic_double_apply_is_identity() {
     let ctx = SymContext::new_mock();
@@ -703,6 +707,9 @@ fn test_vec_bit_mtx_xpose_symbolic_double_apply_is_identity() {
 
 /// The symbolic per-bit path must agree with the concrete u128 fold: pin a
 /// symbolic operand to a known value and eval the result.
+///
+/// z3-gated (angr-c7xno.99): see the sibling double-apply test above.
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_vec_bit_mtx_xpose_symbolic_matches_concrete_path() {
     let ctx = SymContext::new_mock();

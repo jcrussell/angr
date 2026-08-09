@@ -135,10 +135,13 @@ jobs:
       # the `--all-features` clippy gate reaches them — so warnings must fail
       # here or unused-import/dead-code rot accumulates invisibly. Mirrors
       # `make check-no-z3`.
+      # --all-targets (angr-c7xno.99): without it only the lib is compiled, so
+      # the no-z3 test/bench targets were gated by nothing and had rotted to 41
+      # errors — the reason the no-z3 mock arms had zero runtime coverage.
       - name: Cargo check with features "${{ matrix.features }}"
         env:
           RUSTFLAGS: "-D warnings"
-        run: cargo check --manifest-path native/angr/Cargo.toml --no-default-features --features "${{ matrix.features }}"
+        run: cargo check --manifest-path native/angr/Cargo.toml --no-default-features --features "${{ matrix.features }}" --all-targets
       # Execute (not just compile) the no-default-features combo at PR time —
       # the cheapest build and the combo that has historically broken
       # (angr-ph300.79). The full in-crate `cargo test --no-default-features`

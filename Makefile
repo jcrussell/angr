@@ -85,10 +85,13 @@ check-no-z3:  ## cargo check the four --no-default-features combos CI gates (ang
 	@# -D warnings (angr-sqfj8.139): these combos compile the
 	@# #[cfg(not(feature = "vex-engine-z3"))] arms nothing else covers, so
 	@# without it unused-import/dead-code rot accumulates here invisibly.
+	@# --all-targets (angr-c7xno.99): without it only the lib is compiled, so
+	@# the no-z3 *test* targets were checked by nothing and rotted to 41 errors
+	@# — which is why the no-z3 mock arms had zero runtime coverage.
 	@for f in "" "vex-engine" "vex-engine,vex-engine-z3" "automaton"; do \
 		echo "--- --no-default-features --features \"$$f\""; \
 		RUSTFLAGS="$$RUSTFLAGS -D warnings" \
-		$(CARGO) check --manifest-path $(MANIFEST) --no-default-features --features "$$f" || exit 1; \
+		$(CARGO) check --manifest-path $(MANIFEST) --no-default-features --features "$$f" --all-targets || exit 1; \
 	done
 
 .PHONY: clean
