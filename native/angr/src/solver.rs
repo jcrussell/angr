@@ -806,16 +806,16 @@ impl RustSolverContext {
         self.i().ctx().z3_assertion_count()
     }
 
-    /// Export constraints as serialized data for Python sync.
+    /// Debug/REPL-only: list the solver's constraints as
+    /// `(description, is_trackable)` tuples.
     ///
-    /// This returns a list of (description, is_trackable) tuples for each
-    /// constraint in the solver. The descriptions can be used for debugging
-    /// and the is_trackable flag indicates if the constraint could be
-    /// reconstructed from tracked handles.
-    ///
-    /// Note: Full Z3->claripy AST conversion is complex. This method provides
-    /// constraint info for debugging. The primary sync mechanism is through
-    /// the bidirectional constraint flow via add_constraints_to_pending.
+    /// **Not part of the constraint-sync path** and has no in-tree caller
+    /// (angr-c7xno.96): Rust->Python constraint flow goes through
+    /// `add_constraints_to_pending`, and `get_all_constraints_str` is the
+    /// string view that tooling actually uses. This wrapper exists so an
+    /// interactive session can see the same list with the trackability flag
+    /// attached; the flag is currently always `true`, since every constraint
+    /// the solver holds was added through a tracked handle.
     pub fn export_constraint_info(&self) -> Vec<(String, bool)> {
         self.i()
             .ctx()
@@ -825,9 +825,13 @@ impl RustSolverContext {
             .collect()
     }
 
-    /// Get the number of new constraints added since last sync.
+    /// Debug/REPL-only: constraints added since `baseline`, saturating at 0
+    /// when the baseline is already ahead of the live count.
     ///
-    /// This helps track constraint growth during callbacks.
+    /// Has no in-tree caller (angr-c7xno.96) — Python code that wants to see
+    /// constraint growth around a callback calls `num_constraints` directly
+    /// and subtracts (see `rust_callback_dispatch.py`). Kept as a convenience
+    /// for interactive use.
     pub fn constraint_delta(&self, baseline: usize) -> usize {
         let current = self.i().ctx().num_constraints();
         current.saturating_sub(baseline)

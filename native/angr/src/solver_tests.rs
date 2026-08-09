@@ -140,9 +140,10 @@ fn test_pop_to_level_pops_the_difference_and_refuses_to_overshoot() {
 // Constraint bookkeeping (angr-sqfj8.125)
 // =============================================================================
 
-/// `num_constraints`/`constraint_delta` are what the Python side polls to
-/// decide whether a callback added constraints; `constraint_delta` saturates
-/// rather than underflowing when the baseline is already ahead.
+/// `num_constraints` is what the Python side polls to report constraint growth
+/// (`rust_callback_dispatch.py`); `constraint_delta` is the debug-only
+/// convenience over it, and must saturate rather than underflow when the
+/// baseline is already ahead.
 #[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_num_constraints_and_delta_track_adds() {
@@ -162,8 +163,8 @@ fn test_num_constraints_and_delta_track_adds() {
 }
 
 /// `get_all_constraints_str` / `export_constraint_info` / `z3_assertion_count`
-/// are the debugging + Python-sync views of the same assertion list; they must
-/// agree with each other.
+/// are three debugging views of the same assertion list; they must agree with
+/// each other.
 #[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_constraint_export_views_agree() {
