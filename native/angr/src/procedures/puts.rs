@@ -98,7 +98,7 @@ crate::declare_proc! {
     aliases = ["fputc_unlocked", "putc", "putc_unlocked"],
     call |state| {
         let byte = (c & 0xFF) as u8;
-        let fd = match crate::procedures::stdio::read_fileno_for_stream(state, stream) {
+        let fd = match crate::procedures::fileops::read_fileno(state, stream) {
             Ok(fd) => fd,
             Err(e) => {
                 // Unresolvable fd on a write path: any bounded symbolic

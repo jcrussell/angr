@@ -3,22 +3,16 @@
 //! These are the highest-volume libc stdio procedures the Python fallback
 //! still serviced (per angr-otjw spike). fflush / setvbuf are no-ops that
 //! always return 0; fwrite resolves the FILE struct's `_fileno` field via
-//! an arch-specific offset and reuses the NativeWrite path for stdout/stderr.
+//! the shared [`super::fileops::read_fileno`] helper and reuses the
+//! NativeWrite path for stdout/stderr.
 
 use super::arch_word;
+use super::fileops::read_fileno;
 use super::{NativeSimProcedure, ProcedureError, extract_concrete_arg};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
 const MAX_FWRITE_SIZE: u64 = 4096;
-
-/// `_IO_FILE._fileno` byte offset per arch. Projects the offset out of
-/// [`super::fileops::io_file_for_arch`], the single source of truth for the
-/// `_IO_FILE` layout table (mirroring
-/// `cle.backends.externs.simdata.io_file.io_file_data_for_arch`).
-fn fd_offset_for_arch(name: &str) -> Option<u64> {
-    super::fileops::io_file_for_arch(name).map(|(fd_offset, _size)| fd_offset)
-}
 
 /// Native fwrite implementation.
 ///
@@ -136,12 +130,12 @@ impl NativeSimProcedure for NativeFwrite {
 
 /// Resolve fwrite's `FILE *stream` argument (arg 3) to its `_fileno`.
 /// Thin wrapper: extract the concrete `FILE *` then defer to the shared
-/// [`read_fileno_for_stream`] so the fd-offset lookup / load / cast logic
+/// [`super::fileops::read_fileno`] so the fd-offset lookup / load / cast logic
 /// lives in one place. Split out so the caller can demote-all on ANY
 /// resolution failure without repeating the error mapping.
 fn resolve_fwrite_fd(state: &RustSimState, stream: &RustBV) -> Result<i32, ProcedureError> {
     let file_ptr = extract_concrete_arg(stream, "file_ptr")?;
-    read_fileno_for_stream(state, file_ptr)
+    read_fileno(state, file_ptr)
 }
 
 /// Native fflush implementation.
@@ -232,24 +226,6 @@ impl NativeSimProcedure for NativeSetbuf {
     }
 }
 
-/// Read a 32-bit fd from a FILE struct on the given arch. Returns the signed
-/// fd (so -1 sentinels are preserved). Mirrors fileops.rs::read_fileno so the
-/// stdio shims don't need to depend on private helpers there.
-pub(crate) fn read_fileno_for_stream(
-    state: &RustSimState,
-    file_ptr: u64,
-) -> Result<i32, ProcedureError> {
-    let arch_name = state.arch().name();
-    let fd_off = fd_offset_for_arch(arch_name).ok_or_else(|| {
-        ProcedureError::Other(format!("no _IO_FILE fd offset for arch {arch_name}"))
-    })?;
-    let bv = state.memory_load(file_ptr.wrapping_add(fd_off), 4)?;
-    let raw = bv
-        .as_u64()
-        .ok_or_else(|| ProcedureError::SymbolicArgument("FILE._fileno".to_string()))?;
-    Ok(raw as u32 as i32)
-}
-
 /// Native feof implementation.
 ///
 /// ```c
@@ -291,7 +267,7 @@ impl NativeSimProcedure for NativeFeof {
         args: &[RustBV],
     ) -> Result<Option<RustBV>, ProcedureError> {
         let file_ptr = extract_concrete_arg(&args[0], "stream")?;
-        let fd = read_fileno_for_stream(state, file_ptr)?;
+        let fd = read_fileno(state, file_ptr)?;
         if fd < 0 {
             return Ok(Some(arch_word(state, 0u64)));
         }
@@ -378,7 +354,7 @@ impl NativeSimProcedure for NativeFputs {
     ) -> Result<Option<RustBV>, ProcedureError> {
         let str_addr = extract_concrete_arg(&args[0], "s")?;
         let file_ptr = extract_concrete_arg(&args[1], "stream")?;
-        let fd = match read_fileno_for_stream(state, file_ptr) {
+        let fd = match read_fileno(state, file_ptr) {
             Ok(fd) => fd,
             Err(e) => {
                 // Unresolvable fd on a write path: any bounded symbolic

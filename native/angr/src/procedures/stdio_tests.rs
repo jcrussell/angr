@@ -4,7 +4,8 @@ use crate::memory::Permission;
 
 fn setup_file_struct(state: &mut RustSimState, file_ptr: u64, fd: i32) {
     let arch_name = state.arch().name();
-    let off = fd_offset_for_arch(arch_name).expect("test arch supported");
+    let (off, _size) =
+        crate::procedures::fileops::io_file_for_arch(arch_name).expect("test arch supported");
     // Map enough room for the FILE struct + buf.
     state.map_memory_data(file_ptr & !0xfff, &vec![0u8; 0x4000], Permission::RWX);
     let fd_bv = RustBV::concrete(fd as u32 as u128, 32);

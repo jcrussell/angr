@@ -87,7 +87,7 @@ fn test_putchar_symbolic() {
 }
 
 /// Map a FILE struct at `file_ptr` whose `_fileno` field holds `fd`. The
-/// AMD64 `_IO_FILE._fileno` byte offset is 112 (see `fd_offset_for_arch`).
+/// AMD64 `_IO_FILE._fileno` byte offset is 112 (see `fileops::io_file_for_arch`).
 fn setup_file_struct(state: &mut RustSimState, file_ptr: u64, fd: i32) {
     const AMD64_FD_OFFSET: u64 = 112;
     state.map_memory_data(file_ptr & !0xfff, &vec![0u8; 0x4000], Permission::RWX);

@@ -87,7 +87,7 @@ crate::declare_proc! {
     args = [stream: concrete, fmt_addr: concrete],
     aliases = ["vfprintf"],
     call |state| {
-        let fd = match crate::procedures::stdio::read_fileno_for_stream(state, stream) {
+        let fd = match crate::procedures::fileops::read_fileno(state, stream) {
             Ok(fd) => fd,
             Err(e) => {
                 // Unresolvable fd on a write path: any bounded symbolic

@@ -80,7 +80,7 @@ fn read_pathname(state: &mut RustSimState, addr: u64) -> Result<Vec<u8>, Procedu
 /// `_IO_FILE` size and fd offset per arch, mirroring
 /// `cle.backends.externs.simdata.io_file.io_file_data_for_arch`.
 /// Returns `(fd_offset, total_size)`. Single source of truth for the arch ->
-/// `_fileno` offset mapping; `stdio::fd_offset_for_arch` projects out the offset.
+/// `_fileno` offset mapping.
 /// Arch names match what `Arch::name()` returns (only `"ARM"`/`"ARM64"` for the
 /// ARM family — the `ARMEL`/`ARMHF`/`AARCH64` aliases never reach here).
 pub(super) fn io_file_for_arch(name: &str) -> Option<(u64, u64)> {
