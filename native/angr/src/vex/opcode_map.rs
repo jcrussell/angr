@@ -1067,8 +1067,9 @@ fn parse_vreverse(op_str: &str) -> Option<IROp> {
 
 /// Parse ARM/AArch64 NEON SIMD opcodes that have been claimed but not yet
 /// implemented. Hits here route through `IROp::NeonUnimplemented(name)` so
-/// dispatch in `VEXOps::unop` / `binop` / etc. panics with the original
-/// opcode name instead of silently returning a fresh-symbolic value.
+/// dispatch in `VEXOps::unop` / `binop` / `qop` returns
+/// `Err(OpError::UnsupportedNeon { name })` carrying the original opcode name
+/// instead of silently returning a fresh-symbolic value.
 ///
 /// Implementations are added one-at-a-time in angr-bkcs.2 by:
 ///   1. Removing the opcode's entry from this function.

@@ -189,8 +189,8 @@ pub fn iropclass(op: &IROp) -> VexOpFamily {
         | IROp::PclmulHQLQ
         | IROp::Crc32C => VexOpFamily::Arith,
 
-        // Raw opcode escape + NEON panic sentinel + unmapped-opcode
-        // typed-error sentinel (angr-tkbr.2): not pre-classified.
+        // Raw opcode escape + NEON and unmapped-opcode typed-error
+        // sentinels (angr-tkbr.2): not pre-classified.
         IROp::NeonUnimplemented(_) | IROp::Unmapped(_) | IROp::Raw(_) => VexOpFamily::Other,
     }
 }

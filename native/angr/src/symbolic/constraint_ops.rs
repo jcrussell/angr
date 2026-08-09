@@ -167,39 +167,6 @@ impl SymContext {
         }
     }
 
-    /// Add a constraint from a typed Z3 AST handle (shared context fast path).
-    ///
-    /// This bypasses the RustBV → build_z3_ast_cached() conversion, preserving
-    /// the original Z3 AST structure from Python's claripy/z3 backend.
-    ///
-    /// The `Z3AstPtr` handle carries its own refcount; on entry, this
-    /// function wraps the pointer as a [`z3::ast::Bool`] (which takes its
-    /// own ref via `Z3_inc_ref`) and the handle's `Drop` releases the
-    /// extraction-time ref before return — net zero change to the AST's
-    /// refcount across the call.
-    ///
-    /// Dispatches on `self.lineage` (angr-v5a5 slice 4c.2; mirrors the
-    /// pattern landed in slice 4c.1 for [`Self::add_constraint`]):
-    ///
-    /// - **None** (today's only production path): asserts the constraint
-    ///   on the per-context Z3 solver — byte-identical to the pre-slice
-    ///   `self.with_z3_solver(|s| s.assert(&constraint))` call.
-    /// - **Some** (shared-lineage): mints a fresh
-    ///   [`ScopeFrame`](super::lineage::ScopeFrame) carrying the constraint,
-    ///   appends it to `self.scope_path`, and calls
-    ///   [`SharedLineageSolver::switch_to`](super::lineage::SharedLineageSolver::switch_to)
-    ///   to push the new frame onto the shared solver. The
-    ///   `constraint.clone()` is a ref-bump on the same Z3 AST that came
-    ///   in via `Ast::wrap` — no additional Z3 allocations.
-    ///
-    /// See [`Self::add_constraint`] for the full rationale on why the
-    /// Some branch can't route through `with_z3_solver` (would put the
-    /// assert at scope 0 = lineage base = leak to all siblings).
-    ///
-    /// **Caller contract:** the wrapped pointer must denote a Bool-sorted
-    /// AST. The constructor of `Z3AstPtr` is `unsafe` precisely so this
-    /// invariant is checked at extraction time; once a `Z3AstPtr` exists,
-    /// this method is safe to call.
     /// Install one constraint via the active lineage mode, then run the
     /// standard post-assert bookkeeping (constraint_count bump, sat_cache
     /// clear, model-consistency invalidation).
@@ -243,6 +210,30 @@ impl SymContext {
         self.invalidate_model_if_inconsistent(constraint);
     }
 
+    /// Add a constraint from a typed Z3 AST handle (shared context fast path).
+    ///
+    /// This bypasses the RustBV → build_z3_ast_cached() conversion, preserving
+    /// the original Z3 AST structure from Python's claripy/z3 backend.
+    ///
+    /// The `Z3AstPtr` handle carries its own refcount; in
+    /// [`Self::add_constraint_raw_inner`] the pointer is wrapped as a
+    /// [`z3::ast::Bool`] (which takes its own ref via `Z3_inc_ref`) and the
+    /// handle's `Drop` releases the extraction-time ref before return — net
+    /// zero change to the AST's refcount across the call.
+    ///
+    /// The wrapped constraint is deduped against the ptr-keyed side table and,
+    /// on a miss, installed via [`Self::install_constraint`], which dispatches
+    /// on `self.lineage` (angr-v5a5 slice 4c.2; mirrors the pattern landed in
+    /// slice 4c.1 for [`Self::add_constraint`]).
+    ///
+    /// A non-dup constraint is also pushed to the residual log
+    /// (`non_bv_assertions`) so it can be round-tripped without a RustBV form;
+    /// [`Self::add_constraint_raw_assumed`] is the variant that skips that.
+    ///
+    /// **Caller contract:** the wrapped pointer must denote a Bool-sorted
+    /// AST. The constructor of `Z3AstPtr` is `unsafe` precisely so this
+    /// invariant is checked at extraction time; once a `Z3AstPtr` exists,
+    /// this method is safe to call.
     #[cfg(feature = "vex-engine-z3")]
     pub fn add_constraint_raw(&self, ast: super::Z3AstPtr) {
         self.add_constraint_raw_inner(ast, true);

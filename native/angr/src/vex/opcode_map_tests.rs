@@ -361,8 +361,9 @@ fn test_qdmull_opcode_mapping() {
 fn test_neon_unimplemented_scaffold_is_empty() {
     // The NeonUnimplemented scaffold (parse_neon_unimplemented) routes
     // claimed-but-unimplemented NEON opcodes through
-    // IROp::NeonUnimplemented(name) so dispatch panics with the original
-    // opcode name instead of silently producing a fresh-symbolic value.
+    // IROp::NeonUnimplemented(name) so dispatch returns
+    // OpError::UnsupportedNeon carrying the original opcode name instead of
+    // silently producing a fresh-symbolic value.
     // As of angr-cudgw.6 no NEON op routes there anymore — the last
     // placeholder, Iop_PwAdd32Fx2 (FP pairwise add), graduated to
     // IROp::VFPwAdd. This test guards that graduation: if Iop_PwAdd32Fx2
