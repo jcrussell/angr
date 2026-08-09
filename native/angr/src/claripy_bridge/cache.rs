@@ -311,14 +311,14 @@ pub(crate) fn reset_for_new_exploration() {
     crate::symbolic::clear_global_registry();
 }
 
-/// Get the current cache hit/miss statistics.
+/// Number of entries currently held in this thread's [`AST_CACHE`].
+///
+/// Capacity is a compile-time constant ([`AST_CACHE_SIZE_NZ`]), so it was
+/// dropped from the return type in angr-c7xno.15 — every caller only ever
+/// wanted the occupancy, and a returned constant is not a statistic.
 #[cfg(test)]
-pub(crate) fn cache_stats() -> (usize, usize) {
-    // Returns (len, cap) for debugging
-    AST_CACHE.with(|cache| {
-        let c = cache.borrow();
-        (c.len(), c.cap().get())
-    })
+pub(crate) fn ast_cache_len() -> usize {
+    AST_CACHE.with(|cache| cache.borrow().len())
 }
 
 test_submod!("cache_tests.rs" => cache_tests);

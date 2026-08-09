@@ -64,9 +64,15 @@ fn ensure_claripy_ast(
         }
     };
 
-    // Check the actual Python type to distinguish bool from int
-    // IMPORTANT: In Python, bool is a subclass of int, so we must check bool FIRST
-    // but use is_instance_of, not extract, because extract::<bool>() succeeds for ints too
+    // Check the actual Python type to distinguish bool from int.
+    // IMPORTANT: `bool` is a subclass of `int` in Python, and `extract::<bool>()`
+    // happily succeeds for a plain `int`, so a bare extract cannot tell the two
+    // apart. The discrimination is therefore done on the *type name* below —
+    // each branch gates on `type_name == "bool"` / `== "int"` first and only
+    // then extracts, so the extract is a value unpack, never the type test.
+    // The name comparison is exact, so an `int` subclass (name != "int") falls
+    // through to the tagged unknown-type fallback at the end rather than being
+    // silently wrapped as a BVV.
     let type_name = py_type_name(bound);
     if missing_op_attr {
         log::debug!("ensure_claripy_ast: object {type_name} missing 'op' attr, wrapping");

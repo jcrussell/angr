@@ -80,7 +80,7 @@ fn test_worker_local_clear_empties_ast_cache() {
     clear_worker_local_caches();
     tl_cache!(AST_CACHE, put(0x5151_i64, RustBV::concrete(0x1234, 64)));
     assert_eq!(
-        cache_stats().0,
+        ast_cache_len(),
         1,
         "setup: AST_CACHE holds the one entry just put",
     );
@@ -88,7 +88,7 @@ fn test_worker_local_clear_empties_ast_cache() {
     clear_worker_local_caches();
 
     assert_eq!(
-        cache_stats().0,
+        ast_cache_len(),
         0,
         "worker-teardown clear must empty AST_CACHE so no RustBV outlives z3ctx",
     );
