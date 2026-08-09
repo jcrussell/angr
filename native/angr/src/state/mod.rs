@@ -843,6 +843,4 @@ impl PyRustSimState {
     }
 }
 
-#[cfg(test)]
-#[path = "../state_tests.rs"]
-mod state_tests;
+test_submod!(tests);

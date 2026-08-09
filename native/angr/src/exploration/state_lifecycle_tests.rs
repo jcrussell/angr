@@ -552,7 +552,7 @@ fn drop_state_from_copies_does_not_notify() {
 // `RustSimState::merge` grew removal tombstones in the angr-9ke6b.121 follow-up
 // so one branch's explicit `remove_hook` / `set_option(_, false)` / `unsetenv`
 // can't be resurrected by a sibling that never touched the item, and
-// `state_tests.rs` covers that on `merge` directly. `_merge_states` is the
+// `state/tests/merge_config.rs` covers that on `merge` directly. `_merge_states` is the
 // entry point `register_merge_point`'s `NativeTechnique::MergePoint` actually
 // reaches in a real run; it takes its own copy of each input first, and taking
 // that copy with `fork` (which resets the tombstones by design) silently undid

@@ -92,7 +92,7 @@ pub struct ExplorationStateSnapshot {
 //   `_sync_rust_heap_brk_to_state`, `_sync_state_posix_fds_to_rust`, ...) read
 //   the LIVE `rust_mgr.get_state_*` accessors instead of a materialized
 //   snapshot, so these duplicate that data at snapshot granularity. Retained
-//   as a stable Rust-side introspection API (exercised by state_tests.rs,
+//   as a stable Rust-side introspection API (exercised by `state/tests/export.rs`,
 //   angr-n0irt.17) — not dead, just not on the materialization hot path.
 #[pymethods]
 impl ExplorationStateSnapshot {
