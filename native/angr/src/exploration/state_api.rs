@@ -405,11 +405,10 @@ impl RustExplorationManager {
 
     pub(crate) fn _set_state_symbolic_pages<'py>(
         &mut self,
-        py: Python<'py>,
+        _py: Python<'py>,
         state_id: u64,
         pages: &Bound<'py, PyDict>,
     ) -> PyResult<()> {
-        let _ = py;
         let mut map: HashMap<u64, Py<PyAny>> = HashMap::with_capacity(pages.len());
         for (key, value) in pages.iter() {
             let addr: u64 = key.extract()?;
@@ -423,7 +422,7 @@ impl RustExplorationManager {
 
     // The three `_get_state_*` metadata getters below and `_clear_state_metadata`
     // deliberately tolerate a missing state_id (empty dict / no-op) instead of
-    // raising like their ~25 `with_state`/`with_state_mut` siblings. This is a
+    // raising like their `with_state`/`with_state_mut` siblings. This is a
     // load-bearing contract, not an oversight: the Python `_lookup_via_ancestry`
     // helper (rust_state_sync.py) walks a state's ancestry by calling these
     // getters on possibly-evicted ancestor ids and treats a falsy result as

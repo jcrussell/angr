@@ -4600,10 +4600,12 @@ The audit found one place where a Python caller's input is treated as
 a raw pointer with no validation:
 
 * ``RustExplorationManager.import_z3_constraint_ptrs(state_id, ptrs:
-  Vec<usize>)`` (``exploration/state_api.rs:100``) iterates ``ptrs``
+  Vec<usize>)`` (``exploration/state_api.rs::_import_z3_constraint_ptrs``)
+  iterates ``ptrs``
   and calls ``unsafe { ctx.add_constraint_raw(*ptr) }`` whenever
   ``*ptr != 0``. The ``add_constraint_raw`` SAFETY contract
-  (``symbolic/context.rs:1784``) requires each pointer to be a valid,
+  (``symbolic/constraint_ops.rs::add_constraint_raw``) requires each
+  pointer to be a valid,
   live ``Z3_ast Bool`` in the active thread-local Z3 context. The
   function calls ``NonNull::new_unchecked(ptr as *mut _)`` followed by
   ``z3::ast::Ast::wrap`` — both UB if the pointer is anything other

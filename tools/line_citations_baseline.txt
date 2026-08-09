@@ -19,7 +19,6 @@ docs/advanced-topics/rust_engine.rst	(``native/angr/src/memory/load.rs:384-394``
 docs/advanced-topics/rust_engine.rst	(``native/angr/src/memory/load.rs:384-394``) returns a fresh
 docs/advanced-topics/rust_engine.rst	(``native/angr/src/symbolic/context.rs:360``) applies when the env var
 docs/advanced-topics/rust_engine.rst	(``rust_state_sync.py:235``) returns ``False``. Each manager then
-docs/advanced-topics/rust_engine.rst	(``symbolic/context.rs:1784``) requires each pointer to be a valid,
 docs/advanced-topics/rust_engine.rst	(``veritesting.py:256``) against the Python engine, so a
 docs/advanced-topics/rust_engine.rst	(line 466). Per-Callable ``map_loader`` dropped from several ms
 docs/advanced-topics/rust_engine.rst	(see ``z3-rs 0.19+`` note at ``native/angr/src/solver.rs:99``).
@@ -38,7 +37,6 @@ docs/advanced-topics/rust_engine.rst	- ``rust_manager.py:1424`` (consumed at ``:
 docs/advanced-topics/rust_engine.rst	- ``rust_manager.py:1425`` (consumed at ``:1443``)
 docs/advanced-topics/rust_engine.rst	- ``rust_manager.py:3517`` (per-state, also propagated through
 docs/advanced-topics/rust_engine.rst	Matches Python's ``engines/successors.py:232-237`` (early elif
-docs/advanced-topics/rust_engine.rst	Vec<usize>)`` (``exploration/state_api.rs:100``) iterates ``ptrs``
 docs/advanced-topics/rust_engine.rst	``RustBV::Symbolic`` (``symbolic/value.rs:425``) and
 docs/advanced-topics/rust_engine.rst	``RustBVHandle`` (``symbolic/handle.rs:28``) is a pure value type:
 docs/advanced-topics/rust_engine.rst	``SymContext::z3_assertions_shared`` (``symbolic/context.rs:1357``)
