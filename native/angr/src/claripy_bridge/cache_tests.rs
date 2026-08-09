@@ -166,3 +166,29 @@ fn test_evict_claripy_ast_clears_registry() {
         );
     });
 }
+
+// angr-c7xno.19: `store_claripy_ast_with_info`'s sentinel guard is an
+// always-on `assert_ne!` rather than a `debug_assert_ne!` (angr-9ke6b.220)
+// precisely because a registry entry keyed by `RustBV::EXPRESSION_ID` would
+// hand back an unrelated AST on the next `get_claripy_ast`. Nothing else in
+// the crate reaches the panic arm — every production call site passes an
+// allocated leaf id — so without this test the guard could be weakened or
+// deleted with the suite still green.
+//
+// The `Py<PyAny>` is minted inside `Python::attach` and the store is called
+// *outside* it, so the unwind does not cross the GIL-guard closure.
+#[test]
+#[should_panic(expected = "must not be keyed by the EXPRESSION_ID sentinel")]
+fn test_store_claripy_ast_with_info_rejects_expression_sentinel() {
+    Python::initialize();
+    let none = Python::attach(|py| py.None());
+
+    store_claripy_ast_with_info(
+        0x19EE,
+        RustBV::EXPRESSION_ID,
+        "c7xno19_sentinel",
+        64,
+        SymbolKind::BitVector,
+        none,
+    );
+}
