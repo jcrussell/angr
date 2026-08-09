@@ -15,10 +15,6 @@
 //! lock — the same argument the [`scheduler`](super::scheduler) Panic policy
 //! spells out in full.
 //!
-//! **Enforcement (angr-qwyti.11):** this module carries
-//! `#![deny(clippy::unwrap_used, clippy::expect_used)]`.
-#![deny(clippy::unwrap_used, clippy::expect_used)]
-//!
 //! This is the load-bearing foundation for a parallel wave loop: each worker
 //! must be able to drive the post-step phase from an owned / `Arc`-shared
 //! config bundle rather than reaching back into the manager. The single-threaded
@@ -52,6 +48,12 @@
 //! BEFORE the post-step phase and copied onto every fork's tag; the coordinator
 //! calls `sm.set_root(child_id, root_hint)`. This equals the inline value the
 //! legacy `materialize_deferred_forks` computed.
+//!
+//! **Enforcement (angr-qwyti.11, angr-c7xno.36):** `exploration/mod.rs`
+//! deliberately carries no module-level deny, so this module re-states
+//! `#![deny(clippy::unwrap_used, clippy::expect_used)]` itself — placed last,
+//! after the whole doc block, as in every sibling here.
+#![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use std::collections::HashMap;
 use std::sync::Mutex;

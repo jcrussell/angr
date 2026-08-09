@@ -1,13 +1,14 @@
 //! Compare-and-swap (`IRStmt::CAS`) execution, single and double-width.
 //!
-//! **Panic policy / enforcement (angr-qwyti.11, angr-9ke6b.212):** the CAS
-//! operands come straight from guest-lifted IR, so this module carries
-//! `#![deny(clippy::unwrap_used, clippy::expect_used)]` and malformed IR
-//! returns `CbExecutionError::InvalidIR`. There are no `unwrap`/`expect` sites
-//! left: the all-Some/all-None DCAS validation in `execute_cas_stmt` now binds
-//! `old_hi`/`data_hi` in the arm that proves them present, so the DCAS branch
-//! needs no second unwrap.
-#![deny(clippy::unwrap_used, clippy::expect_used)]
+//! **Panic policy / enforcement (angr-qwyti.11, angr-9ke6b.212, angr-c7xno.47):**
+//! the CAS operands come straight from guest-lifted IR, so malformed IR returns
+//! `CbExecutionError::InvalidIR` instead of panicking. The enforcing
+//! `#![deny(clippy::unwrap_used, clippy::expect_used)]` is *inherited* from
+//! `interpreter/mod.rs` — a mod.rs inner-attribute deny propagates into every
+//! child module, so it is not restated here (no file in `interpreter/` restates
+//! it). There are no `unwrap`/`expect` sites left: the all-Some/all-None DCAS
+//! validation in `execute_cas_stmt` now binds `old_hi`/`data_hi` in the arm
+//! that proves them present, so the DCAS branch needs no second unwrap.
 
 use super::bv_utils::{bv_to_bytes, reject_symbolic_byte_store};
 use super::*;
