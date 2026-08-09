@@ -848,6 +848,53 @@ impl RegisterFile {
             }
         }
 
+        // Check concrete data for differences at non-symbolic offsets.
+        // We iterate register-sized chunks. For simplicity, use the arch's
+        // native register width (e.g. 8 bytes for amd64).
+        //
+        // Runs *before* `updates` is applied so the `get` calls below still see
+        // each file's own pre-merge overlay; staging into the same vectors keeps
+        // the "compose, then subsume the inner overlays" contract in one place.
+        let reg_bytes = (self.arch.bits() / 8) as usize;
+        let len = self.data.len().min(other.data.len());
+        let mut off = 0;
+        while off + reg_bytes <= len {
+            let u32_off = off as u32;
+            // Skip offsets that are already handled by symbolic merge
+            if !all_offsets.contains(&u32_off) {
+                let self_slice = &self.data[off..off + reg_bytes];
+                let other_slice = &other.data[off..off + reg_bytes];
+                if self_slice != other_slice {
+                    // An overlay may cover part of this chunk without living at
+                    // its aligned start: x86/amd64 register the high-byte
+                    // aliases ah/ch/dh/bh at `GPR_offset + 1` (see `ALIASES` in
+                    // arch/amd64.rs and arch/x86.rs), so `all_offsets` holds
+                    // unaligned keys. Comparing raw backing bytes there would
+                    // insert a concrete-only ITE at the aligned offset that
+                    // shadows the already-merged sub-register on the next
+                    // full-width read (angr-c7xno.1). Compose both sides
+                    // through `get` instead, exactly as the width-mismatch arm
+                    // above does.
+                    let inner_symbolic =
+                        (off + 1..off + reg_bytes).any(|k| all_offsets.contains(&(k as u32)));
+                    if inner_symbolic {
+                        let size = reg_bytes as u32;
+                        let self_full = self.get(u32_off, size, ctx);
+                        let other_full = other.get(u32_off, size, ctx);
+                        updates.push((u32_off, merge_cond_other.ite(&other_full, &self_full, ctx)));
+                        widened.push((u32_off, size));
+                    } else {
+                        // Concrete values differ — create ITE
+                        let width = (reg_bytes * 8) as u32;
+                        let self_bv = RustBV::concrete(le_bytes_to_u128(self_slice), width);
+                        let other_bv = RustBV::concrete(le_bytes_to_u128(other_slice), width);
+                        updates.push((u32_off, merge_cond_other.ite(&other_bv, &self_bv, ctx)));
+                    }
+                }
+            }
+            off += reg_bytes;
+        }
+
         for (offset, val) in updates {
             self.symbolic.insert(offset, val);
             merged = true;
@@ -860,31 +907,6 @@ impl RegisterFile {
         for (offset, size) in widened {
             self.symbolic
                 .retain(|&k, _| !(k > offset && k < offset + size));
-        }
-
-        // Check concrete data for differences at non-symbolic offsets.
-        // We iterate register-sized chunks. For simplicity, use the arch's
-        // native register width (e.g. 8 bytes for amd64).
-        let reg_bytes = (self.arch.bits() / 8) as usize;
-        let len = self.data.len().min(other.data.len());
-        let mut off = 0;
-        while off + reg_bytes <= len {
-            let u32_off = off as u32;
-            // Skip offsets that are already handled by symbolic merge
-            if !all_offsets.contains(&u32_off) {
-                let self_slice = &self.data[off..off + reg_bytes];
-                let other_slice = &other.data[off..off + reg_bytes];
-                if self_slice != other_slice {
-                    // Concrete values differ — create ITE
-                    let width = (reg_bytes * 8) as u32;
-                    let self_bv = RustBV::concrete(le_bytes_to_u128(self_slice), width);
-                    let other_bv = RustBV::concrete(le_bytes_to_u128(other_slice), width);
-                    let ite_val = merge_cond_other.ite(&other_bv, &self_bv, ctx);
-                    self.symbolic.insert(u32_off, ite_val);
-                    merged = true;
-                }
-            }
-            off += reg_bytes;
         }
 
         merged

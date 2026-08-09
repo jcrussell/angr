@@ -1008,6 +1008,93 @@ fn merge_widen_adjacent_overlay_selects_both_bytes_under_solver() {
     ctx.pop();
 }
 
+/// angr-c7xno.1: the high-byte aliases ah/ch/dh/bh live at `GPR_offset + 1`, so
+/// a branch can carry a symbolic overlay inside a register chunk while the
+/// chunk's *aligned* offset is absent from both files' overlay maps. The
+/// concrete-diff loop used to skip only on the aligned offset, so it fell
+/// through to comparing raw backing bytes and inserted a concrete-only ITE at
+/// `rax_off` — which `get` then returned verbatim, shadowing the merged `ah`.
+#[test]
+fn merge_concrete_chunk_keeps_unaligned_subregister_overlay() {
+    let ctx = SymContext::new_mock();
+    let rax_off = AMD64.register_offset("rax").unwrap();
+
+    // Neither side has an overlay at `rax_off` itself; only `other` writes
+    // `ah`. The underlying concrete bytes differ for an unrelated reason.
+    let mut a = RegisterFile::new(Box::new(AMD64));
+    a.put(rax_off, RustBV::concrete(0xAAAA_AAAA_AAAA_AAAA, 64));
+    let mut b = RegisterFile::new(Box::new(AMD64));
+    b.put(rax_off, RustBV::concrete(0xBBBB_BBBB_BBBB_BBBB, 64));
+    b.put(rax_off + 1, RustBV::symbolic(&ctx, "ah", 8));
+    assert!(!a.symbolic.contains_key(&rax_off));
+    assert!(!b.symbolic.contains_key(&rax_off));
+
+    let cond = RustBV::symbolic(&ctx, "merge_cond", 1);
+    assert!(a.merge(&b, &cond, &ctx));
+
+    let mentions_ah = |bv: &RustBV| {
+        let mut stack = vec![bv.clone()];
+        while let Some(node) = stack.pop() {
+            if let RustBV::Symbolic { name, .. } = &node
+                && &**name == "ah"
+            {
+                return true;
+            }
+            if let Some(ops) = node.operands() {
+                stack.extend(ops.iter().cloned());
+            }
+        }
+        false
+    };
+
+    let wide = a.get(rax_off, 8, &ctx);
+    assert_eq!(wide.width(), 64);
+    assert!(
+        mentions_ah(&wide),
+        "full-width read after merge dropped the merged `ah` overlay: {wide:?}"
+    );
+    let ah_back = a.get(rax_off + 1, 1, &ctx);
+    assert_eq!(ah_back.width(), 8);
+    assert!(
+        mentions_ah(&ah_back),
+        "reading `ah` after the merge returned a stale value: {ah_back:?}"
+    );
+}
+
+/// Solver twin of `merge_concrete_chunk_keeps_unaligned_subregister_overlay`:
+/// each leg of the merged full-width value must equal that path's own
+/// composition, `other`'s carrying `ah` in byte 1.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn merge_concrete_chunk_unaligned_overlay_selects_each_path_under_solver() {
+    let ctx = SymContext::new();
+    let rax_off = AMD64.register_offset("rax").unwrap();
+
+    let mut a = RegisterFile::new(Box::new(AMD64));
+    a.put(rax_off, RustBV::concrete(0xAAAA_AAAA_AAAA_AAAA, 64));
+    let mut b = RegisterFile::new(Box::new(AMD64));
+    b.put(rax_off, RustBV::concrete(0xBBBB_BBBB_BBBB_BBBB, 64));
+    b.put(rax_off + 1, RustBV::symbolic(&ctx, "ah", 8));
+
+    let self_expected = a.get(rax_off, 8, &ctx).to_z3_ast();
+    let other_expected = b.get(rax_off, 8, &ctx).to_z3_ast();
+
+    let cond = RustBV::symbolic(&ctx, "merge_cond", 1);
+    assert!(a.merge(&b, &cond, &ctx));
+    let got = a.get(rax_off, 8, &ctx).to_z3_ast();
+
+    for (bit, expected, what) in [
+        (1u64, other_expected, "other's `ah`-composed value"),
+        (0u64, self_expected, "self's concrete value"),
+    ] {
+        ctx.push();
+        ctx.add_constraint(cond.to_z3_ast().eq(z3::ast::BV::from_u64(bit, 1)));
+        ctx.add_constraint(got.eq(expected).not());
+        assert!(!ctx.is_sat(), "cond={bit} must select {what}");
+        ctx.pop();
+    }
+}
+
 /// Semantic twin of `merge_width_mismatch_ite_merges_both_paths`: prove with
 /// the solver that the widened ITE selects each path's value under the
 /// matching merge condition. `self`'s 32-bit value composes with its own
