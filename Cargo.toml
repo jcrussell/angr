@@ -24,8 +24,10 @@ categories = ["science", "security"]
 repository = "https://github.com/angr/angr.git"
 
 [workspace.lints.clippy]
-all = "warn"
-cargo = "warn"
+# Group entries need a lower priority than the individual lints below so the
+# specific settings win; cargo errors out when they tie.
+all = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
 # Panics on caller-supplied/untrusted input are a recurring audit-bug class
 # (angr-9ke6b .126/.191/.63/.75). New code and files without a grandfather
 # #![allow(...)] must handle the None/Err case explicitly instead of
@@ -33,6 +35,17 @@ cargo = "warn"
 # existing grandfathered sites.
 unwrap_used = "warn"
 expect_used = "warn"
+# `Result`/`Option` are already `#[must_use]`, but every silently-discarded-error
+# finding across all three audit rounds (angr-sqfj8 .87/.82/.38, angr-c7xno
+# .60/.84, plus round 1's dead-code cluster) opted OUT of that via
+# `let _ = <fallible expr>;` — so plain must_use never caught them. This lint
+# flags exactly that shape. A discard that really is expected control flow
+# stays legal by spelling itself `drop(expr)` with a `SILENT(cat-a)` rationale
+# comment; a lossy one uses `silent_default!` (see CLAUDE.md). When the
+# discarded value is `Copy` (e.g. `compare_exchange`'s `Result<u64, u64>`),
+# `drop` is a no-op that clippy rejects in turn — those keep `let _ =` under an
+# `#[expect(clippy::let_underscore_must_use, reason = "SILENT(cat-a): ...")]`.
+let_underscore_must_use = "deny"
 
 [profile.release]
 lto = "fat"

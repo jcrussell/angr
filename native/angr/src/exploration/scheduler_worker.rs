@@ -200,7 +200,7 @@ pub(super) fn worker_session_loop(
     loop {
         if t.cancel.is_cancelled() {
             drain_local_upstream(session, local);
-            let _ = session.up_tx.send(WorkerUp::Paused { worker_id });
+            session.notify_up(WorkerUp::Paused { worker_id });
             return;
         }
 
@@ -212,10 +212,10 @@ pub(super) fn worker_session_loop(
                     // local queue is already empty here, but keep the single
                     // drain path) and ack.
                     drain_local_upstream(session, local);
-                    let _ = session.up_tx.send(WorkerUp::Paused { worker_id });
+                    session.notify_up(WorkerUp::Paused { worker_id });
                 } else {
                     // Global quiescence: park empty-handed until a wake ping.
-                    let _ = session.up_tx.send(WorkerUp::Quiesced { worker_id });
+                    session.notify_up(WorkerUp::Quiesced { worker_id });
                 }
                 return;
             }
@@ -258,7 +258,7 @@ pub(super) fn worker_session_loop(
             t.counters
                 .materialized_terminals
                 .fetch_add(1, Ordering::SeqCst);
-            let _ = session.up_tx.send(WorkerUp::Terminal { payload });
+            session.notify_up(WorkerUp::Terminal { payload });
         }
 
         // Dead paths stay cheap summaries, counted and dropped in-context (the
@@ -331,7 +331,7 @@ fn drain_local_into_results(job: &WaveJob, local: &mut VecDeque<RustSimState>) {
 /// have dropped the receiver after finalize).
 pub(super) fn drain_local_upstream(session: &RunSession, local: &mut VecDeque<RustSimState>) {
     drain_local_with(&session.transport, local, |payload| {
-        let _ = session.up_tx.send(WorkerUp::Terminal { payload });
+        session.notify_up(WorkerUp::Terminal { payload });
     });
 }
 

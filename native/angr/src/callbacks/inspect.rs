@@ -17,6 +17,27 @@ fn opt_ast_or_none(py: Python<'_>, ast: Option<&Py<PyAny>>) -> Py<PyAny> {
     }
 }
 
+/// Record — and discard — a failed `call_inspect_*` dispatch.
+///
+/// A `state.inspect` breakpoint is observation-only: an exception raised
+/// inside the user's Python callback must not abort the step that fired it,
+/// because the engine has already committed the effect the breakpoint is
+/// observing (the register was written, the block was entered). Every
+/// dispatch site therefore drops the `PyResult`, and used to do so with a
+/// bare `let _ =` — the exact shape `clippy::let_underscore_must_use` exists
+/// to flag, and the reason a raising breakpoint was invisible.
+///
+/// `event` is the `state.inspect` event name (`"irsb"`, `"reg_write"`, …) so
+/// the log line names the breakpoint that failed.
+pub(crate) fn note_inspect_error(result: PyResult<()>, event: &str) {
+    silent_default!(
+        cat_b,
+        result,
+        (),
+        |err| "state.inspect '{event}' breakpoint raised; ignored: {err}"
+    );
+}
+
 impl PythonCallbacks {
     /// Shared prologue for every `call_inspect_*` method: attach to the
     /// interpreter, open a GIL-profiling span attributed to the inspect site,

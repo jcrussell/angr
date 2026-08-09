@@ -1246,12 +1246,15 @@ impl<'a> VEXInterpreter<'a> {
         let Some(value_ast) = self.inspect_ast(callbacks, InspectBit::RegRead, value) else {
             return;
         };
-        let _ = callbacks.call_inspect_reg_read(
-            self.current_state_id,
-            "after",
-            offset,
-            size,
-            Some(&value_ast),
+        note_inspect_error(
+            callbacks.call_inspect_reg_read(
+                self.current_state_id,
+                "after",
+                offset,
+                size,
+                Some(&value_ast),
+            ),
+            "reg_read",
         );
     }
 
@@ -1266,11 +1269,14 @@ impl<'a> VEXInterpreter<'a> {
         let Some(value_ast) = self.inspect_ast(callbacks, InspectBit::TmpRead, value) else {
             return;
         };
-        let _ = callbacks.call_inspect_tmp_read(
-            self.current_state_id,
-            "after",
-            tmp_num,
-            Some(&value_ast),
+        note_inspect_error(
+            callbacks.call_inspect_tmp_read(
+                self.current_state_id,
+                "after",
+                tmp_num,
+                Some(&value_ast),
+            ),
+            "tmp_read",
         );
     }
 
@@ -1288,7 +1294,10 @@ impl<'a> VEXInterpreter<'a> {
         let Some(value_ast) = self.inspect_ast(callbacks, InspectBit::Expr, value) else {
             return;
         };
-        let _ = callbacks.call_inspect_expr(self.current_state_id, "after", Some(&value_ast));
+        note_inspect_error(
+            callbacks.call_inspect_expr(self.current_state_id, "after", Some(&value_ast)),
+            "expr",
+        );
     }
 
     /// Fire an `address_concretization` inspect callback (angr-vfst).
@@ -1313,12 +1322,15 @@ impl<'a> VEXInterpreter<'a> {
         else {
             return;
         };
-        let _ = callbacks.call_inspect_address_concretization(
-            self.current_state_id,
-            when,
-            action,
-            &addr_ast,
-            result,
+        note_inspect_error(
+            callbacks.call_inspect_address_concretization(
+                self.current_state_id,
+                when,
+                action,
+                &addr_ast,
+                result,
+            ),
+            "address_concretization",
         );
     }
 
@@ -1340,12 +1352,15 @@ impl<'a> VEXInterpreter<'a> {
         else {
             return;
         };
-        let _ = callbacks.call_inspect_symbolic_variable(
-            self.current_state_id,
-            "after",
-            name,
-            size_bits,
-            &expr_ast,
+        note_inspect_error(
+            callbacks.call_inspect_symbolic_variable(
+                self.current_state_id,
+                "after",
+                name,
+                size_bits,
+                &expr_ast,
+            ),
+            "symbolic_variable",
         );
     }
 }

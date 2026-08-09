@@ -73,12 +73,15 @@ impl<'a> VEXInterpreter<'a> {
         let Some(value_ast) = self.inspect_ast(callbacks, InspectBit::RegWrite, value) else {
             return;
         };
-        let _ = callbacks.call_inspect_reg_write(
-            self.current_state_id,
-            "after",
-            offset,
-            size,
-            Some(&value_ast),
+        note_inspect_error(
+            callbacks.call_inspect_reg_write(
+                self.current_state_id,
+                "after",
+                offset,
+                size,
+                Some(&value_ast),
+            ),
+            "reg_write",
         );
     }
 
@@ -98,11 +101,14 @@ impl<'a> VEXInterpreter<'a> {
         let Some(value_ast) = self.inspect_ast(callbacks, InspectBit::TmpWrite, value) else {
             return;
         };
-        let _ = callbacks.call_inspect_tmp_write(
-            self.current_state_id,
-            "after",
-            tmp_num,
-            Some(&value_ast),
+        note_inspect_error(
+            callbacks.call_inspect_tmp_write(
+                self.current_state_id,
+                "after",
+                tmp_num,
+                Some(&value_ast),
+            ),
+            "tmp_write",
         );
     }
 
@@ -115,7 +121,10 @@ impl<'a> VEXInterpreter<'a> {
         if !callbacks.inspect_event_enabled(InspectBit::Instruction) {
             return;
         }
-        let _ = callbacks.call_inspect_instruction(self.current_state_id, "before", addr);
+        note_inspect_error(
+            callbacks.call_inspect_instruction(self.current_state_id, "before", addr),
+            "instruction",
+        );
     }
 
     /// Fire an `exit` inspect callback into Python for a VEX conditional `Exit`.
@@ -131,12 +140,15 @@ impl<'a> VEXInterpreter<'a> {
         let Some(guard_ast) = self.inspect_ast(callbacks, InspectBit::Exit, guard) else {
             return;
         };
-        let _ = callbacks.call_inspect_exit(
-            self.current_state_id,
-            "before",
-            target,
-            jk.ijk_name(),
-            Some(&guard_ast),
+        note_inspect_error(
+            callbacks.call_inspect_exit(
+                self.current_state_id,
+                "before",
+                target,
+                jk.ijk_name(),
+                Some(&guard_ast),
+            ),
+            "exit",
         );
     }
 }

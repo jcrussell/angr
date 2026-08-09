@@ -430,7 +430,7 @@ fn find_predicate_pending_with_deferred_fork_trips_canary() {
     );
 
     // Panics: the consumer refuses to silently drop the fork.
-    let _ = mgr._resume_find_predicate(sid, false);
+    drop(mgr._resume_find_predicate(sid, false));
 }
 
 /// Sibling canary to `find_predicate_pending_with_deferred_fork_trips_canary`
@@ -465,7 +465,7 @@ fn avoid_predicate_pending_with_deferred_fork_trips_canary() {
         },
     );
 
-    let _ = mgr._resume_avoid_predicate(sid, false);
+    drop(mgr._resume_avoid_predicate(sid, false));
 }
 
 /// _deadend_pending_callback must not silently drop a deferred fork whose

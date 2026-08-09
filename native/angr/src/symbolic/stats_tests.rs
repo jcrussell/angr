@@ -46,6 +46,11 @@ fn marker_guard() -> std::sync::MutexGuard<'static, ()> {
 /// restore; a plain `fetch_sub` would then wrap the counter to ~u64::MAX and
 /// poison every later reader.
 fn undo_bump(counter: &AtomicU64) {
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "SILENT(cat-a): the closure always returns Some, so fetch_update cannot \
+                  fail; `drop(..)` is rejected here because Result<u64, u64> is Copy"
+    )]
     let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
         Some(v.saturating_sub(MARK))
     });

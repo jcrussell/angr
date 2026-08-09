@@ -107,7 +107,7 @@ fn single_wide_store_patches_multiple_earlier_stores() {
 fn drain_clears_index() {
     let mut buf = PendingStoreBuffer::with_capacity(8);
     buf.push(0x100, vec![1, 2, 3, 4]);
-    let _: Vec<_> = buf.drain().collect();
+    drop(buf.drain().collect::<Vec<_>>());
     assert!(buf.is_empty());
     assert!(buf.try_load(0x100, 4).is_none());
 }

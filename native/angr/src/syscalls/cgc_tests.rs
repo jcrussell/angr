@@ -170,7 +170,7 @@ fn receive_non_stdin_fd_records_no_stdin_symbols() {
     // stdin_symbols.
     let h = NativeReceiveSyscall;
     let mut state = x86_state_with_buf();
-    let _ = h.call(
+    drop(h.call(
         &mut state,
         &[
             RustBV::concrete(1, 32),
@@ -178,7 +178,7 @@ fn receive_non_stdin_fd_records_no_stdin_symbols() {
             RustBV::concrete(4, 32),
             RustBV::concrete(0x2800, 32),
         ],
-    );
+    ));
     assert!(!state.has_stdin_symbols());
 }
 

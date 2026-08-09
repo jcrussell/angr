@@ -653,7 +653,10 @@ impl<'a> VEXInterpreter<'a> {
         // state.inspect irsb event — fires `when='before'` at block entry,
         // before any statement runs.
         if callbacks.inspect_event_enabled(InspectBit::Irsb) {
-            let _ = callbacks.call_inspect_irsb(self.current_state_id, "before", irsb.addr);
+            note_inspect_error(
+                callbacks.call_inspect_irsb(self.current_state_id, "before", irsb.addr),
+                "irsb",
+            );
         }
 
         // Execute statements
@@ -667,10 +670,13 @@ impl<'a> VEXInterpreter<'a> {
             // gate keeps the no-BP cost at one `AtomicU32::load + AND` per
             // statement.
             if callbacks.inspect_event_enabled(InspectBit::Statement) {
-                let _ = callbacks.call_inspect_statement(
-                    self.current_state_id,
-                    "before",
-                    stmt_idx as u32,
+                note_inspect_error(
+                    callbacks.call_inspect_statement(
+                        self.current_state_id,
+                        "before",
+                        stmt_idx as u32,
+                    ),
+                    "statement",
                 );
             }
             let stmt_start = profile_start!(self);
@@ -771,7 +777,10 @@ impl<'a> VEXInterpreter<'a> {
         if !callbacks.inspect_event_enabled(InspectBit::Call) {
             return;
         }
-        let _ = callbacks.call_inspect_call(self.current_state_id, when, function_address);
+        note_inspect_error(
+            callbacks.call_inspect_call(self.current_state_id, when, function_address),
+            "call",
+        );
     }
 
     /// Fire a `return` inspect callback into Python for an Ijk_Ret exit.
@@ -789,7 +798,10 @@ impl<'a> VEXInterpreter<'a> {
         if !callbacks.inspect_event_enabled(InspectBit::Return) {
             return;
         }
-        let _ = callbacks.call_inspect_return(self.current_state_id, when, function_address);
+        note_inspect_error(
+            callbacks.call_inspect_return(self.current_state_id, when, function_address),
+            "return",
+        );
     }
 }
 

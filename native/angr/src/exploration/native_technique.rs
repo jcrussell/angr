@@ -262,7 +262,13 @@ impl RustExplorationManager {
         // 4. A single waiter has nothing to merge with: release it unmerged so
         //    the path count is preserved and exploration does not stall.
         if wait_len == 1 {
-            let _ = self._move_states(wait_stash, STASH_ACTIVE, None);
+            silent_default!(
+                cat_c,
+                self._move_states(wait_stash, STASH_ACTIVE, None),
+                0,
+                |err| "veritesting: releasing the lone waiter from '{wait_stash}' failed, \
+                       the path is stranded: {err}"
+            );
             return;
         }
 

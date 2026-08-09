@@ -328,9 +328,9 @@ fn set_rust_log_level(level: &str) -> PyResult<()> {
         filter: parking_lot::RwLock::new(build_filter("off")),
     });
     *logger.filter.write() = new_filter;
-    // log::set_logger errors on second call — fine, the first install wins
+    // SILENT(cat-a): log::set_logger errors on second call — fine, the first install wins
     // and from then on we only swap the filter inside our Logger.
-    let _ = log::set_logger(logger);
+    drop(log::set_logger(logger));
     log::set_max_level(max_level);
     Ok(())
 }

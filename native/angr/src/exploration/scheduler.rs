@@ -254,6 +254,15 @@ impl CancelToken {
     /// true to false mid-wave, breaking the Bug M1 contract
     /// (angr-op0dn.13.8) `cancel` exists to guarantee.
     pub(crate) fn cancel_for_budget(&self) {
+        // `drop(..)` — the usual explicit-discard spelling — is itself a
+        // no-op-lint error here because `Result<u8, u8>` is `Copy`, so this
+        // discard has to opt out by name.
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "SILENT(cat-a): a failed CAS means some other reason already cancelled \
+                      this wave, which is precisely the outcome the doc comment above \
+                      requires — the current value is deliberately left alone"
+        )]
         let _ = self.state.compare_exchange(
             NOT_CANCELLED,
             BUDGET_CANCELLED,

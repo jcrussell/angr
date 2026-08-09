@@ -252,7 +252,6 @@ impl NativeSyscall for NativeOpenSyscall {
         let pathname_addr = extract_concrete_arg(&args[0], "open pathname")?;
         let flags = extract_concrete_arg(&args[1], "open flags")?;
         // args[2] = mode — irrelevant in Rust's FileSystem model.
-        let _ = args.get(2);
 
         let path = read_path(state, pathname_addr, "open")?;
         if path.is_empty() {
@@ -291,7 +290,6 @@ impl NativeSyscall for NativeOpenatSyscall {
         let pathname_addr = extract_concrete_arg(&args[1], "openat pathname")?;
         let flags = extract_concrete_arg(&args[2], "openat flags")?;
         // args[3] = mode — irrelevant in Rust's FileSystem model.
-        let _ = args.get(3);
 
         let path = read_path(state, pathname_addr, "openat")?;
         if path.is_empty() {
@@ -361,7 +359,6 @@ impl NativeSyscall for NativeAccessSyscall {
     ) -> Result<SyscallOutcome, SyscallError> {
         let pathname_addr = extract_concrete_arg(&args[0], "access pathname")?;
         // args[1] = mode — Python proc ignores it; so do we.
-        let _ = args.get(1);
 
         let path = read_path(state, pathname_addr, "access")?;
         if path.is_empty() {
@@ -401,7 +398,6 @@ impl NativeSyscall for NativeFaccessatSyscall {
         let dirfd = extract_concrete_arg(&args[0], "faccessat dirfd")?;
         let pathname_addr = extract_concrete_arg(&args[1], "faccessat pathname")?;
         // args[2] = mode — ignored, mirroring NativeAccessSyscall.
-        let _ = args.get(2);
 
         let path = read_path(state, pathname_addr, "faccessat")?;
         if path.is_empty() {

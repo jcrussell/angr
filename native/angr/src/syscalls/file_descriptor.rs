@@ -182,7 +182,6 @@ fn fcntl_dispatch(
     // args[2] = arg — unused by the handled cmds. For F_SETFL it
     // would be the new flags; we accept any value (including
     // symbolic) without forcing concretization.
-    let _ = args.get(2);
 
     match cmd {
         F_GETFD | F_SETFD => Ok(SyscallOutcome::Continue { ret: 0 }),
@@ -262,7 +261,8 @@ impl NativeSyscall for NativeIoctlSyscall {
     ) -> Result<SyscallOutcome, SyscallError> {
         let _fd = extract_concrete_arg(&args[0], "ioctl fd")?;
         let cmd = extract_concrete_arg(&args[1], "ioctl cmd")?;
-        let _ = args.get(2);
+        // args[2] = arg — unused by the handled cmds; accept any value
+        // (including symbolic) without forcing concretization.
 
         let arch_name = state.arch().name();
         if Some(cmd) == tiocgwinsz_for_arch(arch_name) {
@@ -355,7 +355,6 @@ impl NativeSyscall for NativeDup3Syscall {
         // args[2] = flags — O_CLOEXEC modeling is out of scope, so the
         // value is never read; accept any value (including symbolic)
         // without forcing concretization, same as fcntl_dispatch/ioctl.
-        let _ = args.get(2);
         // Parity with Python `dup3` (no EINVAL for oldfd==newfd — see dup2_body).
         let ret = dup2_body(state, oldfd, newfd);
         Ok(SyscallOutcome::Continue { ret })

@@ -438,7 +438,10 @@ impl Icicle {
     pub(crate) fn set_isa_mode(&mut self, mode: u8) {
         // https://github.com/icicle-emu/icicle-emu/issues/70#issuecomment-2857265222
         self.vm.cpu.set_isa_mode(mode);
-        let _ = self.set_pc(self.get_pc());
+        // SILENT(cat-a): `set_pc` is infallible today (it returns `PyResult`
+        // only for the `#[setter]` signature); the re-write exists to make the
+        // new ISA mode take effect, not to report anything.
+        drop(self.set_pc(self.get_pc()));
     }
 
     // Execution

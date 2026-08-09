@@ -88,6 +88,19 @@ pub(crate) struct RunSession {
 }
 
 impl RunSession {
+    /// Report upstream to the coordinator, ignoring a closed channel.
+    ///
+    /// SILENT(cat-a): a `SendError` here means the coordinator already dropped
+    /// the receiver after finalizing the wave — the shutdown race the `up_tx`
+    /// doc comment describes. There is nothing left to report to and nothing
+    /// to recover, so the message is dropped by design. This is the single
+    /// place workers discard that `Result`; open-coding `let _ = ... .send(..)`
+    /// at each of the five call sites is what
+    /// `clippy::let_underscore_must_use` now rejects.
+    pub(super) fn notify_up(&self, msg: WorkerUp) {
+        drop(self.up_tx.send(msg));
+    }
+
     /// Build a session around a per-state processor. Returns the session and
     /// the receiving half of its upstream channel (the coordinator keeps it;
     /// dropping it makes late worker sends fail silently — workers ignore send
@@ -346,7 +359,10 @@ impl PersistentPool {
     /// session loop, finds nothing to do, and parks again (one cheap loop).
     pub(crate) fn wake_worker(&self, worker_id: usize, session: &Arc<RunSession>) {
         if let Some(tx) = self.job_txs.get(worker_id) {
-            let _ = tx.send(WorkerCtl::Run(Arc::clone(session)));
+            // SILENT(cat-a): a dead worker's channel just means there is
+            // nobody left to wake — the ping is advisory (see the idempotence
+            // note above), so a `SendError` is expected control flow.
+            drop(tx.send(WorkerCtl::Run(Arc::clone(session))));
         }
     }
 }
@@ -356,10 +372,16 @@ impl Drop for PersistentPool {
     /// drops on its own thread — never freed cross-thread.
     fn drop(&mut self) {
         for tx in &self.job_txs {
-            let _ = tx.send(WorkerCtl::Shutdown);
+            // SILENT(cat-a): a worker that already exited has dropped its
+            // receiver; it needs no `Shutdown`.
+            drop(tx.send(WorkerCtl::Shutdown));
         }
         for handle in self.handles.drain(..) {
-            let _ = handle.join();
+            // SILENT(cat-a): `join` returns `Err` only when the worker
+            // panicked, which it has already reported through the panic hook.
+            // A `Drop` impl cannot propagate, and unwinding out of one during
+            // an in-flight panic would abort the process.
+            drop(handle.join());
         }
     }
 }

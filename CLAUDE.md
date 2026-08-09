@@ -89,7 +89,16 @@ macro-defined one from the message). `$default` sits in tail position, so
 `tools/audit_silent_fallback.py` gates the currently-narrow
 `return Ok(None)` / `.ok();` shapes in CI (`rust_check`) against
 `tools/silent_fallback_baseline.txt`, same baseline-audit pattern as the
-line-citation check above. The noisier `.unwrap_or*`/`let _ =`/wildcard
+line-citation check above. The `let _ = <fallible expr>;` shape needs no
+script — since angr-91vj9.11 the workspace `[lints.clippy]` block in the
+repo-root `Cargo.toml` carries `let_underscore_must_use = "deny"`, so clippy
+rejects it outright. A discard that really is expected control flow spells
+itself `drop(expr)` with a `// SILENT(cat-a):` rationale comment; a lossy one
+uses `silent_default!`. When the discarded value is `Copy`
+(`compare_exchange`'s `Result<u64, u64>`), `drop` is itself a no-op clippy
+rejects, so those keep `let _ =` under an
+`#[expect(clippy::let_underscore_must_use, reason = "SILENT(cat-a): ...")]` —
+the attribute's `reason` is the tag. The noisier `.unwrap_or*`/wildcard
 `_ =>` match-arm shapes are deliberately NOT auto-detected (too many
 legitimate uses, e.g. matching a handful of variants out of a huge
 externally-defined enum like `IROp`) — for those, apply the same judgment in
