@@ -1297,3 +1297,8 @@ impl super::value_ops::ExtractTarget for Z3ExtractTarget<'_> {
         inner.to_z3_ast_cached(self.cache).extract(high, low)
     }
 }
+
+// Direct coverage for the `build_fp_*_cached` family (angr-c7xno.74): before
+// this file the FP Z3 builders were only reached transitively, via the VEX-op
+// tests. `z3` gating because every test drives `SymContext::eval`.
+test_submod!(z3 "value_z3_fp_tests.rs" => value_z3_fp_tests);
