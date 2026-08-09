@@ -291,3 +291,78 @@ fn set_deterministic_reaches_parked_pending_callback_states() {
         );
     }
 }
+
+// --- set_max_history reach (angr-c7xno.21) -------------------------------
+
+/// `set_max_history` propagates to states parked in `pending_callbacks`, the
+/// same way `set_deterministic` above does.
+///
+/// Same shape of gap: a parked state is in no stash, so the stash loop cannot
+/// reach it, and nothing re-applies `environment.max_history` on resume — the
+/// state would keep its old ring-buffer cap for the rest of the exploration.
+/// `pre_callback_snapshot` matters for the same reason it does there: deferred
+/// forks are materialized from it, so a stale cap propagates to children too.
+///
+/// Asserted over several values (including the unlimited `0`) so the test
+/// cannot pass on a one-way latch or on the default cap by accident.
+#[test]
+fn set_max_history_reaches_parked_pending_callback_states() {
+    use crate::exploration::{CallbackReason, PendingCallback};
+    use rustc_hash::FxHashMap;
+
+    Python::initialize();
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    let stashed = push_states(&mut mgr, STASH_ACTIVE, 1)[0];
+
+    let state = RustSimState::new("amd64").expect("state");
+    let sid = state.state_id();
+    let pre_callback_snapshot = Some(state.fork());
+    mgr.pending_callbacks.insert(
+        StateId::new(sid),
+        PendingCallback {
+            state,
+            pre_callback_snapshot,
+            reason: CallbackReason::Syscall { num: Some(60) },
+            jumpkind: None,
+            solver_ctx: None,
+            deferred_forks: Vec::new(),
+            stored_conditions: FxHashMap::default(),
+            fork_snapshots: FxHashMap::default(),
+        },
+    );
+
+    for max in [7usize, 3, 0, 42] {
+        mgr.set_max_history(max);
+        assert_eq!(mgr.get_max_history(), max, "manager cap follows set({max})");
+
+        let stashed_cap = mgr
+            .sm
+            .stashes()
+            .values()
+            .flatten()
+            .find(|s| s.state_id() == stashed)
+            .expect("stashed state")
+            .max_history();
+        assert_eq!(stashed_cap, max, "stashed state follows set_max_history({max})");
+
+        let pending = mgr
+            .pending_callbacks
+            .get(&StateId::new(sid))
+            .expect("callback still parked");
+        assert_eq!(
+            pending.state.max_history(),
+            max,
+            "parked state follows set_max_history({max})",
+        );
+        assert_eq!(
+            pending
+                .pre_callback_snapshot
+                .as_ref()
+                .expect("pre-callback snapshot")
+                .max_history(),
+            max,
+            "pre-callback snapshot (the deferred forks' fork_base) follows \
+             set_max_history({max})",
+        );
+    }
+}

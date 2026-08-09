@@ -717,11 +717,29 @@ impl RustExplorationManager {
     /// explorations). Default is 1000. The new value is applied to every
     /// state already in any stash, plus any future state created via this
     /// manager.
+    ///
+    /// Guarded and pending-aware for the same reasons as `set_deterministic`
+    /// (angr-c7xno.21): a mid-steady flip would otherwise miss the parallel
+    /// session's resident frontier, and a state parked in `pending_callbacks`
+    /// lives in no stash, so the loop below alone would leave it capped at the
+    /// old value forever.
+    #[angr_macros::steady_guarded]
     pub fn set_max_history(&mut self, max: usize) {
         self.environment.max_history = max;
         for stash in self.sm.stashes_mut().values_mut() {
             for state in stash.iter_mut() {
                 state.set_max_history(max);
+            }
+        }
+        // Parked states and the pre-branch snapshots their deferred forks are
+        // materialized from, mirroring `set_deterministic`. `fork_snapshots`
+        // needs nothing: a `BranchSnapshot` carries solver/registers/memory
+        // only — no history buffers — and the state a deferred fork is built
+        // from is `pre_callback_snapshot`, which is covered here.
+        for pending in self.pending_callbacks.values_mut() {
+            pending.state.set_max_history(max);
+            if let Some(snapshot) = pending.pre_callback_snapshot.as_mut() {
+                snapshot.set_max_history(max);
             }
         }
     }

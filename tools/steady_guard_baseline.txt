@@ -7,7 +7,6 @@
 native/angr/src/exploration/manager_methods.rs	clear_callbacks
 native/angr/src/exploration/manager_methods.rs	set_callbacks
 native/angr/src/exploration/manager_methods.rs	set_drop_terminal_states
-native/angr/src/exploration/manager_methods.rs	set_max_history
 native/angr/src/exploration/manager_methods_constraints.rs	add_constraints_to_pending
 native/angr/src/exploration/manager_methods_constraints.rs	add_constraints_to_state
 native/angr/src/exploration/manager_methods_constraints.rs	clear_errors
