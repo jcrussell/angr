@@ -13,7 +13,6 @@ docs/advanced-topics/rust_engine.rst	(``cfg_emulated.py:1552-1554`` / ``:1760-17
 docs/advanced-topics/rust_engine.rst	(``context.rs:1058``) sets ``bv_extract_prop=true`` and
 docs/advanced-topics/rust_engine.rst	(``context.rs:2073``) reached only via
 docs/advanced-topics/rust_engine.rst	(``context.rs:989``), which runs every 64th call across
-docs/advanced-topics/rust_engine.rst	(``exploration/state_lifecycle.rs:71``) forks the incoming state via
 docs/advanced-topics/rust_engine.rst	(``identifier/identify.py:315``) and the per-call replay path
 docs/advanced-topics/rust_engine.rst	(``identifier/runner.py:72`` / ``:82``) build internal
 docs/advanced-topics/rust_engine.rst	(``native/angr/src/memory/load.rs:384-394``) already falls back to a
@@ -28,12 +27,10 @@ docs/advanced-topics/rust_engine.rst	(line 466). Per-Callable ``map_loader`` dro
 docs/advanced-topics/rust_engine.rst	(see ``z3-rs 0.19+`` note at ``native/angr/src/solver.rs:99``).
 docs/advanced-topics/rust_engine.rst	* ``check_branch_feasibility`` (``context.rs:2304–2383``) — outer
 docs/advanced-topics/rust_engine.rst	**1. ``Rc<RefCell<SymContext>>`` in ``RustSimState`` (state.rs:960).**
-docs/advanced-topics/rust_engine.rst	- ``ExplorationEvent`` (``native/angr/src/exploration/mod.rs:124``) —
 docs/advanced-topics/rust_engine.rst	- ``Fuzzer`` (``native/angr/src/fuzzer.rs:59``) — libafl state machine;
 docs/advanced-topics/rust_engine.rst	- ``Icicle`` (``native/angr/src/icicle.rs:230``) — icicle VM owns
 docs/advanced-topics/rust_engine.rst	- ``PyOnDiskCorpus`` (``native/angr/src/fuzzer/corpus.rs:146``) — libafl
 docs/advanced-topics/rust_engine.rst	- ``RustBVHandle`` (``native/angr/src/symbolic/handle.rs:28``) — three
-docs/advanced-topics/rust_engine.rst	- ``RustExplorationManager`` (``native/angr/src/exploration/mod.rs:386``)
 docs/advanced-topics/rust_engine.rst	- ``RustSolverContext`` (``native/angr/src/solver.rs:102``) — holds
 docs/advanced-topics/rust_engine.rst	- ``SymContext`` itself (``native/angr/src/symbolic/context.rs:1325``)
 docs/advanced-topics/rust_engine.rst	- ``VmExit``, ``ExceptionCode`` (``native/angr/src/icicle.rs:47,97``) —
@@ -42,7 +39,6 @@ docs/advanced-topics/rust_engine.rst	- ``rust_manager.py:1420``
 docs/advanced-topics/rust_engine.rst	- ``rust_manager.py:1424`` (consumed at ``:1443``)
 docs/advanced-topics/rust_engine.rst	- ``rust_manager.py:1425`` (consumed at ``:1443``)
 docs/advanced-topics/rust_engine.rst	- ``rust_manager.py:3517`` (per-state, also propagated through
-docs/advanced-topics/rust_engine.rst	- ``thread_local! STEPPING_STATE_ID`` (``exploration/mod.rs:63``) is
 docs/advanced-topics/rust_engine.rst	Matches Python's ``engines/successors.py:232-237`` (early elif
 docs/advanced-topics/rust_engine.rst	Vec<usize>)`` (``exploration/state_api.rs:100``) iterates ``ptrs``
 docs/advanced-topics/rust_engine.rst	``RustBV::Symbolic`` (``symbolic/value.rs:425``) and

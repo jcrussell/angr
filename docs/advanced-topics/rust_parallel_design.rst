@@ -103,7 +103,9 @@ Single-threaded. The relevant pieces:
 * ``native/angr/src/state/mod.rs`` ``RustSimState`` carries register values,
   memory pages, and a reference to the symcontext.
 * ``native/angr/src/exploration/run_loop.rs`` drives the
-  ``stash → step → categorize`` loop on the calling thread.
+  ``stash → step → categorize`` loop on the calling thread. It is a thin
+  driver — it owns the loop frame and delegates the per-state body to
+  ``run_loop_single.rs::step_one``, the single stepping decision point.
 
 The Python wrapper (``angr/exploration/rust_manager.py``) is
 single-threaded too — every PyO3 call into Rust runs on the

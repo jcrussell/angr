@@ -824,7 +824,7 @@ ordering, branch enumeration, eval answer)?"*:
      - Verdict
    * - ``stash.rs`` ``stashes`` / ``state_index`` / ``state_roots``
      - Yes (``stashes_mut().values_mut()`` in
-       ``exploration/mod.rs:set_max_history`` and the slow path of
+       ``exploration/manager_methods.rs:set_max_history`` and the slow path of
        ``find_state_by_id``)
      - **Not output-affecting.** Per-stash order is the VecDeque
        (FIFO/LIFO is honored). Cross-stash iteration only writes the
@@ -1747,7 +1747,8 @@ Honored options
      - Inherited through the Python syscall fallback
      - ``VEXInterpreter::get_syscall_num`` returns ``Option<u64>``
        (``None`` when the syscall register is symbolic), and
-       ``stepping.rs::RunResult::Syscall`` skips the native syscall
+       ``core_outcome_handlers.rs::handle_syscall_core`` (the
+       ``RunResult::Syscall`` handler) skips the native syscall
        registry when ``num`` is ``None``, forcing a Python callback. The
        Python side's ``engines/successors.py:_resolve_syscall`` reads
        the option from ``state.options`` and either enumerates concrete
@@ -1768,7 +1769,9 @@ Honored options
        ``state.set_ip`` after ``state.set_pc(next_pc)``
        (``native/angr/src/exploration/stepping.rs``,
        ``native/angr/src/interpreter/exits.rs``). Multi-target forks are
-       handled by ``handle_symbolic_jump_target``. Mirrors Python's
+       handled by
+       ``core_outcome_handlers.rs::handle_symbolic_jump_target_core``.
+       Mirrors Python's
        ``engines/successors.py:295-304,325-326``.
 
 Inherited (option works because the code path runs in Python)
@@ -3576,7 +3579,8 @@ update.
    the typed ``CbExecutionError`` is **stringified at the interpreter
    boundary** — ``RunResult::Error { message, addr }`` carries a
    ``String`` that ``stepping`` collapses into
-   ``StepError::Error(state, String)`` and ``run_loop`` pushes into the
+   ``StepError::Error(state, String)`` and
+   ``run_loop_single.rs::apply_terminal`` pushes into the
    errored stash as a ``(pc, message, state_id)`` record. The concrete
    variant is lost the moment a live step fails; only the formatted
    message survives, readable off the errored-stash record
@@ -4517,10 +4521,12 @@ that need an assertion should check the return value
 Callback registration
 ~~~~~~~~~~~~~~~~~~~~~
 
-``PythonCallbacks`` (``callbacks/mod.rs``) holds 24 ``Option<Py<PyAny>>``
-slots, one per dispatch site (memory load/store, hooks, syscall,
-lift_block, dirty_call, page fetch, six ``state.inspect`` slots,
-etc.). ``Py<PyAny>`` is an owning Python refcount, so a callback
+``PythonCallbacks`` (``callbacks/mod.rs``) holds 30 ``Option<Py<PyAny>>``
+slots, one per dispatch site — the ``with_callback_fields!`` macro is
+the single source of truth for the list: 12 non-inspect slots (memory
+load/store, batched load/store, lift_block, dirty_call, page fetch,
+symbolic load/store, resolve_function) plus 18 ``state.inspect``
+slots. ``Py<PyAny>`` is an owning Python refcount, so a callback
 cannot dangle even if Python "drops" it locally — the engine's clone
 keeps it alive.
 
@@ -4529,6 +4535,16 @@ keeps it alive.
   callback not set"))?`` and then ``cb.call1(py, args)?``. A Python
   ``raise`` becomes a ``PyErr`` that the engine returns up through
   the exploration loop (``run_loop.rs``).
+
+  **Exception** — the 18 ``call_inspect_*`` methods. They route through
+  the ``with_inspect_cb`` helper rather than ``require_callback!``, and
+  return ``Ok(())`` / ``Ok(None)`` when their slot is unset — an
+  unregistered ``state.inspect`` breakpoint is the normal case, not an
+  error. A ``raise`` from a breakpoint that *is* registered does become
+  a ``PyErr``, but no dispatch site propagates it with ``?``: every one
+  funnels it through ``callbacks/inspect.rs::note_inspect_error``,
+  which logs it (``SILENT(cat-b)``, visible at ``debug``) and lets
+  execution continue, so a buggy breakpoint cannot derail a run.
 * **Type/arity mismatches propagate**. Result destructuring uses
   ``.cast_bound::<PyTuple>(py)?.get_item(N)?.extract()?`` — a 1-tuple
   returned for a 3-tuple slot raises ``IndexError``; a wrong-type
@@ -4663,7 +4679,8 @@ PyRustSimState lifetime
 ~~~~~~~~~~~~~~~~~~~~~~~
 
 ``add_state(&mut self, stash, state: &PyRustSimState)``
-(``exploration/state_lifecycle.rs:71``) forks the incoming state via
+(the public pymethod in ``exploration/manager_methods_state.rs``, body in
+``exploration/state_lifecycle.rs::_add_state``) forks the incoming state via
 ``state.inner().fork()``, so the engine ends up owning an isolated
 copy. Subsequent Python-side mutations of the original
 ``PyRustSimState`` do not affect the engine's state. The ``state``
@@ -5326,10 +5343,10 @@ are:
 - ``OpError`` (``native/angr/src/vex/ops/error.rs``)
 - ``ProcedureError`` (``native/angr/src/procedures/mod.rs``)
 - ``MemoryError`` (``native/angr/src/memory/mod.rs``)
-- ``CallbackReason`` (``native/angr/src/exploration/mod.rs``)
+- ``CallbackReason`` (``native/angr/src/exploration/callback_types.rs``)
 - ``ExecutionEvent`` (``native/angr/src/state/types.rs``)
 - ``ExplorationEvent`` pyclass struct
-  (``native/angr/src/exploration/mod.rs``) — the Python-visible event
+  (``native/angr/src/exploration/event.rs``) — the Python-visible event
   envelope, expected to grow ``#[pyo3(get)]`` fields as new
   callback reasons land.
 - ``ExecutionConfig`` pyclass struct (``native/angr/src/callbacks/config.rs``)
@@ -5374,7 +5391,7 @@ Six ``#[pyclass(unsendable)]`` types — cannot be shared across OS
 threads even with a ``Mutex``, because they hold ``!Send`` interior
 state:
 
-- ``RustExplorationManager`` (``native/angr/src/exploration/mod.rs:386``)
+- ``RustExplorationManager`` (``native/angr/src/exploration/mod.rs``)
   — coordinator; transitively owns the StashManager (which holds the
   per-state ``Rc<RefCell<SymContext>>``) plus thread-bound Z3 solver
   handles. The unsendable marker is correct.
@@ -5404,7 +5421,7 @@ GIL controls actual dereference). No refactor needed for these:
   ``PythonCallbacks`` (``callbacks/mod.rs``), ``LoopExecutionEvent``
   (``native/angr/src/callbacks/events.rs``) — value types, plus ``Py<PyAny>``
   callback handles (Send+Sync) and ``Arc<Atomic*>`` shared toggles.
-- ``ExplorationEvent`` (``native/angr/src/exploration/mod.rs:124``) —
+- ``ExplorationEvent`` (``native/angr/src/exploration/event.rs``) —
   value type built from primitives + ``Py<PyAny>``.
 - ``RustBVHandle`` (``native/angr/src/symbolic/handle.rs:28``) — three
   POD fields (``id: u64``, ``width: u32``, ``concrete: Option<u128>``).
@@ -5480,7 +5497,7 @@ Secondary considerations
   hold a Python reference to the ``unsendable`` Rust manager. They are
   not directly subject to a Rust ``Send`` / ``Sync`` audit, but inherit
   the same single-thread constraint via the Rust handle they wrap.
-- ``thread_local! STEPPING_STATE_ID`` (``exploration/mod.rs:63``) is
+- ``thread_local! STEPPING_STATE_ID`` (``exploration/mod.rs``) is
   fine — each worker would get its own.
 
 Recommendation: ship snapshots, not states
