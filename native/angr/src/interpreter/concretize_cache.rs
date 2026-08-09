@@ -263,6 +263,4 @@ impl<'a> VEXInterpreter<'a> {
     }
 }
 
-#[cfg(test)]
-#[path = "concretize_cache_tests.rs"]
-mod concretize_cache_tests;
+test_submod!("concretize_cache_tests.rs" => concretize_cache_tests);

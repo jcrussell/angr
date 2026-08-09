@@ -134,6 +134,4 @@ pub fn parse_length_modifier(fmt: &[u8], start: usize) -> (LengthModifier, usize
     }
 }
 
-#[cfg(test)]
-#[path = "format_common_tests.rs"]
-mod tests;
+test_submod!("format_common_tests.rs" => tests);

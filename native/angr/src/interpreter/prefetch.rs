@@ -282,6 +282,4 @@ impl<'a> VEXInterpreter<'a> {
     }
 }
 
-#[cfg(test)]
-#[path = "prefetch_tests.rs"]
-mod prefetch_tests;
+test_submod!("prefetch_tests.rs" => prefetch_tests);
