@@ -273,7 +273,9 @@ pub(crate) use impl_arch_registers;
 /// shadow type — the `FxHashMap<u32, RustBV>` collapses to a
 /// `BTreeMap<u32, RustBV>` for deterministic ordering on the wire, and
 /// the architecture is recorded by its `arch.name()` string and rebuilt
-/// via [`arch_from_name`]. Symbolic overlay AST caches are rebuilt
+/// via [`arch_from_name`]. Deserialization is fallible
+/// (`#[serde(try_from = ...)]`): an unrecognized `arch_name` is rejected with
+/// [`UnknownRegisterFileArch`], see [`RegisterFileData`]. Symbolic overlay AST caches are rebuilt
 /// inside the active thread-local Z3 context per the [`RustBV`] serde
 /// shape (see `snapshot-rustbv-shadow-type-pattern` bd memory).
 ///
@@ -291,7 +293,7 @@ pub(crate) use impl_arch_registers;
 /// "self wins" is spelled `in_place_self` — there is no assignment for a
 /// generated `merge_field_<name>()` to replace.
 #[derive(Clone, Serialize, Deserialize, angr_macros::MergePolicy)]
-#[serde(from = "RegisterFileData", into = "RegisterFileData")]
+#[serde(try_from = "RegisterFileData", into = "RegisterFileData")]
 pub struct RegisterFile {
     /// Raw storage (byte-addressable). `Arc`-wrapped so `fork`/`Clone`
     /// share the buffer O(1); every `&mut self` write site routes through
@@ -321,12 +323,20 @@ pub struct RegisterFile {
 
 /// Serde shadow form for [`RegisterFile`].
 ///
-/// The architecture is represented by its `name()` string. Unknown
-/// architecture names round-trip through [`arch_from_name`]'s AMD64
-/// fallback (matches the existing `impl Clone for Box<dyn Arch>`
-/// behavior in this module). `data` is right-padded / truncated to the rebuilt
-/// architecture's `state_size()` so a snapshot taken at one arch is
-/// structurally usable even if reloaded under a different one.
+/// The architecture is represented by its `name()` string and rebuilt via
+/// [`arch_from_name`]. An unrecognized name is **rejected** with
+/// [`UnknownRegisterFileArch`] rather than silently substituted with AMD64
+/// (angr-c7xno.3): `data` is a raw register-byte image, so reinterpreting one
+/// arch's layout as another's makes every subsequent register read
+/// wrong-but-plausible. Rejecting matches how the rest of this subsystem
+/// handles an unknown arch name — `RustSimState::from_snapshot` returns
+/// `SnapshotError::UnknownArch`, and [`arch_from_vex`] panics (which
+/// `impl Clone for Box<dyn Arch>` inherits, since commit 91b9f82ca replaced its
+/// own AMD64 fallback with that panic).
+///
+/// `data` is right-padded / truncated to the rebuilt architecture's
+/// `state_size()` so a snapshot taken at one arch is structurally usable even
+/// if reloaded under a different, *recognized* one.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RegisterFileData {
     pub data: Vec<u8>,
@@ -345,19 +355,32 @@ impl From<RegisterFile> for RegisterFileData {
     }
 }
 
-impl From<RegisterFileData> for RegisterFile {
-    fn from(d: RegisterFileData) -> Self {
-        let arch = arch_from_name(&d.arch_name).unwrap_or_else(|| Box::new(AMD64));
+/// Deserializing a [`RegisterFile`] whose recorded `arch_name` matches no
+/// architecture this build knows about. The sole failure mode of
+/// `TryFrom<RegisterFileData> for RegisterFile`; surfaces as a plain serde
+/// error (e.g. through `RustExplorationManager::load_snapshot_bytes`).
+#[derive(Debug, thiserror::Error)]
+#[error("unknown architecture in serialized register file: {name}")]
+pub struct UnknownRegisterFileArch {
+    pub name: String,
+}
+
+impl TryFrom<RegisterFileData> for RegisterFile {
+    type Error = UnknownRegisterFileArch;
+
+    fn try_from(d: RegisterFileData) -> Result<Self, Self::Error> {
+        let arch =
+            arch_from_name(&d.arch_name).ok_or(UnknownRegisterFileArch { name: d.arch_name })?;
         let size = arch.state_size();
         let mut data = vec![0u8; size];
         let copy_len = d.data.len().min(size);
         data[..copy_len].copy_from_slice(&d.data[..copy_len]);
         let symbolic: FxHashMap<u32, RustBV> = d.symbolic.into_iter().collect();
-        RegisterFile {
+        Ok(RegisterFile {
             data: Arc::new(data),
             symbolic,
             arch,
-        }
+        })
     }
 }
 

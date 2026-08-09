@@ -571,19 +571,44 @@ fn serde_roundtrip_register_file_symbolic() {
     assert_eq!(sym_name, "rdi_sym");
 }
 
-/// Unknown arch names fall back to AMD64 (matches `impl Clone for
-/// Box<dyn Arch>` in `arch/mod.rs`), so a corrupted snapshot still loads into a
-/// usable register file. Tests the fallback path explicitly.
+/// An unrecognized `arch_name` is rejected instead of silently reinterpreting
+/// the register-byte image under AMD64's layout (angr-c7xno.3). Loud failure
+/// here matches `RustSimState::from_snapshot`'s `SnapshotError::UnknownArch`
+/// and `arch_from_vex`'s panic; the error text must name the offending arch so
+/// a mismatched snapshot is diagnosable.
 #[test]
-fn serde_unknown_arch_name_falls_back_to_amd64() {
+fn serde_unknown_arch_name_is_rejected() {
     let bad = RegisterFileData {
         data: vec![0u8; AMD64.state_size()],
         symbolic: BTreeMap::new(),
         arch_name: "not_a_real_arch".to_string(),
     };
     let s = serde_json::to_string(&bad).expect("serialize");
+    // `RegisterFile` is not `Debug`, so unwrap the error by hand rather than
+    // via `expect_err`.
+    let err = match serde_json::from_str::<RegisterFile>(&s) {
+        Ok(_) => panic!("must reject unknown arch"),
+        Err(e) => e,
+    };
+    assert!(
+        err.to_string().contains("not_a_real_arch"),
+        "error must name the unrecognized arch, got: {err}"
+    );
+}
+
+/// The rejection above is specific to *unrecognized* names — a register file
+/// serialized under one known arch still reloads under that arch, with `data`
+/// resized to its `state_size()`.
+#[test]
+fn serde_known_arch_name_round_trips() {
+    let bad = RegisterFileData {
+        data: vec![0u8; 4],
+        symbolic: BTreeMap::new(),
+        arch_name: "X86".to_string(),
+    };
+    let s = serde_json::to_string(&bad).expect("serialize");
     let restored: RegisterFile = serde_json::from_str(&s).expect("deserialize");
-    assert_eq!(restored.arch().name(), "AMD64");
+    assert_eq!(restored.arch().name(), "X86");
 }
 
 /// `register_names()` is the set that crosses the Python boundary
