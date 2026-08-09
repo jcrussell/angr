@@ -216,13 +216,13 @@ impl SymContext {
     /// the original Z3 AST structure from Python's claripy/z3 backend.
     ///
     /// The `Z3AstPtr` handle carries its own refcount; in
-    /// [`Self::add_constraint_raw_inner`] the pointer is wrapped as a
+    /// `add_constraint_raw_inner` the pointer is wrapped as a
     /// [`z3::ast::Bool`] (which takes its own ref via `Z3_inc_ref`) and the
     /// handle's `Drop` releases the extraction-time ref before return — net
     /// zero change to the AST's refcount across the call.
     ///
     /// The wrapped constraint is deduped against the ptr-keyed side table and,
-    /// on a miss, installed via [`Self::install_constraint`], which dispatches
+    /// on a miss, installed via `install_constraint`, which dispatches
     /// on `self.lineage` (angr-v5a5 slice 4c.2; mirrors the pattern landed in
     /// slice 4c.1 for [`Self::add_constraint`]).
     ///

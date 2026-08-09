@@ -8,7 +8,7 @@
 //! `call_inspect_tmp_write` compiled just as happily as the correct pairing
 //! and silently mis-gated the breakpoint.
 //!
-//! The [`inspect_events!`] table below declares (variant, bit, event name)
+//! The `inspect_events!` table below declares (variant, bit, event name)
 //! once; [`InspectBit`] is generated from it and is the only type
 //! [`PythonCallbacks::inspect_event_enabled`] accepts, so a dispatch site
 //! now names its event instead of its bit.

@@ -3,8 +3,9 @@
 //! Each [`CallingConvention`] impl is a table of ABI facts — argument /
 //! syscall-argument register windows, pointer size, stack-spill offsets,
 //! return and link registers. The extraction *logic* that consumes them lives
-//! once in
-//! [`extract_args_with_abi`](crate::exploration::helpers::extract_args_with_abi),
+//! once in `exploration::helpers::extract_args_with_abi` (plain code span, not
+//! an intra-doc link: `helpers` is private to `exploration`, so the path is
+//! not nameable from here),
 //! which walks a `RustSimState`; this module deliberately holds no second copy
 //! of that walk (angr-9iny6).
 
@@ -23,8 +24,7 @@ use super::arm64::offsets as arm64_off;
 use super::mips::{offsets32 as mips32_off, offsets64 as mips64_off};
 use super::x86::offsets as x86_off;
 
-/// Errors produced by
-/// [`extract_args_with_abi`](crate::exploration::helpers::extract_args_with_abi)
+/// Errors produced by `exploration::helpers::extract_args_with_abi`
 /// when the stack portion of the argument list cannot be read.
 ///
 /// Argument extraction previously relied on silent fabrication (it would mint

@@ -37,7 +37,7 @@
 //! | [`SymbolicMemory::store_symbolic_unified`] | symbolic (concretizer) | W | `UnmappedPageInRegion` | mapped candidates only | **install** (`_safe`) |
 //! | [`SymbolicMemory::store_symbolic_unified_multi`] | symbolic (multiwrite concretizer) | W | `UnmappedPageInRegion` (concrete-address path only) | **yes**, zero RW for every candidate | **install** (bare) |
 //! | [`SymbolicMemory::store_with_concretization`] | pre-computed result | W | `UnmappedPageInRegion` | mapped candidates only | **install** (`_safe`) |
-//! | [`SymbolicMemory::store_concrete_multi`] | explicit candidate list | W | never — auto-mapped | **yes**, zero RW | **install** (bare, test rig) |
+//! | `SymbolicMemory::store_concrete_multi` (`#[cfg(test)]`) | explicit candidate list | W | never — auto-mapped | **yes**, zero RW | **install** (bare, test rig) |
 //!
 //! Notes that the axes alone don't carry:
 //!

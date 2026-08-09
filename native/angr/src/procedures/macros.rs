@@ -130,7 +130,7 @@ macro_rules! declare_proc {
 /// shape — the POSIX identity getters (`getuid`/`geteuid`/`getgid`/`getegid`)
 /// each just `return 1000`. The `$value` expression is evaluated per call and
 /// widened to the architecture word width via
-/// [`arch_word`](crate::procedures::arch_word), exactly as the expanded
+/// `procedures::arch_word`, exactly as the expanded
 /// `declare_proc!` body would.
 ///
 /// # Example

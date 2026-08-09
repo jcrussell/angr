@@ -25,7 +25,7 @@
 //! # Lock discipline
 //!
 //! Each map has its own `RwLock`. Every write guard is taken through
-//! [`registry_lock::write_ordered`], which asserts the two rules that keep the
+//! `registry_lock::write_ordered`, which asserts the two rules that keep the
 //! mutators deadlock-free and their hold windows short: canonical acquisition
 //! order, and at most the `IdToPy` primary plus one secondary co-held. See that
 //! module for why the rules exist and what broke them before.
