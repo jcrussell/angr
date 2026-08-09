@@ -22,9 +22,23 @@ pub struct CallStackEntry {
 ///
 /// Tracks allocated regions and freed addresses for heap exploitation
 /// analysis. Cloned on fork so each exploration path has its own heap state.
-#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+///
+/// ## Merge coverage (angr-91vj9.13)
+///
+/// `RustSimState` labels `heap_metadata` `#[merge_policy = "delegate"]`, which
+/// ends the top-level derive's guarantee here; deriving
+/// [`angr_macros::MergePolicy`] extends it, so a new field does not compile
+/// until it declares how [`Self::union_from`] treats it. `union_from` merges in
+/// place and both fields are combined by hand (the `allocated` union reads its
+/// `freed` sibling), so both are `joint` rather than the mechanical `union` —
+/// that policy generates a `bool`-only `||` body.
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize, angr_macros::MergePolicy)]
 pub struct HeapMetadata {
     /// Currently allocated regions: address -> size in bytes.
+    ///
+    /// Merged as a `self`-preferring union gated on `freed` — see
+    /// [`Self::union_from`].
+    #[merge_policy = "joint"]
     pub allocated: FxHashMap<u64, u64>,
     /// Freed addresses, as a **set** in first-free order.
     ///
@@ -33,6 +47,9 @@ pub struct HeapMetadata {
     /// merged branches inherited the same free. A `Vec` (not a hash set)
     /// because export order must stay deterministic; see `record_free` for
     /// why the linear membership scan is acceptable.
+    ///
+    /// Merged as a deduplicated set union — see [`Self::union_from`].
+    #[merge_policy = "joint"]
     pub freed: Vec<u64>,
 }
 

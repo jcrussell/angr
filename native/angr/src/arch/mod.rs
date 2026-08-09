@@ -276,17 +276,46 @@ pub(crate) use impl_arch_registers;
 /// via [`arch_from_name`]. Symbolic overlay AST caches are rebuilt
 /// inside the active thread-local Z3 context per the [`RustBV`] serde
 /// shape (see `snapshot-rustbv-shadow-type-pattern` bd memory).
-#[derive(Clone, Serialize, Deserialize)]
+///
+/// ## Merge coverage (angr-91vj9.13)
+///
+/// `RustSimState` labels `registers` `#[merge_policy = "delegate"]`, which ends
+/// the top-level derive's guarantee at this struct's boundary — and, exactly as
+/// with [`crate::memory::SymbolicMemory`], the "field-added-without-a-merge-line"
+/// bug family recurred one level deeper (angr-c7xno.1: [`Self::merge`]'s
+/// concrete-diff chunk scan shadowed an already-merged unaligned sub-register
+/// overlay). Deriving [`angr_macros::MergePolicy`] here extends the guarantee:
+/// a new field does not compile until it declares how [`Self::merge`] treats it.
+///
+/// [`Self::merge`] mutates `self` in place rather than building a new struct, so
+/// "self wins" is spelled `in_place_self` — there is no assignment for a
+/// generated `merge_field_<name>()` to replace.
+#[derive(Clone, Serialize, Deserialize, angr_macros::MergePolicy)]
 #[serde(from = "RegisterFileData", into = "RegisterFileData")]
 pub struct RegisterFile {
     /// Raw storage (byte-addressable). `Arc`-wrapped so `fork`/`Clone`
     /// share the buffer O(1); every `&mut self` write site routes through
     /// `Arc::make_mut` for copy-on-write isolation (mirrors the CoW
     /// discipline of `SymbolicMemory::fork`).
+    ///
+    /// Never assigned by [`Self::merge`]: the buffer stays `self`'s and each
+    /// byte range where the two branches' backing bytes differ is lifted into a
+    /// `symbolic` ITE overlay by the concrete-diff chunk scan, which shadows the
+    /// stale bytes underneath. Jointly computed with `symbolic` for that reason.
+    #[merge_policy = "joint"]
     data: Arc<Vec<u8>>,
     /// Symbolic overlays (offset -> value).
+    ///
+    /// The whole body of [`Self::merge`] targets this map — per-offset ITEs,
+    /// the widening arm, and the subsumption pass that drops overlays a wide
+    /// merge now covers. Reads `data` (see above), hence `joint`.
+    #[merge_policy = "joint"]
     symbolic: FxHashMap<u32, RustBV>,
     /// Architecture information.
+    ///
+    /// Merge-invariant: merge arms are fork siblings, and no API reassigns a
+    /// live register file's architecture.
+    #[merge_policy = "in_place_self"]
     arch: Box<dyn Arch>,
 }
 
@@ -852,13 +881,22 @@ impl RegisterFile {
         // We iterate register-sized chunks. For simplicity, use the arch's
         // native register width (e.g. 8 bytes for amd64).
         //
+        // The final chunk is short when `state_size()` is not a multiple of the
+        // register width: amd64's guest state is 1060 bytes against 8-byte
+        // chunks, so bytes 1056..1060 — the tail of archinfo's segment-selector
+        // block — used to fall off the end of the scan and a concrete
+        // divergence there was silently dropped in `self`'s favour
+        // (angr-91vj9.13, same shape as angr-c7xno.1 one chunk over). Clamping
+        // the chunk to what is left covers the whole buffer.
+        //
         // Runs *before* `updates` is applied so the `get` calls below still see
         // each file's own pre-merge overlay; staging into the same vectors keeps
         // the "compose, then subsume the inner overlays" contract in one place.
         let reg_bytes = (self.arch.bits() / 8) as usize;
         let len = self.data.len().min(other.data.len());
         let mut off = 0;
-        while off + reg_bytes <= len {
+        while off < len {
+            let reg_bytes = reg_bytes.min(len - off);
             let u32_off = off as u32;
             // Skip offsets that are already handled by symbolic merge
             if !all_offsets.contains(&u32_off) {

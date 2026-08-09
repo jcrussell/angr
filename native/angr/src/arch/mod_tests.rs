@@ -1095,6 +1095,70 @@ fn merge_concrete_chunk_unaligned_overlay_selects_each_path_under_solver() {
     }
 }
 
+/// amd64's guest state is 1060 bytes — not a multiple of the 8-byte chunk
+/// `RegisterFile::merge`'s concrete-diff scan walks in — so the trailing 4
+/// bytes used to fall off the end of the scan entirely and a concrete
+/// divergence there was silently resolved in `self`'s favour (angr-91vj9.13).
+#[test]
+fn merge_covers_short_tail_chunk_of_guest_state() {
+    let ctx = SymContext::new_mock();
+    let reg_bytes = AMD64.bits() as usize / 8;
+    let tail = AMD64.state_size() % reg_bytes;
+    assert_eq!(tail, 4, "amd64's guest state is expected to have a short tail");
+    let tail_off = (AMD64.state_size() - tail) as u32;
+
+    let mut a = RegisterFile::new(Box::new(AMD64));
+    a.put(tail_off, RustBV::concrete(0x1111_1111, 32));
+    let mut b = RegisterFile::new(Box::new(AMD64));
+    b.put(tail_off, RustBV::concrete(0x2222_2222, 32));
+    // Concrete puts mirror into the backing bytes, leaving no overlay — the
+    // divergence is visible only to the concrete-diff scan.
+    assert!(!a.symbolic.contains_key(&tail_off));
+    assert!(!b.symbolic.contains_key(&tail_off));
+
+    let cond = RustBV::symbolic(&ctx, "merge_cond", 1);
+    assert!(
+        a.merge(&b, &cond, &ctx),
+        "a divergence in the short tail chunk must count as a merge"
+    );
+    let merged = a.get(tail_off, 4, &ctx);
+    assert_eq!(merged.width(), 32);
+    assert!(
+        merged.as_u64().is_none(),
+        "tail chunk collapsed to a single path's concrete value: {merged:?}"
+    );
+}
+
+/// Solver twin of `merge_covers_short_tail_chunk_of_guest_state`: each leg of
+/// the merged tail value must equal that path's own bytes.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn merge_short_tail_chunk_selects_each_path_under_solver() {
+    let ctx = SymContext::new();
+    let reg_bytes = AMD64.bits() as usize / 8;
+    let tail_off = (AMD64.state_size() - AMD64.state_size() % reg_bytes) as u32;
+
+    let mut a = RegisterFile::new(Box::new(AMD64));
+    a.put(tail_off, RustBV::concrete(0x1111_1111, 32));
+    let mut b = RegisterFile::new(Box::new(AMD64));
+    b.put(tail_off, RustBV::concrete(0x2222_2222, 32));
+
+    let cond = RustBV::symbolic(&ctx, "merge_cond", 1);
+    assert!(a.merge(&b, &cond, &ctx));
+    let got = a.get(tail_off, 4, &ctx).to_z3_ast();
+
+    for (bit, expected, what) in [
+        (1u64, 0x2222_2222u64, "other's tail bytes"),
+        (0u64, 0x1111_1111u64, "self's tail bytes"),
+    ] {
+        ctx.push();
+        ctx.add_constraint(cond.to_z3_ast().eq(z3::ast::BV::from_u64(bit, 1)));
+        ctx.add_constraint(got.eq(z3::ast::BV::from_u64(expected, 32)).not());
+        assert!(!ctx.is_sat(), "cond={bit} must select {what}");
+        ctx.pop();
+    }
+}
+
 /// Semantic twin of `merge_width_mismatch_ite_merges_both_paths`: prove with
 /// the solver that the widened ITE selects each path's value under the
 /// matching merge condition. `self`'s 32-bit value composes with its own
