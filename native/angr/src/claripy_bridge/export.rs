@@ -369,6 +369,76 @@ impl ConcreteBvvEncoding {
     }
 }
 
+/// Which operands of a two-operand `BVOp` were `Bool`s coerced to `BV(1)`
+/// before the width-reconciliation step in `rustbv_to_claripy_memo`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BoolCoercion {
+    /// Both operands arrived as real BVs; no coercion happened.
+    Neither,
+    /// Operand 0 was a `Bool`, now a `BV(1)`.
+    Arg0,
+    /// Operand 1 was a `Bool`, now a `BV(1)`.
+    Arg1,
+    /// Both operands were `Bool`s, now `BV(1)`s.
+    Both,
+}
+
+impl BoolCoercion {
+    /// Whether operand `idx` is a coerced `Bool` (so its value is 0 or 1).
+    fn covers(self, idx: usize) -> bool {
+        matches!(
+            (self, idx),
+            (Self::Both, _) | (Self::Arg0, 0) | (Self::Arg1, 1)
+        )
+    }
+}
+
+/// How `rustbv_to_claripy_memo` reconciles a two-operand `BVOp` whose claripy
+/// operands ended up with different widths. Pure decision seam, unit-tested in
+/// `export_tests.rs` without a Python interpreter.
+///
+/// The only legitimate width mismatch is the [`BoolCoercion`] one: a `Bool`
+/// operand became a `BV(1)` holding 0 or 1, so widening it with `ZeroExt` is
+/// unambiguously value-preserving. Two *real* BVs of different widths cannot
+/// happen — every `RustBV` binary-op constructor in `symbolic::value_ops`
+/// checks operand widths before building the node — so reaching that case means
+/// an upstream invariant was violated (a `debug_assert_eq!` compiled out in
+/// release, or a hand-built/deserialized `Expression`). Zero-extending there
+/// would silently mint a semantically wrong AST — sign-flipped for a signed op
+/// like `Slt`/`SDiv` — so this module's "fail loud rather than hand back a
+/// plausible-looking wrong answer" rule applies and the case is rejected
+/// (angr-c7xno.14).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WidthFixup {
+    /// Widths already agree; pass the operands through untouched.
+    Agree,
+    /// `ZeroExt` operand 0 (a coerced `Bool`) up to operand 1's width.
+    ZeroExtendArg0,
+    /// `ZeroExt` operand 1 (a coerced `Bool`) up to operand 0's width.
+    ZeroExtendArg1,
+    /// Mismatched widths that no `Bool` coercion explains — fail loud.
+    Reject,
+}
+
+impl WidthFixup {
+    fn decide(w0: u32, w1: u32, coercion: BoolCoercion) -> Self {
+        // The narrower operand is the one that would be widened; it is only
+        // safe to widen when it is a coerced Bool.
+        let (narrower, fixup) = if w0 == w1 {
+            return Self::Agree;
+        } else if w0 < w1 {
+            (0usize, Self::ZeroExtendArg0)
+        } else {
+            (1usize, Self::ZeroExtendArg1)
+        };
+        if coercion.covers(narrower) {
+            fixup
+        } else {
+            Self::Reject
+        }
+    }
+}
+
 /// Convert a claripy `Bool` AST to a 1-bit BV via `If(cond, BVV(1,1), BVV(0,1))`.
 ///
 /// claripy's `ZeroExt`/`SignExt`/`Extract` and the width-matching binary-op
@@ -582,22 +652,48 @@ fn rustbv_to_claripy_memo(
                 let to_bv1 = |arg: &Py<PyAny>| -> PyResult<Py<PyAny>> {
                     Ok(bool_to_bv1(claripy_mod, arg.bind(py))?.unbind())
                 };
-                let (args, w0, w1) = match (w0, w1) {
-                    (None, Some(w)) => (vec![to_bv1(&args[0])?, args[1].clone_ref(py)], 1u32, w),
-                    (Some(w), None) => (vec![args[0].clone_ref(py), to_bv1(&args[1])?], w, 1u32),
-                    (None, None) => (vec![to_bv1(&args[0])?, to_bv1(&args[1])?], 1u32, 1u32),
-                    (Some(a), Some(b)) => (args, a, b),
+                let (args, w0, w1, coercion) = match (w0, w1) {
+                    (None, Some(w)) => (
+                        vec![to_bv1(&args[0])?, args[1].clone_ref(py)],
+                        1u32,
+                        w,
+                        BoolCoercion::Arg0,
+                    ),
+                    (Some(w), None) => (
+                        vec![args[0].clone_ref(py), to_bv1(&args[1])?],
+                        w,
+                        1u32,
+                        BoolCoercion::Arg1,
+                    ),
+                    (None, None) => (
+                        vec![to_bv1(&args[0])?, to_bv1(&args[1])?],
+                        1u32,
+                        1u32,
+                        BoolCoercion::Both,
+                    ),
+                    (Some(a), Some(b)) => (args, a, b, BoolCoercion::Neither),
                 };
-                if w0 != w1 {
-                    if w0 < w1 {
+                // Only a coerced Bool (value 0 or 1) may be widened here; see
+                // `WidthFixup` for why the general mismatch fails loud instead.
+                match WidthFixup::decide(w0, w1, coercion) {
+                    WidthFixup::Agree => args,
+                    WidthFixup::ZeroExtendArg0 => {
                         let extended = claripy_mod.call_method1("ZeroExt", (w1 - w0, &args[0]))?;
                         vec![extended.unbind(), args[1].clone_ref(py)]
-                    } else {
+                    }
+                    WidthFixup::ZeroExtendArg1 => {
                         let extended = claripy_mod.call_method1("ZeroExt", (w0 - w1, &args[1]))?;
                         vec![args[0].clone_ref(py), extended.unbind()]
                     }
-                } else {
-                    args
+                    WidthFixup::Reject => {
+                        return Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
+                            "rustbv_to_claripy: {op:?} operands have mismatched widths \
+                             ({w0} vs {w1}) with no Bool coercion to explain it; every \
+                             RustBV binary-op constructor checks operand widths, so this \
+                             is an upstream invariant violation. Refusing to zero-extend, \
+                             which would silently sign-flip a signed op (angr-c7xno.14)."
+                        )));
+                    }
                 }
             } else {
                 args

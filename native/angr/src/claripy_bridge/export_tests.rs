@@ -10,7 +10,7 @@
 //! Pure (no Python interpreter): the cargo-test env has no claripy, so we assert
 //! the branch decision rather than round-trip through `claripy.BVV`.
 
-use super::ConcreteBvvEncoding;
+use super::{BoolCoercion, ConcreteBvvEncoding, WidthFixup};
 
 #[test]
 fn width_le_64_is_int64() {
@@ -70,5 +70,77 @@ fn byte_aligned_over_128_uses_pyint_not_bytes() {
     assert_eq!(
         ConcreteBvvEncoding::for_width(256),
         ConcreteBvvEncoding::PyIntWide
+    );
+}
+
+// --- WidthFixup (angr-c7xno.14) ---------------------------------------------
+//
+// The binary-op width-reconciliation step used to `ZeroExt` the narrower
+// operand unconditionally. That is only value-preserving when the narrower
+// operand is a Bool coerced to BV(1); for two real BVs of different widths it
+// would hand back a plausible-looking but semantically wrong AST — sign-flipped
+// for a signed op such as `Slt`/`SDiv`. These pin the decision seam.
+
+#[test]
+fn equal_widths_need_no_fixup() {
+    for coercion in [
+        BoolCoercion::Neither,
+        BoolCoercion::Arg0,
+        BoolCoercion::Arg1,
+        BoolCoercion::Both,
+    ] {
+        assert_eq!(WidthFixup::decide(32, 32, coercion), WidthFixup::Agree);
+        assert_eq!(WidthFixup::decide(1, 1, coercion), WidthFixup::Agree);
+    }
+}
+
+#[test]
+fn coerced_bool_operand_is_zero_extended() {
+    // The reachable-today shapes: one operand was a claripy Bool (length None),
+    // became BV(1), and the other is a real BV wider than 1.
+    assert_eq!(
+        WidthFixup::decide(1, 64, BoolCoercion::Arg0),
+        WidthFixup::ZeroExtendArg0
+    );
+    assert_eq!(
+        WidthFixup::decide(64, 1, BoolCoercion::Arg1),
+        WidthFixup::ZeroExtendArg1
+    );
+    // `Both` covers either side (though in practice it yields 1 vs 1).
+    assert_eq!(
+        WidthFixup::decide(1, 8, BoolCoercion::Both),
+        WidthFixup::ZeroExtendArg0
+    );
+    assert_eq!(
+        WidthFixup::decide(8, 1, BoolCoercion::Both),
+        WidthFixup::ZeroExtendArg1
+    );
+}
+
+#[test]
+fn mismatched_real_bv_widths_are_rejected() {
+    // No coercion happened, so both operands are real BVs — an upstream
+    // invariant violation, not something to paper over with ZeroExt.
+    assert_eq!(
+        WidthFixup::decide(32, 64, BoolCoercion::Neither),
+        WidthFixup::Reject
+    );
+    assert_eq!(
+        WidthFixup::decide(64, 32, BoolCoercion::Neither),
+        WidthFixup::Reject
+    );
+}
+
+#[test]
+fn coercion_on_the_wider_side_does_not_license_extension() {
+    // Arg0 was the coerced Bool, yet Arg1 is the narrower operand: whatever
+    // produced this, the operand about to be widened is a real BV. Reject.
+    assert_eq!(
+        WidthFixup::decide(8, 4, BoolCoercion::Arg0),
+        WidthFixup::Reject
+    );
+    assert_eq!(
+        WidthFixup::decide(4, 8, BoolCoercion::Arg1),
+        WidthFixup::Reject
     );
 }
