@@ -196,6 +196,20 @@ const AT_FDCWD_UNSIGNED: u64 = 4_294_967_196;
 /// register.
 const NEG_ONE: u64 = u64::MAX;
 
+/// The shared `*at` dirfd policy: `true` when this handler can resolve
+/// `path` on its own, i.e. the path is absolute (dirfd irrelevant) or
+/// `dirfd` is the `AT_FDCWD` sentinel. A relative path against a real
+/// dirfd is not modeled — Rust's `FileSystem` has no per-fd directory —
+/// so the caller returns `-1`, mirroring
+/// `procedures/linux_kernel/openat.py`.
+///
+/// Every `*at` handler in this module (`openat`, `faccessat`,
+/// `readlinkat`, `newfstatat`) must gate on this, so that adding real
+/// dirfd support is a one-site change instead of four (angr-c7xno.82).
+fn dirfd_allows(path: &str, dirfd: u64) -> bool {
+    path.starts_with('/') || dirfd == AT_FDCWD_UNSIGNED
+}
+
 /// Read a NUL-terminated path from memory at `addr`, up to
 /// `MAX_PATH_LEN`. Returns `SymbolicArgument` on the first symbolic
 /// byte (the syscall then falls back to Python). Errors out with
@@ -295,8 +309,7 @@ impl NativeSyscall for NativeOpenatSyscall {
         if path.is_empty() {
             return Ok(SyscallOutcome::Continue { ret: NEG_ONE });
         }
-        let absolute = path.starts_with('/');
-        if !absolute && dirfd != AT_FDCWD_UNSIGNED {
+        if !dirfd_allows(&path, dirfd) {
             return Ok(SyscallOutcome::Continue { ret: NEG_ONE });
         }
         let fd = state
@@ -403,8 +416,7 @@ impl NativeSyscall for NativeFaccessatSyscall {
         if path.is_empty() {
             return Ok(SyscallOutcome::Continue { ret: NEG_ONE });
         }
-        let absolute = path.starts_with('/');
-        if !absolute && dirfd != AT_FDCWD_UNSIGNED {
+        if !dirfd_allows(&path, dirfd) {
             return Ok(SyscallOutcome::Continue { ret: NEG_ONE });
         }
         let ret = if state.file_system_ref().is_path_known(&path) {
@@ -480,8 +492,7 @@ impl NativeSyscall for NativeReadlinkatSyscall {
         if path.is_empty() {
             return Ok(SyscallOutcome::Continue { ret: NEG_ONE });
         }
-        let absolute = path.starts_with('/');
-        if !absolute && dirfd != AT_FDCWD_UNSIGNED {
+        if !dirfd_allows(&path, dirfd) {
             return Ok(SyscallOutcome::Continue { ret: NEG_ONE });
         }
         write_symlink_target(state, &path, &args[2], &args[3], "readlinkat")
@@ -1066,8 +1077,7 @@ impl NativeSyscall for NativeNewfstatatSyscall {
         if path.is_empty() {
             return Ok(SyscallOutcome::Continue { ret: NEG_ONE });
         }
-        let absolute = path.starts_with('/');
-        if !absolute && dirfd != AT_FDCWD_UNSIGNED {
+        if !dirfd_allows(&path, dirfd) {
             return Ok(SyscallOutcome::Continue { ret: NEG_ONE });
         }
 
