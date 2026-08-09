@@ -1,3 +1,14 @@
+//! Guest-page fetching and the prefetch heuristics layered on top of it.
+//!
+//! `fetch_page` / `fetch_pages_batch` pull page bytes across the Python
+//! callback boundary; `fetch_page_with_prefetch` wraps them with the two
+//! speculation policies — an eager list around the stack pointer
+//! (`get_eager_prefetch_list` + `is_stack_region`) and a nearby-page window
+//! sized by `set_page_prefetch_count` (`get_nearby_prefetch_list`) — so a
+//! sequential access pattern pays one callback per batch instead of one per
+//! page. The stack-pointer accessors the stack heuristic needs live here too,
+//! including the `SILENT(cat-c)` `get_stack_pointer_or_log`.
+
 use super::*;
 
 impl<'a> VEXInterpreter<'a> {

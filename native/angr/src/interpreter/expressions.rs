@@ -1,3 +1,18 @@
+//! `IRExpr` evaluation — the read half of VEX execution.
+//!
+//! `eval_expr_with_callbacks` is the general entry point (`eval_expr_simple`
+//! the no-callback variant used where re-entering Python is not allowed).
+//! Underneath it are three groups: the load paths, which pick between native
+//! `rust_memory`, the layered pending-store buffer and the Python callback
+//! depending on how concrete the address is (`load_concrete_addr`,
+//! `load_symbolic_addr`, `load_layered`, `symbolic_overlap_load`,
+//! `dispatch_multi_load`); the arithmetic dispatchers that hand each `IROp` to
+//! [`VEXOps`] (`eval_unop`/`eval_binop`/`eval_triop`/`eval_qop`, plus
+//! `eval_ite`, `eval_geti`, `eval_ccall`, `eval_const`); and the read-side
+//! `state.inspect` breakpoint dispatchers (`mem_read`, `reg_read`, `tmp_read`,
+//! `expr`, address-concretization, symbolic-variable). The write-side
+//! dispatchers are the mirror-image `statements_inspect.rs`.
+
 use super::bv_utils::{build_balanced_ite, bytes_to_bv};
 use super::*;
 use crate::vex::ir::{IRCallee, IRRegArray};

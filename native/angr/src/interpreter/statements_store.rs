@@ -1,3 +1,15 @@
+//! `IRStmt::Store` execution: the store path split out of `statements.rs`.
+//!
+//! `store_value` picks the lane by how concrete the address and value are —
+//! `handle_concrete_store` (with `buffer_store_for_rust_memory` deferring the
+//! commit to the block-end pending-store flush), `handle_symbolic_store`, or
+//! `dispatch_multi_store` for a concretized address set — with
+//! `try_rust_memory_store` taking the native path and `fallback_to_python_store`
+//! the callback one. The rest is the bookkeeping a store must not skip:
+//! invalidating cached IRSBs when the written bytes are code
+//! (`invalidate_code_on_store` and friends, see `code_invalidation.rs`) and
+//! evicting concrete/symbolic cache entries the store now contradicts.
+
 use super::bv_utils::{bv_to_bytes, reject_symbolic_byte_store};
 use super::*;
 use crate::symbolic::{MAX_CONCRETE_CHUNK, u128_to_le_bytes};

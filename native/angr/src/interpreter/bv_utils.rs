@@ -1,3 +1,15 @@
+//! Free `RustBV` <-> bytes conversion helpers shared by the statement and
+//! expression paths.
+//!
+//! Nothing here touches [`VEXInterpreter`] state — these are pure functions
+//! over a bitvector, kept out of `expressions.rs`/`statements.rs` so both can
+//! reach them without one depending on the other. Beyond the two byte
+//! conversions, the file holds [`extract_ite_targets`] (harvest the concrete
+//! leaves of a nested ITE jump target), [`build_balanced_ite`] (the inverse:
+//! fold a value set back into a depth-balanced ITE), and
+//! [`reject_symbolic_byte_store`], the guard that turns the lossy
+//! symbolic-value byte-store fallback into a loud error.
+
 use super::*;
 
 pub(super) fn extract_ite_targets(bv: &RustBV, max_targets: usize) -> Option<Vec<u64>> {

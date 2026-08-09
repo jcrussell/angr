@@ -1,3 +1,13 @@
+//! Write-side `state.inspect` breakpoint dispatchers.
+//!
+//! One per event a statement can raise — `mem_write`, `reg_write`,
+//! `tmp_write`, `instruction`, `exit` — each gated on the
+//! `inspect_event_enabled` bitmask so the no-breakpoint case costs a single
+//! test per statement. The value-injection contract (a BP that overrides
+//! `state.inspect.*_expr` returns `Some(bv)` for the caller to substitute) is
+//! documented per function. The read-side counterparts live in
+//! `expressions.rs`.
+
 use super::*;
 
 impl<'a> VEXInterpreter<'a> {

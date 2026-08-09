@@ -1,3 +1,17 @@
+//! `IRStmt` execution — the write half of VEX execution.
+//!
+//! `execute_stmt_with_callbacks` is the per-statement dispatch point;
+//! everything reachable only from one arm of it either sits below
+//! (`handle_exit_stmt`, `handle_storeg`, `handle_loadg`, `handle_dirty_call`)
+//! or has its own file: `Ist_Store` in `statements_store.rs`, `Ist_CAS` in
+//! `statements_cas.rs`, and the `state.inspect` write dispatchers in
+//! `statements_inspect.rs`.
+//!
+//! The one type defined here rather than in `mod.rs` is [`GuardClass`], the
+//! shared tristate the four guarded statements (`Exit`, `StoreG`, `LoadG`,
+//! `Dirty`) classify their guard with; see its own docs for why `Exit` uses
+//! the two decision rules but not the `classify_guard` wrapper.
+
 use super::bv_utils::{bv_to_bytes, bytes_to_bv, reject_symbolic_byte_store};
 use super::expressions::fabricate_unsupported_irop;
 use super::statements_cas::CasArgs;

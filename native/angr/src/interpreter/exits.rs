@@ -1,3 +1,13 @@
+//! VEX exit / jump-target resolution: where a block goes next.
+//!
+//! Covers both ends of a block's control flow — `eval_next_addr` and
+//! `eval_next_addr_concretized` turn `irsb.next` into concrete target(s)
+//! (routing symbolic targets through the shared per-block cache in
+//! [`super::concretize_cache`]), while `handle_default_exit` / `handle_exit`
+//! turn a resolved target plus its [`JumpKind`] into the [`BlockResult`] that
+//! either chains to the next block or hands control back to Python.
+//! `get_syscall_num` reads the syscall number for the `Ijk_Sys_*` kinds.
+
 use super::bv_utils::extract_ite_targets;
 use super::*;
 

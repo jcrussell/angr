@@ -1,3 +1,16 @@
+//! Block-level execution driver: the loop that lifts and runs IRSBs.
+//!
+//! `run_until_event` is the entry point the manager calls — it chains blocks
+//! internally (subject to `stop_addrs` / `block_granular`) and returns only
+//! when an event needs Python. Below it sit the lift path (`get_or_lift_block`
+//! over the LRU block cache, with `try_native_lift` taking the libVEX-FFI
+//! shortcut when the bytes are concrete and undirtied) and the per-block
+//! statement loop (`execute_block` / `execute_block_with_callbacks`), plus the
+//! call/return inspect-BP dispatchers that bracket it.
+//!
+//! Per-statement work lives in `statements*.rs`, per-expression work in
+//! `expressions.rs`, and exit resolution in `exits.rs`.
+
 use super::*;
 
 /// Why a native libVEX lift attempt did not produce an IRSB. Every variant
