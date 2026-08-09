@@ -83,7 +83,7 @@ use crate::symbolic::{
 };
 use crate::vex::Endness;
 
-use super::multi::{MultiAlternative, MultiPayload};
+use super::multi::MultiAlternative;
 use super::page::{MemoryPage, PAGE_SIZE, Permission};
 use super::{Address, MemoryError, SymbolicMemory, end_page_exclusive, end_page_inclusive};
 
@@ -641,16 +641,21 @@ impl SymbolicMemory {
                 // Merge with any existing payload at this byte. New alt
                 // goes after existing ones; conds are disjoint so order
                 // is semantically irrelevant.
-                let merged: Vec<MultiAlternative> =
-                    match self.multi_objects.get(&Address(byte_addr)) {
-                        Some(p) => {
-                            let mut v = p.alternatives().to_vec();
-                            v.push(alt);
-                            v
-                        }
-                        None => vec![alt],
-                    };
-                self.set_multi_alternatives(byte_addr, MultiPayload::from_alternatives(merged));
+                //
+                // angr-c7xno.54: take the payload *out* of the map and
+                // `MultiPayload::push` onto it rather than cloning its
+                // alternatives into a fresh Vec — `push` is the append
+                // primitive its doc comment advertises, and moving avoids
+                // an allocation per byte. `set_multi_alternatives` puts the
+                // payload straight back (and keeps the ITE-depth counter
+                // contract); `push` clears the collapse cache the moved
+                // payload carried.
+                let mut payload = self
+                    .multi_objects
+                    .remove(&Address(byte_addr))
+                    .unwrap_or_default();
+                payload.push(alt);
+                self.set_multi_alternatives(byte_addr, payload);
             }
         }
         Ok(())
@@ -779,7 +784,15 @@ impl SymbolicMemory {
     /// the address concretizer. Pure wrapper around
     /// `install_multi_for_candidates`. Useful for round-trip tests that
     /// drive the Phase 1.2 load path.
-    pub fn store_concrete_multi(
+    ///
+    /// `#[cfg(test)] pub(crate)` (angr-c7xno.55): every call site lives in
+    /// `memory/tests/multi.rs`, and no pyo3/manager binding exposes it, so a
+    /// crate-external `pub` would overstate the supported API surface. The
+    /// `cfg(test)` gate is what `pub(crate)` alone cannot express — the test
+    /// submodules are themselves `cfg(test)` (see `test_submod!` in `lib.rs`),
+    /// so a non-test build sees no caller at all and `dead_code` fires.
+    #[cfg(test)]
+    pub(crate) fn store_concrete_multi(
         &mut self,
         addr_expr: &RustBV,
         value: &RustBV,

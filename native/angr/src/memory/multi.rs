@@ -118,9 +118,10 @@ struct CachedCollapse {
 /// `cached_collapse` memoizes the right-folded ITE BV produced by
 /// `collapse`. Reads (e.g. `assemble_load_with_multi`) reuse the cached BV
 /// when the page's concrete default byte is unchanged. Any append-mutation
-/// (`push`) invalidates the cache; `set_multi_alternatives` always installs
-/// a fresh payload (cache starts as `None`) so the merge path in
-/// `install_multi_for_candidates` is automatically safe.
+/// (`push`) invalidates the cache, which is what keeps the merge path in
+/// `install_multi_for_candidates` safe: it moves the existing payload out of
+/// `multi_objects`, `push`es the new alternative, and re-installs it. A
+/// payload built by `from_alternatives` starts with an empty cache.
 #[derive(Debug, Default)]
 pub struct MultiPayload {
     alternatives: Vec<MultiAlternative>,
@@ -170,7 +171,8 @@ impl MultiPayload {
     /// This is the lazy-store primitive: emitting a `Multi` cell from a
     /// symbolic-address store appends the candidate's `(addr == cand, value)`
     /// pair without rebuilding any ITE. The collapse cost is paid at load
-    /// time instead.
+    /// time instead. `SymbolicMemory::install_multi_for_candidates` — the one
+    /// production Multi-installing path — accumulates through here.
     pub fn push(&mut self, alt: MultiAlternative) {
         self.alternatives.push(alt);
         self.cached_collapse.get_mut().take();
