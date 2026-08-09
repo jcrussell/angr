@@ -1188,9 +1188,19 @@ impl SymContext {
     }
 
     /// Merge without Z3 — just combines assumed constraints.
+    ///
+    /// The conditions themselves are unused here (there is no solver to guard
+    /// constraints with), but the length invariant is asserted identically to
+    /// the z3 variant so a caller bug fails the same way in both feature
+    /// builds rather than only under `vex-engine-z3`.
     #[cfg(not(feature = "vex-engine-z3"))]
     pub fn merge(&self, others: &[&SymContext], merge_conditions: &[RustBV]) -> Self {
-        let _ = merge_conditions;
+        assert_eq!(
+            others.len() + 1,
+            merge_conditions.len(),
+            "merge_conditions must have one entry per context (self + others)"
+        );
+
         let mut merged = Self::new();
 
         // Merge symbol tables — see Z3 path comment about Arc::make_mut on
