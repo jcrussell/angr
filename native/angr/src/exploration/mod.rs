@@ -143,7 +143,7 @@ pub(crate) use self::callback_types::PendingCallback;
 pub(crate) use self::callback_types::apply_deferred_fork_constraints;
 pub(crate) use self::callback_types::{ForkBundle, SimProcCall};
 pub(crate) use self::event::ExplorationEvent;
-pub(crate) use self::native_technique::NativeTechnique;
+pub(crate) use self::native_technique::{NativeTechnique, TIMEOUT_STASH};
 
 /// Rust-native exploration manager.
 ///

@@ -334,3 +334,82 @@ fn loop_bound_drops_spinners_when_drop_terminal_states_is_set() {
         "drop_terminal_states discards instead of filing"
     );
 }
+
+// --- state_index consistency after eviction (angr-c7xno.97) ----------------
+// Timeout and evict_active_states used to re-home states with a raw
+// `stashes_mut()` push, leaving `state_index` pointing at STASH_ACTIVE until
+// Python's post-`run()` `sync_state_index`. Mid-`run()`, `find_state_mut` /
+// `take_state` resolve against that stale entry, so a write-path lookup for a
+// live evictee failed while the read path succeeded. These pin the index (and,
+// on the discard arms, the lineage root) moving with the state.
+
+/// An expired Timeout re-indexes the drained frontier under "timeout" — and a
+/// mid-run write-path lookup for one of those states still resolves.
+#[test]
+fn timeout_reindexes_drained_states_under_timeout_stash() {
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    let a = push_active_with_history(&mut mgr, &[0x1000]);
+    let b = push_active_with_history(&mut mgr, &[0x2000]);
+    mgr.register_timeout(0.0);
+    expire_timeouts(&mut mgr);
+
+    mgr.apply_native_techniques();
+
+    assert_eq!(mgr.sm.stash_of(a), Some("timeout"));
+    assert_eq!(mgr.sm.stash_of(b), Some("timeout"));
+    assert!(
+        mgr.sm.find_state_mut(a).is_some(),
+        "write-path lookup must not need sync_state_index first"
+    );
+    assert_eq!(mgr.sm.take_state(b).map(|s| s.state_id()), Some(b));
+}
+
+/// LengthLimiter with `drop=false` re-indexes the evictees under "cut" and
+/// leaves the survivors indexed under active.
+#[test]
+fn length_limiter_cut_reindexes_evictees_and_leaves_survivors() {
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    let over = push_active_with_history(&mut mgr, &[1, 2, 3, 4]);
+    let under = push_active_with_history(&mut mgr, &[1]);
+    mgr.register_length_limiter(3, false);
+
+    mgr.apply_native_techniques();
+
+    assert_eq!(mgr.sm.stash_of(over), Some("cut"));
+    assert_eq!(mgr.sm.stash_of(under), Some(STASH_ACTIVE));
+    assert!(mgr.sm.find_state_mut(over).is_some());
+}
+
+/// `drop=true` discards in place, so module invariant I6 applies: the evictee
+/// takes *both* of its map entries (index and lineage root) with it.
+#[test]
+fn length_limiter_drop_clears_index_and_root_entries() {
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    let dropped = push_active_with_history(&mut mgr, &[1, 2, 3, 4]);
+    let survivor = push_active_with_history(&mut mgr, &[1]);
+    mgr.sm.set_root(dropped, dropped);
+    mgr.sm.set_root(survivor, survivor);
+    mgr.register_length_limiter(3, true);
+
+    mgr.apply_native_techniques();
+
+    assert_eq!(mgr.sm.stash_of(dropped), None, "index entry follows the drop");
+    assert_eq!(mgr.sm.get_root(dropped), None, "I6: root follows the drop");
+    assert_eq!(mgr.sm.stash_of(survivor), Some(STASH_ACTIVE));
+    assert_eq!(mgr.sm.get_root(survivor), Some(survivor));
+}
+
+/// LoopBound shares `evict_active_states`, so its discard stash gets the same
+/// index maintenance.
+#[test]
+fn loop_bound_reindexes_spinners_under_discard_stash() {
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    let spinner = push_active_with_history(&mut mgr, &[0x10, 0x10, 0x10]);
+    let straight = push_active_with_history(&mut mgr, &[0x10, 0x20]);
+    mgr.register_loop_bound(2, "spinning");
+
+    mgr.apply_native_techniques();
+
+    assert_eq!(mgr.sm.stash_of(spinner), Some("spinning"));
+    assert_eq!(mgr.sm.stash_of(straight), Some(STASH_ACTIVE));
+}

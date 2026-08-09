@@ -417,27 +417,47 @@ impl StashManager {
     // State lookup
     // =========================================================================
 
-    /// Find an immutable reference to a state by ID.
-    pub fn find_state(&self, state_id: u64) -> Option<&RustSimState> {
-        // Fast path: use index
+    /// Resolve `(stash name, position)` for a state, treating `state_index` as
+    /// a **hint** rather than an authority.
+    ///
+    /// The indexed stash is consulted first, but only accepted once the state
+    /// is actually found in it: a *present-but-stale* entry (index says stash
+    /// A, the state now lives in stash B) falls through to the full scan
+    /// exactly as a missing entry does. Before angr-c7xno.97 only `find_state`
+    /// self-healed this way, while `find_state_mut` / `take_state` trusted a
+    /// present entry and returned `None` for a live state — an observable
+    /// read-vs-write divergence whenever a raw stash move skipped
+    /// [`index`](Self::index) (the `NativeTechnique` `Timeout` /
+    /// `evict_active_states` bypass). Single-sourcing the lookup here means a
+    /// future bypass degrades to an O(n) scan for all three, never to a
+    /// spurious "state not found".
+    fn locate_state(&self, state_id: u64) -> Option<(&str, usize)> {
         if let Some(stash_name) = self.state_index.get(&state_id)
             && let Some(stash) = self.stashes.get(stash_name)
+            && let Some(idx) = stash.iter().position(|s| s.state_id() == state_id)
         {
-            for state in stash {
-                if state.state_id() == state_id {
-                    return Some(state);
-                }
-            }
+            return Some((stash_name.as_str(), idx));
         }
-        // Slow fallback: linear scan
-        for stash in self.stashes.values() {
-            for state in stash {
-                if state.state_id() == state_id {
-                    return Some(state);
-                }
-            }
-        }
-        None
+        // Slow fallback: linear scan (index missing or stale).
+        self.stashes.iter().find_map(|(name, stash)| {
+            stash
+                .iter()
+                .position(|s| s.state_id() == state_id)
+                .map(|idx| (name.as_str(), idx))
+        })
+    }
+
+    /// Like [`locate_state`](Self::locate_state) but yields an owned stash
+    /// name, releasing the borrow so the caller can take `&mut self`.
+    fn locate_state_owned(&self, state_id: u64) -> Option<(String, usize)> {
+        self.locate_state(state_id)
+            .map(|(name, idx)| (name.to_string(), idx))
+    }
+
+    /// Find an immutable reference to a state by ID.
+    pub fn find_state(&self, state_id: u64) -> Option<&RustSimState> {
+        let (stash_name, idx) = self.locate_state(state_id)?;
+        self.stashes.get(stash_name)?.get(idx)
     }
 
     /// Remove a state from whichever stash holds it and return it by value.
@@ -446,15 +466,8 @@ impl StashManager {
     /// state must leave its stash for the duration of the step, exactly as the
     /// run loop's `pop_active` takes it off the active stash.
     pub fn take_state(&mut self, state_id: u64) -> Option<RustSimState> {
-        let stash_name = self.stash_of(state_id).map(str::to_string).or_else(|| {
-            self.stashes
-                .iter()
-                .find(|(_, stash)| stash.iter().any(|s| s.state_id() == state_id))
-                .map(|(name, _)| name.clone())
-        })?;
-        let stash = self.stashes.get_mut(&stash_name)?;
-        let idx = stash.iter().position(|s| s.state_id() == state_id)?;
-        let state = stash.remove(idx);
+        let (stash_name, idx) = self.locate_state_owned(state_id)?;
+        let state = self.stashes.get_mut(&stash_name)?.remove(idx);
         self.unindex(state_id);
         state
     }
@@ -479,34 +492,8 @@ impl StashManager {
 
     /// Find a mutable reference to a state by ID.
     pub fn find_state_mut(&mut self, state_id: u64) -> Option<&mut RustSimState> {
-        let stash_name = if let Some(name) = self.state_index.get(&state_id) {
-            Some(name.clone())
-        } else {
-            let mut found = None;
-            for (name, stash) in &self.stashes {
-                for state in stash {
-                    if state.state_id() == state_id {
-                        found = Some(name.clone());
-                        break;
-                    }
-                }
-                if found.is_some() {
-                    break;
-                }
-            }
-            found
-        };
-
-        if let Some(name) = stash_name
-            && let Some(stash) = self.stashes.get_mut(&name)
-        {
-            for state in stash.iter_mut() {
-                if state.state_id() == state_id {
-                    return Some(state);
-                }
-            }
-        }
-        None
+        let (stash_name, idx) = self.locate_state_owned(state_id)?;
+        self.stashes.get_mut(&stash_name)?.get_mut(idx)
     }
 
     // =========================================================================

@@ -274,3 +274,43 @@ fn test_take_state_from_stash_scoped() {
     assert_eq!(mgr.count(STASH_FOUND), 1);
     assert_eq!(mgr.stash_of(id2), Some(STASH_FOUND));
 }
+
+/// angr-c7xno.97: a **present-but-stale** `state_index` entry (index says
+/// stash A, the state actually lives in stash B) must self-heal for all three
+/// lookups, not just `find_state`. Before the fix `find_state_mut` /
+/// `take_state` trusted a present entry and returned `None` for a live state,
+/// while `find_state` fell back to a full scan — an observable read-vs-write
+/// divergence for any state a raw stash move re-homed without `index()`.
+#[test]
+fn stale_index_entry_self_heals_for_all_three_lookups() {
+    let mut mgr = StashManager::new();
+    let state = RustSimState::new("amd64").unwrap();
+    let sid = state.state_id();
+    mgr.push(STASH_FOUND, state);
+    // Simulate a raw move that forgot to re-index: the state is in
+    // STASH_FOUND, the index still claims STASH_ACTIVE.
+    mgr.index(sid, STASH_ACTIVE);
+    assert_eq!(mgr.stash_of(sid), Some(STASH_ACTIVE), "index is stale");
+
+    assert!(mgr.find_state(sid).is_some(), "find_state already self-healed");
+    assert!(
+        mgr.find_state_mut(sid).is_some(),
+        "find_state_mut must fall back to the scan its doc comment promises"
+    );
+    let taken = mgr.take_state(sid).expect("take_state must find the state");
+    assert_eq!(taken.state_id(), sid);
+    assert_eq!(mgr.count(STASH_FOUND), 0, "taken from its real stash");
+    assert_eq!(mgr.stash_of(sid), None, "stale entry cleared on take");
+}
+
+/// The stale-index fallback must not resurrect a *deleted* state: an index
+/// entry with no backing state anywhere still resolves to `None`.
+#[test]
+fn stale_index_entry_for_absent_state_still_yields_none() {
+    let mut mgr = StashManager::new();
+    mgr.index(4_242, STASH_ACTIVE);
+
+    assert!(mgr.find_state(4_242).is_none());
+    assert!(mgr.find_state_mut(4_242).is_none());
+    assert!(mgr.take_state(4_242).is_none());
+}

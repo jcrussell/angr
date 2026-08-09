@@ -15,6 +15,11 @@
 
 use super::*;
 
+/// Stash the [`NativeTechnique::Timeout`] arm parks the active frontier in.
+/// Declared up front by `RustExplorationManager::register_timeout` so the
+/// stash exists (empty) even when the deadline never fires.
+pub(crate) const TIMEOUT_STASH: &str = "timeout";
+
 /// Native exploration technique variants.
 ///
 /// These techniques run entirely in Rust during the exploration loop,
@@ -91,22 +96,27 @@ impl RustExplorationManager {
                             "Native Timeout: exploration timed out after {timeout_secs:.1}s"
                         );
                         // Move all active states to "timeout" stash
-                        if let Some(active) = self.sm.get_mut(STASH_ACTIVE) {
-                            let states: Vec<_> = active.drain(..).collect();
-                            // Draining STASH_ACTIVE bypasses `policy.select`;
-                            // notify so a memoizing policy doesn't leak its
-                            // per-state memo entries (angr-myzjx.25).
-                            for s in &states {
-                                self.policy.on_state_removed(s.state_id());
-                            }
-                            let timeout_stash = self
-                                .sm
-                                .stashes_mut()
-                                .entry("timeout".to_string())
-                                .or_default();
-                            for s in states {
-                                timeout_stash.push_back(s);
-                            }
+                        let states: Vec<_> = self
+                            .sm
+                            .get_mut(STASH_ACTIVE)
+                            .map(|active| active.drain(..).collect::<Vec<_>>())
+                            .unwrap_or_default();
+                        // Draining STASH_ACTIVE bypasses `policy.select`;
+                        // notify so a memoizing policy doesn't leak its
+                        // per-state memo entries (angr-myzjx.25).
+                        for s in &states {
+                            self.policy.on_state_removed(s.state_id());
+                        }
+                        // Re-home through `index`, not a raw `stashes_mut()`
+                        // push: a raw move leaves `state_index` pointing at
+                        // STASH_ACTIVE until the next `sync_state_index`, and
+                        // within one `run()` that stale entry is what
+                        // `find_state_mut` / `take_state` resolve against
+                        // (angr-c7xno.97).
+                        for s in states {
+                            let sid = s.state_id();
+                            self.sm.ensure_stash(TIMEOUT_STASH).push_back(s);
+                            self.sm.index(sid, TIMEOUT_STASH);
                         }
                         complete = true;
                     }
@@ -185,10 +195,24 @@ impl RustExplorationManager {
             self.policy.on_state_removed(state.state_id());
         }
 
+        // Both arms keep `state_index` (and, on the discard arm, `state_roots`)
+        // moving with the state. A raw `stashes_mut()` push left the evictees
+        // indexed under STASH_ACTIVE until Python's post-`run()`
+        // `sync_state_index`, and mid-run that stale entry is what
+        // `find_state_mut` / `take_state` resolve against (angr-c7xno.97).
         if let Some(dest) = dest {
-            let target = self.sm.stashes_mut().entry(dest.to_string()).or_default();
             for state in removed_states {
-                target.push_back(state);
+                let sid = state.state_id();
+                self.sm.ensure_stash(dest).push_back(state);
+                self.sm.index(sid, dest);
+            }
+        } else {
+            // Discarded in place: module invariant I6 — a state that leaves
+            // the stashes takes both of its map entries with it.
+            for state in &removed_states {
+                let sid = state.state_id();
+                self.sm.unindex(sid);
+                self.sm.remove_root(sid);
             }
         }
     }

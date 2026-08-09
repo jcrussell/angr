@@ -72,7 +72,7 @@ impl RustExplorationManager {
             timeout_secs,
             start_time: None,
         });
-        self.sm.declare_stash("timeout");
+        self.sm.declare_stash(TIMEOUT_STASH);
     }
 
     /// Register a native LoopBound technique.
