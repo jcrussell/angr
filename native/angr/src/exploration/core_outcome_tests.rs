@@ -366,14 +366,25 @@ impl crate::procedures::NativeSimProcedure for FindTargetProc {
 /// `FindTargetProc` registered, under a manager configured by `cfg` (which
 /// seeds find/avoid addresses). Returns the raw outcome.
 fn dispatch_hook_with(cfg: impl FnOnce(&mut RustExplorationManager)) -> CoreOutcome {
-    dispatch_hook_on_arch("amd64", None, cfg)
+    dispatch_hook_on_arch("amd64", SpSeed::Default, cfg)
+}
+
+/// How [`dispatch_hook_on_arch`] seeds the state's stack pointer.
+enum SpSeed {
+    /// Leave SP at whatever `RustSimState::new` produced.
+    Default,
+    /// Seed a concrete SP.
+    Concrete(u64),
+    /// Seed a fresh symbolic SP — `extract_args_with_abi` never touches SP for
+    /// a zero-arg proc, so it stays symbolic through the return (angr-c7xno.29).
+    Symbolic,
 }
 
 /// [`dispatch_hook_with`] on an arbitrary architecture, optionally seeding SP,
 /// so the return path's SP adjustment can be checked per calling convention.
 fn dispatch_hook_on_arch(
     arch: &str,
-    sp: Option<u64>,
+    sp: SpSeed,
     cfg: impl FnOnce(&mut RustExplorationManager),
 ) -> CoreOutcome {
     let mut mgr = RustExplorationManager::new(arch, None).unwrap();
@@ -386,9 +397,14 @@ fn dispatch_hook_on_arch(
 
     let mut state = RustSimState::new(arch).unwrap();
     state.set_pc(HOOK_ADDR);
-    if let Some(sp) = sp {
-        let bits = state.arch().bits();
-        state.set_sp(crate::symbolic::RustBV::concrete(sp as u128, bits));
+    let bits = state.arch().bits();
+    match sp {
+        SpSeed::Default => {}
+        SpSeed::Concrete(sp) => state.set_sp(crate::symbolic::RustBV::concrete(sp as u128, bits)),
+        SpSeed::Symbolic => {
+            let sym = crate::symbolic::RustBV::symbolic(&state.solver().borrow(), "sym_sp", bits);
+            state.set_sp(sym);
+        }
     }
     let sid = state.state_id();
 
@@ -486,7 +502,7 @@ const SP_SEED: u64 = 0x7fff_0000;
 
 /// Run the native-return path on `arch` and hand back the successor's SP.
 fn native_return_sp(arch: &str) -> u64 {
-    let outcome = dispatch_hook_on_arch(arch, Some(SP_SEED), |_| {});
+    let outcome = dispatch_hook_on_arch(arch, SpSeed::Concrete(SP_SEED), |_| {});
     assert_eq!(
         outcome.counters.native_calls, 1,
         "{arch}: native proc must have run"
@@ -530,6 +546,54 @@ fn native_return_leaves_sp_untouched_on_link_register_abis() {
                 native_return_sp(arch),
                 SP_SEED,
                 "{arch} returns via a link register; SP must not move"
+            );
+        }
+    });
+}
+
+/// A symbolic SP must survive the native-return bump (angr-c7xno.29).
+///
+/// `extract_args_with_abi` only reads SP when the argument count overflows the
+/// register window, so a zero-arg native proc runs to completion with SP still
+/// symbolic. The pre-fix `get_sp().as_u64().unwrap_or(0)` then rewrote that SP
+/// to a bogus concrete `ptr_size` (8 on amd64, 4 on x86) — the shared
+/// `advance_sp_past_return_addr` helper adds the pointer symbolically instead.
+#[test]
+fn native_return_keeps_symbolic_sp_symbolic_on_stack_return_abi() {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|_py| {
+        for arch in ["amd64", "x86"] {
+            let outcome = dispatch_hook_on_arch(arch, SpSeed::Symbolic, |_| {});
+            let CoreReturn::Continue(succ) = outcome.ret else {
+                panic!("{arch}: expected Continue");
+            };
+            let sp = succ[0].0.get_sp();
+            assert!(
+                sp.as_u64().is_none(),
+                "{arch}: symbolic SP was concretized to {:?} — the unwrap_or(0) bug",
+                sp.as_u64()
+            );
+        }
+    });
+}
+
+/// Control for the test above on the link-register ABIs: the bump is skipped
+/// entirely there, so the SP register must come out as the *same* symbol it
+/// went in as. (This one passed pre-fix too — it guards against the shared
+/// helper regressing into an unconditional bump.)
+#[test]
+fn native_return_keeps_symbolic_sp_symbolic_on_link_register_abis() {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|_py| {
+        for arch in ["armel", "aarch64", "mips32", "mips64"] {
+            let outcome = dispatch_hook_on_arch(arch, SpSeed::Symbolic, |_| {});
+            let CoreReturn::Continue(succ) = outcome.ret else {
+                panic!("{arch}: expected Continue");
+            };
+            let sp = succ[0].0.get_sp();
+            assert!(
+                matches!(sp, crate::symbolic::RustBV::Symbolic { .. }),
+                "{arch}: SP must be the untouched symbol, got {sp:?}"
             );
         }
     });

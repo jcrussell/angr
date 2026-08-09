@@ -21,6 +21,7 @@
 use super::*;
 
 use super::core_outcome::NativeSubcall;
+use super::helpers::advance_sp_past_return_addr;
 use super::native_proc_dispatch::{
     NativeProcCounters, NativeProcDisposition, dispatch_native_proc,
 };
@@ -362,15 +363,11 @@ impl RustExplorationManager {
                             if let Some(ret_addr) = ret_addr_opt {
                                 // Only adjust SP for stack-based ABIs
                                 // (x86/AMD64). ARM/ARM64/MIPS keep ret addr in a
-                                // register and leave SP untouched.
-                                if pops_return_addr {
-                                    let sp = state.get_sp().as_u64().unwrap_or(0);
-                                    let ptr_size = state.arch().bytes() as u64;
-                                    state.set_sp(RustBV::concrete(
-                                        (sp + ptr_size) as u128,
-                                        state.arch().bits(),
-                                    ));
-                                }
+                                // register and leave SP untouched — the shared
+                                // helper gates that, and is also what keeps this
+                                // site and `handle_simprocedure_core` from
+                                // drifting apart (angr-c7xno.29).
+                                advance_sp_past_return_addr(&mut state, pops_return_addr);
                                 state.set_pc(ret_addr);
                             } else if pops_return_addr {
                                 // Fallback: read ret addr from [sp] for

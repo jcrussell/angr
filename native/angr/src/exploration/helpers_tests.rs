@@ -885,3 +885,47 @@ fn migration_sample_buckets_width_before_early_return() {
         "early return leaves the home map untouched",
     );
 }
+
+// --- angr-c7xno.29: advance_sp_past_return_addr ---
+
+/// The concrete happy path: one pointer popped off the stack.
+#[test]
+fn advance_sp_past_return_addr_bumps_concrete_sp() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.set_sp(RustBV::concrete(0x7fff_0000u128, 64));
+
+    advance_sp_past_return_addr(&mut state, true);
+
+    assert_eq!(state.get_sp().as_u64(), Some(0x7fff_0008));
+}
+
+/// Link-register ABIs never pushed a return address, so nothing is popped.
+#[test]
+fn advance_sp_past_return_addr_is_noop_when_abi_does_not_pop() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.set_sp(RustBV::concrete(0x7fff_0000u128, 64));
+
+    advance_sp_past_return_addr(&mut state, false);
+
+    assert_eq!(state.get_sp().as_u64(), Some(0x7fff_0000));
+}
+
+/// The regression this helper exists for: the two native-return sites used to
+/// do `get_sp().as_u64().unwrap_or(0)`, rewriting a symbolic SP to the bogus
+/// concrete value `ptr_size`. The bump must stay symbolic instead.
+#[test]
+fn advance_sp_past_return_addr_keeps_symbolic_sp_symbolic() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    let sym = RustBV::symbolic(&state.solver().borrow(), "sym_sp", 64);
+    state.set_sp(sym);
+
+    advance_sp_past_return_addr(&mut state, true);
+
+    let sp = state.get_sp();
+    assert_eq!(
+        sp.as_u64(),
+        None,
+        "symbolic SP must not collapse to a concrete value"
+    );
+    assert_eq!(sp.width(), 64, "the bump preserves SP width");
+}

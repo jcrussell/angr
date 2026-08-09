@@ -742,4 +742,44 @@ pub(crate) fn prepare_shared_callback_solver(
     (pre_callback_snapshot, shared_ctx)
 }
 
+/// Pop the return-address slot off the stack after a native procedure returns.
+///
+/// Only stack-return ABIs (x86/AMD64) push the return address, so only they
+/// advance SP here; on link-register ABIs (ARM/ARM64 LR/X30, MIPS `$ra`) the
+/// caller's return address never went on the stack and bumping SP would
+/// discard a live stack slot (angr-sqfj8.37), so this is a no-op there.
+///
+/// Both native-return sites — `core_outcome_handlers.rs`'s
+/// `handle_simprocedure_core` and the inline native path in
+/// `run_loop_single.rs`'s `step_one` — must call this rather than inlining
+/// the bump: the two used to be kept in sync by a comment alone, and both
+/// drifted into the same `get_sp().as_u64().unwrap_or(0)` bug (angr-c7xno.29).
+///
+/// A symbolic SP is bumped **symbolically** (`sp + ptr_size`) rather than
+/// collapsed to a concrete value. `extract_args_with_abi` only reads SP when
+/// the argument count overflows the register window, so an all-register-args
+/// native proc can run to completion with SP still symbolic; the old
+/// `unwrap_or(0)` rewrote that SP to a bogus concrete `ptr_size`.
+pub(crate) fn advance_sp_past_return_addr(state: &mut RustSimState, pops_return_addr: bool) {
+    if !pops_return_addr {
+        return;
+    }
+    let ptr_size = state.arch().bytes() as u64;
+    let bits = state.arch().bits();
+    let sp = state.get_sp();
+    let bumped = match sp.as_u64() {
+        Some(concrete_sp) => RustBV::concrete((concrete_sp.wrapping_add(ptr_size)) as u128, bits),
+        None => {
+            log::debug!(
+                "native-proc return: stack pointer is symbolic; advancing it \
+                 symbolically by {ptr_size} bytes instead of concretizing"
+            );
+            let delta = RustBV::concrete(ptr_size as u128, sp.width());
+            let ctx = state.solver().borrow();
+            sp.add_into(delta, &ctx)
+        }
+    };
+    state.set_sp(bumped);
+}
+
 test_submod!("helpers_tests.rs" => tests);
