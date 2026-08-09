@@ -66,6 +66,18 @@ jobs:
       # set_max_history). Baseline-gated like the two checks above.
       - name: Steady-guard coverage audit
         run: python3 tools/audit_steady_guard_coverage.py
+      # angr-91vj9.7: a `*_rm` VEX helper whose concrete closure drops the
+      # rounding mode compiles cleanly (a `_rm` parameter is the *sanctioned*
+      # spelling of "unused"), so the symbolic and concrete paths can silently
+      # disagree on RZ/RU/RD (angr-c7xno.85 / f64_to_f32_rm). Baseline-gated
+      # like the three checks above; the baseline is empty and should stay so.
+      # `--self-test` runs first, same reasoning as the nightly valgrind gate:
+      # a lint that has never been seen to fire is indistinguishable from one
+      # that cannot. It classifies a synthetic threaded/dropped/exempt trio.
+      - name: VEX rounding-mode threading audit
+        run: |
+          python3 tools/audit_rounding_mode_threading.py --self-test
+          python3 tools/audit_rounding_mode_threading.py
 
   rust_test:
     strategy:

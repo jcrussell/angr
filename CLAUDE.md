@@ -94,6 +94,26 @@ carries the attribute, **or** documents the exception with a doc line matching
 cannot be the unconditional first statement the macro injects). Fixing a
 baselined gap means deleting its line, not just adding the attribute.
 
+### VEX rounding-mode threading (Rust)
+
+The `VEXOps::*_rm` helpers hand a concrete closure to a shared `*_rm`
+dispatcher (`float_to_int_rm`, `float_to_float_rm`) whose whole purpose is to
+thread the VEX rounding mode into the concrete path so it agrees with the
+symbolic Z3 FP path. A closure that drops the mode compiles cleanly — naming
+the parameter `_rm` is Rust's *sanctioned* spelling of "unused" — so
+`f64_to_f32_rm` silently computed round-to-nearest-even for RZ/RU/RD while
+every sibling routed through `apply_rounding_f32`/`apply_rounding_f64`
+(angr-c7xno.85). `tools/audit_rounding_mode_threading.py` gates that shape in
+CI (`rust_check`) against `tools/rounding_mode_baseline.txt` — same
+baseline-audit pattern as the three checks above, but the baseline is **empty**
+and should stay so. Flags a closure inside a `fn *_rm` whose last parameter is
+`_`-prefixed, or is named `rm` and never referenced in the body. Exempt by
+documenting the reason with an `rm-ignored: <why>` comment on the line above
+(for the genuine cases — e.g. a libm-backed transcendental where Rust only
+offers RNE); prefer that over `--update-baseline`. `--self-test` classifies a
+synthetic threaded/dropped/exempt trio and runs ahead of the real check in CI —
+same reasoning as the valgrind gate's self-test.
+
 ### Where context lives
 
 When you need background that isn't in CLAUDE.md, look here first, then

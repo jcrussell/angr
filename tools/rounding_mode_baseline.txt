@@ -1,0 +1,7 @@
+# Rounding-mode threading baseline -- see tools/audit_rounding_mode_threading.py
+# One key per known mode-dropping closure: <relpath>\t<fn>\t<closure params>.
+# Regenerate with: tools/audit_rounding_mode_threading.py --update-baseline
+# This file should stay EMPTY. Threading the mode through (see
+# VEXOps::apply_rounding_f32 / apply_rounding_f64 / narrow_f64_to_f32_rm)
+# or documenting the exception with an `rm-ignored:` comment are both
+# preferable; growing it needs a reason in the commit message.
