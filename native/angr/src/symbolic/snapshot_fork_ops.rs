@@ -909,12 +909,17 @@ impl SymContext {
 
     #[cfg(not(feature = "vex-engine-z3"))]
     pub fn fork(&self) -> Self {
+        // Mirrors the Z3 arm's `bare_local_savepoints` gate: inside an open
+        // bare `push()` scope `local.assumed` must survive the freeze so the
+        // matching `pop()` can still truncate it (angr-c7xno.75 / .100).
+        let scope_open = !self.mock_scope_savepoints.lock().is_empty();
         let frozen_assumed = {
             let mut local = self.local_constraints.lock();
-            // Always false here: the mock `push()`/`pop()` are no-ops that
-            // record no savepoint, so no scope can be open to preserve
-            // `local` for (angr-c7xno.75).
-            freeze_into_shared(&self.assumed_constraints_shared, &mut local.assumed, false)
+            freeze_into_shared(
+                &self.assumed_constraints_shared,
+                &mut local.assumed,
+                scope_open,
+            )
         };
 
         SymContext {
@@ -933,6 +938,9 @@ impl SymContext {
                 self.assume_class_reconstructible.load(Ordering::Relaxed),
             ),
             local_constraints: Mutex::new(LocalConstraints::new()),
+            // A fork starts outside any scope — same as the Z3 arm's fresh
+            // `bare_local_savepoints`.
+            mock_scope_savepoints: Mutex::new(Vec::new()),
         }
     }
 

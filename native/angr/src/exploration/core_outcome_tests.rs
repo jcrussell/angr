@@ -966,6 +966,23 @@ fn syscall_without_native_handler_bounces_to_python() {
 
 const JUMP_COND_ID: u64 = 77;
 
+/// Assert that a symbolic-jump successor pinned `expr` to `target`.
+///
+/// The pin is only *observable* where a model exists: without Z3 the mock
+/// solver's `eval` returns `None` for every symbolic BV, so the no-z3 build
+/// asserts exactly that rather than z3-gating the whole test away — the rest
+/// of each test (pc advanced, forked vs moved, ids, tags) is engine-agnostic
+/// and stays covered in both builds (angr-c7xno.100).
+fn assert_jump_pinned(
+    state: &RustSimState,
+    expr: &crate::symbolic::RustBV,
+    target: u64,
+    what: &str,
+) {
+    let expected = cfg!(feature = "vex-engine-z3").then(|| u128::from(target));
+    assert_eq!(state.eval(expr), expected, "{what}");
+}
+
 /// Drive one `RunResult::SymbolicJumpTarget` through `run_post_step_core` with
 /// a fresh symbolic jump expression stored under [`JUMP_COND_ID`] (unless
 /// `with_expr` is false, which models the id-missing path).
@@ -1052,10 +1069,11 @@ fn symbolic_jump_single_target_constrains_in_place() {
         assert_eq!(succ[0].0.state_id(), sid, "moved, not forked");
         assert!(!succ[0].1.is_fork);
         assert_eq!(succ[0].0.pc(), TARGET);
-        assert_eq!(
-            succ[0].0.eval(&expr),
-            Some(TARGET as u128),
-            "jump expression pinned to the target"
+        assert_jump_pinned(
+            &succ[0].0,
+            &expr,
+            TARGET,
+            "jump expression pinned to the target",
         );
         assert!(
             !matches!(succ[0].0.get_ip(), crate::symbolic::RustBV::Symbolic { .. }),
@@ -1131,10 +1149,11 @@ fn symbolic_jump_multiple_targets_fork_from_unconstrained_base() {
         let mut seen_ids = vec![succ[0].0.state_id()];
         for (i, (state, tag)) in succ.iter().enumerate() {
             assert_eq!(state.pc(), TARGETS[i], "successor {i} pc");
-            assert_eq!(
-                state.eval(&expr),
-                Some(TARGETS[i] as u128),
-                "successor {i} pinned the jump expression to its own target"
+            assert_jump_pinned(
+                state,
+                &expr,
+                TARGETS[i],
+                &format!("successor {i} pinned the jump expression to its own target"),
             );
             assert!(state.satisfiable(), "successor {i} must be SAT");
             if i > 0 {

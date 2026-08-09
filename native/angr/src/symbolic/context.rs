@@ -382,6 +382,22 @@ pub struct SymContext {
     /// Pairs push↔pop exactly like `scope_savepoints`.
     #[cfg(feature = "vex-engine-z3")]
     pub(super) bare_local_savepoints: Mutex<Vec<(usize, usize, usize)>>,
+
+    /// No-Z3 analogue of [`bare_local_savepoints`](Self::bare_local_savepoints)
+    /// (angr-c7xno.100).
+    ///
+    /// Each entry is `local_constraints.assumed.len()` at the moment of a
+    /// `push()` — the only local log this build has, since `z3_assertions` /
+    /// `non_bv_assertions` / `dedup_set` are all Z3-gated out of
+    /// [`LocalConstraints`]. `pop()` truncates back to it, so the mock arm
+    /// honours the same "constraints added inside a scope do not survive the
+    /// matching pop" contract, and its length is the scope depth
+    /// [`try_pop`](Self::try_pop) needs to refuse an under-pop. Before this
+    /// existed the mock `push()`/`pop()` were no-ops and `try_pop()` returned
+    /// `true` unconditionally, so `RustSolverContext::pop` accepted an
+    /// unbalanced pop that the Z3 arm rejects with a `ValueError`.
+    #[cfg(not(feature = "vex-engine-z3"))]
+    pub(super) mock_scope_savepoints: Mutex<Vec<usize>>,
     /// Track assumed RustBV constraints for export to Python.
     /// Each entry is (constraint, is_assumed_true). The shared prefix is an
     /// Arc<Vec<...>> for O(1) clone on fork; local additions live alongside
@@ -582,6 +598,7 @@ impl SymContext {
             assumed_constraints_shared: Mutex::new(Arc::new(Vec::new())),
             assume_class_reconstructible: AtomicBool::new(true),
             local_constraints: Mutex::new(LocalConstraints::new()),
+            mock_scope_savepoints: Mutex::new(Vec::new()),
         }
     }
 

@@ -129,10 +129,18 @@ impl SymContext {
         true
     }
 
-    /// Mock `try_pop` — without Z3 a `pop()` is a no-op that never panics, so
-    /// every pop is trivially "safe".
+    /// Mock `try_pop` — refuses an under-pop exactly like the Z3 arm
+    /// (angr-c7xno.100), consulting `mock_scope_savepoints` where that arm
+    /// consults [`bare_z3_push_depth()`](Self::bare_z3_push_depth).
+    ///
+    /// The previous mock forwarded to `pop()` and returned `true`
+    /// unconditionally, so `RustSolverContext::pop` silently accepted the
+    /// unbalanced pop the Z3 build reports as a `ValueError`.
     #[cfg(not(feature = "vex-engine-z3"))]
     pub fn try_pop(&self) -> bool {
+        if self.mock_scope_savepoints.lock().is_empty() {
+            return false;
+        }
         self.pop();
         true
     }
@@ -313,14 +321,33 @@ impl SymContext {
     // Mock implementations when Z3 is not available
     // =========================================================================
 
+    /// Mock `push` — records the local assumed-constraint log length so the
+    /// matching `pop()` can retract everything added inside the scope, and so
+    /// the savepoint stack's length tracks the scope depth (angr-c7xno.100).
+    /// Mirrors `scope_savepoint_push`'s local-log bookkeeping; there is no Z3
+    /// stack to touch here.
     #[cfg(not(feature = "vex-engine-z3"))]
     pub fn push(&self) {
-        // No-op without Z3
+        let assumed_len = self.local_constraints.lock().assumed.len();
+        self.mock_scope_savepoints.lock().push(assumed_len);
     }
 
+    /// Mock `pop` — truncates the assumed log back to the matching `push()`'s
+    /// savepoint, mirroring `scope_savepoint_pop` (angr-c7xno.100).
     #[cfg(not(feature = "vex-engine-z3"))]
     pub fn pop(&self) {
-        // No-op without Z3
+        // Pop into a local first so the savepoint guard drops before
+        // `local_constraints` is locked — never hold both at once, same rule
+        // as `scope_savepoint_pop`.
+        let popped = self.mock_scope_savepoints.lock().pop();
+        match popped {
+            Some(assumed_len) => self.local_constraints.lock().assumed.truncate(assumed_len),
+            // SILENT(cat-a): an unbalanced bare `pop()` has no scope to close.
+            // `try_pop()` is the guarded entry point that reports it; the Z3
+            // arm inherits z3-rs's panic here, which the mock cannot mimic
+            // without aborting the process.
+            None => {}
+        }
     }
 
     #[cfg(not(feature = "vex-engine-z3"))]

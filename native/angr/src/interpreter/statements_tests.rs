@@ -921,6 +921,14 @@ def store_cb(addr, data):
 /// Converse of the test above: when the value *is* concretizable, the fallback
 /// still writes the concretized bytes little-endian through `memory_store`.
 /// Guards against "fix the zero-fill by disabling the fallback entirely".
+///
+/// Z3-gated (angr-c7xno.100): the premise is a value that is symbolic but
+/// *concretizable* — `data_val` is pinned to `0xdeadbeef` by a constraint, and
+/// only a real solver can read that back through `eval`. The no-z3 mock has no
+/// model at all, so it takes the sibling test's unconcretizable path instead;
+/// there is no faithful mock arm to write, short of reimplementing constraint
+/// solving.
+#[cfg(feature = "vex-engine-z3")]
 #[test]
 fn symbolic_store_fallback_writes_concretized_bytes_when_eval_succeeds() {
     use pyo3::types::{PyDict, PyList};
