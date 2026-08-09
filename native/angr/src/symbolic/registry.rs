@@ -21,12 +21,24 @@
 //!
 //! On import: Check registry before creating new symbol
 //! On export: Return original `Py<PyAny>` if in registry
+//!
+//! # Lock discipline
+//!
+//! Each map has its own `RwLock`. Every write guard is taken through
+//! [`registry_lock::write_ordered`], which asserts the two rules that keep the
+//! mutators deadlock-free and their hold windows short: canonical acquisition
+//! order, and at most the `IdToPy` primary plus one secondary co-held. See that
+//! module for why the rules exist and what broke them before.
 
 use parking_lot::RwLock;
 use pyo3::prelude::*;
+use registry_lock::{RegistryMap, write_ordered};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+
+#[path = "registry_lock.rs"]
+mod registry_lock;
 
 /// Live-symbol counts at which [`SymbolicIdentityRegistry::register`] emits a
 /// one-shot unbounded-growth warning.
@@ -253,10 +265,11 @@ impl SymbolicIdentityRegistry {
     ) {
         // Store mappings. Each guard is scoped to its own statement so no two
         // of the four maps are ever write-locked at once here — `remove` and
-        // `retain` acquire them in a different order (angr-zi35f.12).
-        self.py_hash_to_rust_id.write().insert(py_hash, rust_id);
+        // `retain` acquire them in a different order (angr-zi35f.12), and
+        // `write_ordered` asserts that this method never co-holds two.
+        write_ordered(&self.py_hash_to_rust_id, RegistryMap::HashToId).insert(py_hash, rust_id);
         let live = {
-            let mut id_to_py = self.rust_id_to_py.write();
+            let mut id_to_py = write_ordered(&self.rust_id_to_py, RegistryMap::IdToPy);
             id_to_py.insert(rust_id, py_ast);
             id_to_py.len()
         };
@@ -265,7 +278,7 @@ impl SymbolicIdentityRegistry {
         // E.g., "x" with width 32 vs "x" with width 64 should not collide.
         // The sort tag additionally separates BVS(name, 1) from BoolS(name),
         // which share a width — see [`SymbolKind`].
-        self.name_to_info.write().insert(
+        write_ordered(&self.name_to_info, RegistryMap::NameToInfo).insert(
             qualified_key(name, width, kind),
             SymbolInfo {
                 rust_id,
@@ -274,8 +287,7 @@ impl SymbolicIdentityRegistry {
                 py_hash,
             },
         );
-        self.rust_id_to_name
-            .write()
+        write_ordered(&self.rust_id_to_name, RegistryMap::IdToName)
             .insert(rust_id, name.to_string());
 
         // Update stats
@@ -377,7 +389,7 @@ impl SymbolicIdentityRegistry {
     /// This is a simplified registration that doesn't require hash or name info.
     /// Used when storing claripy ASTs during conversion.
     pub fn register_by_id(&self, rust_id: u64, py_ast: Py<PyAny>) {
-        self.rust_id_to_py.write().insert(rust_id, py_ast);
+        write_ordered(&self.rust_id_to_py, RegistryMap::IdToPy).insert(rust_id, py_ast);
     }
 
     /// Check if a symbol ID has a registered Python AST.
@@ -404,7 +416,7 @@ impl SymbolicIdentityRegistry {
     /// * `py_hash` - The new Python hash to map
     /// * `rust_id` - The existing Rust symbol ID
     pub fn update_hash_mapping(&self, py_hash: i64, rust_id: u64) {
-        self.py_hash_to_rust_id.write().insert(py_hash, rust_id);
+        write_ordered(&self.py_hash_to_rust_id, RegistryMap::HashToId).insert(py_hash, rust_id);
     }
 
     /// Allocate a new unique symbol ID.
@@ -440,10 +452,10 @@ impl SymbolicIdentityRegistry {
     /// This should be called when starting a new exploration to prevent
     /// stale mappings from previous runs.
     pub fn clear(&self) {
-        self.py_hash_to_rust_id.write().clear();
-        self.rust_id_to_py.write().clear();
-        self.name_to_info.write().clear();
-        self.rust_id_to_name.write().clear();
+        write_ordered(&self.py_hash_to_rust_id, RegistryMap::HashToId).clear();
+        write_ordered(&self.rust_id_to_py, RegistryMap::IdToPy).clear();
+        write_ordered(&self.name_to_info, RegistryMap::NameToInfo).clear();
+        write_ordered(&self.rust_id_to_name, RegistryMap::IdToName).clear();
         self.growth_warn_idx.store(0, Ordering::SeqCst);
         *self.stats.write() = RegistryStats::default();
     }
@@ -466,7 +478,7 @@ impl SymbolicIdentityRegistry {
         // front; the absent-id path then takes no other write locks (and
         // avoids the 3-lock cross-lock window). The other two write guards
         // are bound only once the id is confirmed present.
-        let mut id_to_py = self.rust_id_to_py.write();
+        let mut id_to_py = write_ordered(&self.rust_id_to_py, RegistryMap::IdToPy);
 
         if id_to_py.remove(&rust_id).is_some() {
             // Drop the id→Rust-name entry too, so all four maps stay symmetric
@@ -474,15 +486,16 @@ impl SymbolicIdentityRegistry {
             // reused, so a leaked entry is not a correctness bug today — but a
             // symmetric mutator keeps the invariant honest for any future GC
             // caller.
-            self.rust_id_to_name.write().remove(&rust_id);
+            write_ordered(&self.rust_id_to_name, RegistryMap::IdToName).remove(&rust_id);
 
             // Each secondary map is scoped so its write guard drops before the
             // next map's is taken — the id→py primary guard already serializes
             // the whole removal, so we never hold two secondary write locks at
             // once across a filter/collect/loop (angr-zi35f.12; the 167yo.1 fix
             // left these two co-held from the same acquire point).
+            // `registry_lock::write_ordered` asserts this (angr-91vj9.12).
             {
-                let mut hash_to_id = self.py_hash_to_rust_id.write();
+                let mut hash_to_id = write_ordered(&self.py_hash_to_rust_id, RegistryMap::HashToId);
                 let hash_to_remove: Vec<i64> = hash_to_id
                     .iter()
                     .filter(|(_, id)| **id == rust_id)
@@ -494,7 +507,7 @@ impl SymbolicIdentityRegistry {
             }
 
             {
-                let mut name_to_info = self.name_to_info.write();
+                let mut name_to_info = write_ordered(&self.name_to_info, RegistryMap::NameToInfo);
                 let names_to_remove: Vec<String> = name_to_info
                     .iter()
                     .filter(|(_, info)| info.rust_id == rust_id)
@@ -562,11 +575,13 @@ impl SymbolicIdentityRegistry {
         // map's is taken — no two secondary write locks are ever co-held. The
         // maps are also visited in `remove`'s order (id→py, id→name, hash→id,
         // name→info), so the two mutators can never deadlock against each other.
+        // Both halves are now asserted by `registry_lock::write_ordered` rather
+        // than left to this comment (angr-91vj9.12).
         //
         // Removals are batched per map rather than per id, which is what makes
         // the one-lock-at-a-time shape affordable: each secondary lock is taken
         // exactly once regardless of how many ids are pruned.
-        let mut id_to_py = self.rust_id_to_py.write();
+        let mut id_to_py = write_ordered(&self.rust_id_to_py, RegistryMap::IdToPy);
 
         let to_remove: std::collections::HashSet<u64> = id_to_py
             .keys()
@@ -581,17 +596,17 @@ impl SymbolicIdentityRegistry {
         // Drop the id→Rust-name entries too (angr-4xaga.3): keep all four maps
         // symmetric so a wired GC caller cannot leak this map.
         {
-            let mut id_to_name = self.rust_id_to_name.write();
+            let mut id_to_name = write_ordered(&self.rust_id_to_name, RegistryMap::IdToName);
             id_to_name.retain(|id, _| !to_remove.contains(id));
         }
 
         {
-            let mut hash_to_id = self.py_hash_to_rust_id.write();
+            let mut hash_to_id = write_ordered(&self.py_hash_to_rust_id, RegistryMap::HashToId);
             hash_to_id.retain(|_, id| !to_remove.contains(id));
         }
 
         {
-            let mut name_to_info = self.name_to_info.write();
+            let mut name_to_info = write_ordered(&self.name_to_info, RegistryMap::NameToInfo);
             name_to_info.retain(|_, info| !to_remove.contains(&info.rust_id));
         }
     }
