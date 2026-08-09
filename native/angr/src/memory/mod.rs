@@ -1244,7 +1244,37 @@ impl SymbolicMemory {
                     }
                 }
                 (None, Some(op)) => {
-                    pages_to_add.push((page_num, op.clone()));
+                    // A page present only in `other` is adopted wholesale,
+                    // `multi_bitmap` included — but `multi_objects` is a flat
+                    // side table on `SymbolicMemory`, not nested inside
+                    // `MemoryPage`, so the clone carries no payloads with it.
+                    // Copy them explicitly (angr-c7xno.50): an adopted Multi
+                    // bit with no payload makes `range_has_multi` report false
+                    // (it gates on `multi_objects`, not the bitmap), so loads
+                    // silently return the stale page byte, and a later merge's
+                    // `s_multi implies a payload` expect panics.
+                    let mut adopted = op.clone();
+                    let page_base = Address(page_num << 12);
+                    for offset in op.multi_offsets() {
+                        let addr = page_base + u64::from(offset);
+                        match other.multi_objects.get(&addr) {
+                            Some(payload) => multi_ops.push((addr, payload.clone())),
+                            None => {
+                                // SILENT(cat-b): `other` arrived with a Multi
+                                // bit whose payload is already missing — the
+                                // invariant is broken upstream, not here.
+                                // Clear the orphaned bit rather than adopt it
+                                // so `self` stays self-consistent, and warn.
+                                log::warn!(
+                                    "merge: page {page_num:#x} adopted from `other` has a Multi \
+                                     bit at {addr:?} with no multi_objects payload; clearing the \
+                                     orphaned bit"
+                                );
+                                adopted.clear_multi(offset);
+                            }
+                        }
+                    }
+                    pages_to_add.push((page_num, adopted));
                 }
                 (Some(_), None) | (None, None) => {}
             }

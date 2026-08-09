@@ -342,6 +342,16 @@ impl MemoryPage {
         self.symbolic_bitmap.set_offsets()
     }
 
+    /// Get the Multi byte offsets.
+    ///
+    /// Parallel to [`symbolic_offsets`](Self::symbolic_offsets). `merge` uses
+    /// it to walk the Multi cells of a page it is adopting wholesale from the
+    /// other arm, so the flat `SymbolicMemory::multi_objects` payloads can be
+    /// copied alongside the bitmap the page clone brings with it.
+    pub fn multi_offsets(&self) -> Vec<u16> {
+        self.multi_bitmap.set_offsets()
+    }
+
     /// Load bytes from this page (concrete only).
     pub fn load_concrete(&self, offset: u16, size: u16) -> Vec<u8> {
         let start = offset as usize;

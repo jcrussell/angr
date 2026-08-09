@@ -195,3 +195,86 @@ fn test_pending_writes_are_merge_guarded() {
         "other write live on the other arm (m==1), And-composed with its prior condition"
     );
 }
+
+/// A page that exists only in `other` and carries Multi cells must bring its
+/// `multi_objects` payloads along (angr-c7xno.50). The page clone copies the
+/// `multi_bitmap`, but the payload table is flat on `SymbolicMemory`, so
+/// without an explicit copy the adopted bit points at nothing: `range_has_multi`
+/// reports false and the load silently returns the page's stale concrete byte.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_merge_adopts_multi_cells_from_other_only_page() {
+    let ctx = SymContext::new();
+    let addr = Address(ADDR);
+
+    // `a` maps a *different* page, so ADDR's page exists only in `b`.
+    let mut a = SymbolicMemory::new(Endness::Little);
+    a.map(0x1000, PAGE_SIZE, Permission::RW);
+
+    let mut b = SymbolicMemory::new(Endness::Little);
+    b.set_multi_alternatives(
+        addr,
+        MultiPayload::from_alternatives(vec![multi_cell(RustBV::concrete(1, 1), 0x5a)]),
+    );
+
+    assert!(
+        a.merge(&b, &RustBV::symbolic(&ctx, "m", 1), &ctx),
+        "adopting a page counts as a merge"
+    );
+
+    let page = a.pages.get(&addr.page_num()).expect("page adopted");
+    assert!(
+        page.is_multi(addr.page_offset()),
+        "adopted page keeps its Multi bit"
+    );
+    let payload = a
+        .get_multi_alternatives(addr)
+        .expect("payload copied alongside the adopted page");
+    assert_eq!(payload.len(), 1, "the arm's single alternative survives");
+
+    let v = a.load_concrete(ADDR, 1, &ctx).unwrap();
+    assert_eq!(
+        v.as_u64(),
+        Some(0x5a),
+        "load dispatches through the Multi cell, not the page's concrete default"
+    );
+}
+
+/// The second half of angr-c7xno.50: after adopting an other-only page with a
+/// Multi cell, a *second* merge whose third state is Multi at the same byte
+/// hits the `s_multi implies a payload` expect. With the payload orphaned that
+/// expect panics; with it copied the union merges normally.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_second_level_merge_over_adopted_multi_page_does_not_panic() {
+    let ctx = SymContext::new();
+    let addr = Address(ADDR);
+
+    let mut a = SymbolicMemory::new(Endness::Little);
+    a.map(0x1000, PAGE_SIZE, Permission::RW);
+
+    let mut b = SymbolicMemory::new(Endness::Little);
+    b.set_multi_alternatives(
+        addr,
+        MultiPayload::from_alternatives(vec![multi_cell(RustBV::concrete(1, 1), 0x5a)]),
+    );
+    assert!(a.merge(&b, &RustBV::concrete(1, 1), &ctx));
+
+    let mut c = SymbolicMemory::new(Endness::Little);
+    c.set_multi_alternatives(
+        addr,
+        MultiPayload::from_alternatives(vec![multi_cell(RustBV::concrete(1, 1), 0x77)]),
+    );
+    // Pre-fix this panics inside merge on the orphaned `self.multi_objects`.
+    assert!(a.merge(&c, &RustBV::concrete(0, 1), &ctx));
+
+    let merged = a
+        .get_multi_alternatives(addr)
+        .expect("byte stays a Multi cell after the second merge");
+    assert_eq!(merged.len(), 2, "both arms' alternatives are unioned");
+    assert_eq!(
+        merged.collapse(0x00, &ctx).as_u128(),
+        Some(0x5a),
+        "m==0 keeps the value adopted by the first merge"
+    );
+}
