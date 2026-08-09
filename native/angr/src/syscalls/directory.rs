@@ -195,11 +195,13 @@ impl NativeSyscall for NativeGetcwdSyscall {
         for (i, b) in payload.iter().enumerate() {
             let dst = buf_addr.wrapping_add(i as u64);
             if let Err(e) = state.memory_store(dst, RustBV::concrete(*b as u128, 8)) {
-                // EFAULT mirrors the SimSegfaultException branch of the
-                // Python proc. We do not surface SyscallError here
-                // because the proc already encodes EFAULT as a negative
-                // return rather than a syscall-level error.
-                let _ = e;
+                // SILENT(cat-a): EFAULT mirrors the SimSegfaultException
+                // branch of the Python proc, so the fault detail is the
+                // return value and nothing is lost by dropping `e`. We do
+                // not surface SyscallError here because the proc already
+                // encodes EFAULT as a negative return rather than a
+                // syscall-level error.
+                drop(e);
                 return Ok(SyscallOutcome::Continue { ret: NEG_EFAULT });
             }
         }
