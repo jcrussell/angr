@@ -410,3 +410,5 @@ impl RustExplorationManager {
         Ok(dict)
     }
 }
+
+test_submod!("stats_api_tests.rs" => tests);

@@ -141,3 +141,5 @@ impl RustExplorationManager {
         Ok(())
     }
 }
+
+test_submod!("manager_methods_stats_tests.rs" => tests);
