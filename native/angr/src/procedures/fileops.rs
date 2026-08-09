@@ -476,6 +476,10 @@ crate::declare_proc! {
     ///
     /// Equivalent to `fseek(stream, 0, SEEK_SET)` but returns void. The exploration
     /// manager handles void returns by leaving the return register untouched.
+    ///
+    /// A seek failure (stale or never-registered `_fileno`) is deliberately
+    /// swallowed — see the `SILENT(cat-a)` note in the body; `NativeFseek` is
+    /// the procedure that reports the same failure, as `-1`.
     name = "rewind",
     struct = NativeRewind,
     args = [file_ptr: concrete],
@@ -483,7 +487,17 @@ crate::declare_proc! {
         let fd = read_fileno(state, file_ptr)?;
 
         if fd >= 0 {
-            // SEEK_SET = 0
+            // SEEK_SET = 0.
+            // SILENT(cat-a): rewind is void — C gives it no channel to report a
+            // seek failure (callers are told to check ferror), so a seek on a
+            // stale or never-registered fd is a no-op by design, not a lost
+            // error. `NativeFseek` reports the same failure as -1.
+            //
+            // The workspace's `let_underscore_must_use = "deny"` does not reach
+            // this line: clippy skips macro-expanded bodies, and every proc here
+            // is one `declare_proc!` expansion. Hence the comment tag rather
+            // than the `#[expect(..)]` form `CancelToken::cancel_for_budget`
+            // uses — an `expect` here is reported as unfulfilled.
             let _ = state.file_system().seek(fd as u32, 0, 0);
         }
         Ok(None)

@@ -730,6 +730,39 @@ fn test_rewind_returns_none_and_resets_position() {
 }
 
 #[test]
+fn test_rewind_unknown_fd_is_a_silent_noop() {
+    let mut state = setup_amd64_state();
+    state.map_memory_data(0x20000, &vec![0u8; 0x1000], Permission::RWX);
+    // fd=88 never registered, so seek() fails. rewind is void, so unlike
+    // NativeFseek there is no -1 to report it with — see the SILENT(cat-a)
+    // tag in NativeRewind. It must still succeed and touch nothing.
+    state
+        .memory_store(0x20000 + 112, RustBV::concrete(88, 32))
+        .unwrap();
+
+    let ret = NativeRewind
+        .call(&mut state, &[RustBV::concrete(0x20000, 64)])
+        .unwrap();
+    assert!(ret.is_none());
+    assert!(state.file_system_ref().fd_info(88).is_none());
+}
+
+#[test]
+fn test_rewind_negative_fd_is_a_silent_noop() {
+    let mut state = setup_amd64_state();
+    state.map_memory_data(0x20000, &vec![0u8; 0x1000], Permission::RWX);
+    // _fileno = -1: the fd < 0 guard skips the seek entirely.
+    state
+        .memory_store(0x20000 + 112, RustBV::concrete(0xFFFF_FFFFu64 as u128, 32))
+        .unwrap();
+
+    let ret = NativeRewind
+        .call(&mut state, &[RustBV::concrete(0x20000, 64)])
+        .unwrap();
+    assert!(ret.is_none());
+}
+
+#[test]
 fn test_fdopen_existing_fd() {
     let mut state = setup_amd64_state();
     // Open via FileSystem directly so fd 3 is known to be open.
