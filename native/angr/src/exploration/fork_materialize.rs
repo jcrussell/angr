@@ -229,7 +229,12 @@ pub(crate) struct MaterializeForkCtx<'a> {
 /// The parallel mirror is deliberately NOT folded in here: it has no P11
 /// fallback, fires the `constraints` inspect BP via
 /// [`add_fork_guard_constraint`], and accumulates into atomics rather than
-/// `ExecutionStats` (angr-ph300.73 tracks unifying it).
+/// `ExecutionStats`. That split is a knowingly-accepted duplication, not an
+/// outstanding TODO: the bd memory `invariant-stepping-decomposition`
+/// enumerates all four deferred-fork materializers (this one, the parallel
+/// mirror, and the two `process_deferred_forks_into*` helpers) and records
+/// that unifying them would either lose profiling or force it everywhere, so
+/// it needs an explicit decision rather than a drive-by refactor.
 pub(crate) fn materialize_deferred_forks(
     forks: Vec<DeferredFork>,
     ctx: MaterializeForkCtx<'_>,

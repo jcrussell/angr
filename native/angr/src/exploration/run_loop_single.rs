@@ -312,9 +312,11 @@ impl RustExplorationManager {
                         &name,
                         no_return,
                         args,
-                        // Unlike the parallel mirror, a strict-page-access fault
-                        // still bounces to Python here (angr-ph300.73 tracks
-                        // unifying the two).
+                        // `mirror_segfault`: unlike the parallel mirror, a
+                        // strict-page-access fault still bounces to Python here.
+                        // Deliberate — angr-ph300.73's shared-dispatch extraction
+                        // parameterized this flag precisely to preserve each
+                        // caller's behavior; see `dispatch_native_proc`'s doc.
                         false,
                         &mut NativeProcCounters {
                             native_calls: &mut stats.native_calls,
