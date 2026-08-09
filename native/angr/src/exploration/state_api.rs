@@ -69,6 +69,54 @@ macro_rules! state_accessors {
     };
 }
 
+/// Why a `u128` register read produced no value, with the two causes named
+/// instead of collapsed into one `None` (angr-91vj9.9).
+///
+/// The Python-facing `_get_state_register` / `_get_state_registers_batch` do
+/// still answer `Option<u128>` — that contract is deliberate and documented on
+/// `_get_state_register` (angr-sqfj8.56) — but the collapse now happens in one
+/// place, [`RegisterU128::into_option`], where each case can state why it maps
+/// to `None`. Any future Rust-side caller that needs to tell them apart (e.g.
+/// to log a suspected typo) can match on this instead of re-deriving the
+/// distinction from a bare `None`.
+enum RegisterU128 {
+    /// The register exists and holds a value with a concrete `u128` form.
+    Concrete(u128),
+    /// The register exists but holds a symbolic `RustBV`.
+    Symbolic,
+    /// The architecture has no `(offset, size)` slot for this name — either an
+    /// angr register Rust's `RegisterFile` does not model (`ymm0`, `cr0`, ...)
+    /// or a caller typo. `RegisterFile::get_reg` returns `None` in exactly
+    /// this case, so the classification below is exact.
+    UnknownName,
+}
+
+impl RegisterU128 {
+    /// Collapse to the `Option<u128>` the register-read APIs hand to Python.
+    fn into_option(self) -> Option<u128> {
+        match self {
+            RegisterU128::Concrete(v) => Some(v),
+            // The proxy mints an unconstrained BVS, matching what angr's own
+            // `state.regs` view would have produced for an unmodeled name.
+            RegisterU128::UnknownName => None,
+            // No `u128` form exists; the proxy recovers the AST separately via
+            // `_get_state_register_ast`.
+            RegisterU128::Symbolic => None,
+        }
+    }
+}
+
+/// Classify a `u128` register read on `state`. See [`RegisterU128`].
+fn read_register_u128(state: &RustSimState, name: &str) -> RegisterU128 {
+    match state.get_register(name) {
+        None => RegisterU128::UnknownName,
+        Some(bv) => match bv.as_u128() {
+            Some(v) => RegisterU128::Concrete(v),
+            None => RegisterU128::Symbolic,
+        },
+    }
+}
+
 /// Convert one `(bv, is_true)` assumed-constraint pair to a claripy AST and
 /// push it into `results`, logging (rather than silently dropping) a failed
 /// conversion — mirrors `pending_api.rs::_export_pending_constraints`'s
@@ -597,9 +645,13 @@ impl RustExplorationManager {
     /// *typo'd* register name is indistinguishable from an unmodeled one and
     /// yields an orphan BVS. `RustRegisterProxy._recover_symbolic_register_ast`
     /// logs that at debug level.
+    ///
+    /// The collapse itself is done by [`RegisterU128::into_option`] rather than
+    /// by an `and_then` here, so the two causes exist as named variants inside
+    /// Rust and the collapse is one exhaustive, commented match (angr-91vj9.9).
     pub(crate) fn _get_state_register(&self, state_id: u64, name: &str) -> PyResult<Option<u128>> {
         self.with_state(state_id, |state| {
-            Ok(state.get_register(name).and_then(|bv| bv.as_u128()))
+            Ok(read_register_u128(state, name).into_option())
         })
     }
 
@@ -616,7 +668,7 @@ impl RustExplorationManager {
         self.with_state(state_id, |state| {
             Ok(names
                 .iter()
-                .map(|name| state.get_register(name).and_then(|bv| bv.as_u128()))
+                .map(|name| read_register_u128(state, name).into_option())
                 .collect())
         })
     }

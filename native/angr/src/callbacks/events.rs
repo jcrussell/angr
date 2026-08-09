@@ -14,8 +14,45 @@ pub(crate) enum RunErrorKind {
     /// invalid/unliftable code addresses.
     Deadend,
     /// Genuine execution error (malformed IRSB, memory/op/temp/callback
-    /// failure). Routed to the errored stash.
+    /// failure). Routed to the errored stash — *unless* it was reported at
+    /// the null address, see [`RunErrorKind::route`].
     Fatal,
+}
+
+/// Which stash a [`RunResult::Error`] actually lands in, once the
+/// address-dependent carve-out is taken into account.
+///
+/// `RunErrorKind` alone does not decide this: a `Fatal` reported at pc 0 is
+/// deadended, not errored. That carve-out used to live as an unnamed
+/// `RunErrorKind::Fatal if addr == 0` guard inline in the routing `match`,
+/// which read as a special case with no stated meaning and no way to assert
+/// on it (angr-c7xno.30 / angr-91vj9.9). Naming it as its own variant makes
+/// each real case explicit and forces the routing site to choose per case.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ErrorRoute {
+    /// The block was unliftable ([`RunErrorKind::Deadend`]) — a graceful stop
+    /// at invalid/unmapped code. Deadended stash.
+    UnliftableDeadend,
+    /// A [`RunErrorKind::Fatal`] reported at pc 0. The state jumped to the
+    /// null address (classically a `ret` into a zeroed return-address slot
+    /// after a clean exit), so whatever the interpreter then failed on is a
+    /// consequence of the null jump rather than an engine fault. The vanilla
+    /// Python engine deadends such states, so we do too.
+    NullAddressDeadend,
+    /// A genuine execution error at a real address. Errored stash.
+    Errored,
+}
+
+impl RunErrorKind {
+    /// Classify a [`RunResult::Error`] for stash routing. `addr` is the pc the
+    /// error was reported at (the value the state's pc is set to).
+    pub(crate) fn route(self, addr: u64) -> ErrorRoute {
+        match self {
+            RunErrorKind::Deadend => ErrorRoute::UnliftableDeadend,
+            RunErrorKind::Fatal if addr == 0 => ErrorRoute::NullAddressDeadend,
+            RunErrorKind::Fatal => ErrorRoute::Errored,
+        }
+    }
 }
 
 /// Result of running the execution loop.
@@ -126,4 +163,38 @@ pub(crate) enum RunResult {
         /// Symbol name if available from binary.
         symbol_name: Option<String>,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ErrorRoute, RunErrorKind};
+
+    // angr-91vj9.9: the pc-0 carve-out used to be an unnamed guard clause in
+    // `core_outcome.rs`'s routing match, so there was nothing to assert on.
+    #[test]
+    fn deadend_kind_routes_to_unliftable_at_any_addr() {
+        assert_eq!(
+            RunErrorKind::Deadend.route(0x40_1000),
+            ErrorRoute::UnliftableDeadend
+        );
+        assert_eq!(
+            RunErrorKind::Deadend.route(0),
+            ErrorRoute::UnliftableDeadend
+        );
+    }
+
+    #[test]
+    fn fatal_at_real_addr_routes_to_errored() {
+        assert_eq!(RunErrorKind::Fatal.route(0x40_1000), ErrorRoute::Errored);
+        assert_eq!(RunErrorKind::Fatal.route(1), ErrorRoute::Errored);
+    }
+
+    #[test]
+    fn fatal_at_null_addr_is_its_own_named_route() {
+        let route = RunErrorKind::Fatal.route(0);
+        assert_eq!(route, ErrorRoute::NullAddressDeadend);
+        // The whole point of the variant: it is a deadend, but not the same
+        // deadend as an unliftable block.
+        assert_ne!(route, ErrorRoute::UnliftableDeadend);
+    }
 }

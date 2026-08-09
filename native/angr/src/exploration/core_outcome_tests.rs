@@ -225,6 +225,50 @@ fn error_fatal_kind_routes_to_errored() {
     });
 }
 
+/// angr-91vj9.9: a `Fatal` reported at pc 0 is deadended, not errored —
+/// `ErrorRoute::NullAddressDeadend`. Pins the routing behaviour behind the
+/// named variant (the classifier itself is unit-tested in `callbacks/events.rs`).
+#[test]
+fn error_fatal_at_null_addr_routes_to_deadended() {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|_py| {
+        let ctx = fresh_ctx();
+        let prof = ParallelProfiling::default();
+        let procs = NativeProcedureRegistry::new();
+        let syscalls = NativeSyscallRegistry::new();
+
+        let state = RustSimState::new("amd64").unwrap();
+        let sid = state.state_id();
+        let inputs = PostStepInputs {
+            result: RunResult::Error {
+                message: "boom at null".to_string(),
+                addr: 0,
+                kind: RunErrorKind::Fatal,
+            },
+            deferred_forks: Vec::new(),
+            last_condition: None,
+            stored_conditions: FxHashMap::default(),
+            fork_snapshots: FxHashMap::default(),
+        };
+        let outcome = run_post_step_core(
+            &CoreCtx {
+                ctx: &ctx,
+                prof: &prof,
+                native_procs: &procs,
+                native_syscalls: &syscalls,
+                callbacks: None,
+            },
+            state,
+            inputs,
+            sid,
+        );
+        match outcome.ret {
+            CoreReturn::Deadended(s) => assert_eq!(s.state_id(), sid),
+            _ => panic!("expected Deadended for a Fatal error at pc 0"),
+        }
+    });
+}
+
 #[test]
 fn symbolic_branch_forks_both_targets_natively() {
     pyo3::Python::initialize();

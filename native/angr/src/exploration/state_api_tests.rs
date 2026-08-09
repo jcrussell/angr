@@ -186,3 +186,35 @@ fn get_state_register_folds_unmodeled_name_and_symbolic_into_none() {
         vec![Some(0x2a), None, None],
     );
 }
+
+/// The fold above is Python-facing only: inside Rust the two `None` causes are
+/// distinct `RegisterU128` variants, so a future caller can tell an unmodeled
+/// name from a symbolic value without re-deriving it (angr-91vj9.9).
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn read_register_u128_names_both_causes_of_none() {
+    let mut state = RustSimState::new("amd64").expect("amd64 state");
+    assert!(state.set_register("rax", RustBV::concrete(0x2a, 64)));
+    let sym = {
+        let ctx = state.solver().borrow();
+        RustBV::symbolic(&ctx, "rbx_sym", 64)
+    };
+    assert!(state.set_register("rbx", sym));
+
+    assert!(matches!(
+        read_register_u128(&state, "rax"),
+        RegisterU128::Concrete(0x2a)
+    ));
+    assert!(matches!(
+        read_register_u128(&state, "rbx"),
+        RegisterU128::Symbolic
+    ));
+    assert!(matches!(
+        read_register_u128(&state, "ymm0"),
+        RegisterU128::UnknownName
+    ));
+    // ... and all three still collapse to the documented Python contract.
+    assert_eq!(read_register_u128(&state, "rax").into_option(), Some(0x2a));
+    assert_eq!(read_register_u128(&state, "rbx").into_option(), None);
+    assert_eq!(read_register_u128(&state, "ymm0").into_option(), None);
+}

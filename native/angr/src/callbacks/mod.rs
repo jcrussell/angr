@@ -111,7 +111,7 @@ mod inspect;
 mod inspect_bits;
 
 pub(crate) use config::{DeferredFork, ExecutionConfig};
-pub(crate) use events::{RunErrorKind, RunResult};
+pub(crate) use events::{ErrorRoute, RunErrorKind, RunResult};
 pub(crate) use inspect::note_inspect_error;
 pub(crate) use inspect_bits::InspectBit;
 

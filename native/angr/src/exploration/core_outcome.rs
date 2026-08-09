@@ -60,7 +60,7 @@ use std::time::Instant;
 
 use rustc_hash::FxHashMap;
 
-use crate::callbacks::{DeferredFork, PythonCallbacks, RunErrorKind, RunResult};
+use crate::callbacks::{DeferredFork, ErrorRoute, PythonCallbacks, RunResult};
 use crate::interpreter::{BranchSnapshot, ExecutionStats};
 use crate::procedures::{NATIVE_RESUME_SENTINEL_NAME, NativeProcedureRegistry, ProcOutcome};
 use crate::stash::STASH_DEADENDED;
@@ -527,10 +527,13 @@ pub(crate) fn run_post_step_core(
             kind,
         } => {
             state.set_pc(addr);
-            let ret = match kind {
-                RunErrorKind::Deadend => CoreReturn::Deadended(state),
-                RunErrorKind::Fatal if addr == 0 => CoreReturn::Deadended(state),
-                RunErrorKind::Fatal => CoreReturn::Errored(state, message),
+            let ret = match kind.route(addr) {
+                ErrorRoute::UnliftableDeadend => CoreReturn::Deadended(state),
+                // Not folded into the arm above: this one is a *Fatal* error
+                // we choose to swallow because the pc is null, and that
+                // choice should stay visible at the routing site.
+                ErrorRoute::NullAddressDeadend => CoreReturn::Deadended(state),
+                ErrorRoute::Errored => CoreReturn::Errored(state, message),
             };
             CoreOutcome {
                 ret,
