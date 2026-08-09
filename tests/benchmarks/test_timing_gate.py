@@ -189,3 +189,69 @@ def test_dead_band_keeps_a_quiet_run_byte_for_byte_unnormalized():
     # Just outside it: normalization engages at exactly the median.
     edge = run_regression.HOST_FACTOR_DEAD_BAND
     assert run_regression.host_scale_factor(edge, CAP) == edge
+
+
+# --- pinned baselines (angr-x6t9o) ------------------------------------------
+#
+# The floor and the host normalization both assume the *baseline* is honest.
+# cow_fork_scaling's was not: REGRESSION_SUITE documented a deliberate
+# slow-mode pin, but two blanket ``--update`` refreshes overwrote it with
+# fast-mode measurements (2.559, then 2.5) and nothing warned. These pin that
+# ``--update`` can no longer do that silently.
+
+
+def test_update_keeps_a_pinned_rust_time_and_reports_the_measurement():
+    results = {"cow_fork_scaling": {"rust_time": 2.5, "steps": 513}}
+    held = run_regression.apply_pinned_baselines(results, {"cow_fork_scaling": 2.8})
+    assert results["cow_fork_scaling"]["rust_time"] == 2.8
+    assert held == [("cow_fork_scaling", 2.5, 2.8)]
+    # Everything else in the record is still refreshed as usual.
+    assert results["cow_fork_scaling"]["steps"] == 513
+
+
+def test_pin_is_kept_even_when_the_measurement_is_slower():
+    # A pin is a floor *and* a ceiling: a single slow read must not ratchet the
+    # baseline up either, or the gate loosens itself one refresh at a time.
+    results = {"cow_fork_scaling": {"rust_time": 3.4}}
+    run_regression.apply_pinned_baselines(results, {"cow_fork_scaling": 2.8})
+    assert results["cow_fork_scaling"]["rust_time"] == 2.8
+
+
+def test_unpinned_benches_are_refreshed_untouched():
+    results = {"fauxware": {"rust_time": 0.19}, "cow_fork_scaling": {"rust_time": 2.5}}
+    run_regression.apply_pinned_baselines(results, {"cow_fork_scaling": 2.8})
+    assert results["fauxware"]["rust_time"] == 0.19
+
+
+def test_pin_matching_the_measurement_reports_nothing():
+    results = {"cow_fork_scaling": {"rust_time": 2.8}}
+    assert run_regression.apply_pinned_baselines(results, {"cow_fork_scaling": 2.8}) == []
+
+
+def test_pin_for_a_bench_absent_from_the_run_is_skipped():
+    # ``--rust-only``/``--skip-bimodal``/fast-tier runs do not measure every
+    # pinned bench; a missing one must not be invented into the results dict.
+    results = {"fauxware": {"rust_time": 0.19}}
+    assert run_regression.apply_pinned_baselines(results, {"cow_fork_scaling": 2.8}) == []
+    assert "cow_fork_scaling" not in results
+
+
+def test_live_pin_matches_the_checked_in_baseline():
+    # The whole point of the table is that the JSON agrees with it. If someone
+    # hand-edits baseline_timings.json, this catches the drift.
+    baseline = run_regression.load_baseline()
+    for name, pin in run_regression.PINNED_RUST_TIMES.items():
+        assert baseline[name]["rust_time"] == pin, f"{name} baseline drifted from its pin"
+
+
+def test_live_pin_clears_every_in_gate_sample_recorded_on_the_bead():
+    # The 12 ralph gate reads that motivated angr-x6t9o. With the old 2.5
+    # baseline most of these were at or over the 15% bar; with the pin none of
+    # them is a failure. Guards against a future refresh quietly re-tightening
+    # the pin below the load-sensitive range.
+    in_gate_reads = [2.90, 3.09, 2.89, 3.05, 2.98, 2.96, 2.94, 3.11, 2.97, 2.94, 3.14, 3.09]
+    pin = run_regression.PINNED_RUST_TIMES["cow_fork_scaling"]
+    for read in in_gate_reads:
+        assert run_regression.timing_regression_pct(pin, read, 0.15, FLOOR) is None, read
+    # ...and the pin still fails a genuine regression: fast mode plus 50%.
+    assert run_regression.timing_regression_pct(pin, 3.3, 0.15, FLOOR) is not None

@@ -349,6 +349,15 @@ python tests/benchmarks/run_regression.py --full --rust-only --skip-bimodal --up
 ANGR_EXAMPLES_DIR=/path/to/angr-examples/examples python tests/benchmarks/run_regression.py
 ```
 
+`--update` does **not** overwrite a baseline listed in
+`run_regression.py::PINNED_RUST_TIMES` — those are deliberately pessimistic
+(slow-mode / load-sensitive) pins that a single refresh run would otherwise
+demote to whichever mode it happened to measure, which is how
+`cow_fork_scaling`'s documented 2.7 pin became 2.5 and reddened the ralph gate
+for a dozen iterations (angr-x6t9o). A held-back pin prints a
+`pinned baseline kept:` line naming the measurement it declined to write.
+Change a pin by editing that table, so the new value lands in a reviewable diff.
+
 ### Benchmark gates in CI
 
 - **`.github/workflows/ci.yml::benchmark_regression`** (PR-time): runs the

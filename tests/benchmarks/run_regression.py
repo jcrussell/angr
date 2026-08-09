@@ -271,10 +271,14 @@ FAST_SUITE = [
     # deliberately NOT in BIMODAL_BENCHMARKS — that set drops a bench from the
     # whole gate, and the steps=513 count signal (the O(1) CoW-fork claim) is
     # this bench's entire reason to exist and must stay gated. Instead the
-    # baseline_timings rust_time is pinned to the SLOW mode (2.7), so the gate
+    # baseline_timings rust_time is pinned pessimistically, so the gate
     # tolerates both modes while keeping the count gate (same convention the
     # CADET_00001_partial BIMODAL note uses). A doc-only iter-77 commit tripped
     # the old 2.28 (fast-mode) baseline with three consecutive ~2.7 reads.
+    # The pin now lives in PINNED_RUST_TIMES (2.8, angr-x6t9o) rather than only
+    # in this comment — a blanket ``--update`` had twice demoted it to a
+    # fast-mode measurement, which is what reddened the ralph gate on iters 24
+    # and 25. See that table for why 2.8 and not the earlier 2.7.
     ("cow_fork_scaling", 30, "bfs", True),
     # SharifCTF rev50 (angr-vx8p.4, promoted from the run_single catalog
     # after angr-8kmjo fixed the argv gap). A real CTF reversing binary
@@ -385,6 +389,61 @@ BIMODAL_BENCHMARKS = frozenset(
         "CADET_00001_partial",
     }
 )
+
+
+# Baselines that are deliberately pessimistic and must survive a blanket
+# ``--update`` refresh.
+#
+# A bimodal bench's baseline is pinned to its SLOW mode so the threshold
+# absorbs both modes (see BIMODAL_BENCHMARKS above and bd memory
+# ``benchmark-bimodal-variance-rules``). ``--update`` writes a *single* run's
+# measurement, so a refresh that happens to land in the fast mode silently
+# demotes the pin to a too-tight value and every later slow-mode read reds the
+# gate. That is not hypothetical: cow_fork_scaling's pin was documented in
+# REGRESSION_SUITE as 2.7 and was overwritten to 2.559 by 807bfd74d and then to
+# 2.5 by dbad6440c ("refresh baselines after 219-commit gap"), with no warning
+# either time. The stale 2.5 then reddened the ralph gate on iters 24 and 25
+# while standalone re-runs on the same commit read 2.45-2.51s.
+#
+# Entries here are honored by ``--update`` (and ``--full --update``): the pin is
+# kept and the measurement it declined to write is reported. To *change* a pin,
+# edit this table — that way the new value lands in a reviewable diff with a
+# rationale, instead of arriving as a side effect of a refresh run.
+PINNED_RUST_TIMES = {
+    # angr-x6t9o. Bimodal (angr-5cx4r) *and* load-sensitive: 12 consecutive
+    # ralph gate runs read 2.87-3.14s while standalone runs on the same commit
+    # read 2.45-2.51s, because the gate always runs right after `cargo test
+    # --release` in a loaded 6G scope. 2.8 clears the observed in-gate maximum
+    # (3.14 -> +12.1%, under the 15% bar) with headroom; the previously
+    # documented 2.7 gives a 3.105 bar that 3.14 trips. It costs little
+    # detection power — the bench's own 2.2/2.7 bimodal spread is already 1.23x,
+    # so it can never resolve a regression finer than ~25% anyway, and the
+    # steps=513 count gate (this bench's real reason to exist) is unaffected.
+    "cow_fork_scaling": 2.8,
+}
+
+
+def apply_pinned_baselines(results, pinned=None):
+    """Restore pinned ``rust_time`` values in a fresh ``--update`` result set.
+
+    Mutates *results* in place and returns the list of
+    ``(name, measured, pinned)`` triples that were held back, so the caller can
+    report what it declined to write. Benches with no pin, and pins whose
+    measurement already matches, are left alone (the latter produce no report
+    line — there is nothing for a reader to act on).
+    """
+    if pinned is None:
+        pinned = PINNED_RUST_TIMES
+    held = []
+    for name, pin in pinned.items():
+        rec = results.get(name)
+        if rec is None or "rust_time" not in rec:
+            continue
+        measured = rec["rust_time"]
+        rec["rust_time"] = pin
+        if measured != pin:
+            held.append((name, measured, pin))
+    return held
 
 
 # Absolute-delta floor for the timing gate, in seconds. A relative-only
@@ -1266,6 +1325,11 @@ def main():
     print(f"Benchmarks: {len(REGRESSION_SUITE)}, Passed: {len(results)}, Failed: {len(failures)}")
 
     if args.update and results:
+        for name, measured, pin in apply_pinned_baselines(results):
+            print(
+                f"  pinned baseline kept: {name} rust_time stays {pin}s "
+                f"(measured {measured}s) — edit PINNED_RUST_TIMES to change it"
+            )
         baseline.update(results)
         save_baseline(baseline)
         if current_counters:
