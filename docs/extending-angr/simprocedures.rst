@@ -522,9 +522,16 @@ declaration:
        struct = NativeStrlen,
        args = [addr: concrete],
        call |state| {
-           scan_for_null(state, addr, MAX_STRLEN as u64)
+           scan_for_null(state, addr, MAX_STRLEN as u64, /*require_null=*/true)
        }
    }
+
+``scan_for_null``'s trailing ``require_null: bool`` exists because the
+helper is shared with ``NativeStrnlen`` in the same file: ``strlen`` must
+assert a terminator exists in the scanned window, while ``strnlen``
+legitimately saturates at ``maxlen`` and passes ``false``. That is the
+usual shape for a second procedure in a family — grow the shared helper's
+signature rather than fork it.
 
 The supported argument kinds are:
 
@@ -776,19 +783,14 @@ into the next instruction and into forked successor states. Source:
 
 .. code-block:: rust
 
-   impl NativeSimProcedure for NativeMalloc {
-       fn name(&self) -> &'static str { "malloc" }
-       fn num_args(&self) -> usize { 1 }
-
-       fn call(
-           &self,
-           state: &mut RustSimState,
-           args: &[RustBV],
-       ) -> Result<Option<RustBV>, ProcedureError> {
-           let size = extract_concrete_arg(&args[0], "size")?;
+   crate::declare_proc! {
+       /// Native malloc: `void *malloc(size_t size)`.
+       name = "malloc",
+       struct = NativeMalloc,
+       args = [size: concrete],
+       call |state| {
            let addr = state.heap_alloc(size);
-           let bits = state.arch().bits();
-           Ok(Some(RustBV::concrete(addr as u128, bits)))
+           Ok(Some(arch_word(state, addr)))
        }
    }
 
@@ -800,9 +802,12 @@ gets state-aware allocation for free.
 
 Things to take away from this example:
 
-* Return-value width must match the arch's pointer width
-  (``state.arch().bits()``). Returning a ``RustBV::concrete(addr, 64)``
-  on a 32-bit guest would silently truncate.
+* Return-value width must match the arch's pointer width. That is what
+  ``arch_word(state, addr)`` (``procedures/mod.rs``) is for — it wraps
+  ``RustBV::concrete(addr as u128, state.arch().bits())``. Hand-writing
+  ``RustBV::concrete(addr, 64)`` on a 32-bit guest would silently
+  truncate, which is why the helper replaced the hand-written call sites.
+  Reach for it for any pointer- or ``long``-width return.
 * Side-effects on ``RustSimState`` (heap, fd table, posix env) are
   the *only* state the engine considers durable — write through
   ``state`` methods, not through globals or thread-locals.
@@ -877,9 +882,25 @@ prologue.
 Testing a native procedure
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-The convention used across ``procedures/*.rs`` is a single
-``#[cfg(test)] mod tests`` at the bottom of the module. ``strlen.rs``
-is the most complete reference and covers every shape worth testing:
+The crate-wide convention is a **separate test file** pulled in by the
+``test_submod!`` macro (defined in ``native/angr/src/lib.rs``), not an
+inline ``#[cfg(test)] mod tests`` block. ``strlen.rs``'s last line is:
+
+.. code-block:: rust
+
+   test_submod!("strlen_tests.rs" => strlen_tests);
+
+and the tests live beside it in ``procedures/strlen_tests.rs``, opening
+with ``use super::*;``. The macro expands to a ``#[cfg(test)] #[path =
+...] mod``, so the test file sees the procedure module's private items
+while staying out of the source file. It also attaches the
+``#[allow(clippy::unwrap_used, clippy::expect_used)]`` that test code
+needs — the crate denies both, and a hand-rolled ``mod tests`` would have
+to repeat that opt-out. Roughly 46 of the ``procedures/*.rs`` modules
+already follow this shape; a new procedure should too.
+
+``strlen`` is the most complete reference and covers every shape worth
+testing:
 
 * **Happy path** — basic, empty, longer string.
   (``test_strlen_basic`` / ``test_strlen_empty`` /
@@ -959,10 +980,14 @@ column makes the provenance scannable, parallel to the
 SimProcedures
 ^^^^^^^^^^^^^
 
-The original pre-campaign set covers the highest-frequency string,
+The original pre-campaign set covered the highest-frequency string,
 memory, I/O, and process primitives; the ``angr-f16h`` campaign
 expanded coverage into stdio file I/O, the extended allocator family,
-the string-to-numeric family, env mutation, and extended string ops.
+the string-to-numeric family, env mutation, and extended string ops,
+and ``angr-ae54t`` added the remaining PLT-visible no-op / stub-shaped
+libc entries. Rows are grouped by function family and list every name
+the registry answers to, **including aliases** (an alias reuses the
+same impl — see ``NativeProcedureRegistry::register``).
 
 .. list-table::
    :header-rows: 1
@@ -972,28 +997,70 @@ the string-to-numeric family, env mutation, and extended string ops.
      - Members
      - Native
      - Provenance
-   * - String / memory (pre-campaign)
-     - ``strlen``, ``strnlen``, ``strcpy``, ``strncpy``, ``strdup``,
-       ``strcmp``, ``strncmp``, ``strcasecmp``, ``strcat``,
-       ``strncat``, ``strchr``, ``strstr``, ``memcpy``, ``memmove``,
-       ``memset``, ``memcmp``, ``memchr``
-     - 17 / 17
-     - Original set in ``procedures/mod.rs`` (search
-       ``NativeProcedureRegistry::new``)
-   * - Character classification (pre-campaign)
+   * - String length / copy / concat
+     - ``strlen``, ``strnlen``, ``strcpy``, ``strncpy``, ``stpcpy``,
+       ``stpncpy``, ``strdup``, ``strndup``, ``strxfrm``,
+       ``strcat``, ``strncat``
+     - 11 / 11
+     - ``strlen.rs``, ``strcpy.rs``, ``strcat.rs``
+   * - String / memory compare
+     - ``strcmp`` (alias ``strcoll``), ``strncmp``, ``strcasecmp``,
+       ``strncasecmp``, ``memcmp``
+     - 5 / 5
+     - ``strcmp.rs``, ``memcmp.rs``
+   * - Search
+     - ``strchr``, ``strchrnul``, ``strrchr``, ``memchr``,
+       ``rawmemchr``, ``memrchr``, ``strstr``, ``strpbrk``,
+       ``strspn``, ``strcspn``, ``strtok`` ✗
+     - 10 / 11
+     - ``strchr.rs``, ``strstr.rs``, ``strset.rs`` (angr-f16h.5).
+       ``strtok`` intentionally left on the Python fallback path
+       (angr-4c65 wontfix): a 14-bench fallback profile shows zero
+       ``strtok`` appearances, so the stateful ``state.globals`` save
+       pointer + ``strtok_r`` symbolic-write plumbing is not justified.
+   * - Bulk memory
+     - ``memcpy``, ``memmove``, ``mempcpy``, ``memset``, ``bzero``
+     - 5 / 5
+     - ``memcpy.rs``, ``memset.rs``
+   * - Fortify-source ``_chk`` wrappers
+     - ``__memcpy_chk``, ``__memmove_chk``, ``__mempcpy_chk``,
+       ``__memset_chk``, ``__strcpy_chk``, ``__strncpy_chk``,
+       ``__stpcpy_chk``, ``__strcat_chk``, ``__strncat_chk``,
+       ``__printf_chk``, ``__sprintf_chk``, ``__snprintf_chk``,
+       ``__fprintf_chk``, ``__vsnprintf_chk``
+     - 14 / 14
+     - ``fortify_mem.rs``, ``fortify_str.rs``, ``fortify_printf.rs``.
+       Each wrapper adds the destination-size bound check (or drops the
+       injected flag/slen args) and then **calls the base native
+       procedure** — it never reimplements the copy/format logic.
+   * - Character classification (ctype.h)
      - ``isdigit``, ``isalpha``, ``isspace``, ``isalnum``,
        ``isupper``, ``islower``, ``isxdigit``, ``isprint``,
-       ``tolower``, ``toupper``
-     - 10 / 10
-     - ``ctype.rs`` (symbolic-aware helper pattern lives in the file)
-   * - String → integer (pre-campaign)
-     - ``strtol``, ``atoi``
-     - 2 / 2
-     - ``strtol.rs`` (NativeStrtol, NativeAtoi)
+       ``isascii``, ``isblank``, ``iscntrl``, ``isgraph``,
+       ``ispunct``, ``tolower``, ``toupper``, ``__ctype_b_loc``,
+       ``__ctype_tolower_loc``, ``__ctype_toupper_loc``
+     - 18 / 18
+     - ``ctype.rs`` (symbolic-aware helper pattern lives in the file;
+       the ``*_loc`` accessors return the tables Python's
+       ``__libc_start_main`` built — see ``CtypeLocPtrs``)
+   * - String → numeric
+     - ``strtol``, ``strtoul``, ``strtoll``, ``strtoull``, ``atoi``,
+       ``atol``, ``strtod``
+     - 7 / 7
+     - ``strtol.rs``, ``strtod.rs`` (angr-f16h.3; ``strtod`` is
+       amd64 xmm0 / AArch64 v0 FP-return)
+   * - Heap
+     - ``malloc``, ``free``, ``calloc``, ``realloc``, ``memalign``,
+       ``posix_memalign``
+     - 6 / 6
+     - ``malloc.rs`` (bump allocator, matches ``SimHeapBrk``);
+       the extended four are angr-f16h.2
    * - Input (stdin)
-     - ``read`` ✓, ``fgets`` ✓, ``fgetc`` ✓, ``getchar`` ✓,
-       ``getc`` ✓, ``scanf`` ✓, ``__isoc99_scanf`` ✓, ``sscanf`` ✗
-     - 7 / 8
+     - ``read``, ``fgets``, ``fgetc``, ``getchar``, ``getc``,
+       ``gets``, ``scanf`` (alias ``__isoc99_scanf``), ``fscanf``
+       (alias ``__isoc99_fscanf``), ``sscanf`` ✗ — plus the
+       ``*_unlocked`` aliases of the ``fgets`` family
+     - 8 / 9
      - ``read.rs``, ``fgets.rs``, ``scanf.rs``. ``sscanf`` is
        registered (``scanf.rs::NativeSscanf``) but its ``call`` body
        unconditionally returns ``ProcedureError::Other``, so every
@@ -1003,56 +1070,74 @@ the string-to-numeric family, env mutation, and extended string ops.
        and a native free-BVS mint would explore impossible paths
        (angr-8onrp).
    * - Output (stdout / formatted)
-     - ``write``, ``puts``, ``putchar``, ``fputc``, ``putc``,
-       ``printf``, ``sprintf``, ``snprintf``
-     - 8 / 8
-     - ``write.rs``, ``puts.rs``, ``printf.rs``, ``sprintf.rs``
-   * - Heap (pre-campaign + angr-f16h.2)
-     - ``malloc``, ``free`` (pre-campaign);
-       ``calloc``, ``realloc``, ``memalign``, ``posix_memalign``
-       (angr-f16h.2)
-     - 6 / 6
-     - ``malloc.rs`` (bump allocator, matches ``SimHeapBrk``)
-   * - Process / exit / RNG (pre-campaign)
-     - ``exit``, ``_exit``, ``abort``, ``rand``, ``srand``,
-       ``__libc_start_main``
-     - 6 / 6
-     - ``exit.rs``, ``rand.rs``, ``libc_start_main.rs``
-   * - Env read (pre-campaign)
-     - ``getenv``
-     - 1 / 1
-     - ``getenv.rs::NativeGetenv``
-   * - C stdio file I/O (angr-f16h.1)
-     - ``fopen``, ``fclose``, ``feof``, ``ferror``, ``fflush``,
-       ``fputc``, ``fputs``, ``fgetc``, ``ftell``, ``fseek``,
-       ``rewind``
-     - 11 / 11
-     - angr-f16h.1 (closed) — ``stdio.rs``, ``fileops.rs``,
-       ``fgets.rs`` (also covers ``fdopen``, ``fwrite``, ``setvbuf``)
-   * - File ops (pre-campaign)
+     - ``write``, ``puts``, ``putchar``, ``fputc`` (aliases ``putc``,
+       ``*_unlocked``), ``perror``, ``printf`` (alias ``vprintf``),
+       ``fprintf`` (alias ``vfprintf``), ``sprintf``, ``asprintf``,
+       ``snprintf``, ``vsnprintf``, ``vsprintf``
+     - 12 / 12
+     - ``write.rs``, ``puts.rs``, ``perror.rs``, ``printf.rs``,
+       ``sprintf.rs``
+   * - C stdio ``FILE`` I/O
+     - ``fopen``, ``fdopen``, ``fclose``, ``feof``, ``ferror``,
+       ``fflush``, ``fputs``, ``fwrite``, ``fread``
+       (``fread_unlocked``), ``ftell`` (alias ``ftello``), ``fseek``
+       (alias ``fseeko``), ``rewind``, ``setvbuf``, ``setbuf``
+     - 14 / 14
+     - angr-f16h.1 / angr-karp / angr-70no / angr-m674p —
+       ``stdio.rs``, ``fileops.rs``, ``fread.rs``. ``fopen``/``fdopen``
+       heap-allocate an ``_IO_FILE``; the rest dispatch off
+       ``FILE._fileno``.
+   * - Low-level file ops
      - ``open``, ``close``, ``lseek``, ``dup``, ``dup2``, ``pipe``
      - 6 / 6
      - ``fileops.rs`` (fd-tracking through ``FileSystem``)
-   * - String → numeric (angr-f16h.3)
-     - ``atol``, ``strtoul``, ``strtoll``, ``strtoull``, ``strtod``
-     - 5 / 5
-     - angr-f16h.3 (closed) — ``strtol.rs``, ``strtod.rs``
-       (``strtod``: amd64 xmm0 / AArch64 v0 FP-return)
-   * - Env mutation (angr-f16h.4)
-     - ``setenv`` ✓, ``putenv`` ✓, ``unsetenv`` ✓, ``clearenv`` ✓
-     - 4 / 4
-     - angr-f16h.4 — ``getenv.rs`` (``NativeSetenv`` / ``NativePutenv``
-       / ``NativeUnsetenv`` / ``NativeClearenv``)
-   * - Extended strings (angr-f16h.5)
-     - ``strnlen`` ✓, ``strncpy`` ✓, ``strncat`` ✓, ``strrchr`` ✓,
-       ``strpbrk`` ✓, ``strspn`` ✓, ``strcspn`` ✓, ``strtok`` ✗
-     - 7 / 8
-     - ``strtok`` intentionally left on the Python fallback path
-       (angr-4c65 wontfix). 14-bench fallback profile shows zero
-       strtok appearances, so the stateful ``state.globals`` save
-       pointer + ``strtok_r`` symbolic-write plumbing is not justified.
-       ``strrchr``/``strpbrk``/``strspn``/``strcspn`` in
-       ``strchr.rs`` and ``strset.rs``
+   * - Process / exit / RNG
+     - ``exit``, ``_exit``, ``abort``, ``__stack_chk_fail``,
+       ``rand``, ``srand``, ``system``, ``__libc_start_main``
+     - 8 / 8
+     - ``exit.rs``, ``rand.rs``, ``system.rs`` (angr-ae54t.16 —
+       models the exit status as an unconstrained 8-bit code),
+       ``libc_start_main.rs``
+   * - Environment / identity / args
+     - ``getenv``, ``setenv``, ``putenv``, ``unsetenv``,
+       ``clearenv``, ``getopt``, ``getuid``, ``geteuid``, ``getgid``,
+       ``getegid``
+     - 10 / 10
+     - ``getenv.rs`` (mutators are angr-f16h.4), ``getopt.rs``,
+       ``getid.rs`` (angr-ae54t.9 — the four id getters return the
+       constant 1000, mirroring ``syscalls/identity.rs``)
+   * - Time / sleep / logging no-ops
+     - ``time``, ``sleep``, ``usleep``, ``openlog``, ``closelog``,
+       ``access``
+     - 6 / 6
+     - ``time.rs`` (angr-ae54t.21 — forwards to
+       ``syscalls::sim_time::fresh_monotonic_time``, so the libc entry
+       and the syscall share one model), ``sleep.rs`` (angr-ae54t.15),
+       ``syslog.rs`` (angr-ae54t.20 — void no-ops; ``syslog(3)`` itself
+       stays on Python), ``access.rs``
+   * - Threads
+     - ``pthread_mutex_lock``, ``pthread_mutex_unlock``,
+       ``pthread_once``
+     - 3 / 3
+     - ``pthread.rs`` — single-path symex means locks always succeed;
+       ``pthread_once`` is the worked example of the native sub-call
+       (``CallAndResume``) dispatcher
+   * - Byte order
+     - ``htonl`` (alias ``ntohl``), ``htons`` (alias ``ntohs``)
+     - 2 / 2
+     - ``byteorder.rs``
+
+Not in the table: **unconstrained stubs**. ``procedures/stub.rs``'s
+``NativeReturnUnconstrained`` is the native counterpart of angr's
+``ReturnUnconstrained`` SimProcedure, and it is not keyed on a fixed
+libc name — the dispatch name is whatever symbol the *binary* left
+unresolved (``get_flag``, some unmodelled import). Instances are
+registered dynamically at setup time by
+``RustExplorationManager::register_unconstrained_stubs``
+(``exploration/manager_methods_procedures.rs``), which walks
+``project._sim_procedures`` from the Python side and registers one
+stub per display name and return width. So a given binary's native
+coverage is the static table above *plus* a per-binary set of stubs.
 
 Syscalls
 ^^^^^^^^
