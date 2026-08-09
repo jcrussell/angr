@@ -1170,8 +1170,8 @@ still fall through ``stepping.rs::RunResult::Syscall`` to Python's
      - ``brk``, ``mmap``, ``mprotect``, ``munmap``
      - 4 / 4
      - ``brk.rs``, ``mmap.rs`` (anonymous concrete-args fast path;
-       MAP_FIXED collisions tracked by angr-ttr7), ``mprotect.rs``,
-       ``munmap.rs``
+       MAP_FIXED collisions resolved natively by an unmap-then-map),
+       ``mprotect.rs``, ``munmap.rs``
    * - Process exit (baseline)
      - ``exit``, ``exit_group``
      - 2 / 2

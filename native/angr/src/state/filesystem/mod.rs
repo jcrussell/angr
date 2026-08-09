@@ -62,8 +62,9 @@ pub struct FileSystem {
     /// Path-keyed symbolic-content registry: cwd-normalized absolute path
     /// → per-byte symbolic content (see [`FileDescriptor::content_sym`]).
     /// Seeded via [`register_file_content`](FileSystem::register_file_content)
-    /// (Phase 3 of angr-0xyq2 will push Python `state.fs._files` symbolic
-    /// SimFile content here); consulted by `open` so a native open attaches
+    /// (`RustExplorationManager._export_fs_files_to_rust` pushes Python
+    /// `state.fs._files` symbolic SimFile content here at state-add time);
+    /// consulted by `open` so a native open attaches
     /// `content_sym` without a Python bounce (`open_symbolic` does NOT
     /// attach — the stream model owns those fds). Arc'd for O(1) fork,
     /// mirroring `known_paths`.
