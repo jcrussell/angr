@@ -409,6 +409,35 @@ fn test_reverse_non_byte_aligned_width_is_identity_not_truncation() {
 }
 
 #[test]
+fn test_reverse_wide_concrete_declines_fold_instead_of_overshifting() {
+    // angr-03vl4.60: a `Concrete` keeps only its low 128 bits, so a byte
+    // reverse at width > 128 has no readable source for the bytes it must move
+    // down — and the fold loop's `v >> (i * 8)` / `byte << ((n - 1 - i) * 8)`
+    // shifts a u128 by up to `w - 8`, which aborts under `debug_assertions`
+    // and silently wraps mod 128 in release. Same resolution as a non-trivial
+    // wide rotate (see `define_rotate_pair`): decline the fold, stay symbolic.
+    let ctx = SymContext::new_mock();
+    for width in [136u32, 192, 256] {
+        let rev = RustBV::concrete(0x1122_3344, width).reverse(&ctx);
+        assert_eq!(rev.width(), width, "width {width} must be preserved");
+        assert!(
+            matches!(
+                rev,
+                RustBV::Expression {
+                    op: BVOp::Reverse,
+                    ..
+                }
+            ),
+            "width {width}: wide reverse must stay symbolic, got {rev:?}"
+        );
+    }
+
+    // The boundary width still folds concretely.
+    let at_ceiling = RustBV::concrete(0xAA, 128).reverse(&ctx);
+    assert_eq!(at_ceiling.as_u128(), Some(0xAA << 120));
+}
+
+#[test]
 fn test_shift_by_zero() {
     let ctx = SymContext::new_mock();
     let x = RustBV::symbolic(&ctx, "x", 32);

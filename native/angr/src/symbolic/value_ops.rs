@@ -653,7 +653,7 @@ impl RustBV {
             return self;
         }
         match self.as_u128() {
-            Some(v) => {
+            Some(v) if w <= 128 => {
                 let num_bytes = (w / 8) as usize;
                 let mut result: u128 = 0;
                 for i in 0..num_bytes {
@@ -661,6 +661,18 @@ impl RustBV {
                     result |= byte << ((num_bytes - 1 - i) * 8);
                 }
                 Self::concrete(result, w)
+            }
+            Some(_) => {
+                // A `Concrete` of `width > 128` stores only its low 128 bits, so
+                // the bytes a reverse must move into positions 0..w/2 are not
+                // there to read — and the loop's `v >> (i * 8)` / `byte << ...`
+                // would shift a u128 by up to `w - 8 >= 128` (debug abort under
+                // panic=abort, release wrap mod 128). There is no correct
+                // concrete answer, so decline the fold and keep the reverse
+                // symbolic, the same way `define_rotate_pair` handles a
+                // non-trivial wide rotate.
+                record_bvop_reverse();
+                Self::expr_node(w, BVOp::Reverse, [self])
             }
             None => {
                 // reverse(reverse(x)) → x
