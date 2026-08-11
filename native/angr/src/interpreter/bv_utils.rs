@@ -123,15 +123,38 @@ pub(super) fn reject_symbolic_byte_store(
 
 /// Convert bytes (little-endian) to a RustBV.
 ///
-/// The mirror image of [`bv_to_bytes`], and it inherits the same
-/// `WIDE_PAYLOAD_BYTES` ceiling: a `RustBV::Concrete` of `width > 128` keeps
-/// only its low 128 bits, so bytes at index 16 and up cannot be represented.
+/// The mirror image of [`bv_to_bytes`], and it faces the same
+/// `WIDE_PAYLOAD_BYTES` ceiling from the other side: a value wider than the
+/// `u128` payload cannot be *packed* into one, so it is assembled as a `Concat`
+/// of per-byte concretes instead — the same rule
+/// `memory::load::bytes_to_bv` follows for `size > 16` loads (angr-tk7yv).
+/// Packing anyway would `<< (i * 8)` with `i >= 16`: an abort under debug
+/// assertions, and in release a wrap that ORs byte 16 back over byte 0
+/// (angr-03vl4.31).
 pub(super) fn bytes_to_bv(bytes: &[u8], width: u32) -> RustBV {
     let width_bytes = (width as usize).div_ceil(8).min(bytes.len());
+
+    if width_bytes > WIDE_PAYLOAD_BYTES
+        && width.is_multiple_of(8)
+        && bytes.len() * 8 >= width as usize
+    {
+        // Fold high byte first so byte 0 lands in the low lane: `a.concat(b)`
+        // puts `a` above `b`. `concat_no_ctx` keeps a `Concat` expression once
+        // the result passes 128 bits rather than re-folding into a u128.
+        let mut lanes = bytes[..width_bytes]
+            .iter()
+            .rev()
+            .map(|&b| RustBV::concrete(b as u128, 8));
+        if let Some(high) = lanes.next() {
+            return lanes.fold(high, |acc, lane| acc.concat_no_ctx(&lane));
+        }
+    }
+
     let mut value: u128 = 0;
-    // `min(WIDE_PAYLOAD_BYTES)`: `<< (i * 8)` with `i >= 16` would abort under
-    // debug assertions and wrap in release, OR-ing byte 16 over byte 0 — the
-    // mirror image of the `bv_to_bytes` overflow (angr-03vl4.31).
+    // SILENT(cat-b): a `width > 128` that is not a whole number of bytes cannot
+    // take the `Concat` path above (the folded width would not equal `width`),
+    // so it degrades to the low 128 bits. No VEX type has such a width, hence
+    // the fallback rather than an error.
     for (i, &byte) in bytes
         .iter()
         .take(width_bytes.min(WIDE_PAYLOAD_BYTES))
@@ -139,18 +162,9 @@ pub(super) fn bytes_to_bv(bytes: &[u8], width: u32) -> RustBV {
     {
         value |= (byte as u128) << (i * 8);
     }
-    // SILENT(cat-c): the high bytes of a >128-bit load have nowhere to go in
-    // the `u128` payload, so they are dropped and the value silently reads back
-    // as zero above bit 127. Losing *nonzero* data that way is a wrong answer
-    // rather than a degraded one, so say so.
-    if bytes[..width_bytes]
-        .iter()
-        .skip(WIDE_PAYLOAD_BYTES)
-        .any(|&b| b != 0)
-    {
-        log::warn!(
-            "bytes_to_bv: dropping nonzero bytes above bit 127 of a {width}-bit value; \
-             RustBV::Concrete stores only its low 128 bits"
+    if width_bytes > WIDE_PAYLOAD_BYTES {
+        log::debug!(
+            "bytes_to_bv: {width}-bit value is not byte-aligned; keeping only its low 128 bits"
         );
     }
     RustBV::concrete(value, width)

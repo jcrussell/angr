@@ -36,22 +36,30 @@ fn bv_to_bytes_of_256_bit_value_zero_fills_above_the_u128_payload() {
 }
 
 #[test]
-fn bytes_to_bv_of_256_bit_buffer_keeps_the_low_128_bits() {
-    let mut bytes = vec![0u8; 32];
-    bytes[..16].copy_from_slice(&u128::MAX.to_le_bytes());
-    bytes[16] = 0xab; // unrepresentable; must be dropped, not OR-ed over byte 0
+fn bytes_to_bv_of_256_bit_buffer_keeps_every_byte_via_concat() {
+    let bytes: Vec<u8> = (0..32u8).map(|i| i.wrapping_add(1)).collect();
     let bv = bytes_to_bv(&bytes, 256);
     assert_eq!(bv.width(), 256);
-    assert_eq!(bv.as_u128(), Some(u128::MAX));
+
+    let lo = u128::from_le_bytes(bytes[..16].try_into().unwrap());
+    let hi = u128::from_le_bytes(bytes[16..].try_into().unwrap());
+    // The truncating version dropped `hi` entirely; the wrapping one OR-ed
+    // byte 16 (0x11) over byte 0 (0x01), giving a low lane ending in 0x11.
+    assert_eq!(bv.extract_no_ctx(127, 0).as_u128(), Some(lo));
+    assert_eq!(bv.extract_no_ctx(255, 128).as_u128(), Some(hi));
 }
 
 #[test]
 fn bytes_to_bv_round_trips_through_bv_to_bytes_at_256_bits() {
+    // `bv_to_bytes` can only serialize the u128 payload, so the round trip is
+    // exact exactly for the values that fit in it — the high bytes it emits are
+    // zeros and come back as zeros.
     let value = 0x0f0e_0d0c_0b0a_0908_0706_0504_0302_0100u128;
     let bv = RustBV::concrete(value, 256);
     let round_tripped = bytes_to_bv(&bv_to_bytes(&bv), 256);
-    assert_eq!(round_tripped.as_u128(), Some(value));
     assert_eq!(round_tripped.width(), 256);
+    assert_eq!(round_tripped.extract_no_ctx(127, 0).as_u128(), Some(value));
+    assert_eq!(round_tripped.extract_no_ctx(255, 128).as_u128(), Some(0));
 }
 
 #[test]
