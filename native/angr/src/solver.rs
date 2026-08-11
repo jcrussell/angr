@@ -11,7 +11,7 @@
 //! - here: the Python-boundary error mapping, the [`RustSolverContext`]
 //!   pyclass itself, and the "normal" claripy-AST solver API
 //!   (`add_constraint*` / `eval*` / `min` / `max` / `push` / `pop` / `fork`);
-//! - [`z3_ptr`]: raw `Z3_ast`-pointer extraction and evaluation, i.e. every
+//! - [`z3_ast_extract`]: raw `Z3_ast`-pointer extraction and evaluation, i.e. every
 //!   `unsafe` in the solver surface;
 //! - [`handle_api`]: the handle-based claripy-bypass API (symbol-table
 //!   lifecycle plus the 33 `op_*` arithmetic wrappers — 25 of which route
@@ -27,7 +27,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
 mod handle_api;
-mod z3_ptr;
+mod z3_ast_extract;
 
 use pyo3::exceptions::{PyRecursionError, PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
@@ -40,7 +40,7 @@ use crate::claripy_bridge::{BridgeError, claripy_to_rustbv, try_extract_bvv};
 use crate::symbolic::{BinaryOpError, RustBV, RustSymbolTable, SymContext};
 
 #[cfg(feature = "vex-engine-z3")]
-use self::z3_ptr::{extract_z3_ast_ptr, z3_ast_to_eval_bv};
+use self::z3_ast_extract::{extract_z3_ast_ptr, z3_ast_to_eval_bv};
 #[cfg(feature = "vex-engine-z3")]
 use crate::symbolic::Z3AstPtr;
 

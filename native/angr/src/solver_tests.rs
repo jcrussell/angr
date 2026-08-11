@@ -205,7 +205,7 @@ fn test_new_context_is_not_shared_and_mints_unique_names() {
 // claripy-AST constraint API (angr-sqfj8.125) — deliberately NOT covered here
 //
 // `add_constraint_ast` / `add_constraints` / `add_constraint_tracked_ast` and
-// the `z3_ptr.rs` helpers that feed them stay covered by the Python suite
+// the `z3_ast_extract.rs` helpers that feed them stay covered by the Python suite
 // (`tests/engines/rust/test_solver_ops.py`, which already carries the
 // angr-sqfj8.121 double-listing regression) rather than by cargo tests. Two
 // environment facts block an in-crate version, both established while writing

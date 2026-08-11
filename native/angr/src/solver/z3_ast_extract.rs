@@ -6,6 +6,11 @@
 //! parent `solver` module because it is the only part of the solver surface
 //! that carries `unsafe` and its attendant safety obligations (angr-9ke6b.205).
 //!
+//! This is the *consumer* side: [`Z3AstPtr`] itself — the refcounted wrapper
+//! with the `Drop`/`Z3_inc_ref` obligations — is defined in
+//! `symbolic/z3_ast_ptr.rs`. This module only borrows one out of claripy and
+//! hands it to the solver (angr-03vl4.75).
+//!
 //! None of it is a `#[pymethods]` item — [`Z3AstPtr`] is not PyO3-bridgeable
 //! (it owns a Z3 refcount and cannot be reconstructed from a Python value), so
 //! these are internal helpers the claripy-AST API in the parent module calls.
@@ -206,4 +211,4 @@ impl RustSolverContext {
     }
 }
 
-test_submod!("z3_ptr_tests.rs" => tests);
+test_submod!("z3_ast_extract_tests.rs" => tests);
