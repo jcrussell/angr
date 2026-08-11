@@ -1530,6 +1530,7 @@ impl SymContext {
     }
 }
 
-#[cfg(all(test, feature = "vex-engine-z3"))]
-#[path = "solving_ops_tests.rs"]
-mod solving_ops_tests;
+// `test_submod!`, not a hand-written `mod`: this file's `#![deny(clippy::
+// unwrap_used, clippy::expect_used)]` above propagates into the child test
+// module, and the macro is what re-`allow`s the two lints there (angr-03vl4.83).
+test_submod!(z3 "solving_ops_tests.rs" => solving_ops_tests);
