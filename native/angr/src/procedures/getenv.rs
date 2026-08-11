@@ -12,9 +12,15 @@ use super::{ProcedureError, arch_word};
 use crate::state::RustSimState;
 
 /// Read a null-terminated concrete string from memory (up to [`MAX_STRING_SCAN`]
-/// bytes; exhausting the cap without a null is not an error). A symbolic byte
-/// or out-of-bounds read propagates as an `Err` and falls back to Python.
-fn read_cstring(state: &mut RustSimState, addr: u64) -> Result<Vec<u8>, ProcedureError> {
+/// bytes; exhausting the cap without a null is **not** an error — the prefix is
+/// returned as-is). A symbolic byte or out-of-bounds read propagates as an `Err`
+/// and falls back to Python.
+///
+/// The `_tolerant` suffix distinguishes this from `fileops.rs`'s
+/// `read_cstring_strict`, which errors out on an unterminated buffer instead
+/// (angr-03vl4.47): the two used to share the bare name `read_cstring` with
+/// silently opposite cap-exhaustion contracts.
+fn read_cstring_tolerant(state: &mut RustSimState, addr: u64) -> Result<Vec<u8>, ProcedureError> {
     let (buf, _null_found) = scan_concrete_bounded(state, addr, MAX_STRING_SCAN, "string")?;
     Ok(buf)
 }
@@ -29,7 +35,7 @@ crate::declare_proc! {
     struct = NativeGetenv,
     args = [name_addr: concrete],
     call |state| {
-        let key = read_cstring(state, name_addr)?;
+        let key = read_cstring_tolerant(state, name_addr)?;
 
         match state.getenv(&key) {
             Some(value) => {
@@ -59,8 +65,8 @@ crate::declare_proc! {
     struct = NativeSetenv,
     args = [name_addr: concrete, value_addr: concrete, overwrite: concrete],
     call |state| {
-        let key = read_cstring(state, name_addr)?;
-        let value = read_cstring(state, value_addr)?;
+        let key = read_cstring_tolerant(state, name_addr)?;
+        let value = read_cstring_tolerant(state, value_addr)?;
 
         // Only set if overwrite is non-zero or key doesn't exist
         if overwrite != 0 || state.getenv(&key).is_none() {
@@ -85,7 +91,7 @@ crate::declare_proc! {
     struct = NativeUnsetenv,
     args = [name_addr: concrete],
     call |state| {
-        let key = read_cstring(state, name_addr)?;
+        let key = read_cstring_tolerant(state, name_addr)?;
         state.unsetenv(&key);
 
         Ok(Some(arch_word(state, 0u64))) // success
@@ -117,7 +123,7 @@ crate::declare_proc! {
     struct = NativePutenv,
     args = [str_addr: concrete],
     call |state| {
-        let s = read_cstring(state, str_addr)?;
+        let s = read_cstring_tolerant(state, str_addr)?;
 
         // Find '=' separator
         if let Some(eq_pos) = s.iter().position(|&b| b == b'=') {

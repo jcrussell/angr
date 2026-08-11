@@ -38,7 +38,7 @@ fn read_pathname(state: &mut RustSimState, addr: u64) -> Result<Vec<u8>, Procedu
             // `strlen`, so a longer pathname is a real path there — returning
             // the 256-byte prefix would silently open a *different* file.
             // Error out so dispatch falls back, matching sibling
-            // `read_cstring`/`scan_concrete_until_null` (angr-sqfj8.80).
+            // `read_cstring_strict`/`scan_concrete_until_null` (angr-sqfj8.80).
             if length == MAX_PATH {
                 return Err(ProcedureError::MaxIterations(MAX_PATH as usize));
             }
@@ -101,7 +101,13 @@ const MAX_FOPEN_MODE_LEN: u64 = 8;
 /// Read a NUL-terminated string from memory up to `max_len` bytes. Concrete
 /// only: a symbolic byte (or exhausting `max_len` without a null) errors and
 /// falls back to Python.
-fn read_cstring(
+///
+/// The `_strict` suffix distinguishes this from `getenv.rs`'s
+/// `read_cstring_tolerant`, which returns the unterminated prefix instead of
+/// erroring (angr-03vl4.47): the two used to share the bare name `read_cstring`
+/// with silently opposite cap-exhaustion contracts. `read_pathname` above
+/// deliberately follows the strict contract for the same reason (angr-sqfj8.80).
+fn read_cstring_strict(
     state: &mut RustSimState,
     addr: u64,
     max_len: u64,
@@ -389,8 +395,8 @@ crate::declare_proc! {
     struct = NativeFopen,
     args = [path_addr: concrete, mode_addr: concrete],
     call |state| {
-        let path = read_cstring(state, path_addr, MAX_FOPEN_PATH_LEN, "pathname")?;
-        let mode = read_cstring(state, mode_addr, MAX_FOPEN_MODE_LEN, "mode")?;
+        let path = read_cstring_strict(state, path_addr, MAX_FOPEN_PATH_LEN, "pathname")?;
+        let mode = read_cstring_strict(state, mode_addr, MAX_FOPEN_MODE_LEN, "mode")?;
         let flags = parse_fopen_mode(&mode).ok_or_else(|| {
             ProcedureError::Other(format!(
                 "unsupported fopen mode {:?}",
@@ -435,7 +441,7 @@ crate::declare_proc! {
     args = [fd_raw: concrete, mode_addr: concrete],
     call |state| {
         let fd = fd_raw as u32 as i32;
-        let mode = read_cstring(state, mode_addr, MAX_FOPEN_MODE_LEN, "mode")?;
+        let mode = read_cstring_strict(state, mode_addr, MAX_FOPEN_MODE_LEN, "mode")?;
         parse_fopen_mode(&mode).ok_or_else(|| {
             ProcedureError::Other(format!(
                 "unsupported fdopen mode {:?}",
