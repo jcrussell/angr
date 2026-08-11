@@ -41,6 +41,38 @@ use super::stats::*;
 #[cfg(feature = "vex-engine-z3")]
 use std::sync::atomic::Ordering;
 
+/// Result of a bounded solution enumeration ([`SymContext::eval_upto_checked`],
+/// [`SymContext::solutions_checked`]).
+///
+/// The plain `Vec` returned by `eval_upto`/`solutions` cannot distinguish "these
+/// are all the feasible values" from "Z3 stopped deciding after `k` of them" —
+/// both come back as a short `Vec` (angr-03vl4.85). `undecided` carries that
+/// distinction so a caller whose correctness depends on exhaustiveness (see
+/// `AddressConcretizer::concretize_internal`) can refuse the partial set.
+///
+/// Note that `undecided == false` does **not** mean the set is complete: a
+/// decided enumeration that returns exactly `n` values may simply have hit the
+/// caller's cap. The idiom for detecting *that* is to request `n + 1` and treat
+/// `len > n` as an overflow; both checks are needed.
+pub struct Enumeration<T> {
+    /// The values found, in canonical ascending order.
+    pub values: Vec<T>,
+    /// True when enumeration stopped on an undecided Z3 result (timeout, or a
+    /// model/extraction failure) rather than on a decided Unsat or the `n` cap.
+    pub undecided: bool,
+}
+
+impl<T> Enumeration<T> {
+    /// A fully decided enumeration (concrete fast paths, `n == 0`, and the
+    /// non-Z3 stubs, none of which ever consult a solver).
+    fn decided(values: Vec<T>) -> Self {
+        Self {
+            values,
+            undecided: false,
+        }
+    }
+}
+
 /// Render a concrete `u128` as a big-endian byte vector sized for `width`
 /// bits (`ceil(width/8)` bytes). For widths ≤ 128 the low `byte_len` bytes
 /// of the value are taken; wider widths left-pad with zeros. Shared by the
@@ -475,6 +507,11 @@ impl SymContext {
     /// either way the prefix gathered so far is a valid set (angr-ph300.43). A
     /// missing model or failed extraction stops it the same way.
     ///
+    /// The two stop reasons are *not* interchangeable to every caller, so they
+    /// are reported apart in [`Enumeration::undecided`]: only the Unsat stop (or
+    /// exhausting `n`) leaves a prefix a caller may treat as the whole feasible
+    /// set (angr-03vl4.85).
+    ///
     /// The trailing sort is canonical *presentation* order (angr-op0dn.10.1):
     /// the exclude-loop decides WHICH values come back, this only decides in
     /// what order. Any future short-circuit must land ABOVE that sort.
@@ -491,8 +528,9 @@ impl SymContext {
         n: usize,
         extract: impl Fn(&z3::ast::BV) -> Option<T>,
         exclusion_of: impl Fn(&T) -> z3::ast::BV,
-    ) -> Vec<T> {
+    ) -> Enumeration<T> {
         let mut results = Vec::with_capacity(n);
+        let mut undecided = false;
         let seeded = self.cached_model_eval_with(ast, &extract);
 
         self.with_z3_solver(|solver| {
@@ -507,16 +545,27 @@ impl SymContext {
             }
 
             for _ in 0..remaining {
-                if timed_check(solver, CheckSite::EvalUpto).decided() != Some(true) {
-                    break;
+                // Only a decided Unsat means "no more solutions"; Unknown, and
+                // likewise a missing model or a failed extraction, leave the
+                // remainder of the feasible set unknown.
+                match timed_check(solver, CheckSite::EvalUpto).decided() {
+                    Some(true) => {}
+                    Some(false) => break,
+                    None => {
+                        undecided = true;
+                        break;
+                    }
                 }
                 let Some(model) = solver.get_model() else {
+                    undecided = true;
                     break;
                 };
                 let Some(result) = model.eval(ast, true) else {
+                    undecided = true;
                     break;
                 };
                 let Some(value) = extract(&result) else {
+                    undecided = true;
                     break;
                 };
                 solver.assert(ast.eq(exclusion_of(&value)).not());
@@ -527,7 +576,10 @@ impl SymContext {
         });
 
         results.sort_unstable();
-        results
+        Enumeration {
+            values: results,
+            undecided,
+        }
     }
 
     /// Evaluate a bitvector to bytes (for values > 128 bits).
@@ -676,15 +728,26 @@ impl SymContext {
     }
 
     /// Evaluate a bitvector and return up to n solutions.
+    ///
+    /// Drops the "did enumeration finish, or did Z3 give up?" signal — use
+    /// [`eval_upto_checked`](Self::eval_upto_checked) when the answer's
+    /// correctness depends on the set being complete (angr-03vl4.85).
     #[cfg(feature = "vex-engine-z3")]
     pub fn eval_upto(&self, bv: &RustBV, n: usize) -> Vec<u128> {
+        self.eval_upto_checked(bv, n).values
+    }
+
+    /// [`eval_upto`](Self::eval_upto) plus the stop reason — see
+    /// [`Enumeration`].
+    #[cfg(feature = "vex-engine-z3")]
+    pub fn eval_upto_checked(&self, bv: &RustBV, n: usize) -> Enumeration<u128> {
         // Fast path for concrete values
         if let Some(v) = bv.as_u128() {
-            return vec![v];
+            return Enumeration::decided(vec![v]);
         }
 
         if n == 0 {
-            return vec![];
+            return Enumeration::decided(vec![]);
         }
 
         // Strict-deterministic mode (angr-op0dn.10.2): ascending enumeration
@@ -819,7 +882,7 @@ impl SymContext {
     /// model-cache seed is bypassed and `model_cache` is left untouched (a
     /// history-dependent seed is precisely the nondeterminism being removed).
     #[cfg(feature = "vex-engine-z3")]
-    fn eval_upto_ascending(&self, bv: &RustBV, n: usize) -> Vec<u128> {
+    fn eval_upto_ascending(&self, bv: &RustBV, n: usize) -> Enumeration<u128> {
         let width = bv.width();
         let ast = bv.to_z3_ast();
         let max_val = max_val_for_width(width);
@@ -827,6 +890,7 @@ impl SymContext {
             query_class::scope(|| query_class::classify_eval(bv, &self.get_assumed_constraints()));
 
         let mut results = Vec::with_capacity(n);
+        let mut undecided = false;
         self.with_z3_solver(|solver| {
             solver.push();
 
@@ -836,9 +900,15 @@ impl SymContext {
                 // an asserted `ast >= lo` (below), so this check also covers an
                 // unsat base constraint set on iteration 0.
                 // Stop on anything but a decided Sat (Unsat = exhausted,
-                // Unknown = undetermined); the prefix stays a valid set.
-                if timed_check(solver, CheckSite::EvalUpto).decided() != Some(true) {
-                    break;
+                // Unknown = undetermined); the prefix stays a valid set, and the
+                // two reasons are reported apart (angr-03vl4.85).
+                match timed_check(solver, CheckSite::EvalUpto).decided() {
+                    Some(true) => {}
+                    Some(false) => break,
+                    None => {
+                        undecided = true;
+                        break;
+                    }
                 }
                 // Feasible min in [lo, max_val] — `ast >= lo` is already
                 // asserted, so bsearch_min never returns below the floor.
@@ -847,6 +917,7 @@ impl SymContext {
                 // gathered so far is still a valid ascending set.
                 let Some(value) = bsearch_min(solver, &ast, width, lo, max_val, |a, m| a.bvule(m))
                 else {
+                    undecided = true;
                     break;
                 };
                 results.push(value);
@@ -859,7 +930,10 @@ impl SymContext {
 
             solver.pop(1);
         });
-        results
+        Enumeration {
+            values: results,
+            undecided,
+        }
     }
 
     /// Evaluate a bitvector and return up to n solutions as byte arrays (big-endian).
@@ -889,12 +963,16 @@ impl SymContext {
         // every witness is `width` bits wide, so all byte vectors have the same
         // length and big-endian lexicographic order coincides with numeric
         // order (angr-op0dn.10.1).
+        // No `_checked` sibling: every caller of the wide path (the Python
+        // `eval_upto` bridge) treats the result as a sample, not as a complete
+        // feasible set. Add one the day one doesn't (angr-03vl4.85).
         self.enumerate_distinct(
             &ast,
             n,
             |result| extract_bv_value_wide(result, width),
             |bytes| make_bv_from_bytes(bytes, width),
         )
+        .values
     }
 
     /// Get the minimum value of a bitvector using binary search (O(log N)).
@@ -1233,10 +1311,19 @@ impl SymContext {
 
     /// Get up to n concrete solutions for a bitvector.
     ///
-    /// This is a convenience wrapper around eval_upto.
+    /// This is a convenience wrapper around eval_upto — and inherits its
+    /// inability to report *why* enumeration stopped. Callers that need the
+    /// complete feasible set want [`solutions_checked`](Self::solutions_checked).
     #[cfg(feature = "vex-engine-z3")]
     pub fn solutions(&self, bv: &RustBV, n: usize) -> Vec<u128> {
         self.eval_upto(bv, n)
+    }
+
+    /// [`solutions`](Self::solutions) plus the stop reason — see
+    /// [`Enumeration`].
+    #[cfg(feature = "vex-engine-z3")]
+    pub fn solutions_checked(&self, bv: &RustBV, n: usize) -> Enumeration<u128> {
+        self.eval_upto_checked(bv, n)
     }
 
     /// Check if a specific value is a valid solution for a bitvector.
@@ -1322,11 +1409,18 @@ impl SymContext {
 
     #[cfg(not(feature = "vex-engine-z3"))]
     pub fn eval_upto(&self, bv: &RustBV, n: usize) -> Vec<u128> {
+        self.eval_upto_checked(bv, n).values
+    }
+
+    /// Without Z3 nothing is ever undecided: a concrete value enumerates to
+    /// itself and a symbolic one to the empty set, both definitively.
+    #[cfg(not(feature = "vex-engine-z3"))]
+    pub fn eval_upto_checked(&self, bv: &RustBV, n: usize) -> Enumeration<u128> {
         if n == 0 {
-            return vec![];
+            return Enumeration::decided(vec![]);
         }
         // Without Z3, can only return concrete values
-        bv.as_u128().map(|v| vec![v]).unwrap_or_default()
+        Enumeration::decided(bv.as_u128().map(|v| vec![v]).unwrap_or_default())
     }
 
     #[cfg(not(feature = "vex-engine-z3"))]
@@ -1376,11 +1470,13 @@ impl SymContext {
     /// Get up to n concrete solutions for a bitvector.
     #[cfg(not(feature = "vex-engine-z3"))]
     pub fn solutions(&self, bv: &RustBV, n: usize) -> Vec<u128> {
-        if n == 0 {
-            return vec![];
-        }
-        // Without Z3, can only return concrete values
-        bv.as_u128().map(|v| vec![v]).unwrap_or_default()
+        self.eval_upto(bv, n)
+    }
+
+    /// See the Z3 twin — without Z3 the stop reason is always "decided".
+    #[cfg(not(feature = "vex-engine-z3"))]
+    pub fn solutions_checked(&self, bv: &RustBV, n: usize) -> Enumeration<u128> {
+        self.eval_upto_checked(bv, n)
     }
 }
 

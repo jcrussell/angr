@@ -1280,6 +1280,110 @@ fn test_check_branch_feasibility_keeps_branch_on_timeout() {
     );
 }
 
+/// Build a symbolic BV with exactly two feasible values, evaluate it once so
+/// the warm `model_cache` holds one of them, then clamp the search budget to a
+/// single resource unit so every *subsequent* Z3 check aborts Unknown.
+///
+/// That is a mid-enumeration timeout in its purest form: `enumerate_distinct`
+/// seeds iteration 0 from the cached model with no check at all, then the check
+/// for a second value comes back Unknown — so the caller gets a one-element
+/// prefix of a two-element set (angr-03vl4.85). Returns `(bv, seeded_value)`.
+///
+/// Uses `rlimit` rather than the hard-factoring rig above because it needs the
+/// *first* query to succeed and only later ones to fail; a formula hard enough
+/// to time out mid-enumeration also times out on the seeding eval (measured).
+/// `rlimit=1` makes the cut-off deterministic instead of difficulty-dependent —
+/// `test_pin_rlimit_reaches_the_solver` is the guard that it really lands.
+#[cfg(feature = "vex-engine-z3")]
+fn build_warm_seed_then_stalled(ctx: &SymContext, name: &str, lo: u128, hi: u128) -> (RustBV, u128) {
+    let x = RustBV::symbolic(ctx, name, 64);
+    let a = x.eq(&RustBV::concrete(lo, 64), ctx);
+    let b = x.eq(&RustBV::concrete(hi, 64), ctx);
+    ctx.assume_true(&a.or(&b, ctx));
+    // Warms model_cache (and sat_cache) while the budget is still generous.
+    let seeded = ctx.eval(&x).expect("the two-value set is satisfiable");
+    // Applied after the asserts, per `pin_rlimit`: a later solver rebuild would
+    // clobber the params.
+    pin_rlimit(ctx, 1);
+    (x, seeded)
+}
+
+/// The core of angr-03vl4.85: an enumeration that stops because Z3 stopped
+/// deciding must say so. Pre-fix `eval_upto` returned the one-element prefix
+/// byte-identical to the answer for a BV with exactly one feasible value.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_eval_upto_checked_flags_mid_enumeration_timeout() {
+    let ctx = SymContext::new();
+    let (x, seeded) = build_warm_seed_then_stalled(&ctx, "stalled_enum_x", 0x1000, 0x2000);
+
+    let enumeration = ctx.eval_upto_checked(&x, 8);
+    assert_eq!(
+        enumeration.values,
+        vec![seeded],
+        "only the warm-model seed is reachable once the budget is spent"
+    );
+    assert!(
+        enumeration.undecided,
+        "a prefix cut short by a Z3 timeout must not look like an exhausted set"
+    );
+}
+
+/// Companion: a decided enumeration must NOT be flagged, whether it stopped
+/// because the set ran out (Unsat) or because it hit the caller's cap. Without
+/// this the fix could "pass" by flagging everything.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_eval_upto_checked_not_flagged_when_decided() {
+    let ctx = SymContext::new();
+    let x = RustBV::symbolic(&ctx, "decided_enum_x", 64);
+    let a = x.eq(&RustBV::concrete(0x10, 64), &ctx);
+    let b = x.eq(&RustBV::concrete(0x20, 64), &ctx);
+    ctx.assume_true(&a.or(&b, &ctx));
+
+    let exhausted = ctx.eval_upto_checked(&x, 8);
+    assert_eq!(exhausted.values, vec![0x10, 0x20]);
+    assert!(
+        !exhausted.undecided,
+        "stopping on a decided Unsat means the set really is exhausted"
+    );
+
+    let capped = ctx.eval_upto_checked(&x, 1);
+    assert_eq!(capped.values.len(), 1);
+    assert!(
+        !capped.undecided,
+        "stopping at the caller's cap is a decided stop — detecting THAT \
+         truncation is the request-n+1 idiom's job, not `undecided`'s"
+    );
+}
+
+/// End-to-end consequence of the above, and the reason the flag exists: the
+/// address concretizer must not turn a timeout-truncated prefix into a
+/// `Single`/`Multiple`, which every consumer (ITE load default arm, store
+/// disjunction hoist, `invalidate_code_for_concretization`) reads as the
+/// complete feasible set. Pre-fix the stalled two-value enumeration came back
+/// as `Single(seed)`, silently dropping the other feasible address. Lives here
+/// rather than in `concretize_tests.rs` so it can reuse the stall rig above.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_concretize_refuses_timeout_truncated_solution_set() {
+    use crate::concretize::{AddressConcretizer, ConcretizationResult};
+
+    let ctx = SymContext::new();
+    let (addr, _) = build_warm_seed_then_stalled(&ctx, "stalled_addr", 0x1000, 0x2000);
+
+    match AddressConcretizer::new().concretize(&addr, &ctx) {
+        // `range_seeded` runs on the same undecidable constraints, so in
+        // practice this is `Failed`; `TooLarge` (a decided bound, unenumerable
+        // set) would be equally sound if the bisection ever got one.
+        ConcretizationResult::Failed(_) | ConcretizationResult::TooLarge { .. } => {}
+        other => panic!(
+            "a timeout-truncated enumeration must not be reported as a complete \
+             address set, got {other:?}"
+        ),
+    }
+}
+
 // angr-ph300.29: the internal Z3 arm for Clz/Ctz/Popcount must build a sound
 // encoding tied to the operand, not a shared unconstrained new_const. With the
 // old `BV::new_const("clz", w)`, every symbolic clz of a width lowered to ONE

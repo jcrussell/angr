@@ -445,9 +445,21 @@ impl AddressConcretizer {
         // this is dramatically faster than binary-search min/max which does ~64 Z3
         // checks regardless of solution count. eval_upto for 2 solutions: ~3 checks.
         const FAST_ENUM_LIMIT: usize = 16;
-        let fast_solutions = ctx.solutions(addr, FAST_ENUM_LIMIT + 1);
+        // `_checked`, because a short list has two very different meanings: the
+        // feasible set really is that small, or Z3 stopped deciding partway
+        // through it (angr-03vl4.85). Only the first licenses `Single`/`Multiple`
+        // — every consumer reads those as the complete set.
+        let fast = ctx.solutions_checked(addr, FAST_ENUM_LIMIT + 1);
+        let fast_solutions = fast.values;
 
         if fast_solutions.is_empty() {
+            if fast.undecided {
+                // Not "unsat" — the very first check timed out. `eval` would
+                // re-ask the same undecidable question, so report the failure.
+                return ConcretizationResult::Failed(
+                    "solution enumeration undecided (solver timeout)".to_string(),
+                );
+            }
             // No solutions — try single eval as fallback
             if let Some(single) = ctx.eval(addr) {
                 return ConcretizationResult::Single(single as u64);
@@ -455,26 +467,30 @@ impl AddressConcretizer {
             return ConcretizationResult::Failed("no solutions found".to_string());
         }
 
-        if fast_solutions.len() == 1 {
-            return ConcretizationResult::Single(fast_solutions[0] as u64);
-        }
-
-        if fast_solutions.len() <= FAST_ENUM_LIMIT {
-            // Small solution set — return directly without expensive range() call
-            let mut addrs: Vec<u64> = fast_solutions.iter().map(|&v| v as u64).collect();
-            addrs.sort_unstable();
-
-            if self.enable_stride_detection
-                && addrs.len() >= 2
-                && let Some(strided) = self.detect_stride_from_solutions(&addrs)
-            {
-                return strided;
+        if !fast.undecided {
+            if fast_solutions.len() == 1 {
+                return ConcretizationResult::Single(fast_solutions[0] as u64);
             }
 
-            return ConcretizationResult::Multiple(addrs);
+            if fast_solutions.len() <= FAST_ENUM_LIMIT {
+                // Small solution set — return directly without expensive range() call
+                let mut addrs: Vec<u64> = fast_solutions.iter().map(|&v| v as u64).collect();
+                addrs.sort_unstable();
+
+                if self.enable_stride_detection
+                    && addrs.len() >= 2
+                    && let Some(strided) = self.detect_stride_from_solutions(&addrs)
+                {
+                    return strided;
+                }
+
+                return ConcretizationResult::Multiple(addrs);
+            }
         }
 
-        // More than FAST_ENUM_LIMIT solutions — fall back to range-based approach.
+        // Known-incomplete fast-enum set — either more than FAST_ENUM_LIMIT
+        // solutions, or an undecided stop that leaves the rest of the set
+        // unknown. Fall back to the range-based approach.
         // Use range_seeded() with the solutions we already enumerated to tighten
         // the binary-search bounds (saves ~half the SAT calls for `min` when the
         // smallest known solution is well below 2^width).
@@ -491,9 +507,10 @@ impl AddressConcretizer {
         let (min, max) = match ctx.range_seeded(addr, smallest_known, largest_known) {
             Some((min, max)) => (min as u64, max as u64),
             None => {
-                // Range failed (Z3 timed out mid-bisection) and we are on the
-                // `> FAST_ENUM_LIMIT solutions` branch, so the fast-enum set is
-                // known-incomplete. Returning it as `Multiple` would hand
+                // Range failed (Z3 timed out mid-bisection) and the fast-enum
+                // set is known-incomplete (it overflowed FAST_ENUM_LIMIT, or
+                // enumeration itself went undecided). Returning it as
+                // `Multiple` would hand
                 // consumers a truncated set they treat as exhaustive — the ITE
                 // load builder's default arm, the store disjunction hoist and
                 // `invalidate_code_for_concretization` all assume the listed
@@ -504,7 +521,7 @@ impl AddressConcretizer {
                 // invalidate the block cache — so report `Failed`, which every
                 // consumer maps to the fully symbolic Python path.
                 return ConcretizationResult::Failed(
-                    "range query failed and solution set exceeds fast-enum limit".to_string(),
+                    "range query failed and solution set is known-incomplete".to_string(),
                 );
             }
         };
@@ -523,12 +540,17 @@ impl AddressConcretizer {
         // `solutions()` returns `min(n, #feasible)` with no truncation signal,
         // so requesting exactly `max_solutions` cannot tell "exactly that many"
         // from "more, silently dropped" (angr-03vl4.77).
-        let solutions = ctx.solutions(addr, self.max_solutions.saturating_add(1));
+        let enumeration = ctx.solutions_checked(addr, self.max_solutions.saturating_add(1));
+        let solutions = enumeration.values;
 
-        if solutions.len() > self.max_solutions {
+        if solutions.len() > self.max_solutions || enumeration.undecided {
             // Truncated: the feasible set is larger than we are willing to
-            // enumerate, so it is not a `Multiple` any consumer may treat as
-            // exhaustive. Same fallback as the over-range branch above.
+            // enumerate — or Z3 stopped deciding partway through it
+            // (angr-03vl4.85), which yields a *short* list with the same shape
+            // as an exhaustive one. Either way it is not a `Multiple` any
+            // consumer may treat as exhaustive. Same fallback as the over-range
+            // branch above, and here `[min, max]` is a real decided bound, so
+            // `TooLarge` can report it honestly.
             return self.unenumerable(addr, ctx, min, max, range_limit);
         }
 

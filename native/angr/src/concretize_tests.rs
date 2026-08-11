@@ -375,6 +375,12 @@ fn max_only_write_pins_the_chosen_address() {
     );
 }
 
+// The sibling hazard — a set truncated by a Z3 *timeout* rather than by the cap
+// (angr-03vl4.85) — is covered by
+// `test_concretize_refuses_timeout_truncated_solution_set` in
+// `symbolic/context_tests/solver.rs`, which lives there to reuse that file's
+// budget-stalling rig.
+//
 // angr-03vl4.77: `concretize_internal`'s "range is manageable" branch used to
 // ask for exactly `max_solutions` and hand the result back as `Multiple`.
 // `solutions()` returns `min(n, #feasible)` with no truncation signal, so a
