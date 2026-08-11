@@ -618,6 +618,31 @@ fn rustbv_to_claripy_memo(
         RustBV::Constrained { value, width, .. } => {
             // For constrained values, return the concrete value. Shares the
             // width-guard logic with the Concrete arm (angr-ph300.52).
+            //
+            // Deliberately NOT preceded by the `get_claripy_ast(id)` lookup the
+            // `Symbolic` arm above performs (angr-03vl4.9). Two reasons, in
+            // order of importance:
+            //
+            // 1. A hit would be the wrong answer, not a better one. `Constrained`
+            //    is a symbolic leaf already pinned to `value`, and `RustBV`'s own
+            //    Z3 lowering agrees: `to_z3_ast_cached` sends `Constrained` down
+            //    the same `make_bv_const` arm as `Concrete`, so the id names no
+            //    free Z3 variable. The registry entry, if one existed, would hold
+            //    the *unpinned* `BVS` minted for that id — handing it back would
+            //    export a free symbol where Rust's own term is a constant, and
+            //    nothing on the Python side carries the pinning constraint.
+            //    Exporting a `BVV` is the contract for this variant, which is why
+            //    both arms share `concrete_value_to_bvv`.
+            // 2. It would also be a guaranteed miss today: the only live
+            //    constructor of `RustBV::Constrained` is the
+            //    `RustBVData::Constrained` arm of `RustBV::from_data` (snapshot
+            //    deserialization), and no path turns a registered `Symbolic` into
+            //    a `Constrained` while preserving its id. That is a fact about
+            //    reachability, not a soundness argument — reason 1 stands on its
+            //    own — but it is what makes the asymmetry invisible in practice,
+            //    so `export_tests::constrained_has_no_live_constructor_beyond_snapshot_load`
+            //    pins it: a new live constructor lands as a test failure pointing
+            //    back here rather than as a silent behaviour change.
             concrete_value_to_bvv(py, claripy_mod, *value, *width)
         }
         RustBV::Expression { op, operands, .. } => {
