@@ -1285,3 +1285,35 @@ fn merge_width_mismatch_selects_each_path_under_solver() {
     assert!(!ctx.is_sat(), "cond=0 must select self's `narrow` value");
     ctx.pop();
 }
+
+/// `RegisterFile::get`'s same-offset arm is a short-circuit for the contained-
+/// overlay loop further down, so it must produce that loop's answer even when
+/// the read runs past the end of the concrete backing bytes. It used to guard
+/// itself with `offset + size <= data.len()` and fall through to the loop in
+/// that case; the loop calls the same `compose_range`, which zero-pads out-of-
+/// range positions, so the guard only bought an extra pair of map scans
+/// (angr-03vl4.3). Pin the padded result so the two paths cannot diverge.
+#[test]
+fn get_composes_past_end_of_concrete_backing() {
+    let ctx = SymContext::new_mock();
+    let state_size = AMD64.state_size() as u32;
+    // Straddle the end: the low 2 bytes have an overlay, the high 6 are past
+    // the end of `data` entirely.
+    let offset = state_size - 2;
+
+    let mut regs = RegisterFile::new(Box::new(AMD64));
+    regs.put(offset, RustBV::symbolic(&ctx, "straddle", 16));
+
+    let got = regs.get(offset, 8, &ctx);
+    assert_eq!(got.width(), 64, "read keeps its requested width");
+    // Upper 6 bytes are the zero padding; the low 2 are the overlay.
+    assert_eq!(
+        got.extract(63, 16, &ctx).as_u128(),
+        Some(0),
+        "positions past the end of `data` pad with zero"
+    );
+    assert!(
+        got.extract(15, 0, &ctx).is_symbolic(),
+        "the overlay survives into the low bytes"
+    );
+}

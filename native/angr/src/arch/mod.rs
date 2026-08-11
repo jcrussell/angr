@@ -420,8 +420,10 @@ impl RegisterFile {
     ///
     /// Walks the range low-to-high: an overlay starting at a position
     /// contributes its bytes (truncated to what still fits in the range), and
-    /// every position no overlay starts at contributes its concrete byte.
-    /// Little-endian, so the lowest offset is the LSB of the result.
+    /// every position no overlay starts at contributes its concrete byte, or a
+    /// zero byte once the range runs past the end of `data`. Little-endian, so
+    /// the lowest offset is the LSB of the result. Callers therefore need no
+    /// bounds check of their own.
     ///
     /// Shared by both of [`Self::get`]'s composition paths so that a read wider
     /// than the overlay at its own offset sees *all* the overlays inside the
@@ -482,11 +484,22 @@ impl RegisterFile {
             // with whatever covers the remaining bytes — which may be several
             // narrower overlays, not just one that exactly fills the remainder
             // (angr-49v03), falling back to the concrete backing bytes.
+            //
+            // Deliberately duplicates the contained-overlay loop below: an
+            // overlay at exactly `offset` narrower than the read always also
+            // satisfies that loop's `sym_offset >= offset && sym_offset +
+            // sym_size <= offset + size` test and reaches the same
+            // `compose_range(offset, size, ctx)` call, so this arm is a pure
+            // O(1) short-circuit past two O(overlays) scans of `symbolic`. It
+            // earns its keep because x86 sub-registers alias a *shared* offset
+            // (rax/eax/ax/al are all offset 16), making "read wider than the
+            // overlay written at the same offset" the common case rather than
+            // an edge one. Keeping it also pins the current precedence: the
+            // wider-symbolic loop below never gets to preempt a read that has
+            // its own overlay. `put` keeps overlays non-overlapping, so today
+            // no entry could preempt it anyway.
             if sym.width() < size * 8 {
-                let end = offset as usize + size as usize;
-                if end <= self.data.len() {
-                    return self.compose_range(offset, size, ctx);
-                }
+                return self.compose_range(offset, size, ctx);
             }
         }
 
@@ -504,7 +517,9 @@ impl RegisterFile {
 
         // Check if any symbolic sub-register falls within our read range
         // E.g., reading eax (offset=8, size=4) when al (offset=8, size=1) is symbolic
-        // or reading eax when ah (offset=9, size=1) is symbolic
+        // or reading eax when ah (offset=9, size=1) is symbolic.
+        // The `sym_offset == offset` half of this is what the same-offset arm at
+        // the top of this function short-circuits; see the comment there.
         for (&sym_offset, sym_val) in &self.symbolic {
             let sym_size = sym_val.width() / 8;
             if sym_offset >= offset && sym_offset + sym_size <= offset + size {
