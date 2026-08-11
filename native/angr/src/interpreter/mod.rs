@@ -109,7 +109,7 @@ macro_rules! profile_add {
 }
 
 mod block_result;
-mod bv_utils;
+pub(crate) mod bv_utils;
 mod code_invalidation;
 mod concrete_memory;
 mod concretize_cache;

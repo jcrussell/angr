@@ -17,6 +17,50 @@ fn test_bv_to_bytes() {
     assert_eq!(bytes, vec![0x78, 0x56, 0x34, 0x12]);
 }
 
+// --- >128-bit width coverage (angr-03vl4.4 / angr-03vl4.31) ---
+//
+// `RustBV::Concrete` legitimately carries AVX/YMM-scale widths up to 256 while
+// its payload is a `u128`, so both conversions have to stop at byte 16. Before
+// the fix each ran `<< (i * 8)` / `>> (i * 8)` for `i` up to 31: a shift-overflow
+// abort under debug assertions, and in release a wraparound that aliased byte 16
+// onto byte 0 (a silently corrupt value, not a loud failure).
+
+#[test]
+fn bv_to_bytes_of_256_bit_value_zero_fills_above_the_u128_payload() {
+    let bv = RustBV::concrete(u128::MAX, 256);
+    let bytes = bv_to_bytes(&bv);
+    assert_eq!(bytes.len(), 32);
+    assert!(bytes[..16].iter().all(|&b| b == 0xff), "{bytes:?}");
+    // The wrapping bug made byte 16 alias byte 0 (0xff) instead of reading 0.
+    assert!(bytes[16..].iter().all(|&b| b == 0), "{bytes:?}");
+}
+
+#[test]
+fn bytes_to_bv_of_256_bit_buffer_keeps_the_low_128_bits() {
+    let mut bytes = vec![0u8; 32];
+    bytes[..16].copy_from_slice(&u128::MAX.to_le_bytes());
+    bytes[16] = 0xab; // unrepresentable; must be dropped, not OR-ed over byte 0
+    let bv = bytes_to_bv(&bytes, 256);
+    assert_eq!(bv.width(), 256);
+    assert_eq!(bv.as_u128(), Some(u128::MAX));
+}
+
+#[test]
+fn bytes_to_bv_round_trips_through_bv_to_bytes_at_256_bits() {
+    let value = 0x0f0e_0d0c_0b0a_0908_0706_0504_0302_0100u128;
+    let bv = RustBV::concrete(value, 256);
+    let round_tripped = bytes_to_bv(&bv_to_bytes(&bv), 256);
+    assert_eq!(round_tripped.as_u128(), Some(value));
+    assert_eq!(round_tripped.width(), 256);
+}
+
+#[test]
+fn bytes_to_bv_ignores_bytes_past_the_requested_width() {
+    // Buffer longer than `width` — the extra bytes are not part of the value.
+    let bytes = vec![0x78, 0x56, 0x34, 0x12, 0xff, 0xff];
+    assert_eq!(bytes_to_bv(&bytes, 32).as_u64(), Some(0x1234_5678));
+}
+
 // --- extract_ite_targets coverage (angr-szg45.5) ---
 //
 // The symbolic-IP fast-path that pulls concrete jump targets out of a nested

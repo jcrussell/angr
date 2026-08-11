@@ -59,13 +59,24 @@ pub(super) fn extract_ite_targets(bv: &RustBV, max_targets: usize) -> Option<Vec
 }
 
 /// Convert a RustBV to bytes (little-endian).
-pub(super) fn bv_to_bytes(bv: &RustBV) -> Vec<u8> {
+///
+/// Shared with the callback-dispatch store path
+/// (`callbacks::dispatch::store_bytes_via_callback`), which used to carry a
+/// byte-identical private copy that inherited every bug fixed here
+/// (angr-03vl4.4).
+pub(crate) fn bv_to_bytes(bv: &RustBV) -> Vec<u8> {
     let width = bv.width();
     let num_bytes = width.div_ceil(8) as usize;
 
     if let Some(value) = bv.as_u128() {
         let mut bytes = vec![0u8; num_bytes];
-        for (i, byte) in bytes.iter_mut().enumerate() {
+        // `take(WIDE_PAYLOAD_BYTES)`: a `Concrete` wider than 128 bits stores
+        // only its low 128 bits (see `RustBV::Concrete`'s `width` doc and the
+        // `width.min(128)` branches in `value_ops.rs::shl_into`), so every byte
+        // from index 16 up reads as 0 — which the `vec![0u8; _]` already gives.
+        // Shifting a `u128` by >= 128 would abort under debug assertions and
+        // wrap in release, aliasing byte 16 onto byte 0 (angr-03vl4.4).
+        for (i, byte) in bytes.iter_mut().take(WIDE_PAYLOAD_BYTES).enumerate() {
             *byte = (value >> (i * 8)) as u8;
         }
         bytes
@@ -74,6 +85,11 @@ pub(super) fn bv_to_bytes(bv: &RustBV) -> Vec<u8> {
         vec![0u8; num_bytes]
     }
 }
+
+/// Number of little-endian bytes a `RustBV::Concrete`'s `u128` payload can
+/// hold. Widths above `WIDE_PAYLOAD_BYTES * 8` are representable (AVX/YMM
+/// scale, up to 256) but keep only their low bits — see `RustBV::Concrete`.
+const WIDE_PAYLOAD_BYTES: usize = 16;
 
 /// Reject a byte-level store of a *symbolic* value (angr-9ke6b.19).
 ///
@@ -106,13 +122,36 @@ pub(super) fn reject_symbolic_byte_store(
 }
 
 /// Convert bytes (little-endian) to a RustBV.
+///
+/// The mirror image of [`bv_to_bytes`], and it inherits the same
+/// `WIDE_PAYLOAD_BYTES` ceiling: a `RustBV::Concrete` of `width > 128` keeps
+/// only its low 128 bits, so bytes at index 16 and up cannot be represented.
 pub(super) fn bytes_to_bv(bytes: &[u8], width: u32) -> RustBV {
+    let width_bytes = (width as usize).div_ceil(8).min(bytes.len());
     let mut value: u128 = 0;
-    for (i, &byte) in bytes.iter().enumerate() {
-        if i * 8 >= width as usize {
-            break;
-        }
+    // `min(WIDE_PAYLOAD_BYTES)`: `<< (i * 8)` with `i >= 16` would abort under
+    // debug assertions and wrap in release, OR-ing byte 16 over byte 0 — the
+    // mirror image of the `bv_to_bytes` overflow (angr-03vl4.31).
+    for (i, &byte) in bytes
+        .iter()
+        .take(width_bytes.min(WIDE_PAYLOAD_BYTES))
+        .enumerate()
+    {
         value |= (byte as u128) << (i * 8);
+    }
+    // SILENT(cat-c): the high bytes of a >128-bit load have nowhere to go in
+    // the `u128` payload, so they are dropped and the value silently reads back
+    // as zero above bit 127. Losing *nonzero* data that way is a wrong answer
+    // rather than a degraded one, so say so.
+    if bytes[..width_bytes]
+        .iter()
+        .skip(WIDE_PAYLOAD_BYTES)
+        .any(|&b| b != 0)
+    {
+        log::warn!(
+            "bytes_to_bv: dropping nonzero bytes above bit 127 of a {width}-bit value; \
+             RustBV::Concrete stores only its low 128 bits"
+        );
     }
     RustBV::concrete(value, width)
 }

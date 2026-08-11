@@ -28,6 +28,9 @@
 //! matching `has_*` accessor that every production call site checks first.
 
 use super::*;
+// Shared with the interpreter store paths — the byte-identical private copy
+// this file used to carry inherited every bug fixed there (angr-03vl4.4).
+use crate::interpreter::bv_utils::bv_to_bytes;
 
 /// Decode a `(bytes, is_symbolic, symbolic_ast?)` tuple returned by a Python
 /// data callback.
@@ -754,23 +757,6 @@ impl PythonCallbacks {
     /// Check if resolve_function callback is available.
     pub(crate) fn has_resolve_function(&self) -> bool {
         self.resolve_function.is_some()
-    }
-}
-
-/// Convert a RustBV to bytes (little-endian).
-fn bv_to_bytes(bv: &RustBV) -> Vec<u8> {
-    let width = bv.width();
-    let num_bytes = width.div_ceil(8) as usize;
-
-    if let Some(value) = bv.as_u128() {
-        let mut bytes = vec![0u8; num_bytes];
-        for (i, byte) in bytes.iter_mut().enumerate() {
-            *byte = (value >> (i * 8)) as u8;
-        }
-        bytes
-    } else {
-        // For symbolic values, return zeros (the callback will handle it)
-        vec![0u8; num_bytes]
     }
 }
 
