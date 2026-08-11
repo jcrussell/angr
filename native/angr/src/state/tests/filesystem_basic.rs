@@ -198,10 +198,77 @@ fn test_filesystem_dup_dup2_pipe() {
 
     // pipe allocates two consecutive fds
     let mut fs3 = FileSystem::default();
-    let (r, w) = fs3.pipe();
+    let (r, w) = fs3.pipe().unwrap();
     assert_eq!((r, w), (3, 4));
     assert!(fs3.is_open(r));
     assert!(fs3.is_open(w));
     assert_eq!(fs3.fd_info(r).unwrap().2, 0); // ReadOnly
     assert_eq!(fs3.fd_info(w).unwrap().2, 1); // WriteOnly
+}
+
+/// angr-03vl4.54: `lseek`'s offset is a raw guest `i64` and the SEEK_CUR base is
+/// itself guest-steerable (a prior SEEK_SET accepts any non-negative `i64`), so
+/// the old `(base as i64 + offset)` overflowed — a panic under
+/// `[profile.release-checked]`, a silently wrapped position in the shipped
+/// `[profile.release]`. `offset_position` clamps at both ends of the `u64` range
+/// instead.
+#[test]
+fn seek_cur_and_end_clamp_instead_of_overflowing_the_signed_add() {
+    let mut fs = FileSystem::default();
+    let fd = fs.open_with_content("data.bin".to_string(), FdFlags::ReadOnly, vec![0u8; 100]);
+
+    // Park the position at i64::MAX via SEEK_SET, then push past it. The first
+    // bump lands just below the top of the u64 range (the old `as i64` add
+    // overflowed here); the second saturates at u64::MAX rather than wrapping
+    // back down into a small, valid-looking position.
+    assert_eq!(fs.seek(fd, i64::MAX, 0), Some(i64::MAX as u64));
+    assert_eq!(fs.seek(fd, i64::MAX, 1), Some(u64::MAX - 1));
+    assert_eq!(fs.seek(fd, i64::MAX, 1), Some(u64::MAX));
+
+    // A position above i64::MAX must stay positive: `base as i64` alone turned
+    // it negative, which the old `.max(0)` then collapsed to 0.
+    assert_eq!(fs.seek(fd, -1, 1), Some(u64::MAX - 1));
+    assert_eq!(fs.seek(fd, i64::MIN, 1), Some(i64::MAX as u64 - 1));
+
+    // The negative direction still clamps at 0, as the old `.max(0)` did.
+    assert_eq!(fs.seek(fd, 10, 0), Some(10));
+    assert_eq!(fs.seek(fd, i64::MIN, 1), Some(0));
+
+    // SEEK_END shares the helper: a tiny file plus a huge offset must not wrap,
+    // and i64::MIN must not negate into a positive.
+    assert_eq!(fs.seek(fd, i64::MAX, 2), Some(100 + i64::MAX as u64));
+    assert_eq!(fs.seek(fd, i64::MIN, 2), Some(0));
+}
+
+/// angr-03vl4.55: `pipe` allocates two consecutive fds off `next_fd`, which
+/// `register_fd_at` can drive arbitrarily high from an imported Python state
+/// (it is not bounded by `MAX_FD`). The bump is `checked_add`, so an exhausted
+/// fd space refuses the pipe — leaving the table and `next_fd` untouched — and
+/// `NativePipe` bounces to Python. Saturating instead would return `u32::MAX`
+/// for both ends and alias them.
+#[test]
+fn pipe_refuses_rather_than_wrapping_when_the_fd_space_is_exhausted() {
+    // next_fd = u32::MAX (the read end is the last fd) and next_fd = u32::MAX-1
+    // (the read/write pair fits but the post-bump does not) — both refuse.
+    for imported in [u32::MAX - 1, u32::MAX - 2] {
+        let mut fs = FileSystem::default();
+        assert!(fs.register_fd_at(
+            imported,
+            "imported".to_string(),
+            FdFlags::ReadOnly,
+            Vec::new(),
+            0,
+        ));
+        let next_before = fs.next_fd();
+        assert_eq!(next_before, imported + 1);
+        let fds_before = fs.all_fds();
+
+        assert_eq!(
+            fs.pipe(),
+            None,
+            "pipe() must refuse with next_fd={next_before:#x}"
+        );
+        assert_eq!(fs.next_fd(), next_before, "a refused pipe must not bump");
+        assert_eq!(fs.all_fds(), fds_before, "a refused pipe must insert nothing");
+    }
 }

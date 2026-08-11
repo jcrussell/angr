@@ -319,14 +319,18 @@ impl FileSystem {
     /// Seek a file descriptor. Returns the new position.
     ///
     /// whence: 0=SEEK_SET, 1=SEEK_CUR, 2=SEEK_END
+    ///
+    /// The SEEK_CUR/SEEK_END bases are combined with the guest's signed
+    /// `offset` through [`offset_position`], not through `base as i64 +
+    /// offset` (angr-03vl4.54).
     pub fn seek(&mut self, fd: u32, offset: i64, whence: u32) -> Option<u64> {
         // Compute new position without CoW first; only mutate if the fd exists
         // and the whence value is valid.
         let desc = self.fds.get(&fd)?;
         let new_pos = match whence {
             0 => offset.max(0) as u64,                                 // SEEK_SET
-            1 => (desc.position as i64 + offset).max(0) as u64,        // SEEK_CUR
-            2 => (desc.effective_len() as i64 + offset).max(0) as u64, // SEEK_END
+            1 => offset_position(desc.position, offset),               // SEEK_CUR
+            2 => offset_position(desc.effective_len() as u64, offset), // SEEK_END
             _ => return None,
         };
         Arc::make_mut(&mut self.fds).get_mut(&fd)?.position = new_pos;
@@ -449,18 +453,28 @@ impl FileSystem {
         Some(newfd)
     }
 
-    /// Create a pipe: returns `(read_fd, write_fd)`, allocated as two
-    /// consecutive fds.
+    /// Create a pipe: returns `Some((read_fd, write_fd))`, allocated as two
+    /// consecutive fds, or `None` when the fd space cannot supply the pair.
     ///
     /// Like POSIX `pipe(2)`. The read end is opened ReadOnly and the write end
     /// WriteOnly. We do NOT model write→read data flow (each end has its own
     /// content buffer); this matches angr's existing SimPacketsStream-light
     /// modeling — the procedure exists so binaries that allocate fds via pipe()
     /// don't fall through to Python on every fd op.
-    pub fn pipe(&mut self) -> (u32, u32) {
+    ///
+    /// `next_fd` is not bounded by [`MAX_FD`] — [`register_fd_at`](Self::register_fd_at)
+    /// imports whatever fd numbers the Python state carries and bumps `next_fd`
+    /// past them — so the two-fd bump is `checked_add`, and a `next_fd` within
+    /// two of `u32::MAX` refuses the pipe (nothing inserted, `next_fd`
+    /// unchanged) instead of wrapping. Saturating here would be worse than the
+    /// plain `+` it replaced: it would hand out `u32::MAX` for *both* ends and
+    /// alias them onto whatever the previous allocation put there
+    /// (angr-03vl4.55). Refusing bounces the caller to Python, mirroring
+    /// [`dup2`](Self::dup2)'s `MAX_FD` refusal.
+    pub fn pipe(&mut self) -> Option<(u32, u32)> {
         let read_fd = self.next_fd;
-        let write_fd = self.next_fd + 1;
-        self.next_fd += 2;
+        let write_fd = read_fd.checked_add(1)?;
+        self.next_fd = write_fd.checked_add(1)?;
         let map = Arc::make_mut(&mut self.fds);
         map.insert(
             read_fd,
@@ -470,6 +484,23 @@ impl FileSystem {
             write_fd,
             FileDescriptor::new("<pipe:w>".to_string(), FdFlags::WriteOnly),
         );
-        (read_fd, write_fd)
+        Some((read_fd, write_fd))
     }
+}
+
+/// Combine an unsigned file position/length `base` with a guest-supplied
+/// signed `offset`, clamping at both ends of the `u64` range.
+///
+/// `lseek`'s offset arrives from the guest unbounded (`NativeLseekSyscall`'s
+/// `extract_concrete_arg`), and `base` is itself guest-steerable — a prior
+/// `SEEK_SET` accepts any non-negative `i64`. The former spelling,
+/// `(base as i64 + offset).max(0) as u64`, was wrong twice over
+/// (angr-03vl4.54): the add overflows `i64` (panic under
+/// `[profile.release-checked]`, silent wrap in the shipped
+/// `[profile.release]`), and `base as i64` alone turns any position above
+/// `i64::MAX` negative before the offset is even applied. `i128` has room for
+/// every `u64` base plus every `i64` offset, so the clamp is the only
+/// approximation left.
+fn offset_position(base: u64, offset: i64) -> u64 {
+    (i128::from(base) + i128::from(offset)).clamp(0, i128::from(u64::MAX)) as u64
 }

@@ -288,7 +288,12 @@ crate::declare_proc! {
     struct = NativePipe,
     args = [pipefd_addr: concrete],
     call |state| {
-        let (read_fd, write_fd) = state.file_system().pipe();
+        // `None` = the fd space cannot supply a consecutive pair (angr-03vl4.55);
+        // bounce to Python rather than aliasing two ends onto one fd.
+        let (read_fd, write_fd) = state
+            .file_system()
+            .pipe()
+            .ok_or_else(|| ProcedureError::Other("pipe: fd space exhausted".to_string()))?;
 
         // Write the two 32-bit fds as raw bytes at pipefd[0..4] and pipefd[4..8].
         // Use byte-by-byte little/big-endian encoding so pipefd[0] reads back correctly

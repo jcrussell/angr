@@ -196,7 +196,7 @@ fn dup2_refuses_newfd_at_or_above_max_fd() {
 #[test]
 fn pipe_allocates_consecutive_read_write_ends() {
     let mut fs = FileSystem::default();
-    let (r, w) = fs.pipe();
+    let (r, w) = fs.pipe().unwrap();
     assert_eq!((r, w), (3, 4));
     assert_eq!(fs.next_fd(), 5);
     assert_eq!(
