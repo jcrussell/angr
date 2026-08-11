@@ -82,7 +82,11 @@ impl NativeSyscall for NativeGettimeofdaySyscall {
         };
         let stride = (bits / 8) as u64;
         state.memory_store(tv, tv_sec)?;
-        state.memory_store(tv + stride, tv_usec)?;
+        // `tv` is unchecked `extract_concrete_arg` output; wrap explicitly so
+        // the near-`u64::MAX` case behaves the same in the shipped
+        // (overflow-checks-off) build and under CI's `release-checked` profile
+        // (`invariant-proc-address-arith-wrapping`).
+        state.memory_store(tv.wrapping_add(stride), tv_usec)?;
         Ok(SyscallOutcome::Continue { ret: 0 })
     }
 }
@@ -194,7 +198,8 @@ impl NativeSyscall for NativeClockGettimeSyscall {
         };
         let stride = (bits / 8) as u64;
         state.memory_store(ts, tv_sec)?;
-        state.memory_store(ts + stride, tv_nsec)?;
+        // Same unchecked-pointer wrapping rule as `gettimeofday` above.
+        state.memory_store(ts.wrapping_add(stride), tv_nsec)?;
         Ok(SyscallOutcome::Continue { ret: 0 })
     }
 }

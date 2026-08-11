@@ -600,13 +600,19 @@ fn stat_lookup_nofollow(fs: &crate::state::FileSystem, path: &str) -> Option<(u6
 /// Shared `struct stat` field writers used by every per-arch layout below.
 /// Each takes the destination `buf` base plus the field `off`, so the arch
 /// writers no longer redefine identical store closures (audit angr-myzjx.17).
+///
+/// `buf + off` is spelled `wrapping_add`: `buf` reaches us straight from
+/// `extract_concrete_arg(&args[1], "…statbuf")` with no upper-bound check, and
+/// `[profile.release]` disables overflow checks — so a bare `+` would wrap
+/// silently in the shipped `.so` but panic under CI's `release-checked`
+/// profile. Same rule as `invariant-proc-address-arith-wrapping`.
 fn store_stat_u64(
     state: &mut RustSimState,
     buf: u64,
     off: u64,
     val: u64,
 ) -> Result<(), SyscallError> {
-    state.memory_store(buf + off, RustBV::concrete(val as u128, 64))?;
+    state.memory_store(buf.wrapping_add(off), RustBV::concrete(val as u128, 64))?;
     Ok(())
 }
 fn store_stat_u32(
@@ -615,13 +621,13 @@ fn store_stat_u32(
     off: u64,
     val: u32,
 ) -> Result<(), SyscallError> {
-    state.memory_store(buf + off, RustBV::concrete(val as u128, 32))?;
+    state.memory_store(buf.wrapping_add(off), RustBV::concrete(val as u128, 32))?;
     Ok(())
 }
 /// 96-bit zero pad (3 × 32-bit words), matching `claripy.BVV(0, 32 * 3)`.
 /// MIPS32 is the only layout that needs it.
 fn store_stat_zero96(state: &mut RustSimState, buf: u64, off: u64) -> Result<(), SyscallError> {
-    state.memory_store(buf + off, RustBV::concrete(0, 96))?;
+    state.memory_store(buf.wrapping_add(off), RustBV::concrete(0, 96))?;
     Ok(())
 }
 

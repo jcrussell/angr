@@ -70,7 +70,11 @@ impl NativeSyscall for NativeGetrlimitSyscall {
                 fresh_symbolic(&ctx, "rlim_max", 64)
             };
             state.memory_store(rlim, cur)?;
-            state.memory_store(rlim + 8, max)?;
+            // `rlim` is unchecked `extract_concrete_arg` output and release
+            // builds disable overflow checks, so wrap explicitly rather than
+            // panic only under CI's `release-checked` profile
+            // (`invariant-proc-address-arith-wrapping`).
+            state.memory_store(rlim.wrapping_add(8), max)?;
             return Ok(SyscallOutcome::Continue { ret: 0 });
         }
 

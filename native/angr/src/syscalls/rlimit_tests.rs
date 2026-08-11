@@ -189,3 +189,34 @@ fn prlimit64_returns_fresh_symbolic_on_all_arches() {
         assert!(ret.as_u64().is_none(), "{arch}: must be symbolic");
     }
 }
+
+/// `rlim` is unchecked `extract_concrete_arg` output, so `rlim + 8` can
+/// overflow. Both the top page and page 0 are mapped so the handler reaches
+/// the `rlim_max` store; it must wrap to 0, not panic under CI's
+/// `release-checked` (overflow-checks = true) profile (angr-03vl4.66).
+#[test]
+fn getrlimit_rlim_near_u64_max_wraps_max_field() {
+    let h = NativeGetrlimitSyscall;
+    let mut state = fresh_state();
+    state.map_memory(0xFFFF_FFFF_FFFF_F000, 0x1000, Permission::RW);
+    state.map_memory(0, 0x1000, Permission::RW);
+    let rlim = u64::MAX - 7; // rlim + 8 == 0
+    let outcome = h
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(RLIMIT_STACK as u128, 64),
+                RustBV::concrete(rlim as u128, 64),
+            ],
+        )
+        .expect("must not panic on a wrapping rlim");
+    match outcome {
+        SyscallOutcome::Continue { ret } => assert_eq!(ret, 0),
+        _ => panic!("expected Continue"),
+    }
+    assert_eq!(
+        state.memory_load(rlim, 8).expect("loadable").as_u64(),
+        Some(RLIMIT_STACK_CUR as u64)
+    );
+    assert!(state.memory_load(0, 8).expect("loadable").is_symbolic());
+}

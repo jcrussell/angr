@@ -2485,3 +2485,44 @@ fn newfstatat_symbolic_flag_falls_back() {
         .expect_err("must fall back");
     assert_symbolic_arg(err, "flag");
 }
+
+/// `statbuf` is unchecked `extract_concrete_arg` output, so `buf + off` in
+/// the `store_stat_*` writers can overflow. `buf = u64::MAX - 7` keeps every
+/// 8-byte-aligned field within one page (offset 0 in the top page, the rest
+/// wrapped into page 0), so the whole amd64 layout is written and must wrap
+/// rather than panic under CI's `release-checked` (overflow-checks = true)
+/// profile (angr-03vl4.65).
+#[test]
+fn fstat_statbuf_near_u64_max_wraps_field_offsets() {
+    let mut state = RustSimState::new("amd64").expect("state");
+    state.map_memory(0xFFFF_FFFF_FFFF_F000, 0x1000, Permission::RW);
+    state.map_memory(0, 0x1000, Permission::RW);
+
+    let fd = state.file_system().open_with_content(
+        "/tmp/hello".into(),
+        FdFlags::ReadOnly,
+        b"hello, world!".to_vec(),
+    );
+    let buf = u64::MAX - 7;
+
+    let out = NativeFstatSyscall
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(fd as u128, 64),
+                RustBV::concrete(buf as u128, 64),
+            ],
+        )
+        .expect("must not panic on a wrapping statbuf");
+    assert_eq!(expect_continue(out), 0);
+
+    // st_dev at offset 0 lands in the top page; every later field wraps.
+    assert_eq!(read_u64_le(&state, buf), 0);
+    // st_size at 0x30 -> wrapped address 0x28.
+    assert_eq!(read_u64_le(&state, buf.wrapping_add(0x30)), 13);
+    // st_mode at 0x18 (u32) -> wrapped address 0x10.
+    assert_eq!(
+        read_u32_le(&state, buf.wrapping_add(0x18)),
+        S_IFREG_0755 as u32
+    );
+}

@@ -296,3 +296,61 @@ fn time_unmapped_pointer_falls_back() {
         .expect_err("must fall back");
     assert!(matches!(err, SyscallError::Memory(_)));
 }
+
+// ---- near-u64::MAX pointer regression (angr-03vl4.67) ------------
+//
+// `tv` / `ts` are unchecked `extract_concrete_arg` output, so the second
+// field's address (`ptr + stride`) can overflow. These tests pin the wrap:
+// the top page and page 0 are both mapped, so the handler reaches the
+// second store and the write must land at 0 rather than panic under CI's
+// `release-checked` (overflow-checks = true) profile.
+
+/// Map the highest page and page 0 so a `u64::MAX`-adjacent write and its
+/// wrapped-around sibling are both storable.
+fn map_wrap_pages(state: &mut RustSimState) {
+    state.map_memory(0xFFFF_FFFF_FFFF_F000, 0x1000, Permission::RW);
+    state.map_memory(0, 0x1000, Permission::RW);
+}
+
+#[test]
+fn gettimeofday_tv_near_u64_max_wraps_second_field() {
+    let h = NativeGettimeofdaySyscall;
+    let mut state = fresh_state();
+    map_wrap_pages(&mut state);
+    let tv = u64::MAX - 7; // tv + 8 == 0
+    let outcome = h
+        .call(
+            &mut state,
+            &[RustBV::concrete(tv as u128, 64), RustBV::concrete(0, 64)],
+        )
+        .expect("must not panic on a wrapping tv");
+    match outcome {
+        SyscallOutcome::Continue { ret } => assert_eq!(ret, 0),
+        _ => panic!("expected Continue"),
+    }
+    assert!(state.memory_load(tv, 8).expect("loadable").is_symbolic());
+    assert!(state.memory_load(0, 8).expect("loadable").is_symbolic());
+}
+
+#[test]
+fn clock_gettime_ts_near_u64_max_wraps_second_field() {
+    let h = NativeClockGettimeSyscall;
+    let mut state = fresh_state();
+    map_wrap_pages(&mut state);
+    let ts = u64::MAX - 7; // ts + 8 == 0
+    let outcome = h
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(CLOCK_REALTIME as u128, 64),
+                RustBV::concrete(ts as u128, 64),
+            ],
+        )
+        .expect("must not panic on a wrapping ts");
+    match outcome {
+        SyscallOutcome::Continue { ret } => assert_eq!(ret, 0),
+        _ => panic!("expected Continue"),
+    }
+    assert!(state.memory_load(ts, 8).expect("loadable").is_symbolic());
+    assert!(state.memory_load(0, 8).expect("loadable").is_symbolic());
+}
