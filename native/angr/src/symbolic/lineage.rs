@@ -695,6 +695,4 @@ fn common_prefix_len(a: &ScopePath, b: &ScopePath) -> usize {
         .count()
 }
 
-#[cfg(test)]
-#[path = "lineage_tests.rs"]
-mod lineage_tests;
+test_submod!("lineage_tests.rs" => lineage_tests);

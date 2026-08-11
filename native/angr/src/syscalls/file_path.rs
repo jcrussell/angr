@@ -1104,6 +1104,4 @@ impl NativeSyscall for NativeNewfstatatSyscall {
     }
 }
 
-#[cfg(test)]
-#[path = "file_path_tests.rs"]
-mod file_path_tests;
+test_submod!("file_path_tests.rs" => file_path_tests);

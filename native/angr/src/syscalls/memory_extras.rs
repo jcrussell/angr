@@ -49,6 +49,4 @@ stub_syscall!(
     0
 );
 
-#[cfg(test)]
-#[path = "memory_extras_tests.rs"]
-mod memory_extras_tests;
+test_submod!("memory_extras_tests.rs" => memory_extras_tests);

@@ -415,6 +415,4 @@ pub(crate) fn segmentlist(m: &Bound<'_, PyModule>) -> PyResult<()> {
     Ok(())
 }
 
-#[cfg(test)]
-#[path = "segmentlist_tests.rs"]
-mod tests;
+test_submod!("segmentlist_tests.rs" => tests);

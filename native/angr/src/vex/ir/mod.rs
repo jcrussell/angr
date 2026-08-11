@@ -100,6 +100,4 @@ pub use descriptors::*;
 pub use ops_def::*;
 pub use types::*;
 
-#[cfg(test)]
-#[path = "../ir_tests.rs"]
-mod tests;
+test_submod!("../ir_tests.rs" => tests);

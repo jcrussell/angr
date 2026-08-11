@@ -230,9 +230,7 @@ impl<T, E: std::fmt::Display> MapPyErr<T> for Result<T, E> {
     }
 }
 
-#[cfg(test)]
-#[path = "errors_tests.rs"]
-mod tests;
+test_submod!("errors_tests.rs" => tests);
 
 /// Register the typed exception classes on the rustylib vex_engine module.
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {

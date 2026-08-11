@@ -242,6 +242,4 @@ impl Arch for X86 {
     }
 }
 
-#[cfg(test)]
-#[path = "x86_tests.rs"]
-mod tests;
+test_submod!("x86_tests.rs" => tests);

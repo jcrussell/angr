@@ -289,6 +289,4 @@ impl Arch for AMD64 {
     }
 }
 
-#[cfg(test)]
-#[path = "amd64_tests.rs"]
-mod tests;
+test_submod!("amd64_tests.rs" => tests);

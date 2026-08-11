@@ -247,6 +247,4 @@ impl<S> HasTimeout for PyExecutorInner<S> {
     }
 }
 
-#[cfg(test)]
-#[path = "executor_tests.rs"]
-mod tests;
+test_submod!("executor_tests.rs" => tests);

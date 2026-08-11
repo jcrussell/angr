@@ -77,6 +77,4 @@ impl NativeSyscall for NativeArchPrctlSyscall {
     }
 }
 
-#[cfg(test)]
-#[path = "arch_prctl_tests.rs"]
-mod arch_prctl_tests;
+test_submod!("arch_prctl_tests.rs" => arch_prctl_tests);

@@ -81,6 +81,4 @@ constant_syscall!(NativeGetegidSyscall, "getegid", DEFAULT_UID_GID);
 stub_syscall!(NativeSetuidSyscall, "setuid", "syscall_stub_setuid", 1);
 stub_syscall!(NativeSetgidSyscall, "setgid", "syscall_stub_setgid", 1);
 
-#[cfg(test)]
-#[path = "identity_tests.rs"]
-mod identity_tests;
+test_submod!("identity_tests.rs" => identity_tests);

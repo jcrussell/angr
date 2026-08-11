@@ -100,6 +100,4 @@ where
     Ok(out)
 }
 
-#[cfg(test)]
-#[path = "bv_chunk_tests.rs"]
-mod bv_chunk_tests;
+test_submod!("bv_chunk_tests.rs" => bv_chunk_tests);

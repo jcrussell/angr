@@ -71,6 +71,4 @@ impl NativeSyscall for NativeTgkillSyscall {
     }
 }
 
-#[cfg(test)]
-#[path = "signals_tests.rs"]
-mod signals_tests;
+test_submod!("signals_tests.rs" => signals_tests);

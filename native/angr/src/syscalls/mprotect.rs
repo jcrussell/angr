@@ -129,6 +129,4 @@ impl NativeSyscall for NativeMprotectSyscall {
     }
 }
 
-#[cfg(test)]
-#[path = "mprotect_tests.rs"]
-mod mprotect_tests;
+test_submod!("mprotect_tests.rs" => mprotect_tests);

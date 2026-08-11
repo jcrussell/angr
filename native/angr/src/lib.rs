@@ -123,6 +123,17 @@
 ///
 /// Defined before the crate's `mod` declarations so legacy textual macro scope
 /// reaches every module; invoke it unqualified.
+///
+/// It is the convention for **every** out-of-line test submodule, not just the
+/// ones where the `allow` is load-bearing. The payload only bites under a host
+/// module's own `#![deny(clippy::unwrap_used, clippy::expect_used)]` (today:
+/// `exploration::shadow_probe`), so the hand-written spelling compiles fine
+/// everywhere else — which is exactly why three audit rounds each found a
+/// two-site subset of the same ~60-site divergence and called it fixed
+/// (angr-c7xno.48, angr-03vl4.8, angr-03vl4.89). The last of those swept the
+/// remainder, so the invariant a future audit checks is now a simple one:
+/// outside this macro's own definition, `native/angr/src/**` contains no
+/// `#[cfg(test)] #[path = ...] mod ...;`.
 macro_rules! test_submod {
     ($file:literal => $name:ident) => {
         #[cfg(test)]

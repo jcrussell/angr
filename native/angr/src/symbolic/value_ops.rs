@@ -1715,6 +1715,4 @@ impl ExtractTarget for RustBVExtractTarget {
 // through `bv_codec` and the `z3` crate, which are absent from a no-z3 build.
 // Whole-module gate keeps the no-default-features / vex-engine nightly `cargo
 // test` combos compiling; default (z3-on) build still runs every test here.
-#[cfg(all(test, feature = "vex-engine-z3"))]
-#[path = "value_ops_property_tests.rs"]
-mod value_ops_property_tests;
+test_submod!(z3 "value_ops_property_tests.rs" => value_ops_property_tests);

@@ -1025,6 +1025,4 @@ pub fn record_symfile_write_demotion() {
     SYMFILE_WRITE_DEMOTIONS.fetch_add(1, Ordering::Relaxed);
 }
 
-#[cfg(test)]
-#[path = "stats_tests.rs"]
-mod stats_tests;
+test_submod!("stats_tests.rs" => stats_tests);

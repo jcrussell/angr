@@ -1,7 +1,10 @@
 //! Unit tests for the SI-B shadow probe (angr-9ke6b.63 / .64).
 //!
 //! Included as the `#[cfg(test)] mod tests` body of `shadow_probe.rs` via
-//! `#[path]`, so `super::*` resolves to that module.
+//! `test_submod!`, so `super::*` resolves to that module. The macro supplies
+//! the `clippy::unwrap_used` / `expect_used` opt-out this file used to
+//! hand-write — load-bearing here, because `shadow_probe.rs` carries its own
+//! module-level `deny` of both.
 //!
 //! These drive [`spawn_shadow_probe_thread`] directly rather than through
 //! [`RustExplorationManager::shadow_probe_migrate`]: the manager needs a live
@@ -9,11 +12,6 @@
 //! deserialize-failure and channel-teardown branches actually live — is a plain
 //! Rust function. The manager-side wiring stays covered end-to-end by
 //! `tests/engines/rust/test_manager_core.py::test_shadow_probe_{off,on}_*`.
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "test module: a failed unwrap is the assertion"
-)]
 
 use super::*;
 use std::time::Duration;

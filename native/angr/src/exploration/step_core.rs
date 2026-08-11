@@ -369,6 +369,4 @@ pub(crate) fn run_interpreter_step_core(
     }
 }
 
-#[cfg(test)]
-#[path = "step_core_tests.rs"]
-mod tests;
+test_submod!("step_core_tests.rs" => tests);

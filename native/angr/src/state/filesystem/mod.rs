@@ -112,6 +112,4 @@ impl Default for FileSystem {
     }
 }
 
-#[cfg(test)]
-#[path = "../filesystem_tests.rs"]
-mod filesystem_tests;
+test_submod!("../filesystem_tests.rs" => filesystem_tests);

@@ -1101,10 +1101,6 @@ impl RustExplorationManager {
     }
 }
 
-#[cfg(test)]
-#[path = "sizes_tests.rs"]
-mod sizes;
+test_submod!("sizes_tests.rs" => sizes);
 
-#[cfg(test)]
-#[path = "subcall_tests.rs"]
-mod subcall_tests;
+test_submod!("subcall_tests.rs" => subcall_tests);

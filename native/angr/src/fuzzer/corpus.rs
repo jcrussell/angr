@@ -297,6 +297,4 @@ impl DynCorpus<BytesInput> {
     }
 }
 
-#[cfg(test)]
-#[path = "corpus_tests.rs"]
-mod tests;
+test_submod!("corpus_tests.rs" => tests);

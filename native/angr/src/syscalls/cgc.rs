@@ -556,6 +556,4 @@ impl NativeSyscall for NativeDeallocateSyscall {
     }
 }
 
-#[cfg(test)]
-#[path = "cgc_tests.rs"]
-mod cgc_tests;
+test_submod!("cgc_tests.rs" => cgc_tests);

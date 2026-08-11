@@ -124,6 +124,4 @@ impl NativeSyscall for NativeBrkSyscall {
     }
 }
 
-#[cfg(test)]
-#[path = "brk_tests.rs"]
-mod brk_tests;
+test_submod!("brk_tests.rs" => brk_tests);

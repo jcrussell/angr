@@ -956,6 +956,4 @@ pub fn handle_ccall_with_ctx(
     None
 }
 
-#[cfg(test)]
-#[path = "../ccall_tests.rs"]
-mod ccall_tests;
+test_submod!("../ccall_tests.rs" => ccall_tests);

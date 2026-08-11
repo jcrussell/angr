@@ -34,6 +34,4 @@ impl NativeSyscall for NativeMunmapSyscall {
     }
 }
 
-#[cfg(test)]
-#[path = "munmap_tests.rs"]
-mod munmap_tests;
+test_submod!("munmap_tests.rs" => munmap_tests);

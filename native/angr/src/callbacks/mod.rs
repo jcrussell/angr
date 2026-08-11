@@ -1184,6 +1184,4 @@ impl Default for PythonCallbacks {
     }
 }
 
-#[cfg(test)]
-#[path = "../callbacks_tests.rs"]
-mod tests;
+test_submod!("../callbacks_tests.rs" => tests);

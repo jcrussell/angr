@@ -163,6 +163,4 @@ fn handle_out_port(_state: &mut DirtyHelperState, _args: &[u64]) -> Option<Dirty
 // Tests
 // ============================================================================
 
-#[cfg(test)]
-#[path = "dirty_tests.rs"]
-mod tests;
+test_submod!("dirty_tests.rs" => tests);

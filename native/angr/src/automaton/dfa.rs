@@ -389,6 +389,4 @@ impl Default for DFA {
     }
 }
 
-#[cfg(test)]
-#[path = "dfa_tests.rs"]
-mod tests;
+test_submod!("dfa_tests.rs" => tests);

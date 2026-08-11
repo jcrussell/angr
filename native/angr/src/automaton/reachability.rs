@@ -41,6 +41,4 @@ where
     reachable
 }
 
-#[cfg(test)]
-#[path = "reachability_tests.rs"]
-mod tests;
+test_submod!("reachability_tests.rs" => tests);

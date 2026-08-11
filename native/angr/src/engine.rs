@@ -445,9 +445,7 @@ fn libvex_ffi_enabled() -> bool {
     cfg!(feature = "libvex-ffi")
 }
 
-#[cfg(test)]
-#[path = "engine_tests.rs"]
-mod tests;
+test_submod!("engine_tests.rs" => tests);
 
 /// Register the VEX engine module with Python.
 pub(crate) fn vex_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {

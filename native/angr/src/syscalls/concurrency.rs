@@ -121,6 +121,4 @@ stub_syscall!(
     6
 );
 
-#[cfg(all(test, feature = "vex-engine-z3"))]
-#[path = "concurrency_tests.rs"]
-mod concurrency_tests;
+test_submod!(z3 "concurrency_tests.rs" => concurrency_tests);

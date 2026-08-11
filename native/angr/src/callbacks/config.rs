@@ -154,6 +154,4 @@ impl Default for ExecutionConfig {
     }
 }
 
-#[cfg(test)]
-#[path = "config_tests.rs"]
-mod config_tests;
+test_submod!("config_tests.rs" => config_tests);

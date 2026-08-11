@@ -664,9 +664,7 @@ fn disasm_addr_retained(vaddr: u64, addr: u64, end: u64) -> bool {
     vaddr < addr || vaddr >= end
 }
 
-#[cfg(test)]
-#[path = "icicle_tests.rs"]
-mod tests;
+test_submod!("icicle_tests.rs" => tests);
 
 #[pymodule]
 pub(crate) fn icicle(m: &Bound<'_, PyModule>) -> PyResult<()> {

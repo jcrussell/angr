@@ -363,6 +363,4 @@ impl NativeSyscall for NativeMmap2Syscall {
     }
 }
 
-#[cfg(test)]
-#[path = "mmap_tests.rs"]
-mod mmap_tests;
+test_submod!("mmap_tests.rs" => mmap_tests);

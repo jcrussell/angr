@@ -376,6 +376,4 @@ impl Clone for RustSymbolTable {
     }
 }
 
-#[cfg(test)]
-#[path = "table_tests.rs"]
-mod tests;
+test_submod!("table_tests.rs" => tests);

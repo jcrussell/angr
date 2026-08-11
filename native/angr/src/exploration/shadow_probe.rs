@@ -149,6 +149,4 @@ fn spawn_shadow_probe_thread() -> ShadowProbeChan {
     (tx_bytes, rx_ns)
 }
 
-#[cfg(test)]
-#[path = "shadow_probe_tests.rs"]
-mod tests;
+test_submod!("shadow_probe_tests.rs" => tests);

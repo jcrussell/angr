@@ -671,6 +671,4 @@ pub fn convert_pyvex_irsb(pyvex: &PyVexIRSB) -> Result<IRSB, DeserializeError> {
     })
 }
 
-#[cfg(test)]
-#[path = "pyvex_bridge_tests.rs"]
-mod tests;
+test_submod!("pyvex_bridge_tests.rs" => tests);

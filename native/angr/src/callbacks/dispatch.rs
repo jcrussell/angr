@@ -786,6 +786,4 @@ impl PythonCallbacks {
     }
 }
 
-#[cfg(test)]
-#[path = "dispatch_tests.rs"]
-mod dispatch_tests;
+test_submod!("dispatch_tests.rs" => dispatch_tests);

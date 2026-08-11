@@ -486,6 +486,4 @@ pub fn automaton(m: &Bound<'_, PyModule>) -> PyResult<()> {
     Ok(())
 }
 
-#[cfg(test)]
-#[path = "python_bindings_tests.rs"]
-mod tests;
+test_submod!("python_bindings_tests.rs" => tests);

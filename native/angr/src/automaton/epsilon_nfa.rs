@@ -273,6 +273,4 @@ impl Default for EpsilonNFA {
     }
 }
 
-#[cfg(test)]
-#[path = "epsilon_nfa_tests.rs"]
-mod tests;
+test_submod!("epsilon_nfa_tests.rs" => tests);

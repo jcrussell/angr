@@ -270,6 +270,4 @@ impl Arch for ARM {
     }
 }
 
-#[cfg(test)]
-#[path = "arm_tests.rs"]
-mod tests;
+test_submod!("arm_tests.rs" => tests);

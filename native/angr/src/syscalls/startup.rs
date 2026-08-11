@@ -171,6 +171,4 @@ impl NativeSyscall for NativeGetrandomSyscall {
     }
 }
 
-#[cfg(test)]
-#[path = "startup_tests.rs"]
-mod startup_tests;
+test_submod!("startup_tests.rs" => startup_tests);

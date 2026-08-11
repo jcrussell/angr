@@ -105,6 +105,4 @@ stub_syscall!(
     4
 );
 
-#[cfg(test)]
-#[path = "rlimit_tests.rs"]
-mod rlimit_tests;
+test_submod!("rlimit_tests.rs" => rlimit_tests);

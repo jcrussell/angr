@@ -47,6 +47,4 @@ impl NativeSyscall for NativeRtSigactionSyscall {
     }
 }
 
-#[cfg(test)]
-#[path = "sigaction_tests.rs"]
-mod sigaction_tests;
+test_submod!("sigaction_tests.rs" => sigaction_tests);

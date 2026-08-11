@@ -545,6 +545,4 @@ impl NativeSyscall for NativePwrite64Syscall {
     }
 }
 
-#[cfg(test)]
-#[path = "fd_io_tests.rs"]
-mod fd_io_tests;
+test_submod!("fd_io_tests.rs" => fd_io_tests);

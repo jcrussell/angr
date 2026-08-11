@@ -641,6 +641,4 @@ pub fn clear_global_registry() {
     }
 }
 
-#[cfg(test)]
-#[path = "registry_tests.rs"]
-mod tests;
+test_submod!("registry_tests.rs" => tests);

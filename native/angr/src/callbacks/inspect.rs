@@ -434,6 +434,4 @@ impl PythonCallbacks {
     }
 }
 
-#[cfg(test)]
-#[path = "inspect_tests.rs"]
-mod inspect_tests;
+test_submod!("inspect_tests.rs" => inspect_tests);

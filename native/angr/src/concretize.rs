@@ -741,6 +741,4 @@ impl AddressConcretizer {
     }
 }
 
-#[cfg(test)]
-#[path = "concretize_tests.rs"]
-mod tests;
+test_submod!("concretize_tests.rs" => tests);

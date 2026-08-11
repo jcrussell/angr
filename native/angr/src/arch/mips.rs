@@ -698,6 +698,4 @@ impl Arch for MIPS64 {
     }
 }
 
-#[cfg(test)]
-#[path = "mips_tests.rs"]
-mod tests;
+test_submod!("mips_tests.rs" => tests);

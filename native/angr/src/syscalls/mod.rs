@@ -1231,6 +1231,4 @@ impl NativeSyscallRegistry {
     }
 }
 
-#[cfg(test)]
-#[path = "mod_tests.rs"]
-mod mod_tests;
+test_submod!("mod_tests.rs" => mod_tests);

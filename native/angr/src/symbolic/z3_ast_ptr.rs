@@ -166,6 +166,4 @@ impl Drop for Z3AstPtr {
 // handle across threads is unsafe regardless of `Sync`. We deliberately do
 // not implement `Send` or `Sync`.
 
-#[cfg(test)]
-#[path = "z3_ast_ptr_tests.rs"]
-mod tests;
+test_submod!("z3_ast_ptr_tests.rs" => tests);

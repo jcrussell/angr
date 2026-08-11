@@ -568,6 +568,4 @@ pub(crate) fn register_exploration(m: &Bound<'_, PyModule>) -> PyResult<()> {
     Ok(())
 }
 
-#[cfg(test)]
-#[path = "mod_tests.rs"]
-mod tests;
+test_submod!("mod_tests.rs" => tests);

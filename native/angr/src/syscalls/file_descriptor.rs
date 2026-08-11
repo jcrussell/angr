@@ -367,6 +367,4 @@ impl NativeSyscall for NativeDup3Syscall {
     }
 }
 
-#[cfg(test)]
-#[path = "file_descriptor_tests.rs"]
-mod file_descriptor_tests;
+test_submod!("file_descriptor_tests.rs" => file_descriptor_tests);

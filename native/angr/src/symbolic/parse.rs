@@ -163,6 +163,4 @@ pub(super) fn parse_decimal_to_bytes(s: &str, width: u32) -> Option<Vec<u8>> {
     None
 }
 
-#[cfg(test)]
-#[path = "parse_tests.rs"]
-mod tests;
+test_submod!("parse_tests.rs" => tests);

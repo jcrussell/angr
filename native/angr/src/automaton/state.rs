@@ -147,6 +147,4 @@ impl FromIterator<StateId> for StateSet {
     }
 }
 
-#[cfg(test)]
-#[path = "state_tests.rs"]
-mod tests;
+test_submod!("state_tests.rs" => tests);

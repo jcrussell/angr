@@ -855,6 +855,4 @@ impl PartialEq for RustBV {
 // exist in a no-z3 build. The no-default-features / vex-engine (no-z3) nightly
 // combos build the lib test harness, so an ungated decl breaks `cargo test`
 // there (bd angr-cagbn). Default (z3-on) build still compiles and runs them.
-#[cfg(all(test, feature = "vex-engine-z3"))]
-#[path = "value_tests.rs"]
-mod value_tests;
+test_submod!(z3 "value_tests.rs" => value_tests);

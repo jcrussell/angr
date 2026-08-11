@@ -212,6 +212,4 @@ impl NativeSyscall for NativeGetcwdSyscall {
     }
 }
 
-#[cfg(test)]
-#[path = "directory_tests.rs"]
-mod directory_tests;
+test_submod!("directory_tests.rs" => directory_tests);
