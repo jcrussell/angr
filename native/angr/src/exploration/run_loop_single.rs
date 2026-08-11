@@ -194,6 +194,27 @@ impl RustExplorationManager {
         ))
     }
 
+    /// Drop both callable-predicate "already answered at this PC" skip tokens
+    /// for `state_id`.
+    ///
+    /// The gates in [`Self::step_one`] only *inspect* their token; this is the
+    /// single place either one is retired. Both are dropped together so a state
+    /// holding one predicate's token cannot leak it by being routed terminal at
+    /// the other predicate's address check (angr-03vl4.87).
+    fn clear_predicate_skip_tokens(&mut self, state_id: u64) {
+        if !(self.find_needs_python || self.avoid_needs_python) {
+            // No callable predicate is configured, so no token can exist —
+            // skip two hashes on the per-state path.
+            return;
+        }
+        self.constraint_tracker
+            .skip_find_predicate_states
+            .remove(&state_id);
+        self.constraint_tracker
+            .skip_avoid_predicate_states
+            .remove(&state_id);
+    }
+
     /// Step a single popped state to its next outcome — the shared stepping
     /// decision point. Returns a `StepOutcome` the driver routes; this method
     /// performs all the per-state work (find/avoid checks, SimProcedure
@@ -217,29 +238,35 @@ impl RustExplorationManager {
         // no matter which side of a step boundary the state is observed on
         // (angr-03vl4.14).
         let pc = state.pc();
+        let state_id = state.state_id();
 
         // Check if callable find predicate needs Python evaluation.
         // When find is a callable (lambda/function), we must return to Python
         // to evaluate it for each state, not just check addresses.
         // Skip if this state was just checked (resume_find_predicate(false)
         // sets skip_find_predicate_state to avoid infinite loop).
-        if self.find_needs_python {
-            let state_id = state.state_id();
-            if self
+        //
+        // The token is inspected with `contains`, NOT consumed here: with BOTH
+        // predicates callable and both answering false, consuming at the gate
+        // made pass 3 re-ask find with no token and the state ping-ponged
+        // between the two bounces forever (angr-03vl4.87). Both tokens are
+        // dropped together by `clear_predicate_skip_tokens` once the state has
+        // cleared both gate sections (or is routed terminal by an address
+        // check, which would otherwise leak them into the HashSet).
+        if self.find_needs_python
+            && !self
                 .constraint_tracker
                 .skip_find_predicate_states
-                .remove(&state_id)
-            {
-                // Fall through to hooks/stepping — predicate already checked
-            } else {
-                let pending =
-                    PendingCallback::lightweight(state, CallbackReason::FindPredicate { addr: pc });
-                return Ok(StepOutcome::NeedCallback(pending));
-            } // else (not skip_find_predicate_state)
+                .contains(&state_id)
+        {
+            let pending =
+                PendingCallback::lightweight(state, CallbackReason::FindPredicate { addr: pc });
+            return Ok(StepOutcome::NeedCallback(pending));
         }
 
         // Check find addresses (address-based, only when NOT using callable predicate)
         if self.find_addrs.contains(&pc) {
+            self.clear_predicate_skip_tokens(state_id);
             // Only add to found if the state is satisfiable
             // (UNSAT states reached the address via infeasible paths)
             if state.survives_sat_prune(self.constraint_solver.lazy_solves) {
@@ -260,28 +287,31 @@ impl RustExplorationManager {
         // to evaluate it for each state, not just check addresses.
         // Skip if this state was just checked (resume_avoid_predicate(false)
         // sets skip_avoid_predicate_states to prevent infinite loop).
-        if self.avoid_needs_python {
-            let state_id = state.state_id();
-            if self
+        // Inspected, not consumed — see the find gate above (angr-03vl4.87).
+        if self.avoid_needs_python
+            && !self
                 .constraint_tracker
                 .skip_avoid_predicate_states
-                .remove(&state_id)
-            {
-                // Fall through — predicate already checked at this PC
-            } else {
-                let pending = PendingCallback::lightweight(
-                    state,
-                    CallbackReason::AvoidPredicate { addr: pc },
-                );
-                return Ok(StepOutcome::NeedCallback(pending));
-            }
+                .contains(&state_id)
+        {
+            let pending =
+                PendingCallback::lightweight(state, CallbackReason::AvoidPredicate { addr: pc });
+            return Ok(StepOutcome::NeedCallback(pending));
         }
 
         // Check avoid addresses (address-based, only when NOT using callable predicate)
         if self.avoid_addrs.contains(&pc) {
+            self.clear_predicate_skip_tokens(state_id);
             self.push_or_drop_terminal(STASH_AVOID, state);
             return Ok(StepOutcome::Routed);
         }
+
+        // Both predicate gates cleared: the state is about to reach
+        // hooks/stepping, so its PC is about to change and any "already asked
+        // at this PC" answer is spent. Dropping both tokens here (rather than
+        // at each gate) is what bounds a PC visit to one bounce per predicate
+        // instead of an endless find/avoid alternation (angr-03vl4.87).
+        self.clear_predicate_skip_tokens(state_id);
 
         // Check hooks (SimProcedures)
         // GAP 6: stack-based skip tracking for zero-length hooks. Expires

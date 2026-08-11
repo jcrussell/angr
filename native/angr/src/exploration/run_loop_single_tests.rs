@@ -276,6 +276,63 @@ fn callable_find_predicate_bounces_once_then_skip_token_is_consumed() {
     });
 }
 
+/// With BOTH predicates callable and both answering "no", the state must reach
+/// the interpreter on its third visit instead of alternating find/avoid bounces
+/// forever (angr-03vl4.87). Consuming each token at its own gate used to leave
+/// the third visit's find gate token-less, so pass 3 re-bounced to find, pass 4
+/// to avoid, and the PC never advanced.
+#[test]
+fn both_callable_predicates_answering_false_stop_bouncing_on_the_third_visit() {
+    Python::initialize();
+    Python::attach(|_py| {
+        let (mut mgr, state, id) = mgr_and_state(0x40_9000);
+        // Avoid address first: `set_avoid_addrs` clears `avoid_needs_python`.
+        // It is what makes the third visit's fall-through observable without
+        // driving the interpreter, and it sits *after* the avoid gate, so it
+        // cannot preempt either bounce.
+        mgr.set_avoid_addrs(vec![0x40_9000]);
+        mgr.set_find_needs_python(true);
+        mgr.set_avoid_needs_python(true);
+        let cb = PythonCallbacks::new();
+
+        // Visit 1: find has no token, so it bounces. Python answers "no match".
+        let pending = expect_callback(mgr.step_one(&cb, state).unwrap());
+        match pending.reason {
+            CallbackReason::FindPredicate { addr } => assert_eq!(addr, 0x40_9000),
+            other => panic!("expected FindPredicate, got {other:?}"),
+        }
+        mgr.constraint_tracker.skip_find_predicate_states.insert(id);
+
+        // Visit 2: find falls through on its token; avoid has none, so it
+        // bounces. Python answers "not avoided".
+        let pending = expect_callback(mgr.step_one(&cb, pending.state).unwrap());
+        match pending.reason {
+            CallbackReason::AvoidPredicate { addr } => assert_eq!(addr, 0x40_9000),
+            other => panic!("expected AvoidPredicate, got {other:?}"),
+        }
+        mgr.constraint_tracker.skip_avoid_predicate_states.insert(id);
+
+        // Visit 3: the find token must STILL be honored — this is the assertion
+        // the old consume-at-the-gate code failed.
+        assert_routed(mgr.step_one(&cb, pending.state).unwrap());
+        assert_eq!(
+            mgr.stash_count(STASH_AVOID),
+            1,
+            "cleared both gates and hit the avoid address"
+        );
+        assert!(
+            !mgr.constraint_tracker
+                .skip_find_predicate_states
+                .contains(&id)
+                && !mgr
+                    .constraint_tracker
+                    .skip_avoid_predicate_states
+                    .contains(&id),
+            "both tokens retire together once the state clears both gates"
+        );
+    });
+}
+
 /// A pending callable *find* predicate beats an address-based avoid: both find
 /// arms run before either avoid arm, so the state bounces to Python for the
 /// find verdict rather than being routed to AVOID unasked. Only if Python
