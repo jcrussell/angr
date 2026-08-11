@@ -9,7 +9,10 @@
 
 use proc_macro::TokenStream;
 use quote::{format_ident, quote, quote_spanned};
-use syn::{Data, DeriveInput, Fields, ItemFn, Lit, Meta, parse_macro_input, spanned::Spanned};
+use syn::{
+    Data, DeriveInput, Fields, FnArg, ItemFn, Lit, Meta, Receiver, parse_macro_input,
+    spanned::Spanned,
+};
 
 /// Injects `self.steady_config_guard();` as the first statement of the
 /// annotated `&mut self` method body.
@@ -18,16 +21,67 @@ use syn::{Data, DeriveInput, Fields, ItemFn, Lit, Meta, parse_macro_input, spann
 /// session is live, so applying it uniformly (including to methods that
 /// already call it by hand) is safe — the point is to make "a new mutator
 /// forgot to call it" impossible rather than "hopefully remembered."
+///
+/// Takes no attribute arguments, and rejects anything but a `&mut self`
+/// receiver: `steady_config_guard` itself needs `&mut self`, so a misapplied
+/// attribute would otherwise surface as a confusing error *inside* the
+/// injected statement ("cannot find value `self`" / "cannot borrow as
+/// mutable") rather than pointing at the attribute.
 #[proc_macro_attribute]
-pub fn steady_guarded(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    let mut func = parse_macro_input!(item as ItemFn);
+pub fn steady_guarded(attr: TokenStream, item: TokenStream) -> TokenStream {
+    steady_guarded_impl(attr.into(), item.into()).into()
+}
 
-    let guard_call: syn::Stmt = syn::parse_quote! {
-        self.steady_config_guard();
+/// `proc_macro2` body of [`steady_guarded`], so the expansion is reachable
+/// from unit tests (the `proc_macro` types only exist inside a real macro
+/// invocation).
+///
+/// Diagnostics are emitted as `compile_error!` *next to* the function rather
+/// than in place of it, so a misuse reports one clear message instead of also
+/// burying the caller in "no method named ..." follow-ons.
+fn steady_guarded_impl(
+    attr: proc_macro2::TokenStream,
+    item: proc_macro2::TokenStream,
+) -> proc_macro2::TokenStream {
+    let mut func = match syn::parse2::<ItemFn>(item) {
+        Ok(func) => func,
+        Err(err) => return err.to_compile_error(),
     };
-    func.block.stmts.insert(0, guard_call);
 
-    quote! { #func }.into()
+    let mut errors = proc_macro2::TokenStream::new();
+    if !attr.is_empty() {
+        let msg = "#[steady_guarded] takes no arguments — the guard call it injects is not \
+                   configurable; write a bare `#[angr_macros::steady_guarded]`";
+        errors.extend(quote_spanned! { attr.span() => compile_error!(#msg); });
+    }
+
+    let receiver_ok =
+        matches!(func.sig.inputs.first(), Some(FnArg::Receiver(recv)) if takes_mut_self(recv));
+    if receiver_ok {
+        let guard_call: syn::Stmt = syn::parse_quote! {
+            self.steady_config_guard();
+        };
+        func.block.stmts.insert(0, guard_call);
+    } else {
+        // Skip the injection too: without a `&mut self` receiver it cannot
+        // compile, and its errors would drown out the one above.
+        let msg = "#[steady_guarded] requires a `&mut self` receiver — it injects \
+                   `self.steady_config_guard();`, which takes `&mut self`";
+        errors.extend(quote_spanned! { func.sig.span() => compile_error!(#msg); });
+    }
+
+    quote! { #errors #func }
+}
+
+/// Whether a method receiver binds `self` mutably by reference.
+fn takes_mut_self(recv: &Receiver) -> bool {
+    if recv.colon_token.is_some() {
+        // Typed receiver (`self: &mut Self`): syn leaves `reference` /
+        // `mutability` unset for these, so the type is the only signal.
+        matches!(&*recv.ty, syn::Type::Reference(r) if r.mutability.is_some())
+    } else {
+        recv.reference.is_some() && recv.mutability.is_some()
+    }
 }
 
 /// Policy values [`derive_merge_policy`] accepts. Each names a treatment
@@ -286,5 +340,77 @@ fn str_attr_value(attr: &syn::Attribute) -> Option<String> {
             _ => None,
         },
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod steady_guarded_tests {
+    use super::steady_guarded_impl;
+    use quote::quote;
+
+    /// Token-stream text of the expansion. `to_string()` spaces every token,
+    /// so the *injected statement* reads `self . steady_config_guard`, which
+    /// distinguishes it from the unspaced `self.steady_config_guard();` quoted
+    /// inside the diagnostic message.
+    fn expand(attr: proc_macro2::TokenStream, item: proc_macro2::TokenStream) -> String {
+        steady_guarded_impl(attr, item).to_string()
+    }
+
+    const INJECTED: &str = "self . steady_config_guard";
+
+    #[test]
+    fn mut_self_method_gets_the_guard_as_its_first_statement() {
+        let out = expand(quote! {}, quote! { fn set_x(&mut self) { self.x = 1; } });
+        assert!(!out.contains("compile_error"), "{out}");
+        let guard = out.find(INJECTED);
+        let body = out.find("self . x = 1");
+        assert!(guard.is_some(), "guard call injected: {out}");
+        assert!(body.is_some(), "original body kept: {out}");
+        assert!(guard < body, "guard must come first: {out}");
+    }
+
+    #[test]
+    fn typed_mut_self_receiver_is_accepted() {
+        let out = expand(quote! {}, quote! { fn set_x(self: &mut Self) {} });
+        assert!(!out.contains("compile_error"), "{out}");
+        assert!(out.contains(INJECTED), "{out}");
+    }
+
+    #[test]
+    fn shared_self_receiver_is_rejected_without_injecting() {
+        let out = expand(quote! {}, quote! { fn set_x(&self) {} });
+        assert!(out.contains("requires a `&mut self` receiver"), "{out}");
+        // The bad injection is skipped so its own errors cannot drown out the
+        // diagnostic above.
+        assert!(!out.contains(INJECTED), "{out}");
+        // The function itself still reaches the compiler, so its callers do
+        // not additionally fail with "no method named set_x".
+        assert!(out.contains("fn set_x"), "{out}");
+    }
+
+    #[test]
+    fn free_function_is_rejected() {
+        let out = expand(quote! {}, quote! { fn set_x(a: u8) {} });
+        assert!(out.contains("requires a `&mut self` receiver"), "{out}");
+        assert!(!out.contains(INJECTED), "{out}");
+    }
+
+    #[test]
+    fn by_value_self_receiver_is_rejected() {
+        let out = expand(quote! {}, quote! { fn set_x(mut self) {} });
+        assert!(out.contains("requires a `&mut self` receiver"), "{out}");
+    }
+
+    #[test]
+    fn attribute_arguments_are_rejected_but_the_guard_still_lands() {
+        let out = expand(quote! { every = "step" }, quote! { fn set_x(&mut self) {} });
+        assert!(out.contains("takes no arguments"), "{out}");
+        assert!(out.contains(INJECTED), "{out}");
+    }
+
+    #[test]
+    fn non_function_item_reports_a_parse_error() {
+        let out = expand(quote! {}, quote! { struct Nope; });
+        assert!(out.contains("compile_error"), "{out}");
     }
 }
