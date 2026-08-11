@@ -822,3 +822,57 @@ fn wide_extract_reads_zero_past_bit_128() {
         }
     }
 }
+
+// angr-03vl4.58: signed concrete fast paths at width > 128.
+#[test]
+fn wide_signed_compare_degenerates_to_unsigned() {
+    let ctx = SymContext::new_mock();
+    for &w in &WIDE_WIDTHS {
+        for &a in &wide_payloads() {
+            for &b in &wide_payloads() {
+                // The true sign bit (position w-1 >= 128) is a logical zero on
+                // both sides, so every operand is non-negative and the signed
+                // comparisons agree with the unsigned u128 ones -- even when
+                // bit 127 of a stored payload is set.
+                let (x, y) = (bv(a, w), bv(b, w));
+                let checks = [
+                    ("slt", val(&x.slt(&y, &ctx)), a < b),
+                    ("sle", val(&x.sle(&y, &ctx)), a <= b),
+                    ("sgt", val(&x.sgt(&y, &ctx)), a > b),
+                    ("sge", val(&x.sge(&y, &ctx)), a >= b),
+                ];
+                for (name, got, want) in checks {
+                    assert_eq!(got, u128::from(want), "{name} w={w} a={a:#x} b={b:#x}");
+                }
+            }
+        }
+    }
+}
+
+// angr-03vl4.58: signed concrete fast paths at width > 128.
+#[test]
+fn wide_sdiv_srem_degenerate_to_unsigned() {
+    let ctx = SymContext::new_mock();
+    for &w in &WIDE_WIDTHS {
+        for &a in &wide_payloads() {
+            for &b in &wide_payloads() {
+                let (x, y) = (bv(a, w), bv(b, w));
+                // Both operands are non-negative (sign bit past the storage),
+                // so bvsdiv/bvsrem equal bvudiv/bvurem. Division by zero stays
+                // total: x / 0 == -1 == all-ones for x >= 0, and x % 0 == x.
+                let want_div = if b == 0 { u128::MAX } else { a / b };
+                let want_rem = if b == 0 { a } else { a % b };
+                assert_eq!(
+                    val(&x.sdiv(&y, &ctx)),
+                    want_div,
+                    "sdiv w={w} a={a:#x} b={b:#x}"
+                );
+                assert_eq!(
+                    val(&x.srem(&y, &ctx)),
+                    want_rem,
+                    "srem w={w} a={a:#x} b={b:#x}"
+                );
+            }
+        }
+    }
+}

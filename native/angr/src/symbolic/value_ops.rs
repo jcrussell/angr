@@ -107,9 +107,18 @@ macro_rules! define_signed_cmp_pair {
             debug_assert_eq!(self.width(), other.width());
             match (self.as_u128(), other.as_u128()) {
                 (Some(a), Some(b)) => {
-                    let a_signed = sign_extend(a, self.width());
-                    let b_signed = sign_extend(b, self.width());
-                    Self::concrete(if a_signed $cmp b_signed { 1 } else { 0 }, 1)
+                    let width = self.width();
+                    let ord = if sign_bit_beyond_storage(width) {
+                        // Both operands are logically non-negative, so the
+                        // signed compare degenerates to an unsigned one. Going
+                        // through `sign_extend` here would read bit 127 as the
+                        // sign and flip the result. angr-03vl4.58.
+                        a.cmp(&b)
+                    } else {
+                        sign_extend(a, width).cmp(&sign_extend(b, width))
+                    };
+                    let hit = ord $cmp ::core::cmp::Ordering::Equal;
+                    Self::concrete(if hit { 1 } else { 0 }, 1)
                 }
                 _ => Self::expr_node(1, $op, [self, other]),
             }
@@ -376,22 +385,34 @@ impl RustBV {
         sdiv_into,
         |lhs, rhs, _ctx| {
             (Some(a), Some(b)) => {
-                let a_signed = sign_extend(a, lhs.width());
-                if b == 0 {
-                    // SMT-LIB bvsdiv is total: x / 0 is -1 for x >= 0 but +1
-                    // for x < 0. Must match the symbolic BVOp::SDiv arm below,
-                    // which lowers straight to Z3 bvsdiv.
-                    if a_signed < 0 {
-                        Self::concrete(1, lhs.width())
+                let width = lhs.width();
+                if sign_bit_beyond_storage(width) {
+                    // Both operands are logically non-negative, so bvsdiv
+                    // degenerates to bvudiv (and x / 0 == -1 == all-ones for
+                    // every x >= 0). angr-03vl4.58.
+                    if b == 0 {
+                        Self::ones(width)
                     } else {
-                        Self::ones(lhs.width())
+                        Self::concrete(a / b, width)
                     }
                 } else {
-                    let b_signed = sign_extend(b, lhs.width());
-                    // `wrapping_div` for the MIN / -1 overflow: Rust's `/`
-                    // panics even in release and `panic = "abort"` would
-                    // SIGABRT the process; the wrap matches Z3 bvsdiv.
-                    Self::concrete(a_signed.wrapping_div(b_signed) as u128, lhs.width())
+                    let a_signed = sign_extend(a, width);
+                    if b == 0 {
+                        // SMT-LIB bvsdiv is total: x / 0 is -1 for x >= 0 but +1
+                        // for x < 0. Must match the symbolic BVOp::SDiv arm below,
+                        // which lowers straight to Z3 bvsdiv.
+                        if a_signed < 0 {
+                            Self::concrete(1, width)
+                        } else {
+                            Self::ones(width)
+                        }
+                    } else {
+                        let b_signed = sign_extend(b, width);
+                        // `wrapping_div` for the MIN / -1 overflow: Rust's `/`
+                        // panics even in release and `panic = "abort"` would
+                        // SIGABRT the process; the wrap matches Z3 bvsdiv.
+                        Self::concrete(a_signed.wrapping_div(b_signed) as u128, width)
+                    }
                 }
             }
             _ => {
@@ -428,13 +449,18 @@ impl RustBV {
         srem_into,
         |lhs, rhs, _ctx| {
             (Some(a), Some(b)) => {
+                let width = lhs.width();
                 if b == 0 {
                     lhs
+                } else if sign_bit_beyond_storage(width) {
+                    // Both operands are logically non-negative, so bvsrem
+                    // degenerates to bvurem. angr-03vl4.58.
+                    Self::concrete(a % b, width)
                 } else {
-                    let a_signed = sign_extend(a, lhs.width());
-                    let b_signed = sign_extend(b, lhs.width());
+                    let a_signed = sign_extend(a, width);
+                    let b_signed = sign_extend(b, width);
                     // `wrapping_rem` for the MIN % -1 overflow — see `sdiv`.
-                    Self::concrete(a_signed.wrapping_rem(b_signed) as u128, lhs.width())
+                    Self::concrete(a_signed.wrapping_rem(b_signed) as u128, width)
                 }
             }
             _ => {
@@ -1388,8 +1414,32 @@ fn try_zext_const_cmp_fold(
     }
 }
 
+/// `true` when the sign bit of a `width`-bit `Concrete` lies beyond the u128
+/// the node actually stores, which makes the value logically non-negative.
+///
+/// A `Concrete` keeps only the low 128 bits of its value, so at `width > 128`
+/// the true sign bit (position `width - 1 >= 128`) is one of the
+/// logically-zero bits above that storage — see `sign_extend_to` and
+/// `ashr_into`, which document the same convention. Every *signed* concrete
+/// fast path must therefore degenerate to its unsigned sibling here (signed
+/// compare to unsigned compare, `bvsdiv`/`bvsrem` to `bvudiv`/`bvurem`)
+/// instead of reading bit 127 as the sign.
+#[inline]
+fn sign_bit_beyond_storage(width: u32) -> bool {
+    width > 128
+}
+
 /// Sign-extend a value from `width` bits to i128.
+///
+/// Callers must rule out `sign_bit_beyond_storage(width)` first: past 128 bits
+/// the logical value can exceed `i128::MAX` and simply is not representable
+/// here, so the caller owes the unsigned path instead (angr-03vl4.58).
 fn sign_extend(value: u128, width: u32) -> i128 {
+    debug_assert!(
+        !sign_bit_beyond_storage(width),
+        "sign_extend called at width {width} > 128; caller must take the \
+         unsigned path (see sign_bit_beyond_storage)"
+    );
     if width >= 128 {
         value as i128
     } else {
