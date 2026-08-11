@@ -133,3 +133,5 @@ pub(crate) fn symbolic_size_conditional_store(
     }
     Ok(())
 }
+
+test_submod!("mem_common_tests.rs" => tests);

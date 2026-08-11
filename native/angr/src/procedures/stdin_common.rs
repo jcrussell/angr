@@ -78,3 +78,5 @@ pub(crate) fn stdin_seed_unconsumed(state: &RustSimState) -> bool {
     let pos = fs.fd_info(0).map_or(0, |info| info.1);
     (pos as usize) < content.len()
 }
+
+test_submod!("stdin_common_tests.rs" => tests);
