@@ -162,8 +162,12 @@ fn avoid_addr_short_circuits_to_an_avoided_summary() {
     });
 }
 
+/// Find-first, mirroring `step_one` and the Python `Explorer` default
+/// (`avoid_priority=False`). The worker must agree with the serial loop here or
+/// an overlapping find/avoid address makes the found-set worker-dependent
+/// (angr-03vl4.14).
 #[test]
-fn avoid_wins_when_a_pc_is_in_both_find_and_avoid() {
+fn find_wins_when_a_pc_is_in_both_find_and_avoid() {
     Python::initialize();
     Python::attach(|_py| {
         let addr = 0x40_2000;
@@ -172,16 +176,18 @@ fn avoid_wins_when_a_pc_is_in_both_find_and_avoid() {
         mgr.set_find_addrs(vec![addr]);
         let mut h = Harness::new(&mgr);
         let shared = ParallelShared::seeded(0, 1);
+        let state = state_at(addr);
+        let id = state.state_id();
 
-        let out = h.run(state_at(addr), &CancelToken::new(), &shared);
+        let out = h.run(state, &CancelToken::new(), &shared);
 
-        assert_eq!(
-            out.terminal_summaries[0].disposition,
-            SchedDisposition::Avoided,
-            "avoid is checked first, mirroring step_one"
+        assert!(
+            out.terminal_summaries.is_empty(),
+            "a find is materialized, not summarized as avoided"
         );
-        assert!(out.terminal_states.is_empty(), "not collected as a find");
-        assert_eq!(shared.worker_found_hint.load(Ordering::SeqCst), 0);
+        assert_eq!(out.terminal_states.len(), 1, "collected as a find");
+        assert!(matches!(kind_of(&shared, id), Some(MatKind::Found)));
+        assert_eq!(shared.worker_found_hint.load(Ordering::SeqCst), 1);
     });
 }
 

@@ -132,14 +132,15 @@ impl ParallelShared {
 /// summaries.
 ///
 /// How it replicates `step_one`:
-/// * Pre-step address-based find/avoid (the `avoid_addrs` / `find_addrs` checks
-///   at the top of `step_one` in `run_loop_single.rs`): PC in `avoid_addrs`
-///   → an `Avoided` summary; PC in `find_addrs` + satisfiable → a materialized
-///   `Found` (bumping the worker-side `worker_found_hint`, requesting cancel at
-///   `num_find` — a best-effort early trip; coordinator-routed finds rely on the
-///   `push_found_capped` cap, not this hint);
-///   PC in `find_addrs` + UNSAT → a `Pruned` summary. Callable predicates never
-///   reach here (the coordinator routes them single-threaded).
+/// * Pre-step address-based find/avoid (the `find_addrs` / `avoid_addrs` checks
+///   at the top of `step_one` in `run_loop_single.rs`, in that find-first
+///   order): PC in `find_addrs` + satisfiable → a materialized `Found` (bumping
+///   the worker-side `worker_found_hint`, requesting cancel at `num_find` — a
+///   best-effort early trip; coordinator-routed finds rely on the
+///   `push_found_capped` cap, not this hint); PC in `find_addrs` + UNSAT → a
+///   `Pruned` summary; PC in `avoid_addrs` only → an `Avoided` summary.
+///   Callable predicates never reach here (the coordinator routes them
+///   single-threaded).
 /// * Otherwise it steps via the now-GIL-free `run_interpreter_step_core` and
 ///   classifies with `run_post_step_core`, exactly the `step_state_with_skip`
 ///   pipeline minus `&mut self`. `Continue` successors (incl. native simproc /
@@ -173,12 +174,9 @@ pub(crate) fn parallel_process_state(
         .unwrap_or(id);
 
     // --- Pre-step address-based find / avoid (mirror of step_one). ---
-    if cc.ctx.avoid_addrs.contains(&pc) {
-        return TaskOutcome::summarized(vec![TerminalSummary::of(
-            &state,
-            SchedDisposition::Avoided,
-        )]);
-    }
+    // Find-first, exactly as `step_one` orders it: an address in BOTH sets is a
+    // FOUND, and the parallel loop must agree with the serial one or the
+    // worker-invariance contract breaks on that config (angr-03vl4.14).
     if cc.ctx.find_addrs.contains(&pc) {
         if state.survives_sat_prune(cc.ctx.lazy_solves) {
             {
@@ -202,6 +200,12 @@ pub(crate) fn parallel_process_state(
         return TaskOutcome::summarized(vec![TerminalSummary::of(
             &state,
             SchedDisposition::Pruned,
+        )]);
+    }
+    if cc.ctx.avoid_addrs.contains(&pc) {
+        return TaskOutcome::summarized(vec![TerminalSummary::of(
+            &state,
+            SchedDisposition::Avoided,
         )]);
     }
 

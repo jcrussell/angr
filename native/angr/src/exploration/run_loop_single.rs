@@ -204,36 +204,19 @@ impl RustExplorationManager {
         callbacks: &PythonCallbacks,
         mut state: RustSimState,
     ) -> PyResult<StepOutcome> {
-        // Check find/avoid before stepping
+        // Check find/avoid before stepping.
+        //
+        // Ordering is **find-first**, matching angr's Python `Explorer`
+        // technique with its default `avoid_priority=False`: a state that
+        // satisfies both conditions lands in FOUND, not AVOID. The same order
+        // is used by every other find/avoid routing site — `route_successor`
+        // (fresh successors), the SimProcedure-bounce arm below, the wave
+        // loop's bounce routing, and `run_loop_worker::execute_state_task` —
+        // so an address present in BOTH `find_addrs` and `avoid_addrs` (never
+        // rejected by `set_find_addrs`/`set_avoid_addrs`) routes identically
+        // no matter which side of a step boundary the state is observed on
+        // (angr-03vl4.14).
         let pc = state.pc();
-
-        // Check if callable avoid predicate needs Python evaluation.
-        // When avoid is a callable (lambda/function), we must return to Python
-        // to evaluate it for each state, not just check addresses.
-        // Skip if this state was just checked (resume_avoid_predicate(false)
-        // sets skip_avoid_predicate_states to prevent infinite loop).
-        if self.avoid_needs_python {
-            let state_id = state.state_id();
-            if self
-                .constraint_tracker
-                .skip_avoid_predicate_states
-                .remove(&state_id)
-            {
-                // Fall through — predicate already checked at this PC
-            } else {
-                let pending = PendingCallback::lightweight(
-                    state,
-                    CallbackReason::AvoidPredicate { addr: pc },
-                );
-                return Ok(StepOutcome::NeedCallback(pending));
-            }
-        }
-
-        // Check avoid addresses (address-based, only when NOT using callable predicate)
-        if self.avoid_addrs.contains(&pc) {
-            self.push_or_drop_terminal(STASH_AVOID, state);
-            return Ok(StepOutcome::Routed);
-        }
 
         // Check if callable find predicate needs Python evaluation.
         // When find is a callable (lambda/function), we must return to Python
@@ -269,6 +252,34 @@ impl RustExplorationManager {
                 log::debug!("State at find address 0x{pc:x} is UNSAT, pruning");
                 self.push_or_drop_terminal(STASH_PRUNED, state);
             }
+            return Ok(StepOutcome::Routed);
+        }
+
+        // Check if callable avoid predicate needs Python evaluation.
+        // When avoid is a callable (lambda/function), we must return to Python
+        // to evaluate it for each state, not just check addresses.
+        // Skip if this state was just checked (resume_avoid_predicate(false)
+        // sets skip_avoid_predicate_states to prevent infinite loop).
+        if self.avoid_needs_python {
+            let state_id = state.state_id();
+            if self
+                .constraint_tracker
+                .skip_avoid_predicate_states
+                .remove(&state_id)
+            {
+                // Fall through — predicate already checked at this PC
+            } else {
+                let pending = PendingCallback::lightweight(
+                    state,
+                    CallbackReason::AvoidPredicate { addr: pc },
+                );
+                return Ok(StepOutcome::NeedCallback(pending));
+            }
+        }
+
+        // Check avoid addresses (address-based, only when NOT using callable predicate)
+        if self.avoid_addrs.contains(&pc) {
+            self.push_or_drop_terminal(STASH_AVOID, state);
             return Ok(StepOutcome::Routed);
         }
 

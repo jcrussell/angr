@@ -148,11 +148,14 @@ fn lazy_solves_accepts_unsat_state_at_find_address() {
     });
 }
 
-/// The avoid check runs first, so an address in both sets is avoided, not
-/// found. Ordering is load-bearing: the reverse would report solutions the
-/// caller explicitly excluded.
+/// The find check runs first, so an address in both sets is found, not avoided
+/// — angr's Python `Explorer` documents that default (`avoid_priority=False`,
+/// which the Rust engine has no knob to flip). Ordering is load-bearing: the
+/// reverse silently disagreed with `route_successor`, so the very same config
+/// routed a state to FOUND or AVOID purely by which side of a step boundary it
+/// was observed on (angr-03vl4.14).
 #[test]
-fn avoid_wins_over_find_at_the_same_address() {
+fn find_wins_over_avoid_at_the_same_address() {
     Python::initialize();
     Python::attach(|_py| {
         let (mut mgr, state, _id) = mgr_and_state(0x40_4000);
@@ -162,8 +165,39 @@ fn avoid_wins_over_find_at_the_same_address() {
 
         assert_routed(mgr.step_one(&cb, state).unwrap());
 
-        assert_eq!(mgr.stash_count(STASH_AVOID), 1);
-        assert_eq!(mgr.found_count(), 0, "avoid precedes find");
+        assert_eq!(mgr.found_count(), 1, "find precedes avoid");
+        assert_eq!(mgr.stash_count(STASH_AVOID), 0);
+    });
+}
+
+/// The regression proper: `step_one` (pre-step, popped from ACTIVE) and
+/// `route_successor` (post-step, a fresh successor) must land an
+/// overlapping-address state in the SAME stash. Before angr-03vl4.14 the two
+/// disagreed — AVOID vs FOUND — with nothing user-visible selecting between
+/// them.
+#[test]
+fn pre_step_and_post_step_routing_agree_on_an_overlapping_address() {
+    Python::initialize();
+    Python::attach(|_py| {
+        let addr = 0x40_4100;
+        let cb = PythonCallbacks::new();
+
+        let (mut pre, state, _id) = mgr_and_state(addr);
+        pre.set_find_addrs(vec![addr]);
+        pre.set_avoid_addrs(vec![addr]);
+        assert_routed(pre.step_one(&cb, state).unwrap());
+
+        let (mut post, successor, _id) = mgr_and_state(addr);
+        post.set_find_addrs(vec![addr]);
+        post.set_avoid_addrs(vec![addr]);
+        post.route_successor(successor, true);
+
+        assert_eq!(
+            (pre.found_count(), pre.stash_count(STASH_AVOID)),
+            (post.found_count(), post.stash_count(STASH_AVOID)),
+            "pre-step and post-step routing must not disagree"
+        );
+        assert_eq!(post.found_count(), 1, "and both must be find-first");
     });
 }
 
@@ -176,9 +210,12 @@ fn callable_avoid_predicate_bounces_once_then_skip_token_is_consumed() {
     Python::initialize();
     Python::attach(|_py| {
         let (mut mgr, state, id) = mgr_and_state(0x40_5000);
-        // Set find first: `set_find_addrs` clears `find_needs_python`, and the
-        // find address gives the post-skip fall-through an observable verdict.
-        mgr.set_find_addrs(vec![0x40_5000]);
+        // Set the avoid address first: `set_avoid_addrs` clears
+        // `avoid_needs_python`, and the address gives the post-skip
+        // fall-through an observable verdict. It has to be the *avoid* address
+        // (not a find one) because the find arms now run first, and a find
+        // address would route the state before the predicate is ever asked.
+        mgr.set_avoid_addrs(vec![0x40_5000]);
         mgr.set_avoid_needs_python(true);
         let cb = PythonCallbacks::new();
 
@@ -187,13 +224,17 @@ fn callable_avoid_predicate_bounces_once_then_skip_token_is_consumed() {
             CallbackReason::AvoidPredicate { addr } => assert_eq!(addr, 0x40_5000),
             other => panic!("expected AvoidPredicate, got {other:?}"),
         }
-        assert_eq!(mgr.found_count(), 0, "bounced before any find routing");
+        assert_eq!(mgr.stash_count(STASH_AVOID), 0, "bounced, not yet routed");
 
         // Python answered "not avoided": seed the skip token and re-enter.
         mgr.constraint_tracker.skip_avoid_predicate_states.insert(id);
         assert_routed(mgr.step_one(&cb, pending.state).unwrap());
 
-        assert_eq!(mgr.found_count(), 1, "fell through to the find check");
+        assert_eq!(
+            mgr.stash_count(STASH_AVOID),
+            1,
+            "fell through to the avoid-address check"
+        );
         assert!(
             !mgr.constraint_tracker
                 .skip_avoid_predicate_states
@@ -235,20 +276,32 @@ fn callable_find_predicate_bounces_once_then_skip_token_is_consumed() {
     });
 }
 
-/// An address-based avoid still beats a pending callable *find* predicate:
-/// the avoid arms both run before either find arm.
+/// A pending callable *find* predicate beats an address-based avoid: both find
+/// arms run before either avoid arm, so the state bounces to Python for the
+/// find verdict rather than being routed to AVOID unasked. Only if Python
+/// answers "no match" does the avoid address get its say.
 #[test]
-fn avoid_address_beats_pending_callable_find_predicate() {
+fn pending_callable_find_predicate_beats_avoid_address() {
     Python::initialize();
     Python::attach(|_py| {
-        let (mut mgr, state, _id) = mgr_and_state(0x40_7000);
+        let (mut mgr, state, id) = mgr_and_state(0x40_7000);
         mgr.set_avoid_addrs(vec![0x40_7000]);
         mgr.set_find_needs_python(true);
         let cb = PythonCallbacks::new();
 
-        assert_routed(mgr.step_one(&cb, state).unwrap());
+        let pending = expect_callback(mgr.step_one(&cb, state).unwrap());
+        match pending.reason {
+            CallbackReason::FindPredicate { addr } => assert_eq!(addr, 0x40_7000),
+            other => panic!("expected FindPredicate, got {other:?}"),
+        }
+        assert_eq!(mgr.stash_count(STASH_AVOID), 0, "avoid did not preempt it");
+
+        // Python answered "no match": now the avoid address routes it.
+        mgr.constraint_tracker.skip_find_predicate_states.insert(id);
+        assert_routed(mgr.step_one(&cb, pending.state).unwrap());
 
         assert_eq!(mgr.stash_count(STASH_AVOID), 1);
+        assert_eq!(mgr.found_count(), 0);
     });
 }
 
