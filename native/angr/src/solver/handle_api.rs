@@ -450,7 +450,7 @@ impl RustSolverContext {
         a_id: u64,
         to_width: u32,
     ) -> PyResult<()> {
-        if let Some(width) = self.i().symbol_table.with_value(a_id, |bv| bv.width())
+        if let Some(width) = self.source_width(a_id)
             && to_width < width
         {
             return Err(PyValueError::new_err(format!(
