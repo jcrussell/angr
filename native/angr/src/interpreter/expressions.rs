@@ -983,7 +983,19 @@ impl<'a> VEXInterpreter<'a> {
             IRConst::F32(v) => RustBV::concrete(v.to_bits() as u128, 32),
             IRConst::F64(v) => RustBV::concrete(v.to_bits() as u128, 64),
             IRConst::V128(v) => RustBV::concrete(*v, 128),
-            IRConst::V256(v) => RustBV::concrete(v[0] as u128 | ((v[1] as u128) << 64), 128),
+            // A `Concrete` only ever stores its low 128 bits, so packing all four
+            // u64 lanes into one would drop `v[2]`/`v[3]` *and* mistag the width as
+            // 128 (every sibling arm tags its true IRType width). Assemble the two
+            // halves as a `Concat` instead — the wide-concrete rule from bd memory
+            // `invariant-concrete-bv-u128-16-byte-limit`, same shape as
+            // `bv_utils::bytes_to_bv`. `a.concat(b)` puts `a` above `b`, so the
+            // high half leads. Ico_V256's halves genuinely differ (see bd memory
+            // `invariant-libvex-restricted-vector-consts`), so this is reachable.
+            IRConst::V256(v) => {
+                let high = RustBV::concrete(v[2] as u128 | ((v[3] as u128) << 64), 128);
+                let low = RustBV::concrete(v[0] as u128 | ((v[1] as u128) << 64), 128);
+                high.concat_no_ctx(&low)
+            }
         }
     }
 

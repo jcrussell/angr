@@ -38,6 +38,37 @@ fn eval_const_u128_preserves_high_bits() {
 }
 
 #[test]
+fn eval_const_v256_keeps_all_four_lanes_at_width_256() {
+    let ctx = SymContext::new_mock();
+    let interp = new_interp(&ctx);
+    // Distinct lanes so a dropped/aliased limb is visible; the low half is what
+    // the old `RustBV::concrete(.., 128)` arm kept, the high half what it lost.
+    let lanes = [0x0011_2233_4455_6677u64, 0x8899_aabb_ccdd_eeff, 0x0123_4567_89ab_cdef, 0xfedc_ba98_7654_3210];
+    let bv = interp.eval_const(&IRConst::V256(lanes));
+    assert_eq!(bv.width(), 256);
+    // A 256-bit value cannot live in a `Concrete` (u128 payload), so it must be
+    // a Concat — `as_u128` returning `None` is the shape assertion.
+    assert_eq!(bv.as_u128(), None);
+    for (i, lane) in lanes.iter().enumerate() {
+        let lo = (i as u32) * 64;
+        let slice = bv.extract_no_ctx(lo + 63, lo);
+        assert_eq!(slice.width(), 64);
+        assert_eq!(slice.as_u64(), Some(*lane), "lane {i} mismatch");
+    }
+}
+
+#[test]
+fn eval_const_v256_zero_is_still_all_zero() {
+    let ctx = SymContext::new_mock();
+    let interp = new_interp(&ctx);
+    let bv = interp.eval_const(&IRConst::V256([0; 4]));
+    assert_eq!(bv.width(), 256);
+    for i in 0..4u32 {
+        assert_eq!(bv.extract_no_ctx(i * 64 + 63, i * 64).as_u64(), Some(0));
+    }
+}
+
+#[test]
 fn eval_const_f32_packs_to_bits() {
     let ctx = SymContext::new_mock();
     let interp = new_interp(&ctx);
