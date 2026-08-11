@@ -8,6 +8,7 @@ use crate::callbacks::DeferredFork;
 use crate::solver::RustSolverContext;
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
+use crate::vex::ir::JumpKind;
 use rustc_hash::FxHashMap;
 
 /// Reason for returning to Python.
@@ -158,6 +159,24 @@ impl PendingCallback {
             fork_snapshots,
         }
     }
+
+    /// Jumpkind of the exit that led to this callback, defaulting to
+    /// `Ijk_Boring` when there is none.
+    ///
+    /// `jumpkind` is `None` exactly for the callbacks built by `lightweight`
+    /// (predicate evaluation), which carry no exit of their own. Both Python
+    /// export paths in `exploration::pending_api`
+    /// (`_get_pending_history_and_jumpkind` and `_export_callback_bundle`)
+    /// go through this one helper so the default can only ever be changed
+    /// in one place — the same reason `import_python_constraints` was
+    /// centralized.
+    pub(crate) fn jumpkind_or_boring(&self) -> String {
+        // SILENT(cat-a): a lightweight callback legitimately has no jumpkind;
+        // `Ijk_Boring` is the documented default for that case.
+        self.jumpkind
+            .clone()
+            .unwrap_or_else(|| JumpKind::Boring.ijk_name().to_string())
+    }
 }
 
 /// Apply each deferred fork's taken-path constraint onto `state`'s solver.
@@ -183,3 +202,5 @@ pub(crate) fn apply_deferred_fork_constraints(
         }
     }
 }
+
+test_submod!("callback_types_tests.rs" => tests);

@@ -48,7 +48,6 @@
 
 use super::*;
 use crate::errors::MapPyErr;
-use crate::vex::ir::JumpKind;
 
 impl RustExplorationManager {
     // -------------------------------------------------------------------------
@@ -183,10 +182,7 @@ impl RustExplorationManager {
     ) -> PyResult<(Vec<u64>, String)> {
         self.with_pending(state_id, |pending| {
             let history = pending.state.history().iter().copied().collect::<Vec<_>>();
-            let jumpkind = pending
-                .jumpkind
-                .clone()
-                .unwrap_or_else(|| JumpKind::Boring.ijk_name().to_string());
+            let jumpkind = pending.jumpkind_or_boring();
             Ok((history, jumpkind))
         })
     }
@@ -571,13 +567,7 @@ impl RustExplorationManager {
                 pending.state.history().iter().copied().collect::<Vec<_>>(),
             )?;
 
-            dict.set_item(
-                "jumpkind",
-                pending
-                    .jumpkind
-                    .clone()
-                    .unwrap_or_else(|| JumpKind::Boring.ijk_name().to_string()),
-            )?;
+            dict.set_item("jumpkind", pending.jumpkind_or_boring())?;
 
             dict.set_item("stdout", pending.state.stdout_buffer().to_vec())?;
 
