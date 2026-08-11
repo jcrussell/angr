@@ -176,6 +176,24 @@ fn dup2_closes_target_and_bumps_next_fd() {
 }
 
 #[test]
+fn dup2_refuses_newfd_at_or_above_max_fd() {
+    let mut fs = FileSystem::default();
+    let src = fs.open_with_content("f".to_string(), FdFlags::ReadWrite, b"xy".to_vec());
+    let before = fs.next_fd();
+
+    // u32::MAX would wrap the `next_fd = newfd + 1` bump (angr-03vl4.52).
+    assert_eq!(fs.dup2(src, u32::MAX), None);
+    // The boundary itself is out of range; one below it is not.
+    assert_eq!(fs.dup2(src, MAX_FD), None);
+    assert!(!fs.is_open(u32::MAX));
+    assert!(!fs.is_open(MAX_FD));
+    assert_eq!(fs.next_fd(), before, "a refused dup2 must not move next_fd");
+
+    assert_eq!(fs.dup2(src, MAX_FD - 1), Some(MAX_FD - 1));
+    assert_eq!(fs.next_fd(), MAX_FD);
+}
+
+#[test]
 fn pipe_allocates_consecutive_read_write_ends() {
     let mut fs = FileSystem::default();
     let (r, w) = fs.pipe();

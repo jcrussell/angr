@@ -84,7 +84,7 @@
 use super::{
     NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg, fresh_symbolic, stub_syscall,
 };
-use crate::state::RustSimState;
+use crate::state::{MAX_FD, RustSimState};
 use crate::symbolic::RustBV;
 
 /// `-EBADF` as a 64-bit two's-complement value. The kernel ABI returns
@@ -98,7 +98,13 @@ const NEG_ENOTTY: u64 = (-25_i64) as u64;
 
 /// Upper bound on `newfd` that Python `procedures/posix/dup.py` enforces
 /// (the default ulimits ceiling). Out-of-range values return EBADF.
-const NEWFD_LIMIT: u64 = 4096;
+///
+/// Shares the [`MAX_FD`] value with [`FileSystem::dup2`](crate::state::FileSystem::dup2),
+/// which enforces the same cap for the callers that do not come through this
+/// layer (the native `dup2` SimProcedure) — angr-03vl4.52. The check stays
+/// here as well because Python's ordering puts the `oldfd == newfd` success
+/// *before* it.
+const NEWFD_LIMIT: u64 = MAX_FD as u64;
 
 /// Shared `dup2`/`dup3` body. Mirrors angr's Python `dup2`/`dup3`
 /// (`procedures/posix/dup.py`) check ordering **exactly** for parity:

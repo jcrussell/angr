@@ -198,3 +198,20 @@ pub const MAX_SYMFILE_SERVE_SIZE: u64 = 65536;
 /// 16 MiB is far above any file a symbolically-executed test binary writes and
 /// far below anything that threatens the host.
 pub const MAX_FS_FILE_SIZE: u64 = 0x100_0000;
+
+/// Exclusive upper bound on a caller-chosen file descriptor number, enforced
+/// by [`FileSystem::dup2`](super::FileSystem::dup2) (angr-03vl4.52). Matches
+/// the default-ulimit ceiling angr's Python `procedures/posix/dup.py` applies,
+/// so the two engines agree on which `dup2` targets are `EBADF`.
+///
+/// The cap is the *filesystem's* invariant, not the syscall layer's: `dup2`
+/// bumps `next_fd` past `newfd`, so an unbounded target both wraps that `u32`
+/// counter (silently, under the shipped `[profile.release]`, corrupting the fd
+/// namespace so a later `open` can hand out 0/1/2 again) and panics under
+/// `[profile.release-checked]`. `syscalls::file_descriptor::dup2_body` still
+/// checks it *first* because Python's check ordering puts the `oldfd == newfd`
+/// success ahead of the range test — see the
+/// `invariant-dup-python-parity-no-einval` memory — but the native `dup2`
+/// SimProcedure has no such layer, which is how the raw counter stayed
+/// reachable.
+pub const MAX_FD: u32 = 4096;

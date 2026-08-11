@@ -424,6 +424,13 @@ impl FileSystem {
     ///
     /// Like POSIX `dup2(2)`. Bumps `next_fd` past `newfd` if necessary so future
     /// allocations don't collide.
+    ///
+    /// `newfd` at or above [`MAX_FD`] is refused (`None` → `EBADF` at both the
+    /// syscall and SimProcedure layers) rather than allowed to run the `next_fd`
+    /// bump past `u32::MAX` (angr-03vl4.52). The refusal sits *after* the
+    /// `oldfd == newfd` early return so the check order still matches Python's
+    /// `procedures/posix/dup.py` — see `MAX_FD` and the
+    /// `invariant-dup-python-parity-no-einval` memory.
     pub fn dup2(&mut self, oldfd: u32, newfd: u32) -> Option<u32> {
         if !self.fds.get(&oldfd).is_some_and(|d| d.is_open) {
             return None;
@@ -431,10 +438,13 @@ impl FileSystem {
         if oldfd == newfd {
             return Some(newfd);
         }
+        if newfd >= MAX_FD {
+            return None;
+        }
         let cloned = self.fds.get(&oldfd).cloned()?;
         Arc::make_mut(&mut self.fds).insert(newfd, cloned);
         if newfd >= self.next_fd {
-            self.next_fd = newfd + 1;
+            self.next_fd = newfd.saturating_add(1);
         }
         Some(newfd)
     }

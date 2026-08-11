@@ -307,6 +307,51 @@ fn test_dup2_same_fd() {
 }
 
 #[test]
+fn test_dup2_huge_newfd_returns_ebadf_without_wrapping_next_fd() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory_data(0x1000, b"a.txt\0", Permission::RWX);
+    NativeOpen
+        .call(
+            &mut state,
+            &[RustBV::concrete(0x1000, 64), RustBV::concrete(0, 64)],
+        )
+        .unwrap();
+    let before = state.file_system_ref().next_fd();
+
+    // No syscall layer sits above this proc to apply NEWFD_LIMIT, so these
+    // used to reach FileSystem::dup2's raw `next_fd = newfd + 1` bump
+    // (angr-03vl4.52). 0xFFFF_FFFF wraps the u32 counter; 0x1_0000_0000 is
+    // additionally a `as u32` truncation to 0 == stdin.
+    for newfd in [0xFFFF_FFFFu128, 0x1_0000_0000, u128::from(u64::MAX)] {
+        let result = NativeDup2
+            .call(
+                &mut state,
+                &[RustBV::concrete(3, 64), RustBV::concrete(newfd, 64)],
+            )
+            .unwrap();
+        assert_eq!(
+            result.unwrap().as_u64(),
+            Some(u64::MAX),
+            "dup2(3, {newfd:#x}) must fail"
+        );
+    }
+    assert_eq!(state.file_system_ref().next_fd(), before);
+    // stdin must still be stdin, not an alias of a.txt.
+    assert_eq!(state.file_system_ref().fd_info(0).unwrap().0, "/dev/stdin");
+}
+
+#[test]
+fn test_dup_oldfd_wider_than_u32_is_not_truncated() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    // 0x1_0000_0000 truncates to 0 (stdin, which IS open), so an `as u32`
+    // cast would happily duplicate stdin here (angr-03vl4.52).
+    let result = NativeDup
+        .call(&mut state, &[RustBV::concrete(0x1_0000_0000, 64)])
+        .unwrap();
+    assert_eq!(result.unwrap().as_u64(), Some(u64::MAX));
+}
+
+#[test]
 fn test_dup2_oldfd_not_open() {
     let mut state = RustSimState::new("amd64").unwrap();
     let result = NativeDup2

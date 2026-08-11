@@ -226,11 +226,19 @@ crate::declare_proc! {
     ///
     /// Allocates a new fd that refers to the same underlying file as `oldfd`.
     /// Returns the new fd, or -1 if `oldfd` is not open.
+    ///
+    /// An `oldfd` that does not fit in a `u32` is "not open" rather than
+    /// truncated: `oldfd as u32` would alias an unrelated descriptor
+    /// (`0x1_0000_0000` → 0 → stdin) — angr-03vl4.52.
     name = "dup",
     struct = NativeDup,
     args = [oldfd: concrete],
     call |state| {
-        match state.file_system().dup(oldfd as u32) {
+        let duped = match u32::try_from(oldfd) {
+            Ok(oldfd) => state.file_system().dup(oldfd),
+            Err(_) => None,
+        };
+        match duped {
             Some(newfd) => Ok(Some(arch_word(state, u64::from(newfd)))),
             None => Ok(Some(arch_word(state, -1i64 as u64))),
         }
@@ -245,12 +253,22 @@ crate::declare_proc! {
     /// ```
     ///
     /// Makes `newfd` a copy of `oldfd`, closing `newfd` first if it was open.
-    /// Returns `newfd` on success, or -1 if `oldfd` is not open.
+    /// Returns `newfd` on success, or -1 if `oldfd` is not open, if either fd
+    /// does not fit in a `u32` (truncating would alias an unrelated
+    /// descriptor), or if `newfd` is at/above
+    /// [`MAX_FD`](crate::state::MAX_FD) — angr-03vl4.52. Unlike the `dup2`
+    /// *syscall* there is no layer above this one applying that cap, so a
+    /// guest `dup2(fd, 0xFFFFFFFF)` used to reach the unbounded `next_fd`
+    /// bump inside [`FileSystem::dup2`](crate::state::FileSystem::dup2).
     name = "dup2",
     struct = NativeDup2,
     args = [oldfd: concrete, newfd: concrete],
     call |state| {
-        match state.file_system().dup2(oldfd as u32, newfd as u32) {
+        let dup2ed = match (u32::try_from(oldfd), u32::try_from(newfd)) {
+            (Ok(oldfd), Ok(newfd)) => state.file_system().dup2(oldfd, newfd),
+            _ => None,
+        };
+        match dup2ed {
             Some(fd) => Ok(Some(arch_word(state, u64::from(fd)))),
             None => Ok(Some(arch_word(state, -1i64 as u64))),
         }
