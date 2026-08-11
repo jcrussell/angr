@@ -298,3 +298,111 @@ fn test_float_add_symbolic_operand_with_rm_rz_f32() {
         "RZ truncates the 1.5ulp tie of the pinned symbolic operand"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Qop (FMAdd / FMSub) rounding-mode threading — angr-03vl4.30
+// ---------------------------------------------------------------------------
+
+/// Witness for FMA rounding: `1.0 * 1.0 + 1.5*2^-53` sits 1.5 ULP above 1.0,
+/// so RNE rounds *up* to `1.0 + 2^-52` while RZ truncates back to `1.0`. Any
+/// path that drops the Qop's rm operand (the pre-angr-03vl4.30 behaviour)
+/// returns the RNE answer for every mode.
+fn fma_tie_operands() -> (RustBV, RustBV, RustBV) {
+    let c = 3.0f64 * 2.0f64.powi(-54);
+    (
+        RustBV::concrete(1.0f64.to_bits() as u128, 64),
+        RustBV::concrete(1.0f64.to_bits() as u128, 64),
+        RustBV::concrete(c.to_bits() as u128, 64),
+    )
+}
+
+/// RNE rm keeps the native `mul_add` fast path: fully concrete result.
+#[test]
+fn test_qop_with_rm_rne_fastpath_f64() {
+    let ctx = SymContext::new_mock();
+    let (a, b, c) = fma_tie_operands();
+    let rm_rne = RustBV::concrete(0, 32);
+
+    let result = VEXOps::qop_with_rm(IROp::FMAdd(IRType::F64), rm_rne, a, b, c, &ctx).unwrap();
+    assert!(!result.is_symbolic(), "RNE must not route through Z3");
+    assert_eq!(result.as_u64(), Some((1.0f64 + f64::EPSILON).to_bits()));
+}
+
+/// RZ rm on the same operands truncates toward zero → exactly 1.0.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_qop_with_rm_rz_f64_differs_from_rne() {
+    let ctx = SymContext::new_mock();
+    let (a, b, c) = fma_tie_operands();
+    let rm_rz = RustBV::concrete(3, 32);
+
+    let result = VEXOps::qop_with_rm(IROp::FMAdd(IRType::F64), rm_rz, a, b, c, &ctx).unwrap();
+    let bits = ctx.eval(&result).expect("eval failed");
+    assert_eq!(
+        bits,
+        u128::from(1.0f64.to_bits()),
+        "RZ truncates the 1.5ulp FMA sum"
+    );
+    assert_ne!(
+        bits,
+        u128::from((1.0f64 + f64::EPSILON).to_bits()),
+        "must differ from RNE"
+    );
+}
+
+/// FMSub under RZ: `a*b - c` with a negated `c` reaches the same 1.5 ULP sum,
+/// proving both that the rm is threaded and that the `-c` negation survives
+/// the rm-carrying path.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_qop_with_rm_fmsub_rz_f64() {
+    let ctx = SymContext::new_mock();
+    let (a, b, _) = fma_tie_operands();
+    let neg_c = -3.0f64 * 2.0f64.powi(-54);
+    let c = RustBV::concrete(neg_c.to_bits() as u128, 64);
+    let rm_rz = RustBV::concrete(3, 32);
+
+    let result = VEXOps::qop_with_rm(IROp::FMSub(IRType::F64), rm_rz, a, b, c, &ctx).unwrap();
+    let bits = ctx.eval(&result).expect("eval failed");
+    assert_eq!(bits, u128::from(1.0f64.to_bits()));
+}
+
+/// A symbolic rm builds the 4-way ITE: pinning the result to the RZ answer
+/// forces the rm low-2-bits away from RNE.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_qop_with_rm_symbolic_rm_f64() {
+    let ctx = SymContext::new_mock();
+    let (a, b, c) = fma_tie_operands();
+    let rm_sym = RustBV::symbolic(&ctx, "fma_rm", 32);
+
+    let result =
+        VEXOps::qop_with_rm(IROp::FMAdd(IRType::F64), rm_sym.clone(), a, b, c, &ctx).unwrap();
+    assert!(result.is_symbolic(), "symbolic rm must yield a Z3 expression");
+
+    ctx.add_constraint(
+        result
+            .to_z3_ast()
+            .eq(RustBV::concrete(u128::from(1.0f64.to_bits()), 64).to_z3_ast()),
+    );
+    assert!(ctx.is_sat(), "the RZ/RD answer must be reachable");
+    let rm_val = ctx.eval(&rm_sym).expect("eval failed") & 0x3;
+    assert!(
+        rm_val == 1 || rm_val == 3,
+        "only RD/RZ truncate the 1.5ulp sum, got rm={rm_val}"
+    );
+}
+
+/// Non-FMA Qops carry no rounding mode; `qop_with_rm` delegates to `qop` so
+/// the typed error surface is unchanged.
+#[test]
+fn test_qop_with_rm_rejects_non_quaternary() {
+    let ctx = SymContext::new_mock();
+    let zero = || RustBV::concrete(0, 64);
+    let err = VEXOps::qop_with_rm(IROp::Add(IRType::I64), zero(), zero(), zero(), zero(), &ctx)
+        .unwrap_err();
+    match err {
+        OpError::NotQuaternary(_) => (),
+        other => panic!("expected NotQuaternary, got {other:?}"),
+    }
+}

@@ -637,7 +637,9 @@ impl RustBV {
             | FloatOpKind::SubRm
             | FloatOpKind::MulRm
             | FloatOpKind::DivRm
-            | FloatOpKind::SqrtRm => {
+            | FloatOpKind::SqrtRm
+            | FloatOpKind::FmaRm
+            | FloatOpKind::FmsRm => {
                 return Self::build_fp_arith_rm_cached(kind, prec, operands, cache);
             }
             _ => {}
@@ -707,7 +709,9 @@ impl RustBV {
                 | FloatOpKind::SubRm
                 | FloatOpKind::MulRm
                 | FloatOpKind::DivRm
-                | FloatOpKind::SqrtRm => unreachable!("handled above"),
+                | FloatOpKind::SqrtRm
+                | FloatOpKind::FmaRm
+                | FloatOpKind::FmsRm => unreachable!("handled above"),
             }
             .unwrap_or_else(|| {
                 // Compares yield a Bool; every other op yields a Float at
@@ -794,8 +798,8 @@ impl RustBV {
     }
 
     /// Build the Z3 AST for an FP arithmetic op with explicit rounding mode
-    /// (`AddRm`/`SubRm`/`MulRm`/`DivRm`/`SqrtRm`). operand\[0\] is the rm BV;
-    /// remaining operands are the FP operands. Concrete rm picks one Z3
+    /// (`AddRm`/`SubRm`/`MulRm`/`DivRm`/`SqrtRm`/`FmaRm`/`FmsRm`). operand\[0\]
+    /// is the rm BV; remaining operands are the FP operands. Concrete rm picks one Z3
     /// `RoundingMode`; symbolic rm builds all four variants and ITEs on the
     /// rm low-2-bits — Z3 simplifies away dead arms at solve time. Mirrors
     /// the pattern in `build_fp_round_to_int_cached`.
@@ -807,10 +811,15 @@ impl RustBV {
         cache: &mut std::collections::HashMap<usize, z3::ast::BV>,
     ) -> z3::ast::BV {
         use z3::ast::{Ast, Float};
-        use z3_sys::{Z3_mk_fpa_add, Z3_mk_fpa_div, Z3_mk_fpa_mul, Z3_mk_fpa_sqrt, Z3_mk_fpa_sub};
+        use z3_sys::{
+            Z3_mk_fpa_add, Z3_mk_fpa_div, Z3_mk_fpa_fma, Z3_mk_fpa_mul, Z3_mk_fpa_neg,
+            Z3_mk_fpa_sqrt, Z3_mk_fpa_sub,
+        };
 
-        let is_unary = matches!(kind, FloatOpKind::SqrtRm);
-        debug_assert_eq!(operands.len(), if is_unary { 2 } else { 3 });
+        // Number of FP operands after the leading rm BV: 1 for `SqrtRm`,
+        // 2 for the binary arith kinds, 3 for `FmaRm`/`FmsRm`.
+        let fp_arity = kind.arity() - 1;
+        debug_assert_eq!(operands.len(), kind.arity());
         let rm_bv = &operands[0];
 
         let z3_ctx = z3::Context::thread_local();
@@ -826,44 +835,54 @@ impl RustBV {
                 bv_to_z3_float(&z3_ctx, raw_ctx, &z3, raw_sort)
             };
         let a_fp = to_fp(&operands[1], cache);
-        let b_fp = if is_unary {
-            None
-        } else {
-            Some(to_fp(&operands[2], cache))
-        };
+        let b_fp = (fp_arity >= 2).then(|| to_fp(&operands[2], cache));
+        let c_fp = (fp_arity >= 3).then(|| to_fp(&operands[3], cache));
 
         let apply = |vex_rm: u8| -> Float {
             let rm = vex_rm_to_z3(vex_rm);
             let rm_raw = rm.get_z3_ast();
             let raw_a = a_fp.get_z3_ast();
-            // SAFETY: `rm` (RoundingMode) and `a_fp` / `b_fp` (Float) are
-            // live wrappers in `z3_ctx` for the duration of this closure
+            // SAFETY: `rm` (RoundingMode) and `a_fp` / `b_fp` / `c_fp` (Float)
+            // are live wrappers in `z3_ctx` for the duration of this closure
             // body, so `rm_raw`, `raw_a` and the `get_z3_ast()` calls on
-            // `b_fp` all yield valid Z3_ast pointers. Each `Z3_mk_fpa_*`
+            // `b_fp` / `c_fp` all yield valid Z3_ast pointers. Each `Z3_mk_fpa_*`
             // returns a fresh AST (or NULL → fresh unconstrained AST via `unwrap_or_else`).
-            // Matching on `(kind, b_fp.as_ref())` rather than `kind` alone
-            // keeps the second FP operand out of an `unwrap`: `b_fp` is
-            // `Some` exactly when `is_unary` is false, i.e. for every kind
-            // but `SqrtRm`, so the binary arms bind it by pattern and the
-            // impossible (binary-kind, `None`) pairing falls into the same
-            // closed-world `unreachable!` arm as a non-Rm kind.
+            // Matching on `(kind, b_fp.as_ref(), c_fp.as_ref())` rather than
+            // `kind` alone keeps the extra FP operands out of an `unwrap`:
+            // `b_fp`/`c_fp` are `Some` exactly per `fp_arity`, so each arm
+            // binds the operands its kind needs and every impossible
+            // (kind, operand-count) pairing falls into the same closed-world
+            // `unreachable!` arm as a non-Rm kind.
             let raw = unsafe {
-                match (kind, b_fp.as_ref()) {
-                    (FloatOpKind::AddRm, Some(b)) => {
+                match (kind, b_fp.as_ref(), c_fp.as_ref()) {
+                    (FloatOpKind::AddRm, Some(b), None) => {
                         Z3_mk_fpa_add(raw_ctx, rm_raw, raw_a, b.get_z3_ast())
                     }
-                    (FloatOpKind::SubRm, Some(b)) => {
+                    (FloatOpKind::SubRm, Some(b), None) => {
                         Z3_mk_fpa_sub(raw_ctx, rm_raw, raw_a, b.get_z3_ast())
                     }
-                    (FloatOpKind::MulRm, Some(b)) => {
+                    (FloatOpKind::MulRm, Some(b), None) => {
                         Z3_mk_fpa_mul(raw_ctx, rm_raw, raw_a, b.get_z3_ast())
                     }
-                    (FloatOpKind::DivRm, Some(b)) => {
+                    (FloatOpKind::DivRm, Some(b), None) => {
                         Z3_mk_fpa_div(raw_ctx, rm_raw, raw_a, b.get_z3_ast())
                     }
-                    (FloatOpKind::SqrtRm, _) => Z3_mk_fpa_sqrt(raw_ctx, rm_raw, raw_a),
+                    (FloatOpKind::SqrtRm, None, None) => Z3_mk_fpa_sqrt(raw_ctx, rm_raw, raw_a),
+                    (FloatOpKind::FmaRm, Some(b), Some(c)) => {
+                        Z3_mk_fpa_fma(raw_ctx, rm_raw, raw_a, b.get_z3_ast(), c.get_z3_ast())
+                    }
+                    (FloatOpKind::FmsRm, Some(b), Some(c)) => {
+                        // a*b - c == a*b + (-c), same encoding as the RNE
+                        // `FloatOpKind::Fms` arm in `build_fp_z3_ast_cached`.
+                        // Wrap neg_c in a Float so the intermediate AST is
+                        // held while we build the FMA.
+                        let neg_c_raw = Z3_mk_fpa_neg(raw_ctx, c.get_z3_ast())
+                            .unwrap_or_else(|| fresh_unconstrained_raw(raw_ctx, raw_sort));
+                        let neg_c = Float::wrap(&z3_ctx, neg_c_raw);
+                        Z3_mk_fpa_fma(raw_ctx, rm_raw, raw_a, b.get_z3_ast(), neg_c.get_z3_ast())
+                    }
                     _ => unreachable!(
-                        "non-Rm FP arith kind, or binary Rm kind without its second operand, in build_fp_arith_rm_cached"
+                        "non-Rm FP arith kind, or Rm kind without its declared FP operand count, in build_fp_arith_rm_cached"
                     ),
                 }
                 .unwrap_or_else(|| fresh_unconstrained_raw(raw_ctx, raw_sort))

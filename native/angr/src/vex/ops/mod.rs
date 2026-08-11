@@ -912,9 +912,10 @@ impl VEXOps {
     // Quaternary Operations
     // =========================================================================
 
-    /// Execute a quaternary operation. Used for fused multiply-add/sub
-    /// where VEX delivers (rounding_mode, a, b, c) but the rm has already
-    /// been stripped by the caller (so this takes a, b, c).
+    /// Execute a quaternary operation with the rounding mode already
+    /// stripped by the caller (so this takes a, b, c), i.e. the
+    /// round-to-nearest-ties-to-even form. Callers holding the guest's rm
+    /// must go through `qop_with_rm`, which delegates here only for RNE.
     #[inline]
     pub fn qop(
         op: IROp,
@@ -937,6 +938,42 @@ impl VEXOps {
             }),
             _ => Err(OpError::NotQuaternary(op)),
         }
+    }
+
+    /// Fused multiply-add/sub with the explicit VEX rounding mode VEX
+    /// delivers as the Qop's first operand: `(rm, a, b, c)`. RNE concrete rm
+    /// keeps the native `mul_add` fast path in `qop`; non-RNE or symbolic rm
+    /// routes through `FloatOpKind::FmaRm`/`FmsRm` so the guest's MXCSR
+    /// rounding mode is honored. Exactly the `binop_with_rm` shape — before
+    /// angr-03vl4.30 the interpreter dropped the Qop rm and always computed
+    /// RNE.
+    #[inline]
+    pub fn qop_with_rm(
+        op: IROp,
+        rm: RustBV,
+        a: RustBV,
+        b: RustBV,
+        c: RustBV,
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
+        let (kind_rm, ty) = match op {
+            IROp::FMAdd(t) => (FloatOpKind::FmaRm, t),
+            IROp::FMSub(t) => (FloatOpKind::FmsRm, t),
+            // Non-FMA Qops (NEON scaffolding, unmapped opcodes) carry no
+            // rounding mode; let `qop` produce their typed error.
+            _ => return Self::qop(op, a, b, c, ctx),
+        };
+
+        // RNE concrete: keep the native-f{32,64} `mul_add` fast path, same
+        // reasoning as `binop_with_rm`.
+        if let Some(m) = rm.as_u128()
+            && m & 0x3 == 0
+        {
+            return Self::qop(op, a, b, c, ctx);
+        }
+
+        let prec = float_prec_of(ty).ok_or(OpError::InvalidFloatType(ty))?;
+        Ok(build_float_expr(kind_rm, prec, vec![rm, a, b, c]))
     }
 
     // =========================================================================

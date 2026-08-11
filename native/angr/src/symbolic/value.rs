@@ -181,6 +181,12 @@ pub enum FloatOpKind {
     /// Unary FP sqrt with explicit rounding mode.
     /// operand\[0\] = rm BV (32-bit), operand\[1\] = a BV at prec.bits().
     SqrtRm,
+    /// Ternary fused multiply-add / multiply-sub with explicit rounding mode.
+    /// operand\[0\] = rm BV (32-bit, VEX rm low-2-bits 0..3), operands
+    /// \[1\]/\[2\]/\[3\] = a/b/c BVs at prec.bits(). VEX delivers FMA as a Qop
+    /// `(rm, a, b, c)`; the rm-less `Fma`/`Fms` above are the RNE forms.
+    FmaRm,
+    FmsRm,
 }
 
 impl FloatOpKind {
@@ -212,6 +218,7 @@ impl FloatOpKind {
             | FloatOpKind::SubRm
             | FloatOpKind::MulRm
             | FloatOpKind::DivRm => 3,
+            FloatOpKind::FmaRm | FloatOpKind::FmsRm => 4,
         }
     }
 

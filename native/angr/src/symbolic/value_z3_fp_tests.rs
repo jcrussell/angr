@@ -389,6 +389,40 @@ fn test_fp_arith_rm_values_match_plain_ops_under_rne() {
     );
 }
 
+/// `FmaRm`/`FmsRm`: `1.0*1.0 + 1.5*2^-53` sits 1.5 ULP above 1.0, so RNE
+/// rounds up to `1.0 + 2^-52` while RZ truncates back to 1.0. A builder that
+/// ignored the rm operand (the angr-03vl4.30 bug shape) returns the RNE
+/// answer for every mode.
+#[test]
+fn test_fp_fma_rm_rounding_is_threaded() {
+    let ctx = SymContext::new();
+    let c = 3.0f64 * 2.0f64.powi(-54);
+    let rne = fp_expr(
+        FloatOpKind::FmaRm,
+        FloatPrec::F64,
+        vec![rm(0), bv64(1.0), bv64(1.0), bv64(c)],
+    );
+    let rz = fp_expr(
+        FloatOpKind::FmaRm,
+        FloatPrec::F64,
+        vec![rm(3), bv64(1.0), bv64(1.0), bv64(c)],
+    );
+    assert_eq!(eval_f64(&ctx, &rne).to_bits(), (1.0f64 + f64::EPSILON).to_bits());
+    assert_eq!(eval_f64(&ctx, &rz).to_bits(), 1.0f64.to_bits());
+
+    // FmsRm computes a*b - c, so negating c reaches the same sum — an
+    // implementation that dropped the negation would land on 1.0 - 1.5ulp.
+    let fms_rne = fp_expr(
+        FloatOpKind::FmsRm,
+        FloatPrec::F64,
+        vec![rm(0), bv64(1.0), bv64(1.0), bv64(-c)],
+    );
+    assert_eq!(
+        eval_f64(&ctx, &fms_rne).to_bits(),
+        (1.0f64 + f64::EPSILON).to_bits()
+    );
+}
+
 #[test]
 fn test_fp_arith_rm_symbolic_rm_matches_concrete() {
     for (vex_rm, expect_rz) in [(0u8, false), (3u8, true)] {
@@ -734,6 +768,8 @@ fn test_every_float_op_kind_builds_at_declared_width() {
             FloatOpKind::MulRm,
             FloatOpKind::DivRm,
             FloatOpKind::SqrtRm,
+            FloatOpKind::FmaRm,
+            FloatOpKind::FmsRm,
         ];
         // Compile-time guard: if a variant is added to `FloatOpKind`, this
         // exhaustive match stops compiling until the list above grows too.
@@ -762,7 +798,9 @@ fn test_every_float_op_kind_builds_at_declared_width() {
                 | FloatOpKind::SubRm
                 | FloatOpKind::MulRm
                 | FloatOpKind::DivRm
-                | FloatOpKind::SqrtRm => {}
+                | FloatOpKind::SqrtRm
+                | FloatOpKind::FmaRm
+                | FloatOpKind::FmsRm => {}
             }
         }
 
@@ -791,6 +829,9 @@ fn test_every_float_op_kind_builds_at_declared_width() {
                 | FloatOpKind::SubRm
                 | FloatOpKind::MulRm
                 | FloatOpKind::DivRm => vec![rm(0), fp(1.5), fp(2.5)],
+                FloatOpKind::FmaRm | FloatOpKind::FmsRm => {
+                    vec![rm(0), fp(1.5), fp(2.5), fp(3.5)]
+                }
                 other => vec![fp(1.5); other.arity()],
             };
             assert_eq!(

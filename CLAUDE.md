@@ -141,8 +141,15 @@ every sibling routed through `apply_rounding_f32`/`apply_rounding_f64`
 (angr-c7xno.85). `tools/audit_rounding_mode_threading.py` gates that shape in
 CI (`rust_check`) against `tools/rounding_mode_baseline.txt` — same
 baseline-audit pattern as the three checks above, but the baseline is **empty**
-and should stay so. Flags a closure inside a `fn *_rm` whose last parameter is
-`_`-prefixed, or is named `rm` and never referenced in the body. Exempt by
+and should stay so. Two detectors, over both `native/angr/src/vex/` and
+`native/angr/src/interpreter/`: (1) a closure inside a `fn *_rm` whose last
+parameter is `_`-prefixed, or is named `rm` and never referenced in the body;
+(2) a `let` binding whose name is `_`-prefixed and ends in `rm` — an rm operand
+evaluated and then discarded. Detector 2 exists because `eval_qop` bound the
+Qop's rm to `_rm` and called the rm-less `VEXOps::qop`, so FMAdd/FMSub always
+computed RNE, outside detector 1's `vex/`-only, closure-only reach
+(angr-03vl4.30); the fix is `VEXOps::qop_with_rm`, the Qop mirror of
+`binop_with_rm`. Exempt by
 documenting the reason with an `rm-ignored: <why>` comment on the line above
 (for the genuine cases — e.g. a libm-backed transcendental where Rust only
 offers RNE); prefer that over `--update-baseline`. `--self-test` classifies a

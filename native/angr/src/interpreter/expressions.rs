@@ -702,16 +702,17 @@ impl<'a> VEXInterpreter<'a> {
         tyenv: &TypeEnv,
     ) -> Result<RustBV, CbExecutionError> {
         record_vex_qop(iropclass(&op));
-        // VEX Qops are typically fused multiply-add/sub with a
-        // rounding mode: (rm, a, b, c). Drop rm for the same reason
-        // as Triop above.
-        let _rm = self.eval_expr_with_callbacks(callbacks, args[0], tyenv)?;
+        // VEX Qops are fused multiply-add/sub with a rounding mode:
+        // (rm, a, b, c). Route through `qop_with_rm`, which honors the VEX
+        // rm bits when non-RNE and keeps the native mul_add fast path for
+        // RNE — same split as `binop_with_rm` in the Triop arm above.
+        let rm = self.eval_expr_with_callbacks(callbacks, args[0], tyenv)?;
         let v2 = self.eval_expr_with_callbacks(callbacks, args[1], tyenv)?;
         let v3 = self.eval_expr_with_callbacks(callbacks, args[2], tyenv)?;
         let v4 = self.eval_expr_with_callbacks(callbacks, args[3], tyenv)?;
-        let any_sym = v2.is_symbolic() || v3.is_symbolic() || v4.is_symbolic();
+        let any_sym = v2.is_symbolic() || v3.is_symbolic() || v4.is_symbolic() || rm.is_symbolic();
         let width = op.result_type().map(|t| t.bits()).unwrap_or(64);
-        match VEXOps::qop(op, v2, v3, v4, self.ctx) {
+        match VEXOps::qop_with_rm(op, rm, v2, v3, v4, self.ctx) {
             Ok(v) => Ok(v),
             // NEON scaffolding: surface explicitly rather than letting the
             // fresh-symbolic fallback below swallow it. See the rustdoc on

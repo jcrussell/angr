@@ -21,16 +21,26 @@ This script closes the loop the same way ``tools/audit_silent_fallback.py``,
 do: a heuristic detector plus a checked-in baseline of already-known gaps. Only
 *new* mode-dropping closures fail.
 
-Detection heuristic — inside any ``fn <name>_rm(...)`` in
-``native/angr/src/vex/**/*.rs`` (test modules excluded), every closure literal
-of arity >= 2 is checked. Its **last** parameter is the rounding mode by
+Two detectors run over ``native/angr/src/vex/**/*.rs`` and
+``native/angr/src/interpreter/**/*.rs`` (test modules excluded).
+
+**Detector 1 (dropped closure mode)** — inside any ``fn <name>_rm(...)``,
+every closure literal of arity >= 2 is checked. Its **last** parameter is the rounding mode by
 convention (``|v, rm|``, ``|a, b, rm|``). A closure is a gap when:
 
   * that parameter is named ``_rm`` / ``_`` / any ``_``-prefixed name — an
     explicit "I am discarding the rounding mode", or
   * it is named ``rm`` but the closure body never mentions ``rm``.
 
-A gap is exempt when the line above the closure (or the closure's own trailing
+**Detector 2 (discarded rm binding)** — a ``let`` binding whose name is
+underscore-prefixed and ends in ``rm`` (``_rm``, ``_vex_rm``, ``_rm_bv``): the
+rounding-mode operand was evaluated and then thrown away. That is the shape
+``interpreter/expressions.rs::eval_qop`` carried — it evaluated the Qop's rm
+operand into ``_rm`` and called the rm-less ``VEXOps::qop``, so FMAdd/FMSub
+always computed RNE (angr-03vl4.30). Detector 1 could not see it: ``eval_qop``
+lives outside ``vex/``, is not named ``*_rm`` and uses no closure.
+
+A gap is exempt when the line above the closure or binding (or the closure's own trailing
 comment) documents it with a marker matching :data:`EXEMPT_RE`, i.e. contains
 ``rm-ignored:`` followed by a rationale — the escape hatch for the genuine
 cases (e.g. a libm-backed transcendental where Rust only offers RNE).
@@ -60,6 +70,8 @@ from rust_source_utils import blank_noise, is_test_file
 # Repo layout: this file lives at <repo>/tools/audit_rounding_mode_threading.py
 REPO_ROOT = Path(__file__).resolve().parent.parent
 VEX_DIR = REPO_ROOT / "native" / "angr" / "src" / "vex"
+INTERP_DIR = REPO_ROOT / "native" / "angr" / "src" / "interpreter"
+SCAN_DIRS = (VEX_DIR, INTERP_DIR)
 BASELINE_PATH = REPO_ROOT / "tools" / "rounding_mode_baseline.txt"
 
 # Documented-exception marker, e.g.
@@ -71,11 +83,16 @@ ANY_FN_RE = re.compile(r"\bfn\s+[A-Za-z_][A-Za-z0-9_]*\s*[(<]")
 # A closure header: `|a, b|` / `|v, _rm|`. Excludes `||` (arity 0) and the
 # `a || b` boolean-or shape, since both alternations require an identifier.
 CLOSURE_RE = re.compile(r"\|\s*(?P<params>[A-Za-z_][A-Za-z0-9_]*(?:\s*,\s*[A-Za-z_][A-Za-z0-9_]*)+)\s*\|")
+# Detector 2: `let _rm = ...` / `let _vex_rm: T = ...` — an evaluated rounding
+# mode bound to a deliberately-unused name, i.e. discarded.
+DISCARDED_RM_RE = re.compile(r"\blet\s+(?P<name>_(?:[A-Za-z0-9_]*_)?rm[A-Za-z0-9_]*)\s*[:=]")
+# Any fn declaration, capturing its name (detector 2 is not scoped to `*_rm`).
+FN_NAMED_RE = re.compile(r"\bfn\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*[(<]")
 
 
 def _iter_source_files() -> list[Path]:
-    """Non-test Rust sources under native/angr/src/vex/."""
-    return [p for p in sorted(VEX_DIR.rglob("*.rs")) if not is_test_file(p)]
+    """Non-test Rust sources under the scanned dirs (vex/ + interpreter/)."""
+    return [p for d in SCAN_DIRS for p in sorted(d.rglob("*.rs")) if not is_test_file(p)]
 
 
 def _enclosing_fn(src: str, pos: int) -> str | None:
@@ -97,6 +114,19 @@ def _enclosing_fn(src: str, pos: int) -> str | None:
     if ANY_FN_RE.search(src, last.end(), pos) is not None:
         return None
     return last.group("name")
+
+
+def _enclosing_any_fn(src: str, pos: int) -> str:
+    """Name of the nearest preceding ``fn`` declaration ("?" when at file scope).
+
+    Detector 2 is not scoped to ``*_rm`` helpers, so it reports whichever
+    function the discarded binding sits in — that name is what makes the
+    baseline key line-number-independent.
+    """
+    last = None
+    for m in FN_NAMED_RE.finditer(src, 0, pos):
+        last = m
+    return last.group("name") if last is not None else "?"
 
 
 def _closure_body(src: str, start: int) -> str:
@@ -148,6 +178,14 @@ def scan_text(rel: str, raw: str) -> list[tuple[str, int, str, str, bool, bool]]
         window = raw_lines[max(0, lineno - 3) : lineno]
         exempt = any(EXEMPT_RE.search(line) for line in window)
         hits.append((rel, lineno, fn_name, m.group("params"), drops, exempt))
+
+    # Detector 2: a rounding mode evaluated into an underscore-prefixed
+    # binding, i.e. computed and then discarded (angr-03vl4.30's eval_qop).
+    for m in DISCARDED_RM_RE.finditer(src):
+        lineno = src.count("\n", 0, m.start()) + 1
+        window = raw_lines[max(0, lineno - 3) : lineno]
+        exempt = any(EXEMPT_RE.search(line) for line in window)
+        hits.append((rel, lineno, _enclosing_any_fn(src, m.start()), f"let {m.group('name')}", True, exempt))
     return hits
 
 
@@ -180,6 +218,15 @@ impl VEXOps {
     fn plain(a: u32) -> u32 {
         (0..a).map(|x, y| x + y).sum()
     }
+    fn eval_qop_like(&mut self) -> R {
+        let _rm = self.eval(args[0])?;
+        VEXOps::qop(op, a, b, c)
+    }
+    fn eval_exempt(&mut self) -> R {
+        // rm-ignored: this Qop family carries no rounding mode.
+        let _vex_rm = self.eval(args[0])?;
+        VEXOps::qop(op, a, b, c)
+    }
 }
 """
 
@@ -188,6 +235,8 @@ _SELF_TEST_EXPECTED = [
     ("underscore_rm", "v, _rm", True, False),
     ("unused_rm", "v, rm", True, False),
     ("exempt_rm", "v, _rm", True, True),
+    ("eval_qop_like", "let _rm", True, False),
+    ("eval_exempt", "let _vex_rm", True, True),
 ]
 
 
@@ -207,7 +256,7 @@ def self_test() -> int:
         for row in got:
             print(f"    {row}")
         return 1
-    print(f"self-test OK: {len(got)} closures classified as expected (1 threaded, 2 gaps, 1 exempt)")
+    print(f"self-test OK: {len(got)} sites classified as expected (1 threaded, 3 gaps, 2 exempt)")
     return 0
 
 
@@ -245,7 +294,7 @@ def write_baseline(gaps: list[tuple[str, int, str, str, bool, bool]]) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--list", action="store_true", help="list ALL rm closures (threaded + dropped)")
+    ap.add_argument("--list", action="store_true", help="list ALL rm sites (threaded + dropped)")
     ap.add_argument("--update-baseline", action="store_true", help="rewrite the baseline from current gaps")
     ap.add_argument("--self-test", action="store_true", help="prove the detector fires on a synthetic gap")
     args = ap.parse_args()
@@ -253,9 +302,10 @@ def main() -> int:
     if args.self_test:
         return self_test()
 
-    if not VEX_DIR.is_dir():
-        print(f"error: vex source dir not found: {VEX_DIR}", file=sys.stderr)
-        return 2
+    for d in SCAN_DIRS:
+        if not d.is_dir():
+            print(f"error: source dir not found: {d}", file=sys.stderr)
+            return 2
 
     hits = scan()
     gaps = [h for h in hits if h[4] and not h[5]]
@@ -266,7 +316,7 @@ def main() -> int:
             print(f"{mark} {rel}:{lineno}\t{fn}\t|{params}|")
         n_threaded = sum(1 for h in hits if not h[4])
         n_exempt = sum(1 for h in hits if h[4] and h[5])
-        print(f"\n{len(hits)} rm closures ({n_threaded} threaded, {n_exempt} documented-exempt, {len(gaps)} gaps)")
+        print(f"\n{len(hits)} rm sites ({n_threaded} threaded, {n_exempt} documented-exempt, {len(gaps)} gaps)")
         return 0
 
     if args.update_baseline:
@@ -279,10 +329,10 @@ def main() -> int:
 
     if not new_gaps:
         n_threaded = sum(1 for h in hits if not h[4])
-        print(f"OK: {len(hits)} rm closures, {n_threaded} thread the mode, {len(gaps)} baselined gaps, 0 new.")
+        print(f"OK: {len(hits)} rm sites, {n_threaded} thread the mode, {len(gaps)} baselined gaps, 0 new.")
         return 0
 
-    print(f"FOUND {len(new_gaps)} closure(s) dropping the VEX rounding mode:\n")
+    print(f"FOUND {len(new_gaps)} site(s) dropping the VEX rounding mode:\n")
     for rel, lineno, fn, params, _, _ in new_gaps:
         print(f"  {rel}:{lineno}\t{fn}\t|{params}|")
     print(
@@ -290,7 +340,9 @@ def main() -> int:
         "`apply_rounding_f64`, `narrow_f64_to_f32_rm`) so it matches the symbolic Z3 FP\n"
         "path. If the mode genuinely cannot be honoured (e.g. Rust libm is\n"
         "round-to-nearest-even only), document it with an `rm-ignored: <why>` comment\n"
-        "on the line above. Use --update-baseline only to defer a gap you have\n"
+        "on the line above (a discarded `let _rm` binding means routing the call\n"
+        "through the rm-carrying dispatcher instead, e.g. `VEXOps::qop_with_rm`).\n"
+        "Use --update-baseline only to defer a gap you have\n"
         "deliberately decided not to close."
     )
     return 1
