@@ -419,7 +419,8 @@ impl AddressConcretizer {
     ///
     /// # Returns
     /// * `Single` if the address has exactly one possible value
-    /// * `Multiple` if the address has 2-256 possible values
+    /// * `Multiple` if the address has 2..=`max_solutions` possible values —
+    ///   always the *complete* feasible set, never a truncated prefix
     /// * `Strided` if a regular stride pattern is detected (e.g., arr\[i*4\])
     /// * `TooLarge` if the address range exceeds the limit
     /// * `Failed` if concretization is not possible
@@ -490,14 +491,21 @@ impl AddressConcretizer {
         let (min, max) = match ctx.range_seeded(addr, smallest_known, largest_known) {
             Some((min, max)) => (min as u64, max as u64),
             None => {
-                // Range failed but we have solutions from fast enum — use them
-                let mut addrs: Vec<u64> = fast_solutions
-                    .iter()
-                    .take(FAST_ENUM_LIMIT)
-                    .map(|&v| v as u64)
-                    .collect();
-                addrs.sort_unstable();
-                return ConcretizationResult::Multiple(addrs);
+                // Range failed (Z3 timed out mid-bisection) and we are on the
+                // `> FAST_ENUM_LIMIT solutions` branch, so the fast-enum set is
+                // known-incomplete. Returning it as `Multiple` would hand
+                // consumers a truncated set they treat as exhaustive — the ITE
+                // load builder's default arm, the store disjunction hoist and
+                // `invalidate_code_for_concretization` all assume the listed
+                // addresses are the only feasible ones (angr-03vl4.77, same
+                // hazard angr-lf108 fixed for the stride grid). With no bound
+                // from `range_seeded` there is no honest `TooLarge` min/max to
+                // report either — an under-approximated range would under-
+                // invalidate the block cache — so report `Failed`, which every
+                // consumer maps to the fully symbolic Python path.
+                return ConcretizationResult::Failed(
+                    "range query failed and solution set exceeds fast-enum limit".to_string(),
+                );
             }
         };
 
@@ -507,20 +515,22 @@ impl AddressConcretizer {
 
         let range_size = max.saturating_sub(min);
         if range_size > range_limit {
-            if self.enable_stride_detection
-                && let Some(strided) = self.try_detect_stride(addr, ctx, min, max)
-            {
-                return strided;
-            }
-            return ConcretizationResult::TooLarge {
-                min,
-                max,
-                limit: range_limit,
-            };
+            return self.unenumerable(addr, ctx, min, max, range_limit);
         }
 
-        // Range is manageable — enumerate all solutions
-        let solutions = ctx.solutions(addr, self.max_solutions);
+        // Range is manageable — enumerate all solutions. Ask for one more than
+        // `max_solutions` so a set that overflows the cap is *detectable*:
+        // `solutions()` returns `min(n, #feasible)` with no truncation signal,
+        // so requesting exactly `max_solutions` cannot tell "exactly that many"
+        // from "more, silently dropped" (angr-03vl4.77).
+        let solutions = ctx.solutions(addr, self.max_solutions.saturating_add(1));
+
+        if solutions.len() > self.max_solutions {
+            // Truncated: the feasible set is larger than we are willing to
+            // enumerate, so it is not a `Multiple` any consumer may treat as
+            // exhaustive. Same fallback as the over-range branch above.
+            return self.unenumerable(addr, ctx, min, max, range_limit);
+        }
 
         match solutions.len() {
             0 => {
@@ -544,6 +554,30 @@ impl AddressConcretizer {
                 ConcretizationResult::Multiple(addrs)
             }
         }
+    }
+
+    /// Result for an address whose feasible set is bounded by `[min, max]` but
+    /// cannot be enumerated exhaustively — either because the range exceeds
+    /// `limit` or because enumeration overflowed `max_solutions`.
+    ///
+    /// Tries the stride abstraction first (`try_detect_stride` carries the
+    /// angr-lf108 completeness gate, so a grid it returns really does cover
+    /// every feasible address), else reports `TooLarge` so consumers take the
+    /// fully symbolic path instead of an incomplete address list.
+    fn unenumerable(
+        &self,
+        addr: &RustBV,
+        ctx: &SymContext,
+        min: u64,
+        max: u64,
+        limit: u64,
+    ) -> ConcretizationResult {
+        if self.enable_stride_detection
+            && let Some(strided) = self.try_detect_stride(addr, ctx, min, max)
+        {
+            return strided;
+        }
+        ConcretizationResult::TooLarge { min, max, limit }
     }
 
     /// Try to detect a stride pattern by sampling solutions.

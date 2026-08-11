@@ -374,3 +374,59 @@ fn max_only_write_pins_the_chosen_address() {
         "Max() must pin addr == chosen, like the TooLarge fallback does"
     );
 }
+
+// angr-03vl4.77: `concretize_internal`'s "range is manageable" branch used to
+// ask for exactly `max_solutions` and hand the result back as `Multiple`.
+// `solutions()` returns `min(n, #feasible)` with no truncation signal, so a
+// feasible set larger than the cap came back as a silently-truncated address
+// list that every consumer (ITE load default arm, store disjunction hoist,
+// `invalidate_code_for_concretization`) treats as exhaustive. It must now
+// report `TooLarge` instead.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_over_max_solutions_is_too_large_not_truncated_multiple() {
+    let ctx = SymContext::new_mock();
+    let mut concretizer = AddressConcretizer::new();
+    concretizer.max_solutions = 20;
+    // Contiguous set → gcd of differences is 1, so no Strided result; disabled
+    // explicitly so the assertion does not depend on which samples Z3 picks.
+    concretizer.enable_stride_detection = false;
+
+    // 33 feasible addresses over a 32-byte range: past FAST_ENUM_LIMIT (16) so
+    // the range path runs, but well inside read_range_limit (1024) so the
+    // "manageable" branch — not the over-range one — is what fires.
+    let addr = ctx.new_bv("trunc", 64);
+    ctx.assume_true(&addr.uge(&RustBV::concrete(0x1000, 64), &ctx));
+    ctx.assume_true(&addr.ule(&RustBV::concrete(0x1020, 64), &ctx));
+
+    match concretizer.concretize(&addr, &ctx) {
+        ConcretizationResult::TooLarge { min, max, .. } => {
+            assert_eq!((min, max), (0x1000, 0x1020));
+        }
+        other => panic!("expected TooLarge for a set over max_solutions, got {other:?}"),
+    }
+}
+
+// Companion: with the cap above the feasible count the same address still
+// enumerates, and the returned set is complete (not clipped at the cap).
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_under_max_solutions_still_enumerates_completely() {
+    let ctx = SymContext::new_mock();
+    let mut concretizer = AddressConcretizer::new();
+    concretizer.max_solutions = 64;
+    concretizer.enable_stride_detection = false;
+
+    let addr = ctx.new_bv("full", 64);
+    ctx.assume_true(&addr.uge(&RustBV::concrete(0x1000, 64), &ctx));
+    ctx.assume_true(&addr.ule(&RustBV::concrete(0x1020, 64), &ctx));
+
+    match concretizer.concretize(&addr, &ctx) {
+        ConcretizationResult::Multiple(addrs) => {
+            assert_eq!(addrs.len(), 33, "whole feasible set must come back");
+            assert_eq!(addrs[0], 0x1000);
+            assert_eq!(addrs[32], 0x1020);
+        }
+        other => panic!("expected Multiple, got {other:?}"),
+    }
+}
