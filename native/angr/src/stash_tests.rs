@@ -14,7 +14,7 @@ fn test_new_has_default_stashes() {
     assert!(mgr.get(STASH_PRUNED).is_some());
     assert!(mgr.get(STASH_UNCONSTRAINED).is_some());
     assert_eq!(mgr.active_count(), 0);
-    assert_eq!(mgr.found_count(), 0);
+    assert_eq!(mgr.count(STASH_FOUND), 0);
 }
 
 #[test]

@@ -234,19 +234,16 @@ impl StashManager {
     // =========================================================================
 
     /// Number of states in the active stash.
+    ///
+    /// Named shorthand for [`count`](Self::count) — the one place the
+    /// stash → length lookup lives at this layer. There is deliberately no
+    /// `found_count` twin here: the only caller that ever wanted one is
+    /// `RustExplorationManager::found_count`, which counts through its own
+    /// `stash_count` so it can reason about the
+    /// wave-parked bounces this layer knows nothing about (angr-03vl4.79).
     #[inline]
     pub fn active_count(&self) -> usize {
-        self.stashes
-            .get(STASH_ACTIVE)
-            .map_or(0, std::collections::VecDeque::len)
-    }
-
-    /// Number of states in the found stash.
-    #[inline]
-    pub fn found_count(&self) -> usize {
-        self.stashes
-            .get(STASH_FOUND)
-            .map_or(0, std::collections::VecDeque::len)
+        self.count(STASH_ACTIVE)
     }
 
     /// Number of states in a named stash.
