@@ -139,15 +139,14 @@ const CANONICAL: &[RegEntry] = &[
 const ALIASES: &[RegEntry] = &[
     // r11/r13/r14/r15 alternate names.
     //
-    // Deliberately no "ip" alias for r12 (angr-itm3u): the ARM ABI calls r12
-    // the intra-procedure-call scratch register "ip", but archinfo/angr use
-    // "ip" as the architecture-independent *instruction pointer* alias on
-    // every arch (ARMEL: (68, 4) = R15T). Exposing the ABI reading here made
-    // a Python-side write through the name "ip" land in r12 instead of the
-    // PC — a silent cross-register corruption. No other arch table defines
-    // "ip" either; RustStateProxy._canonical_name maps it to "pc" via
-    // archinfo before the name ever reaches Rust, and r12 stays reachable as
-    // "r12".
+    // "ip" is R15T, the PC — NOT r12 (angr-itm3u, angr-690nc). The ARM ABI
+    // calls r12 the intra-procedure-call scratch register "ip", but
+    // archinfo/angr use "ip" as the architecture-independent *instruction
+    // pointer* alias on every arch (ARMEL: (68, 4) = R15T). The ABI reading
+    // lived here once and made a Python-side write through the name "ip" land
+    // in r12 instead of the PC — a silent cross-register corruption. r12 stays
+    // reachable as "r12".
+    ("ip", offsets::R15T, 4),
     ("fp", offsets::R11, 4),
     // Architecture-independent frame-pointer name, mirroring archinfo's
     // ArchARMEL bp=(52,4) and the `bp`/`fp` interchangeability documented on

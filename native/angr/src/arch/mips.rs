@@ -247,6 +247,9 @@ const ALIASES_MIPS32: &[RegEntry] = &[
     // LR and $ra as the same architectural concept (angr-03vl4.1/.2).
     ("bp", offsets32::R30, 4),
     ("lr", offsets32::R31, 4),
+    // Architecture-independent instruction-pointer name, mirroring archinfo's
+    // ArchMIPS32 ip=(136,4)=pc (angr-690nc).
+    ("ip", offsets32::PC, 4),
     // Numeric rN aliases
     ("r0", offsets32::R0, 4),
     ("r1", offsets32::R1, 4),
@@ -458,6 +461,9 @@ const ALIASES_MIPS64: &[RegEntry] = &[
     // the two conventions this follows (angr-03vl4.1/.2).
     ("bp", offsets64::R30, 8),
     ("lr", offsets64::R31, 8),
+    // Architecture-independent instruction-pointer name, mirroring archinfo's
+    // ArchMIPS64 ip=(272,8)=pc (angr-690nc).
+    ("ip", offsets64::PC, 8),
     // Numeric rN aliases
     ("r0", offsets64::R0, 8),
     ("r1", offsets64::R1, 8),

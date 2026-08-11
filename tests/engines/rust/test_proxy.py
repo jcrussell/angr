@@ -2610,12 +2610,16 @@ class TestRegisterProxySymbolicRecovery:
 
     def test_prefetch_alias_canonicalizes_no_orphan(self):
         """prefetch() with an ABI alias (e.g. "ip") must canonicalize before
-        the FFI call — Rust's register file has no "ip" entry (angr-hv4lt.4).
+        the FFI call, so alias and canonical name share one cache entry
+        (angr-hv4lt.4).
 
-        Pre-fix: prefetch(["ip"]) reached Rust verbatim, missed, and cached a
-        fresh orphan BVS under "ip"; a subsequent proxy.regs.ip returned that
-        ghost symbol instead of the real instruction pointer, so constraints
-        never touched the actual register.
+        Pre-fix: prefetch(["ip"]) reached Rust verbatim, missed — the register
+        file had no "ip" entry at all back then — and cached a fresh orphan BVS
+        under "ip"; a subsequent proxy.regs.ip returned that ghost symbol
+        instead of the real instruction pointer, so constraints never touched
+        the actual register. Rust now defines "ip" as an alias of the PC
+        (angr-690nc), but canonicalization still has to collapse the two
+        spellings onto one cached AST.
         """
         import claripy
 

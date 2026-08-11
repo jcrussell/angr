@@ -137,6 +137,7 @@ const ARCH_EXPECTATIONS: &[ArchExpect] = &[
             ("sp", 24, 4),
             ("bp", 28, 4),
             ("pc", 68, 4),
+            ("ip", 68, 4),
             ("ax", 8, 2),
             ("di", 36, 2),
         ],
@@ -153,6 +154,7 @@ const ARCH_EXPECTATIONS: &[ArchExpect] = &[
             ("sp", 48, 8),
             ("bp", 56, 8),
             ("pc", 184, 8),
+            ("ip", 184, 8),
             ("ax", 16, 2),
             ("si", 64, 2),
         ],
@@ -165,7 +167,7 @@ const ARCH_EXPECTATIONS: &[ArchExpect] = &[
         ip_offset: 68,       // PC (R15T)
         sp_offset: 60,       // R13
         bp_offset: Some(52), // R11/FP
-        aliases: &[("sp", 60, 4), ("bp", 52, 4), ("lr", 64, 4)],
+        aliases: &[("sp", 60, 4), ("bp", 52, 4), ("lr", 64, 4), ("ip", 68, 4)],
         ip_name: "pc",
     },
     ArchExpect {
@@ -175,7 +177,7 @@ const ARCH_EXPECTATIONS: &[ArchExpect] = &[
         ip_offset: 272,       // PC
         sp_offset: 264,       // XSP
         bp_offset: Some(248), // X29/FP
-        aliases: &[("sp", 264, 8), ("bp", 248, 8), ("lr", 256, 8)],
+        aliases: &[("sp", 264, 8), ("bp", 248, 8), ("lr", 256, 8), ("ip", 272, 8)],
         ip_name: "pc",
     },
     ArchExpect {
@@ -192,6 +194,7 @@ const ARCH_EXPECTATIONS: &[ArchExpect] = &[
             ("sp", 124, 4),
             ("bp", 128, 4),
             ("lr", 132, 4),
+            ("ip", 136, 4),
             ("$2", 16, 4),
             ("$29", 124, 4),
             ("$30", 128, 4),
@@ -209,6 +212,7 @@ const ARCH_EXPECTATIONS: &[ArchExpect] = &[
             ("sp", 248, 8),
             ("bp", 256, 8),
             ("lr", 264, 8),
+            ("ip", 272, 8),
             ("$2", 32, 8),
             ("$29", 248, 8),
             ("$30", 256, 8),

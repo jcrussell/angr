@@ -88,7 +88,6 @@ def _numbered(prefix: str, stop: int, suffix: str = "", start: int = 0) -> froze
 # module and forces the group to be edited rather than left to rot.
 KNOWN_MISSING: dict[str, tuple[tuple[frozenset[str], str], ...]] = {
     "amd64": (
-        (frozenset({"ip"}), "angr-690nc: alias for rip — a real gap, not a design choice"),
         (
             frozenset({"_bp", "bph", "dih", "sih"}),
             "high-byte (bits 8-15) slices of rbp/rdi/rsi plus archinfo's 16-bit `_bp` "
@@ -120,7 +119,6 @@ KNOWN_MISSING: dict[str, tuple[tuple[frozenset[str], str], ...]] = {
         ),
     ),
     "x86": (
-        (frozenset({"ip"}), "angr-690nc: alias for eip — a real gap, not a design choice"),
         (
             frozenset({"dih", "dil", "sih", "sil"}),
             "8-bit slices of edi/esi; the Rust x86 table stops at the 16- and 32-bit forms",
@@ -134,18 +132,12 @@ KNOWN_MISSING: dict[str, tuple[tuple[frozenset[str], str], ...]] = {
     ),
     "arm": (
         (
-            frozenset({"ip"}),
-            "angr-690nc: archinfo puts ARM's `ip` at the pc offset (68), NOT at r12 "
-            "despite the AAPCS name — a real gap, not a design choice",
-        ),
-        (
             frozenset({"a1", "a2", "a3", "a4", "sb", "sl"}) | _numbered("v", 9, start=1),
             "AAPCS role aliases of r0-r3 (a1-a4) and r4-r11 (v1-v8), with sb/sl as the alternate names for r9/r10",
         ),
         (_numbered("s", 32), "VFP single-precision halves of d0-d15"),
     ),
     "arm64": (
-        (frozenset({"ip"}), "angr-690nc: alias for pc — a real gap, not a design choice"),
         (frozenset({"ip0", "ip1"}), "AAPCS64 intra-procedure-call scratch aliases of x16/x17"),
         (_numbered("r", 31), "legacy r-spelling of x0-x30"),
         (frozenset({"wsp"}), "32-bit view of sp"),
@@ -155,7 +147,6 @@ KNOWN_MISSING: dict[str, tuple[tuple[frozenset[str], str], ...]] = {
         ),
     ),
     "mips32": (
-        (frozenset({"ip"}), "angr-690nc: alias for pc — a real gap, not a design choice"),
         (
             frozenset({"ulr", "cond", "cp0_status"}),
             "VEX guest-state tail past the FP file (TLS shadow, condition word, CP0 "
@@ -165,7 +156,6 @@ KNOWN_MISSING: dict[str, tuple[tuple[frozenset[str], str], ...]] = {
         (_numbered("f", 32, "_lo"), "low 32-bit halves of the 64-bit FP registers; Rust exposes f0-f31 whole"),
     ),
     "mips64": (
-        (frozenset({"ip"}), "angr-690nc: alias for pc — a real gap, not a design choice"),
         (
             frozenset({"ulr", "cond", "cp0_status"}),
             "VEX guest-state tail past the FP file (TLS shadow, condition word, CP0 "
