@@ -804,9 +804,25 @@ impl<'a> VEXInterpreter<'a> {
             }
         }
 
-        // Determine return type bits
+        // Determine return type bits. A dirty call that names a result temp
+        // must have that temp in the block's tyenv; a missing entry is
+        // malformed IR, not a "assume 64" case. `ret_ty_bits` feeds both the
+        // native-handler write path (`RustBV::concrete` below) and the
+        // Python-callback path (`bytes_to_bv`), so defaulting silently
+        // produces a wrong-width tmp that propagates instead of erroring.
+        // Fail loud, matching the `IRStmt::LLSC` arm of
+        // `execute_stmt_with_callbacks`, which does the same lookup for the
+        // same condition (angr-03vl4.33).
         let ret_ty_bits = if let Some(tmp) = dirty.tmp {
-            irsb.tyenv.get(tmp).map(|t| t.bits()).unwrap_or(64)
+            irsb.tyenv
+                .get(tmp)
+                .ok_or_else(|| {
+                    CbExecutionError::InvalidIR(format!(
+                        "dirty call '{}': result temp {tmp} not in tyenv",
+                        dirty.cee.name
+                    ))
+                })?
+                .bits()
         } else {
             0 // No return value
         };
@@ -868,9 +884,14 @@ impl<'a> VEXInterpreter<'a> {
             );
             self.stats.vex_bypass_fabricate_count += 1;
             if let Some(tmp) = dirty.tmp {
-                let bits = if ret_ty_bits == 0 { 64 } else { ret_ty_bits };
-                let stub =
-                    RustBV::symbolic(self.ctx, format!("dirty_{}_stub", dirty.cee.name), bits);
+                // `ret_ty_bits` is the tyenv width of exactly this temp, and
+                // `IRType::bits` never yields 0, so the 0 sentinel means
+                // "no result temp" and cannot be reached inside this arm.
+                let stub = RustBV::symbolic(
+                    self.ctx,
+                    format!("dirty_{}_stub", dirty.cee.name),
+                    ret_ty_bits,
+                );
                 self.write_tmp(tmp, stub)?;
             }
             return Ok(StmtResult::Continue);

@@ -1032,3 +1032,48 @@ fn unmodelled_dirty_call_routes_to_python_not_fabricate() {
         );
     });
 }
+
+/// angr-03vl4.33: a dirty call naming a result temp that is absent from the
+/// block's tyenv is malformed IR. `handle_dirty_call` used to default the
+/// width to 64, which silently produced a wrong-width tmp on both the
+/// native-handler and Python-callback write paths; it must now fail with
+/// `InvalidIR` like the `IRStmt::LLSC` arm does for the same condition.
+#[test]
+fn dirty_call_result_tmp_missing_from_tyenv_is_invalid_ir() {
+    use crate::vex::ir::{DirtyFx, IRCallee, IRDirty};
+    let ctx = SymContext::new_mock();
+    let mut interp = new_interp(&ctx);
+    // tyenv declares exactly one temp (t0); the dirty call names t5.
+    let irsb = make_irsb_with_temps(0x3000, &[IRType::I64]);
+    let dirty = IRDirty {
+        cee: IRCallee {
+            name: "amd64g_dirtyhelper_NOT_A_REAL_HELPER".to_string(),
+            addr: 0,
+            mcx_mask: 0,
+        },
+        guard: None,
+        tmp: Some(5),
+        mFx: DirtyFx::None,
+        mAddr: None,
+        mSize: 0,
+        nFxState: 0,
+        args: vec![],
+    };
+    with_python(|cb| {
+        let res = interp.execute_stmt_with_callbacks(cb, &IRStmt::Dirty(dirty), &irsb);
+        match &res {
+            Err(CbExecutionError::InvalidIR(msg)) => {
+                assert!(
+                    msg.contains("not in tyenv") && msg.contains('5'),
+                    "InvalidIR message should name the missing temp, got {msg}"
+                );
+            }
+            Ok(_) => panic!("missing tyenv entry silently accepted"),
+            Err(e) => panic!("expected InvalidIR, got {e:?}"),
+        }
+        assert_eq!(
+            interp.stats.vex_bypass_fabricate_count, 0,
+            "the tyenv lookup must fail before any fabricate/fallback path"
+        );
+    });
+}
