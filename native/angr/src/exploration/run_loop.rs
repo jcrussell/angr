@@ -268,8 +268,9 @@ impl RustExplorationManager {
     /// can be replayed that way; the worker zeroed the pc of the others
     /// (`state.set_pc(step.new_pc)` in `parallel_process_state`), so they have
     /// no recoverable resume point and stay parked — logged, not silently
-    /// dropped. Ids already resident in a stash are skipped so the flush can
-    /// never double-insert a state.
+    /// dropped. Ids already resident in a stash are DISCARDED (not re-parked,
+    /// regardless of kind) so the flush can never double-insert a state and
+    /// never accumulates a duplicate no later flush could drain.
     ///
     /// Deliberately `set_pc` WITHOUT `add_to_history`, unlike the sibling
     /// bounce-restore sites (`dispatch_bounce`'s `Hook` /
@@ -297,13 +298,29 @@ impl RustExplorationManager {
         let mut kept = Vec::new();
         for (mut state, kind, root) in parked {
             let id = state.state_id();
+            if resident.contains(&id) {
+                // SILENT(cat-b): a stash already holds this id, so the parked
+                // copy is a redundant duplicate — re-entering it would
+                // double-insert the state. Dropping is not a loss of work: the
+                // resident copy carries the path forward. Re-parking it instead
+                // (what the old catch-all arm did) leaked the duplicate
+                // forever, since every later flush re-ran this same check and
+                // re-parked it again, under a "no re-enterable entry address"
+                // message that named the wrong reason (angr-03vl4.18).
+                log::debug!(
+                    "dropping parked bounce for state {id} (kind={kind:?}): the id \
+                     is already resident in a stash, so the parked copy is a \
+                     duplicate the flush must not re-insert"
+                );
+                continue;
+            }
             match bounce_target_addr(&kind) {
-                Some(addr) if !resident.contains(&id) => {
+                Some(addr) => {
                     state.set_pc(addr);
                     self.sm.set_root(id, root);
                     self.route_successor(state, true);
                 }
-                _ => {
+                None => {
                     log::warn!(
                         "parked bounce for state {id} has no re-enterable entry \
                          address (kind={kind:?}); it stays live in this manager but \

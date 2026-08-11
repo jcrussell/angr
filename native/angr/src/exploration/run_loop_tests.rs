@@ -49,6 +49,68 @@ fn flush_parked_bounce_leaves_history_for_the_replay_to_append() {
     });
 }
 
+/// A parked bounce whose id is ALREADY resident in a stash is a duplicate the
+/// flush must not re-insert — and must not re-park either. Re-parking it (the
+/// old catch-all arm, which also mislabelled the reason as "no re-enterable
+/// entry address") leaked it forever: every later flush re-ran the same check
+/// and put it straight back (angr-03vl4.18).
+///
+/// A snapshot round-trip is the only way to mint a second `RustSimState`
+/// carrying an existing id — `fork`/`Clone` always allocate a fresh one
+/// (`state-id-never-reused`, asserted in `fork_with`).
+#[test]
+fn flush_drops_parked_bounce_whose_id_is_already_resident() {
+    Python::initialize();
+    Python::attach(|_py| {
+        const BOUNCE_ADDR: u64 = 0x40_5000;
+        let (mut mgr, mut state, id) = mgr_and_state(0x40_0000);
+        let resident = RustSimState::from_snapshot(state.to_snapshot()).expect("round-trip");
+        assert_eq!(resident.state_id(), id, "snapshot restore preserves the id");
+        mgr.sm.push(STASH_ACTIVE, resident);
+        mgr.pending_parallel_bounces
+            .push((state, BounceKind::Hook { addr: BOUNCE_ADDR }, id));
+
+        mgr.flush_parked_bounces_to_active();
+
+        assert!(
+            mgr.pending_parallel_bounces.is_empty(),
+            "a resident duplicate is dropped, not re-parked for the next flush"
+        );
+        let active = mgr.sm.get(STASH_ACTIVE).expect("active stash exists");
+        assert_eq!(active.len(), 1, "the flush must not double-insert the id");
+        assert_eq!(
+            active[0].pc(),
+            0x40_0000,
+            "the resident copy is untouched — the parked duplicate is discarded"
+        );
+    });
+}
+
+/// The other half of the same split: a kind with no re-enterable entry address
+/// and a NON-resident id still parks (logged, never silently dropped), which is
+/// what keeps the state live for a later `_pending_*` API call.
+#[test]
+fn flush_keeps_parked_bounce_with_no_reenterable_address() {
+    Python::initialize();
+    Python::attach(|_py| {
+        let (mut mgr, state, id) = mgr_and_state(0x40_0000);
+        mgr.pending_parallel_bounces
+            .push((state, BounceKind::SyscallPython { num: Some(60) }, id));
+
+        mgr.flush_parked_bounces_to_active();
+
+        assert_eq!(
+            mgr.pending_parallel_bounces.len(),
+            1,
+            "no re-enterable address and not resident → stays parked"
+        );
+        assert!(
+            mgr.sm.get(STASH_ACTIVE).is_none_or(|s| s.is_empty()),
+            "an unreplayable bounce must not reach a stash"
+        );
+    });
+}
+
 // --- must_run_serial: the run_loop parallel-vs-serial routing guard
 // (angr-ph300.6). Native techniques are coordinator-side and only run between
 // waves, so a wave on a non-terminating frontier would never quiesce and the
