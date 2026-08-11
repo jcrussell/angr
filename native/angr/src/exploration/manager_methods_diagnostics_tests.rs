@@ -56,11 +56,9 @@ fn analyze_constraint_sharing_is_all_zeroes_on_an_empty_manager() {
 /// which is exactly the `structural_duplicates` signal the analysis exists to
 /// report (angr-zdho: what a construction-time hash-cons would save).
 ///
-/// Both constraints live on the same state deliberately — the sharing walk
-/// keys pointers by address, and addresses are only comparable while the
-/// values are simultaneously alive, which holds within one state's
-/// `get_assumed_constraints` vector but not across two states' successive
-/// temporaries.
+/// Both constraints live on the same state here; the cross-state case is
+/// pinned separately below, since keeping per-state addresses comparable took
+/// a fix of its own (angr-gkcxh).
 #[cfg(feature = "vex-engine-z3")]
 #[test]
 fn analyze_constraint_sharing_reports_structurally_duplicate_allocations() {
@@ -89,6 +87,38 @@ fn analyze_constraint_sharing_reports_structurally_duplicate_allocations() {
         Some(1),
         "structural_duplicates is unique_pointers - unique_shapes"
     );
+}
+
+/// The cross-state counterpart of the test above (angr-gkcxh): each state is
+/// folded from its own short-lived `get_assumed_constraints` clone, so a walk
+/// that let those temporaries die would score later states' nodes as
+/// already-seen and report far fewer than `n` of each. Enough states to make
+/// address reuse near-certain if it can happen at all.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn analyze_constraint_sharing_counts_every_state_not_just_the_first() {
+    const N: u128 = 32;
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    for value in 0..N {
+        let state = RustSimState::new("amd64").expect("state");
+        assume_bv(&state, RustBV::concrete(value, 64));
+        mgr.sm.push(STASH_ACTIVE, state);
+    }
+
+    let out = mgr.analyze_constraint_sharing();
+    assert_eq!(out.get("states_analyzed").copied(), Some(N as u64));
+    assert_eq!(out.get("constraints_analyzed").copied(), Some(N as u64));
+    assert_eq!(
+        out.get("unique_pointers").copied(),
+        Some(N as u64),
+        "one live node per state, none reusing a dropped predecessor's address"
+    );
+    assert_eq!(
+        out.get("unique_shapes").copied(),
+        Some(N as u64),
+        "the constraint values are all distinct"
+    );
+    assert_eq!(out.get("structural_duplicates").copied(), Some(0));
 }
 
 /// The two population rules in the fold: a constraint-free state is skipped

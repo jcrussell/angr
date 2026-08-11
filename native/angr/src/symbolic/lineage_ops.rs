@@ -30,11 +30,18 @@ impl SymContext {
     /// tree and walked recursively; pointer-keyed dedup matches today's
     /// per-conversion cache, structural-keyed dedup answers what
     /// construction-level hash-cons (angr-behq) would dedupe to.
+    ///
+    /// The cloned vector is handed to the walk *by value*: it would otherwise
+    /// be dropped here, and the next context's clone could reuse its addresses
+    /// and be scored as already-seen (angr-gkcxh — see the `sharing` module
+    /// doc).
     pub fn fold_sharing_walk(&self, walk: &mut ConstraintSharingWalk) {
-        let constraints = self.get_assumed_constraints();
-        for (bv, _) in &constraints {
-            walk.visit(bv);
-        }
+        walk.visit_batch(
+            self.get_assumed_constraints()
+                .into_iter()
+                .map(|(bv, _)| bv)
+                .collect(),
+        );
     }
 
     /// Clone of this context's lineage Arc, if any (angr-v5a5 spike).
