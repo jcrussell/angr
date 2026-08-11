@@ -911,6 +911,33 @@ fn wide_rotate_declines_the_concrete_fold() {
     }
 }
 
+// angr-03vl4.60: the byte-reverse concrete fast path at width > 128, same
+// unstorable-result shape as the wide rotate above.
+#[test]
+fn wide_reverse_declines_the_concrete_fold() {
+    let ctx = SymContext::new_mock();
+    for &w in &WIDE_WIDTHS {
+        for &v in &wide_payloads() {
+            let got = bv(v, w).reverse(&ctx);
+            assert_eq!(got.width(), w, "reverse width w={w} v={v:#x}");
+            if !w.is_multiple_of(8) {
+                // A partial byte has no reverse at any width; the misaligned
+                // arm returns the operand unchanged (angr-sqfj8.92).
+                assert_eq!(val(&got), v, "misaligned reverse w={w} v={v:#x}");
+            } else {
+                // A reverse moves byte 0 to bit position `w - 8 >= 128`, which
+                // the u128 payload cannot represent, so there is no concrete
+                // answer to fold to.
+                assert!(
+                    got.as_u128().is_none(),
+                    "reverse must not fold w={w} v={v:#x}"
+                );
+                assert_eq!(got.op(), Some(&BVOp::Reverse), "reverse op w={w} v={v:#x}");
+            }
+        }
+    }
+}
+
 /// The `width <= 128` fold is unchanged by the wide guard: check it against an
 /// independent masked-`u128` reference across the boundary widths and the
 /// amounts that straddle 0 / w / 2^32.
