@@ -929,3 +929,163 @@ fn advance_sp_past_return_addr_keeps_symbolic_sp_symbolic() {
     );
     assert_eq!(sp.width(), 64, "the bump preserves SP width");
 }
+
+// ---------------------------------------------------------------------------
+// record_reconvergence_sample — the per-step (pc, callstack-return-addr-chain)
+// collision sampler (angr-11djq.16, angr-03vl4.27). Counters only, so the whole
+// grouping model is exercised directly: push states with hand-built pcs and
+// callstacks onto the active stash, sample, and assert the four counters. The
+// pre-existing coverage in `stats_api_tests.rs` sets those counters by hand and
+// only proves the derived ratio math, leaving the hashing / >=2 threshold /
+// max_group logic here untested.
+// ---------------------------------------------------------------------------
+
+/// Push a fresh amd64 state at `pc` whose callstack has one frame per entry of
+/// `rets` (only `return_addr` participates in the reconvergence key), then park
+/// it on the active stash.
+fn push_active_with_callstack(mgr: &mut RustExplorationManager, pc: u64, rets: &[u64]) {
+    let mut s = RustSimState::new("amd64").expect("state");
+    s.set_pc(pc);
+    for (i, &ret) in rets.iter().enumerate() {
+        s.push_call(0x400_000 + i as u64, 0x401_000 + i as u64, ret, 0x7fff_0000);
+    }
+    mgr.sm.push(STASH_ACTIVE, s);
+}
+
+fn reconvergence_mgr() -> RustExplorationManager {
+    Python::initialize();
+    RustExplorationManager::new("amd64", None).expect("amd64 mgr")
+}
+
+/// An empty active stash records nothing at all — not even a sample — so the
+/// derived rate stays undefined rather than being diluted by empty steps.
+#[test]
+fn reconvergence_sample_skips_empty_active_stash() {
+    let mut mgr = reconvergence_mgr();
+
+    mgr.record_reconvergence_sample();
+
+    assert_eq!(mgr.reconvergence_samples, 0, "no active states, no sample");
+    assert_eq!(mgr.reconvergence_active_observed, 0);
+    assert_eq!(mgr.reconvergence_collision_states, 0);
+    assert_eq!(mgr.reconvergence_max_group, 0);
+}
+
+/// The `<2` short-circuit: a lone active state is observed and sampled, but
+/// cannot collide, and its group size is 1.
+#[test]
+fn reconvergence_sample_single_state_cannot_collide() {
+    let mut mgr = reconvergence_mgr();
+    push_active_with_callstack(&mut mgr, 0x1000, &[0x2000]);
+
+    mgr.record_reconvergence_sample();
+
+    assert_eq!(mgr.reconvergence_samples, 1);
+    assert_eq!(mgr.reconvergence_active_observed, 1);
+    assert_eq!(mgr.reconvergence_collision_states, 0, "one state, no pair");
+    assert_eq!(mgr.reconvergence_max_group, 1);
+}
+
+/// Two states sharing both pc and return-addr chain reconverge: BOTH count as
+/// colliding (the counter is colliding *states*, not colliding groups).
+#[test]
+fn reconvergence_sample_counts_both_members_of_a_collision() {
+    let mut mgr = reconvergence_mgr();
+    push_active_with_callstack(&mut mgr, 0x1000, &[0x2000]);
+    push_active_with_callstack(&mut mgr, 0x1000, &[0x2000]);
+
+    mgr.record_reconvergence_sample();
+
+    assert_eq!(mgr.reconvergence_samples, 1);
+    assert_eq!(mgr.reconvergence_active_observed, 2);
+    assert_eq!(
+        mgr.reconvergence_collision_states, 2,
+        "both members of the >=2 group count",
+    );
+    assert_eq!(mgr.reconvergence_max_group, 2);
+}
+
+/// pc participates in the key: same callstack, different program point is not
+/// a reconvergence. Guards against a hashing change that drops `pc()`.
+#[test]
+fn reconvergence_sample_distinct_pcs_do_not_collide() {
+    let mut mgr = reconvergence_mgr();
+    push_active_with_callstack(&mut mgr, 0x1000, &[0x2000]);
+    push_active_with_callstack(&mut mgr, 0x1004, &[0x2000]);
+
+    mgr.record_reconvergence_sample();
+
+    assert_eq!(mgr.reconvergence_collision_states, 0, "different pc");
+    assert_eq!(mgr.reconvergence_max_group, 1);
+    assert_eq!(mgr.reconvergence_active_observed, 2);
+}
+
+/// The callstack participates too — same pc reached through different callers
+/// is not a reconvergence. Covers both ways the chain can differ: a different
+/// return address at equal depth, and a deeper chain sharing a prefix.
+#[test]
+fn reconvergence_sample_distinct_callstacks_do_not_collide() {
+    let mut mgr = reconvergence_mgr();
+    push_active_with_callstack(&mut mgr, 0x1000, &[0x2000]);
+    push_active_with_callstack(&mut mgr, 0x1000, &[0x3000]);
+    push_active_with_callstack(&mut mgr, 0x1000, &[0x2000, 0x4000]);
+
+    mgr.record_reconvergence_sample();
+
+    assert_eq!(
+        mgr.reconvergence_collision_states, 0,
+        "same pc via different callers is not reconvergence",
+    );
+    assert_eq!(mgr.reconvergence_max_group, 1);
+    assert_eq!(mgr.reconvergence_active_observed, 3);
+}
+
+/// Several groups at once: a 3-group, a 2-group and a singleton. Colliding
+/// counts 3+2 (the singleton is excluded by the `>=2` threshold) and max_group
+/// tracks the LARGEST group, not the last one visited.
+#[test]
+fn reconvergence_sample_sums_groups_and_tracks_max() {
+    let mut mgr = reconvergence_mgr();
+    for _ in 0..3 {
+        push_active_with_callstack(&mut mgr, 0x1000, &[0x2000]);
+    }
+    for _ in 0..2 {
+        push_active_with_callstack(&mut mgr, 0x1100, &[0x2000]);
+    }
+    push_active_with_callstack(&mut mgr, 0x1200, &[0x2000]);
+
+    mgr.record_reconvergence_sample();
+
+    assert_eq!(mgr.reconvergence_active_observed, 6);
+    assert_eq!(
+        mgr.reconvergence_collision_states, 5,
+        "3-group + 2-group collide; the singleton does not",
+    );
+    assert_eq!(mgr.reconvergence_max_group, 3, "largest group wins");
+}
+
+/// Across steps the counters accumulate but `max_group` is a running high-water
+/// mark: a later, less-converged step must not lower it.
+#[test]
+fn reconvergence_max_group_is_a_high_water_mark_across_samples() {
+    let mut mgr = reconvergence_mgr();
+    for _ in 0..3 {
+        push_active_with_callstack(&mut mgr, 0x1000, &[0x2000]);
+    }
+    mgr.record_reconvergence_sample();
+    assert_eq!(mgr.reconvergence_max_group, 3);
+
+    // Next step: drop the active stash to two states that do NOT collide.
+    mgr.sm.clear(STASH_ACTIVE);
+    push_active_with_callstack(&mut mgr, 0x1000, &[0x2000]);
+    push_active_with_callstack(&mut mgr, 0x1004, &[0x2000]);
+    mgr.record_reconvergence_sample();
+
+    assert_eq!(mgr.reconvergence_samples, 2, "two steps sampled");
+    assert_eq!(mgr.reconvergence_active_observed, 5, "3 + 2 observed");
+    assert_eq!(mgr.reconvergence_collision_states, 3, "only the first step");
+    assert_eq!(
+        mgr.reconvergence_max_group, 3,
+        "a calmer later step must not lower the high-water mark",
+    );
+}
