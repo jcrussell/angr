@@ -181,6 +181,22 @@ fn do_mmap(
         return Ok(SyscallOutcome::Continue { ret: u64::MAX });
     }
 
+    // MAP_FIXED skips `range_collides` below, and with it that function's
+    // `checked_add` overflow guard — so a page-aligned `addr` near the top of
+    // the address space used to fall straight through to `unmap`/`map`, whose
+    // page-range helpers reject the wrapping range and skip silently, leaving
+    // `do_mmap` to report success for a mapping that was never made
+    // (angr-03vl4.68). Mirror `range_collides`'s guard exactly: the *last
+    // byte* is what must be representable, so a region ending precisely at
+    // `2^64` (e.g. mapping the final page) stays legal, matching
+    // `Memory::end_page_exclusive`. `length` is nonzero here — the `length ==
+    // 0` fast path returned above. Linux rejects an unrepresentable fixed
+    // range with -EINVAL, so return -1 rather than falling back to Python,
+    // whose `map_region` would wrap just as silently.
+    if is_fixed && candidate.checked_add(length - 1).is_none() {
+        return Ok(SyscallOutcome::Continue { ret: u64::MAX });
+    }
+
     // Collision policy:
     //   - addr=0 + collision: fall back. Python's allocate_memory loop
     //     would try a different mmap_base; we can't reproduce that loop

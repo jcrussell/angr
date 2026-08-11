@@ -311,6 +311,59 @@ fn map_fixed_clean_addr_still_maps_without_unmap_noise() {
 }
 
 #[test]
+fn map_fixed_wrapping_range_is_rejected_not_falsely_successful() {
+    // angr-03vl4.68: MAP_FIXED bypasses `range_collides`, so it also
+    // bypassed that function's overflow guard. `addr + length` wrapping
+    // past u64::MAX made `Memory::map`'s page range empty, so nothing was
+    // mapped — yet do_mmap reported success with the requested address.
+    let h = NativeMmapSyscall;
+    let mut state = fresh_state();
+    // Page-aligned, and well under MAX_MAP_SIZE so the oversized-length
+    // fast path above cannot be what rejects this.
+    let target = 0xFFFF_FFFF_FFFF_0000_u64;
+
+    let outcome = h
+        .call(
+            &mut state,
+            &args(target, 0x2_0000, 0x3, ANON_PRIVATE | MAP_FIXED, ANON_FD, 0),
+        )
+        .expect("wrapping MAP_FIXED must complete natively, not fall back");
+    match outcome {
+        SyscallOutcome::Continue { ret } => assert_eq!(ret, u64::MAX, "expected -1 (EINVAL)"),
+        other => panic!("expected Continue, got {other:?}"),
+    }
+    // Nothing may have been mapped — neither at the requested address nor
+    // at the low pages the wrapped range would have walked into.
+    assert_eq!(state.memory().page_permissions(target >> 12), None);
+    assert_eq!(state.memory().page_permissions(0), None);
+}
+
+#[test]
+fn map_fixed_region_ending_exactly_at_top_of_address_space_still_maps() {
+    // Over-rejection guard for the check above: a region whose *last byte*
+    // is u64::MAX does not overflow, so mapping the final page is legal and
+    // must still succeed. A naive `checked_add(length)` guard would reject it.
+    let h = NativeMmapSyscall;
+    let mut state = fresh_state();
+    let target = 0xFFFF_FFFF_FFFF_F000_u64;
+
+    let outcome = h
+        .call(
+            &mut state,
+            &args(target, 0x1000, 0x3, ANON_PRIVATE | MAP_FIXED, ANON_FD, 0),
+        )
+        .expect("last-page MAP_FIXED must succeed natively");
+    match outcome {
+        SyscallOutcome::Continue { ret } => assert_eq!(ret, target),
+        other => panic!("expected Continue, got {other:?}"),
+    }
+    assert_eq!(
+        state.memory().page_permissions(target >> 12),
+        Some(Permission::RW),
+    );
+}
+
+#[test]
 fn map_fixed_misaligned_addr_returns_einval_and_maps_nothing() {
     // angr-sqfj8.110: MAP_FIXED must land at exactly `addr`, but
     // Memory::map is page-granular and would floor the request to its
