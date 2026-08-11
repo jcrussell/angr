@@ -519,9 +519,10 @@ impl RustExplorationManager {
     /// being whatever model Z3 happened to build. States already in a stash
     /// are updated in place — as are states parked in an outstanding callback
     /// and the pre-branch snapshots their deferred forks will be materialized
-    /// from (angr-sqfj8.32) — so the order of this call relative to
-    /// `add_state` does not matter, and neither does whether a SimProcedure /
-    /// syscall callback happens to be in flight.
+    /// from (angr-sqfj8.32) and states parked in the parallel bounce queue
+    /// (angr-03vl4.10) — so the order of this call relative to `add_state` does
+    /// not matter, and neither does whether a SimProcedure / syscall callback
+    /// happens to be in flight or a wave left bounces undispatched.
     ///
     /// Costs Z3 checks (an `O(log width)` binary search per witness), hence
     /// opt-in. Note this makes *witness choice* deterministic; with more than
@@ -546,6 +547,13 @@ impl RustExplorationManager {
         // session's resident frontier.
         for pending in self.pending_callbacks.values() {
             constraints::apply_pending_deterministic(pending, v);
+        }
+        // The third bucket of live states outside every stash: a wave/session
+        // pass that surfaced one callback parks the REST of its bounce queue,
+        // and the steady guard does not drain that (angr-03vl4.10). See
+        // `parked_bounce_states`.
+        for state in self.parked_bounce_states() {
+            constraints::apply_state_deterministic(state, v);
         }
         log::debug!("Strict-deterministic witness selection set to {v}");
     }
@@ -747,8 +755,9 @@ impl RustExplorationManager {
     /// Guarded and pending-aware for the same reasons as `set_deterministic`
     /// (angr-c7xno.21): a mid-steady flip would otherwise miss the parallel
     /// session's resident frontier, and a state parked in `pending_callbacks`
-    /// lives in no stash, so the loop below alone would leave it capped at the
-    /// old value forever.
+    /// or in `pending_parallel_bounces` (angr-03vl4.10) lives in no stash, so
+    /// the stash loop below alone would leave it capped at the old value
+    /// forever.
     #[angr_macros::steady_guarded]
     pub fn set_max_history(&mut self, max: usize) {
         self.environment.max_history = max;
@@ -767,6 +776,11 @@ impl RustExplorationManager {
             if let Some(snapshot) = pending.pre_callback_snapshot.as_mut() {
                 snapshot.set_max_history(max);
             }
+        }
+        // Parked parallel bounces are a third bucket living in no stash
+        // (angr-03vl4.10); see `parked_bounce_states`.
+        for state in self.parked_bounce_states_mut() {
+            state.set_max_history(max);
         }
     }
 

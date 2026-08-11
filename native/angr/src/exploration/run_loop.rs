@@ -380,6 +380,40 @@ impl RustExplorationManager {
             })
             .count()
     }
+
+    /// The states parked in `pending_parallel_bounces`, for a manager-level
+    /// BROADCAST that must reach every live state (angr-03vl4.10).
+    ///
+    /// `pending_parallel_bounces` is the third bucket of live `RustSimState`s —
+    /// alongside the stashes and `pending_callbacks` — and like the second it
+    /// lives in NO stash, so a broadcast that only loops `sm.stashes_mut()`
+    /// misses it. Nothing re-applies the change when
+    /// [`flush_parked_bounces_to_active`] later routes the state back to
+    /// `STASH_ACTIVE`, so it would resume on the old configuration forever.
+    /// `#[angr_macros::steady_guarded]` does not cover this: the guard only
+    /// drains the parallel session's *resident* frontier back into stashes.
+    ///
+    /// Yields EVERY parked entry, including the ones
+    /// [`parked_bounces_flushable_count`] excludes. That asymmetry is
+    /// deliberate: the census must equal the post-flush stash population, while
+    /// a broadcast must reach every state that can still execute. An
+    /// unflushable kind stays live in this manager, and a resident duplicate is
+    /// dropped only at flush time — until then it is a real state a later step
+    /// could observe.
+    pub(crate) fn parked_bounce_states(&self) -> impl Iterator<Item = &RustSimState> {
+        self.pending_parallel_bounces
+            .iter()
+            .map(|(state, _, _)| state)
+    }
+
+    /// `&mut` half of [`parked_bounce_states`], for broadcasts that mutate the
+    /// state in place (`set_max_history`, `_active_states_map_memory`) rather
+    /// than reaching through it to a shared solver.
+    pub(crate) fn parked_bounce_states_mut(&mut self) -> impl Iterator<Item = &mut RustSimState> {
+        self.pending_parallel_bounces
+            .iter_mut()
+            .map(|(state, _, _)| state)
+    }
 }
 
 test_submod!(z3 "run_loop_tests.rs" => tests);

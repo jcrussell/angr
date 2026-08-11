@@ -62,8 +62,9 @@ impl RustExplorationManager {
         })
     }
 
-    /// Map `data` into every state that can still execute — the active stash
-    /// plus everything parked behind an in-flight Python callback.
+    /// Map `data` into every state that can still execute — the active stash,
+    /// everything parked behind an in-flight Python callback, and the parallel
+    /// bounce queue an unfinished wave left parked (angr-03vl4.10).
     ///
     /// The pending half matters because a parked state re-enters `STASH_ACTIVE`
     /// when its callback returns: skipping it leaves that one state faulting
@@ -89,6 +90,14 @@ impl RustExplorationManager {
                     memory.map_data(addr, data, permissions);
                 }
             }
+        }
+        // Third bucket of states that can still execute and live in no stash:
+        // the parked parallel bounce queue (angr-03vl4.10). Same reasoning as
+        // the pending loop above — a parked bounce re-enters `STASH_ACTIVE` on
+        // the next flush, and would fault `Unmapped` on a region every sibling
+        // can read. See `parked_bounce_states`.
+        for state in self.parked_bounce_states_mut() {
+            state.map_memory_data(addr, data, permissions);
         }
     }
 

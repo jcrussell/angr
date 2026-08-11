@@ -414,3 +414,57 @@ fn active_states_map_memory_reaches_parked_pending_callback_states() {
         "fork snapshot memory sees the mapping",
     );
 }
+
+/// The parked parallel bounce queue is a THIRD bucket of states that can still
+/// execute and live in no stash — newer than `pending_callbacks` and missed by
+/// the same loop for the same reason (angr-03vl4.10). A bounce parked while
+/// Python maps a region would re-enter `STASH_ACTIVE` on the next flush and
+/// fault `Unmapped` on memory every sibling can read.
+///
+/// Both flush arms are pinned: the broadcast must reach even a bounce kind no
+/// flush can route to a stash, since it stays live in this manager anyway.
+#[test]
+fn active_states_map_memory_reaches_parked_parallel_bounce_states() {
+    use crate::exploration::core_outcome::BounceKind;
+
+    Python::initialize();
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+
+    let replayable = RustSimState::new("amd64").expect("state");
+    let replayable_id = replayable.state_id();
+    let unreplayable = RustSimState::new("amd64").expect("state");
+    let unreplayable_id = unreplayable.state_id();
+    mgr.pending_parallel_bounces.push((
+        replayable,
+        BounceKind::Hook { addr: 0x40_5000 },
+        replayable_id,
+    ));
+    mgr.pending_parallel_bounces.push((
+        unreplayable,
+        BounceKind::SyscallPython { num: Some(60) },
+        unreplayable_id,
+    ));
+
+    const ADDR: u64 = 0x41_000;
+    let data = [0xde_u8, 0xad, 0xbe, 0xef];
+    mgr._active_states_map_memory(ADDR, &data, 5);
+
+    // amd64 is little-endian, so the mapped byte sequence reads back reversed.
+    let expected = 0xefbe_adde_u64;
+    for id in [replayable_id, unreplayable_id] {
+        let state = mgr
+            .parked_bounce_states()
+            .find(|s| s.state_id() == id)
+            .expect("bounce still parked");
+        let mem = state.memory();
+        assert!(mem.is_mapped(ADDR), "region mapped in parked bounce {id}");
+        assert_eq!(
+            mem.load_concrete(ADDR, 4, &state.solver().borrow())
+                .expect("load mapped bytes")
+                .as_u64()
+                .expect("concrete bytes"),
+            expected,
+            "parked bounce {id} sees the mapping",
+        );
+    }
+}

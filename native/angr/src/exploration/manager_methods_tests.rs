@@ -451,3 +451,121 @@ fn set_max_history_reaches_parked_pending_callback_states() {
         );
     }
 }
+
+// --- config broadcast reaches parked parallel bounces (angr-03vl4.10) ----
+
+/// Push one replayable and one unreplayable bounce onto
+/// `pending_parallel_bounces`, returning their ids in that order.
+///
+/// Both arms matter for a broadcast: unlike the census
+/// (`parked_bounces_flushable_count`), which must exclude a bounce the flush
+/// never routes to a stash, a config mutator has to reach EVERY parked state —
+/// an unreplayable one stays live in this manager indefinitely.
+fn park_two_bounces(mgr: &mut RustExplorationManager) -> (u64, u64) {
+    use crate::exploration::core_outcome::BounceKind;
+
+    let mut replayable = RustSimState::new("amd64").expect("state");
+    replayable.set_pc(0x40_1000);
+    let replayable_id = replayable.state_id();
+    let mut unreplayable = RustSimState::new("amd64").expect("state");
+    unreplayable.set_pc(0x40_3000);
+    let unreplayable_id = unreplayable.state_id();
+
+    mgr.pending_parallel_bounces.push((
+        replayable,
+        BounceKind::Hook { addr: 0x40_5000 },
+        replayable_id,
+    ));
+    mgr.pending_parallel_bounces.push((
+        unreplayable,
+        BounceKind::SyscallPython { num: Some(60) },
+        unreplayable_id,
+    ));
+    (replayable_id, unreplayable_id)
+}
+
+/// Look up a parked bounce state by id.
+fn parked_bounce(mgr: &RustExplorationManager, id: u64) -> &RustSimState {
+    mgr.parked_bounce_states()
+        .find(|s| s.state_id() == id)
+        .expect("bounce still parked")
+}
+
+/// `set_deterministic` reaches states parked in `pending_parallel_bounces`.
+///
+/// A wave/session pass that surfaces one `need_callback` event parks the rest
+/// of its bounce queue in states that live in NO stash and NOT in
+/// `pending_callbacks` — a third bucket, newer than both earlier fixes to this
+/// bug family (angr-sqfj8.32, angr-c7xno.21). `#[steady_guarded]` does not
+/// cover it: the guard only drains the parallel session's resident frontier.
+/// Without the broadcast, a flip made between two `run()` calls left those
+/// states minting non-canonical witnesses forever once flushed back to active.
+///
+/// Asserted in both directions so a one-way `true` latch cannot pass.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn set_deterministic_reaches_parked_parallel_bounce_states() {
+    Python::initialize();
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    let stashed = push_states(&mut mgr, STASH_ACTIVE, 1)[0];
+    let (replayable_id, unreplayable_id) = park_two_bounces(&mut mgr);
+
+    for v in [true, false, true] {
+        mgr.set_deterministic(v);
+        assert_eq!(
+            mgr.state_is_deterministic(stashed).expect("stashed state"),
+            v,
+            "stashed state follows set_deterministic({v})",
+        );
+        assert_eq!(
+            constraints::state_is_deterministic(parked_bounce(&mgr, replayable_id)),
+            v,
+            "replayable parked bounce follows set_deterministic({v})",
+        );
+        assert_eq!(
+            constraints::state_is_deterministic(parked_bounce(&mgr, unreplayable_id)),
+            v,
+            "unreplayable parked bounce follows set_deterministic({v}) too — it \
+             stays live in this manager even though no flush can route it",
+        );
+    }
+}
+
+/// `set_max_history` reaches states parked in `pending_parallel_bounces`, the
+/// same third bucket `set_deterministic` above covers (angr-03vl4.10).
+///
+/// Asserted over several caps (including the unlimited `0`) so neither the
+/// default nor a one-way latch can satisfy it by accident.
+#[test]
+fn set_max_history_reaches_parked_parallel_bounce_states() {
+    Python::initialize();
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    push_states(&mut mgr, STASH_ACTIVE, 1);
+    let (replayable_id, unreplayable_id) = park_two_bounces(&mut mgr);
+
+    for max in [7usize, 3, 0, 42] {
+        mgr.set_max_history(max);
+        assert_eq!(
+            parked_bounce(&mgr, replayable_id).max_history(),
+            max,
+            "replayable parked bounce follows set_max_history({max})",
+        );
+        assert_eq!(
+            parked_bounce(&mgr, unreplayable_id).max_history(),
+            max,
+            "unreplayable parked bounce follows set_max_history({max})",
+        );
+    }
+
+    // And the cap survives the flush that moves the bounce into a stash: the
+    // broadcast has to be applied to the state itself, not re-derived on route.
+    mgr.flush_parked_bounces_to_active();
+    let flushed = mgr
+        .sm
+        .stashes()
+        .values()
+        .flatten()
+        .find(|s| s.state_id() == replayable_id)
+        .expect("flushed to a stash");
+    assert_eq!(flushed.max_history(), 42, "cap survives the flush");
+}
