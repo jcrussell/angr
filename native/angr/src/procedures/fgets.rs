@@ -134,8 +134,19 @@ pub(crate) fn store_symbolic_line(
 /// `cle##externs` object, which is mapped lazily in Rust and is *not fetchable
 /// from a SimProcedure context* (only the VEX interpreter can fetch lazy pages).
 /// So `read_fileno` hits an unmapped page and errors for the very common
-/// `fgets(buf, n, stdin)` call, forcing a ~100ms Python fallback per call
-/// (angr-defcamp_r100 regressed 88% after the native fd-resolution landed).
+/// `fgets(buf, n, stdin)` call, forcing a Python fallback (angr-defcamp_r100
+/// regressed after the native fd-resolution landed, which is what motivated
+/// the carve-out).
+///
+/// Re-measured 2026-08-11 (angr-42g67) by replacing the `Ok(0)` arm below with
+/// a propagating `Err` and running `run_single.py defcamp_r100 --engine rust`,
+/// 3 reps per configuration: the bench's single stdin `fgets` falls back,
+/// costing ~83ms of `time_in_callbacks` and moving wall time 0.32s -> ~0.49s
+/// (+55%). Read that ~83ms as a *first*-fallback price dominated by one-time
+/// Python state-sync warmup, not a steady-state per-call cost — the write-side
+/// sibling amortizes to ~2.8ms/call over 192 fallbacks (bd memory
+/// `write-side-fileno-fallback-correct`, which also records that this file's
+/// former "~100ms per call" figure was an unmeasured estimate).
 ///
 /// A `FILE *` whose struct is unmapped in Rust can only be a cle standard
 /// stream — `fopen`'d files allocate their `_IO_FILE` in Rust memory (native
