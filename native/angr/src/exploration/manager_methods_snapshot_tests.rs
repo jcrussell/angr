@@ -1,4 +1,4 @@
-// Tests for exploration/manager_methods_stats.rs (see
+// Tests for exploration/manager_methods_snapshot.rs (see
 // rust-mod-tests-sibling-extraction for why these live in a sibling file
 // rather than an inline `mod tests`).
 //

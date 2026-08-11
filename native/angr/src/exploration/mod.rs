@@ -517,6 +517,8 @@ pub struct RustExplorationManager {
 mod manager_methods;
 #[path = "manager_methods_constraints.rs"]
 mod manager_methods_constraints;
+#[path = "manager_methods_diagnostics.rs"]
+mod manager_methods_diagnostics;
 #[path = "manager_methods_export.rs"]
 mod manager_methods_export;
 #[path = "manager_methods_hooks.rs"]
@@ -525,10 +527,10 @@ mod manager_methods_hooks;
 mod manager_methods_procedures;
 #[path = "manager_methods_run.rs"]
 mod manager_methods_run;
+#[path = "manager_methods_snapshot.rs"]
+mod manager_methods_snapshot;
 #[path = "manager_methods_state.rs"]
 mod manager_methods_state;
-#[path = "manager_methods_stats.rs"]
-mod manager_methods_stats;
 #[path = "manager_methods_techniques.rs"]
 mod manager_methods_techniques;
 

@@ -13,8 +13,15 @@
 //! its former section banners into sibling `manager_methods_*.rs` modules,
 //! each with its own `#[pymethods] impl RustExplorationManager` block:
 //! `_hooks`, `_state`, `_constraints`, `_procedures`, `_techniques`,
-//! `_export`, `_run`, `_stats`. Adding a method means picking the module that
-//! matches its section — no need to grow any single file.
+//! `_export`, `_run`, `_diagnostics`, `_snapshot`. Adding a method means
+//! picking the module that matches its section — no need to grow any single
+//! file.
+//!
+//! The last two were one `_stats` module until angr-03vl4.25; the name read as
+//! the `#[pymethods]` half of `stats_api` — which it never was, `stats_api`'s
+//! wrappers live in `_constraints` and `_procedures` — while the file actually
+//! held solver-profiling counters, the constraint-sharing walk and the stash
+//! snapshot envelopes.
 //!
 //! This is a Python-boundary module; `unwrap`/`expect` are denied here so a
 //! future panic-on-input landmine cannot be reintroduced without a reviewed,
