@@ -548,6 +548,13 @@ impl RustExplorationManager {
     // Eval / satisfiability / register / memory inspection
     // -------------------------------------------------------------------------
 
+    /// Human-readable symbolic-memory summary for `addr`, for debugging a live
+    /// state from Python. Covered by `state_symbolic_info_reports_*` in
+    /// `state_api_tests.rs`.
+    ///
+    /// Page addressing goes through `Address::page_num` / `page_offset` rather
+    /// than an open-coded `>> 12` / `& 0xFFF`, so this cannot drift from the
+    /// page size `memory/` uses (angr-c7xno.49).
     pub(crate) fn _state_symbolic_info(&self, state_id: u64, addr: u64) -> PyResult<String> {
         self.with_state(state_id, |state| {
             let mem = state.memory();
@@ -555,8 +562,8 @@ impl RustExplorationManager {
             let has_at_addr = mem
                 .get_symbolic_object(addr)
                 .map(super::super::symbolic::RustBV::width);
-            let page_num = addr >> 12;
-            let offset = (addr & 0xFFF) as u16;
+            let page_num = crate::memory::Address::new(addr).page_num();
+            let offset = crate::memory::Address::new(addr).page_offset();
             let page_info = if let Some(page) = mem.pages().get(&page_num) {
                 format!("page=mapped sym_at_offset={}", page.is_symbolic(offset))
             } else {

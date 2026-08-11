@@ -218,3 +218,86 @@ fn read_register_u128_names_both_causes_of_none() {
     assert_eq!(read_register_u128(&state, "rbx").into_option(), None);
     assert_eq!(read_register_u128(&state, "ymm0").into_option(), None);
 }
+
+/// A state with one 64-bit symbolic object at `0x1234` — page 1, in-page
+/// offset 0x234 — inside a mapped page, so `_state_symbolic_info` has all
+/// three of its inputs (`symbolic_objects`, the page table, the page's
+/// `symbolic_bitmap`) populated with distinguishable values.
+#[cfg(feature = "vex-engine-z3")]
+fn state_with_symbolic_object_at_0x1234() -> RustSimState {
+    let mut state = RustSimState::new("amd64").expect("amd64 state");
+    state.map_memory(0x1000, 0x1000, Permission::RW);
+    let sym = {
+        let ctx = state.solver().borrow();
+        RustBV::symbolic(&ctx, "sym_info_probe", 64)
+    };
+    state
+        .memory_mut()
+        .import_symbolic_value(0x1234, sym, None)
+        .expect("64-bit symbolic import must be accepted");
+    state
+}
+
+/// `_state_symbolic_info` is debug-only output, but its bit math is the same
+/// address→(page, offset) decomposition the memory model uses, so a page-size
+/// or `is_symbolic(offset)` change must not silently turn it into a liar
+/// (angr-03vl4.26). Pins the symbolic address, a concrete byte in the *same*
+/// mapped page, and an unmapped page.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn state_symbolic_info_reports_symbolic_and_concrete_addresses() {
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    let state = state_with_symbolic_object_at_0x1234();
+    let state_id = state.state_id();
+    mgr.sm.push(STASH_FOUND, state);
+
+    assert_eq!(
+        mgr._state_symbolic_info(state_id, 0x1234)
+            .expect("state found"),
+        "total_sym_objs=1 at_0x1234=Some(64) page=mapped sym_at_offset=true",
+    );
+    // 0x1240 is past the 8 bytes the import marked, so the page is still
+    // mapped but the offset is concrete and no object starts there.
+    assert_eq!(
+        mgr._state_symbolic_info(state_id, 0x1240)
+            .expect("state found"),
+        "total_sym_objs=1 at_0x1240=None page=mapped sym_at_offset=false",
+    );
+    assert_eq!(
+        mgr._state_symbolic_info(state_id, 0x9234)
+            .expect("state found"),
+        "total_sym_objs=1 at_0x9234=None page=unmapped",
+    );
+}
+
+/// The page/offset split must use *both* halves of the address: `0x9234`
+/// above shares 0x1234's in-page offset but lives in an unmapped page, and
+/// `0x1235` shares 0x1234's page while landing on a different — here still
+/// symbolic — offset. Dropping either half would make one of these agree with
+/// the 0x1234 answer.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn state_symbolic_info_uses_both_page_and_offset() {
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    let state = state_with_symbolic_object_at_0x1234();
+    let state_id = state.state_id();
+    mgr.sm.push(STASH_FOUND, state);
+
+    // Same page, offset 0x235: covered by the 8-byte import, but no symbolic
+    // object *starts* there — the two sources of "symbolic" are independent.
+    assert_eq!(
+        mgr._state_symbolic_info(state_id, 0x1235)
+            .expect("state found"),
+        "total_sym_objs=1 at_0x1235=None page=mapped sym_at_offset=true",
+    );
+    // A state with no symbolic memory at all reports the empty case rather
+    // than erroring.
+    let empty = RustSimState::new("amd64").expect("amd64 state");
+    let empty_id = empty.state_id();
+    mgr.sm.push(STASH_FOUND, empty);
+    assert_eq!(
+        mgr._state_symbolic_info(empty_id, 0x1234)
+            .expect("state found"),
+        "total_sym_objs=0 at_0x1234=None page=unmapped",
+    );
+}
