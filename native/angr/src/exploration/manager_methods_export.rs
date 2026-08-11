@@ -1,7 +1,44 @@
-//! `#[pymethods]` for [`RustExplorationManager`]: state export methods.
+//! `#[pymethods]` for [`RustExplorationManager`]: snapshot export plus the
+//! by-state-id read/write accessors the Python state proxy is built on.
 //!
 //! One of several `#[pymethods]` blocks for the pyclass; see the
 //! `manager_methods` module doc for the split rationale (angr-9ke6b.50).
+//!
+//! Only three methods here are `export_*`-prefixed, so — following the
+//! `manager_methods_constraints` precedent — the contents are spelled out
+//! rather than left to the file name (angr-03vl4.11):
+//!
+//! - **Snapshot export**: `export_state`, `export_state_flushed`,
+//!   `export_found_states`, plus `step_state`, which returns per-stash
+//!   snapshots of one state's successors.
+//! - **Symbolic introspection**: `state_symbolic_info`,
+//!   `get_state_symbolic_z3_asts`, `state_satisfiable`.
+//! - **SimOption queries**: `state_has_option` and the named shorthands
+//!   `state_enforce_{permissions,nx}`, `state_no_ip_concretization`,
+//!   `state_no_symbolic_jump_resolution`, `state_keep_ip_symbolic`.
+//! - **Registers**: `get_state_register{,s_batch,_ast}`,
+//!   `set_state_register_symbolic_ast`.
+//! - **Memory**: `get_state_memory{,_ast}`,
+//!   `set_state_memory_{concrete,ast}{,_automap}`,
+//!   `state_memory_store_symbolic_multi`.
+//! - **Files and stdio**: `get_state_stdout`, `{get,has,append}_state_fd_output`,
+//!   `{has,get}_state_stdin_symbols`, `eval_stdin_symbol`,
+//!   `get_state_open_fds`, `has_state_extra_fds`, `get_state_fd_content`,
+//!   `register_state_fd`.
+//! - **History and heap**: `get_state_call_stack{,_depth}`,
+//!   `get_state_detailed_history`, `get_state_heap_metadata`.
+//!
+//! Five `export_*`-named methods live *elsewhere*, in
+//! `manager_methods_constraints`: `export_pending_{constraints,state}`,
+//! `export_state_constraints`, `export_callback_bundle` and
+//! `export_z3_constraint_ptrs`. They are grouped by subject (the pending
+//! state and its constraint plumbing), not by name prefix; look for an
+//! `export_*` method there before assuming it is missing.
+//!
+//! The line against `manager_methods_state.rs` is *addressing*, not subject
+//! matter: that module owns state lifecycle and stash membership, while every
+//! method here reads or writes the contents of one already-existing state
+//! named by `state_id`.
 //!
 //! This is a Python-boundary module; `unwrap`/`expect` are denied here so a
 //! future panic-on-input landmine cannot be reintroduced without a reviewed,
