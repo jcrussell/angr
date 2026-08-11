@@ -117,9 +117,15 @@ impl<'a> VEXInterpreter<'a> {
         let mut fetched = 0;
 
         if let Some(ref mut rust_mem) = self.rust_memory {
-            for (i, (data, permissions, is_mapped)) in results.into_iter().enumerate() {
+            // `zip` rather than `enumerate` + `servable[i]`: `call_list_batch`
+            // already rejects a length mismatch (see its "one result per item
+            // is a hard contract" section), and pairing positionally here means
+            // a future callback path that skips that check truncates instead of
+            // panicking the process — `panic = "abort"` (angr-03vl4.5).
+            for ((data, permissions, is_mapped), &page_addr) in
+                results.into_iter().zip(servable.iter())
+            {
                 if is_mapped {
-                    let page_addr = servable[i];
                     let perm = Permission::from_bits(permissions);
                     rust_mem.map_page(page_addr, data, perm);
                     fetched += 1;

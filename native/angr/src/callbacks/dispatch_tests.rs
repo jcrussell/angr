@@ -323,6 +323,69 @@ def fetch_cb(page_addr):
     });
 }
 
+/// Both `call_list_batch` users reject a batch callback whose returned list is
+/// not exactly one entry per requested item.
+///
+/// Consumers zip the result positionally, so a mismatch is a wiring bug, not a
+/// degraded mode: `fetch_pages_batch` used to index `servable[i]` unchecked and
+/// a long list aborted the process (angr-03vl4.5). Both directions (short and
+/// long) and both callbacks are pinned, and the message must name the slot.
+#[test]
+fn batch_callbacks_reject_a_result_list_of_the_wrong_length() {
+    Python::initialize();
+    Python::attach(|py| {
+        let globals = defs(
+            py,
+            c"def short_pages(page_addrs):
+    return [(b'\\xcc' * 4096, 5, True)]
+def long_pages(page_addrs):
+    return [(b'\\xcc' * 4096, 5, True)] * (len(page_addrs) + 1)
+def exact_pages(page_addrs):
+    return [(b'\\xcc' * 4096, 5, True)] * len(page_addrs)
+def short_loads(loads):
+    return [(b'\\x00' * 4, False)]
+def long_loads(loads):
+    return [(b'\\x00' * 4, False)] * (len(loads) + 1)
+",
+        );
+
+        for name in ["short_pages", "long_pages"] {
+            let mut cb = PythonCallbacks::new();
+            cb.set_batch_fetch_pages(obj(&globals, name));
+            let err = cb
+                .call_batch_fetch_pages(&[0x1000, 0x2000])
+                .expect_err("length mismatch must be a loud error");
+            let msg = err.to_string();
+            assert!(
+                msg.contains("batch_fetch_pages") && msg.contains("2 requested items"),
+                "{name}: message must name the slot and the request size, got {msg}"
+            );
+        }
+
+        for name in ["short_loads", "long_loads"] {
+            let mut cb = PythonCallbacks::new();
+            cb.set_memory_load_batch(obj(&globals, name));
+            let err = cb
+                .call_memory_load_batch(&[(0x10, 4), (0x20, 4)])
+                .expect_err("length mismatch must be a loud error");
+            assert!(
+                err.to_string().contains("memory_load_batch"),
+                "{name}: message must name the slot, got {err}"
+            );
+        }
+
+        // A well-behaved 1:1 callback is untouched by the check.
+        let mut cb = PythonCallbacks::new();
+        cb.set_batch_fetch_pages(obj(&globals, "exact_pages"));
+        assert_eq!(
+            cb.call_batch_fetch_pages(&[0x1000, 0x2000])
+                .expect("1:1 batch must still be accepted")
+                .len(),
+            2
+        );
+    });
+}
+
 /// `call_lift_block` builds four different positional-arg shapes depending on
 /// `opt_level` / `dirty_bytes`. The Python endpoint reads them positionally, so
 /// an arity change silently mis-binds `byte_string=`.

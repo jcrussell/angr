@@ -79,8 +79,24 @@ fn extract_data_tuple(tuple: &Bound<'_, pyo3::types::PyTuple>) -> PyResult<Batch
 /// through here: it returns unit rather than a per-item result and has to
 /// materialize a `PyBytes` for every element on the way out, so the only piece
 /// it shares is the empty-input check.
+///
+/// # One result per item is a hard contract
+///
+/// The returned `Vec` is positionally zipped with `items` by every consumer,
+/// so a batch callback that returns a differently-sized list is a wiring bug,
+/// not a degraded mode: `interpreter::prefetch::VEXInterpreter::fetch_pages_batch`
+/// indexes `servable[i]` unchecked and a long list would panic the process
+/// (`panic = "abort"`), while the load-side consumers
+/// (`interpreter::expressions`' `build_ite_load_from_callbacks` /
+/// `build_ite_store_from_callbacks`, via `convert_load_result`) index through
+/// `.get(i)` and would silently drop entries instead (angr-03vl4.5). `batch_fetch_pages`
+/// and `memory_load_batch` are both documented override points, so the length
+/// is checked here — once, for both callers — and a mismatch is a loud
+/// `PyValueError` naming `slot`. `slot` is the Python-side callback name so
+/// the message points at the callback the user actually wired.
 fn call_list_batch<A, T>(
     py: Python<'_>,
+    slot: &str,
     batch_cb: Option<&Py<PyAny>>,
     items: &[A],
     call_batch: impl FnOnce(&Py<PyAny>) -> PyResult<Py<PyAny>>,
@@ -96,6 +112,14 @@ fn call_list_batch<A, T>(
         let result = call_batch(cb)?;
 
         let result_list = result.cast_bound::<pyo3::types::PyList>(py)?;
+        if result_list.len() != items.len() {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "{slot} callback returned {} results for {} requested items; \
+                 it must return exactly one result per item, in order",
+                result_list.len(),
+                items.len(),
+            )));
+        }
         let mut results = Vec::with_capacity(items.len());
 
         for item in result_list.iter() {
@@ -327,6 +351,7 @@ impl PythonCallbacks {
             );
             call_list_batch(
                 py,
+                "memory_load_batch",
                 self.memory_load_batch.as_ref(),
                 loads,
                 // Converted to a Python list of tuples by PyO3's
@@ -536,6 +561,7 @@ impl PythonCallbacks {
             );
             call_list_batch(
                 py,
+                "batch_fetch_pages",
                 self.batch_fetch_pages.as_ref(),
                 page_addrs,
                 // `IntoPyObject for &[T]` builds the Python list directly from
