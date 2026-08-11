@@ -255,3 +255,107 @@ fn test_registered_in_registry() {
     let registry = crate::procedures::NativeProcedureRegistry::new();
     assert!(registry.has_native("getopt"));
 }
+
+// --- guest-controlled address wrapping (angr-03vl4.44) ---------------------
+//
+// `argv_ptr` and the argv element pointers are guest values, so every address
+// computation in the proc uses `wrapping_add`. These three tests pin one site
+// each: a plain `+` panics under the release-checked profile that CI runs, and
+// silently produces a wrong address in the shipped release `.so`. Each test is
+// non-vacuous only because both the pre-wrap page and page 0 are mapped, so the
+// wrapped access is servable and the assertion reaches past the arithmetic.
+
+/// Map the two pages a `u64::MAX`-adjacent access straddles.
+fn map_wrap_pages(state: &mut RustSimState) {
+    state.map_memory(0xFFFF_FFFF_FFFF_F000, 0x1000, Permission::RWX);
+    state.map_memory(0, 0x1000, Permission::RWX);
+}
+
+/// Extern-global layout with `optind` unset, so `load_cursor` uses the plugin
+/// cursor these tests seed directly instead of a guest word.
+fn wrap_setup() -> RustSimState {
+    let mut state = setup();
+    state.set_getopt_extern(GetoptExternAddrs {
+        optind: None,
+        optarg: Some(OPTARG_ADDR),
+        optopt: Some(OPTOPT_ADDR),
+    });
+    map_wrap_pages(&mut state);
+    state
+}
+
+fn store_ptr_at(state: &mut RustSimState, addr: u64, value: u64) {
+    state
+        .memory_store(addr, RustBV::concrete(value as u128, 64))
+        .unwrap();
+}
+
+fn call_at(state: &mut RustSimState, argc: u32, argv_ptr: u64) -> i64 {
+    let r = NativeGetopt
+        .call(
+            state,
+            &[
+                RustBV::concrete(argc as u128, 64),
+                RustBV::concrete(argv_ptr as u128, 64),
+                RustBV::concrete(STR_BASE as u128, 64),
+            ],
+        )
+        .expect("must not panic on a wrapping argv address")
+        .unwrap();
+    r.as_u64().unwrap() as u32 as i32 as i64
+}
+
+#[test]
+fn getopt_argv_ptr_near_u64_max_wraps_element_slot() {
+    let mut state = wrap_setup();
+    state.map_memory_data(STR_BASE, b"a\0", Permission::RWX);
+    let arg1 = STR_BASE + 2;
+    state.map_memory_data(arg1, b"-a\0", Permission::RWX);
+
+    // argv[1]'s slot is `argv_ptr + 1 * 8`, which wraps to address 0.
+    let argv_ptr = u64::MAX - 7;
+    store_ptr_at(&mut state, 0, arg1);
+    state.set_getopt_cursor(1, 0);
+
+    assert_eq!(call_at(&mut state, 2, argv_ptr), b'a' as i64);
+}
+
+#[test]
+fn getopt_argv_ptr_near_u64_max_wraps_next_element_slot() {
+    let mut state = wrap_setup();
+    state.map_memory_data(STR_BASE, b"a:\0", Permission::RWX);
+    let arg0 = STR_BASE + 3;
+    let arg1 = STR_BASE + 6;
+    state.map_memory_data(arg0, b"-a\0", Permission::RWX);
+    state.map_memory_data(arg1, b"val\0", Permission::RWX);
+
+    // argv[0]'s slot sits in the top page; argv[1]'s — the required argument
+    // that `-a` consumes — is `argv_ptr + 1 * 8`, which wraps to address 0.
+    let argv_ptr = u64::MAX - 7;
+    store_ptr_at(&mut state, argv_ptr, arg0);
+    store_ptr_at(&mut state, 0, arg1);
+    state.set_getopt_cursor(0, 0);
+
+    assert_eq!(call_at(&mut state, 2, argv_ptr), b'a' as i64);
+    assert_eq!(read_optarg(&state), arg1);
+}
+
+#[test]
+fn getopt_element_near_u64_max_wraps_inline_optarg() {
+    let mut state = wrap_setup();
+    state.map_memory_data(STR_BASE, b"a:\0", Permission::RWX);
+
+    // The argv element itself straddles the wrap: "-av\0" starts at u64::MAX,
+    // so the inline optarg (`elem_ptr + optchar + 1`) lands at address 1.
+    let elem_ptr = u64::MAX;
+    for (i, b) in b"-av\0".iter().enumerate() {
+        state
+            .memory_store(elem_ptr.wrapping_add(i as u64), RustBV::concrete(*b as u128, 8))
+            .unwrap();
+    }
+    store_ptr_at(&mut state, ARGV_BASE, elem_ptr);
+    state.set_getopt_cursor(0, 0);
+
+    assert_eq!(call_at(&mut state, 1, ARGV_BASE), b'a' as i64);
+    assert_eq!(read_optarg(&state), 1);
+}

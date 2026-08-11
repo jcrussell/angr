@@ -180,7 +180,14 @@ crate::declare_proc! {
             return ret(0xFFFF_FFFF); // -1
         }
 
-        let elem_ptr = match eval_ptr(state, argv_ptr + optind as u64 * ps)? {
+        // `argv_ptr` is a guest-controlled address, so every address computation
+        // below uses `wrapping_add` per the convention documented in memcpy.rs:
+        // `[profile.release]` disables overflow checks, so a plain `+` panics
+        // under the release-checked test profile and silently wraps in the
+        // shipped `.so` — a wrong address rather than a loud failure.
+        // (`optind`/`optchar` are u32, so their `as u64` scaling cannot itself
+        // overflow: u32::MAX * 8 fits in u64.)
+        let elem_ptr = match eval_ptr(state, argv_ptr.wrapping_add(optind as u64 * ps))? {
             Some(p) => p,
             None => return Err(ProcedureError::SymbolicArgument("argv element".into())),
         };
@@ -249,7 +256,7 @@ crate::declare_proc! {
 
         // option takes an argument (required or optional)
         if (optchar as usize) + 1 < arg.len() {
-            store_ptr(state, optarg_addr, elem_ptr + optchar as u64 + 1)?;
+            store_ptr(state, optarg_addr, elem_ptr.wrapping_add(optchar as u64 + 1))?;
             save_cursor(state, optind_addr, optind + 1, 0)?;
             return ret(c as u32);
         }
@@ -260,7 +267,7 @@ crate::declare_proc! {
         }
         // required argument from the next argv element
         if optind + 1 < argc {
-            let next_ptr = match eval_ptr(state, argv_ptr + (optind as u64 + 1) * ps)? {
+            let next_ptr = match eval_ptr(state, argv_ptr.wrapping_add((optind as u64 + 1) * ps))? {
                 Some(p) => p,
                 None => return Err(ProcedureError::SymbolicArgument("argv next".into())),
             };
