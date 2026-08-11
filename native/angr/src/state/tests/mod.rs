@@ -12,8 +12,10 @@
 //! - `history`: `set_detailed_history` / `set_max_history` cap behaviour.
 //! - `memory`: state-level load/store, CoW fork isolation, unflushed Multi
 //!   cells, and `apply_changes` write chunking.
-//! - `filesystem_basic`: concrete-content filesystem surface — open/close,
-//!   read/write/seek, fd tables, normalization, fork isolation.
+//! - `filesystem_state`: the filesystem behaviour that needs a whole
+//!   `RustSimState` — fork isolation and the `write_stdout`/`fd_buffer`
+//!   wrappers. The bare-`FileSystem` CRUD/fd-table surface is
+//!   `state/filesystem_tests.rs`'s, not this module's (angr-03vl4.56).
 //! - `filesystem_symbolic`: `register_file_content` and the `content_sym`
 //!   sharing / serde / length / `read_sym*` contracts.
 //! - `filesystem_demote`: demotion of symbolic content to concrete and the
@@ -39,8 +41,8 @@
 
 mod basics;
 mod export;
-mod filesystem_basic;
 mod filesystem_demote;
+mod filesystem_state;
 mod filesystem_symbolic;
 mod heap;
 mod helpers;

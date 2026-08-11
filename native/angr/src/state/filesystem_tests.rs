@@ -5,6 +5,17 @@
 //! symlinks, and the fd-metadata queries. The bounded-symbolic-content paths
 //! (`content_sym` / `RustBV`) are exercised by the Python-level rust suite;
 //! these stay Z3-free so they run under a plain `cargo test --lib`.
+//!
+//! This file owns the whole *concrete, Z3-free* `FileSystem` surface. Its
+//! three siblings under `state/tests/` are split off for a reason, not by
+//! accident: `filesystem_symbolic` and `filesystem_demote` need a live
+//! `SymContext` for `content_sym`, and `filesystem_state` needs a whole
+//! [`RustSimState`](super::RustSimState) around the fs (fork isolation, the
+//! `write_stdout`/`fd_buffer` convenience wrappers). Anything reachable from a
+//! bare `FileSystem::default()` belongs here — angr-c7xno.69's mechanical
+//! carve-out of `state_tests.rs` had re-tested this file's CRUD/fd-table
+//! surface under a second set of idioms, and angr-03vl4.56 folded those
+//! duplicates back in.
 
 use super::*;
 
@@ -28,6 +39,7 @@ fn fdflags_posix_roundtrip() {
 fn default_preregisters_std_streams() {
     let fs = FileSystem::default();
     assert!(fs.is_open(0) && fs.is_open(1) && fs.is_open(2));
+    assert!(!fs.is_open(3), "nothing above stderr is preregistered");
     assert_eq!(fs.next_fd(), 3);
     assert_eq!(fs.cwd(), b"/");
     assert_eq!(
@@ -77,6 +89,55 @@ fn write_then_read_tracks_position() {
 }
 
 #[test]
+fn read_closed_fd_serves_nothing() {
+    // Parity with read_sym/read_sym_at: a closed fd serves no bytes even
+    // though its content buffer survives (angr-myzjx.23).
+    let mut fs = FileSystem::default();
+    let fd = fs
+        .open_with_content(
+            "data.bin".to_string(),
+            FdFlags::ReadOnly,
+            b"hello world".to_vec(),
+        )
+        .expect("fd space is not exhausted in tests");
+    assert_eq!(fs.read_at(fd, 0, 5), b"hello");
+    assert!(fs.close(fd));
+
+    // Both the position-advancing and positioned reads must refuse a closed fd.
+    assert!(fs.read(fd, 5).is_empty());
+    assert!(fs.read_at(fd, 0, 5).is_empty());
+}
+
+#[test]
+fn write_overwrites_in_place_and_zero_fills_after_a_sparse_seek() {
+    // `write` is position-aware (see the `write-fd-position-aware` bd memory),
+    // not append-only: it honors a prior seek instead of extending the buffer.
+    let mut fs = FileSystem::default();
+    let fd = fs
+        .open("out.bin".to_string(), FdFlags::WriteOnly)
+        .expect("fd space is not exhausted in tests");
+
+    // Sequential writes (no seek): byte-identical to a plain append.
+    assert!(fs.write(fd, b"abc"));
+    assert!(fs.write(fd, b"def"));
+    assert_eq!(fs.fd_content(fd), b"abcdef");
+
+    // Seek back and overwrite in place (the case append-only would corrupt).
+    assert_eq!(fs.seek(fd, 0, 0), Some(0));
+    assert!(fs.write(fd, b"XY"));
+    assert_eq!(fs.fd_content(fd), b"XYcdef");
+
+    // A subsequent write continues from the advanced position (after "XY").
+    assert!(fs.write(fd, b"Z"));
+    assert_eq!(fs.fd_content(fd), b"XYZdef");
+
+    // Sparse seek past EOF zero-fills the gap, like write_at/pwrite.
+    assert_eq!(fs.seek(fd, 8, 0), Some(8));
+    assert!(fs.write(fd, b"!"));
+    assert_eq!(fs.fd_content(fd), b"XYZdef\x00\x00!");
+}
+
+#[test]
 fn write_at_position_zero_fills_gap() {
     let mut fs = FileSystem::default();
     let fd = fs
@@ -120,6 +181,42 @@ fn seek_whence_variants_and_invalid() {
     assert_eq!(fs.fd_info(fd).map(|i| i.1), Some(0));
     // Seek on a missing fd is None.
     assert_eq!(fs.seek(999, 0, 0), None);
+}
+
+/// angr-03vl4.54: `lseek`'s offset is a raw guest `i64` and the SEEK_CUR base is
+/// itself guest-steerable (a prior SEEK_SET accepts any non-negative `i64`), so
+/// the old `(base as i64 + offset)` overflowed — a panic under
+/// `[profile.release-checked]`, a silently wrapped position in the shipped
+/// `[profile.release]`. `offset_position` clamps at both ends of the `u64` range
+/// instead.
+#[test]
+fn seek_cur_and_end_clamp_instead_of_overflowing_the_signed_add() {
+    let mut fs = FileSystem::default();
+    let fd = fs
+        .open_with_content("data.bin".to_string(), FdFlags::ReadOnly, vec![0u8; 100])
+        .expect("fd space is not exhausted in tests");
+
+    // Park the position at i64::MAX via SEEK_SET, then push past it. The first
+    // bump lands just below the top of the u64 range (the old `as i64` add
+    // overflowed here); the second saturates at u64::MAX rather than wrapping
+    // back down into a small, valid-looking position.
+    assert_eq!(fs.seek(fd, i64::MAX, 0), Some(i64::MAX as u64));
+    assert_eq!(fs.seek(fd, i64::MAX, 1), Some(u64::MAX - 1));
+    assert_eq!(fs.seek(fd, i64::MAX, 1), Some(u64::MAX));
+
+    // A position above i64::MAX must stay positive: `base as i64` alone turned
+    // it negative, which the old `.max(0)` then collapsed to 0.
+    assert_eq!(fs.seek(fd, -1, 1), Some(u64::MAX - 1));
+    assert_eq!(fs.seek(fd, i64::MIN, 1), Some(i64::MAX as u64 - 1));
+
+    // The negative direction still clamps at 0, as the old `.max(0)` did.
+    assert_eq!(fs.seek(fd, 10, 0), Some(10));
+    assert_eq!(fs.seek(fd, i64::MIN, 1), Some(0));
+
+    // SEEK_END shares the helper: a tiny file plus a huge offset must not wrap,
+    // and i64::MIN must not negate into a positive.
+    assert_eq!(fs.seek(fd, i64::MAX, 2), Some(100 + i64::MAX as u64));
+    assert_eq!(fs.seek(fd, i64::MIN, 2), Some(0));
 }
 
 #[test]
@@ -237,6 +334,103 @@ fn pipe_allocates_consecutive_read_write_ends() {
     );
 }
 
+/// angr-03vl4.55: `pipe` allocates two consecutive fds off `next_fd`, which
+/// `register_fd_at` can drive arbitrarily high from an imported Python state
+/// (it is not bounded by `MAX_FD`). The bump is `checked_add`, so an exhausted
+/// fd space refuses the pipe — leaving the table and `next_fd` untouched — and
+/// `NativePipe` bounces to Python. Saturating instead would return `u32::MAX`
+/// for both ends and alias them.
+#[test]
+fn pipe_refuses_rather_than_wrapping_when_the_fd_space_is_exhausted() {
+    // next_fd = u32::MAX (the read end is the last fd) and next_fd = u32::MAX-1
+    // (the read/write pair fits but the post-bump does not) — both refuse.
+    for imported in [u32::MAX - 1, u32::MAX - 2] {
+        let mut fs = FileSystem::default();
+        assert!(fs.register_fd_at(
+            imported,
+            "imported".to_string(),
+            FdFlags::ReadOnly,
+            Vec::new(),
+            0,
+        ));
+        let next_before = fs.next_fd();
+        assert_eq!(next_before, imported + 1);
+        let fds_before = fs.all_fds();
+
+        assert_eq!(
+            fs.pipe(),
+            None,
+            "pipe() must refuse with next_fd={next_before:#x}"
+        );
+        assert_eq!(fs.next_fd(), next_before, "a refused pipe must not bump");
+        assert_eq!(
+            fs.all_fds(),
+            fds_before,
+            "a refused pipe must insert nothing"
+        );
+    }
+}
+
+/// angr-03vl4.88: the three single-fd allocators bumped `next_fd` with a plain
+/// `+= 1`, which wraps to 0 in the shipped release profile once `register_fd_at`
+/// has imported a Python-chosen fd of `u32::MAX` — the next `open()` would hand
+/// out fd 0 (stdin) as a fresh file. Each must refuse instead, leaving `next_fd`
+/// and the fd table untouched.
+#[test]
+fn open_family_refuses_rather_than_wrapping_when_the_fd_space_is_exhausted() {
+    type Allocator = fn(&mut FileSystem) -> Option<u32>;
+    let allocators: [(&str, Allocator); 3] = [
+        ("open", |fs| fs.open("f".to_string(), FdFlags::ReadOnly)),
+        ("open_with_content", |fs| {
+            fs.open_with_content("f".to_string(), FdFlags::ReadOnly, vec![1, 2, 3])
+        }),
+        ("open_symbolic", |fs| {
+            fs.open_symbolic("f".to_string(), FdFlags::ReadOnly)
+        }),
+    ];
+
+    for (label, alloc) in allocators {
+        let mut fs = FileSystem::default();
+        assert!(fs.register_fd_at(
+            u32::MAX,
+            "imported".to_string(),
+            FdFlags::ReadOnly,
+            Vec::new(),
+            0,
+        ));
+        // register_fd_at's bump saturates, so next_fd is pinned at u32::MAX —
+        // the fd itself is still free to hand out, but nothing after it is.
+        assert_eq!(fs.next_fd(), u32::MAX);
+        let fds_before = fs.all_fds();
+
+        assert_eq!(fs.next_fd(), u32::MAX, "{label}: precondition");
+        assert_eq!(alloc(&mut fs), None, "{label} must refuse at u32::MAX");
+        assert_eq!(fs.next_fd(), u32::MAX, "a refused {label} must not bump");
+        assert_eq!(
+            fs.all_fds(),
+            fds_before,
+            "a refused {label} must insert nothing"
+        );
+
+        // One below the wall the same allocator succeeds, proving the refusal
+        // is the overflow guard and not a blanket decline.
+        let mut fs = FileSystem::default();
+        assert!(fs.register_fd_at(
+            u32::MAX - 2,
+            "imported".to_string(),
+            FdFlags::ReadOnly,
+            Vec::new(),
+            0,
+        ));
+        assert_eq!(
+            alloc(&mut fs),
+            Some(u32::MAX - 1),
+            "{label} must still allocate below the wall"
+        );
+        assert_eq!(fs.next_fd(), u32::MAX);
+    }
+}
+
 #[test]
 fn normalize_path_resolves_dot_dotdot_and_cwd() {
     let mut fs = FileSystem::default();
@@ -244,13 +438,17 @@ fn normalize_path_resolves_dot_dotdot_and_cwd() {
     assert_eq!(fs.normalize_path("/a/./b//c"), "/a/b/c");
     // `..` past root saturates at root.
     assert_eq!(fs.normalize_path("/../../x"), "/x");
+    assert_eq!(fs.normalize_path("/../.."), "/");
     assert_eq!(fs.normalize_path("/"), "/");
     // Relative paths join against cwd.
     fs.set_cwd(b"/home/user".to_vec());
     assert_eq!(fs.normalize_path("file"), "/home/user/file");
     assert_eq!(fs.normalize_path("../peer"), "/home/peer");
-    // Path is truncated at the first NUL.
+    // The empty path is the cwd itself, not a trailing-slash spelling of it.
+    assert_eq!(fs.normalize_path(""), "/home/user");
+    // Path is truncated at the first NUL — before, not after, the cwd join.
     assert_eq!(fs.normalize_path("/a\0/b"), "/a");
+    assert_eq!(fs.normalize_path("x\0junk"), "/home/user/x");
 }
 
 #[test]
