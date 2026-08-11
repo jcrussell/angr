@@ -7,17 +7,15 @@
 //!
 //! Concrete keys only — falls back to Python for symbolic arguments.
 
-use super::strings::{scan_concrete_bounded, write_cstr};
+use super::strings::{MAX_STRING_SCAN, scan_concrete_bounded, write_cstr};
 use super::{ProcedureError, arch_word};
 use crate::state::RustSimState;
 
-const MAX_STR_LEN: usize = 4096;
-
-/// Read a null-terminated concrete string from memory (up to `MAX_STR_LEN`
+/// Read a null-terminated concrete string from memory (up to [`MAX_STRING_SCAN`]
 /// bytes; exhausting the cap without a null is not an error). A symbolic byte
 /// or out-of-bounds read propagates as an `Err` and falls back to Python.
 fn read_cstring(state: &mut RustSimState, addr: u64) -> Result<Vec<u8>, ProcedureError> {
-    let (buf, _null_found) = scan_concrete_bounded(state, addr, MAX_STR_LEN, "string")?;
+    let (buf, _null_found) = scan_concrete_bounded(state, addr, MAX_STRING_SCAN, "string")?;
     Ok(buf)
 }
 

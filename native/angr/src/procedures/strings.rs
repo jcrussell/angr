@@ -27,12 +27,15 @@ use crate::symbolic::{RustBV, SymContext};
 
 /// Shared upper bound on a concrete null-terminated string scan for the
 /// str-family procedures (strcpy/strncpy/strcat/strncat, strstr, strset,
-/// memset-of-string, …). Hitting this without a null terminator bails to
+/// memset-of-string, …) and for the other procedures that scan a C string
+/// argument: `getopt` (optstring and argv elements), `perror`, and
+/// `getenv`/`setenv`/`putenv`. Hitting this without a null terminator bails to
 /// Python via [`ProcedureError::MaxIterations`].
 ///
 /// One home so a future security-driven reduction is applied everywhere at
 /// once rather than silently missing a copy that kept its own local `4096`
-/// (angr-myzjx.7). `strcmp`/`memcmp` share their own equivalent
+/// (angr-myzjx.7, continued for the getopt/perror/getenv trio in
+/// angr-03vl4.45). `strcmp`/`memcmp` share their own equivalent
 /// (`strcmp::MAX_STRCMP_LEN`); the printf/scanf family share
 /// [`super::format_common::MAX_FORMAT_LEN`].
 pub(crate) const MAX_STRING_SCAN: usize = 4096;

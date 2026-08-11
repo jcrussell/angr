@@ -11,16 +11,14 @@
 //! `write_fd` / `FileSystem::write` path as `NativeWrite`), returning void.
 //!
 //! Falls back to Python when the string pointer or any byte is symbolic, when
-//! the string is not NUL-terminated within `MAX_PERROR_LEN`, or when fd 2 is
+//! the string is not NUL-terminated within [`MAX_STRING_SCAN`], or when fd 2 is
 //! not open in the Rust `FileSystem` (so the symbolic-file model can handle it
 //! — see the "Fd-table sync invariant" section of the `procedures::read`
 //! module doc: the two fd tables are deliberately not synced, so anything
 //! outside Rust's table bounces to Python).
 
 use super::ProcedureError;
-use super::strings::scan_concrete_until_null;
-
-const MAX_PERROR_LEN: usize = 4096;
+use super::strings::{MAX_STRING_SCAN, scan_concrete_until_null};
 
 const STDERR_FD: u32 = 2;
 
@@ -35,7 +33,7 @@ crate::declare_proc! {
                     .to_string(),
             ));
         }
-        let bytes = scan_concrete_until_null(state, string, MAX_PERROR_LEN, "perror string")?;
+        let bytes = scan_concrete_until_null(state, string, MAX_STRING_SCAN, "perror string")?;
         // A refusal means fd 2 was rebound (dup2) onto a bounded-symbolic-
         // content fd, now demoted — bounce to Python (angr-0xyq2 Phase 2
         // choke point; see FileSystem::write).

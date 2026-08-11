@@ -30,7 +30,7 @@
 //! cursor read already used a checked `arg.get(..)` (angr-qwyti.19).
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
-use super::strings::scan_concrete_until_null;
+use super::strings::{MAX_STRING_SCAN, scan_concrete_until_null};
 use super::{ProcedureError, arch_word};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
@@ -41,8 +41,6 @@ const OPTIONAL_ARGUMENT: u8 = 2;
 
 const DASH: u8 = b'-';
 const COLON: u8 = b':';
-
-const MAX_CSTR: usize = 4096;
 
 /// Parse an optstring into `(char -> has_arg, leading_colon)` per POSIX/glibc
 /// syntax. Leading `+`/`-` mode chars (ordering, which we do not model) are
@@ -169,7 +167,7 @@ crate::declare_proc! {
 
         let argc = argc as u32;
 
-        let optstring = scan_concrete_until_null(state, optstring_ptr, MAX_CSTR, "optstring")?;
+        let optstring = scan_concrete_until_null(state, optstring_ptr, MAX_STRING_SCAN, "optstring")?;
         let (opts, leading_colon) = parse_optstring(&optstring);
 
         let (mut optind, mut optchar) = load_cursor(state, optind_addr)?;
@@ -195,7 +193,7 @@ crate::declare_proc! {
             save_cursor(state, optind_addr, optind, 0)?;
             return ret(0xFFFF_FFFF);
         }
-        let arg = scan_concrete_until_null(state, elem_ptr, MAX_CSTR, "argv string")?;
+        let arg = scan_concrete_until_null(state, elem_ptr, MAX_STRING_SCAN, "argv string")?;
 
         if optchar == 0 {
             // non-option operand "-" or a non-dash element -> stop (non-permuting)
