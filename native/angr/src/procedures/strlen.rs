@@ -14,18 +14,18 @@
 //!   initial right-most value is the upper bound (MAX_STRLEN for strlen,
 //!   maxlen for strnlen). This is an approximation: if no null is ever
 //!   reachable in MAX_STRLEN bytes the result will saturate at MAX_STRLEN.
-//! - Maximum string length is 4096 bytes (configurable).
+//! - Maximum string length is the str-family-wide
+//!   [`strings::MAX_STRING_SCAN`](super::strings::MAX_STRING_SCAN), aliased
+//!   here as `MAX_STRLEN`.
 
 use super::ProcedureError;
 use super::check_max;
 use super::strings::{
-    ScanOutcome, build_strlen_chain, null_exists_constraint, scan_for_null_symbolic,
+    MAX_STRING_SCAN as MAX_STRLEN, ScanOutcome, build_strlen_chain, null_exists_constraint,
+    scan_for_null_symbolic,
 };
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
-
-/// Maximum string length before falling back to Python.
-const MAX_STRLEN: usize = 4096;
 
 /// Shared scan for strlen / strnlen. `max_scan` is the upper bound on the
 /// number of positions inspected (MAX_STRLEN for strlen, min(maxlen, MAX) for

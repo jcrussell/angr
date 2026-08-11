@@ -40,8 +40,7 @@ use super::{ProcedureError, symbol_counter};
 use crate::state::MAX_SYMFILE_SERVE_SIZE;
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
-
-const MAX_READ_SIZE: u64 = 4096;
+use crate::syscalls::MAX_IO_SIZE as MAX_READ_SIZE;
 
 crate::declare_proc! {
     /// read: serve stdin (fd=0) symbolic bytes or concrete FS content.

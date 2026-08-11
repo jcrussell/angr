@@ -12,11 +12,11 @@
 
 use super::ProcedureError;
 use super::check_max;
-use super::strings::{ConcreteStep, ScanResult, scan_concrete_then_collect};
+use super::strings::{
+    ConcreteStep, MAX_STRING_SCAN as MAX_SCAN, ScanResult, scan_concrete_then_collect,
+};
 use crate::state::RustSimState;
 use crate::symbolic::{RustBV, SymContext};
-
-const MAX_SCAN: usize = 4096;
 
 /// Is a forward-scan result trustworthy even though the scan stopped short of
 /// the caller's `n`?

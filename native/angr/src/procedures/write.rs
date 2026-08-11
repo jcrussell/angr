@@ -16,8 +16,7 @@
 //! section of the `procedures::read` module doc).
 
 use super::{ProcedureError, arch_word};
-
-const MAX_WRITE_SIZE: u64 = 4096;
+use crate::syscalls::MAX_IO_SIZE as MAX_WRITE_SIZE;
 
 crate::declare_proc! {
     /// write: serve any fd open in the Rust `FileSystem` (not fd=0).

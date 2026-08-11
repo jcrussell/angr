@@ -87,11 +87,14 @@ use crate::memory::MemoryError;
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
-/// Shared cap (bytes) on the concrete byte count a native IO syscall handler
-/// will service before falling back to Python. `read`/`write` treat it as the
+/// Shared cap (bytes) on the concrete byte count a native IO handler will
+/// service before falling back to Python. `read`/`write` treat it as the
 /// whole-request limit, as do `cgc` (transmit/receive/random) and `startup`
-/// (getrandom); `fd_io` (readv/writev) applies it per segment. Kept as a single
-/// source of truth so the handlers can't desync (angr-myzjx.18, angr-9ke6b.157)
+/// (getrandom); `fd_io` (readv/writev) applies it per segment. The libc-hook
+/// twins in `procedures` — [`crate::procedures::read`] and
+/// [`crate::procedures::write`] — share it too, since they cap the same
+/// request the syscall handlers do (angr-03vl4.49). Kept as a single source of
+/// truth so the handlers can't desync (angr-myzjx.18, angr-9ke6b.157)
 /// — importers alias it locally (`MAX_IO_SIZE as MAX_READ_SIZE`) so each call
 /// site still reads in its own vocabulary.
 pub(crate) const MAX_IO_SIZE: u64 = 4096;
