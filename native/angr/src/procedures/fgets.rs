@@ -35,6 +35,7 @@
 use super::arch_word;
 use super::stdin_common::mint_stdin_bytes;
 use super::{ProcedureError, symbol_counter};
+use crate::memory::MemoryError;
 use crate::procedures::fileops::read_fileno;
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
@@ -141,14 +142,25 @@ pub(crate) fn store_symbolic_line(
 /// `fopen`), so their `_fileno` resolves normally. For a read like `fgets`, a
 /// cle standard stream is overwhelmingly stdin (reading from stdout/stderr is a
 /// programming error that does not occur in practice), and Python resolves
-/// stdin's `_fileno` to 0. So on a *memory* error we serve fd 0 natively,
-/// matching Python's stdin path. A *symbolic* `_fileno` still falls back to
-/// Python (we cannot pick a branch).
+/// stdin's `_fileno` to 0. So on an *unmapped-memory* error we serve fd 0
+/// natively, matching Python's stdin path. A *symbolic* `_fileno` still falls
+/// back to Python (we cannot pick a branch).
+///
+/// The carve-out is deliberately limited to the two "not in Rust memory"
+/// variants ([`MemoryError::Unmapped`] / [`MemoryError::UnmappedPageInRegion`]),
+/// the only ones the cle-lazy-page rationale above covers. Every other
+/// `MemoryError` describes a FILE struct that *is* mapped — a `Permission`
+/// violation under STRICT_PAGE_ACCESS, an `OutOfBounds` `_fileno` slot that
+/// wraps past the top of the address space — and answering "stdin" for those
+/// would invent an fd out of an unrelated failure, so they propagate and let
+/// Python decide (angr-03vl4.43).
 fn resolve_stream_fd(state: &RustSimState, stream: u64) -> Result<i32, ProcedureError> {
     match read_fileno(state, stream) {
         Ok(fd) => Ok(fd),
         // FILE struct not in Rust memory => cle standard stream => stdin.
-        Err(ProcedureError::Memory(_)) => Ok(0),
+        Err(ProcedureError::Memory(
+            MemoryError::Unmapped { .. } | MemoryError::UnmappedPageInRegion { .. },
+        )) => Ok(0),
         Err(e) => Err(e),
     }
 }

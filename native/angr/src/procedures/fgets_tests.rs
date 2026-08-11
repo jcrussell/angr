@@ -563,3 +563,75 @@ fn test_getchar_consumes_seeded_stdin_in_order() {
     assert!(ret.as_u64().is_none());
     assert_eq!(state.stdin_symbols().len(), 1);
 }
+
+/// The unmapped-FILE carve-out itself: a `FILE *` that is not in Rust memory at
+/// all is a cle standard stream, so fgets serves it as stdin natively rather
+/// than bouncing to Python (the ~100ms/call regression the carve-out exists to
+/// avoid).
+#[test]
+fn test_fgets_unmapped_file_struct_serves_stdin() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory(0x2000, 0x1000, Permission::RWX);
+    // 0x5000 is deliberately never mapped: read_fileno errors Unmapped.
+    let result = NativeFgets
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(4, 64),
+                RustBV::concrete(0x5000, 64),
+            ],
+        )
+        .unwrap();
+    assert_eq!(result.unwrap().as_u64(), Some(0x2000));
+    // Served as stdin: the buffer holds fresh symbolic stdin bytes.
+    assert!(state.memory_load(0x2000, 1).unwrap().as_u64().is_none());
+}
+
+/// angr-03vl4.43: the carve-out covers only "FILE struct not in Rust memory".
+/// A *mapped* FILE struct whose `_fileno` slot is unreadable under
+/// STRICT_PAGE_ACCESS is a permission failure, not a cle standard stream —
+/// answering "stdin" there would invent fd 0 out of an unrelated error, so it
+/// must propagate and let Python decide.
+#[test]
+fn test_fgets_permission_error_does_not_masquerade_as_stdin() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory(0x2000, 0x1000, Permission::RWX);
+    // FILE struct is mapped, but write-only: the _fileno load needs R.
+    let file_ptr: u64 = 0x5000;
+    state.map_memory(file_ptr, 0x1000, Permission::W);
+    state.set_enforce_permissions(true);
+
+    let result = NativeFgets.call(
+        &mut state,
+        &[
+            RustBV::concrete(0x2000, 64),
+            RustBV::concrete(10, 64),
+            RustBV::concrete(file_ptr as u128, 64),
+        ],
+    );
+    assert!(
+        matches!(
+            result,
+            Err(ProcedureError::Memory(MemoryError::Permission { .. }))
+        ),
+        "expected the permission error to propagate, got {result:?}"
+    );
+    // And nothing was written into the buffer as if stdin had been served.
+    assert_eq!(state.memory_load(0x2000, 1).unwrap().as_u64(), Some(0));
+}
+
+/// The same narrowing on the fgetc side, which shares `resolve_stream_fd`.
+#[test]
+fn test_fgetc_permission_error_does_not_masquerade_as_stdin() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    let file_ptr: u64 = 0x5000;
+    state.map_memory(file_ptr, 0x1000, Permission::W);
+    state.set_enforce_permissions(true);
+
+    let result = NativeFgetc.call(&mut state, &[RustBV::concrete(file_ptr as u128, 64)]);
+    assert!(matches!(
+        result,
+        Err(ProcedureError::Memory(MemoryError::Permission { .. }))
+    ));
+}
