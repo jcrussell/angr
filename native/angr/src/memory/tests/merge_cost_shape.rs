@@ -4,7 +4,8 @@
 //! measurement record behind that decision; the shipped optimization and its
 //! behavioural tests live in the sibling `merge_divergence.rs`
 //! (angr-op0dn.11.2.1). Read that file for what production does *today* — the
-//! "before" shape described below no longer exists in `memory/mod.rs::merge`.
+//! "before" shape described below no longer exists in
+//! [`SymbolicMemory::merge`](crate::memory::SymbolicMemory::merge).
 //!
 //! Question it answered: on a diamond CFG, does `SymbolicMemory::merge` cost
 //! scale with the *divergence* between the two arms, or with their *total* size?
