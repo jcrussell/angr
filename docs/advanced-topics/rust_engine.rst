@@ -1735,7 +1735,8 @@ Honored options
        from mapped non-X pages raise ``SimSegfaultError`` at
        ``VEXInterpreter::get_or_lift_block``. Matches Python: the X
        check fires only when ``ENABLE_NX`` AND ``STRICT_PAGE_ACCESS`` are
-       both set (``angr/engines/vex/heavy/heavy.py:118-127``).
+       both set (``HeavyVEXMixin.process_successors`` in
+       ``angr/engines/vex/heavy/heavy.py``).
    * - ``NO_IP_CONCRETIZATION``
      - ``rust_manager.py::_add_rust_state`` (also propagated through
        ``_apply_state_metadata`` on cache reuse)

@@ -52,7 +52,6 @@ docs/advanced-topics/rust_engine.rst	``native/angr/src/symbolic/value.rs:415``:
 docs/advanced-topics/rust_engine.rst	``rust_state_sync.py:348`` is consumed by both
 docs/advanced-topics/rust_engine.rst	``sat_cache: Cell<Option<bool>>`` (line 1372) and
 docs/advanced-topics/rust_engine.rst	``state.scratch`` directly (``runner.py:93``), which is deep
-docs/advanced-topics/rust_engine.rst	both set (``angr/engines/vex/heavy/heavy.py:118-127``).
 docs/advanced-topics/rust_engine.rst	boundary. It takes an explicit ``z3::Context`` clone (line 35) so
 docs/advanced-topics/rust_engine.rst	call inside ``veritesting.py:215``. ``RustStateProxy.copy()``
 docs/advanced-topics/rust_engine.rst	call site with ``do_nothing`` (lines 95–107 of the example), so the
@@ -97,7 +96,6 @@ native/angr/src/interpreter/mod.rs	/// NO_SYMBOLIC_JUMP_RESOLUTION option (engin
 native/angr/src/interpreter/mod.rs	/// `split_state.regs.ip = target` at engines/successors.py:328). Also
 native/angr/src/interpreter/mod.rs	/// `split_state.regs.ip = target` write at engines/successors.py:328.
 native/angr/src/interpreter/statements_store.rs	// Mirrors `address_concretization_mixin.py:327-329`.
-native/angr/src/memory/mod.rs	/// (angr/engines/vex/heavy/heavy.py:115-124). Default false.
 native/angr/src/memory/store.rs	// early `return` at `address_concretization_mixin.py:327-329`.
 native/angr/src/memory/store.rs	/// address_concretization_mixin.py:292-294, 342-344) does the same for
 native/angr/src/procedures/sprintf_tests.rs	// format_parser.py masks each concretized int arg to `size*8` bits (line 96)

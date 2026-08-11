@@ -355,7 +355,8 @@ pub struct SymbolicMemory {
     /// fetches from mapped pages without the X bit. Mirrors angr's ENABLE_NX
     /// option: Python's heavy VEX engine only fires the non-executable check
     /// when BOTH STRICT_PAGE_ACCESS and ENABLE_NX are in state.options
-    /// (angr/engines/vex/heavy/heavy.py:115-124). Default false.
+    /// (`HeavyVEXMixin::process_successors` in
+    /// angr/engines/vex/heavy/heavy.py). Default false.
     ///
     /// Merge-invariant: a SimOption mirror, see `zero_fill_unconstrained`.
     #[merge_policy = "in_place_self"]
