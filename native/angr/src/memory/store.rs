@@ -630,7 +630,21 @@ impl SymbolicMemory {
             let addr_const = RustBV::concrete(cand as u128, addr_expr.width());
             let cond = addr_expr.eq(&addr_const, ctx);
             for b in 0..size {
-                let byte_addr = cand + b as u64;
+                // angr-03vl4.37: `cand` is a Z3 solution for a guest-supplied
+                // store pointer, so this addition is on untrusted shape. A
+                // bare `+` panics under debug-assertions and wraps in release,
+                // which would plant the Multi cell on a low page — the exact
+                // silent redirection `end_page_inclusive` exists to stop.
+                // Unreachable in practice (`b < size`, and the page-range pass
+                // above already rejected every candidate whose last byte
+                // overflows), so this is defense-in-depth of the module's panic
+                // policy in the same shape `MemoryError::UnexpectedSymbolic`
+                // takes — it must not silently self-heal if that pass is ever
+                // changed to saturate instead of erroring.
+                let byte_addr = cand.checked_add(b as u64).ok_or(MemoryError::OutOfBounds {
+                    addr: cand,
+                    size: size as u64,
+                })?;
                 let byte_value = Self::extract_byte_lane(value, b, endness, ctx).ok_or(
                     MemoryError::SymbolicAddress {
                         description: "value byte offset out of range".to_string(),

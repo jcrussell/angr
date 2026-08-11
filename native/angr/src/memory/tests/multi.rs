@@ -917,6 +917,41 @@ fn test_multi_install_permission_check_off_by_default() {
     assert_eq!(mem.multi_cell_count(), 2);
 }
 
+/// angr-03vl4.37: a candidate whose byte range runs off the top of the address
+/// space must be rejected outright, never wrapped onto a low page. The
+/// candidates come from Z3 solutions for a guest-supplied pointer, and
+/// `install_multi_for_candidates` computed the per-byte address with a bare
+/// `cand + b` — a panic under debug-assertions, a silent redirect in release.
+/// Two guards now cover it: the page-range pass (`end_page_inclusive`) and the
+/// `checked_add` in the install loop itself; this pins the observable contract
+/// either one must deliver.
+#[test]
+fn test_multi_install_rejects_wrapping_candidate() {
+    let ctx = SymContext::new_mock();
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    // The page a wrapped byte address would land on.
+    mem.map(0x0u64, 0x1000, Permission::RWX);
+
+    let addr_var = RustBV::symbolic(&ctx, "wrap_multi_addr", 64);
+    let wrapping = u64::MAX - 1; // [u64::MAX-1, u64::MAX+2) for a 4-byte value
+    let err = mem
+        .store_concrete_multi(
+            &addr_var,
+            &RustBV::concrete(0xdead_beef, 32),
+            &[0x100, wrapping],
+            &ctx,
+        )
+        .expect_err("a candidate whose range wraps past u64::MAX must be rejected");
+    assert!(matches!(err, MemoryError::OutOfBounds { .. }));
+
+    // The rejection precedes every mutation, so not even the well-formed
+    // candidate installed — and page 0 is untouched.
+    assert_eq!(mem.multi_cell_count(), 0);
+    for byte in 0..4u64 {
+        assert!(mem.get_multi_alternatives(byte).is_none());
+    }
+}
+
 /// `flush_multi_cells` must collapse every Multi byte into a per-byte
 /// symbolic_objects entry and mark the page-level symbolic bit so the
 /// state export pipeline picks it up. This is the export-correctness
