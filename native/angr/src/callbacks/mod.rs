@@ -375,7 +375,7 @@ pub struct PythonCallbacks {
     /// Callback for state.inspect fork events.
     /// Signature: `fn(state_id: int, when: str) -> None`. Fires
     /// `when='after'` for each forked state created by the deferred-fork
-    /// processing in `exploration/stepping.rs` (both `handle_block_end`
+    /// processing in `exploration/stepping.rs` (both `apply_core_outcome`
     /// and `process_deferred_forks_into`). The dispatch fires on the
     /// FORKED state's id (matching the `state._inspect("fork", BP_AFTER)`
     /// in Python `SimSuccessors::_preprocess_successor`

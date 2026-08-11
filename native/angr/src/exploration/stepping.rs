@@ -1046,7 +1046,7 @@ impl RustExplorationManager {
 
                 self.sm.set_root(forked.state_id(), root_state_id);
 
-                // state.inspect fork BP — see handle_block_end for rationale.
+                // state.inspect fork BP — see `dispatch_fork_inspect` for rationale.
                 self.dispatch_fork_inspect(forked.state_id());
 
                 if forked.survives_sat_prune(self.constraint_solver.lazy_solves) {

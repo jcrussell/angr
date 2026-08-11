@@ -2762,7 +2762,7 @@ _INSPECT_EVENT_SPECS: dict = {
     },
     # angr-ysml: fork dispatch fires from `exploration/stepping.rs` for
     # each forked state created by the deferred-fork processing in
-    # `handle_block_end` and `process_deferred_forks_into`. Matches
+    # `apply_core_outcome` and `process_deferred_forks_into`. Matches
     # Python's `engines/successors.py:203` where `state._inspect("fork",
     # BP_AFTER)` fires on the newly-added successor after constraints +
     # ip are applied. The BP fires BEFORE the Rust-side satisfiability

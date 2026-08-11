@@ -3389,7 +3389,7 @@ class RustExplorationManager(
 
         Fired `when='after'` once per forked state created by the
         deferred-fork processing in `exploration/stepping.rs`
-        (`handle_block_end` + `process_deferred_forks_into`). `state_id`
+        (`apply_core_outcome` + `process_deferred_forks_into`). `state_id`
         is the FORKED state's id (matching Python's
         `engines/successors.py:203` where the BP fires on the newly-added
         successor, not the parent). The fork event has no attrs in

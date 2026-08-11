@@ -2824,7 +2824,7 @@ Decision history
 * ``angr-ysml`` (2026-06-03): wired ``fork`` dispatch at the
   previously-reserved bit 4. The dispatch fires from
   ``exploration/stepping.rs`` for each forked state created by the
-  deferred-fork processing (``handle_block_end`` and
+  deferred-fork processing (``apply_core_outcome`` and
   ``process_deferred_forks_into`` — covers ``fork_from_snapshot``,
   ``fork_true``/``fork_false``, and the P15 conservative
   ``fork()`` fallback path). Mirrors Python

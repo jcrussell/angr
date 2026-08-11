@@ -17,7 +17,7 @@
 //!
 //! Scope note: this carries only the fields `run_interpreter_step_core`
 //! actually reads (see the inventory in the bead). The post-interpreter handlers
-//! (`handle_block_end`, simproc / syscall / symbolic-jump dispatch) and the
+//! (`run_post_step_core`, simproc / syscall / symbolic-jump dispatch) and the
 //! native registries / `PythonCallbacks` they consume are intentionally NOT
 //! bundled yet — that is sub-increment 2b-ii. `PythonCallbacks` stays an
 //! explicit parameter (it is already `Send + Sync` and already threaded through
@@ -123,7 +123,12 @@ const _: fn() = || {
 impl RustExplorationManager {
     /// Build a [`StepContext`] snapshot of the manager's current step
     /// configuration. Clones/`Arc`-shares so the result borrows nothing from
-    /// `self`. Called once per `run_interpreter_step`.
+    /// `self`. Called once per [`step_state_inner`] on the single-threaded
+    /// path; the parallel path instead builds one per wave / session in
+    /// `build_parallel_process` (`vex-engine-z3` only, hence no intra-doc
+    /// link).
+    ///
+    /// [`step_state_inner`]: Self::step_state_inner
     pub(crate) fn step_context(&self) -> StepContext {
         StepContext {
             vex_arch: self.environment.vex_arch,
@@ -170,7 +175,8 @@ impl RustExplorationManager {
 
 /// Run the VEX interpreter for one step and recover all owned state from it.
 ///
-/// Behavior-identical extraction of `RustExplorationManager::run_interpreter_step`:
+/// Behavior-identical extraction of the interpreter-driving half of
+/// [`RustExplorationManager::step_state_inner`], which is also its caller:
 /// it constructs a `VEXInterpreter` against the borrowed solver, runs it until
 /// its next event, then fully drains (registers, memory, history, block cache,
 /// profiling stats) before the interpreter is dropped at scope end.
