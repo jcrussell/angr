@@ -1723,3 +1723,60 @@ fn test_load_concrete_partial_multi_overlap() {
         "Multi byte 0 must override; bytes 1..3 keep their concrete values"
     );
 }
+
+/// `cond_fingerprint`'s `Expression` key mixes the op in alongside the
+/// operands `Arc` pointer (angr-03vl4.38). Under today's construction every
+/// `Expression` allocates a fresh operands `Arc`, so a shared pointer already
+/// implies a shared op — this pins the defensive half, so a future
+/// construction path that reuses an operands `Arc` across two different ops
+/// cannot silently coalesce bytes whose conds are not equivalent.
+#[test]
+fn test_cond_fingerprint_distinguishes_op_on_shared_operands() {
+    use crate::memory::multi::cond_fingerprint;
+    use crate::symbolic::BVOp;
+    use std::sync::Arc;
+
+    let operands: Arc<[RustBV]> =
+        Arc::from(vec![RustBV::concrete(0x1000, 64), RustBV::concrete(0x2000, 64)]);
+    let make = |op: BVOp| RustBV::Expression {
+        id: RustBV::EXPRESSION_ID,
+        width: 1,
+        op,
+        operands: Arc::clone(&operands),
+        memo: Default::default(),
+    };
+
+    // Same Arc, different op → distinct fingerprints.
+    assert_ne!(
+        cond_fingerprint(&make(BVOp::Eq)),
+        cond_fingerprint(&make(BVOp::Ne)),
+        "op must participate in the Expression fingerprint"
+    );
+    // Payload-carrying variants must not collapse onto their discriminant.
+    assert_ne!(
+        cond_fingerprint(&make(BVOp::Extract(7, 0))),
+        cond_fingerprint(&make(BVOp::Extract(15, 8))),
+        "op payload must participate too"
+    );
+    // The coalescing case itself is unaffected: same op + same Arc matches,
+    // which is what a run of bytes cloned from one cond looks like.
+    assert_eq!(
+        cond_fingerprint(&make(BVOp::Eq)),
+        cond_fingerprint(&make(BVOp::Eq)),
+        "clones of one cond must still coalesce"
+    );
+    // A fresh Arc with the same op is a different store path → no coalesce.
+    let other_operands: Arc<[RustBV]> =
+        Arc::from(vec![RustBV::concrete(0x1000, 64), RustBV::concrete(0x2000, 64)]);
+    assert_ne!(
+        cond_fingerprint(&make(BVOp::Eq)),
+        cond_fingerprint(&RustBV::Expression {
+            id: RustBV::EXPRESSION_ID,
+            width: 1,
+            op: BVOp::Eq,
+            operands: other_operands,
+            memo: Default::default(),
+        }),
+        "distinct operands allocations stay distinct"
+    );
+}

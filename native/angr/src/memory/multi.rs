@@ -35,6 +35,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use std::cell::RefCell;
+use std::hash::{Hash, Hasher};
 
 use super::{Address, MemoryPage, Permission, SymbolicMemory};
 use crate::symbolic::{RustBV, SymContext, record_mem_ite_depth};
@@ -518,13 +519,33 @@ impl SymbolicMemory {
 /// candidate and `.clone()`d into every byte); bytes whose payload conds match
 /// in count and per-position fingerprint originated from the same store path
 /// and can be safely coalesced into a single wider `symbolic_objects` entry.
-fn cond_fingerprint(bv: &RustBV) -> u64 {
+///
+/// `pub(super)` only so `memory/tests/multi.rs`'s
+/// `test_cond_fingerprint_distinguishes_op_on_shared_operands` can unit-test
+/// the op half of the key — no caller outside this module.
+pub(super) fn cond_fingerprint(bv: &RustBV) -> u64 {
     match bv {
-        RustBV::Expression { operands, .. } => {
+        RustBV::Expression { op, operands, .. } => {
             // Within one `flush_multi_cells` call the entries Vec keeps every
             // Arc live, so ptr reuse via free/realloc can't happen — pointer
             // identity is a stable cross-byte comparison key.
-            std::sync::Arc::as_ptr(operands) as *const () as usize as u64
+            //
+            // The op is mixed in as well (angr-03vl4.38). Today it is
+            // redundant: every `Expression` is built by
+            // `crate::symbolic::value_ops`'s `expr_node`, which allocates a
+            // fresh `Arc<[RustBV]>` per call, so a shared operands pointer can
+            // only come from cloning one whole node — same op by construction.
+            // Should a future construction path ever reuse an operands Arc
+            // across two different ops, keying on the pointer alone would
+            // coalesce bytes whose conds are *not* equivalent, silently
+            // widening one candidate's guard over another's bytes. The op is
+            // hashed rather than discriminant-compared so payload-carrying
+            // variants (`Extract(hi, lo)`, `ZeroExt(n)`, `Float { .. }`) stay
+            // distinguishable.
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            op.hash(&mut hasher);
+            (std::sync::Arc::as_ptr(operands) as *const () as usize as u64).rotate_left(17)
+                ^ hasher.finish()
         }
         RustBV::Concrete { value, width } => {
             // Mix in a salt distinct from the other variants so a Concrete 0
