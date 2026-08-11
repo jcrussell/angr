@@ -9,10 +9,7 @@
 
 use proc_macro::TokenStream;
 use quote::{format_ident, quote, quote_spanned};
-use syn::{
-    Data, DeriveInput, Fields, FnArg, ItemFn, Lit, Meta, Receiver, parse_macro_input,
-    spanned::Spanned,
-};
+use syn::{Data, DeriveInput, Fields, FnArg, ItemFn, Lit, Meta, Receiver, spanned::Spanned};
 
 /// Injects `self.steady_config_guard();` as the first statement of the
 /// annotated `&mut self` method body.
@@ -150,7 +147,7 @@ const MECHANICAL_MERGE_POLICIES: &[&str] = &["self_wins", "union", "max", "min",
 /// field labelled `max` could be merged self-wins (or vice versa) and no
 /// tooling would notice. Each mechanical field now gets a private
 ///
-/// ```ignore
+/// ```text
 /// fn merge_field_<name>(&self, others: &[&Self]) -> <FieldTy>
 /// ```
 ///
@@ -165,21 +162,53 @@ const MECHANICAL_MERGE_POLICIES: &[&str] = &["self_wins", "union", "max", "min",
 /// - `union` fields must be `bool`, `max`/`min` fields `Ord`, and
 ///   `warn_on_diverge` fields `PartialEq` — otherwise the generated body does
 ///   not compile and the field needs `#[merge_manual = "<why>"]`.
+///
+/// # Example
+///
+/// ```
+/// #[derive(angr_macros::MergePolicy)]
+/// struct Config {
+///     #[merge_policy = "self_wins"]
+///     arch: &'static str,
+///     #[merge_policy = "union"]
+///     tainted: bool,
+///     #[merge_policy = "max"]
+///     depth: u64,
+///     #[merge_policy = "delegate"]
+///     memory: Vec<u8>,
+/// }
+///
+/// let a = Config { arch: "x86", tainted: false, depth: 3, memory: vec![] };
+/// let b = Config { arch: "amd64", tainted: true, depth: 7, memory: vec![] };
+///
+/// assert_eq!(a.merge_field_arch(&[&b]), "x86");
+/// assert!(a.merge_field_tainted(&[&b]));
+/// assert_eq!(a.merge_field_depth(&[&b]), 7);
+/// // No `merge_field_memory` — `delegate` is hand-written by definition.
+/// ```
 #[proc_macro_derive(MergePolicy, attributes(merge_policy, merge_manual))]
 pub fn derive_merge_policy(input: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(input as DeriveInput);
+    derive_merge_policy_impl(input.into()).into()
+}
+
+/// `proc_macro2` body of [`derive_merge_policy`], so the expansion is
+/// reachable from unit tests (the `proc_macro` types only exist inside a real
+/// macro invocation).
+fn derive_merge_policy_impl(input: proc_macro2::TokenStream) -> proc_macro2::TokenStream {
+    let input = match syn::parse2::<DeriveInput>(input) {
+        Ok(input) => input,
+        Err(err) => return err.to_compile_error(),
+    };
 
     let Data::Struct(data) = &input.data else {
         return quote_spanned! { input.span() =>
             compile_error!("MergePolicy can only be derived for structs");
-        }
-        .into();
+        };
     };
     let Fields::Named(fields) = &data.fields else {
         return quote_spanned! { input.span() =>
             compile_error!("MergePolicy requires named fields");
-        }
-        .into();
+        };
     };
 
     let mut errors = proc_macro2::TokenStream::new();
@@ -327,7 +356,6 @@ pub fn derive_merge_policy(input: TokenStream) -> TokenStream {
             #methods
         }
     }
-    .into()
 }
 
 /// Extracts `"value"` from a `#[name = "value"]` attribute.
@@ -412,5 +440,227 @@ mod steady_guarded_tests {
     fn non_function_item_reports_a_parse_error() {
         let out = expand(quote! {}, quote! { struct Nope; });
         assert!(out.contains("compile_error"), "{out}");
+    }
+}
+
+#[cfg(test)]
+mod merge_policy_tests {
+    use super::{MECHANICAL_MERGE_POLICIES, VALID_MERGE_POLICIES, derive_merge_policy_impl};
+    use quote::quote;
+
+    /// Token-stream text of the expansion. `to_string()` spaces every token,
+    /// so a generated signature reads `fn merge_field_depth (& self , ...)`;
+    /// matching on the bare `merge_field_<name>` ident is spacing-independent.
+    fn expand(input: proc_macro2::TokenStream) -> String {
+        derive_merge_policy_impl(input).to_string()
+    }
+
+    /// Expansion with every space removed, for assertions about a generated
+    /// *body* — `to_string()`'s inter-token spacing is an implementation
+    /// detail of `proc_macro2` and not worth pinning.
+    fn squished(input: proc_macro2::TokenStream) -> String {
+        expand(input).replace(' ', "")
+    }
+
+    /// One field per mechanical policy, so a single expansion covers all five
+    /// generated bodies.
+    fn all_mechanical() -> proc_macro2::TokenStream {
+        quote! {
+            struct S {
+                #[merge_policy = "self_wins"]
+                arch: String,
+                #[merge_policy = "union"]
+                tainted: bool,
+                #[merge_policy = "max"]
+                depth: u64,
+                #[merge_policy = "min"]
+                floor: u64,
+                #[merge_policy = "warn_on_diverge"]
+                optind: i32,
+            }
+        }
+    }
+
+    #[test]
+    fn every_mechanical_policy_generates_a_merge_field_method() {
+        let out = expand(all_mechanical());
+        assert!(!out.contains("compile_error"), "{out}");
+        for name in ["arch", "tainted", "depth", "floor", "optind"] {
+            assert!(
+                out.contains(&format!("merge_field_{name}")),
+                "{name}: {out}"
+            );
+        }
+    }
+
+    #[test]
+    fn generated_bodies_match_their_policy() {
+        let out = squished(all_mechanical());
+        // `self_wins` keeps `self`'s value and never reads `others`.
+        assert!(out.contains("fnmerge_field_arch(&self,_others:"), "{out}");
+        assert!(out.contains("self.arch.clone()"), "{out}");
+        // `union` is a logical OR across every branch.
+        assert!(out.contains("self.tainted||others.iter().any"), "{out}");
+        assert!(out.contains("acc.max(o.depth)"), "{out}");
+        assert!(out.contains("acc.min(o.floor)"), "{out}");
+        // `warn_on_diverge` is `self_wins` plus the loud divergence check.
+        assert!(out.contains("warn_config_divergence(\"optind\""), "{out}");
+        assert!(out.contains("self.optind.clone()"), "{out}");
+    }
+
+    #[test]
+    fn non_mechanical_policies_generate_nothing() {
+        // Every valid policy that is not mechanical: labelled, accepted, but
+        // hand-written in state/fork.rs::merge.
+        for policy in VALID_MERGE_POLICIES
+            .iter()
+            .filter(|p| !MECHANICAL_MERGE_POLICIES.contains(p))
+        {
+            let out = expand(quote! {
+                struct S {
+                    #[merge_policy = #policy]
+                    f: u64,
+                }
+            });
+            assert!(!out.contains("compile_error"), "{policy}: {out}");
+            assert!(!out.contains("merge_field_f"), "{policy}: {out}");
+        }
+    }
+
+    #[test]
+    fn missing_merge_policy_is_an_error() {
+        let out = expand(quote! { struct S { f: u64, } });
+        assert!(out.contains("has no #[merge_policy"), "{out}");
+    }
+
+    #[test]
+    fn unknown_merge_policy_is_an_error() {
+        let out = expand(quote! {
+            struct S {
+                #[merge_policy = "whatever"]
+                f: u64,
+            }
+        });
+        assert!(out.contains("unknown merge_policy"), "{out}");
+        assert!(out.contains("whatever"), "{out}");
+        assert!(!out.contains("merge_field_f"), "{out}");
+    }
+
+    #[test]
+    fn non_string_merge_policy_is_an_error() {
+        let out = expand(quote! {
+            struct S {
+                #[merge_policy(self_wins)]
+                f: u64,
+            }
+        });
+        assert!(out.contains("string literal"), "{out}");
+        assert!(!out.contains("merge_field_f"), "{out}");
+    }
+
+    #[test]
+    fn duplicate_merge_policy_is_an_error() {
+        let out = expand(quote! {
+            struct S {
+                #[merge_policy = "max"]
+                #[merge_policy = "min"]
+                f: u64,
+            }
+        });
+        assert!(out.contains("more than one #[merge_policy]"), "{out}");
+        // Neither of the two policies may win by accident.
+        assert!(!out.contains("merge_field_f"), "{out}");
+    }
+
+    #[test]
+    fn merge_manual_opts_a_mechanical_field_out_of_generation() {
+        let out = expand(quote! {
+            struct S {
+                #[merge_policy = "max"]
+                #[merge_manual = "Option<RustBV> has no Ord"]
+                f: Option<u64>,
+            }
+        });
+        assert!(!out.contains("compile_error"), "{out}");
+        assert!(!out.contains("merge_field_f"), "{out}");
+    }
+
+    #[test]
+    fn merge_manual_without_a_reason_is_an_error() {
+        for attr in [
+            quote! { #[merge_manual] },
+            quote! { #[merge_manual = "  "] },
+        ] {
+            let out = expand(quote! {
+                struct S {
+                    #[merge_policy = "max"]
+                    #attr
+                    f: u64,
+                }
+            });
+            assert!(out.contains("non-empty string literal"), "{out}");
+        }
+    }
+
+    #[test]
+    fn duplicate_merge_manual_is_an_error() {
+        let out = expand(quote! {
+            struct S {
+                #[merge_policy = "max"]
+                #[merge_manual = "a"]
+                #[merge_manual = "b"]
+                f: u64,
+            }
+        });
+        assert!(out.contains("more than one #[merge_manual]"), "{out}");
+    }
+
+    #[test]
+    fn merge_manual_on_a_non_mechanical_policy_is_redundant() {
+        let out = expand(quote! {
+            struct S {
+                #[merge_policy = "delegate"]
+                #[merge_manual = "already hand-written"]
+                f: u64,
+            }
+        });
+        assert!(out.contains("redundant"), "{out}");
+    }
+
+    #[test]
+    fn enums_and_tuple_structs_are_rejected() {
+        let out = expand(quote! { enum E { A } });
+        assert!(out.contains("only be derived for structs"), "{out}");
+
+        let out = expand(quote! { struct S(u64); });
+        assert!(out.contains("requires named fields"), "{out}");
+    }
+
+    #[test]
+    fn unparseable_input_reports_a_parse_error() {
+        let out = expand(quote! { fn nope() {} });
+        assert!(out.contains("compile_error"), "{out}");
+    }
+
+    #[test]
+    fn generics_and_where_clauses_are_carried_onto_the_impl() {
+        let out = squished(quote! {
+            struct S<T> where T: Ord + Clone {
+                #[merge_policy = "max"]
+                f: T,
+            }
+        });
+        assert!(!out.contains("compile_error"), "{out}");
+        assert!(out.contains("impl<T>S<T>"), "{out}");
+        assert!(out.contains("whereT:Ord+Clone"), "{out}");
+    }
+
+    /// A struct with no fields still gets an (empty) impl block rather than a
+    /// diagnostic — the derive has nothing to prove about zero fields.
+    #[test]
+    fn empty_struct_expands_to_an_empty_impl() {
+        let out = expand(quote! { struct S {} });
+        assert!(!out.contains("compile_error"), "{out}");
+        assert!(out.contains("impl S"), "{out}");
     }
 }
