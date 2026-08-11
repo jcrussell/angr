@@ -441,3 +441,44 @@ fn test_posix_memalign_symbolic_size_falls_back() {
     );
     assert!(matches!(result, Err(ProcedureError::SymbolicArgument(_))));
 }
+
+/// angr-03vl4.53: `malloc` caps its guest-controlled size at `MAX_ALLOC_SIZE`
+/// exactly like calloc/realloc/memalign/posix_memalign do, so the classic
+/// `malloc(len - 1)` underflow pattern bounces to Python instead of wrapping
+/// the bump allocator's 16-byte rounding into a tiny (aliasing) allocation.
+#[test]
+fn test_malloc_huge_size_defers_to_python_without_wrapping_heap_brk() {
+    for size in [u64::MAX, u64::MAX - 14, 2_000_000, MAX_ALLOC_SIZE as u64 + 1] {
+        let mut state = RustSimState::new("amd64").unwrap();
+        let before = state.heap_brk();
+
+        let result = NativeMalloc.call(&mut state, &[RustBV::concrete(size as u128, 64)]);
+
+        assert!(
+            matches!(result, Err(ProcedureError::MaxIterations(_))),
+            "malloc({size:#x}) must defer to Python, got {result:?}"
+        );
+        assert_eq!(
+            state.heap_brk(),
+            before,
+            "a refused malloc({size:#x}) must not move the brk"
+        );
+        assert_eq!(state.heap_metadata().alloc_count(), 0);
+    }
+}
+
+/// The cap is inclusive: `MAX_ALLOC_SIZE` itself is still served natively.
+#[test]
+fn test_malloc_at_max_alloc_size_still_succeeds() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    let addr = NativeMalloc
+        .call(&mut state, &[RustBV::concrete(MAX_ALLOC_SIZE as u128, 64)])
+        .unwrap()
+        .unwrap()
+        .as_u64()
+        .unwrap();
+    assert_eq!(
+        state.heap_metadata().alloc_size(addr),
+        Some(MAX_ALLOC_SIZE as u64)
+    );
+}

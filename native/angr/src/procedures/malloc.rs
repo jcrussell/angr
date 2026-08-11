@@ -8,8 +8,9 @@ use super::{ProcedureError, arch_word};
 use crate::symbolic::RustBV;
 
 /// Maximum allocation size accepted by the native allocator procedures
-/// (calloc/realloc/memalign/posix_memalign). Beyond this we defer to Python
-/// rather than growing the bump heap. Mirrors memcpy.rs's `MAX_COPY_SIZE`.
+/// (malloc/calloc/realloc/memalign/posix_memalign). Beyond this we defer to
+/// Python rather than growing the bump heap. Mirrors memcpy.rs's
+/// `MAX_COPY_SIZE`.
 const MAX_ALLOC_SIZE: usize = 1024 * 1024; // 1MB
 
 crate::declare_proc! {
@@ -18,6 +19,12 @@ crate::declare_proc! {
     struct = NativeMalloc,
     args = [size: concrete],
     call |state| {
+        // angr-03vl4.53: `size` is guest-controlled, and the classic
+        // `malloc(len - 1)` underflow pattern reaches here with a near-`u64::MAX`
+        // request. Every sibling in this file already caps before bumping the
+        // heap; malloc was the lone hole.
+        check_max(size, MAX_ALLOC_SIZE)?;
+
         let addr = state.heap_alloc(size);
         Ok(Some(arch_word(state, addr)))
     }

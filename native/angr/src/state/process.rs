@@ -334,8 +334,12 @@ impl RustSimState {
 
     /// Bump-allocate from the heap. Returns the address of the allocation.
     /// Aligns size up to 16 bytes (matching angr's SimHeapBrk).
+    ///
+    /// Callers that take a guest-controlled size (`procedures/malloc.rs`) cap it
+    /// at `MAX_ALLOC_SIZE` first; the rounding here is nonetheless saturating so
+    /// no caller can wrap the bump — see [`round_alloc_size`].
     pub fn heap_alloc(&mut self, size: u64) -> u64 {
-        let aligned = (size + 15) & !15; // round up to 16
+        let aligned = round_alloc_size(size);
         let addr = self.heap_brk;
         self.heap_brk = addr.wrapping_add(aligned);
         self.heap_metadata.record_alloc(addr, size);
@@ -352,7 +356,7 @@ impl RustSimState {
         }
         let mask = alignment - 1;
         let addr = self.heap_brk.wrapping_add(mask) & !mask;
-        let aligned = (size + 15) & !15;
+        let aligned = round_alloc_size(size);
         self.heap_brk = addr.wrapping_add(aligned);
         self.heap_metadata.record_alloc(addr, size);
         addr
@@ -367,4 +371,16 @@ impl RustSimState {
     pub fn heap_metadata(&self) -> &HeapMetadata {
         &self.heap_metadata
     }
+}
+
+/// Round an allocation size up to the bump allocator's 16-byte granularity.
+///
+/// `saturating_add` rather than `+`: with a plain add a size within 15 of
+/// `u64::MAX` wraps the rounding down to a *small* bump, so `heap_brk` barely
+/// moves and the next allocation aliases the previous one — a wrong answer
+/// under the shipped `[profile.release]` (overflow-checks off) and a panic
+/// under `[profile.release-checked]` (angr-03vl4.53). Saturating keeps the
+/// bump `>= size` for every request the 64-bit address space can hold.
+fn round_alloc_size(size: u64) -> u64 {
+    size.saturating_add(15) & !15
 }

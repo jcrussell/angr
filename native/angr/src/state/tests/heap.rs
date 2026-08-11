@@ -242,3 +242,39 @@ fn test_heap_alloc_aligned_records_requested_size_at_aligned_address() {
     assert_eq!(s.heap_free(addr), Some(24));
     assert_eq!(s.heap_metadata().free_count(), 1);
 }
+
+/// angr-03vl4.53: the 16-byte size rounding is saturating, so a near-`u64::MAX`
+/// size bumps the brk *forward* rather than wrapping the rounding down to a
+/// small (or zero) bump. `procedures/malloc.rs` caps guest sizes long before
+/// this, but the state-layer allocator must not depend on that to stay sane —
+/// the wrapping form panicked under `[profile.release-checked]` and produced
+/// aliasing allocations under `[profile.release]`.
+#[test]
+fn test_heap_alloc_saturates_instead_of_wrapping_the_size_rounding() {
+    for size in [u64::MAX, u64::MAX - 1, u64::MAX - 14] {
+        let mut s = RustSimState::new("amd64").unwrap();
+        s.set_heap_brk(0x1000);
+
+        let addr = s.heap_alloc(size);
+        assert_eq!(addr, 0x1000);
+        assert_ne!(
+            s.heap_brk(),
+            0x1000,
+            "heap_alloc({size:#x}) must not leave the brk in place"
+        );
+        assert!(
+            s.heap_brk() < 0x1000,
+            "a >2^63 bump wraps the address space, but only after saturating \
+             the rounding: brk={:#x}",
+            s.heap_brk()
+        );
+        assert_eq!(s.heap_metadata().alloc_size(addr), Some(size));
+
+        // Same for the aligned entry point.
+        let mut s = RustSimState::new("amd64").unwrap();
+        s.set_heap_brk(0x1000);
+        let addr = s.heap_alloc_aligned(size, 0x40);
+        assert_eq!(addr, 0x1000);
+        assert_ne!(s.heap_brk(), 0x1000);
+    }
+}
