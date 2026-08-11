@@ -42,6 +42,23 @@ use crate::symbolic::{RustBV, SymContext};
 /// [`super::format_common::MAX_FORMAT_LEN`].
 pub(crate) const MAX_STRING_SCAN: usize = 4096;
 
+/// Shared upper bound on a *pathname* scan — deliberately much tighter than
+/// [`MAX_STRING_SCAN`]. Used by `fileops.rs`'s `read_pathname` (`open`, a
+/// symbolic-tolerant scan) and its `fopen` path read (a concrete-only scan),
+/// and by `syscalls/file_path.rs::read_path` (`open`/`openat`/`readlink`/
+/// `faccessat`/`newfstatat`). Every one of them errors out to Python on
+/// cap exhaustion rather than truncating: a runaway unterminated path almost
+/// certainly signals a bad pointer, and returning a 256-byte prefix would
+/// silently operate on a *different* file (angr-sqfj8.80).
+///
+/// One home for the same reason [`MAX_STRING_SCAN`] has one: these three used
+/// to be three independent `256` literals whose agreement was a coincidence a
+/// reader had to verify by hand (angr-03vl4.46, same class as angr-myzjx.7).
+/// `syscalls/directory.rs::PATH_MAX` is deliberately *not* folded in — it is a
+/// larger (4096) cap with truncating rather than erroring semantics; see the
+/// asymmetry note on `file_path.rs::read_path`.
+pub(crate) const MAX_PATH_SCAN: u64 = 256;
+
 /// Concrete byte-by-byte scan up to and including the null terminator.
 ///
 /// Returns the bytes read **up to but not including** the null terminator.

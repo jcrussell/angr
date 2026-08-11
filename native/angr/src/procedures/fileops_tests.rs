@@ -578,7 +578,7 @@ fn test_fopen_unknown_mode_falls_back() {
 fn test_fopen_unterminated_path_errors() {
     let mut state = setup_amd64_state();
     // No NUL within mapped region — read_cstring_strict will hit a memory error
-    // before reaching MAX_FOPEN_PATH_LEN (page boundary triggers Unmapped).
+    // before reaching MAX_PATH (page boundary triggers Unmapped).
     state.map_memory_data(0x1000, &vec![b'A'; 0x1000], Permission::RWX);
     state.map_memory_data(0x2000, b"r\0", Permission::RWX);
 

@@ -171,6 +171,7 @@
 //! happens FIRST (before any memory read), matching the `stat` policy.
 
 use super::{NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg};
+use crate::procedures::strings::MAX_PATH_SCAN as MAX_PATH_LEN;
 use crate::state::{FdFlags, RustSimState};
 use crate::symbolic::RustBV;
 
@@ -179,10 +180,6 @@ use crate::symbolic::RustBV;
 // faccessat(dfd, filename, mode) → long — see NativeFaccessatSyscall impl below.
 // lstat(pathname, statbuf) → long — see NativeLstatSyscall impl below.
 // newfstatat(dfd, filename, statbuf, flag) → long — see NativeNewfstatatSyscall impl below.
-
-/// Upper bound on the NUL-terminated path we will read from memory.
-/// Matches `procedures/fileops.rs::MAX_FOPEN_PATH_LEN` (256 bytes).
-const MAX_PATH_LEN: u64 = 256;
 
 /// `AT_FDCWD` in unsigned 32-bit form (-100 reinterpreted). Linux's
 /// `openat(2)` treats this as "use the current working directory" for

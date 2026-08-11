@@ -9,15 +9,12 @@
 //! Only handles concrete arguments; symbolic arguments fall back to Python.
 
 use super::strings::{
-    ScanOutcome, null_exists_constraint, scan_concrete_bounded, scan_concrete_until_null,
-    scan_for_null_symbolic,
+    MAX_PATH_SCAN as MAX_PATH, ScanOutcome, null_exists_constraint, scan_concrete_bounded,
+    scan_concrete_until_null, scan_for_null_symbolic,
 };
 use super::{ProcedureError, arch_word};
 use crate::state::{FdFlags, RustSimState};
 use crate::symbolic::RustBV;
-
-/// Longest pathname `open` will read out of memory.
-const MAX_PATH: u64 = 256;
 
 /// Read the NUL-terminated pathname at `addr`, concretizing symbolic bytes the
 /// way angr's Python `open` does (`procedures/posix/open.py`): it inline-calls
@@ -95,7 +92,6 @@ pub(super) fn io_file_for_arch(name: &str) -> Option<(u64, u64)> {
     }
 }
 
-const MAX_FOPEN_PATH_LEN: u64 = 256;
 const MAX_FOPEN_MODE_LEN: u64 = 8;
 
 /// Read a NUL-terminated string from memory up to `max_len` bytes. Concrete
@@ -395,7 +391,7 @@ crate::declare_proc! {
     struct = NativeFopen,
     args = [path_addr: concrete, mode_addr: concrete],
     call |state| {
-        let path = read_cstring_strict(state, path_addr, MAX_FOPEN_PATH_LEN, "pathname")?;
+        let path = read_cstring_strict(state, path_addr, MAX_PATH, "pathname")?;
         let mode = read_cstring_strict(state, mode_addr, MAX_FOPEN_MODE_LEN, "mode")?;
         let flags = parse_fopen_mode(&mode).ok_or_else(|| {
             ProcedureError::Other(format!(
