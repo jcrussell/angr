@@ -7,7 +7,7 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 use crate::arch::arch_from_name;
-use crate::callbacks::{DeferredFork, ExecutionConfig, PythonCallbacks};
+use crate::callbacks::{ExecutionConfig, PythonCallbacks};
 use crate::errors::RustExecError;
 use crate::interpreter::CbExecutionError;
 use crate::solver::RustSolverContext;
@@ -459,8 +459,7 @@ pub(crate) fn vex_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<RustSolverContext>()?;
     // Handle-based API for claripy bypass
     m.add_class::<crate::symbolic::RustBVHandle>()?;
-    // Deferred fork types
-    m.add_class::<DeferredFork>()?;
+    // Deferred fork types (`DeferredFork` itself is Rust-internal — angr-03vl4.6)
     m.add_class::<ExecutionConfig>()?;
     // Rust-first state
     m.add_class::<crate::state::PyRustSimState>()?;

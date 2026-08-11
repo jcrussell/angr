@@ -508,7 +508,6 @@ impl<'a> VEXInterpreter<'a> {
                         path_taken: true, // we took the exit (guard=true) path
                         unexplored_target: false_target, // fall-through deferred
                         condition_id: cond_id,
-                        push_level: self.push_level,
                         condition_ast,
                     }
                 } else {
@@ -517,7 +516,6 @@ impl<'a> VEXInterpreter<'a> {
                         path_taken: false, // we took the fallthrough (guard=false) path
                         unexplored_target: dst, // the exit target is deferred
                         condition_id: cond_id,
-                        push_level: self.push_level,
                         condition_ast,
                     }
                 };

@@ -1,35 +1,17 @@
 //! In-module unit tests for `callbacks/config.rs` (angr-c4xcs.7).
 //!
-//! These cover the pure value types — `DeferredFork` and `ExecutionConfig` —
-//! with no Z3 context and no GIL: the pyclass structs are
-//! plain Rust structs whose constructors/`__repr__` take no `Python<'_>`, so
-//! `condition_ast=None` keeps every case Python-free (mirrors the existing
+//! These cover `ExecutionConfig` with no Z3 context and no GIL: the pyclass
+//! struct is a plain Rust struct whose constructor/`__repr__` take no
+//! `Python<'_>` (mirrors the existing
 //! `callbacks_tests::test_loop_execution_event`, which also skips
 //! `Python::initialize`).
+//!
+//! `DeferredFork` had two tests here covering its `#[new]` constructor and
+//! `__repr__`; both went away with that Python surface in angr-03vl4.6. Its
+//! behaviour is covered by the consumers instead —
+//! `exploration::fork_materialize_tests` and `callback_types_tests`.
 
 use super::*;
-
-#[test]
-fn test_deferred_fork_new_fields() {
-    let fork = DeferredFork::new(0x400123, true, 0x400456, 7, 3, None);
-    assert_eq!(fork.branch_addr, 0x400123);
-    assert!(fork.path_taken);
-    assert_eq!(fork.unexplored_target, 0x400456);
-    assert_eq!(fork.condition_id, 7);
-    assert_eq!(fork.push_level, 3);
-    assert!(fork.condition_ast.is_none());
-}
-
-#[test]
-fn test_deferred_fork_repr_hex_and_pushlevel() {
-    let fork = DeferredFork::new(0x1000, false, 0x2000, 1, 5, None);
-    let repr = fork.__repr__();
-    // Addresses are hex-formatted; path_taken and push_level are echoed.
-    assert!(repr.contains("branch_addr=0x1000"), "{repr}");
-    assert!(repr.contains("unexplored=0x2000"), "{repr}");
-    assert!(repr.contains("path_taken=false"), "{repr}");
-    assert!(repr.contains("push_level=5"), "{repr}");
-}
 
 #[test]
 fn test_execution_config_py_new_overrides_only_two_args() {

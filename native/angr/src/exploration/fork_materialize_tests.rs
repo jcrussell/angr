@@ -25,7 +25,6 @@ fn deferred_fork(condition_id: u64, path_taken: bool) -> crate::callbacks::Defer
         path_taken,
         unexplored_target: 0x40_2000,
         condition_id,
-        push_level: 0,
         condition_ast: None,
     }
 }
@@ -314,7 +313,6 @@ fn reconstruct_deferred_fork_condition_early_returns_none() {
         path_taken: true,
         unexplored_target: 0x40_2000,
         condition_id: 7,
-        push_level: 0,
         condition_ast: None,
     };
 

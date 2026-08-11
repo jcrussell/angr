@@ -57,7 +57,6 @@ fn pending_with_one_fork(
             path_taken: false,
             unexplored_target: UNEXPLORED,
             condition_id: COND_ID,
-            push_level: 0,
             condition_ast: None,
         }],
         stored_conditions: stored,

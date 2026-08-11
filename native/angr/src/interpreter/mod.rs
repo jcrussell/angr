@@ -207,9 +207,6 @@ pub(crate) struct VEXInterpreter<'a> {
     config: ExecutionConfig,
     /// Next condition ID for tracking branch conditions.
     next_condition_id: u64,
-    /// Current solver push level for constraint tracking.
-    /// Incremented when we push before adding a branch constraint.
-    push_level: u32,
     /// Concrete memory regions cached locally for fast access.
     /// These are read-only regions (e.g., binary .text/.rodata sections).
     /// Arc-shared on fork (O(1) clone). Mutators use Arc::make_mut for CoW.
@@ -383,7 +380,6 @@ impl<'a> VEXInterpreter<'a> {
             block_forks_asserted: 0,
             config,
             next_condition_id: 0,
-            push_level: 0,
             concrete_memory: Arc::new(Vec::new()),
             concretizer: AddressConcretizer::new(),
             dirty_registers: 0,
@@ -840,10 +836,9 @@ impl<'a> VEXInterpreter<'a> {
             block_forks_asserted: 0,
             config: self.config.clone(),
             next_condition_id: self.next_condition_id,
-            push_level: self.push_level, // Inherit push level for forked interpreter
             concrete_memory: Arc::clone(&self.concrete_memory), // Share concrete memory (read-only)
-            concretizer: self.concretizer.clone(), // Share concretizer settings
-            dirty_registers: 0,          // Fresh dirty tracking for fork
+            concretizer: self.concretizer.clone(),              // Share concretizer settings
+            dirty_registers: 0,                                 // Fresh dirty tracking for fork
             pending_stores: PendingStoreBuffer::with_capacity(256), // Fresh store buffer for fork
             all_flushed_stores: FxHashMap::default(),
             all_flushed_symbolic_stores: FxHashMap::default(),

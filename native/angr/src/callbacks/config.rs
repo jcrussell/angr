@@ -8,72 +8,37 @@ use pyo3::prelude::*;
 ///
 /// When the Rust engine encounters a symbolic branch where both paths are
 /// feasible, it picks one path to continue executing and records the other
-/// as a deferred fork. Python can later create states for these unexplored
-/// branches and schedule them for execution.
-#[pyclass]
+/// as a deferred fork. The engine materializes the unexplored side itself
+/// (see `exploration::fork_materialize`); the
+/// struct never crosses to Python.
+///
+/// Rust-internal only (angr-03vl4.6). It used to carry a `#[pyclass]` with a
+/// `#[new]` constructor, per-field `#[pyo3(get)]` getters and a `__repr__`,
+/// registered on the module — but no pymethod anywhere returned one and
+/// nothing on the Python side ever constructed one, so the whole surface was
+/// unreachable. Every producer builds it with a struct literal
+/// (`interpreter/statements.rs`); use that rather than reintroducing a
+/// constructor, and `Debug` rather than reintroducing `__repr__`.
+///
+/// Dropping the getters exposed a `push_level: u32` field that only the
+/// unreachable getter ever read — a third copy of the always-zero counter
+/// whose siblings died in angr-ph300.44 / angr-c7xno.75 (see
+/// `symbolic::transaction_ops`'s module doc), so it went too.
 #[derive(Debug, Clone)]
-#[allow(
-    unreachable_pub,
-    reason = "pyo3 `#[pymethods]`/`#[pyclass]` surface: these items are reached from Python, not from Rust. See the `unreachable_pub` note in lib.rs (angr-9ke6b.50)."
-)]
-pub struct DeferredFork {
+pub(crate) struct DeferredFork {
     /// Address where the branch occurred.
-    #[pyo3(get)]
-    pub branch_addr: u64,
+    pub(crate) branch_addr: u64,
     /// The path we took (true = took true branch, false = took false branch).
-    #[pyo3(get)]
-    pub path_taken: bool,
+    pub(crate) path_taken: bool,
     /// Address of the unexplored path.
-    #[pyo3(get)]
-    pub unexplored_target: u64,
-    /// Condition ID for constraint tracking.
-    /// Python can use this to reconstruct the branch condition.
-    #[pyo3(get)]
-    pub condition_id: u64,
-    /// Solver push level before this branch constraint was added.
-    /// Used for proper constraint handling during fork processing.
-    #[pyo3(get)]
-    pub push_level: u32,
+    pub(crate) unexplored_target: u64,
+    /// Condition ID for constraint tracking, keying into the interpreter's
+    /// stored-conditions map (see `apply_deferred_fork_constraints`).
+    pub(crate) condition_id: u64,
     /// The branch condition as a claripy AST (if available).
     /// This is the original condition - path_taken indicates which path
     /// was explored. For the fork, we need the opposite constraint.
-    #[pyo3(get)]
-    pub condition_ast: Option<Py<PyAny>>,
-}
-
-#[allow(
-    unreachable_pub,
-    reason = "pyo3 `#[pymethods]`/`#[pyclass]` surface: these items are reached from Python, not from Rust. See the `unreachable_pub` note in lib.rs (angr-9ke6b.50)."
-)]
-#[pymethods]
-impl DeferredFork {
-    /// Create a new deferred fork.
-    #[new]
-    #[pyo3(signature = (branch_addr, path_taken, unexplored_target, condition_id, push_level=0, condition_ast=None))]
-    pub fn new(
-        branch_addr: u64,
-        path_taken: bool,
-        unexplored_target: u64,
-        condition_id: u64,
-        push_level: u32,
-        condition_ast: Option<Py<PyAny>>,
-    ) -> Self {
-        DeferredFork {
-            branch_addr,
-            path_taken,
-            unexplored_target,
-            condition_id,
-            push_level,
-            condition_ast,
-        }
-    }
-
-    fn __repr__(&self) -> String {
-        format!(
-            "DeferredFork(branch_addr=0x{:x}, path_taken={}, unexplored=0x{:x}, push_level={})",
-            self.branch_addr, self.path_taken, self.unexplored_target, self.push_level
-        )
-    }
+    pub(crate) condition_ast: Option<Py<PyAny>>,
 }
 
 /// Configuration for the execution loop with deferred forks.

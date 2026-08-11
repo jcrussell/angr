@@ -11,9 +11,13 @@
 //! lifecycle (plus `current_push_level` / `in_transaction`) was removed in
 //! angr-ph300.44 — it had zero callers and a latent corruption bug (commit
 //! popped only one of the three aux stacks and never released the Z3 frame).
-//! Its last vestige, the `push_level` counter, was deleted in angr-c7xno.75:
-//! nothing had incremented it since that removal, yet `fork()` still read it
-//! as its "is a scope open?" gate and so never took the preserve branch.
+//! Its last vestige here, the `push_level` counter, was deleted in
+//! angr-c7xno.75: nothing had incremented it since that removal, yet `fork()`
+//! still read it as its "is a scope open?" gate and so never took the preserve
+//! branch. A second, independent copy survived one round longer in
+//! `VEXInterpreter` (mirrored into every `DeferredFork` and read back only
+//! through a `#[pyo3(get)]` getter Python never called); it was likewise
+//! always zero and went in angr-03vl4.6.
 //!
 //! Unlike the fully Z3-gated `constraint_ops`, this slice carries both the
 //! `#[cfg(feature = "vex-engine-z3")]` implementations and their non-Z3 mock
