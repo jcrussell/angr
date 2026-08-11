@@ -1032,6 +1032,14 @@ impl SymbolicMemory {
     /// * `start_addr` - Start address of the region (will be page-aligned down)
     /// * `size` - Size of the region in bytes
     pub fn add_lazy_region(&mut self, start_addr: impl Into<Address>, size: u64) {
+        // Mirror `map`/`unmap`: a zero-length region covers no pages regardless
+        // of alignment. Without this guard a non-page-aligned `start_addr`
+        // rounds `end_page` up past `start_page` and registers a spurious
+        // one-page region, which turns that page's hard `Unmapped` load error
+        // into an `UnmappedPageInRegion` fetch request Python cannot serve.
+        if size == 0 {
+            return;
+        }
         let start_addr = start_addr.into();
         let start_page = start_addr.page_num();
         // angr-03vl4.34: mirror `map`'s overflow handling — see the note there.

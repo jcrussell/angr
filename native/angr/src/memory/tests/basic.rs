@@ -301,6 +301,60 @@ fn test_map_of_last_page_and_of_wrapping_region() {
 }
 
 #[test]
+fn test_add_lazy_region_of_last_page_and_of_wrapping_region() {
+    // angr-03vl4.36: the third `end_page_exclusive` caller, alongside the
+    // `map`/`unmap` pair covered by the test above. A wrapping region used to
+    // push `(start_page, end_page)` with `start_page > end_page`, which
+    // `is_in_lazy_region`'s `page >= start && page < end` can never match — the
+    // region was registered but permanently inert, and the pages inside it kept
+    // reporting a hard `Unmapped` instead of the intended fetch request.
+    let ctx = SymContext::new_mock();
+
+    // Boundary case that must keep working: a region ending exactly at
+    // u64::MAX is legal, not an overflow.
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    let last_page = u64::MAX - 0xFFF;
+    mem.add_lazy_region(last_page, 0x1000);
+    assert_eq!(mem.lazy_region_count(), 1);
+    assert!(
+        mem.is_in_lazy_region(u64::MAX >> 12),
+        "a lazy region ending exactly at u64::MAX must cover the last page"
+    );
+    assert!(
+        matches!(
+            mem.load_concrete_lazy(last_page, 1, &ctx),
+            Err(MemoryError::UnmappedPageInRegion { .. })
+        ),
+        "a miss in the last-page lazy region must ask for a fetch"
+    );
+
+    // A genuinely wrapping region is a caller bug: rejected outright, never
+    // pushed as an inert entry that silently matches nothing.
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    mem.add_lazy_region(0x1000u64, u64::MAX);
+    assert_eq!(
+        mem.lazy_region_count(),
+        0,
+        "a wrapping lazy region must not be registered"
+    );
+    assert!(!mem.is_in_lazy_region(1));
+
+    // Zero size is a no-op even when `start_addr` is not page-aligned — the
+    // ceil-div would otherwise round `end_page` up over a page nobody asked for.
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    mem.add_lazy_region(0x1800u64, 0);
+    assert_eq!(mem.lazy_region_count(), 0);
+    assert!(!mem.is_in_lazy_region(1));
+    assert!(
+        matches!(
+            mem.load_concrete_lazy(0x1800u64, 1, &ctx),
+            Err(MemoryError::Unmapped { .. })
+        ),
+        "a zero-size lazy region must not make an unmapped page fetchable"
+    );
+}
+
+#[test]
 fn test_unmap_zero_size_is_noop_regardless_of_alignment() {
     // Sibling of the map() guard: a zero-length unmap must not drop a page.
     let mut mem = SymbolicMemory::new(Endness::Little);
