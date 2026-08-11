@@ -20,8 +20,9 @@
 //!   *or* a stashed state — the same access shape as the methods homed in
 //!   `state_api.rs`. They live here only because they arrived alongside the
 //!   pending import/export plumbing (angr-03vl4.24).
-//! * **Manager-global**: `_active_states_map_memory` walks the stashes, and
-//!   the `_set_skip_hook_addr` / `_clear_skip_hook_addr` /
+//! * **Manager-global**: `_active_states_map_memory` walks the active stash
+//!   *and* every pending callback, and the
+//!   `_set_skip_hook_addr` / `_clear_skip_hook_addr` /
 //!   `_clear_skip_hook_for_addr` / `consume_skip_hook` quartet operates on
 //!   the manager's skip-hook stack; neither consults a `state_id`.
 //!
@@ -61,10 +62,32 @@ impl RustExplorationManager {
         })
     }
 
+    /// Map `data` into every state that can still execute — the active stash
+    /// plus everything parked behind an in-flight Python callback.
+    ///
+    /// The pending half matters because a parked state re-enters `STASH_ACTIVE`
+    /// when its callback returns: skipping it leaves that one state faulting
+    /// `Unmapped` on a region every sibling can read (angr-03vl4.23). Same bug
+    /// class as `set_deterministic` (angr-sqfj8.32) and `set_max_history`
+    /// (angr-c7xno.21). Unlike `set_max_history`, `fork_snapshots` *is*
+    /// covered here: a `BranchSnapshot` carries memory, and a deferred fork
+    /// materialized from one lands in the active stash too.
     pub(crate) fn _active_states_map_memory(&mut self, addr: u64, data: &[u8], permissions: u8) {
+        let permissions = Permission::from_bits(permissions);
         if let Some(stash) = self.sm.get_mut(STASH_ACTIVE) {
             for state in stash.iter_mut() {
-                state.map_memory_data(addr, data, Permission::from_bits(permissions));
+                state.map_memory_data(addr, data, permissions);
+            }
+        }
+        for pending in self.pending_callbacks.values_mut() {
+            pending.state.map_memory_data(addr, data, permissions);
+            if let Some(snapshot) = pending.pre_callback_snapshot.as_mut() {
+                snapshot.map_memory_data(addr, data, permissions);
+            }
+            for snapshot in pending.fork_snapshots.values_mut() {
+                if let Some(memory) = snapshot.memory.as_mut() {
+                    memory.map_data(addr, data, permissions);
+                }
             }
         }
     }

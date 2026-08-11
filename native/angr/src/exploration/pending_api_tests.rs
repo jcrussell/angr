@@ -314,3 +314,103 @@ fn get_pending_register_raises_for_unknown_name_but_not_for_symbolic() {
         "error names the offending register: {err}",
     );
 }
+
+/// A state parked behind an in-flight Python callback is in no stash, so the
+/// `STASH_ACTIVE` loop in `_active_states_map_memory` could not reach it — the
+/// mapping silently skipped it and the state faulted `Unmapped` on a region
+/// every sibling could read once its callback returned (angr-03vl4.23).
+///
+/// Pins all four reachable carriers: the stashed state, the parked state, its
+/// `pre_callback_snapshot` (deferred forks are materialized from it) and the
+/// memory a `fork_snapshots` `BranchSnapshot` carries (a deferred fork built
+/// from one lands in the active stash too).
+#[test]
+fn active_states_map_memory_reaches_parked_pending_callback_states() {
+    Python::initialize();
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+
+    let stashed = RustSimState::new("amd64").expect("state");
+    let stashed_id = stashed.state_id();
+    mgr.sm.push(STASH_ACTIVE, stashed);
+
+    let state = RustSimState::new("amd64").expect("state");
+    let sid = state.state_id();
+    let mut fork_snapshots = FxHashMap::default();
+    fork_snapshots.insert(
+        7u64,
+        crate::interpreter::BranchSnapshot {
+            solver: state.solver().borrow().fork(),
+            registers: state.registers().fork(),
+            memory: Some(state.memory().fork()),
+        },
+    );
+    let pre_callback_snapshot = Some(state.fork());
+    mgr.pending_callbacks.insert(
+        StateId::new(sid),
+        PendingCallback {
+            state,
+            pre_callback_snapshot,
+            reason: CallbackReason::Syscall { num: Some(60) },
+            jumpkind: None,
+            solver_ctx: None,
+            deferred_forks: Vec::new(),
+            stored_conditions: FxHashMap::default(),
+            fork_snapshots,
+        },
+    );
+
+    const ADDR: u64 = 0x40_000;
+    let data = [0xde_u8, 0xad, 0xbe, 0xef];
+    mgr._active_states_map_memory(ADDR, &data, 5);
+
+    let read = |mem: &crate::memory::SymbolicMemory, ctx: &crate::symbolic::SymContext| {
+        assert!(mem.is_mapped(ADDR), "region mapped");
+        mem.load_concrete(ADDR, 4, ctx)
+            .expect("load mapped bytes")
+            .as_u64()
+            .expect("concrete bytes")
+    };
+    // amd64 is little-endian, so the mapped byte sequence reads back reversed.
+    let expected = 0xefbe_adde_u64;
+
+    let stashed_state = mgr
+        .sm
+        .stashes()
+        .values()
+        .flatten()
+        .find(|s| s.state_id() == stashed_id)
+        .expect("stashed state");
+    assert_eq!(
+        read(stashed_state.memory(), &stashed_state.solver().borrow()),
+        expected,
+        "stashed state sees the mapping",
+    );
+
+    let pending = mgr
+        .pending_callbacks
+        .get(&StateId::new(sid))
+        .expect("callback still parked");
+    assert_eq!(
+        read(pending.state.memory(), &pending.state.solver().borrow()),
+        expected,
+        "parked state sees the mapping",
+    );
+    let snap = pending
+        .pre_callback_snapshot
+        .as_ref()
+        .expect("pre-callback snapshot");
+    assert_eq!(
+        read(snap.memory(), &snap.solver().borrow()),
+        expected,
+        "pre-callback snapshot sees the mapping",
+    );
+    let branch = &pending.fork_snapshots[&7u64];
+    assert_eq!(
+        read(
+            branch.memory.as_ref().expect("branch snapshot memory"),
+            &branch.solver
+        ),
+        expected,
+        "fork snapshot memory sees the mapping",
+    );
+}
