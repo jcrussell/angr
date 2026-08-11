@@ -33,7 +33,7 @@ impl FileSystem {
     /// before (`content_sym: None`).
     ///
     /// Returns `None` — changing nothing — when the fd space is exhausted;
-    /// see [`alloc_fd`](Self::alloc_fd) for why that is not unreachable.
+    /// see `alloc_fd` for why that is not unreachable.
     pub fn open(&mut self, name: String, flags: FdFlags) -> Option<u32> {
         let fd = self.alloc_fd()?;
         // known_paths keys on normalized paths; normalizing at insertion
@@ -77,8 +77,7 @@ impl FileSystem {
     /// SimFiles). Intentionally bypasses the `file_contents` registry — the
     /// caller supplies explicit concrete content (test-seeding API).
     ///
-    /// Returns `None` when the fd space is exhausted — see
-    /// [`alloc_fd`](Self::alloc_fd).
+    /// Returns `None` when the fd space is exhausted — see `alloc_fd`.
     pub fn open_with_content(
         &mut self,
         name: String,
@@ -149,8 +148,7 @@ impl FileSystem {
     /// bytes forever. The stream model wins for `open_symbolic`; bounded
     /// symbolic files come via `open()` on a registered path.
     ///
-    /// Returns `None` when the fd space is exhausted — see
-    /// [`alloc_fd`](Self::alloc_fd).
+    /// Returns `None` when the fd space is exhausted — see `alloc_fd`.
     pub fn open_symbolic(&mut self, name: String, flags: FdFlags) -> Option<u32> {
         let fd = self.alloc_fd()?;
         // Normalized at insertion (freezes cwd-at-open) — see `open`.
@@ -351,7 +349,7 @@ impl FileSystem {
     /// whence: 0=SEEK_SET, 1=SEEK_CUR, 2=SEEK_END
     ///
     /// The SEEK_CUR/SEEK_END bases are combined with the guest's signed
-    /// `offset` through [`offset_position`], not through `base as i64 +
+    /// `offset` through `offset_position`, not through `base as i64 +
     /// offset` (angr-03vl4.54).
     pub fn seek(&mut self, fd: u32, offset: i64, whence: u32) -> Option<u64> {
         // Compute new position without CoW first; only mutate if the fd exists

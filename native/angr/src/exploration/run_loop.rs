@@ -333,7 +333,8 @@ impl RustExplorationManager {
         self.pending_parallel_bounces = kept;
     }
 
-    /// How many parked bounces a [`flush_parked_bounces_to_active`] would
+    /// How many parked bounces a
+    /// [`flush_parked_bounces_to_active`](Self::flush_parked_bounces_to_active) would
     /// materialize into `STASH_ACTIVE` right now (angr-03vl4.15).
     ///
     /// The read-only census accessors (`active_count`, `stash_counts`) take
@@ -388,13 +389,15 @@ impl RustExplorationManager {
     /// alongside the stashes and `pending_callbacks` — and like the second it
     /// lives in NO stash, so a broadcast that only loops `sm.stashes_mut()`
     /// misses it. Nothing re-applies the change when
-    /// [`flush_parked_bounces_to_active`] later routes the state back to
+    /// [`flush_parked_bounces_to_active`](Self::flush_parked_bounces_to_active)
+    /// later routes the state back to
     /// `STASH_ACTIVE`, so it would resume on the old configuration forever.
     /// `#[angr_macros::steady_guarded]` does not cover this: the guard only
     /// drains the parallel session's *resident* frontier back into stashes.
     ///
     /// Yields EVERY parked entry, including the ones
-    /// [`parked_bounces_flushable_count`] excludes. That asymmetry is
+    /// [`parked_bounces_flushable_count`](Self::parked_bounces_flushable_count)
+    /// excludes. That asymmetry is
     /// deliberate: the census must equal the post-flush stash population, while
     /// a broadcast must reach every state that can still execute. An
     /// unflushable kind stays live in this manager, and a resident duplicate is
@@ -406,7 +409,8 @@ impl RustExplorationManager {
             .map(|(state, _, _)| state)
     }
 
-    /// `&mut` half of [`parked_bounce_states`], for broadcasts that mutate the
+    /// `&mut` half of [`parked_bounce_states`](Self::parked_bounce_states), for
+    /// broadcasts that mutate the
     /// state in place (`set_max_history`, `_active_states_map_memory`) rather
     /// than reaching through it to a shared solver.
     pub(crate) fn parked_bounce_states_mut(&mut self) -> impl Iterator<Item = &mut RustSimState> {

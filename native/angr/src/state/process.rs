@@ -337,7 +337,7 @@ impl RustSimState {
     ///
     /// Callers that take a guest-controlled size (`procedures/malloc.rs`) cap it
     /// at `MAX_ALLOC_SIZE` first; the rounding here is nonetheless saturating so
-    /// no caller can wrap the bump — see [`round_alloc_size`].
+    /// no caller can wrap the bump — see `round_alloc_size`.
     pub fn heap_alloc(&mut self, size: u64) -> u64 {
         let aligned = round_alloc_size(size);
         let addr = self.heap_brk;
