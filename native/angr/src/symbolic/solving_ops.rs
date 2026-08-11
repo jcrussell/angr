@@ -210,12 +210,23 @@ impl SymContext {
     // Satisfiability & Evaluation (Z3-backed)
     // =========================================================================
 
-    /// Check if the current constraints are satisfiable.
+    /// Check if the current constraints are satisfiable, reporting an
+    /// undecided (Z3 Unknown / timeout) query as `None` rather than collapsing
+    /// it into `false`.
+    ///
+    /// This is the honest form of `is_sat`: a caller that would *prune* on a
+    /// `false` must use this one, because "Z3 gave up" and "proven
+    /// contradictory" have opposite consequences for soundness — dropping a
+    /// state on the former loses a feasible path (angr-03vl4.62). The same
+    /// distinction `check_branch_feasibility` already makes for branch
+    /// pruning (`invariant-z3-unknown-not-unsat`).
+    ///
+    /// `None` is never cached: a later call retries the query.
     #[cfg(feature = "vex-engine-z3")]
-    pub fn is_sat(&self) -> bool {
+    pub fn is_sat_checked(&self) -> Option<bool> {
         // Check cache first
         if let Some(cached) = self.sat_cache.get() {
-            return cached;
+            return Some(cached);
         }
         let _class =
             query_class::scope(|| query_class::classify_sat(&self.get_assumed_constraints()));
@@ -247,12 +258,27 @@ impl SymContext {
             decided
         });
         // Only a decided result updates the cache; Unknown leaves it unset so a
-        // later call retries. Conservatively report "not satisfiable" to the
-        // caller on Unknown without pinning that verdict.
+        // later call retries.
         if let Some(v) = result {
             self.sat_cache.set(Some(v));
         }
-        result.unwrap_or(false)
+        result
+    }
+
+    /// Check if the current constraints are satisfiable.
+    ///
+    /// Lenient form: an undecided query reports `false`. Correct only for
+    /// callers whose `false` branch is "give up on producing an answer"
+    /// (`min`/`max`/`range` return `None`); a caller that *prunes* on `false`
+    /// must use `is_sat_checked` instead (angr-03vl4.62).
+    #[cfg(feature = "vex-engine-z3")]
+    pub fn is_sat(&self) -> bool {
+        silent_default!(
+            cat_c,
+            self.is_sat_checked(),
+            false,
+            "is_sat: Z3 returned Unknown (timeout); reporting not-satisfiable without caching it"
+        )
     }
 
     /// Check if a bitvector condition can be true.
@@ -1366,6 +1392,12 @@ impl SymContext {
     pub fn is_sat(&self) -> bool {
         // Without Z3, we assume everything is satisfiable
         true
+    }
+
+    /// Without Z3 there is no query to time out, so the answer is always decided.
+    #[cfg(not(feature = "vex-engine-z3"))]
+    pub fn is_sat_checked(&self) -> Option<bool> {
+        Some(true)
     }
 
     #[cfg(not(feature = "vex-engine-z3"))]

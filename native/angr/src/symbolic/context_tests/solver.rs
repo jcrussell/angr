@@ -1087,6 +1087,52 @@ fn test_pin_rlimit_reaches_the_solver() {
     );
 }
 
+/// `is_sat_checked` must report a timed-out query as undecided (`None`) rather
+/// than as the proven-unsat `false` its lenient sibling `is_sat` returns, and
+/// must not pin that verdict in `sat_cache` — a later query with budget to
+/// spare has to be able to reach the real answer (angr-03vl4.62).
+///
+/// Rig: the *easy* `10 < x < 20` set under `rlimit=1` and no wall-clock
+/// timeout, same as `test_pin_rlimit_reaches_the_solver` — the first check
+/// aborts Unknown, and lifting the rlimit afterwards decides it instantly, so
+/// the test cannot hang either way.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_is_sat_checked_reports_timeout_as_undecided() {
+    let ctx = SymContext::with_timeout(u32::MAX);
+    let x = RustBV::symbolic(&ctx, "is_sat_undecided_x", 32);
+    let ten = RustBV::concrete(10, 32);
+    let twenty = RustBV::concrete(20, 32);
+    ctx.assume_true(&x.ugt(&ten, &ctx));
+    ctx.assume_true(&x.ult(&twenty, &ctx));
+    pin_rlimit(&ctx, 1);
+
+    assert_eq!(
+        ctx.is_sat_checked(),
+        None,
+        "a Z3 Unknown must surface as undecided, not as a proven verdict"
+    );
+    assert_eq!(
+        ctx.sat_cache.get(),
+        None,
+        "an undecided query must leave sat_cache unset so a later call retries"
+    );
+    assert!(
+        !ctx.is_sat(),
+        "the lenient sibling still collapses Unknown to false for its Option-returning callers"
+    );
+    assert_eq!(
+        ctx.sat_cache.get(),
+        None,
+        "is_sat's collapse must not pin the undecided verdict either"
+    );
+
+    // With the budget restored the same constraint set is decided satisfiable —
+    // proof that the earlier None poisoned nothing.
+    pin_rlimit(&ctx, 0);
+    assert_eq!(ctx.is_sat_checked(), Some(true));
+}
+
 /// Assert `x * y == N`, `x > 1`, `y > 1` on a 1ms-budget context, returning the
 /// 64-bit factor `x`. The multiply is widened to 128 bits so the product does
 /// not overflow.

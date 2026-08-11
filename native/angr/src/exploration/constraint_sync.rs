@@ -171,17 +171,28 @@ impl RustExplorationManager {
             log::debug!("Synced {success_count} constraints from Python to Rust");
         }
 
-        // P12: Check satisfiability and return status so callers can prune UNSAT states
+        // P12: Check satisfiability and return status so callers can prune UNSAT states.
+        // Only a *decided* Unsat prunes: an undecided query (Z3 Unknown /
+        // timeout) says nothing about feasibility, and dropping the state on it
+        // would lose a path that is very likely feasible (angr-03vl4.62,
+        // `invariant-z3-unknown-not-unsat`). The state is kept and the caller
+        // re-checks it on the next solver query.
         #[cfg(feature = "vex-engine-z3")]
-        {
-            let is_sat = sym_ctx.is_sat();
-            if !is_sat {
+        match sym_ctx.is_sat_checked() {
+            Some(false) => {
                 log::debug!(
                     "P12: Constraints are UNSAT after syncing {success_count} from Python (failed={failed_count}). \
                      Returning false to trigger pruning."
                 );
                 return Ok(false);
             }
+            None => {
+                log::warn!(
+                    "P12: satisfiability undecided (Z3 timeout) after syncing {success_count} constraints \
+                     from Python (failed={failed_count}); keeping the state rather than pruning it."
+                );
+            }
+            Some(true) => {}
         }
 
         // P14: If many constraints failed to convert, do explicit SAT check
@@ -194,8 +205,8 @@ impl RustExplorationManager {
         // contradictory constraints prunes — not which gate fires.
         #[cfg(feature = "vex-engine-z3")]
         if failed_count > 0 && success_count > 0 {
-            let is_sat = sym_ctx.is_sat();
-            if !is_sat {
+            // Same decided-Unsat-only rule as P12 above.
+            if sym_ctx.is_sat_checked() == Some(false) {
                 log::debug!(
                     "P14: State became UNSAT with partial constraint sync ({}/{} failed). Pruning.",
                     failed_count,

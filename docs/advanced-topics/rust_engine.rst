@@ -540,6 +540,16 @@ solver context:
 This is intended for low-level solver experiments and tests; for
 exploration use ``RustExplorationManager`` instead.
 
+``satisfiable()`` is claripy-compatible and therefore lenient: a query
+Z3 could not decide within the solver timeout reports ``False``, the
+same answer a proven contradiction gets (a ``[rust:WARN]`` line is
+logged when this happens). Code that would *drop* a state on ``False``
+should call ``satisfiable_checked()`` instead, which returns ``True`` /
+``False`` for a decided query and ``None`` when the query timed out.
+The same distinction governs the Rust side: only a decided unsat prunes
+(see ``SymContext::is_sat_checked`` and
+``check_branch_feasibility``).
+
 For the build-time wiring that makes a shared ``libz3.so`` possible,
 the ``SymContext`` lifecycle across forks, and the push/pop discipline
 that ``RustSolverContext`` / ``SharedLineageSolver`` both rely on,

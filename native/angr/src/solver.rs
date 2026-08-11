@@ -428,8 +428,20 @@ impl RustSolverContext {
     }
 
     /// Check if the current constraints are satisfiable.
+    ///
+    /// Lenient, claripy-compatible form: an undecided query (Z3 Unknown /
+    /// timeout) reports `False`, with a `log::warn!` from `SymContext::is_sat`
+    /// so the collapse is at least observable. Callers that must distinguish
+    /// "proven contradictory" from "solver gave up" — anything that would drop
+    /// a state on `False` — should use `satisfiable_checked` (angr-03vl4.62).
     pub fn satisfiable(&self) -> bool {
         self.i().ctx().is_sat()
+    }
+
+    /// Satisfiability with the undecided case preserved: `True` / `False` for
+    /// a decided query, `None` when Z3 returned Unknown (timeout).
+    pub fn satisfiable_checked(&self) -> Option<bool> {
+        self.i().ctx().is_sat_checked()
     }
 
     /// Set the Z3 solver timeout in milliseconds.
