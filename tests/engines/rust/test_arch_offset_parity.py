@@ -26,15 +26,20 @@ This generalizes the two hand-written ground-truth checks in
 ``test_arm32_offsets_match_archinfo``), which stay as named anchors for the
 angr-mpln0 and angr-ihfe5 regressions.
 
-Registers that Rust does not know are skipped (``set_register`` raises
-``ValueError``); the gate covers the intersection, which is 90-170 names per
-arch. Genuine disagreements live in :data:`KNOWN_DRIFT`, each pinned to a bead.
-That table is asserted to *still* mismatch, so fixing a bead reddens this test
-and forces the entry's removal — the table cannot silently rot into a
-permanent allowlist.
+Registers that Rust does not know cannot be probed (``set_register`` raises
+``ValueError``), so the offset check covers the intersection — 90-170 names per
+arch. Those names are not silently skipped: each must appear in
+:data:`KNOWN_MISSING` with a stated reason, so a *missing* register name is a
+hard failure rather than an invisible one (angr-keda8). Genuine offset/size
+disagreements live in :data:`KNOWN_DRIFT`, each pinned to a bead. Both tables
+are asserted to *still* describe reality, so fixing a bead reddens this test and
+forces the entry's removal — neither can silently rot into a permanent
+allowlist.
 """
 
 from __future__ import annotations
+
+import functools
 
 import archinfo
 import pytest
@@ -62,11 +67,129 @@ KNOWN_DRIFT: dict[tuple[str, str], tuple[int, int, str, str]] = {}
 # archinfo register slot. Same self-cleaning contract as KNOWN_DRIFT.
 KNOWN_STATE_SIZE_DRIFT: dict[str, str] = {}
 
+
+def _numbered(prefix: str, stop: int, suffix: str = "", start: int = 0) -> frozenset[str]:
+    """``{prefix}{i}{suffix}`` for ``i`` in ``range(start, stop)`` — register-file spellings."""
+    return frozenset(f"{prefix}{i}{suffix}" for i in range(start, stop))
+
+
+# rust_arch -> ((names, reason), ...): archinfo register names the Rust tables
+# deliberately (or, when a bead is cited, accidentally) do not implement.
+#
+# The parity test may only skip a name listed here. Without this table an
+# archinfo name Rust never defined just disappeared into a ``pytest.skip``,
+# which is how three missing aliases reached master unnoticed — angr-9ke6b.217
+# ('pc' on x86/amd64), angr-03vl4.1 ('bp' on ARM/ARM64/MIPS) and angr-03vl4.2
+# ('lr' on MIPS). See angr-keda8.
+#
+# Same self-cleaning contract as KNOWN_DRIFT:
+# :func:`test_known_missing_groups_are_still_entirely_missing` asserts every
+# name in a group is *still* absent, so implementing one of them reddens this
+# module and forces the group to be edited rather than left to rot.
+KNOWN_MISSING: dict[str, tuple[tuple[frozenset[str], str], ...]] = {
+    "amd64": (
+        (frozenset({"ip"}), "angr-690nc: alias for rip — a real gap, not a design choice"),
+        (
+            frozenset({"_bp", "bph", "dih", "sih"}),
+            "high-byte (bits 8-15) slices of rbp/rdi/rsi plus archinfo's 16-bit `_bp` "
+            "spelling; the Rust table stops at the 8-bit low, 16-, 32- and 64-bit forms",
+        ),
+        (
+            frozenset({"cr0", "cr2", "cr3", "cr4", "cr8"}),
+            "privileged control registers; the interpreter models user-mode state only",
+        ),
+        (
+            frozenset({"cs_seg", "ds_seg", "es_seg", "fs_seg", "gs_seg", "ss_seg"}),
+            "segment selectors; Rust models flat addressing and reaches TLS through "
+            "fs_const/gs_const, which it does implement",
+        ),
+        (
+            frozenset({"fpu_regs", "fpu_tags"}),
+            "aggregate x87 rows (the whole 64-byte register file / 8-byte tag block); "
+            "archinfo exposes no per-st* names and the Rust table has no aggregate entries",
+        ),
+        (_numbered("mm", 8), "MMX aliases over the x87 register file (mm0 is fpu_regs+0)"),
+        (_numbered("r", 16, "w", start=8), "16-bit sub-registers of r8-r15"),
+        (
+            frozenset(f"xmm{i}{half}" for i in range(16) for half in ("lq", "hq")),
+            "64-bit halves of the xmm slots",
+        ),
+        (
+            _numbered("ymm", 16) | _numbered("ymm", 16, "hx"),
+            "AVX 256-bit views and their upper 128-bit halves; Rust's SIMD support stops at 128-bit xmm",
+        ),
+    ),
+    "x86": (
+        (frozenset({"ip"}), "angr-690nc: alias for eip — a real gap, not a design choice"),
+        (
+            frozenset({"dih", "dil", "sih", "sil"}),
+            "8-bit slices of edi/esi; the Rust x86 table stops at the 16- and 32-bit forms",
+        ),
+        (
+            frozenset({"fpu_regs", "fpu_tags"}),
+            "aggregate x87 rows (register file / tag block); archinfo exposes no "
+            "per-st* names and the Rust table has no aggregate entries",
+        ),
+        (_numbered("mm", 8), "MMX aliases over the x87 register file (mm0 is fpu_regs+0)"),
+    ),
+    "arm": (
+        (
+            frozenset({"ip"}),
+            "angr-690nc: archinfo puts ARM's `ip` at the pc offset (68), NOT at r12 "
+            "despite the AAPCS name — a real gap, not a design choice",
+        ),
+        (
+            frozenset({"a1", "a2", "a3", "a4", "sb", "sl"}) | _numbered("v", 9, start=1),
+            "AAPCS role aliases of r0-r3 (a1-a4) and r4-r11 (v1-v8), with sb/sl as the alternate names for r9/r10",
+        ),
+        (_numbered("s", 32), "VFP single-precision halves of d0-d15"),
+    ),
+    "arm64": (
+        (frozenset({"ip"}), "angr-690nc: alias for pc — a real gap, not a design choice"),
+        (frozenset({"ip0", "ip1"}), "AAPCS64 intra-procedure-call scratch aliases of x16/x17"),
+        (_numbered("r", 31), "legacy r-spelling of x0-x30"),
+        (frozenset({"wsp"}), "32-bit view of sp"),
+        (
+            _numbered("b", 32) | _numbered("h", 32) | _numbered("s", 32),
+            "byte/half/single lane views of v0-v31; Rust exposes the d/q/v spellings",
+        ),
+    ),
+    "mips32": (
+        (frozenset({"ip"}), "angr-690nc: alias for pc — a real gap, not a design choice"),
+        (
+            frozenset({"ulr", "cond", "cp0_status"}),
+            "VEX guest-state tail past the FP file (TLS shadow, condition word, CP0 "
+            "status) that the Rust MIPS table does not model",
+        ),
+        (frozenset({"dspcontrol"}) | _numbered("ac", 4), "MIPS DSP-ASE accumulators and control word"),
+        (_numbered("f", 32, "_lo"), "low 32-bit halves of the 64-bit FP registers; Rust exposes f0-f31 whole"),
+    ),
+    "mips64": (
+        (frozenset({"ip"}), "angr-690nc: alias for pc — a real gap, not a design choice"),
+        (
+            frozenset({"ulr", "cond", "cp0_status"}),
+            "VEX guest-state tail past the FP file (TLS shadow, condition word, CP0 "
+            "status) that the Rust MIPS table does not model",
+        ),
+        (_numbered("f", 32, "_lo"), "low 32-bit halves of the 64-bit FP registers; Rust exposes f0-f31 whole"),
+    ),
+}
+
+
+def _known_missing_reason(rust_arch: str, name: str) -> str | None:
+    """Why ``rust_arch`` is expected to lack ``name``, or ``None`` if it is not expected to."""
+    for names, reason in KNOWN_MISSING.get(rust_arch, ()):
+        if name in names:
+            return reason
+    return None
+
+
 # Wider than any register we probe; set_register truncates to Rust's width, so
 # an all-ones write paints exactly register_size(name) bytes with 0xFF.
 _ALL_ONES = (1 << 128) - 1
 
 
+@functools.cache
 def _rust_offset_size(arch: str, name: str) -> tuple[int, int] | None:
     """Recover Rust's ``(register_offset, register_size)`` for ``name``.
 
@@ -74,6 +197,9 @@ def _rust_offset_size(arch: str, name: str) -> tuple[int, int] | None:
     ``set_register`` raises) or when the write is unobservable in the flat
     dump. Probes twice — all-ones, then all-zeros — so a register that already
     holds the probe pattern in a fresh state is still located.
+
+    Cached: the probe is a pure function of ``(arch, name)`` and all three
+    tests in this module walk the same ~1000 pairs.
     """
     for value in (_ALL_ONES, 0):
         state = RustSimState(arch)
@@ -108,7 +234,15 @@ def test_register_offset_and_size_match_archinfo(rust_arch, arch_id, name, arch_
     """Rust's offset/size for a register equals archinfo's VEX guest layout."""
     probed = _rust_offset_size(rust_arch, name)
     if probed is None:
-        pytest.skip(f"{rust_arch} has no register named {name!r}")
+        missing_reason = _known_missing_reason(rust_arch, name)
+        assert missing_reason is not None, (
+            f"{rust_arch} has no register named {name!r}, and KNOWN_MISSING does not "
+            "say why. A missing archinfo alias is usually a real bug (angr-9ke6b.217 "
+            "'pc', angr-03vl4.1 'bp', angr-03vl4.2 'lr'): add the row to that arch's "
+            "ALIASES table in native/angr/src/arch/, or — if the omission is "
+            "deliberate — add a KNOWN_MISSING group here stating the reason."
+        )
+        pytest.skip(f"{rust_arch} has no register named {name!r} ({missing_reason})")
 
     drift = KNOWN_DRIFT.get((rust_arch, name))
     if drift is not None:
@@ -128,6 +262,31 @@ def test_register_offset_and_size_match_archinfo(rust_arch, arch_id, name, arch_
         f"archinfo {arch_id} says {(arch_offset, arch_size)}. "
         "The Rust register table has drifted from the VEX guest-state layout."
     )
+
+
+@pytest.mark.parametrize(("rust_arch", "arch_id"), sorted(ARCHES.items()))
+def test_known_missing_groups_are_still_entirely_missing(rust_arch, arch_id):
+    """Every :data:`KNOWN_MISSING` name is still absent from the Rust table.
+
+    The self-cleaning half of the allowlist, mirroring what :data:`KNOWN_DRIFT`
+    does for offset drift: implementing one name in a group reddens this test,
+    so the group has to be edited and the name handed back to the real parity
+    check instead of staying permanently exempt. Also rejects a name archinfo
+    itself no longer defines, which would exempt nothing at all.
+    """
+    registers = archinfo.arch_from_id(arch_id).registers
+    for names, reason in KNOWN_MISSING.get(rust_arch, ()):
+        unknown = sorted(n for n in names if n not in registers)
+        assert not unknown, (
+            f"{rust_arch}: KNOWN_MISSING group ({reason}) lists {unknown}, which "
+            f"archinfo {arch_id} does not define — the group has rotted; drop them."
+        )
+        implemented = sorted(n for n in names if _rust_offset_size(rust_arch, n) is not None)
+        assert not implemented, (
+            f"{rust_arch}: KNOWN_MISSING group ({reason}) claims {implemented} are "
+            "absent, but the Rust table implements them now. Drop them from the group "
+            "so the parity check covers their offset and size."
+        )
 
 
 @pytest.mark.parametrize(("rust_arch", "arch_id"), sorted(ARCHES.items()))
