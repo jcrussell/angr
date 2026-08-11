@@ -532,7 +532,6 @@ impl SymbolicMemory {
     /// * `addr` - The address to load from
     /// * `size` - Number of bytes to load
     /// * `ctx` - The solver context
-    /// * `counter` - A counter for generating unique symbolic names
     ///
     /// # Returns
     /// The loaded value, or a fresh unconstrained symbolic value if unmapped.
@@ -541,7 +540,6 @@ impl SymbolicMemory {
         addr: impl Into<Address>,
         size: u32,
         ctx: &SymContext,
-        counter: &mut u64,
     ) -> RustBV {
         let addr = addr.into();
         match self.load_concrete_lazy(addr, size, ctx) {
@@ -550,13 +548,14 @@ impl SymbolicMemory {
                 if self.zero_fill_unconstrained {
                     RustBV::concrete(0, size * 8)
                 } else {
-                    // Generate a unique name for the unconstrained memory read
-                    *counter += 1;
-                    RustBV::symbolic(
-                        ctx,
-                        format!("unc_mem_{:x}_{}", addr.raw(), counter),
-                        size * 8,
-                    )
+                    // angr-03vl4.41: the name must be unique *process-wide*, not
+                    // just within one ITE-tree build. `RustBV::from_parts` lowers
+                    // the name straight to `z3::ast::BV::new_const`, which interns
+                    // by name and ignores the Rust-side `.id`, so two unconstrained
+                    // reads that stringify the same would literally alias in the
+                    // solver. `SymContext::new_bv` suffixes the globally-monotonic
+                    // `next_id()`, which no per-call counter can collide with.
+                    ctx.new_bv(&format!("unc_mem_{:x}", addr.raw()), size * 8)
                 }
             }
         }

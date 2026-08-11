@@ -202,7 +202,7 @@ impl SymbolicMemory {
     /// Shared recursive ITE-tree scaffold (angr-24pv4.3) parameterized over a
     /// `load_leaf` closure so the only difference between the lazy
     /// (`load_concrete_lazy`, error-propagating) and unified
-    /// (`load_concrete_or_unconstrained`, counter-fed fallback) builders is
+    /// (`load_concrete_or_unconstrained`, unconstrained fallback) builders is
     /// the leaf loader. Tree shape: 1-addr leaf; 2-addr `eq`-ITE with
     /// `loads_match` dedup; N-addr midpoint split on `ult` then recurse with
     /// identical-subtree collapse (all angr-269l).
@@ -268,33 +268,30 @@ impl SymbolicMemory {
         ctx: &SymContext,
     ) -> Result<RustBV, MemoryError> {
         if addrs.is_empty() {
-            return Ok(RustBV::symbolic(
-                ctx,
-                format!("mem_empty_ite_{size}"),
-                size * 8,
-            ));
+            // angr-03vl4.41: `mem_empty_ite_{size}` alone is not a unique name —
+            // two independent empty-address loads of the same width would intern
+            // to the same Z3 constant. Same reasoning as the `unc_mem_` fallback
+            // in `SymbolicMemory::load_concrete_or_unconstrained`.
+            return Ok(ctx.new_bv(&format!("mem_empty_ite_{size}"), size * 8));
         }
         if addrs.len() == 1 {
-            let mut counter = 0u64;
-            return Ok(self.load_concrete_or_unconstrained(addrs[0], size, ctx, &mut counter));
+            return Ok(self.load_concrete_or_unconstrained(addrs[0], size, ctx));
         }
 
-        let mut counter = 0u64;
-        self.build_ite_tree_inner(addr_expr, addrs, size, ctx, &mut counter)
+        self.build_ite_tree_inner(addr_expr, addrs, size, ctx)
     }
 
     /// Recursive helper for building ITE tree (immutable borrow). Leaves load
-    /// via the infallible counter-fed `load_concrete_or_unconstrained`.
+    /// via the infallible `load_concrete_or_unconstrained`.
     fn build_ite_tree_inner(
         &self,
         addr_expr: &RustBV,
         addrs: &[u64],
         size: u32,
         ctx: &SymContext,
-        counter: &mut u64,
     ) -> Result<RustBV, MemoryError> {
         let mut load_leaf = |m: &Self, a: u64, s: u32, c: &SymContext| {
-            Ok(m.load_concrete_or_unconstrained(a, s, c, counter))
+            Ok(m.load_concrete_or_unconstrained(a, s, c))
         };
         self.build_ite_tree_generic(addr_expr, addrs, size, ctx, &mut load_leaf)
     }
