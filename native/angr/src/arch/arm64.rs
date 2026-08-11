@@ -156,6 +156,10 @@ const CANONICAL: &[RegEntry] = &[
 const ALIASES: &[RegEntry] = &[
     // X29/X30/XSP alternate names
     ("x29", offsets::X29, 8),
+    // Architecture-independent frame-pointer name, mirroring archinfo's
+    // ArchAArch64 bp=(248,8) and the `bp`/`fp` interchangeability documented
+    // on `Arch::bp_offset` (angr-03vl4.1).
+    ("bp", offsets::X29, 8),
     ("x30", offsets::X30, 8),
     ("xsp", offsets::XSP, 8),
     // 32-bit W registers (lower 32 bits of X registers)

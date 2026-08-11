@@ -113,9 +113,10 @@ struct ArchExpect {
     /// relying on the Python archinfo parity gate
     /// (`tests/engines/rust/test_arch_offset_parity.py`). Two groups:
     ///
-    /// * The architecture-independent full-width `sp`/`bp` names, plus the
-    ///   legacy 16-bit x86/amd64 sub-registers that must have kept their
-    ///   narrow widths when `sp`/`bp` were widened (angr-6qzik).
+    /// * The architecture-independent full-width `sp`/`bp` names (and `lr` on
+    ///   the arches that have a link register), plus the legacy 16-bit
+    ///   x86/amd64 sub-registers that must have kept their narrow widths when
+    ///   `sp`/`bp` were widened (angr-6qzik).
     /// * The MIPS `$N` spellings, which the parity gate cannot see at all
     ///   because archinfo has no register under those names.
     aliases: &'static [(&'static str, u32, u32)],
@@ -164,7 +165,7 @@ const ARCH_EXPECTATIONS: &[ArchExpect] = &[
         ip_offset: 68,       // PC (R15T)
         sp_offset: 60,       // R13
         bp_offset: Some(52), // R11/FP
-        aliases: &[("sp", 60, 4)],
+        aliases: &[("sp", 60, 4), ("bp", 52, 4), ("lr", 64, 4)],
         ip_name: "pc",
     },
     ArchExpect {
@@ -174,7 +175,7 @@ const ARCH_EXPECTATIONS: &[ArchExpect] = &[
         ip_offset: 272,       // PC
         sp_offset: 264,       // XSP
         bp_offset: Some(248), // X29/FP
-        aliases: &[("sp", 264, 8)],
+        aliases: &[("sp", 264, 8), ("bp", 248, 8), ("lr", 256, 8)],
         ip_name: "pc",
     },
     ArchExpect {
@@ -189,6 +190,8 @@ const ARCH_EXPECTATIONS: &[ArchExpect] = &[
         bp_offset: Some(128), // R30 (fp/s8)
         aliases: &[
             ("sp", 124, 4),
+            ("bp", 128, 4),
+            ("lr", 132, 4),
             ("$2", 16, 4),
             ("$29", 124, 4),
             ("$30", 128, 4),
@@ -204,6 +207,8 @@ const ARCH_EXPECTATIONS: &[ArchExpect] = &[
         bp_offset: Some(256), // R30 (fp/s8)
         aliases: &[
             ("sp", 248, 8),
+            ("bp", 256, 8),
+            ("lr", 264, 8),
             ("$2", 32, 8),
             ("$29", 248, 8),
             ("$30", 256, 8),

@@ -240,6 +240,13 @@ const CANONICAL_MIPS32: &[RegEntry] = &[
 ];
 
 const ALIASES_MIPS32: &[RegEntry] = &[
+    // Architecture-independent names for $30/$31, mirroring archinfo's
+    // ArchMIPS32 bp=(128,4)/lr=(132,4). `bp` matches the `bp`/`fp`
+    // interchangeability documented on `Arch::bp_offset`; `lr` matches the
+    // ARM/ARM64 tables and `CallingConvention::link_register`, which treats
+    // LR and $ra as the same architectural concept (angr-03vl4.1/.2).
+    ("bp", offsets32::R30, 4),
+    ("lr", offsets32::R31, 4),
     // Numeric rN aliases
     ("r0", offsets32::R0, 4),
     ("r1", offsets32::R1, 4),
@@ -446,6 +453,11 @@ const ALIASES_MIPS64: &[RegEntry] = &[
     ("t3", offsets64::R11, 8),
     // $30 canonicalizes to `fp`; `s8` is its saved-register alias.
     ("s8", offsets64::R30, 8),
+    // Architecture-independent names for $30/$31, mirroring archinfo's
+    // ArchMIPS64 bp=(256,8)/lr=(264,8) — see the ALIASES_MIPS32 comment for
+    // the two conventions this follows (angr-03vl4.1/.2).
+    ("bp", offsets64::R30, 8),
+    ("lr", offsets64::R31, 8),
     // Numeric rN aliases
     ("r0", offsets64::R0, 8),
     ("r1", offsets64::R1, 8),

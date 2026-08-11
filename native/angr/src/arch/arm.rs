@@ -149,6 +149,10 @@ const ALIASES: &[RegEntry] = &[
     // archinfo before the name ever reaches Rust, and r12 stays reachable as
     // "r12".
     ("fp", offsets::R11, 4),
+    // Architecture-independent frame-pointer name, mirroring archinfo's
+    // ArchARMEL bp=(52,4) and the `bp`/`fp` interchangeability documented on
+    // `Arch::bp_offset` (angr-03vl4.1).
+    ("bp", offsets::R11, 4),
     ("r13", offsets::R13, 4),
     ("r14", offsets::R14, 4),
     ("r15", offsets::R15T, 4),
