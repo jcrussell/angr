@@ -232,7 +232,13 @@ fn single_threaded_loop_drains_parked_parallel_bounces() {
         let mut mgr = RustExplorationManager::new("amd64", None).unwrap();
         const BOUNCE_ADDR: u64 = 0x40_2000;
         let id = park_reenterable_bounce(&mut mgr, BOUNCE_ADDR);
-        assert_eq!(mgr.active_count(), 0, "parked bounce is in NO stash");
+        // `active_count` counts the parked bounce by design (angr-03vl4.15);
+        // `stash_count` is the stash-only view that shows it is in none yet.
+        assert_eq!(
+            mgr.stash_count(STASH_ACTIVE),
+            0,
+            "parked bounce is in NO stash"
+        );
 
         // No callbacks configured, so the loop bails right after the drain.
         assert!(mgr.run_loop_single_threaded(Some(1)).is_err());

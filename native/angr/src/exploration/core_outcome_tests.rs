@@ -670,7 +670,14 @@ fn flush_parked_bounce_recovers_reenterable_state_to_active() {
         id, // lineage root = self
     ));
 
-    assert_eq!(mgr.active_count(), 0, "parked bounce is in NO stash");
+    // Stash-only view: `active_count` deliberately includes the parked bounce
+    // (angr-03vl4.15), so it is `stash_count` that shows the state is in no
+    // stash yet.
+    assert_eq!(
+        mgr.stash_count(STASH_ACTIVE),
+        0,
+        "parked bounce is in NO stash"
+    );
 
     mgr.flush_parked_bounces_to_active();
 

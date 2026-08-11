@@ -332,6 +332,54 @@ impl RustExplorationManager {
         }
         self.pending_parallel_bounces = kept;
     }
+
+    /// How many parked bounces a [`flush_parked_bounces_to_active`] would
+    /// materialize into `STASH_ACTIVE` right now (angr-03vl4.15).
+    ///
+    /// The read-only census accessors (`active_count`, `stash_counts`) take
+    /// `&self`, so unlike `dump_snapshot_bytes` / `finalize_parallel_session`
+    /// they cannot flush before reading — yet a steady/wave session can return
+    /// to Python with bounces still parked, and those states live in NO stash.
+    /// Without this addend a mid-explore `len(mgr)` or progress callback
+    /// silently under-reports the frontier. Mirrors the flush's own two filters
+    /// so the count equals the post-flush stash population: an id already
+    /// resident in a stash is a duplicate the flush discards, and a kind with no
+    /// re-enterable entry address ([`bounce_target_addr`]) stays parked forever
+    /// and never reaches a stash — counting either would make the census jump
+    /// *down* across a flush that lost nothing.
+    ///
+    /// Attributed wholly to the ACTIVE stash, which is where the flush's
+    /// `route_successor` sends a bounce whose target is neither a find nor an
+    /// avoid address — the normal case, since the target is a hook /
+    /// SimProcedure entry. When a hook address IS also a find address the flush
+    /// would land it in FOUND instead, so the per-stash attribution can be off
+    /// by that state while the total stays exact. That asymmetry is deliberate:
+    /// `found_count` gates control flow (`>= num_find` in all three run loops
+    /// and in `push_found_capped`), and a parked bounce is a live frontier state
+    /// whose callback has not run yet — not a collected result — so inflating
+    /// the found count could end an explore before the state is ever collected.
+    ///
+    /// Free on the serial path: the queue is empty there, and the early return
+    /// skips building the resident-id set (this runs per `run()` return and per
+    /// profiling sample, so an unconditional O(frontier) scan would be a real
+    /// cost).
+    pub(crate) fn parked_bounces_flushable_count(&self) -> usize {
+        if self.pending_parallel_bounces.is_empty() {
+            return 0;
+        }
+        let resident: std::collections::HashSet<u64> = self
+            .sm
+            .stashes()
+            .values()
+            .flat_map(|states| states.iter().map(|s| s.state_id()))
+            .collect();
+        self.pending_parallel_bounces
+            .iter()
+            .filter(|(state, kind, _)| {
+                !resident.contains(&state.state_id()) && bounce_target_addr(kind).is_some()
+            })
+            .count()
+    }
 }
 
 test_submod!(z3 "run_loop_tests.rs" => tests);

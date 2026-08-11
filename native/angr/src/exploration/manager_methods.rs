@@ -167,27 +167,41 @@ impl RustExplorationManager {
 
     /// Get active state count.
     ///
-    /// Named shorthand for
-    /// [`stash_count`](RustExplorationManager::stash_count), which is the one
-    /// place the stash → length lookup lives (angr-c7xno.28).
+    /// [`stash_count`](RustExplorationManager::stash_count) — the one place the
+    /// stash → length lookup lives (angr-c7xno.28) — plus the wave-parked
+    /// bounces, which live in NO stash and would otherwise make a mid-explore
+    /// `len(mgr)` under-report the frontier (angr-03vl4.15). See
+    /// [`parked_bounces_flushable_count`](RustExplorationManager::parked_bounces_flushable_count)
+    /// for why the whole addend lands on ACTIVE and none of it on FOUND.
     pub fn active_count(&self) -> usize {
-        self.stash_count(STASH_ACTIVE)
+        self.stash_count(STASH_ACTIVE) + self.parked_bounces_flushable_count()
     }
 
     /// Get found state count.
     ///
     /// Named shorthand for
-    /// [`stash_count`](RustExplorationManager::stash_count); see
-    /// [`active_count`](RustExplorationManager::active_count).
+    /// [`stash_count`](RustExplorationManager::stash_count). Unlike
+    /// [`active_count`](RustExplorationManager::active_count) this takes NO
+    /// parked-bounce addend: a parked bounce is a live frontier state whose
+    /// callback has not run yet, not a collected result, and this count gates
+    /// `num_find` control flow (angr-03vl4.15).
     pub fn found_count(&self) -> usize {
         self.stash_count(STASH_FOUND)
     }
 
     /// Get stash counts as a dictionary.
+    ///
+    /// Includes the wave-parked bounces in the `active` entry, for the reason
+    /// given on [`active_count`](RustExplorationManager::active_count) — the
+    /// census must not depend on whether a flush happened to have run.
     pub fn stash_counts<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let dict = PyDict::new(py);
         for (name, stash) in self.sm.stashes() {
             dict.set_item(name, stash.len())?;
+        }
+        let parked = self.parked_bounces_flushable_count();
+        if parked > 0 {
+            dict.set_item(STASH_ACTIVE, self.active_count())?;
         }
         Ok(dict)
     }

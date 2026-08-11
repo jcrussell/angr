@@ -207,6 +207,91 @@ fn stash_counts_censuses_every_stash_after_move_drop_clear() {
     assert_eq!(mgr.found_count(), 1);
 }
 
+/// angr-03vl4.15: a wave parks the rest of its bounce queue in
+/// `pending_parallel_bounces` — states in NO stash — and a steady/wave session
+/// can return to Python with the queue non-empty. The read-only census
+/// accessors take `&self` and so cannot flush the way `dump_snapshot_bytes`
+/// does, which used to make a mid-explore `len(mgr)` / progress callback
+/// under-report the frontier.
+///
+/// The property under test is that the census does NOT depend on whether a
+/// flush has run: every count is asserted before and after
+/// `flush_parked_bounces_to_active`, over a queue holding one of each arm the
+/// flush distinguishes (replayable, resident duplicate, unreplayable).
+#[test]
+fn census_counts_parked_bounces_identically_before_and_after_a_flush() {
+    use crate::exploration::core_outcome::BounceKind;
+
+    Python::initialize();
+    Python::attach(|py| {
+        let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+        push_states(&mut mgr, STASH_ACTIVE, 1);
+        push_states(&mut mgr, STASH_FOUND, 1);
+
+        // (a) replayable + not resident → the flush routes it to ACTIVE.
+        let mut replayable = RustSimState::new("amd64").expect("state");
+        replayable.set_pc(0x40_1000);
+        let replayable_id = replayable.state_id();
+        // (b) resident duplicate → the flush drops it; counting it would make
+        //     the census fall across a flush that lost nothing.
+        let mut dup = RustSimState::new("amd64").expect("state");
+        dup.set_pc(0x40_2000);
+        let dup_id = dup.state_id();
+        let dup_resident = RustSimState::from_snapshot(dup.to_snapshot()).expect("round-trip");
+        mgr.sm.push(STASH_ACTIVE, dup_resident);
+        // (c) no re-enterable entry address → stays parked forever, never
+        //     reaches a stash, so it must not be counted either.
+        let mut unreplayable = RustSimState::new("amd64").expect("state");
+        unreplayable.set_pc(0x40_3000);
+        let unreplayable_id = unreplayable.state_id();
+
+        mgr.pending_parallel_bounces.push((
+            replayable,
+            BounceKind::Hook { addr: 0x40_5000 },
+            replayable_id,
+        ));
+        mgr.pending_parallel_bounces
+            .push((dup, BounceKind::Hook { addr: 0x40_6000 }, dup_id));
+        mgr.pending_parallel_bounces.push((
+            unreplayable,
+            BounceKind::SyscallPython { num: Some(60) },
+            unreplayable_id,
+        ));
+
+        // 2 resident actives (the pushed one + the duplicate) + 1 replayable.
+        let census = |mgr: &RustExplorationManager| {
+            let counts = mgr.stash_counts(py).expect("stash_counts");
+            let active: usize = counts
+                .get_item(STASH_ACTIVE)
+                .expect("lookup")
+                .expect("active key")
+                .extract()
+                .expect("count");
+            (mgr.active_count(), mgr.found_count(), active)
+        };
+        assert_eq!(
+            census(&mgr),
+            (3, 1, 3),
+            "parked replayable bounce counts as active; the duplicate and the \
+             unreplayable one do not, and none of them inflate found_count"
+        );
+
+        mgr.flush_parked_bounces_to_active();
+
+        assert_eq!(
+            mgr.pending_parallel_bounces.len(),
+            1,
+            "only the unreplayable bounce survives the flush"
+        );
+        assert_eq!(
+            census(&mgr),
+            (3, 1, 3),
+            "census is flush-invariant: the same states, now visible via stashes"
+        );
+        assert_in_exactly(&mgr, replayable_id, STASH_ACTIVE);
+    });
+}
+
 // --- set_deterministic reach (angr-sqfj8.32) -----------------------------
 
 /// `set_deterministic` propagates to states parked in `pending_callbacks`, not
