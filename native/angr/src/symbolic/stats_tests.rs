@@ -288,24 +288,93 @@ fn test_measurement_counters_reach_their_stats_key() {
     }
 }
 
+/// Same wiring check as `test_measurement_counters_reach_their_stats_key`, for
+/// the `CORE_COUNTERS` table `get_solver_stats()` was hand-writing an
+/// `insert`/`store` pair per counter for until angr-03vl4.64.
+///
+/// This is the test that would have caught the drift the table exists to
+/// prevent: a counter declared and reset but never emitted, or emitted under a
+/// key nothing bumps.
+#[test]
+fn test_core_counters_reach_their_stats_key() {
+    let _serial = marker_guard();
+    for (key, counter) in CORE_COUNTERS {
+        counter.fetch_add(MARK, Ordering::Relaxed);
+        let observed = get_solver_stats().get(*key).copied();
+        undo_bump(counter);
+        assert!(
+            observed.is_some_and(|v| v >= MARK),
+            "{key} missing from get_solver_stats() or not wired to its atomic (got {observed:?})"
+        );
+    }
+}
+
+/// `WATERMARK_COUNTERS` are `AtomicU32`, so they exercise the widening half of
+/// the `ProfilingCounter` impl — the `as u64` cast the hand-written inserts
+/// used to carry per call site.
+///
+/// `MARK32` rather than `MARK`: 2^24 is far above any depth or candidate count
+/// a real run produces, and still fits the narrower atomic.
+#[test]
+fn test_watermark_counters_reach_their_stats_key() {
+    const MARK32: u32 = 1 << 24;
+    let _serial = marker_guard();
+    for (key, counter) in WATERMARK_COUNTERS {
+        counter.fetch_add(MARK32, Ordering::Relaxed);
+        let observed = get_solver_stats().get(*key).copied();
+        // Saturating, for the same reason `undo_bump` is: a sibling's
+        // `reset_solver_stats()` inside the window must not wrap us to ~u32::MAX.
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "SILENT(cat-a): the closure always returns Some, so fetch_update cannot \
+                      fail; `drop(..)` is rejected here because Result<u32, u32> is Copy"
+        )]
+        let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+            Some(v.saturating_sub(MARK32))
+        });
+        assert!(
+            observed.is_some_and(|v| v >= u64::from(MARK32)),
+            "{key} missing from get_solver_stats() or not wired to its atomic (got {observed:?})"
+        );
+    }
+}
+
+/// No key is claimed by two tables. A duplicate would make one counter's value
+/// silently overwrite the other's in the emitted map, depending on table order.
+#[test]
+fn test_counter_table_keys_are_disjoint() {
+    let keys: Vec<&str> = CORE_COUNTERS
+        .iter()
+        .map(|(k, _)| *k)
+        .chain(WATERMARK_COUNTERS.iter().map(|(k, _)| *k))
+        .chain(MEASUREMENT_COUNTERS.iter().map(|(k, _)| *k))
+        .collect();
+    let unique: std::collections::HashSet<&str> = keys.iter().copied().collect();
+    assert_eq!(
+        unique.len(),
+        keys.len(),
+        "duplicate key across the counter tables: {keys:?}"
+    );
+}
+
 /// The emit half of the table loop: always-emit semantics, zeros included,
 /// so a capture can distinguish "path never fired" from "key dropped".
 ///
 /// Driven through local atomics, so it is deterministic under the parallel
 /// runner — the same pure-seam technique as `insert_query_class_stats`.
 #[test]
-fn test_insert_measurement_stats_emits_every_pair() {
+fn test_insert_counter_stats_emits_every_pair() {
     let quiet = AtomicU64::new(0);
     let busy = AtomicU64::new(9);
     let mut stats: HashMap<String, u64> = HashMap::new();
-    insert_measurement_stats(&mut stats, &[("quiet", &quiet), ("busy", &busy)]);
+    insert_counter_stats(&mut stats, &[("quiet", &quiet), ("busy", &busy)]);
 
     assert_eq!(stats.len(), 2, "every pair must emit, got {stats:?}");
     assert_eq!(stats.get("quiet"), Some(&0));
     assert_eq!(stats.get("busy"), Some(&9));
 }
 
-/// The reset half: `reset_measurement_counters` zeroes every entry it is
+/// The reset half: `reset_counter_stats` zeroes every entry it is
 /// given, leaving nothing behind for the next capture.
 ///
 /// Combined with `reset_solver_stats()` passing the very same
@@ -314,17 +383,17 @@ fn test_insert_measurement_stats_emits_every_pair() {
 /// checking that by actually calling `reset_solver_stats()` here is not an
 /// option, see the note at the bottom of this file.
 #[test]
-fn test_reset_measurement_counters_zeroes_every_entry() {
+fn test_reset_counter_stats_zeroes_every_entry() {
     let a = AtomicU64::new(7);
     let b = AtomicU64::new(u64::MAX);
     let c = AtomicU64::new(0);
-    reset_measurement_counters(&[("a", &a), ("b", &b), ("c", &c)]);
+    reset_counter_stats(&[("a", &a), ("b", &b), ("c", &c)]);
 
     for (name, counter) in [("a", &a), ("b", &b), ("c", &c)] {
         assert_eq!(
             counter.load(Ordering::Relaxed),
             0,
-            "{name} must be cleared by reset_measurement_counters"
+            "{name} must be cleared by reset_counter_stats"
         );
     }
 }

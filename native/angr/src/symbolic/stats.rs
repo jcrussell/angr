@@ -463,249 +463,176 @@ pub(crate) static MEASUREMENT_COUNTERS: [(&str, &AtomicU64); 13] = [
     ("z3_assume_dedup_hit", &Z3_ASSUME_DEDUP_HIT_COUNT),
 ];
 
+/// The engine's own counters, each paired with the `get_solver_stats()` key it
+/// is emitted under — the same table-driven contract as
+/// [`MEASUREMENT_COUNTERS`], extended to the counters that predate it
+/// (angr-03vl4.64).
+///
+/// Kept as a table distinct from `MEASUREMENT_COUNTERS` because the two have
+/// different *lifecycles*, not different mechanics: the measurement groups are
+/// audit-scoped and expected to be retired when their bead's question is
+/// answered, while these are the standing engine instrumentation
+/// `--counters-json` captures compare across releases. Both feed the same
+/// `insert_counter_stats` / `reset_counter_stats` pair, so neither can be
+/// emitted without also being cleared.
+///
+/// `AtomicU32` watermarks live in [`WATERMARK_COUNTERS`] instead — same
+/// treatment, different atomic width.
+pub(crate) static CORE_COUNTERS: &[(&str, &AtomicU64)] = &[
+    // Z3 solving: check volume/time, materialization, assume/branch classification.
+    ("z3_check_count", &Z3_CHECK_COUNT),
+    ("z3_check_time_ns", &Z3_CHECK_TIME_NS),
+    ("z3_materialize_count", &Z3_MATERIALIZE_COUNT),
+    ("z3_materialize_time_ns", &Z3_MATERIALIZE_TIME_NS),
+    ("z3_assume_concrete", &Z3_ASSUME_CONCRETE_COUNT),
+    ("z3_assume_symbolic", &Z3_ASSUME_SYMBOLIC_COUNT),
+    ("z3_branch_check", &Z3_BRANCH_CHECK_COUNT),
+    ("z3_branch_concrete", &Z3_BRANCH_CONCRETE_COUNT),
+    ("z3_branch_model_hit", &Z3_BRANCH_MODEL_HIT_COUNT),
+    ("z3_branch_model_miss", &Z3_BRANCH_MODEL_MISS_COUNT),
+    ("z3_extrema_model_hit", &Z3_EXTREMA_MODEL_HIT_COUNT),
+    ("z3_extrema_model_miss", &Z3_EXTREMA_MODEL_MISS_COUNT),
+    ("z3_eval_upto_model_hit", &Z3_EVAL_UPTO_MODEL_HIT_COUNT),
+    ("z3_ast_build", &Z3_AST_BUILD_COUNT),
+    ("z3_ast_cache_hit", &Z3_AST_CACHE_HIT_COUNT),
+    ("z3_ast_cache_miss", &Z3_AST_CACHE_MISS_COUNT),
+    ("z3_ast_memo_hit", &Z3_AST_MEMO_HIT_COUNT),
+    ("z3_bool_build", &Z3_BOOL_BUILD_COUNT),
+    ("z3_bool_build_nodes", &Z3_BOOL_BUILD_NODES),
+    ("z3_bool_memo_reused_nodes", &Z3_BOOL_MEMO_REUSED_NODES),
+    ("z3_bool_memoized_subtree", &Z3_BOOL_MEMOIZED_SUBTREE_COUNT),
+    ("z3_sat_count", &Z3_SAT_COUNT),
+    ("z3_unsat_count", &Z3_UNSAT_COUNT),
+    ("z3_timeout_count", &Z3_TIMEOUT_COUNT),
+    // Symbolic-memory ITE depth (the max watermark is in `WATERMARK_COUNTERS`).
+    ("mem_ite_depth_total", &MEM_ITE_DEPTH_TOTAL),
+    // VEX op dispatch (angr-2j5v).
+    ("vex_unop_total", &VEX_UNOP_TOTAL),
+    ("vex_binop_total", &VEX_BINOP_TOTAL),
+    ("vex_triop_total", &VEX_TRIOP_TOTAL),
+    ("vex_qop_total", &VEX_QOP_TOTAL),
+    ("vex_op_arith", &VEX_OP_ARITH),
+    ("vex_op_logic", &VEX_OP_LOGIC),
+    ("vex_op_shift", &VEX_OP_SHIFT),
+    ("vex_op_cmp", &VEX_OP_CMP),
+    ("vex_op_ext", &VEX_OP_EXT),
+    ("vex_op_fp", &VEX_OP_FP),
+    ("vex_op_vec", &VEX_OP_VEC),
+    ("vex_op_other", &VEX_OP_OTHER),
+    // Memory volume.
+    ("mem_load_count", &MEM_LOAD_COUNT),
+    ("mem_store_count", &MEM_STORE_COUNT),
+    ("mem_load_bytes", &MEM_LOAD_BYTES),
+    ("mem_store_bytes", &MEM_STORE_BYTES),
+    ("mem_load_symbolic_addr", &MEM_LOAD_SYMBOLIC_ADDR),
+    ("mem_store_symbolic_addr", &MEM_STORE_SYMBOLIC_ADDR),
+    ("mem_lazy_page_fault_count", &MEM_LAZY_PAGE_FAULT_COUNT),
+    // Concretization fanout.
+    ("concretize_read_count", &CONCRETIZE_READ_COUNT),
+    ("concretize_write_count", &CONCRETIZE_WRITE_COUNT),
+    ("concretize_total_candidates", &CONCRETIZE_TOTAL_CANDIDATES),
+    // angr-62li: disjunction hoisting.
+    (
+        "concretize_disjunction_count",
+        &CONCRETIZE_DISJUNCTION_COUNT,
+    ),
+    (
+        "concretize_disjunction_terms_total",
+        &CONCRETIZE_DISJUNCTION_TERMS_TOTAL,
+    ),
+    // AST construction.
+    ("bvop_reverse_count", &BVOP_REVERSE_COUNT),
+    ("bvop_concat_count", &BVOP_CONCAT_COUNT),
+    ("bvop_extract_count", &BVOP_EXTRACT_COUNT),
+    // Constraint intake and simplify sampling (the sampling *phase* counter,
+    // `SIMPLIFY_SAMPLE_TICKER`, is deliberately absent — see its doc comment).
+    ("add_constraint_raw_total", &ADD_CONSTRAINT_RAW_TOTAL_COUNT),
+    (
+        "branch_cond_simplify_sampled",
+        &BRANCH_COND_SIMPLIFY_SAMPLED_COUNT,
+    ),
+    (
+        "branch_cond_simplify_reduced",
+        &BRANCH_COND_SIMPLIFY_REDUCED_COUNT,
+    ),
+    // angr-0xyq2 Phase 2: bounded symbolic file content serving.
+    ("symfile_reads_native", &SYMFILE_READS_NATIVE),
+    ("symfile_write_demotions", &SYMFILE_WRITE_DEMOTIONS),
+];
+
+/// The `AtomicU32` high-water marks, same emit/reset contract as
+/// [`CORE_COUNTERS`].
+///
+/// Separate only because the atomic width differs; the `ProfilingCounter` impl
+/// widens them to the `u64` the stats map exposes, which is what the
+/// hand-written `as u64` casts used to do at each call site.
+pub(crate) static WATERMARK_COUNTERS: &[(&str, &AtomicU32)] = &[
+    ("mem_ite_depth_max", &MEM_ITE_DEPTH_MAX),
+    ("concretize_max_candidates", &CONCRETIZE_MAX_CANDIDATES),
+    (
+        "concretize_disjunction_max_terms",
+        &CONCRETIZE_DISJUNCTION_MAX_TERMS,
+    ),
+];
+
+/// Read/clear seam letting one pair of table-driven loops serve both the
+/// `AtomicU64` counters and the narrower `AtomicU32` watermarks.
+trait ProfilingCounter {
+    /// Current value, widened to the `u64` the stats map exposes.
+    fn read_u64(&self) -> u64;
+    /// Zero the counter — the reset half of [`Self::read_u64`].
+    fn clear(&self);
+}
+
+impl ProfilingCounter for AtomicU64 {
+    fn read_u64(&self) -> u64 {
+        self.load(Ordering::Relaxed)
+    }
+    fn clear(&self) {
+        self.store(0, Ordering::Relaxed);
+    }
+}
+
+impl ProfilingCounter for AtomicU32 {
+    fn read_u64(&self) -> u64 {
+        u64::from(self.load(Ordering::Relaxed))
+    }
+    fn clear(&self) {
+        self.store(0, Ordering::Relaxed);
+    }
+}
+
 /// Emit every `(key, counter)` pair in `counters` into `stats`.
 ///
 /// Always-emit, like `insert_query_class_stats`: a zero here means "the path
 /// never fired", which is the measurement these counters exist to report.
-fn insert_measurement_stats(stats: &mut HashMap<String, u64>, counters: &[(&str, &AtomicU64)]) {
+fn insert_counter_stats<C: ProfilingCounter>(
+    stats: &mut HashMap<String, u64>,
+    counters: &[(&str, &C)],
+) {
     for (key, counter) in counters {
-        stats.insert((*key).into(), counter.load(Ordering::Relaxed));
+        stats.insert((*key).into(), counter.read_u64());
     }
 }
 
 /// Zero every counter in `counters`. The reset half of
-/// `insert_measurement_stats`, driven by the same table.
-fn reset_measurement_counters(counters: &[(&str, &AtomicU64)]) {
+/// `insert_counter_stats`, driven by the same table.
+fn reset_counter_stats<C: ProfilingCounter>(counters: &[(&str, &C)]) {
     for (_, counter) in counters {
-        counter.store(0, Ordering::Relaxed);
+        counter.clear();
     }
 }
 
 /// Get all solver profiling stats as a HashMap.
 pub fn get_solver_stats() -> HashMap<String, u64> {
     let mut stats = HashMap::new();
-    stats.insert(
-        "z3_check_count".into(),
-        Z3_CHECK_COUNT.load(Ordering::Relaxed),
-    );
-    stats.insert(
-        "z3_check_time_ns".into(),
-        Z3_CHECK_TIME_NS.load(Ordering::Relaxed),
-    );
-    stats.insert(
-        "z3_materialize_count".into(),
-        Z3_MATERIALIZE_COUNT.load(Ordering::Relaxed),
-    );
-    stats.insert(
-        "z3_materialize_time_ns".into(),
-        Z3_MATERIALIZE_TIME_NS.load(Ordering::Relaxed),
-    );
-    stats.insert(
-        "z3_assume_concrete".into(),
-        Z3_ASSUME_CONCRETE_COUNT.load(Ordering::Relaxed),
-    );
-    stats.insert(
-        "z3_assume_symbolic".into(),
-        Z3_ASSUME_SYMBOLIC_COUNT.load(Ordering::Relaxed),
-    );
-    stats.insert(
-        "z3_branch_check".into(),
-        Z3_BRANCH_CHECK_COUNT.load(Ordering::Relaxed),
-    );
-    stats.insert(
-        "z3_branch_concrete".into(),
-        Z3_BRANCH_CONCRETE_COUNT.load(Ordering::Relaxed),
-    );
-    stats.insert(
-        "z3_branch_model_hit".into(),
-        Z3_BRANCH_MODEL_HIT_COUNT.load(Ordering::Relaxed),
-    );
-    stats.insert(
-        "z3_branch_model_miss".into(),
-        Z3_BRANCH_MODEL_MISS_COUNT.load(Ordering::Relaxed),
-    );
-    stats.insert(
-        "z3_extrema_model_hit".into(),
-        Z3_EXTREMA_MODEL_HIT_COUNT.load(Ordering::Relaxed),
-    );
-    stats.insert(
-        "z3_extrema_model_miss".into(),
-        Z3_EXTREMA_MODEL_MISS_COUNT.load(Ordering::Relaxed),
-    );
-    stats.insert(
-        "z3_eval_upto_model_hit".into(),
-        Z3_EVAL_UPTO_MODEL_HIT_COUNT.load(Ordering::Relaxed),
-    );
-    stats.insert(
-        "z3_ast_build".into(),
-        Z3_AST_BUILD_COUNT.load(Ordering::Relaxed),
-    );
-    stats.insert(
-        "z3_ast_cache_hit".into(),
-        Z3_AST_CACHE_HIT_COUNT.load(Ordering::Relaxed),
-    );
-    stats.insert(
-        "z3_ast_cache_miss".into(),
-        Z3_AST_CACHE_MISS_COUNT.load(Ordering::Relaxed),
-    );
-    stats.insert(
-        "z3_ast_memo_hit".into(),
-        Z3_AST_MEMO_HIT_COUNT.load(Ordering::Relaxed),
-    );
-    stats.insert(
-        "z3_bool_build".into(),
-        Z3_BOOL_BUILD_COUNT.load(Ordering::Relaxed),
-    );
-    stats.insert(
-        "z3_bool_build_nodes".into(),
-        Z3_BOOL_BUILD_NODES.load(Ordering::Relaxed),
-    );
-    stats.insert(
-        "z3_bool_memo_reused_nodes".into(),
-        Z3_BOOL_MEMO_REUSED_NODES.load(Ordering::Relaxed),
-    );
-    stats.insert(
-        "z3_bool_memoized_subtree".into(),
-        Z3_BOOL_MEMOIZED_SUBTREE_COUNT.load(Ordering::Relaxed),
-    );
-    stats.insert("z3_sat_count".into(), Z3_SAT_COUNT.load(Ordering::Relaxed));
-    stats.insert(
-        "z3_unsat_count".into(),
-        Z3_UNSAT_COUNT.load(Ordering::Relaxed),
-    );
-    stats.insert(
-        "z3_timeout_count".into(),
-        Z3_TIMEOUT_COUNT.load(Ordering::Relaxed),
-    );
-    stats.insert(
-        "mem_ite_depth_max".into(),
-        MEM_ITE_DEPTH_MAX.load(Ordering::Relaxed) as u64,
-    );
-    stats.insert(
-        "mem_ite_depth_total".into(),
-        MEM_ITE_DEPTH_TOTAL.load(Ordering::Relaxed),
-    );
-    // VEX op dispatch
-    stats.insert(
-        "vex_unop_total".into(),
-        VEX_UNOP_TOTAL.load(Ordering::Relaxed),
-    );
-    stats.insert(
-        "vex_binop_total".into(),
-        VEX_BINOP_TOTAL.load(Ordering::Relaxed),
-    );
-    stats.insert(
-        "vex_triop_total".into(),
-        VEX_TRIOP_TOTAL.load(Ordering::Relaxed),
-    );
-    stats.insert(
-        "vex_qop_total".into(),
-        VEX_QOP_TOTAL.load(Ordering::Relaxed),
-    );
-    stats.insert("vex_op_arith".into(), VEX_OP_ARITH.load(Ordering::Relaxed));
-    stats.insert("vex_op_logic".into(), VEX_OP_LOGIC.load(Ordering::Relaxed));
-    stats.insert("vex_op_shift".into(), VEX_OP_SHIFT.load(Ordering::Relaxed));
-    stats.insert("vex_op_cmp".into(), VEX_OP_CMP.load(Ordering::Relaxed));
-    stats.insert("vex_op_ext".into(), VEX_OP_EXT.load(Ordering::Relaxed));
-    stats.insert("vex_op_fp".into(), VEX_OP_FP.load(Ordering::Relaxed));
-    stats.insert("vex_op_vec".into(), VEX_OP_VEC.load(Ordering::Relaxed));
-    stats.insert("vex_op_other".into(), VEX_OP_OTHER.load(Ordering::Relaxed));
-    // Memory volume
-    stats.insert(
-        "mem_load_count".into(),
-        MEM_LOAD_COUNT.load(Ordering::Relaxed),
-    );
-    stats.insert(
-        "mem_store_count".into(),
-        MEM_STORE_COUNT.load(Ordering::Relaxed),
-    );
-    stats.insert(
-        "mem_load_bytes".into(),
-        MEM_LOAD_BYTES.load(Ordering::Relaxed),
-    );
-    stats.insert(
-        "mem_store_bytes".into(),
-        MEM_STORE_BYTES.load(Ordering::Relaxed),
-    );
-    stats.insert(
-        "mem_load_symbolic_addr".into(),
-        MEM_LOAD_SYMBOLIC_ADDR.load(Ordering::Relaxed),
-    );
-    stats.insert(
-        "mem_store_symbolic_addr".into(),
-        MEM_STORE_SYMBOLIC_ADDR.load(Ordering::Relaxed),
-    );
-    stats.insert(
-        "mem_lazy_page_fault_count".into(),
-        MEM_LAZY_PAGE_FAULT_COUNT.load(Ordering::Relaxed),
-    );
-    // Concretization fanout
-    stats.insert(
-        "concretize_read_count".into(),
-        CONCRETIZE_READ_COUNT.load(Ordering::Relaxed),
-    );
-    stats.insert(
-        "concretize_write_count".into(),
-        CONCRETIZE_WRITE_COUNT.load(Ordering::Relaxed),
-    );
-    stats.insert(
-        "concretize_total_candidates".into(),
-        CONCRETIZE_TOTAL_CANDIDATES.load(Ordering::Relaxed),
-    );
-    stats.insert(
-        "concretize_max_candidates".into(),
-        CONCRETIZE_MAX_CANDIDATES.load(Ordering::Relaxed) as u64,
-    );
-    // angr-62li: disjunction hoisting
-    stats.insert(
-        "concretize_disjunction_count".into(),
-        CONCRETIZE_DISJUNCTION_COUNT.load(Ordering::Relaxed),
-    );
-    stats.insert(
-        "concretize_disjunction_terms_total".into(),
-        CONCRETIZE_DISJUNCTION_TERMS_TOTAL.load(Ordering::Relaxed),
-    );
-    stats.insert(
-        "concretize_disjunction_max_terms".into(),
-        CONCRETIZE_DISJUNCTION_MAX_TERMS.load(Ordering::Relaxed) as u64,
-    );
-    // AST construction
-    stats.insert(
-        "bvop_reverse_count".into(),
-        BVOP_REVERSE_COUNT.load(Ordering::Relaxed),
-    );
-    stats.insert(
-        "bvop_concat_count".into(),
-        BVOP_CONCAT_COUNT.load(Ordering::Relaxed),
-    );
-    stats.insert(
-        "bvop_extract_count".into(),
-        BVOP_EXTRACT_COUNT.load(Ordering::Relaxed),
-    );
-    // angr-g7nq / angr-acoq / angr-1joc measurement groups, table-driven so
-    // emit and reset cannot drift apart. See `MEASUREMENT_COUNTERS`.
-    insert_measurement_stats(&mut stats, &MEASUREMENT_COUNTERS);
-    stats.insert(
-        "add_constraint_raw_total".into(),
-        ADD_CONSTRAINT_RAW_TOTAL_COUNT.load(Ordering::Relaxed),
-    );
-    stats.insert(
-        "branch_cond_simplify_sampled".into(),
-        BRANCH_COND_SIMPLIFY_SAMPLED_COUNT.load(Ordering::Relaxed),
-    );
-    stats.insert(
-        "branch_cond_simplify_reduced".into(),
-        BRANCH_COND_SIMPLIFY_REDUCED_COUNT.load(Ordering::Relaxed),
-    );
-    // angr-0xyq2 Phase 2: bounded symbolic file content serving.
-    stats.insert(
-        "symfile_reads_native".into(),
-        SYMFILE_READS_NATIVE.load(Ordering::Relaxed),
-    );
-    stats.insert(
-        "symfile_write_demotions".into(),
-        SYMFILE_WRITE_DEMOTIONS.load(Ordering::Relaxed),
-    );
+    // Every plain counter this file declares, emitted from the same tables
+    // `reset_solver_stats` clears, so a counter cannot be emitted without
+    // also being reset (angr-9ke6b.150 for the measurement groups,
+    // angr-03vl4.64 for the rest).
+    insert_counter_stats(&mut stats, CORE_COUNTERS);
+    insert_counter_stats(&mut stats, WATERMARK_COUNTERS);
+    insert_counter_stats(&mut stats, &MEASUREMENT_COUNTERS);
     // angr-v5a5: shared-lineage solver telemetry. The counters live in
     // `super::lineage` and are atomically incremented by `switch_to`; this
     // is the only place that surfaces them to the Python caller via
@@ -777,74 +704,15 @@ pub fn get_solver_stats() -> HashMap<String, u64> {
 pub fn reset_solver_stats() {
     #[cfg(feature = "vex-engine-z3")]
     crate::symbolic::query_class::reset();
-    Z3_CHECK_COUNT.store(0, Ordering::Relaxed);
-    Z3_CHECK_TIME_NS.store(0, Ordering::Relaxed);
-    Z3_MATERIALIZE_COUNT.store(0, Ordering::Relaxed);
-    Z3_MATERIALIZE_TIME_NS.store(0, Ordering::Relaxed);
-    Z3_ASSUME_CONCRETE_COUNT.store(0, Ordering::Relaxed);
-    Z3_ASSUME_SYMBOLIC_COUNT.store(0, Ordering::Relaxed);
-    Z3_BRANCH_CHECK_COUNT.store(0, Ordering::Relaxed);
-    Z3_BRANCH_CONCRETE_COUNT.store(0, Ordering::Relaxed);
-    Z3_BRANCH_MODEL_HIT_COUNT.store(0, Ordering::Relaxed);
-    Z3_BRANCH_MODEL_MISS_COUNT.store(0, Ordering::Relaxed);
-    Z3_EXTREMA_MODEL_HIT_COUNT.store(0, Ordering::Relaxed);
-    Z3_EXTREMA_MODEL_MISS_COUNT.store(0, Ordering::Relaxed);
-    Z3_EVAL_UPTO_MODEL_HIT_COUNT.store(0, Ordering::Relaxed);
-    Z3_AST_BUILD_COUNT.store(0, Ordering::Relaxed);
-    Z3_AST_CACHE_HIT_COUNT.store(0, Ordering::Relaxed);
-    Z3_AST_CACHE_MISS_COUNT.store(0, Ordering::Relaxed);
-    Z3_AST_MEMO_HIT_COUNT.store(0, Ordering::Relaxed);
-    Z3_BOOL_BUILD_COUNT.store(0, Ordering::Relaxed);
-    Z3_BOOL_BUILD_NODES.store(0, Ordering::Relaxed);
-    Z3_BOOL_MEMO_REUSED_NODES.store(0, Ordering::Relaxed);
-    Z3_BOOL_MEMOIZED_SUBTREE_COUNT.store(0, Ordering::Relaxed);
-    Z3_SAT_COUNT.store(0, Ordering::Relaxed);
-    Z3_UNSAT_COUNT.store(0, Ordering::Relaxed);
-    Z3_TIMEOUT_COUNT.store(0, Ordering::Relaxed);
-    MEM_ITE_DEPTH_MAX.store(0, Ordering::Relaxed);
-    MEM_ITE_DEPTH_TOTAL.store(0, Ordering::Relaxed);
-    // angr-2j5v counters
-    VEX_UNOP_TOTAL.store(0, Ordering::Relaxed);
-    VEX_BINOP_TOTAL.store(0, Ordering::Relaxed);
-    VEX_TRIOP_TOTAL.store(0, Ordering::Relaxed);
-    VEX_QOP_TOTAL.store(0, Ordering::Relaxed);
-    VEX_OP_ARITH.store(0, Ordering::Relaxed);
-    VEX_OP_LOGIC.store(0, Ordering::Relaxed);
-    VEX_OP_SHIFT.store(0, Ordering::Relaxed);
-    VEX_OP_CMP.store(0, Ordering::Relaxed);
-    VEX_OP_EXT.store(0, Ordering::Relaxed);
-    VEX_OP_FP.store(0, Ordering::Relaxed);
-    VEX_OP_VEC.store(0, Ordering::Relaxed);
-    VEX_OP_OTHER.store(0, Ordering::Relaxed);
-    MEM_LOAD_COUNT.store(0, Ordering::Relaxed);
-    MEM_STORE_COUNT.store(0, Ordering::Relaxed);
-    MEM_LOAD_BYTES.store(0, Ordering::Relaxed);
-    MEM_STORE_BYTES.store(0, Ordering::Relaxed);
-    MEM_LOAD_SYMBOLIC_ADDR.store(0, Ordering::Relaxed);
-    MEM_STORE_SYMBOLIC_ADDR.store(0, Ordering::Relaxed);
-    MEM_LAZY_PAGE_FAULT_COUNT.store(0, Ordering::Relaxed);
-    CONCRETIZE_READ_COUNT.store(0, Ordering::Relaxed);
-    CONCRETIZE_WRITE_COUNT.store(0, Ordering::Relaxed);
-    CONCRETIZE_TOTAL_CANDIDATES.store(0, Ordering::Relaxed);
-    CONCRETIZE_MAX_CANDIDATES.store(0, Ordering::Relaxed);
-    CONCRETIZE_DISJUNCTION_COUNT.store(0, Ordering::Relaxed);
-    CONCRETIZE_DISJUNCTION_TERMS_TOTAL.store(0, Ordering::Relaxed);
-    CONCRETIZE_DISJUNCTION_MAX_TERMS.store(0, Ordering::Relaxed);
-    BVOP_REVERSE_COUNT.store(0, Ordering::Relaxed);
-    BVOP_CONCAT_COUNT.store(0, Ordering::Relaxed);
-    BVOP_EXTRACT_COUNT.store(0, Ordering::Relaxed);
-    // angr-g7nq / angr-acoq / angr-1joc measurement groups: same table
-    // `get_solver_stats` emits from, so a counter cannot be emitted without
-    // also being cleared here.
-    reset_measurement_counters(&MEASUREMENT_COUNTERS);
-    ADD_CONSTRAINT_RAW_TOTAL_COUNT.store(0, Ordering::Relaxed);
-    BRANCH_COND_SIMPLIFY_SAMPLED_COUNT.store(0, Ordering::Relaxed);
-    BRANCH_COND_SIMPLIFY_REDUCED_COUNT.store(0, Ordering::Relaxed);
-    // Reset-but-never-emitted by design; see the doc comment on the static.
+    // Same tables `get_solver_stats` emits from, so a counter cannot be
+    // emitted without also being cleared here (angr-9ke6b.150 for the
+    // measurement groups, angr-03vl4.64 for the rest).
+    reset_counter_stats(CORE_COUNTERS);
+    reset_counter_stats(WATERMARK_COUNTERS);
+    reset_counter_stats(&MEASUREMENT_COUNTERS);
+    // Reset-but-never-emitted by design, hence absent from the tables above;
+    // see the doc comment on the static.
     SIMPLIFY_SAMPLE_TICKER.store(0, Ordering::Relaxed);
-    // angr-0xyq2 Phase 2: bounded symbolic file content serving.
-    SYMFILE_READS_NATIVE.store(0, Ordering::Relaxed);
-    SYMFILE_WRITE_DEMOTIONS.store(0, Ordering::Relaxed);
     // angr-v5a5: clear lineage telemetry alongside the rest.
     #[cfg(feature = "vex-engine-z3")]
     super::lineage::reset_lineage_stats();
