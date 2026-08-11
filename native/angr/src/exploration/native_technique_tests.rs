@@ -118,6 +118,66 @@ fn merge_point_defers_then_fires_on_counter() {
     assert_eq!(active_ids.len(), 2, "live state + merged product");
 }
 
+/// Records every `state_id` passed to `on_state_removed`; forwards the deque
+/// operations to `Lifo` so nothing else changes. Local copy of the same spy
+/// `state_lifecycle_tests.rs` and `scheduler_worker_tests.rs` use — each
+/// `test_submod!` module is private to its parent, so the shape cannot be
+/// shared without widening a test-only surface across modules.
+#[derive(Default)]
+struct SpyPolicy {
+    removed: std::sync::Mutex<Vec<u64>>,
+}
+
+impl selection_policy::SelectionPolicy for SpyPolicy {
+    fn select(&self, active: &mut VecDeque<RustSimState>) -> Option<RustSimState> {
+        selection_policy::Lifo.select(active)
+    }
+
+    fn on_fork(&self, active: &mut VecDeque<RustSimState>, state: RustSimState) {
+        selection_policy::Lifo.on_fork(active, state);
+    }
+
+    fn name(&self) -> &'static str {
+        "spy"
+    }
+
+    fn on_state_removed(&self, state_id: u64) {
+        self.removed.lock().expect("spy poisoned").push(state_id);
+    }
+}
+
+/// Parking waiters out of STASH_ACTIVE happens outside `policy.select`, so
+/// MergePoint must notify the policy for exactly the parked states — otherwise
+/// `LoopHeadRoundRobin::key_cache` keeps a memo entry per waiter for the life
+/// of the policy (angr-03vl4.20, sibling of the Timeout / LengthLimiter /
+/// LoopBound notifies pinned by `invariant-on-state-removed-notify-sites`).
+#[test]
+fn merge_point_parking_notifies_policy_of_removed_states() {
+    Python::initialize();
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    let spy = std::sync::Arc::new(SpyPolicy::default());
+    mgr.policy = spy.clone();
+    let parked_a = push_active_at(&mut mgr, 0x6000, 0xF);
+    let parked_b = push_active_at(&mut mgr, 0x6000, 0xF);
+    // Keeps the frontier non-empty so the round parks without merging, which
+    // isolates the parking notify from any merge-path removal.
+    let live = push_active_at(&mut mgr, 0x7000, 0x11);
+    mgr.register_merge_point(0x6000, 10);
+
+    mgr.apply_native_techniques();
+
+    assert_eq!(mgr.sm.get("merge_waiting_0x6000").unwrap().len(), 2);
+    assert_eq!(mgr.states_merged_native, 0, "no merge this round");
+    let mut notified = spy.removed.lock().expect("spy poisoned").clone();
+    notified.sort_unstable();
+    let mut expected = vec![parked_a, parked_b];
+    expected.sort_unstable();
+    assert_eq!(
+        notified, expected,
+        "exactly the parked states are announced; the still-active {live:#x} is not",
+    );
+}
+
 // --- Timeout / LengthLimiter / LoopBound native techniques (angr-9ke6b.77) -
 // The other three `apply_native_techniques` arms. LengthLimiter and LoopBound
 // share the "scan active, collect indices, remove in reverse, re-home the

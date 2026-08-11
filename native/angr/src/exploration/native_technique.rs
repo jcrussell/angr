@@ -249,7 +249,16 @@ impl RustExplorationManager {
                 *counter += 1;
                 *counter
             }
-            _ => return,
+            // The caller (`apply_native_techniques`) reached this method only
+            // by matching this exact slot as `MergePoint`, and nothing between
+            // that match and here touches `native_techniques`, so the variant
+            // cannot have changed. Fail loud rather than silently skipping the
+            // round if a future refactor breaks that (angr-03vl4.22) — same
+            // treatment `merge_waiters_by_callstack` gives its own
+            // provably-holds invariant.
+            other => {
+                unreachable!("apply_merge_point called for a non-MergePoint technique: {other:?}")
+            }
         };
 
         // 3. Keep waiting while the frontier is non-empty and we are under the
@@ -266,7 +275,7 @@ impl RustExplorationManager {
                 cat_c,
                 self._move_states(wait_stash, STASH_ACTIVE, None),
                 0,
-                |err| "veritesting: releasing the lone waiter from '{wait_stash}' failed, \
+                |err| "MergePoint: releasing the lone waiter from '{wait_stash}' failed, \
                        the path is stranded: {err}"
             );
             return;
@@ -279,6 +288,11 @@ impl RustExplorationManager {
 
     /// Move every state in `from` whose pc equals `address` into `to`,
     /// updating the state index. Returns the number of states moved.
+    ///
+    /// When `from` is `STASH_ACTIVE` the parked states leave the active deque
+    /// outside `policy.select`, so each one is announced through
+    /// `policy.on_state_removed` — same stash-generic guard `_move_states` uses
+    /// (angr-03vl4.20; invariant `invariant-on-state-removed-notify-sites`).
     fn park_states_at_address(&mut self, from: &str, to: &str, address: u64) -> usize {
         let moved: Vec<RustSimState> = {
             let stash = match self.sm.get_mut(from) {
@@ -300,6 +314,11 @@ impl RustExplorationManager {
         let count = moved.len();
         if count == 0 {
             return 0;
+        }
+        if from == STASH_ACTIVE {
+            for state in &moved {
+                self.policy.on_state_removed(state.state_id());
+            }
         }
         for state in moved {
             let sid = state.state_id();
