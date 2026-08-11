@@ -93,7 +93,7 @@ impl RustExplorationManager {
             syscall_native_by_num: HashMap::new(),
             dcas_warned_states: HashSet::new(),
             skip_hook_stack: Vec::new(),
-            policy: Arc::new(selection_policy::Fifo), // Default to BFS (FIFO)
+            policy: selection_policy::default_policy(), // Default to BFS (FIFO)
             constraint_solver: ConstraintSolver::new(),
             memory_config: MemoryConfiguration::default(),
             max_active_states: None,

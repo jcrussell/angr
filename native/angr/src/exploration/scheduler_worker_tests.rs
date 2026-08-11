@@ -10,6 +10,7 @@
 //! affordability transition — and Trigger B's independence from it — are pinned.
 
 use super::*;
+use crate::exploration::selection_policy::{Fifo, default_policy};
 
 /// A minimal migratable state. `offload_surplus` only detaches and counts, so
 /// no registers or constraints are needed.
@@ -153,7 +154,8 @@ fn test_trigger_b_holds_at_the_high_water_mark() {
 // EVERY popped state, on both Trigger A (idle-gated) and Trigger B (HWM cap).
 // ---------------------------------------------------------------------------
 
-/// A policy that forwards `select`/`on_fork` to `Lifo` but records every
+/// A policy that forwards `select`/`on_fork`/`select_for_offload` to `Lifo` but
+/// records every
 /// `state_id` passed to `on_state_removed`, so tests can assert exactly which
 /// states `offload_surplus` evicted without needing access to any real
 /// policy's private memo table.
@@ -169,6 +171,12 @@ impl SelectionPolicy for SpyPolicy {
 
     fn on_fork(&self, active: &mut VecDeque<RustSimState>, state: RustSimState) {
         Lifo.on_fork(active, state);
+    }
+
+    /// Forwarded too, so the two `on_state_removed` tests below keep asserting
+    /// against `Lifo`'s cold end (the front) rather than the trait default's.
+    fn select_for_offload(&self, local: &mut VecDeque<RustSimState>) -> Option<RustSimState> {
+        Lifo.select_for_offload(local)
     }
 
     fn name(&self) -> &'static str {
@@ -241,6 +249,91 @@ fn test_offload_surplus_notifies_policy_on_trigger_b_offload() {
 }
 
 // ---------------------------------------------------------------------------
+// offload picks the end the POLICY calls cold (angr-03vl4.19)
+//
+// `offload_one` used to hardcode `local.pop_front()`, documented as "the
+// coldest (front) state". That is only true for `Lifo` — and the production
+// default is `Fifo`, which dispatches from the front, so every default-policy
+// offload shipped away exactly the state `dispatch_next` was about to hand back
+// for free, paying a full Z3 detach/reattach round-trip for it. The pick now
+// goes through `policy.select_for_offload`; these pin both ends of the mirror,
+// and the `default_policy()` test drives the real production wiring rather than
+// the `Lifo` helper the rest of this file uses.
+// ---------------------------------------------------------------------------
+
+/// Trigger-A-offload `idle` states out of a fresh `n`-state local deque under
+/// `policy`. Returns `(all ids in deque order, ids still local afterward)`.
+fn offload_under(policy: &Arc<dyn SelectionPolicy>, n: usize, idle: usize) -> (Vec<u64>, Vec<u64>) {
+    let states: Vec<RustSimState> = (0..n).map(|_| plain_state()).collect();
+    let ids: Vec<u64> = states.iter().map(|s| s.state_id()).collect();
+    let mut local: VecDeque<RustSimState> = states.into_iter().collect();
+    let injector: Injector<StateMigrationPayload> = Injector::new();
+    let idle_workers = AtomicUsize::new(idle);
+    let counters = SchedulerCounters::default();
+
+    offload_surplus(&mut local, &injector, &idle_workers, &counters, policy);
+
+    (ids, local.iter().map(|s| s.state_id()).collect())
+}
+
+// `Fifo` dispatches the front, so its cold end is the tail.
+#[test]
+fn test_fifo_offloads_the_tail_and_keeps_its_next_dispatch() {
+    let policy: Arc<dyn SelectionPolicy> = Arc::new(Fifo);
+    let (ids, left) = offload_under(&policy, 4, 2);
+    assert_eq!(
+        left,
+        ids[..2],
+        "the two tail states migrated; the front survivors stay local",
+    );
+    // The state `Fifo::select` would hand back next must still be here — that
+    // is the whole point of offloading the far end.
+    assert_eq!(left[0], ids[0], "the next local dispatch was not shipped away");
+}
+
+// `Lifo` dispatches the tail, so its cold end is the front — the mirror image.
+#[test]
+fn test_lifo_offloads_the_front_and_keeps_its_next_dispatch() {
+    let policy: Arc<dyn SelectionPolicy> = Arc::new(Lifo);
+    let (ids, left) = offload_under(&policy, 4, 2);
+    assert_eq!(left, ids[2..], "the two front states migrated");
+    assert_eq!(
+        *left.last().expect("two survivors"),
+        *ids.last().expect("four states"),
+        "the next local dispatch was not shipped away",
+    );
+}
+
+// The production default, exercised through the exact constructor
+// `RustExplorationManager` uses (`selection_policy::default_policy()`) rather
+// than a policy this file names for itself — the drift that hid the bug.
+#[test]
+fn test_default_policy_offload_spares_the_next_dispatch() {
+    let policy = default_policy();
+    assert_eq!(policy.name(), "fifo", "the manager default is BFS");
+
+    // Two states, one starving sibling: one migrates. Then ask the SAME policy
+    // which of the survivors it dispatches next and assert that state never
+    // left — the property the old hardcoded `pop_front` broke.
+    let states: Vec<RustSimState> = (0..2).map(|_| plain_state()).collect();
+    let ids: Vec<u64> = states.iter().map(|s| s.state_id()).collect();
+    let mut local: VecDeque<RustSimState> = states.into_iter().collect();
+    let injector: Injector<StateMigrationPayload> = Injector::new();
+    let idle_workers = AtomicUsize::new(1);
+    let counters = SchedulerCounters::default();
+
+    offload_surplus(&mut local, &injector, &idle_workers, &counters, &policy);
+
+    assert_eq!(local.len(), 1, "one state went to the starving sibling");
+    let next = policy.select(&mut local).expect("one survivor");
+    assert_eq!(
+        next.state_id(),
+        ids[0],
+        "the default policy's next dispatch stayed local; the far end migrated",
+    );
+}
+
+// ---------------------------------------------------------------------------
 // dispatch / steal / absorb / drain bookkeeping (angr-ph300.3.2)
 //
 // `scheduler_tests.rs` drives the pool end to end, where these helpers only ever
@@ -251,7 +344,11 @@ fn test_offload_surplus_notifies_policy_on_trigger_b_offload() {
 // workload.
 // ---------------------------------------------------------------------------
 
-/// A transport with the default `Lifo` policy, as the pool builds it.
+/// A transport pinned to `Lifo` — NOT what the pool builds by default. The
+/// production default is `selection_policy::default_policy()` (`Fifo`, threaded
+/// down as `Arc::clone(&self.policy)` by `run_loop_wave.rs` /
+/// `run_loop_steady.rs`); this helper exists only because the dispatch-order
+/// assertions below are written against `Lifo`'s freshest-first order.
 fn lifo_transport() -> WorkTransport {
     WorkTransport::with_policy(Arc::new(Lifo))
 }

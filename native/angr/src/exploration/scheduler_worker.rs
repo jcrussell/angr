@@ -289,7 +289,10 @@ pub(super) fn worker_session_loop(
 /// leaves on (session mpsc vs. the wave's `results` vec).
 ///
 /// Like `offload_surplus`, this detaches states from `local` WITHOUT going
-/// through `policy.select` — `local.drain(..)` bypasses it entirely — and the
+/// through `policy.select` — `local.drain(..)` bypasses it entirely. There is
+/// no hot/cold end to respect here the way `offload_one` has to: a residual
+/// drain takes the whole deque, so `select_for_offload` has nothing to choose
+/// between. What it shares with the offload path is the eviction hook, and the
 /// coordinator routes the drained states back to `STASH_ACTIVE`, from where a
 /// steady session's `seed_steady_session_from_active` -> `inject_seeds` puts
 /// them back on the shared injector. A stolen-back state is reattached
@@ -340,8 +343,9 @@ pub(super) fn drain_local_upstream(session: &RunSession, local: &mut VecDeque<Ru
     });
 }
 
-/// Pull the next state to process: the live local queue first (LIFO — the
-/// freshest child is hottest in cache and the Z3 context; zero serde), else
+/// Pull the next state to process: the live local queue first (whichever end
+/// `policy.select` names — a local state is hot in cache and the Z3 context;
+/// zero serde), else
 /// steal + reattach from the shared injector. Returns `None` when no task is
 /// available and none can ever appear (quiescence) — or on cancellation.
 /// Shared verbatim by [`worker_loop`] and [`worker_session_loop`] (DRY: the
@@ -355,8 +359,9 @@ pub(super) fn dispatch_next(
 ) -> Option<RustSimState> {
     loop {
         // Local frontier pop goes through the selection policy (angr-1ilq.9):
-        // `Lifo` (the default) reproduces the pre-seam `pop_back`; a find-aware
-        // policy can reorder without touching this skeleton.
+        // `Fifo` (the constructor default, see `selection_policy`'s module doc)
+        // takes the front and `Lifo` reproduces the pre-seam `pop_back`; a
+        // find-aware policy can reorder without touching this skeleton.
         match t.policy.select(local) {
             Some(state) => {
                 t.counters.local_dispatches.fetch_add(1, Ordering::SeqCst);
@@ -493,7 +498,7 @@ pub(super) fn absorb_continues(
 /// Offload is a relocation of already-counted tasks; it does not touch
 /// `pending`.
 ///
-/// Every `pop_front` here detaches a state from the worker's local deque
+/// Every `select_for_offload` here detaches a state from the worker's local deque
 /// through a path other than `policy.select` — so `policy.on_state_removed`
 /// is called alongside it. That is the eviction hook a memoizing policy
 /// (`LoopHeadRoundRobin::key_cache`) needs: a state migrated through the
@@ -507,8 +512,9 @@ pub(super) fn offload_surplus(
     counters: &SchedulerCounters,
     policy: &Arc<dyn SelectionPolicy>,
 ) {
-    // Trigger A: idle-gated load sharing. Offload the COLDEST states (front),
-    // keeping our hot tail; at most one state per starving sibling, so the volume
+    // Trigger A: idle-gated load sharing. Offload the COLDEST states (whichever
+    // end `policy.select_for_offload` names), keeping our hot end; at most one
+    // state per starving sibling, so the volume
     // of Z3 serde is bounded by the idle count and not by the frontier width.
     let idle = idle_workers.load(Ordering::SeqCst);
     if idle > 0 && local.len() >= 2 && offload_is_affordable(counters) {
@@ -534,10 +540,17 @@ pub(super) fn offload_surplus(
     }
 }
 
-/// Detach the coldest (front) state from `local` and push it onto the shared
+/// Detach the coldest state from `local` — the end `policy.select_for_offload`
+/// nominates, NOT a hardcoded `pop_front` — and push it onto the shared
 /// injector, running the `on_state_removed` eviction hook and bumping the
 /// `surplus_offloaded` counter. Returns `false` when `local` is empty (nothing
 /// to offload).
+///
+/// Which end is cold is a property of the *policy*, and the constructor default
+/// is `Fifo` (front-dispatching), not `Lifo`: hardcoding `pop_front` here made
+/// every default-policy offload ship away exactly the state `select` was about
+/// to hand back for free, paying a full Z3 detach/reattach for it
+/// (angr-03vl4.19).
 ///
 /// This is the single body shared by both `offload_surplus` triggers: keeping
 /// the eviction hook + counter bump in one place is what prevents the
@@ -550,7 +563,7 @@ fn offload_one(
     policy: &Arc<dyn SelectionPolicy>,
     counters: &SchedulerCounters,
 ) -> bool {
-    if let Some(state) = local.pop_front() {
+    if let Some(state) = policy.select_for_offload(local) {
         policy.on_state_removed(state.state_id());
         injector.push(detach_timed(state, counters));
         counters.surplus_offloaded.fetch_add(1, Ordering::SeqCst);

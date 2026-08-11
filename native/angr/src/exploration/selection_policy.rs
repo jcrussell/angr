@@ -93,9 +93,20 @@
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use crate::state::RustSimState;
+
+/// The policy a freshly-constructed `RustExplorationManager` runs (BFS).
+///
+/// Exists so the scheduler tests can drive the *production* default instead of
+/// naming a policy of their own and silently drifting from it — the whole
+/// `scheduler_worker_tests.rs` suite pinned `Lifo` while production had
+/// defaulted to `Fifo` for as long as the seam existed, which is what let the
+/// hardcoded-`pop_front` offload bug live untested (angr-03vl4.19).
+pub(crate) fn default_policy() -> Arc<dyn SelectionPolicy> {
+    Arc::new(Fifo)
+}
 
 /// A pluggable active-state selection / fork-insertion policy.
 ///
@@ -112,10 +123,28 @@ pub trait SelectionPolicy: Send + Sync {
     /// Stable, human-readable name for logging / stats.
     fn name(&self) -> &'static str;
 
+    /// Choose and remove the state this policy is *least* likely to dispatch
+    /// next — the pick `scheduler_worker.rs::offload_one` ships to another
+    /// worker across a full Z3 detach/reattach round-trip. Offloading the
+    /// state `select` was about to hand back for free is pure serde cost (the
+    /// same waste angr-faorh / angr-8shhe removed from the halving shed), so
+    /// this is the offload-side mirror of `select`, not a second `select`.
+    ///
+    /// The default pops the **back**, which is the coldest end for every
+    /// built-in but [`Lifo`]: `Fifo` selects the front outright, and the
+    /// ranking policies (`CoverageGuided`, `FindDirected`,
+    /// `LoopHeadRoundRobin`, `DirectedCfgDistance`, and the front-biased
+    /// `min_by_key` in `RandomSelection`'s tie order) all break ties toward the
+    /// front per this module's order-determinism contract. `Lifo` overrides.
+    /// A future policy whose hot end is the tail must override too.
+    fn select_for_offload(&self, local: &mut VecDeque<RustSimState>) -> Option<RustSimState> {
+        local.pop_back()
+    }
+
     /// Notify the policy that `state_id` has left the local/active deque
     /// through a path other than `select` — namely cross-worker migration
     /// (`scheduler_worker.rs::offload_surplus` detaches straight from the
-    /// worker's local `VecDeque` via `pop_front`, bypassing `select`
+    /// worker's local `VecDeque` via `select_for_offload`, bypassing `select`
     /// entirely). Default no-op; only policies that memoize a per-`state_id`
     /// side table need to override this to evict the entry. Without this hook
     /// a migrated state's memo entry is never revisited by `select` (a
@@ -162,6 +191,13 @@ impl SelectionPolicy for Lifo {
     #[inline]
     fn on_fork(&self, active: &mut VecDeque<RustSimState>, state: RustSimState) {
         active.push_back(state);
+    }
+
+    /// The only built-in that dispatches from the tail, so its coldest end is
+    /// the front — the mirror image of the trait's default.
+    #[inline]
+    fn select_for_offload(&self, local: &mut VecDeque<RustSimState>) -> Option<RustSimState> {
+        local.pop_front()
     }
 
     fn name(&self) -> &'static str {
