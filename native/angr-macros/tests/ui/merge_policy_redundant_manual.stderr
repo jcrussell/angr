@@ -1,0 +1,5 @@
+error: field `memory`: #[merge_manual] is redundant on merge_policy "delegate" — only ["self_wins", "union", "max", "min", "warn_on_diverge"] are generated, every other policy is hand-written by definition
+ --> tests/ui/merge_policy_redundant_manual.rs:5:5
+  |
+5 |     #[merge_policy = "delegate"]
+  |     ^

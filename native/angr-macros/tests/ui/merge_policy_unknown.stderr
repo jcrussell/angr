@@ -1,0 +1,5 @@
+error: field `arch`: unknown merge_policy "self-wins" — expected one of ["self_wins", "in_place_self", "computed", "delegate", "union", "max", "min", "warn_on_diverge", "joint"]
+ --> tests/ui/merge_policy_unknown.rs:4:5
+  |
+4 |     #[merge_policy = "self-wins"]
+  |     ^

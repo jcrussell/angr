@@ -1,0 +1,5 @@
+error: #[steady_guarded] takes no arguments — the guard call it injects is not configurable; write a bare `#[angr_macros::steady_guarded]`
+ --> tests/ui/steady_guarded_with_args.rs:8:35
+  |
+8 |     #[angr_macros::steady_guarded(every = "step")]
+  |                                   ^^^^^

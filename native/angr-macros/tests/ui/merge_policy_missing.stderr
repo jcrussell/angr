@@ -1,0 +1,5 @@
+error: field `unlabelled` has no #[merge_policy = "..."] — document how it is combined across merge branches in state/fork.rs::merge (see the `angr_macros::MergePolicy` derive doc for the allowed values)
+ --> tests/ui/merge_policy_missing.rs:7:5
+  |
+7 |     unlabelled: u64,
+  |     ^^^^^^^^^^

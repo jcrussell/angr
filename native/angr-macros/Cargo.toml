@@ -19,3 +19,9 @@ proc-macro = true
 proc-macro2 = "1"
 quote = "1"
 syn = { version = "2", features = ["full"] }
+
+[dev-dependencies]
+# Compile-fail harness: the unit tests in src/lib.rs prove a `compile_error!`
+# token is *emitted*, only an end-to-end rustc run proves it actually halts
+# compilation with that message (angr-03vl4.78).
+trybuild = "1"
