@@ -43,6 +43,19 @@
 //! This is a Python-boundary module; `unwrap`/`expect` are denied here so a
 //! future panic-on-input landmine cannot be reintroduced without a reviewed,
 //! reasoned `#[allow]` (angr-qwyti.11 enforcement layer).
+//!
+//! **No `test_submod!` here, by design** (angr-03vl4.13). Every method in this
+//! file forwards to a `_`-prefixed body in a sibling module — see the
+//! `See ... for the body` line on each — and those modules carry the test
+//! coverage (`state_api.rs`, `state_lifecycle.rs`,
+//! `stats_api.rs`). What is left at this
+//! layer is the PyO3 signature and the `#[angr_macros::steady_guarded]`
+//! placement, neither of which a Rust-level unit test can observe: the
+//! signature defaults only apply to a call made *from Python*, and guard
+//! coverage is gated mechanically by `tools/audit_steady_guard_coverage.py`.
+//! Sibling `manager_methods_{procedures,techniques,state}.rs` do have test
+//! modules because their methods carry filtering / stash-declaration logic of
+//! their own rather than delegating outright.
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 use super::*;
 

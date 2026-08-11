@@ -388,3 +388,5 @@ impl RustExplorationManager {
         self._clear_pending_dirty_tracking(state_id)
     }
 }
+
+test_submod!("manager_methods_state_tests.rs" => tests);

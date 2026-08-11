@@ -125,3 +125,5 @@ impl RustExplorationManager {
         }
     }
 }
+
+test_submod!("manager_methods_procedures_tests.rs" => tests);

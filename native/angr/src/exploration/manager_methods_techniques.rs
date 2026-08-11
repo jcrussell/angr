@@ -121,3 +121,5 @@ impl RustExplorationManager {
         self.native_techniques.clear();
     }
 }
+
+test_submod!("manager_methods_techniques_tests.rs" => tests);
