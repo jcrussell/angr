@@ -876,3 +876,68 @@ fn wide_sdiv_srem_degenerate_to_unsigned() {
         }
     }
 }
+
+// angr-03vl4.59: rotl/rotr concrete fast paths at width > 128.
+#[test]
+fn wide_rotate_declines_the_concrete_fold() {
+    let ctx = SymContext::new_mock();
+    for &w in &WIDE_WIDTHS {
+        for &v in &wide_payloads() {
+            for &a in &wide_shift_amounts(w) {
+                for (name, got, op) in [
+                    ("rotl", bv(v, w).rotl(&bv(a, w), &ctx), BVOp::RotL),
+                    ("rotr", bv(v, w).rotr(&bv(a, w), &ctx), BVOp::RotR),
+                ] {
+                    assert_eq!(got.width(), w, "{name} width w={w} v={v:#x} a={a}");
+                    if a % (w as u128) == 0 {
+                        // Rotation by a multiple of the width is the identity
+                        // and stays foldable even above the storage ceiling.
+                        assert_eq!(val(&got), v, "{name} w={w} v={v:#x} a={a}");
+                    } else {
+                        // Every set bit of a `width > 128` `Concrete` lives in
+                        // the low 128 bits; rotating any of them lands outside
+                        // the u128 payload, so there is no concrete answer to
+                        // fold to. The node must stay symbolic rather than
+                        // shift a u128 by `amt >= 128` (abort/wrap).
+                        assert!(
+                            got.as_u128().is_none(),
+                            "{name} must not fold w={w} v={v:#x} a={a}"
+                        );
+                        assert_eq!(got.op(), Some(&op), "{name} op w={w} v={v:#x} a={a}");
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The `width <= 128` fold is unchanged by the wide guard: check it against an
+/// independent masked-`u128` reference across the boundary widths and the
+/// amounts that straddle 0 / w / 2^32.
+#[test]
+fn narrow_rotate_matches_masked_u128_reference() {
+    let ctx = SymContext::new_mock();
+    for &w in &BOUNDARY_WIDTHS {
+        for &v in &boundary_values(w) {
+            for &raw_a in &[0u128, 1, 7, (w - 1) as u128, w as u128, 1u128 << 32] {
+                // The amount operand is itself a `width`-bit BV, so `concrete()`
+                // masks it; the reference must see the same masked value.
+                let a = raw_a & mask(w);
+                let amt = (a % w as u128) as u32;
+                let want_l = if amt == 0 {
+                    v
+                } else {
+                    ((v << amt) | (v >> (w - amt))) & mask(w)
+                };
+                let want_r = if amt == 0 {
+                    v
+                } else {
+                    ((v >> amt) | (v << (w - amt))) & mask(w)
+                };
+                let (x, n) = (bv(v, w), bv(a, w));
+                assert_eq!(val(&x.rotl(&n, &ctx)), want_l, "rotl w={w} v={v:#x} a={a}");
+                assert_eq!(val(&x.rotr(&n, &ctx)), want_r, "rotr w={w} v={v:#x} a={a}");
+            }
+        }
+    }
+}
