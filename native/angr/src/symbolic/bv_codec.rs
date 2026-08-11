@@ -90,8 +90,11 @@ pub(super) fn make_bv_from_bytes(bytes: &[u8], width: u32) -> z3::ast::BV {
     let top_bits = width % 64; // ragged top chunk width (0 when 64 | width)
     let top_bytes = top_bits.div_ceil(8) as usize;
 
-    // Read `count` big-endian bytes starting at `start`, zero-filling any
-    // out-of-range index (defensive: the sole caller sizes `bytes` exactly).
+    // Read `count` big-endian bytes starting at `start`.
+    // SILENT(cat-a): an out-of-range index zero-fills rather than panicking.
+    // The sole caller (`SymContext::eval_upto_wide`) feeds bytes produced by
+    // `extract_bv_value_wide` at this same `width`, so the slice is
+    // exact-length by construction and the fallback is unreachable.
     let read = |start: usize, count: usize| -> u64 {
         let mut val: u64 = 0;
         for i in 0..count {
