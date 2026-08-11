@@ -3,7 +3,29 @@
 //! Bodies for the cluster of pyclass-exposed methods that read or mutate the
 //! `pending_callback` state — registers, memory, history, jumpkind, dirty
 //! pages, constraints, snapshots, and solver fork/borrow helpers — plus the
-//! related skip-hook stack. The pyclass-facing thin wrappers live in the
+//! related skip-hook stack.
+//!
+//! Not everything here is pending-scoped, and the distinction matters when
+//! deciding where a new method belongs or when auditing which code can touch
+//! `pending_callbacks`. Three groups:
+//!
+//! * **Pending-scoped** (the majority): reach the state through
+//!   `with_pending` / `with_pending_mut`, so they fail when no callback is
+//!   pending for the id. `_get_active_handle_ids` belongs here too — it
+//!   unions over *all* `pending_callbacks` rather than taking a `state_id`.
+//! * **General-state-scoped**: `_import_symbolic_to_state`, `_set_fs_cwd`,
+//!   `_register_file_content`, `_seed_stdin_content`, `_get_demoted_paths`
+//!   and `_demote_file_path` route through `with_state` / `with_state_mut`
+//!   against an arbitrary `state_id`, which resolves a pending callback
+//!   *or* a stashed state — the same access shape as the methods homed in
+//!   `state_api.rs`. They live here only because they arrived alongside the
+//!   pending import/export plumbing (angr-03vl4.24).
+//! * **Manager-global**: `_active_states_map_memory` walks the stashes, and
+//!   the `_set_skip_hook_addr` / `_clear_skip_hook_addr` /
+//!   `_clear_skip_hook_for_addr` / `consume_skip_hook` quartet operates on
+//!   the manager's skip-hook stack; neither consults a `state_id`.
+//!
+//! The pyclass-facing thin wrappers live in the
 //! `manager_methods_*.rs` family — split between `manager_methods_state.rs`
 //! and `manager_methods_constraints.rs` — and forward to the `pub(crate)`
 //! bodies in this module. (They were in `mod.rs` until the `#[pymethods]`
