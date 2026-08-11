@@ -596,3 +596,38 @@ fn dispatch_multi_load_over_cap_without_full_callback_still_builds_ite() {
         assert_eq!(val.width(), 32);
     });
 }
+
+/// `regarray_offset` computes the rotating window offset for a well-formed
+/// descriptor, and rejects `nElems == 0` with `InvalidIR` instead of panicking
+/// on the `%` — `nElems` is lifter-derived and never validated on the way in
+/// (see the guard in `regarray_offset`).
+#[test]
+fn regarray_offset_rotates_and_rejects_zero_nelems() {
+    use crate::vex::ir::IRRegArray;
+
+    let ctx = SymContext::new_mock();
+    let interp = new_interp(&ctx);
+
+    // Well-formed: an 8-element array of I64 based at offset 0x100.
+    // idx 6 + bias 3 == 9, which wraps to element 1 => 0x100 + 1 * 8.
+    let descr = IRRegArray { base: 0x100, elemTy: IRType::I64, nElems: 8 };
+    let ix = RustBV::concrete(6, 64);
+    let (offset, elem_size) = interp
+        .regarray_offset(&descr, &ix, 3, "GetI")
+        .expect("well-formed descriptor resolves");
+    assert_eq!(elem_size, 8);
+    assert_eq!(offset, 0x100 + 8);
+
+    // Malformed: nElems == 0 would divide by zero. Must be a loud InvalidIR.
+    let bad = IRRegArray { base: 0x100, elemTy: IRType::I64, nElems: 0 };
+    let err = interp
+        .regarray_offset(&bad, &ix, 3, "PutI")
+        .expect_err("nElems == 0 must not be executed");
+    match err {
+        CbExecutionError::InvalidIR(msg) => {
+            assert!(msg.contains("PutI"), "site should be named: {msg}");
+            assert!(msg.contains("nElems"), "cause should be named: {msg}");
+        }
+        other => panic!("expected InvalidIR, got {other:?}"),
+    }
+}

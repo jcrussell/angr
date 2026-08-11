@@ -650,6 +650,18 @@ impl<'a> VEXInterpreter<'a> {
 
         // Calculate the rotating register offset:
         // offset = base + ((idx + bias) % nElems) * elemTy.bytes()
+        //
+        // `nElems` is lifter-derived (deserialized from pyvex or marshalled
+        // from the libVEX FFI) and is never validated on the way in, so a
+        // malformed/hand-crafted IRSB can carry 0 here. Real libVEX only ever
+        // emits a small nonzero nElems, so this is a trust-boundary check in
+        // the same class as the LoadG/CAS/LLSC ones in `statements.rs`: fail
+        // loud with `InvalidIR` rather than panic on divide-by-zero.
+        if descr.nElems == 0 {
+            return Err(CbExecutionError::InvalidIR(format!(
+                "{site} register array descriptor has nElems == 0"
+            )));
+        }
         let elem_size = descr.elemTy.bytes();
         let index = ((idx as u32).wrapping_add(bias)) % descr.nElems;
         Ok((descr.base + index * elem_size, elem_size))
