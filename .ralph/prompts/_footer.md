@@ -22,7 +22,13 @@ Otherwise, for each task follow this loop:
     are hard gates — committing warnings re-reddens them. If you touch Python,
     the edit hook auto-runs ruff, but a manual
     `ruff check --fix <file> && ruff format <file>` before commit is the
-    belt-and-suspenders.)
+    belt-and-suspenders. Since angr-z3672 the Stop hook runs a second Rust
+    check after clippy — CI's rustdoc lane,
+    `RUSTDOCFLAGS='-D warnings' cargo doc --manifest-path native/angr/Cargo.toml
+    --no-deps --all-features --document-private-items` (~4s warm) — so an
+    iteration that edits doc comments no longer has to remember to run it by
+    hand. See bd memory `invariant-rustdoc-intra-doc-links` for the three
+    link-authoring rules it enforces.)
  6. If Rust changed: `pip install -e . --no-build-isolation --no-deps`
  7. Test: `python -m pytest tests/engines/rust/ -v --tb=short`
  8. If tests pass: `git add <changed files> && git commit -m "<description>"`
