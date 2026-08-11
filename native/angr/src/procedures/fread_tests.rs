@@ -28,7 +28,7 @@ fn test_fread_concrete_content() {
         "a.txt".to_string(),
         FdFlags::ReadOnly,
         b"hello".to_vec(),
-    );
+    ).expect("fd space is not exhausted in tests");
     let file_ptr = 0x2800;
     write_file_struct(&mut state, file_ptr, fd);
 
@@ -62,7 +62,7 @@ fn test_fread_item_count_rounds_down() {
         "a.txt".to_string(),
         FdFlags::ReadOnly,
         b"hello".to_vec(),
-    );
+    ).expect("fd space is not exhausted in tests");
     let file_ptr = 0x2800;
     write_file_struct(&mut state, file_ptr, fd);
 
@@ -91,7 +91,7 @@ fn test_fread_empty_content_falls_back() {
     let fd =
         state
             .file_system()
-            .open_with_content("sym.txt".to_string(), FdFlags::ReadOnly, Vec::new());
+            .open_with_content("sym.txt".to_string(), FdFlags::ReadOnly, Vec::new()).expect("fd space is not exhausted in tests");
     let file_ptr = 0x2800;
     write_file_struct(&mut state, file_ptr, fd);
 
@@ -118,7 +118,7 @@ fn open_registered_sym_file(state: &mut RustSimState, path: &str, n: usize) -> u
     state.file_system().register_file_content(path, bytes);
     state
         .file_system()
-        .open(path.to_string(), FdFlags::ReadOnly)
+        .open(path.to_string(), FdFlags::ReadOnly).expect("fd space is not exhausted in tests")
 }
 
 #[test]
@@ -196,7 +196,7 @@ fn test_fread_content_sym_item_over_4096_returns_full_item() {
     state.file_system().register_file_content("/tmp/big", bytes);
     let fd = state
         .file_system()
-        .open("/tmp/big".to_string(), FdFlags::ReadOnly);
+        .open("/tmp/big".to_string(), FdFlags::ReadOnly).expect("fd space is not exhausted in tests");
     let file_ptr = 0x12800;
     write_file_struct(&mut state, file_ptr, fd);
 
@@ -310,7 +310,7 @@ fn test_fread_unlocked_matches_fread() {
         "a.txt".to_string(),
         FdFlags::ReadOnly,
         b"abcd".to_vec(),
-    );
+    ).expect("fd space is not exhausted in tests");
     let file_ptr = 0x2800;
     write_file_struct(&mut state, file_ptr, fd);
 

@@ -142,7 +142,7 @@ fn test_export_full_heap_and_open_fds() {
     assert_eq!(s.heap_free(a1), Some(32), "free returns the tracked size");
 
     let fd =
-        s.fs.open_with_content("/flag.txt".to_string(), FdFlags::ReadOnly, vec![b'A'; 10]);
+        s.fs.open_with_content("/flag.txt".to_string(), FdFlags::ReadOnly, vec![b'A'; 10]).expect("fd space is not exhausted in tests");
 
     let snap = s.export_full();
 

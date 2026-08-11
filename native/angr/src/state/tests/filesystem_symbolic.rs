@@ -22,7 +22,7 @@ fn test_register_file_content_open_attaches() {
     // Registration alone makes the path visible to access/stat.
     assert!(fs.is_path_known("/tmp/flag"));
 
-    let fd = fs.open("/tmp/flag".to_string(), FdFlags::ReadOnly);
+    let fd = fs.open("/tmp/flag".to_string(), FdFlags::ReadOnly).expect("fd space is not exhausted in tests");
     let attached = fs
         .fd_content_sym(fd)
         .expect("open attaches registry content");
@@ -39,7 +39,7 @@ fn test_register_file_content_open_attaches() {
     // open_symbolic does NOT attach: the stream model (mint-forever) and
     // the bounded-file model (EOF at size) have conflicting EOF semantics,
     // and the stream model wins for open_symbolic (angr-0xyq2 A5).
-    let fd_sym = fs.open_symbolic("/tmp/flag".to_string(), FdFlags::ReadOnly);
+    let fd_sym = fs.open_symbolic("/tmp/flag".to_string(), FdFlags::ReadOnly).expect("fd space is not exhausted in tests");
     assert!(fs.is_symbolic(fd_sym));
     assert!(fs.fd_content_sym(fd_sym).is_none());
 }
@@ -53,8 +53,8 @@ fn test_register_file_content_cwd_relative_open() {
     assert!(fs.is_path_known("/home/user/flag.txt"));
 
     // Both the relative and the absolute spelling of the same file attach.
-    let fd_rel = fs.open("flag.txt".to_string(), FdFlags::ReadOnly);
-    let fd_abs = fs.open("/home/user/flag.txt".to_string(), FdFlags::ReadOnly);
+    let fd_rel = fs.open("flag.txt".to_string(), FdFlags::ReadOnly).expect("fd space is not exhausted in tests");
+    let fd_abs = fs.open("/home/user/flag.txt".to_string(), FdFlags::ReadOnly).expect("fd space is not exhausted in tests");
     let rel = fs.fd_content_sym(fd_rel).expect("relative open attaches");
     let abs = fs.fd_content_sym(fd_abs).expect("absolute open attaches");
     assert!(Arc::ptr_eq(&rel, &abs));
@@ -64,7 +64,7 @@ fn test_register_file_content_cwd_relative_open() {
 fn test_content_sym_fork_shares_arc() {
     let mut fs = FileSystem::default();
     fs.register_file_content("/tmp/flag", sym_file_bytes(4, "fork"));
-    let fd = fs.open("/tmp/flag".to_string(), FdFlags::ReadOnly);
+    let fd = fs.open("/tmp/flag".to_string(), FdFlags::ReadOnly).expect("fd space is not exhausted in tests");
 
     let handle = fs.fd_content_sym(fd).expect("attached");
     let before = Arc::strong_count(&handle);
@@ -82,7 +82,7 @@ fn test_content_sym_fork_shares_arc() {
 fn test_seek_end_uses_effective_len() {
     let mut fs = FileSystem::default();
     fs.register_file_content("/tmp/flag", sym_file_bytes(10, "seek"));
-    let fd = fs.open("/tmp/flag".to_string(), FdFlags::ReadOnly);
+    let fd = fs.open("/tmp/flag".to_string(), FdFlags::ReadOnly).expect("fd space is not exhausted in tests");
 
     // Concrete buffer is empty; SEEK_END must key off the symbolic length.
     assert_eq!(fs.seek(fd, 0, 2), Some(10));
@@ -103,7 +103,7 @@ fn test_seek_end_uses_effective_len() {
 fn test_effective_len_concrete_write_past_symbolic_end() {
     let mut fs = FileSystem::default();
     fs.register_file_content("/tmp/grow", sym_file_bytes(4, "grow"));
-    let fd = fs.open("/tmp/grow".to_string(), FdFlags::ReadOnly);
+    let fd = fs.open("/tmp/grow".to_string(), FdFlags::ReadOnly).expect("fd space is not exhausted in tests");
     assert_eq!(fs.effective_size(fd), Some(4));
 
     // Concrete content of 10 bytes: its end (10) exceeds the symbolic byte
@@ -139,12 +139,12 @@ fn test_content_size_for_path_registry_without_fd() {
 #[test]
 fn test_open_without_registry_entry_unchanged() {
     let mut fs = FileSystem::default();
-    let fd = fs.open("plain.txt".to_string(), FdFlags::ReadOnly);
+    let fd = fs.open("plain.txt".to_string(), FdFlags::ReadOnly).expect("fd space is not exhausted in tests");
     assert!(fs.fd_content_sym(fd).is_none());
     assert_eq!(fs.effective_size(fd), Some(0));
     assert_eq!(fs.seek(fd, 0, 2), Some(0));
 
-    let fd2 = fs.open_with_content("c.txt".to_string(), FdFlags::ReadOnly, b"abc".to_vec());
+    let fd2 = fs.open_with_content("c.txt".to_string(), FdFlags::ReadOnly, b"abc".to_vec()).expect("fd space is not exhausted in tests");
     assert!(fs.fd_content_sym(fd2).is_none());
     // effective_len falls back to the concrete buffer length.
     assert_eq!(fs.effective_size(fd2), Some(3));
@@ -157,7 +157,7 @@ fn test_content_sym_serde_roundtrip() {
     let mut bytes = sym_file_bytes(2, "wire");
     bytes.push(RustBV::concrete(0x41, 8)); // mixed file: concrete tail byte
     fs.register_file_content("/tmp/flag", bytes);
-    let fd = fs.open("/tmp/flag".to_string(), FdFlags::ReadOnly);
+    let fd = fs.open("/tmp/flag".to_string(), FdFlags::ReadOnly).expect("fd space is not exhausted in tests");
 
     let json = serde_json::to_string(&fs).expect("serialize");
     let restored: FileSystem = serde_json::from_str(&json).expect("deserialize");
@@ -194,7 +194,7 @@ fn test_content_sym_serde_roundtrip() {
 fn test_content_sym_snapshot_backward_compat() {
     let mut fs = FileSystem::default();
     fs.register_file_content("/tmp/flag", sym_file_bytes(2, "compat"));
-    let fd = fs.open("/tmp/flag".to_string(), FdFlags::ReadOnly);
+    let fd = fs.open("/tmp/flag".to_string(), FdFlags::ReadOnly).expect("fd space is not exhausted in tests");
 
     // Simulate a pre-angr-0xyq2 snapshot: strip the new fields entirely.
     let mut v = serde_json::to_value(&fs).expect("to_value");
@@ -220,7 +220,7 @@ fn test_read_sym_serves_clamps_and_advances() {
     let mut fs = FileSystem::default();
     let content = sym_file_bytes(5, "rs");
     fs.register_file_content("/tmp/f", content.clone());
-    let fd = fs.open("/tmp/f".to_string(), FdFlags::ReadOnly);
+    let fd = fs.open("/tmp/f".to_string(), FdFlags::ReadOnly).expect("fd space is not exhausted in tests");
 
     // First read: the served BVs are the registered entries, in order.
     // (Debug compare: RustBV's PartialEq is concrete-only by design, so
@@ -238,7 +238,7 @@ fn test_read_sym_serves_clamps_and_advances() {
     assert_eq!(fs.fd_info(fd).unwrap().1, 5);
 
     // Fds without content_sym return None (caller keeps concrete logic).
-    let plain = fs.open_with_content("p.txt".to_string(), FdFlags::ReadOnly, b"ab".to_vec());
+    let plain = fs.open_with_content("p.txt".to_string(), FdFlags::ReadOnly, b"ab".to_vec()).expect("fd space is not exhausted in tests");
     assert!(fs.read_sym(plain, 1).is_none());
 }
 
@@ -248,7 +248,7 @@ fn test_read_sym_serves_clamps_and_advances() {
 fn test_read_sym_position_past_symbolic_end_serves_empty() {
     let mut fs = FileSystem::default();
     fs.register_file_content("/tmp/mixed", sym_file_bytes(4, "mixededge"));
-    let fd = fs.open("/tmp/mixed".to_string(), FdFlags::ReadOnly);
+    let fd = fs.open("/tmp/mixed".to_string(), FdFlags::ReadOnly).expect("fd space is not exhausted in tests");
     assert_eq!(fs.seek(fd, 6, 0), Some(6)); // SEEK_SET does not clamp to len
     assert_eq!(
         fs.read_sym(fd, 3).expect("content_sym attached"),
@@ -266,7 +266,7 @@ fn test_read_sym_at_does_not_move_position() {
     let mut fs = FileSystem::default();
     let content = sym_file_bytes(4, "rsat");
     fs.register_file_content("/tmp/pread", content.clone());
-    let fd = fs.open("/tmp/pread".to_string(), FdFlags::ReadOnly);
+    let fd = fs.open("/tmp/pread".to_string(), FdFlags::ReadOnly).expect("fd space is not exhausted in tests");
 
     // Debug compare — see test_read_sym_serves_clamps_and_advances.
     let got = fs.read_sym_at(fd, 1, 2).expect("content_sym attached");
@@ -279,6 +279,6 @@ fn test_read_sym_at_does_not_move_position() {
     // Past-EOF offset serves empty, no panic.
     assert_eq!(fs.read_sym_at(fd, 9, 2).expect("attached"), Vec::new());
     // No content_sym → None.
-    let plain = fs.open_with_content("q.txt".to_string(), FdFlags::ReadOnly, b"ab".to_vec());
+    let plain = fs.open_with_content("q.txt".to_string(), FdFlags::ReadOnly, b"ab".to_vec()).expect("fd space is not exhausted in tests");
     assert!(fs.read_sym_at(plain, 0, 1).is_none());
 }

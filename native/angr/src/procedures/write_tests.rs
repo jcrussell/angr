@@ -88,7 +88,7 @@ fn test_write_user_fd_appends_to_filesystem() {
     let mut state = RustSimState::new("amd64").unwrap();
     state
         .file_system()
-        .open("out.bin".to_string(), crate::state::FdFlags::WriteOnly);
+        .open("out.bin".to_string(), crate::state::FdFlags::WriteOnly).expect("fd space is not exhausted in tests");
     state.map_memory_data(0x1000, b"hello", Permission::RWX);
 
     let result = NativeWrite
@@ -114,7 +114,7 @@ fn test_write_closed_fd_falls_back() {
     let mut state = RustSimState::new("amd64").unwrap();
     state
         .file_system()
-        .open("out.bin".to_string(), crate::state::FdFlags::WriteOnly);
+        .open("out.bin".to_string(), crate::state::FdFlags::WriteOnly).expect("fd space is not exhausted in tests");
     assert!(state.file_system().close(3));
     state.map_memory_data(0x1000, b"x", Permission::RWX);
 
@@ -162,10 +162,10 @@ fn test_write_content_sym_demotes_and_falls_back() {
         .register_file_content("/tmp/flag", bytes);
     let fd1 = state
         .file_system()
-        .open("/tmp/flag".to_string(), crate::state::FdFlags::ReadWrite);
+        .open("/tmp/flag".to_string(), crate::state::FdFlags::ReadWrite).expect("fd space is not exhausted in tests");
     let fd2 = state
         .file_system()
-        .open("/tmp/flag".to_string(), crate::state::FdFlags::ReadOnly);
+        .open("/tmp/flag".to_string(), crate::state::FdFlags::ReadOnly).expect("fd space is not exhausted in tests");
 
     let result = NativeWrite.call(
         &mut state,
@@ -221,7 +221,7 @@ fn test_zero_length_write_does_not_demote() {
         .register_file_content("/tmp/flag", bytes);
     let fd = state
         .file_system()
-        .open("/tmp/flag".to_string(), crate::state::FdFlags::ReadWrite);
+        .open("/tmp/flag".to_string(), crate::state::FdFlags::ReadWrite).expect("fd space is not exhausted in tests");
 
     let result = NativeWrite
         .call(

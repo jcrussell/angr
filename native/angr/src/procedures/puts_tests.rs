@@ -202,7 +202,7 @@ fn test_fputc_content_sym_fd_demotes_and_falls_back() {
         .register_file_content("/tmp/flag", bytes);
     let fd = state
         .file_system()
-        .open("/tmp/flag".to_string(), crate::state::FdFlags::ReadWrite);
+        .open("/tmp/flag".to_string(), crate::state::FdFlags::ReadWrite).expect("fd space is not exhausted in tests");
     let file_ptr = 0x5000;
     setup_file_struct(&mut state, file_ptr, fd as i32);
 

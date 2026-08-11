@@ -48,7 +48,7 @@ fn test_translate_state_cross_context() {
         .register_file_content("/tmp/ahypj", vec![fbyte, RustBV::concrete(0x42, 8)]);
     let fs_fd = state
         .file_system()
-        .open("/tmp/ahypj".to_string(), FdFlags::ReadOnly);
+        .open("/tmp/ahypj".to_string(), FdFlags::ReadOnly).expect("fd space is not exhausted in tests");
 
     let original = Context::thread_local();
     let cfg = Config::new();

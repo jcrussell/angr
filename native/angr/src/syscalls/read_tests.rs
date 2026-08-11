@@ -98,7 +98,7 @@ fn read_user_fd_with_content_serves_natively() {
         "in.bin".to_string(),
         crate::state::FdFlags::ReadOnly,
         b"abcdef".to_vec(),
-    );
+    ).expect("fd space is not exhausted in tests");
 
     let outcome = h
         .call(
@@ -130,7 +130,7 @@ fn read_user_fd_eof_returns_zero() {
         "in.bin".to_string(),
         crate::state::FdFlags::ReadOnly,
         b"ab".to_vec(),
-    );
+    ).expect("fd space is not exhausted in tests");
 
     // Drain 2 bytes.
     h.call(
@@ -168,7 +168,7 @@ fn read_empty_content_fd_falls_back() {
     let mut state = fresh_state_with_buf();
     state
         .file_system()
-        .open("in.bin".to_string(), crate::state::FdFlags::ReadOnly);
+        .open("in.bin".to_string(), crate::state::FdFlags::ReadOnly).expect("fd space is not exhausted in tests");
     let err = h
         .call(
             &mut state,
@@ -190,7 +190,7 @@ fn read_symbolic_fd_serves_symbolic_bytes_natively() {
     let mut state = fresh_state_with_buf();
     let fd = state
         .file_system()
-        .open_symbolic("sym.in".to_string(), crate::state::FdFlags::ReadOnly);
+        .open_symbolic("sym.in".to_string(), crate::state::FdFlags::ReadOnly).expect("fd space is not exhausted in tests");
     assert!(state.file_system_ref().is_symbolic(fd));
 
     let outcome = h
@@ -221,7 +221,7 @@ fn read_symbolic_fd_never_hits_eof() {
     let mut state = fresh_state_with_buf();
     let fd = state
         .file_system()
-        .open_symbolic("sym.in".to_string(), crate::state::FdFlags::ReadOnly);
+        .open_symbolic("sym.in".to_string(), crate::state::FdFlags::ReadOnly).expect("fd space is not exhausted in tests");
     for _ in 0..2 {
         let outcome = h
             .call(
@@ -248,7 +248,7 @@ fn read_closed_fd_falls_back() {
         "in.bin".to_string(),
         crate::state::FdFlags::ReadOnly,
         b"x".to_vec(),
-    );
+    ).expect("fd space is not exhausted in tests");
     assert!(state.file_system().close(3));
     let err = h
         .call(
@@ -356,7 +356,7 @@ fn read_content_sym_serves_natively_and_eof_returns_zero() {
         .register_file_content("/tmp/flag", bytes);
     let fd = state
         .file_system()
-        .open("/tmp/flag".to_string(), crate::state::FdFlags::ReadOnly);
+        .open("/tmp/flag".to_string(), crate::state::FdFlags::ReadOnly).expect("fd space is not exhausted in tests");
 
     let outcome = h
         .call(

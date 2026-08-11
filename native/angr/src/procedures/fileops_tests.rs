@@ -95,7 +95,7 @@ fn test_lseek_set() {
         "test.txt".to_string(),
         crate::state::FdFlags::ReadOnly,
         vec![0u8; 100],
-    );
+    ).expect("fd space is not exhausted in tests");
 
     // SEEK_SET to position 42
     let result = NativeLseek
@@ -119,7 +119,7 @@ fn test_lseek_cur() {
         "test.txt".to_string(),
         crate::state::FdFlags::ReadOnly,
         vec![0u8; 100],
-    );
+    ).expect("fd space is not exhausted in tests");
 
     // Seek to 10
     NativeLseek
@@ -155,7 +155,7 @@ fn test_lseek_end() {
         "test.txt".to_string(),
         crate::state::FdFlags::ReadOnly,
         vec![0u8; 100],
-    );
+    ).expect("fd space is not exhausted in tests");
 
     // SEEK_END + 0
     let result = NativeLseek
@@ -649,7 +649,7 @@ fn test_fseek_set_then_ftell() {
     let mut state = setup_amd64_state();
     state
         .file_system()
-        .open_with_content("data".to_string(), FdFlags::ReadOnly, vec![0u8; 100]);
+        .open_with_content("data".to_string(), FdFlags::ReadOnly, vec![0u8; 100]).expect("fd space is not exhausted in tests");
     // Manually build a FILE struct pointing at fd=3.
     state.map_memory_data(0x20000, &vec![0u8; 0x1000], Permission::RWX);
     state
@@ -683,7 +683,7 @@ fn test_fseek_invalid_whence_returns_minus_one() {
     let mut state = setup_amd64_state();
     state
         .file_system()
-        .open_with_content("data".to_string(), FdFlags::ReadOnly, vec![0u8; 100]);
+        .open_with_content("data".to_string(), FdFlags::ReadOnly, vec![0u8; 100]).expect("fd space is not exhausted in tests");
     state.map_memory_data(0x20000, &vec![0u8; 0x1000], Permission::RWX);
     state
         .memory_store(0x20000 + 112, RustBV::concrete(3, 32))
@@ -747,7 +747,7 @@ fn test_rewind_returns_none_and_resets_position() {
     let mut state = setup_amd64_state();
     state
         .file_system()
-        .open_with_content("data".to_string(), FdFlags::ReadOnly, vec![0u8; 100]);
+        .open_with_content("data".to_string(), FdFlags::ReadOnly, vec![0u8; 100]).expect("fd space is not exhausted in tests");
     state.map_memory_data(0x20000, &vec![0u8; 0x1000], Permission::RWX);
     state
         .memory_store(0x20000 + 112, RustBV::concrete(3, 32))
@@ -813,7 +813,7 @@ fn test_fdopen_existing_fd() {
     // Open via FileSystem directly so fd 3 is known to be open.
     state
         .file_system()
-        .open("foo".to_string(), FdFlags::ReadOnly);
+        .open("foo".to_string(), FdFlags::ReadOnly).expect("fd space is not exhausted in tests");
     state.map_memory_data(0x2000, b"r\0", Permission::RWX);
 
     let fp = NativeFdopen

@@ -213,7 +213,10 @@ fn openat_relative_path_without_at_fdcwd_returns_minus_one() {
 fn close_open_fd_returns_zero_and_marks_closed() {
     let mut state = RustSimState::new("amd64").expect("state");
     // Allocate a fresh fd via the file system directly.
-    let fd = state.file_system().open("/tmp/x".into(), FdFlags::ReadOnly);
+    let fd = state
+        .file_system()
+        .open("/tmp/x".into(), FdFlags::ReadOnly)
+        .expect("fd space is not exhausted in tests");
     assert!(state.file_system_ref().is_open(fd));
 
     let outcome = NativeCloseSyscall
@@ -1117,11 +1120,14 @@ fn fstat_known_fd_writes_amd64_layout_and_returns_zero() {
     state.map_memory(0x4000, 0x1000, Permission::RW);
 
     // Seed a file with concrete content so content_len = 13.
-    let fd = state.file_system().open_with_content(
-        "/tmp/hello".into(),
-        FdFlags::ReadOnly,
-        b"hello, world!".to_vec(),
-    );
+    let fd = state
+        .file_system()
+        .open_with_content(
+            "/tmp/hello".into(),
+            FdFlags::ReadOnly,
+            b"hello, world!".to_vec(),
+        )
+        .expect("fd space is not exhausted in tests");
 
     let out = NativeFstatSyscall
         .call(
@@ -1162,7 +1168,8 @@ fn fstat_symbolic_content_fd_reports_symbolic_len() {
         .register_file_content("/tmp/symflag", bytes);
     let fd = state
         .file_system()
-        .open("/tmp/symflag".into(), FdFlags::ReadOnly);
+        .open("/tmp/symflag".into(), FdFlags::ReadOnly)
+        .expect("fd space is not exhausted in tests");
 
     let out = NativeFstatSyscall
         .call(
@@ -1185,11 +1192,10 @@ fn fstat_known_fd_writes_aarch64_layout_and_returns_zero() {
     let mut state = RustSimState::new("aarch64").expect("state");
     state.map_memory(0x4000, 0x1000, Permission::RW);
 
-    let fd = state.file_system().open_with_content(
-        "/tmp/arm".into(),
-        FdFlags::ReadOnly,
-        vec![0u8; 4096],
-    );
+    let fd = state
+        .file_system()
+        .open_with_content("/tmp/arm".into(), FdFlags::ReadOnly, vec![0u8; 4096])
+        .expect("fd space is not exhausted in tests");
 
     let out = NativeFstatSyscall
         .call(
@@ -1223,11 +1229,14 @@ fn fstat_known_fd_writes_i386_layout_and_returns_zero() {
     let mut state = RustSimState::new("x86").expect("state");
     state.map_memory(0x4000, 0x1000, Permission::RW);
 
-    let fd = state.file_system().open_with_content(
-        "/tmp/i386".into(),
-        FdFlags::ReadOnly,
-        b"hello, world!".to_vec(),
-    );
+    let fd = state
+        .file_system()
+        .open_with_content(
+            "/tmp/i386".into(),
+            FdFlags::ReadOnly,
+            b"hello, world!".to_vec(),
+        )
+        .expect("fd space is not exhausted in tests");
 
     let out = NativeFstatSyscall
         .call(
@@ -1261,11 +1270,14 @@ fn fstat_known_fd_writes_arm_layout_and_returns_zero() {
     let mut state = RustSimState::new("armel").expect("state");
     state.map_memory(0x4000, 0x1000, Permission::RW);
 
-    let fd = state.file_system().open_with_content(
-        "/tmp/arm".into(),
-        FdFlags::ReadOnly,
-        b"hello, world!".to_vec(),
-    );
+    let fd = state
+        .file_system()
+        .open_with_content(
+            "/tmp/arm".into(),
+            FdFlags::ReadOnly,
+            b"hello, world!".to_vec(),
+        )
+        .expect("fd space is not exhausted in tests");
 
     let out = NativeFstatSyscall
         .call(
@@ -1303,11 +1315,14 @@ fn fstat_known_fd_writes_mips32_layout_and_returns_zero() {
     assert_eq!(state.arch().name(), "MIPS32");
     state.map_memory(0x4000, 0x1000, Permission::RW);
 
-    let fd = state.file_system().open_with_content(
-        "/tmp/mips".into(),
-        FdFlags::ReadOnly,
-        b"hello, world!".to_vec(),
-    );
+    let fd = state
+        .file_system()
+        .open_with_content(
+            "/tmp/mips".into(),
+            FdFlags::ReadOnly,
+            b"hello, world!".to_vec(),
+        )
+        .expect("fd space is not exhausted in tests");
 
     let out = NativeFstatSyscall
         .call(
@@ -1348,7 +1363,8 @@ fn fstat_unsupported_arch_falls_back() {
         let bits = state.arch().bits();
         let fd = state
             .file_system()
-            .open("/tmp/foo".into(), FdFlags::ReadOnly);
+            .open("/tmp/foo".into(), FdFlags::ReadOnly)
+            .expect("fd space is not exhausted in tests");
 
         let err = NativeFstatSyscall
             .call(
@@ -1397,7 +1413,10 @@ fn fstat_symbolic_buf_falls_back() {
 #[test]
 fn fstat_unmapped_buf_surfaces_error() {
     let mut state = RustSimState::new("amd64").expect("state");
-    let fd = state.file_system().open("/tmp/x".into(), FdFlags::ReadOnly);
+    let fd = state
+        .file_system()
+        .open("/tmp/x".into(), FdFlags::ReadOnly)
+        .expect("fd space is not exhausted in tests");
     // Do NOT map the destination page — store should error.
     let err = NativeFstatSyscall
         .call(
@@ -1452,11 +1471,14 @@ fn stat_known_path_with_content_writes_amd64_layout() {
     state.map_memory(0x4000, 0x1000, Permission::RW);
 
     // Seed an fd with 13 bytes so content_size_for_path returns Some(13).
-    let _fd = state.file_system().open_with_content(
-        "/tmp/sized".into(),
-        FdFlags::ReadOnly,
-        b"hello, world!".to_vec(),
-    );
+    let _fd = state
+        .file_system()
+        .open_with_content(
+            "/tmp/sized".into(),
+            FdFlags::ReadOnly,
+            b"hello, world!".to_vec(),
+        )
+        .expect("fd space is not exhausted in tests");
 
     let out = NativeStatSyscall
         .call(
@@ -1490,7 +1512,8 @@ fn stat_symbolic_content_path_reports_symbolic_len() {
         .register_file_content("/tmp/symstat", bytes);
     let _fd = state
         .file_system()
-        .open("/tmp/symstat".into(), FdFlags::ReadOnly);
+        .open("/tmp/symstat".into(), FdFlags::ReadOnly)
+        .expect("fd space is not exhausted in tests");
 
     let out = NativeStatSyscall
         .call(
@@ -1597,11 +1620,10 @@ fn stat_absolute_spelling_after_relative_open_reports_size() {
     state.map_memory(0x4000, 0x1000, Permission::RW);
     state.file_system().set_cwd(b"/home/user".to_vec());
 
-    let _fd = state.file_system().open_with_content(
-        "notes.txt".into(),
-        FdFlags::ReadOnly,
-        b"hello".to_vec(),
-    );
+    let _fd = state
+        .file_system()
+        .open_with_content("notes.txt".into(), FdFlags::ReadOnly, b"hello".to_vec())
+        .expect("fd space is not exhausted in tests");
 
     let out = NativeStatSyscall
         .call(
@@ -1696,16 +1718,14 @@ fn stat_uses_largest_content_len_across_fds_for_same_path() {
 
     // Two fds for the same name with different sizes. Helper takes
     // the max (deterministic regardless of iteration order).
-    let _fd_small = state.file_system().open_with_content(
-        "/tmp/shared".into(),
-        FdFlags::ReadOnly,
-        vec![0u8; 4],
-    );
-    let _fd_big = state.file_system().open_with_content(
-        "/tmp/shared".into(),
-        FdFlags::ReadOnly,
-        vec![0u8; 17],
-    );
+    let _fd_small = state
+        .file_system()
+        .open_with_content("/tmp/shared".into(), FdFlags::ReadOnly, vec![0u8; 4])
+        .expect("fd space is not exhausted in tests");
+    let _fd_big = state
+        .file_system()
+        .open_with_content("/tmp/shared".into(), FdFlags::ReadOnly, vec![0u8; 17])
+        .expect("fd space is not exhausted in tests");
 
     let out = NativeStatSyscall
         .call(
@@ -1764,11 +1784,10 @@ fn lstat_known_path_with_content_writes_amd64_layout() {
     let mut state = state_with_path(b"/tmp/lsized");
     state.map_memory(0x4000, 0x1000, Permission::RW);
 
-    let _fd = state.file_system().open_with_content(
-        "/tmp/lsized".into(),
-        FdFlags::ReadOnly,
-        b"abc".to_vec(),
-    );
+    let _fd = state
+        .file_system()
+        .open_with_content("/tmp/lsized".into(), FdFlags::ReadOnly, b"abc".to_vec())
+        .expect("fd space is not exhausted in tests");
 
     let out = NativeLstatSyscall
         .call(
@@ -1878,11 +1897,14 @@ fn newfstatat_unknown_path_returns_minus_one() {
 fn newfstatat_at_fdcwd_known_path_amd64_layout() {
     let mut state = state_with_path(b"/tmp/nfa.txt");
     state.map_memory(0x4000, 0x1000, Permission::RW);
-    let _fd = state.file_system().open_with_content(
-        "/tmp/nfa.txt".into(),
-        FdFlags::ReadOnly,
-        b"hello, world!".to_vec(),
-    );
+    let _fd = state
+        .file_system()
+        .open_with_content(
+            "/tmp/nfa.txt".into(),
+            FdFlags::ReadOnly,
+            b"hello, world!".to_vec(),
+        )
+        .expect("fd space is not exhausted in tests");
 
     let out = NativeNewfstatatSyscall
         .call(
@@ -1911,11 +1933,10 @@ fn newfstatat_at_fdcwd_known_path_aarch64_layout() {
     let mut state = RustSimState::new("aarch64").expect("state");
     stage_path(&mut state, 0x2000, b"/tmp/arm-nfa");
     state.map_memory(0x4000, 0x1000, Permission::RW);
-    let _fd = state.file_system().open_with_content(
-        "/tmp/arm-nfa".into(),
-        FdFlags::ReadOnly,
-        vec![0u8; 4096],
-    );
+    let _fd = state
+        .file_system()
+        .open_with_content("/tmp/arm-nfa".into(), FdFlags::ReadOnly, vec![0u8; 4096])
+        .expect("fd space is not exhausted in tests");
 
     let out = NativeNewfstatatSyscall
         .call(
@@ -2205,11 +2226,10 @@ fn stat_follows_symlink_to_its_target() {
     state
         .file_system()
         .add_symlink("/link".to_string(), b"/tmp/target".to_vec());
-    let _fd = state.file_system().open_with_content(
-        "/tmp/target".into(),
-        FdFlags::ReadOnly,
-        vec![0u8; 11],
-    );
+    let _fd = state
+        .file_system()
+        .open_with_content("/tmp/target".into(), FdFlags::ReadOnly, vec![0u8; 11])
+        .expect("fd space is not exhausted in tests");
     state.map_memory(0x4000, 0x1000, Permission::RW);
 
     let out = NativeStatSyscall
@@ -2274,10 +2294,10 @@ fn stat_follows_a_two_hop_symlink_chain() {
     state
         .file_system()
         .add_symlink("/b".to_string(), b"/tmp/real".to_vec());
-    let _fd =
-        state
-            .file_system()
-            .open_with_content("/tmp/real".into(), FdFlags::ReadOnly, vec![0u8; 5]);
+    let _fd = state
+        .file_system()
+        .open_with_content("/tmp/real".into(), FdFlags::ReadOnly, vec![0u8; 5])
+        .expect("fd space is not exhausted in tests");
     state.map_memory(0x4000, 0x1000, Permission::RW);
 
     let out = NativeStatSyscall
@@ -2315,10 +2335,10 @@ fn newfstatat_follows_symlink_like_stat() {
     state
         .file_system()
         .add_symlink("/link".to_string(), b"/tmp/nf".to_vec());
-    let _fd =
-        state
-            .file_system()
-            .open_with_content("/tmp/nf".into(), FdFlags::ReadOnly, vec![0u8; 9]);
+    let _fd = state
+        .file_system()
+        .open_with_content("/tmp/nf".into(), FdFlags::ReadOnly, vec![0u8; 9])
+        .expect("fd space is not exhausted in tests");
     state.map_memory(0x4000, 0x1000, Permission::RW);
 
     let out = NativeNewfstatatSyscall
@@ -2351,11 +2371,10 @@ fn newfstatat_nofollow_reports_the_link_itself() {
     state
         .file_system()
         .add_symlink("/link".to_string(), target.to_vec());
-    let _fd = state.file_system().open_with_content(
-        "/tmp/nf-target".into(),
-        FdFlags::ReadOnly,
-        vec![0u8; 9],
-    );
+    let _fd = state
+        .file_system()
+        .open_with_content("/tmp/nf-target".into(), FdFlags::ReadOnly, vec![0u8; 9])
+        .expect("fd space is not exhausted in tests");
     state.map_memory(0x4000, 0x1000, Permission::RW);
 
     let out = NativeNewfstatatSyscall
@@ -2498,11 +2517,14 @@ fn fstat_statbuf_near_u64_max_wraps_field_offsets() {
     state.map_memory(0xFFFF_FFFF_FFFF_F000, 0x1000, Permission::RW);
     state.map_memory(0, 0x1000, Permission::RW);
 
-    let fd = state.file_system().open_with_content(
-        "/tmp/hello".into(),
-        FdFlags::ReadOnly,
-        b"hello, world!".to_vec(),
-    );
+    let fd = state
+        .file_system()
+        .open_with_content(
+            "/tmp/hello".into(),
+            FdFlags::ReadOnly,
+            b"hello, world!".to_vec(),
+        )
+        .expect("fd space is not exhausted in tests");
     let buf = u64::MAX - 7;
 
     let out = NativeFstatSyscall

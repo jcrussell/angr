@@ -482,7 +482,7 @@ fn test_fgets_content_sym_fd_falls_back_without_half_serving() {
         .register_file_content("/tmp/flag", bytes);
     let fd = state
         .file_system()
-        .open("/tmp/flag".to_string(), crate::state::FdFlags::ReadOnly);
+        .open("/tmp/flag".to_string(), crate::state::FdFlags::ReadOnly).expect("fd space is not exhausted in tests");
     let file_ptr: u64 = 0x5000;
     setup_file_struct(&mut state, file_ptr, fd as i32);
 

@@ -31,9 +31,11 @@ impl FileSystem {
     /// new fd shares that content via `content_sym` (refcount bump, no
     /// deep clone). Paths without a registry entry behave exactly as
     /// before (`content_sym: None`).
-    pub fn open(&mut self, name: String, flags: FdFlags) -> u32 {
-        let fd = self.next_fd;
-        self.next_fd += 1;
+    ///
+    /// Returns `None` — changing nothing — when the fd space is exhausted;
+    /// see [`alloc_fd`](Self::alloc_fd) for why that is not unreachable.
+    pub fn open(&mut self, name: String, flags: FdFlags) -> Option<u32> {
+        let fd = self.alloc_fd()?;
         // known_paths keys on normalized paths; normalizing at insertion
         // freezes cwd-at-open, which is POSIX-correct for relative paths.
         let norm = self.normalize_path(&name);
@@ -49,22 +51,48 @@ impl FileSystem {
         desc.norm_name = Some(norm.clone());
         Arc::make_mut(&mut self.known_paths).insert(norm);
         Arc::make_mut(&mut self.fds).insert(fd, desc);
-        fd
+        Some(fd)
+    }
+
+    /// Allocate the next free fd number, refusing rather than wrapping when
+    /// the fd space is exhausted.
+    ///
+    /// `next_fd` is not bounded by [`MAX_FD`] —
+    /// [`register_fd_at`](Self::register_fd_at) imports whatever fd numbers
+    /// the Python state carries and bumps `next_fd` past them (saturating), so
+    /// an imported `u32::MAX` leaves `next_fd == u32::MAX` and a plain `+= 1`
+    /// would wrap to 0 in the shipped release profile, handing out stdin as a
+    /// fresh file. Refusing (rather than saturating) is required because an fd
+    /// is an *identity*, not a size: clamping aliases two files onto one
+    /// number. See `invariant-overflow-fix-refuse-not-saturate-identities`.
+    ///
+    /// On refusal `next_fd` is left untouched and no descriptor is inserted.
+    fn alloc_fd(&mut self) -> Option<u32> {
+        let fd = self.next_fd;
+        self.next_fd = fd.checked_add(1)?;
+        Some(fd)
     }
 
     /// Open a file descriptor with pre-loaded content (for file-backed
     /// SimFiles). Intentionally bypasses the `file_contents` registry — the
     /// caller supplies explicit concrete content (test-seeding API).
-    pub fn open_with_content(&mut self, name: String, flags: FdFlags, content: Vec<u8>) -> u32 {
-        let fd = self.next_fd;
-        self.next_fd += 1;
+    ///
+    /// Returns `None` when the fd space is exhausted — see
+    /// [`alloc_fd`](Self::alloc_fd).
+    pub fn open_with_content(
+        &mut self,
+        name: String,
+        flags: FdFlags,
+        content: Vec<u8>,
+    ) -> Option<u32> {
+        let fd = self.alloc_fd()?;
         // Normalized at insertion (freezes cwd-at-open) — see `open`.
         let norm = self.normalize_path(&name);
         let mut desc = FileDescriptor::with_content(name, flags, content);
         desc.norm_name = Some(norm.clone());
         Arc::make_mut(&mut self.known_paths).insert(norm);
         Arc::make_mut(&mut self.fds).insert(fd, desc);
-        fd
+        Some(fd)
     }
 
     /// Adopt a file descriptor that was opened *outside* the native engine,
@@ -120,16 +148,18 @@ impl FileSystem {
     /// file returns 0 at EOF forever, while the stream model mints fresh
     /// bytes forever. The stream model wins for `open_symbolic`; bounded
     /// symbolic files come via `open()` on a registered path.
-    pub fn open_symbolic(&mut self, name: String, flags: FdFlags) -> u32 {
-        let fd = self.next_fd;
-        self.next_fd += 1;
+    ///
+    /// Returns `None` when the fd space is exhausted — see
+    /// [`alloc_fd`](Self::alloc_fd).
+    pub fn open_symbolic(&mut self, name: String, flags: FdFlags) -> Option<u32> {
+        let fd = self.alloc_fd()?;
         // Normalized at insertion (freezes cwd-at-open) — see `open`.
         let norm = self.normalize_path(&name);
         let mut desc = FileDescriptor::new_symbolic(name, flags);
         desc.norm_name = Some(norm.clone());
         Arc::make_mut(&mut self.known_paths).insert(norm);
         Arc::make_mut(&mut self.fds).insert(fd, desc);
-        fd
+        Some(fd)
     }
 
     /// Register an existing-file path without allocating an fd. Used by

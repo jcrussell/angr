@@ -171,7 +171,12 @@ crate::declare_proc! {
 
         let pathname = String::from_utf8_lossy(&name).to_string();
         let fd_flags = FdFlags::from_posix(flags as u32);
-        let fd = state.file_system().open(pathname, fd_flags);
+        // `None` = the fd space is exhausted (angr-03vl4.88); bounce to Python
+        // rather than wrapping `next_fd` and handing out stdin as a fresh file.
+        let fd = state
+            .file_system()
+            .open(pathname, fd_flags)
+            .ok_or_else(|| ProcedureError::Other("open: fd space exhausted".to_string()))?;
 
         Ok(Some(arch_word(state, u64::from(fd))))
     }
@@ -356,7 +361,11 @@ crate::declare_proc! {
         })?;
 
         let path_str = String::from_utf8_lossy(&path).to_string();
-        let fd = state.file_system().open(path_str, flags);
+        // `None` = the fd space is exhausted (angr-03vl4.88) — see `NativeOpen`.
+        let fd = state
+            .file_system()
+            .open(path_str, flags)
+            .ok_or_else(|| ProcedureError::Other("fopen: fd space exhausted".to_string()))?;
 
         let file_ptr = state.heap_alloc(struct_size);
         state.memory_store(

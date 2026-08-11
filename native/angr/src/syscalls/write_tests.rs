@@ -107,7 +107,7 @@ fn write_user_fd_appends_to_filesystem() {
     let mut state = RustSimState::new("amd64").expect("amd64 state");
     state
         .file_system()
-        .open("out.bin".to_string(), crate::state::FdFlags::WriteOnly);
+        .open("out.bin".to_string(), crate::state::FdFlags::WriteOnly).expect("fd space is not exhausted in tests");
     state.map_memory_data(0x1000, b"hello", Permission::RWX);
 
     let outcome = h
@@ -135,7 +135,7 @@ fn write_closed_user_fd_falls_back() {
     let mut state = RustSimState::new("amd64").expect("amd64 state");
     state
         .file_system()
-        .open("out.bin".to_string(), crate::state::FdFlags::WriteOnly);
+        .open("out.bin".to_string(), crate::state::FdFlags::WriteOnly).expect("fd space is not exhausted in tests");
     assert!(state.file_system().close(3));
     state.map_memory_data(0x1000, b"x", Permission::RWX);
 
@@ -242,7 +242,7 @@ fn write_content_sym_demotes_and_falls_back() {
         .register_file_content("/tmp/flag", bytes);
     let fd = state
         .file_system()
-        .open("/tmp/flag".to_string(), crate::state::FdFlags::ReadWrite);
+        .open("/tmp/flag".to_string(), crate::state::FdFlags::ReadWrite).expect("fd space is not exhausted in tests");
 
     let err = h
         .call(

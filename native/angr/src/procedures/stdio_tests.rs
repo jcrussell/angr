@@ -190,7 +190,7 @@ fn test_feof_at_start_of_empty_fd_is_eof() {
     let mut state = RustSimState::new("amd64").unwrap();
     let fd = state
         .file_system()
-        .open("empty.txt".to_string(), crate::state::FdFlags::ReadOnly);
+        .open("empty.txt".to_string(), crate::state::FdFlags::ReadOnly).expect("fd space is not exhausted in tests");
     let file_ptr = 0x10000u64;
     setup_file_struct(&mut state, file_ptr, fd as i32);
 
@@ -208,7 +208,7 @@ fn test_feof_with_content_available_returns_zero() {
         "data.txt".to_string(),
         crate::state::FdFlags::ReadOnly,
         b"hello".to_vec(),
-    );
+    ).expect("fd space is not exhausted in tests");
     let file_ptr = 0x10000u64;
     setup_file_struct(&mut state, file_ptr, fd as i32);
 
@@ -226,7 +226,7 @@ fn test_feof_after_consuming_all_bytes_is_eof() {
         "data.txt".to_string(),
         crate::state::FdFlags::ReadOnly,
         b"abc".to_vec(),
-    );
+    ).expect("fd space is not exhausted in tests");
     let _ = state.file_system().read(fd, 3);
     let file_ptr = 0x10000u64;
     setup_file_struct(&mut state, file_ptr, fd as i32);
@@ -248,7 +248,7 @@ fn open_registered_sym_file(state: &mut RustSimState, path: &str, n: usize) -> u
     state.file_system().register_file_content(path, bytes);
     state
         .file_system()
-        .open(path.to_string(), crate::state::FdFlags::ReadOnly)
+        .open(path.to_string(), crate::state::FdFlags::ReadOnly).expect("fd space is not exhausted in tests")
 }
 
 #[test]

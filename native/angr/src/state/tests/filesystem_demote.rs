@@ -13,12 +13,12 @@ fn test_demote_symbolic_content_clears_all_fds_and_registry() {
     let mut fs = FileSystem::default();
     fs.register_file_content("/tmp/d", sym_file_bytes(4, "dem"));
     // Three handles on the same file: absolute, relative spelling, dup.
-    let fd1 = fs.open("/tmp/d".to_string(), FdFlags::ReadWrite);
-    let fd2 = fs.open("tmp/d".to_string(), FdFlags::ReadOnly);
+    let fd1 = fs.open("/tmp/d".to_string(), FdFlags::ReadWrite).expect("fd space is not exhausted in tests");
+    let fd2 = fs.open("tmp/d".to_string(), FdFlags::ReadOnly).expect("fd space is not exhausted in tests");
     let dup = fs.dup(fd1).expect("dup");
     // An unrelated symbolic file must survive the demotion.
     fs.register_file_content("/tmp/other", sym_file_bytes(2, "demother"));
-    let other = fs.open("/tmp/other".to_string(), FdFlags::ReadOnly);
+    let other = fs.open("/tmp/other".to_string(), FdFlags::ReadOnly).expect("fd space is not exhausted in tests");
 
     assert!(fs.demote_symbolic_content(fd1), "demotion reported");
     for fd in [fd1, fd2, dup] {
@@ -29,7 +29,7 @@ fn test_demote_symbolic_content_clears_all_fds_and_registry() {
         "registry entry gone"
     );
     // A fresh open no longer attaches — Python owns the file from here.
-    let fd3 = fs.open("/tmp/d".to_string(), FdFlags::ReadOnly);
+    let fd3 = fs.open("/tmp/d".to_string(), FdFlags::ReadOnly).expect("fd space is not exhausted in tests");
     assert!(fs.fd_content_sym(fd3).is_none());
     // Second demotion is a no-op (nothing left to demote).
     assert!(!fs.demote_symbolic_content(fd1));
@@ -37,7 +37,7 @@ fn test_demote_symbolic_content_clears_all_fds_and_registry() {
     assert!(fs.fd_content_sym(other).is_some());
     assert!(fs.file_content_for_path("/tmp/other").is_some());
     // Plain fds report false (the cheap common case).
-    let plain = fs.open("plain.txt".to_string(), FdFlags::WriteOnly);
+    let plain = fs.open("plain.txt".to_string(), FdFlags::WriteOnly).expect("fd space is not exhausted in tests");
     assert!(!fs.demote_symbolic_content(plain));
 }
 
@@ -48,7 +48,7 @@ fn test_demote_symbolic_content_clears_all_fds_and_registry() {
 fn test_demoted_paths_tracking_and_re_demote() {
     let mut fs = FileSystem::default();
     fs.register_file_content("/tmp/d", sym_file_bytes(4, "qd"));
-    let fd = fs.open("/tmp/d".to_string(), FdFlags::ReadWrite);
+    let fd = fs.open("/tmp/d".to_string(), FdFlags::ReadWrite).expect("fd space is not exhausted in tests");
     assert!(fs.demoted_paths().is_empty(), "nothing demoted yet");
     assert!(fs.demote_symbolic_content(fd));
     assert_eq!(
@@ -88,7 +88,7 @@ fn test_demoted_paths_tracking_and_re_demote() {
 #[test]
 fn test_demote_registry_only_entry() {
     let mut fs = FileSystem::default();
-    let fd = fs.open("/tmp/late".to_string(), FdFlags::ReadWrite);
+    let fd = fs.open("/tmp/late".to_string(), FdFlags::ReadWrite).expect("fd space is not exhausted in tests");
     fs.register_file_content("/tmp/late", sym_file_bytes(2, "late"));
     assert!(fs.fd_content_sym(fd).is_none());
     assert!(fs.demote_symbolic_content(fd));
@@ -104,8 +104,8 @@ fn test_demote_survives_cwd_drift() {
     fs.set_cwd(b"/a".to_vec());
     // Relative registration + opens key under cwd-at-the-time: "/a/f".
     fs.register_file_content("f", sym_file_bytes(3, "drift"));
-    let fd_rel = fs.open("f".to_string(), FdFlags::ReadWrite);
-    let fd_abs = fs.open("/a/f".to_string(), FdFlags::ReadOnly);
+    let fd_rel = fs.open("f".to_string(), FdFlags::ReadWrite).expect("fd space is not exhausted in tests");
+    let fd_abs = fs.open("/a/f".to_string(), FdFlags::ReadOnly).expect("fd space is not exhausted in tests");
     assert!(fs.fd_content_sym(fd_rel).is_some());
     assert!(fs.fd_content_sym(fd_abs).is_some());
 
@@ -129,7 +129,7 @@ fn test_demote_survives_cwd_drift() {
 fn test_write_choke_point_refuses_and_demotes() {
     let mut fs = FileSystem::default();
     fs.register_file_content("/tmp/choke", sym_file_bytes(2, "choke"));
-    let fd = fs.open("/tmp/choke".to_string(), FdFlags::ReadWrite);
+    let fd = fs.open("/tmp/choke".to_string(), FdFlags::ReadWrite).expect("fd space is not exhausted in tests");
 
     // Zero-length writes are a POSIX no-op: accepted, NOT demoted (A3).
     assert!(fs.write(fd, b""));
@@ -149,7 +149,7 @@ fn test_write_choke_point_refuses_and_demotes() {
 
     // write_at leg.
     fs.register_file_content("/tmp/choke2", sym_file_bytes(2, "choke2"));
-    let fd2 = fs.open("/tmp/choke2".to_string(), FdFlags::ReadWrite);
+    let fd2 = fs.open("/tmp/choke2".to_string(), FdFlags::ReadWrite).expect("fd space is not exhausted in tests");
     assert!(!fs.write_at(fd2, 1, b"y"));
     assert!(fs.fd_content_sym(fd2).is_none());
     assert_eq!(fs.fd_content(fd2), b"");
@@ -161,7 +161,7 @@ fn test_write_choke_point_refuses_and_demotes() {
 #[test]
 fn test_write_offset_past_size_cap_is_refused() {
     let mut fs = FileSystem::default();
-    let fd = fs.open("/tmp/huge".to_string(), FdFlags::ReadWrite);
+    let fd = fs.open("/tmp/huge".to_string(), FdFlags::ReadWrite).expect("fd space is not exhausted in tests");
     assert!(fs.write(fd, b"seed"));
 
     // The `lseek(fd, huge, SEEK_SET); write(fd, buf, 1)` chain.
@@ -176,7 +176,7 @@ fn test_write_offset_past_size_cap_is_refused() {
 
     // Exactly at the cap is still allowed; one byte past is not. Checked on
     // a fresh fd so the multi-MiB buffer is dropped with it.
-    let fd2 = fs.open("/tmp/atcap".to_string(), FdFlags::ReadWrite);
+    let fd2 = fs.open("/tmp/atcap".to_string(), FdFlags::ReadWrite).expect("fd space is not exhausted in tests");
     assert!(fs.write_at(fd2, MAX_FS_FILE_SIZE - 1, b"x"));
     assert_eq!(fs.fd_content(fd2).len(), MAX_FS_FILE_SIZE as usize);
     assert!(!fs.write_at(fd2, MAX_FS_FILE_SIZE - 1, b"xy"));
@@ -192,7 +192,7 @@ fn test_write_offset_past_size_cap_is_refused() {
 fn test_write_offset_cap_still_demotes_symbolic_content() {
     let mut fs = FileSystem::default();
     fs.register_file_content("/tmp/capsym", sym_file_bytes(2, "capsym"));
-    let fd = fs.open("/tmp/capsym".to_string(), FdFlags::ReadWrite);
+    let fd = fs.open("/tmp/capsym".to_string(), FdFlags::ReadWrite).expect("fd space is not exhausted in tests");
     assert!(fs.has_content_sym(fd));
 
     assert!(!fs.write_at(fd, MAX_FS_FILE_SIZE, b"x"));
@@ -210,7 +210,7 @@ fn test_write_offset_cap_still_demotes_symbolic_content() {
 fn test_read_sym_closed_fd_returns_none() {
     let mut fs = FileSystem::default();
     fs.register_file_content("/tmp/closed", sym_file_bytes(3, "closed"));
-    let fd = fs.open("/tmp/closed".to_string(), FdFlags::ReadOnly);
+    let fd = fs.open("/tmp/closed".to_string(), FdFlags::ReadOnly).expect("fd space is not exhausted in tests");
     assert!(fs.has_content_sym(fd));
     assert!(fs.close(fd));
     // The content is still attached (fd_content_sym is flag-blind) ...
@@ -229,7 +229,7 @@ fn test_read_sym_closed_fd_returns_none() {
 #[test]
 fn test_write_to_closed_fd_is_refused() {
     let mut fs = FileSystem::default();
-    let fd = fs.open("/tmp/wclosed".to_string(), FdFlags::ReadWrite);
+    let fd = fs.open("/tmp/wclosed".to_string(), FdFlags::ReadWrite).expect("fd space is not exhausted in tests");
     assert!(fs.write(fd, b"open"));
     assert!(fs.close(fd));
 
@@ -252,8 +252,8 @@ fn test_write_to_closed_fd_is_refused() {
     // Refusing a closed fd must not demote the file's symbolic content:
     // a sibling fd on the same file keeps serving natively.
     fs.register_file_content("/tmp/wclosed_sym", sym_file_bytes(3, "wclosed"));
-    let a = fs.open("/tmp/wclosed_sym".to_string(), FdFlags::ReadWrite);
-    let b = fs.open("/tmp/wclosed_sym".to_string(), FdFlags::ReadOnly);
+    let a = fs.open("/tmp/wclosed_sym".to_string(), FdFlags::ReadWrite).expect("fd space is not exhausted in tests");
+    let b = fs.open("/tmp/wclosed_sym".to_string(), FdFlags::ReadOnly).expect("fd space is not exhausted in tests");
     assert!(fs.close(a));
     assert!(!fs.write(a, b"x"));
     assert!(
@@ -273,8 +273,8 @@ fn test_demote_all_symbolic_content_clears_everything() {
 
     fs.register_file_content("/tmp/a", sym_file_bytes(2, "alla"));
     fs.register_file_content("/tmp/b", sym_file_bytes(3, "allb"));
-    let fd_a = fs.open("/tmp/a".to_string(), FdFlags::ReadWrite);
-    let fd_b = fs.open("/tmp/b".to_string(), FdFlags::ReadOnly);
+    let fd_a = fs.open("/tmp/a".to_string(), FdFlags::ReadWrite).expect("fd space is not exhausted in tests");
+    let fd_b = fs.open("/tmp/b".to_string(), FdFlags::ReadOnly).expect("fd space is not exhausted in tests");
     let dup_b = fs.dup(fd_b).expect("dup");
 
     assert!(fs.demote_all_symbolic_content());
@@ -284,7 +284,7 @@ fn test_demote_all_symbolic_content_clears_everything() {
     assert!(fs.file_content_for_path("/tmp/a").is_none());
     assert!(fs.file_content_for_path("/tmp/b").is_none());
     // Fresh opens no longer attach; a second sweep is a no-op.
-    let fd_c = fs.open("/tmp/a".to_string(), FdFlags::ReadOnly);
+    let fd_c = fs.open("/tmp/a".to_string(), FdFlags::ReadOnly).expect("fd space is not exhausted in tests");
     assert!(fs.fd_content_sym(fd_c).is_none());
     assert!(!fs.demote_all_symbolic_content());
 }

@@ -24,7 +24,7 @@ fn test_merge_filesystem_keeps_longest_stdout_branch() {
     assert!(b.write_stdout(b"hello!"));
     let a_fd = a
         .file_system()
-        .open("/tmp/only_on_a".to_string(), FdFlags::WriteOnly);
+        .open("/tmp/only_on_a".to_string(), FdFlags::WriteOnly).expect("fd space is not exhausted in tests");
     assert!(a_fd > 2, "expected a non-std fd, got {a_fd}");
     assert!(a.write_fd(a_fd, b"branch-A-only"));
 
@@ -69,7 +69,7 @@ fn test_merge_filesystem_keeps_longest_stdout_branch() {
     assert!(d.write_stdout(b"eq"));
     let c_fd = c
         .file_system()
-        .open("/tmp/only_on_c".to_string(), FdFlags::WriteOnly);
+        .open("/tmp/only_on_c".to_string(), FdFlags::WriteOnly).expect("fd space is not exhausted in tests");
     assert!(c.write_fd(c_fd, b"branch-C-only"));
     let (n0, n1) = {
         let s = c.solver().borrow();

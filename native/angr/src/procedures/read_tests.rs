@@ -93,7 +93,7 @@ fn test_read_user_fd_with_content_serves_natively() {
         "in.bin".to_string(),
         crate::state::FdFlags::ReadOnly,
         b"abcdef".to_vec(),
-    );
+    ).expect("fd space is not exhausted in tests");
     state.map_memory(0x2000, 0x1000, crate::memory::Permission::RWX);
 
     // Read 3 bytes; should return 3 and copy "abc" to memory.
@@ -125,7 +125,7 @@ fn test_read_user_fd_eof_returns_zero() {
         "in.bin".to_string(),
         crate::state::FdFlags::ReadOnly,
         b"ab".to_vec(),
-    );
+    ).expect("fd space is not exhausted in tests");
     state.map_memory(0x2000, 0x1000, crate::memory::Permission::RWX);
 
     // Drain 2 bytes.
@@ -161,7 +161,7 @@ fn test_read_empty_content_fd_mints_symbolic_bytes() {
     let mut state = RustSimState::new("amd64").unwrap();
     let fd = state
         .file_system()
-        .open("in.bin".to_string(), crate::state::FdFlags::ReadOnly);
+        .open("in.bin".to_string(), crate::state::FdFlags::ReadOnly).expect("fd space is not exhausted in tests");
     state.map_memory(0x2000, 0x1000, crate::memory::Permission::RWX);
     let result = NativeRead
         .call(
@@ -190,7 +190,7 @@ fn test_read_empty_content_fd_second_read_mints_fresh_bytes() {
     let mut state = RustSimState::new("amd64").unwrap();
     let fd = state
         .file_system()
-        .open("in.bin".to_string(), crate::state::FdFlags::ReadOnly);
+        .open("in.bin".to_string(), crate::state::FdFlags::ReadOnly).expect("fd space is not exhausted in tests");
     state.map_memory(0x2000, 0x1000, crate::memory::Permission::RWX);
     for _ in 0..2 {
         let result = NativeRead
@@ -227,7 +227,7 @@ fn open_registered_sym_file(state: &mut RustSimState, path: &str, n: usize) -> u
     state.file_system().register_file_content(path, bytes);
     state
         .file_system()
-        .open(path.to_string(), crate::state::FdFlags::ReadOnly)
+        .open(path.to_string(), crate::state::FdFlags::ReadOnly).expect("fd space is not exhausted in tests")
 }
 
 #[test]
@@ -288,7 +288,7 @@ fn test_read_closed_fd_falls_back() {
         "in.bin".to_string(),
         crate::state::FdFlags::ReadOnly,
         b"x".to_vec(),
-    );
+    ).expect("fd space is not exhausted in tests");
     assert!(state.file_system().close(3));
     state.map_memory(0x2000, 0x1000, crate::memory::Permission::RWX);
     let result = NativeRead.call(
@@ -388,7 +388,7 @@ fn test_read_content_sym_over_4096_serves_whole_file_like_python() {
     state.file_system().register_file_content("/tmp/big", bytes);
     let fd = state
         .file_system()
-        .open("/tmp/big".to_string(), crate::state::FdFlags::ReadOnly);
+        .open("/tmp/big".to_string(), crate::state::FdFlags::ReadOnly).expect("fd space is not exhausted in tests");
 
     // count=5000 > old 4096 clamp: serve all 4100 bytes in one call.
     let result = NativeRead

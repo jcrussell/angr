@@ -43,8 +43,12 @@ fn default_preregisters_std_streams() {
 #[test]
 fn open_allocates_monotonic_fds_and_marks_path_known() {
     let mut fs = FileSystem::default();
-    let a = fs.open("flag.txt".to_string(), FdFlags::ReadOnly);
-    let b = fs.open("/etc/passwd".to_string(), FdFlags::ReadOnly);
+    let a = fs
+        .open("flag.txt".to_string(), FdFlags::ReadOnly)
+        .expect("fd space is not exhausted in tests");
+    let b = fs
+        .open("/etc/passwd".to_string(), FdFlags::ReadOnly)
+        .expect("fd space is not exhausted in tests");
     assert_eq!((a, b), (3, 4));
     assert_eq!(fs.next_fd(), 5);
     // known_paths is cwd-normalized: relative "flag.txt" from cwd "/" -> "/flag.txt".
@@ -57,7 +61,9 @@ fn open_allocates_monotonic_fds_and_marks_path_known() {
 #[test]
 fn write_then_read_tracks_position() {
     let mut fs = FileSystem::default();
-    let fd = fs.open_with_content("f".to_string(), FdFlags::ReadWrite, Vec::new());
+    let fd = fs
+        .open_with_content("f".to_string(), FdFlags::ReadWrite, Vec::new())
+        .expect("fd space is not exhausted in tests");
     assert!(fs.write(fd, b"hello"));
     // Sequential write leaves position at EOF.
     assert_eq!(fs.fd_info(fd).map(|i| i.1), Some(5));
@@ -73,7 +79,9 @@ fn write_then_read_tracks_position() {
 #[test]
 fn write_at_position_zero_fills_gap() {
     let mut fs = FileSystem::default();
-    let fd = fs.open_with_content("f".to_string(), FdFlags::ReadWrite, Vec::new());
+    let fd = fs
+        .open_with_content("f".to_string(), FdFlags::ReadWrite, Vec::new())
+        .expect("fd space is not exhausted in tests");
     // pwrite past EOF zero-fills the gap and leaves the fd position untouched.
     assert!(fs.write_at(fd, 4, b"AB"));
     assert_eq!(fs.fd_content(fd), b"\0\0\0\0AB");
@@ -87,7 +95,9 @@ fn write_at_position_zero_fills_gap() {
 #[test]
 fn empty_write_is_noop_and_returns_true() {
     let mut fs = FileSystem::default();
-    let fd = fs.open_with_content("f".to_string(), FdFlags::WriteOnly, Vec::new());
+    let fd = fs
+        .open_with_content("f".to_string(), FdFlags::WriteOnly, Vec::new())
+        .expect("fd space is not exhausted in tests");
     assert!(fs.write(fd, b""));
     assert!(fs.write_at(fd, 10, b""));
     assert!(fs.fd_content(fd).is_empty());
@@ -97,7 +107,9 @@ fn empty_write_is_noop_and_returns_true() {
 #[test]
 fn seek_whence_variants_and_invalid() {
     let mut fs = FileSystem::default();
-    let fd = fs.open_with_content("f".to_string(), FdFlags::ReadWrite, b"0123456789".to_vec());
+    let fd = fs
+        .open_with_content("f".to_string(), FdFlags::ReadWrite, b"0123456789".to_vec())
+        .expect("fd space is not exhausted in tests");
     assert_eq!(fs.seek(fd, 3, 0), Some(3)); // SEEK_SET
     assert_eq!(fs.seek(fd, 2, 1), Some(5)); // SEEK_CUR
     assert_eq!(fs.seek(fd, -1, 2), Some(9)); // SEEK_END (len 10 - 1)
@@ -113,7 +125,9 @@ fn seek_whence_variants_and_invalid() {
 #[test]
 fn close_flips_flag_and_is_idempotent() {
     let mut fs = FileSystem::default();
-    let fd = fs.open("f".to_string(), FdFlags::ReadOnly);
+    let fd = fs
+        .open("f".to_string(), FdFlags::ReadOnly)
+        .expect("fd space is not exhausted in tests");
     assert!(fs.is_open(fd));
     assert!(fs.close(fd));
     assert!(!fs.is_open(fd));
@@ -125,7 +139,9 @@ fn close_flips_flag_and_is_idempotent() {
 #[test]
 fn dup_clones_state_at_lowest_free_fd() {
     let mut fs = FileSystem::default();
-    let fd = fs.open_with_content("f".to_string(), FdFlags::ReadWrite, b"data".to_vec());
+    let fd = fs
+        .open_with_content("f".to_string(), FdFlags::ReadWrite, b"data".to_vec())
+        .expect("fd space is not exhausted in tests");
     assert_eq!(fs.seek(fd, 2, 0), Some(2));
     let dupd = fs.dup(fd).expect("dup of open fd");
     assert_eq!(dupd, 4);
@@ -143,8 +159,12 @@ fn dup_reuses_a_closed_fd_slot() {
     // monotonically increasing one. open 3, open 4, close 3 -> the next dup
     // must land back on 3 even though next_fd has moved past it.
     let mut fs = FileSystem::default();
-    let a = fs.open("a".to_string(), FdFlags::ReadOnly);
-    let b = fs.open("b".to_string(), FdFlags::ReadOnly);
+    let a = fs
+        .open("a".to_string(), FdFlags::ReadOnly)
+        .expect("fd space is not exhausted in tests");
+    let b = fs
+        .open("b".to_string(), FdFlags::ReadOnly)
+        .expect("fd space is not exhausted in tests");
     assert_eq!((a, b), (3, 4));
     assert!(fs.close(a));
     assert_eq!(fs.next_fd(), 5);
@@ -158,13 +178,19 @@ fn dup_reuses_a_closed_fd_slot() {
     assert_eq!(dupd2, 5);
     // next_fd stays past every allocated fd so a later open cannot collide.
     assert_eq!(fs.next_fd(), 6);
-    assert_eq!(fs.open("c".to_string(), FdFlags::ReadOnly), 6);
+    assert_eq!(
+        fs.open("c".to_string(), FdFlags::ReadOnly)
+            .expect("fd space is not exhausted in tests"),
+        6
+    );
 }
 
 #[test]
 fn dup2_closes_target_and_bumps_next_fd() {
     let mut fs = FileSystem::default();
-    let src = fs.open_with_content("f".to_string(), FdFlags::ReadWrite, b"xy".to_vec());
+    let src = fs
+        .open_with_content("f".to_string(), FdFlags::ReadWrite, b"xy".to_vec())
+        .expect("fd space is not exhausted in tests");
     // dup2 onto a high fd number bumps next_fd past it.
     assert_eq!(fs.dup2(src, 20), Some(20));
     assert!(fs.is_open(20));
@@ -178,7 +204,9 @@ fn dup2_closes_target_and_bumps_next_fd() {
 #[test]
 fn dup2_refuses_newfd_at_or_above_max_fd() {
     let mut fs = FileSystem::default();
-    let src = fs.open_with_content("f".to_string(), FdFlags::ReadWrite, b"xy".to_vec());
+    let src = fs
+        .open_with_content("f".to_string(), FdFlags::ReadWrite, b"xy".to_vec())
+        .expect("fd space is not exhausted in tests");
     let before = fs.next_fd();
 
     // u32::MAX would wrap the `next_fd = newfd + 1` bump (angr-03vl4.52).
@@ -240,7 +268,9 @@ fn symlink_register_and_lookup() {
 fn content_size_for_path_uses_max_across_fds() {
     let mut fs = FileSystem::default();
     assert_eq!(fs.content_size_for_path("f"), None);
-    let fd = fs.open_with_content("f".to_string(), FdFlags::ReadWrite, b"abc".to_vec());
+    let fd = fs
+        .open_with_content("f".to_string(), FdFlags::ReadWrite, b"abc".to_vec())
+        .expect("fd space is not exhausted in tests");
     assert_eq!(fs.content_size_for_path("f"), Some(3));
     // A longer write on the same path raises the reported size.
     assert!(fs.write(fd, b"abcdef"));
@@ -256,10 +286,14 @@ fn content_size_for_path_uses_cwd_at_open_across_chdir() {
     let mut fs = FileSystem::default();
     fs.set_cwd(b"/x/y".to_vec());
     // fd A: relative "a.txt" under /x/y  ->  /x/y/a.txt
-    let a = fs.open_with_content("a.txt".to_string(), FdFlags::ReadWrite, b"abcdef".to_vec());
+    let a = fs
+        .open_with_content("a.txt".to_string(), FdFlags::ReadWrite, b"abcdef".to_vec())
+        .expect("fd space is not exhausted in tests");
     // Guest chdir to /x, then reopen the same real file relative to it.
     fs.set_cwd(b"/x".to_vec());
-    let b = fs.open_with_content("y/a.txt".to_string(), FdFlags::ReadWrite, b"abc".to_vec());
+    let b = fs
+        .open_with_content("y/a.txt".to_string(), FdFlags::ReadWrite, b"abc".to_vec())
+        .expect("fd space is not exhausted in tests");
     assert_ne!(a, b);
     // Both spellings name /x/y/a.txt, so the max across both fds wins.
     assert_eq!(fs.content_size_for_path("y/a.txt"), Some(6));
@@ -280,7 +314,9 @@ fn effective_len_maxes_concrete_buffer() {
 #[test]
 fn open_fds_and_all_fds_reflect_close() {
     let mut fs = FileSystem::default();
-    let fd = fs.open("f".to_string(), FdFlags::ReadOnly);
+    let fd = fs
+        .open("f".to_string(), FdFlags::ReadOnly)
+        .expect("fd space is not exhausted in tests");
     let mut open = fs.open_fds();
     open.sort_unstable();
     assert_eq!(open, vec![0, 1, 2, fd]);
@@ -295,8 +331,12 @@ fn open_fds_and_all_fds_reflect_close() {
 #[test]
 fn is_symbolic_only_for_symbolic_stream_open_fds() {
     let mut fs = FileSystem::default();
-    let concrete = fs.open("f".to_string(), FdFlags::ReadOnly);
-    let sym = fs.open_symbolic("s".to_string(), FdFlags::ReadOnly);
+    let concrete = fs
+        .open("f".to_string(), FdFlags::ReadOnly)
+        .expect("fd space is not exhausted in tests");
+    let sym = fs
+        .open_symbolic("s".to_string(), FdFlags::ReadOnly)
+        .expect("fd space is not exhausted in tests");
     assert!(!fs.is_symbolic(concrete));
     assert!(fs.is_symbolic(sym));
     // Closing clears the symbolic-serve predicate.

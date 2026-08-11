@@ -19,7 +19,7 @@ fn test_filesystem_default() {
 #[test]
 fn test_filesystem_open_close() {
     let mut fs = FileSystem::default();
-    let fd = fs.open("test.txt".to_string(), FdFlags::ReadOnly);
+    let fd = fs.open("test.txt".to_string(), FdFlags::ReadOnly).expect("fd space is not exhausted in tests");
     assert_eq!(fd, 3);
     assert!(fs.is_open(3));
 
@@ -38,7 +38,7 @@ fn test_filesystem_write_read() {
         "data.bin".to_string(),
         FdFlags::ReadOnly,
         b"hello world".to_vec(),
-    );
+    ).expect("fd space is not exhausted in tests");
 
     let data = fs.read(fd, 5);
     assert_eq!(data, b"hello");
@@ -60,7 +60,7 @@ fn test_filesystem_read_closed_fd_serves_nothing() {
         "data.bin".to_string(),
         FdFlags::ReadOnly,
         b"hello world".to_vec(),
-    );
+    ).expect("fd space is not exhausted in tests");
     assert_eq!(fs.read_at(fd, 0, 5), b"hello");
     assert!(fs.close(fd));
 
@@ -72,7 +72,7 @@ fn test_filesystem_read_closed_fd_serves_nothing() {
 #[test]
 fn test_filesystem_seek() {
     let mut fs = FileSystem::default();
-    let fd = fs.open_with_content("data.bin".to_string(), FdFlags::ReadOnly, vec![0u8; 100]);
+    let fd = fs.open_with_content("data.bin".to_string(), FdFlags::ReadOnly, vec![0u8; 100]).expect("fd space is not exhausted in tests");
 
     // SEEK_SET
     assert_eq!(fs.seek(fd, 50, 0), Some(50));
@@ -87,7 +87,7 @@ fn test_filesystem_seek() {
 #[test]
 fn test_filesystem_write_position_aware() {
     let mut fs = FileSystem::default();
-    let fd = fs.open("out.bin".to_string(), FdFlags::WriteOnly);
+    let fd = fs.open("out.bin".to_string(), FdFlags::WriteOnly).expect("fd space is not exhausted in tests");
 
     // Sequential writes (no seek): position-aware path is byte-identical to a
     // plain append, and advances the position to EOF each time. `true` =
@@ -116,7 +116,7 @@ fn test_filesystem_fork_isolation() {
     let mut state = RustSimState::new("amd64").unwrap();
     state
         .file_system()
-        .open("test.txt".to_string(), FdFlags::ReadOnly);
+        .open("test.txt".to_string(), FdFlags::ReadOnly).expect("fd space is not exhausted in tests");
     assert!(state.file_system_ref().is_open(3));
 
     let mut forked = state.fork();
@@ -159,8 +159,8 @@ fn test_filesystem_open_fds() {
     let open = fs.open_fds();
     assert_eq!(open, vec![0, 1, 2]); // stdin, stdout, stderr
 
-    fs.open("a.txt".to_string(), FdFlags::ReadOnly);
-    fs.open("b.txt".to_string(), FdFlags::WriteOnly);
+    fs.open("a.txt".to_string(), FdFlags::ReadOnly).expect("fd space is not exhausted in tests");
+    fs.open("b.txt".to_string(), FdFlags::WriteOnly).expect("fd space is not exhausted in tests");
     let open = fs.open_fds();
     assert_eq!(open, vec![0, 1, 2, 3, 4]);
 
@@ -172,7 +172,7 @@ fn test_filesystem_open_fds() {
 #[test]
 fn test_filesystem_dup_dup2_pipe() {
     let mut fs = FileSystem::default();
-    let fd = fs.open("a.txt".to_string(), FdFlags::ReadOnly);
+    let fd = fs.open("a.txt".to_string(), FdFlags::ReadOnly).expect("fd space is not exhausted in tests");
     assert_eq!(fd, 3);
 
     // dup
@@ -186,7 +186,7 @@ fn test_filesystem_dup_dup2_pipe() {
 
     // dup2 with fresh state
     let mut fs2 = FileSystem::default();
-    let src = fs2.open("src.txt".to_string(), FdFlags::ReadOnly);
+    let src = fs2.open("src.txt".to_string(), FdFlags::ReadOnly).expect("fd space is not exhausted in tests");
     let dst = fs2.dup2(src, 10).unwrap();
     assert_eq!(dst, 10);
     assert_eq!(fs2.fd_info(10).unwrap().0, "src.txt");
@@ -215,7 +215,7 @@ fn test_filesystem_dup_dup2_pipe() {
 #[test]
 fn seek_cur_and_end_clamp_instead_of_overflowing_the_signed_add() {
     let mut fs = FileSystem::default();
-    let fd = fs.open_with_content("data.bin".to_string(), FdFlags::ReadOnly, vec![0u8; 100]);
+    let fd = fs.open_with_content("data.bin".to_string(), FdFlags::ReadOnly, vec![0u8; 100]).expect("fd space is not exhausted in tests");
 
     // Park the position at i64::MAX via SEEK_SET, then push past it. The first
     // bump lands just below the top of the u64 range (the old `as i64` add
@@ -270,5 +270,65 @@ fn pipe_refuses_rather_than_wrapping_when_the_fd_space_is_exhausted() {
         );
         assert_eq!(fs.next_fd(), next_before, "a refused pipe must not bump");
         assert_eq!(fs.all_fds(), fds_before, "a refused pipe must insert nothing");
+    }
+}
+
+/// angr-03vl4.88: the three single-fd allocators bumped `next_fd` with a plain
+/// `+= 1`, which wraps to 0 in the shipped release profile once `register_fd_at`
+/// has imported a Python-chosen fd of `u32::MAX` — the next `open()` would hand
+/// out fd 0 (stdin) as a fresh file. Each must refuse instead, leaving `next_fd`
+/// and the fd table untouched.
+#[test]
+fn open_family_refuses_rather_than_wrapping_when_the_fd_space_is_exhausted() {
+    type Allocator = fn(&mut FileSystem) -> Option<u32>;
+    let allocators: [(&str, Allocator); 3] = [
+        ("open", |fs| fs.open("f".to_string(), FdFlags::ReadOnly)),
+        ("open_with_content", |fs| {
+            fs.open_with_content("f".to_string(), FdFlags::ReadOnly, vec![1, 2, 3])
+        }),
+        ("open_symbolic", |fs| {
+            fs.open_symbolic("f".to_string(), FdFlags::ReadOnly)
+        }),
+    ];
+
+    for (label, alloc) in allocators {
+        let mut fs = FileSystem::default();
+        assert!(fs.register_fd_at(
+            u32::MAX,
+            "imported".to_string(),
+            FdFlags::ReadOnly,
+            Vec::new(),
+            0,
+        ));
+        // register_fd_at's bump saturates, so next_fd is pinned at u32::MAX —
+        // the fd itself is still free to hand out, but nothing after it is.
+        assert_eq!(fs.next_fd(), u32::MAX);
+        let fds_before = fs.all_fds();
+
+        assert_eq!(fs.next_fd(), u32::MAX, "{label}: precondition");
+        assert_eq!(alloc(&mut fs), None, "{label} must refuse at u32::MAX");
+        assert_eq!(fs.next_fd(), u32::MAX, "a refused {label} must not bump");
+        assert_eq!(
+            fs.all_fds(),
+            fds_before,
+            "a refused {label} must insert nothing"
+        );
+
+        // One below the wall the same allocator succeeds, proving the refusal
+        // is the overflow guard and not a blanket decline.
+        let mut fs = FileSystem::default();
+        assert!(fs.register_fd_at(
+            u32::MAX - 2,
+            "imported".to_string(),
+            FdFlags::ReadOnly,
+            Vec::new(),
+            0,
+        ));
+        assert_eq!(
+            alloc(&mut fs),
+            Some(u32::MAX - 1),
+            "{label} must still allocate below the wall"
+        );
+        assert_eq!(fs.next_fd(), u32::MAX);
     }
 }

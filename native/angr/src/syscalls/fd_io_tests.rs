@@ -36,11 +36,10 @@ fn metadata() {
 #[test]
 fn lseek_set_returns_new_position() {
     let mut state = fresh_state();
-    state.file_system().open_with_content(
-        "f.bin".to_string(),
-        FdFlags::ReadOnly,
-        b"abcdefgh".to_vec(),
-    );
+    state
+        .file_system()
+        .open_with_content("f.bin".to_string(), FdFlags::ReadOnly, b"abcdefgh".to_vec())
+        .expect("fd space is not exhausted in tests");
     // SEEK_SET to 3.
     let out = NativeLseekSyscall
         .call(
@@ -62,7 +61,10 @@ fn lseek_set_returns_new_position() {
 #[test]
 fn lseek_bad_whence_returns_neg1() {
     let mut state = fresh_state();
-    state.file_system().open("f".to_string(), FdFlags::ReadOnly);
+    state
+        .file_system()
+        .open("f".to_string(), FdFlags::ReadOnly)
+        .expect("fd space is not exhausted in tests");
     let out = NativeLseekSyscall
         .call(
             &mut state,
@@ -184,7 +186,8 @@ fn writev_user_fd_appends() {
     let mut state = fresh_state();
     state
         .file_system()
-        .open("out".to_string(), FdFlags::WriteOnly);
+        .open("out".to_string(), FdFlags::WriteOnly)
+        .expect("fd space is not exhausted in tests");
     state.map_memory_data(0x3000, b"abc", Permission::RWX);
     write_iovec_array(&mut state, 0x2000, &[(0x3000, 3)]);
     NativeWritevSyscall
@@ -205,7 +208,8 @@ fn readv_user_fd_scatters_content() {
     let mut state = fresh_state();
     state
         .file_system()
-        .open_with_content("in".to_string(), FdFlags::ReadOnly, b"abcdef".to_vec());
+        .open_with_content("in".to_string(), FdFlags::ReadOnly, b"abcdef".to_vec())
+        .expect("fd space is not exhausted in tests");
     write_iovec_array(&mut state, 0x2000, &[(0x3000, 3), (0x3100, 3)]);
     let out = NativeReadvSyscall
         .call(
@@ -269,7 +273,8 @@ fn readv_symbolic_fd_scatters_symbolic_bytes_natively() {
     let mut state = fresh_state();
     let fd = state
         .file_system()
-        .open_symbolic("sym.in".to_string(), FdFlags::ReadOnly);
+        .open_symbolic("sym.in".to_string(), FdFlags::ReadOnly)
+        .expect("fd space is not exhausted in tests");
     assert!(state.file_system_ref().is_symbolic(fd));
     write_iovec_array(&mut state, 0x2000, &[(0x3000, 4), (0x3010, 2)]);
     let out = NativeReadvSyscall
@@ -307,7 +312,8 @@ fn readv_symbolic_fd_never_hits_eof() {
     let mut state = fresh_state();
     let fd = state
         .file_system()
-        .open_symbolic("sym.in".to_string(), FdFlags::ReadOnly);
+        .open_symbolic("sym.in".to_string(), FdFlags::ReadOnly)
+        .expect("fd space is not exhausted in tests");
     write_iovec_array(&mut state, 0x2000, &[(0x3000, 3)]);
     for _ in 0..2 {
         let out = NativeReadvSyscall
@@ -347,11 +353,10 @@ fn readv_unknown_fd_falls_back() {
 #[test]
 fn pread64_reads_at_offset_without_moving_position() {
     let mut state = fresh_state();
-    state.file_system().open_with_content(
-        "in".to_string(),
-        FdFlags::ReadOnly,
-        b"abcdefgh".to_vec(),
-    );
+    state
+        .file_system()
+        .open_with_content("in".to_string(), FdFlags::ReadOnly, b"abcdefgh".to_vec())
+        .expect("fd space is not exhausted in tests");
     // pread64(fd=3, buf=0x3000, nbyte=3, offset=2) -> "cde"
     let out = NativePread64Syscall
         .call(
@@ -383,7 +388,8 @@ fn pread64_symbolic_offset_falls_back() {
     let mut state = fresh_state();
     state
         .file_system()
-        .open_with_content("in".to_string(), FdFlags::ReadOnly, b"abcd".to_vec());
+        .open_with_content("in".to_string(), FdFlags::ReadOnly, b"abcd".to_vec())
+        .expect("fd space is not exhausted in tests");
     let sym = {
         let ctx = state.solver().borrow();
         RustBV::symbolic(&ctx, "off", 64)
@@ -415,7 +421,8 @@ fn pread64_zero_byte_on_empty_fd_is_native_no_op() {
     let mut state = fresh_state();
     state
         .file_system()
-        .open_with_content("empty".to_string(), FdFlags::ReadOnly, Vec::new());
+        .open_with_content("empty".to_string(), FdFlags::ReadOnly, Vec::new())
+        .expect("fd space is not exhausted in tests");
     let out = NativePread64Syscall
         .call(
             &mut state,
@@ -458,11 +465,10 @@ fn pread64_zero_byte_on_unopened_fd_still_falls_back() {
 #[test]
 fn pwrite64_overwrites_at_offset_without_moving_position() {
     let mut state = fresh_state();
-    state.file_system().open_with_content(
-        "out".to_string(),
-        FdFlags::ReadWrite,
-        b"AAAAAA".to_vec(),
-    );
+    state
+        .file_system()
+        .open_with_content("out".to_string(), FdFlags::ReadWrite, b"AAAAAA".to_vec())
+        .expect("fd space is not exhausted in tests");
     state.map_memory_data(0x3000, b"xy", Permission::RWX);
     // pwrite64(fd=3, buf=0x3000, nbyte=2, offset=2) -> "AAxyAA"
     let out = NativePwrite64Syscall
@@ -490,7 +496,8 @@ fn pwrite64_extends_past_eof() {
     let mut state = fresh_state();
     state
         .file_system()
-        .open_with_content("out".to_string(), FdFlags::ReadWrite, b"ab".to_vec());
+        .open_with_content("out".to_string(), FdFlags::ReadWrite, b"ab".to_vec())
+        .expect("fd space is not exhausted in tests");
     state.map_memory_data(0x3000, b"Z", Permission::RWX);
     // offset 4 is past EOF (len 2): zero-fill gap, write 'Z' at index 4.
     NativePwrite64Syscall
@@ -537,6 +544,7 @@ fn open_registered_sym_file(state: &mut RustSimState, path: &str, n: usize) -> u
     state
         .file_system()
         .open(path.to_string(), FdFlags::ReadOnly)
+        .expect("fd space is not exhausted in tests")
 }
 
 #[test]
