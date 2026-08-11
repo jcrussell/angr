@@ -460,19 +460,37 @@ fn parse_mbe_event(event: &str) -> MBusEvent {
         "Imbe_SFence" => MBusEvent::SFence,
         "Imbe_LFence" => MBusEvent::LFence,
         "Imbe_MFence" => MBusEvent::MFence,
+        // SILENT(cat-a): the payload is inert. `Interpreter`'s `IRStmt::MBE`
+        // arm discards it (`statements.rs`, `IRStmt::MBE(_) => Continue`), and
+        // the FFI sibling `libvex_lifter::mbe_event` collapses *every*
+        // discriminant to `Fence` unconditionally — this engine treats each
+        // barrier as a full fence. Widening the fallback to a log would warn
+        // about a value nothing reads.
         _ => MBusEvent::Fence,
     }
 }
 
 /// Convert dirty Fx string to DirtyFx.
 fn parse_dirty_fx(fx: &str) -> DirtyFx {
-    match fx {
-        "Ifx_None" => DirtyFx::None,
-        "Ifx_Read" => DirtyFx::Read,
-        "Ifx_Write" => DirtyFx::Write,
-        "Ifx_Modify" => DirtyFx::Modify,
-        _ => DirtyFx::None,
-    }
+    let parsed = match fx {
+        "Ifx_None" => Some(DirtyFx::None),
+        "Ifx_Read" => Some(DirtyFx::Read),
+        "Ifx_Write" => Some(DirtyFx::Write),
+        "Ifx_Modify" => Some(DirtyFx::Modify),
+        _ => None,
+    };
+    // cat-b rather than cat-c only because `IRDirty::mFx` is write-only today
+    // (see its field comment in `vex::ir::descriptors`): claiming a helper has
+    // no memory effect loses information but cannot yet produce a wrong
+    // answer. Promote to cat-c when memory-effect-aware code invalidation
+    // starts reading it.
+    silent_default!(
+        cat_b,
+        parsed,
+        DirtyFx::None,
+        "Unknown pyvex dirty-call effect string {fx:?}; assuming Ifx_None — \
+         the helper's memory effect is lost"
+    )
 }
 
 /// Convert a pyvex statement to Rust IRStmt.

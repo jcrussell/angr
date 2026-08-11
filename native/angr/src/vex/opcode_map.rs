@@ -1245,13 +1245,30 @@ pub fn parse_type_or_log(ty_str: &str, context: &str) -> IRType {
     )
 }
 
-/// Parse an endianness string from pyvex.
+/// Parse an endianness string from pyvex, substituting `Iend_LE` and logging
+/// when the string is neither `Iend_LE` nor `Iend_BE`.
+// SILENT(cat-c): endianness is not a hint — defaulting a big-endian load or
+// store to little-endian byte-swaps the value silently, and the result is
+// indistinguishable from a correct LE access downstream. Both marshalling
+// paths funnel here (`pyvex_bridge`'s JSON deserializer at every Load/Store/
+// StoreG/LoadG/CAS site, and `libvex_lifter::c_endness` after its own
+// discriminant lookup), so this is the single place table drift on either
+// path can be traced from (angr-03vl4.69).
 pub fn parse_endness(end_str: &str) -> super::ir::Endness {
-    match end_str {
-        "Iend_LE" => super::ir::Endness::Little,
-        "Iend_BE" => super::ir::Endness::Big,
-        _ => super::ir::Endness::Little, // Default to little endian
-    }
+    use super::ir::Endness;
+
+    let parsed = match end_str {
+        "Iend_LE" => Some(Endness::Little),
+        "Iend_BE" => Some(Endness::Big),
+        _ => None,
+    };
+    silent_default!(
+        cat_c,
+        parsed,
+        Endness::Little,
+        "Unknown pyvex endianness string {end_str:?}; assuming Iend_LE — a \
+         big-endian access is byte-swapped wherever it is used"
+    )
 }
 
 /// Parse a jump kind string from pyvex.

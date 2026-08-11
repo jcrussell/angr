@@ -126,6 +126,24 @@ fn test_parse_type_decimal_and_quad_floats_preserve_width() {
     }
 }
 
+/// Both `Iend_*` strings must round-trip, and an unrecognized one must land on
+/// the documented (logged) little-endian default rather than panicking — the
+/// `SILENT(cat-c)` arm on `parse_endness`, previously untested (angr-03vl4.69).
+#[test]
+fn test_parse_endness_defaults_to_little() {
+    use super::super::ir::Endness;
+
+    assert_eq!(parse_endness("Iend_LE"), Endness::Little);
+    assert_eq!(parse_endness("Iend_BE"), Endness::Big);
+    for unknown in ["Iend_ME", "Iend", "", "iend_be"] {
+        assert_eq!(
+            parse_endness(unknown),
+            Endness::Little,
+            "unknown endness {unknown:?} must fall back to little-endian"
+        );
+    }
+}
+
 #[test]
 fn test_parse_jumpkind() {
     assert_eq!(

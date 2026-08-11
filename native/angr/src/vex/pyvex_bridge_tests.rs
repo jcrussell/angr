@@ -565,3 +565,48 @@ fn test_stmt_dirty_guarded_memory_effect() {
         other => panic!("Expected Dirty statement, got {other:?}"),
     }
 }
+
+/// The two untagged string->enum fallbacks on this boundary (angr-03vl4.69):
+/// an unrecognized `Imbe_*` collapses to `Fence` (inert — the interpreter
+/// discards the payload) and an unrecognized `Ifx_*` to the logged
+/// `DirtyFx::None`. Driven through the JSON layer so the `#[serde(rename)]`s
+/// stay covered too.
+#[test]
+fn test_unknown_mbe_and_dirty_fx_strings_fall_back() {
+    match stmt_from_json(r#"{"tag": "Ist_MBE", "event": "Imbe_NotAThing"}"#) {
+        IRStmt::MBE(ev) => assert_eq!(ev, MBusEvent::Fence),
+        other => panic!("Expected MBE statement, got {other:?}"),
+    }
+
+    let stmt = stmt_from_json(
+        r#"{"tag": "Ist_Dirty",
+            "cee": {"name": "helper", "addr": 4096, "mcx_mask": 0},
+            "guard": null,
+            "tmp": null,
+            "mFx": "Ifx_NotAThing",
+            "mAddr": null,
+            "mSize": 0,
+            "nFxState": 0,
+            "args": []}"#,
+    );
+    match stmt {
+        IRStmt::Dirty(d) => assert_eq!(d.mFx, DirtyFx::None),
+        other => panic!("Expected Dirty statement, got {other:?}"),
+    }
+}
+
+/// `parse_endness`'s logged little-endian fallback, reached the way the live
+/// path reaches it: an `Ist_Store` carrying an endness string neither marshal
+/// path knows. The unit-level coverage lives in `opcode_map_tests.rs`.
+#[test]
+fn test_store_with_unknown_endness_falls_back_to_little() {
+    let stmt = stmt_from_json(
+        r#"{"tag": "Ist_Store", "end": "Iend_ME",
+            "addr": {"tag": "Iex_RdTmp", "tmp": 3},
+            "data": {"tag": "Iex_RdTmp", "tmp": 4}}"#,
+    );
+    match stmt {
+        IRStmt::Store { endness, .. } => assert_eq!(endness, Endness::Little),
+        other => panic!("Expected Store statement, got {other:?}"),
+    }
+}
