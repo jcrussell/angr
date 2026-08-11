@@ -206,6 +206,24 @@ impl SymContext {
         self.with_z3_solver(|solver| format!("{solver}"))
     }
 
+    /// Test-only: pin the solver's `rlimit` (resource budget) so the next
+    /// check aborts to a Z3 Unknown deterministically — the stand-in for a
+    /// timeout that a wall-clock `timeout_ms` cannot give a test without
+    /// flakiness (see `test_pin_rlimit_reaches_the_solver`). `rlimit = 0`
+    /// restores an unbounded budget.
+    ///
+    /// Lives on `SymContext` rather than beside `build_solver_params` because
+    /// the `solver_build` module is private to `symbolic/`, and the prune-gate
+    /// tests in `state/tests/solver_gate.rs` need the same rig.
+    #[cfg(all(test, feature = "vex-engine-z3"))]
+    pub(crate) fn pin_rlimit_for_test(&self, rlimit: u32) {
+        self.with_z3_solver(|solver| {
+            let mut params = super::solver_build::build_solver_params(self.timeout_ms());
+            params.set_u32("rlimit", rlimit);
+            solver.set_params(&params);
+        });
+    }
+
     // =========================================================================
     // Satisfiability & Evaluation (Z3-backed)
     // =========================================================================

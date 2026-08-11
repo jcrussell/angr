@@ -318,7 +318,8 @@ impl RustExplorationManager {
     /// identical at every call site; only the FOUND-push gating varies.
     ///
     /// When `gate_found_on_sat` is true the FOUND push is skipped for states
-    /// that are neither `lazy_solves` nor `satisfiable()` (the run_loop
+    /// the solver *proved* unsatisfiable (`survives_sat_prune`, which keeps a
+    /// state whose satisfiability query timed out — the run_loop
     /// successor/loop-exit sites that have not yet filtered satisfiability);
     /// such a state is routed to `STASH_PRUNED` — NOT silently dropped —
     /// exactly as the popped-state path in `check_terminal_conditions` does
@@ -330,7 +331,7 @@ impl RustExplorationManager {
     pub(crate) fn route_successor(&mut self, state: RustSimState, gate_found_on_sat: bool) {
         let spc = state.pc();
         if self.find_addrs.contains(&spc) {
-            if !gate_found_on_sat || self.constraint_solver.lazy_solves || state.satisfiable() {
+            if !gate_found_on_sat || state.survives_sat_prune(self.constraint_solver.lazy_solves) {
                 self.sm
                     .stashes_mut()
                     .entry(STASH_FOUND.to_string())

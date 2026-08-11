@@ -19,6 +19,8 @@
 //! - `filesystem_demote`: demotion of symbolic content to concrete and the
 //!   write choke point that refuses rather than dropping it.
 //! - `inspection`: the `state.inspect` event ring.
+//! - `solver_gate`: the `survives_sat_prune` exploration prune gate and its
+//!   undecided-query (Z3 timeout) contract.
 //! - `snapshot`: `to_snapshot`/`from_snapshot` round-trip and the serialized
 //!   envelope's error paths.
 //! - `migration_translate`: `translate_state` across two `SymContext`s.
@@ -52,3 +54,4 @@ mod merge_scalars;
 mod migration_snapshot;
 mod migration_translate;
 mod snapshot;
+mod solver_gate;

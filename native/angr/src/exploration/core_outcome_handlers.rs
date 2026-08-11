@@ -120,7 +120,7 @@ pub(super) fn materialize_deferred_forks_core(
             } else {
                 None
             };
-            if ctx.lazy_solves || forked.satisfiable() {
+            if forked.survives_sat_prune(ctx.lazy_solves) {
                 if let Some(start) = sat_start {
                     ParallelProfiling::add(
                         &prof.solver_sat_time_ns,
@@ -157,7 +157,7 @@ pub(super) fn materialize_deferred_forks_core(
             }
             fork_ids_out.push(forked.state_id());
 
-            if ctx.lazy_solves || forked.satisfiable() {
+            if forked.survives_sat_prune(ctx.lazy_solves) {
                 forks_out.push((forked, RoutingTag::fork(root_hint)));
             } else {
                 log::debug!(
@@ -223,7 +223,7 @@ fn process_deferred_forks_into_core(
             prior_guards.record(condition.clone(), fork.path_taken);
             fork_ids_out.push(forked.state_id());
 
-            if ctx.lazy_solves || forked.satisfiable() {
+            if forked.survives_sat_prune(ctx.lazy_solves) {
                 forks_out.push((forked, RoutingTag::fork(root_hint)));
             } else {
                 pruned_out.push(forked);
@@ -233,7 +233,7 @@ fn process_deferred_forks_into_core(
             forked.set_pc(fork.unexplored_target);
             fork_ids_out.push(forked.state_id());
 
-            if ctx.lazy_solves || forked.satisfiable() {
+            if forked.survives_sat_prune(ctx.lazy_solves) {
                 forks_out.push((forked, RoutingTag::fork(root_hint)));
             } else {
                 pruned_out.push(forked);
@@ -367,7 +367,7 @@ pub(super) fn handle_symbolic_branch_core(
         (false_state, RoutingTag::main()),
         (true_state, RoutingTag::fork(root_hint)),
     ] {
-        if cc.ctx.lazy_solves || child.satisfiable() {
+        if child.survives_sat_prune(cc.ctx.lazy_solves) {
             succ.push((child, tag));
         } else {
             pruned.push(child);

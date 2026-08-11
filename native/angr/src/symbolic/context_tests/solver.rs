@@ -1050,11 +1050,7 @@ const HARD_FACTORING_RLIMIT: u32 = 100_000;
 /// fresh solver would be clobbered by a later solver rebuild.
 #[cfg(feature = "vex-engine-z3")]
 fn pin_rlimit(ctx: &SymContext, rlimit: u32) {
-    ctx.with_z3_solver(|solver| {
-        let mut params = crate::symbolic::solver_build::build_solver_params(ctx.timeout_ms());
-        params.set_u32("rlimit", rlimit);
-        solver.set_params(&params);
-    });
+    ctx.pin_rlimit_for_test(rlimit);
 }
 
 /// Guard that [`pin_rlimit`] actually reaches the solver (angr-zdakq). The

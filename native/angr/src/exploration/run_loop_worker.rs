@@ -180,7 +180,7 @@ pub(crate) fn parallel_process_state(
         )]);
     }
     if cc.ctx.find_addrs.contains(&pc) {
-        if cc.ctx.lazy_solves || state.satisfiable() {
+        if state.survives_sat_prune(cc.ctx.lazy_solves) {
             {
                 let mut rm = shared.root_map.lock().expect("root_map poisoned");
                 rm.insert(id, root_hint);

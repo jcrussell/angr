@@ -290,7 +290,7 @@ pub(crate) fn materialize_deferred_forks(
                 );
             }
             let sat_start = stats.is_some().then(std::time::Instant::now);
-            let sat = lazy_solves || forked.satisfiable();
+            let sat = forked.survives_sat_prune(lazy_solves);
             if let (Some(s), Some(start)) = (stats.as_deref_mut(), sat_start) {
                 s.solver_sat_time_ns += start.elapsed().as_nanos() as u64;
                 s.solver_sat_count += 1;
@@ -317,7 +317,7 @@ pub(crate) fn materialize_deferred_forks(
             let mut forked = fork_base.fork();
             prior_guards.replay_onto(&forked);
             forked.set_pc(fork.unexplored_target);
-            if lazy_solves || forked.satisfiable() {
+            if forked.survives_sat_prune(lazy_solves) {
                 out.sat.push(forked);
             } else {
                 log::debug!(

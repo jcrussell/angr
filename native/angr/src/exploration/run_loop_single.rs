@@ -259,7 +259,7 @@ impl RustExplorationManager {
         if self.find_addrs.contains(&pc) {
             // Only add to found if the state is satisfiable
             // (UNSAT states reached the address via infeasible paths)
-            if self.constraint_solver.lazy_solves || state.satisfiable() {
+            if state.survives_sat_prune(self.constraint_solver.lazy_solves) {
                 self.sm
                     .stashes_mut()
                     .entry(STASH_FOUND.to_string())
@@ -545,7 +545,10 @@ impl RustExplorationManager {
 
                     // Now handle the main state
                     if is_find {
-                        if self.constraint_solver.lazy_solves || pending.state.satisfiable() {
+                        if pending
+                            .state
+                            .survives_sat_prune(self.constraint_solver.lazy_solves)
+                        {
                             self.sm
                                 .stashes_mut()
                                 .entry(STASH_FOUND.to_string())

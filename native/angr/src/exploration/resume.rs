@@ -164,7 +164,7 @@ impl RustExplorationManager {
         // Note: We split the loops to avoid double mutable borrow of self.sm
         let mut final_successors = Vec::new();
         for successor in successors {
-            if self.constraint_solver.lazy_solves || successor.satisfiable() {
+            if successor.survives_sat_prune(self.constraint_solver.lazy_solves) {
                 final_successors.push(successor);
             } else {
                 log::debug!(
@@ -479,7 +479,7 @@ impl RustExplorationManager {
         let mut pruned_states = Vec::new();
 
         for state in [true_state, false_state] {
-            if self.constraint_solver.lazy_solves || state.satisfiable() {
+            if state.survives_sat_prune(self.constraint_solver.lazy_solves) {
                 // Satisfiability established (and cached by `is_sat`), so the
                 // found gate does not need to re-check it.
                 self.route_successor(state, false);

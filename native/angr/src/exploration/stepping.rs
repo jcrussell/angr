@@ -1049,7 +1049,7 @@ impl RustExplorationManager {
                 // state.inspect fork BP — see handle_block_end for rationale.
                 self.dispatch_fork_inspect(forked.state_id());
 
-                if self.constraint_solver.lazy_solves || forked.satisfiable() {
+                if forked.survives_sat_prune(self.constraint_solver.lazy_solves) {
                     successors.push(forked);
                 } else {
                     self.push_or_drop_terminal(STASH_PRUNED, forked);
@@ -1062,7 +1062,7 @@ impl RustExplorationManager {
 
                 self.dispatch_fork_inspect(forked.state_id());
 
-                if self.constraint_solver.lazy_solves || forked.satisfiable() {
+                if forked.survives_sat_prune(self.constraint_solver.lazy_solves) {
                     successors.push(forked);
                 } else {
                     self.push_or_drop_terminal(STASH_PRUNED, forked);

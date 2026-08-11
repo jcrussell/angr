@@ -501,7 +501,7 @@ impl RustExplorationManager {
                         state.set_pc(addr);
                         state.add_to_history(addr);
                         self.sm.set_root(id, root);
-                        if self.constraint_solver.lazy_solves || state.satisfiable() {
+                        if state.survives_sat_prune(self.constraint_solver.lazy_solves) {
                             self.push_found_capped(state);
                         } else {
                             log::debug!(
@@ -535,7 +535,7 @@ impl RustExplorationManager {
                 self.sm.set_root(id, root);
                 let spc = state.pc();
                 if self.find_addrs.contains(&spc)
-                    && (self.constraint_solver.lazy_solves || state.satisfiable())
+                    && state.survives_sat_prune(self.constraint_solver.lazy_solves)
                 {
                     self.push_found_capped(state);
                 } else {
