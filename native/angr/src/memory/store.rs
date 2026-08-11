@@ -882,7 +882,7 @@ impl SymbolicMemory {
 
         // Check if pages are mapped
         let start_page = addr.page_num();
-        let end_page = end_page_exclusive(addr.raw(), size as u64);
+        let end_page = end_page_exclusive(addr.raw(), size as u64)?;
         self.check_pages_mapped_lazy(start_page, end_page)?;
 
         // Permission checks live in store_concrete; this wrapper only adds
@@ -938,7 +938,7 @@ impl SymbolicMemory {
         let addr = addr.into();
         let size = value.width() / 8;
         let start_page = addr.page_num();
-        let end_page = end_page_exclusive(addr.raw(), size as u64);
+        let end_page = end_page_exclusive(addr.raw(), size as u64)?;
 
         // Check all pages are mapped - do NOT auto-map
         self.check_pages_mapped_lazy(start_page, end_page)?;
@@ -960,7 +960,7 @@ impl SymbolicMemory {
         let addr = addr.into();
         let size = value.width() / 8;
         let start_page = addr.page_num();
-        let end_page = end_page_exclusive(addr.raw(), size as u64);
+        let end_page = end_page_exclusive(addr.raw(), size as u64)?;
 
         // Auto-map any missing pages in lazy regions
         for page_num in start_page..end_page {

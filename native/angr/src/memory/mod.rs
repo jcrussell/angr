@@ -110,7 +110,9 @@ pub enum MemoryError {
     /// Unresolvable symbolic address.
     #[error("symbolic address: {description}")]
     SymbolicAddress { description: String },
-    /// Out of bounds access.
+    /// Out of bounds access. Also the wraparound rejection surfaced by
+    /// `end_page_inclusive` / `end_page_exclusive` when `addr + size` runs
+    /// past the top of the 64-bit address space (angr-03vl4.34/.35).
     #[error("out of bounds access at 0x{addr:x} (size {size})")]
     OutOfBounds { addr: u64, size: u64 },
     /// A zero-size access. Rejected up-front by `end_page_inclusive` rather
@@ -152,11 +154,25 @@ pub enum MemoryError {
 /// (`exploration/pending_api.rs`) forwards a Python-supplied size straight to
 /// `load_concrete`, and on the store side `size = value.width() / 8` is zero
 /// for any sub-byte-width BV.
+///
+/// angr-03vl4.34/.35: the addition is `checked_add`, not bare `+`, for the
+/// mirror-image reason. `addr + size - 1` *overflows* when the access runs off
+/// the top of the address space (`write_fallback_max` concretizes an
+/// under-constrained store pointer to `u64::MAX` by default, so this is
+/// reachable, not theoretical). With release overflow-checks off that wrapped
+/// to a tiny `end_page < start_page`, making both `start_page..=end_page` and
+/// `check_perms_range` empty — every mapped-page and permission check silently
+/// skipped, after which the byte loop's wrapping `Address` addition walked down
+/// through 0 and read/wrote a real low page. Reject as
+/// [`MemoryError::OutOfBounds`] instead.
 pub(super) fn end_page_inclusive(addr: u64, size: u64) -> Result<u64, MemoryError> {
     if size == 0 {
         return Err(MemoryError::ZeroSize { addr });
     }
-    Ok((addr + size - 1) >> 12)
+    let last = addr
+        .checked_add(size - 1)
+        .ok_or(MemoryError::OutOfBounds { addr, size })?;
+    Ok(last >> 12)
 }
 
 /// Exclusive page number one past the last page touched by
@@ -169,10 +185,22 @@ pub(super) fn end_page_inclusive(addr: u64, size: u64) -> Result<u64, MemoryErro
 /// it simply yields `ceil(addr / PAGE_SIZE)`, an empty range for a
 /// page-aligned `addr`. Callers that must reject a zero-size access do so
 /// themselves (`map` / `unmap` early-return; the store wrappers inherit
-/// `store_concrete`'s `end_page_inclusive` check), so no error channel is
-/// needed here.
-pub(super) fn end_page_exclusive(addr: u64, size: u64) -> u64 {
-    (addr + size + PAGE_SIZE - 1) >> 12
+/// `store_concrete`'s `end_page_inclusive` check).
+///
+/// angr-03vl4.34: it *can* overflow at the top of the address space, with the
+/// same silently-empty-range consequence described on [`end_page_inclusive`] —
+/// `check_pages_mapped_lazy` iterates `start_page..end_page` and skips every
+/// page when the sum wraps. Hence the error channel. The ceil-div is applied
+/// to the checked exclusive end address rather than folded into the addition
+/// (`+ PAGE_SIZE - 1` has its own overflow), and the one region that ends
+/// *exactly* at the top of the address space — `addr + size == 2^64`, e.g.
+/// mapping the last page — is a legal range, not an overflow.
+pub(super) fn end_page_exclusive(addr: u64, size: u64) -> Result<u64, MemoryError> {
+    match addr.checked_add(size) {
+        Some(end_addr) => Ok(end_addr.div_ceil(PAGE_SIZE)),
+        None if addr.wrapping_add(size) == 0 => Ok((u64::MAX >> 12) + 1),
+        None => Err(MemoryError::OutOfBounds { addr, size }),
+    }
 }
 
 impl ConcretizationResult {
@@ -605,7 +633,17 @@ impl SymbolicMemory {
         }
         let addr = addr.into();
         let start_page = addr.page_num();
-        let end_page = end_page_exclusive(addr.raw(), size);
+        // angr-03vl4.34: a region running off the top of the address space is
+        // a caller bug. Skipping it keeps the pre-fix effective behaviour (the
+        // wrapped range was empty too) without the silence, and without the
+        // alternative — clamping to the last page — turning `map(0, u64::MAX)`
+        // from a no-op into 2^52 page insertions.
+        let end_page = silent_default!(
+            cat_c,
+            end_page_exclusive(addr.raw(), size),
+            return,
+            |err| "map: {err}"
+        );
 
         for page_num in start_page..end_page {
             let base = page_num << 12;
@@ -648,7 +686,13 @@ impl SymbolicMemory {
         }
         let addr = addr.into();
         let start_page = addr.page_num();
-        let end_page = end_page_exclusive(addr.raw(), size);
+        // angr-03vl4.34: mirror `map`'s overflow handling — see the note there.
+        let end_page = silent_default!(
+            cat_c,
+            end_page_exclusive(addr.raw(), size),
+            return,
+            |err| "unmap: {err}"
+        );
 
         for page_num in start_page..end_page {
             self.pages.remove(&page_num);
@@ -989,7 +1033,15 @@ impl SymbolicMemory {
     pub fn add_lazy_region(&mut self, start_addr: impl Into<Address>, size: u64) {
         let start_addr = start_addr.into();
         let start_page = start_addr.page_num();
-        let end_page = end_page_exclusive(start_addr.raw(), size);
+        // angr-03vl4.34: mirror `map`'s overflow handling — see the note there.
+        // A dropped lazy region only costs on-demand page fetching, not
+        // correctness, but the wrapped range was silently empty all the same.
+        let end_page = silent_default!(
+            cat_c,
+            end_page_exclusive(start_addr.raw(), size),
+            return,
+            |err| "add_lazy_region: {err}"
+        );
         self.lazy_regions.push((start_page, end_page));
     }
 

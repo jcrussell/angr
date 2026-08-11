@@ -207,6 +207,100 @@ fn test_zero_size_access_is_rejected_not_looped() {
 }
 
 #[test]
+fn test_wraparound_access_is_rejected_not_silently_redirected() {
+    // Regression (angr-03vl4.34/.35): the mirror image of the size == 0
+    // underflow above. `end_page_inclusive`/`end_page_exclusive` used bare `+`,
+    // so an access near u64::MAX *overflowed* — and with release overflow-checks
+    // off it wrapped to an end_page far below start_page. Every mapped-page and
+    // permission loop (`start_page..=end_page`, `check_perms_range`) is then
+    // empty, and the byte loop's wrapping `Address` addition walks straight into
+    // whatever low page is really mapped. Reachable: `write_fallback_max`
+    // concretizes an under-constrained store pointer to exactly u64::MAX.
+    let ctx = SymContext::new_mock();
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    // Page 0 is the page a wrapped access lands on. Nothing near u64::MAX is
+    // mapped, so a correct engine can only error here.
+    mem.map(0x0u64, 0x1000, Permission::RWX);
+    mem.set_enforce_permissions(true);
+    mem.store_concrete(0x0u64, RustBV::concrete(0x1111_1111, 32))
+        .unwrap();
+
+    let wrapping = u64::MAX - 1; // [u64::MAX-1, u64::MAX+2) — overflows by 2.
+
+    assert!(
+        matches!(
+            mem.load_concrete(wrapping, 4, &ctx),
+            Err(MemoryError::OutOfBounds { .. })
+        ),
+        "a load whose range wraps past u64::MAX must error, not read page 0"
+    );
+    assert!(matches!(
+        mem.load_concrete_lazy(wrapping, 4, &ctx),
+        Err(MemoryError::OutOfBounds { .. })
+    ));
+
+    // Store side: the eager path (`end_page_inclusive`) and all three lazy
+    // wrappers (`end_page_exclusive` via `check_pages_mapped_lazy` /
+    // the automap loop).
+    let poison = RustBV::concrete(0xdead_beef, 32);
+    assert!(matches!(
+        mem.store_concrete(wrapping, poison.clone()),
+        Err(MemoryError::OutOfBounds { .. })
+    ));
+    assert!(matches!(
+        mem.store_concrete_lazy(wrapping, poison.clone()),
+        Err(MemoryError::OutOfBounds { .. })
+    ));
+    assert!(matches!(
+        mem.store_concrete_automap(wrapping, poison.clone()),
+        Err(MemoryError::OutOfBounds { .. })
+    ));
+    assert!(matches!(
+        mem.store_concrete_automap_internal(wrapping, poison),
+        Err(MemoryError::OutOfBounds { .. })
+    ));
+    assert_eq!(
+        mem.load_concrete(0x0u64, 4, &ctx).unwrap().as_u64(),
+        Some(0x1111_1111),
+        "no rejected wraparound store may have corrupted the low page"
+    );
+
+    // A single byte *at* u64::MAX does not wrap, so it stays a plain unmapped
+    // error — the guard must not over-reject the last addressable byte.
+    assert!(matches!(
+        mem.load_concrete(u64::MAX, 1, &ctx),
+        Err(MemoryError::Unmapped { .. })
+    ));
+}
+
+#[test]
+fn test_map_of_last_page_and_of_wrapping_region() {
+    // `end_page_exclusive`'s two boundary cases. Mapping the final page has
+    // `addr + size == 2^64`, which is a legal range ending exactly at the top
+    // of the address space, not an overflow.
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    let last_page = u64::MAX - 0xFFF;
+    mem.map(last_page, 0x1000, Permission::RWX);
+    assert!(
+        mem.is_mapped(last_page),
+        "a region ending exactly at u64::MAX must still map"
+    );
+
+    // A genuinely wrapping map is a caller bug: skipped (and warned), never
+    // clamped to the last page — clamping would turn map(0, u64::MAX) into 2^52
+    // page insertions. If this ever hangs, the reject-don't-clamp rule is gone.
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    mem.map(0x1000u64, u64::MAX, Permission::RWX);
+    assert!(!mem.is_mapped(0x1000), "a wrapping map must be a no-op");
+    mem.map(0x0u64, 0x1000, Permission::RWX);
+    mem.unmap(0x1000u64, u64::MAX);
+    assert!(
+        mem.is_mapped(0x0),
+        "a wrapping unmap must not drop unrelated pages"
+    );
+}
+
+#[test]
 fn test_unmap_zero_size_is_noop_regardless_of_alignment() {
     // Sibling of the map() guard: a zero-length unmap must not drop a page.
     let mut mem = SymbolicMemory::new(Endness::Little);
