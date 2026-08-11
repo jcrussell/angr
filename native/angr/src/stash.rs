@@ -14,7 +14,7 @@
 //! _current_stepping_state_id}`. The Rust counterpart here owns the
 //! `state_index` and `state_roots` maps that back lineage tracking. Both
 //! maps must move together — every push/pop on a stash that participates
-//! in lineage must update both, and `remove_state` / `clear` /
+//! in lineage must update both, and `remove_state` / `clear` / `insert` /
 //! `push_or_drop_terminal` are the chokepoints that enforce this.
 //! Without consistent maps, `_state_roots` drift produces orphaned roots
 //! and a freshly-mutated state can race-evict between callbacks on the
@@ -165,8 +165,30 @@ impl StashManager {
         self.stashes.remove(stash)
     }
 
-    /// Insert a stash with given contents.
+    /// Insert a stash with given contents, replacing any existing stash of
+    /// that name.
+    ///
+    /// **Invariant I6 chokepoint (angr-03vl4.80):** unlike a bare
+    /// `stashes.insert`, this re-points `state_index` at `stash` for every
+    /// state in `states`, and drops the `state_index` / `state_roots` entries
+    /// of the states it evicts — the same bookkeeping [`Self::clear`] does —
+    /// so the maps cannot desync from the stashes when a caller replaces a
+    /// non-empty stash. Its one in-tree caller (`_move_states` in
+    /// `exploration/state_lifecycle.rs`) passes an empty deque into a name it
+    /// has just [`Self::remove`]d and re-indexed by hand, so both loops are
+    /// no-ops there; they exist so a future caller that does neither stays
+    /// correct.
     pub fn insert(&mut self, stash: &str, states: VecDeque<RustSimState>) {
+        if let Some(evicted) = self.stashes.get(stash) {
+            for state in evicted {
+                let sid = state.state_id();
+                self.state_index.remove(&sid);
+                self.state_roots.remove(&sid);
+            }
+        }
+        for state in &states {
+            self.state_index.insert(state.state_id(), stash.to_string());
+        }
         self.stashes.insert(stash.to_string(), states);
     }
 

@@ -314,3 +314,51 @@ fn stale_index_entry_for_absent_state_still_yields_none() {
     assert!(mgr.find_state_mut(4_242).is_none());
     assert!(mgr.take_state(4_242).is_none());
 }
+
+/// angr-03vl4.80: `insert` is an I6 chokepoint — replacing a stash's contents
+/// must re-index the incoming states and drop the index/root entries of the
+/// states it evicts, so `state_index` / `state_roots` never outlive the
+/// stashes they describe.
+#[test]
+fn test_insert_maintains_index_and_roots() {
+    let mut mgr = StashManager::new();
+    let evicted = RustSimState::new("amd64").unwrap();
+    let evicted_id = evicted.state_id();
+    mgr.push(STASH_ACTIVE, evicted);
+    mgr.set_root(evicted_id, evicted_id);
+    assert_eq!(mgr.stash_of(evicted_id), Some(STASH_ACTIVE));
+
+    let incoming = RustSimState::new("amd64").unwrap();
+    let incoming_id = incoming.state_id();
+    let mut deque = VecDeque::new();
+    deque.push_back(incoming);
+    mgr.insert(STASH_ACTIVE, deque);
+
+    // Evicted state is gone from both maps, not just from the stash.
+    assert_eq!(mgr.stash_of(evicted_id), None, "evicted index entry leaked");
+    assert_eq!(mgr.get_root(evicted_id), None, "evicted root entry leaked");
+    // Incoming state is indexed at the stash it was inserted into.
+    assert_eq!(mgr.count(STASH_ACTIVE), 1);
+    assert_eq!(mgr.stash_of(incoming_id), Some(STASH_ACTIVE));
+    assert!(mgr.find_state(incoming_id).is_some());
+}
+
+/// The live `_move_states` shape (`remove` then `insert` an empty deque into
+/// the same name) must stay a no-op for the index: the states were already
+/// re-indexed to the destination stash by hand.
+#[test]
+fn test_insert_empty_after_remove_preserves_moved_index() {
+    let mut mgr = StashManager::new();
+    let state = RustSimState::new("amd64").unwrap();
+    let sid = state.state_id();
+    mgr.push(STASH_ACTIVE, state);
+
+    let mut from = mgr.remove(STASH_ACTIVE).expect("stash exists");
+    mgr.index(sid, STASH_FOUND);
+    mgr.ensure_stash(STASH_FOUND).append(&mut from);
+    mgr.insert(STASH_ACTIVE, VecDeque::new());
+
+    assert_eq!(mgr.stash_of(sid), Some(STASH_FOUND));
+    assert_eq!(mgr.count(STASH_FOUND), 1);
+    assert_eq!(mgr.count(STASH_ACTIVE), 0);
+}
