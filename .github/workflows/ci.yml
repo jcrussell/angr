@@ -100,6 +100,15 @@ jobs:
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v5
         with:
           python-version: "3.12"
+      # `release-checked` (repo-root Cargo.toml) is `release` plus
+      # overflow-checks and debug-assertions, with default features on. That
+      # combination exists only here and in the ralph gate: every other
+      # default-feature cargo-test lane is plain `--release` (debug-assertions
+      # off), and the debug-assertions-on `rust_feature_flags` lanes are
+      # `--no-default-features`, which #[cfg]s the `vex-engine-z3` block out.
+      # So this is the ONLY job that runs the debug-only Z3 guards, e.g.
+      # `SymContext::to_snapshot`'s residual/assumed accounting bound
+      # (angr-03vl4.84). Keep it on `release-checked`, not `--release`.
       - run: cargo test --profile release-checked
 
   rust_feature_flags_check:

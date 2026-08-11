@@ -16,7 +16,10 @@
 #      memory `cargo-test-not-in-ralph-gate`.
 #
 #      Uses `release-checked` (Cargo.toml: inherits release, lto="off",
-#      codegen-units=16, overflow-checks=true) rather than plain `--release`
+#      codegen-units=16, overflow-checks=true, debug-assertions=true — the
+#      last one added by angr-03vl4.84, so the debug-only Z3 guards such as
+#      `SymContext::to_snapshot`'s residual/assumed bound run here too)
+#      rather than plain `--release`
 #      (fat LTO + codegen-units=1) — matches .github/workflows/ci.yml's
 #      `rust_test` job, which already made this switch. Measured on iteration
 #      211 (a touched-native iteration), plain `--release` cost ~181s of

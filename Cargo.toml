@@ -53,22 +53,38 @@ codegen-units = 1
 strip = "symbols"
 panic = "abort"
 
-# CI-test-only profile: same as `release` but with overflow-checks on, so
-# integer overflow panics loudly in `cargo test` instead of silently
-# wrapping (angr-9ke6b audit found overflow-adjacent bugs -- e.g.
-# SegmentList::release's missing overflow guard, NativeMemmove's
-# non-wrapping overlap-check addition -- that a checked build would catch
-# immediately in any test that exercises the path). NOT used for production
-# wheels or `bench-regression`, which both still build against plain
-# `release` -- overflow-checks adds real per-op runtime cost we don't want
-# to ship or benchmark against. Also drops `release`'s fat LTO /
-# single-codegen-unit settings (same rationale as `release-fast` below):
-# overflow-checks doesn't need link-time optimization, and a from-scratch
-# fat-LTO build of this crate OOM-killed rustc on a 7.8G/0-swap box the
-# first time this profile was built.
+# CI-test-only profile: same as `release` but with overflow-checks and
+# debug-assertions on, so integer overflow panics loudly in `cargo test`
+# instead of silently wrapping (angr-9ke6b audit found overflow-adjacent
+# bugs -- e.g. SegmentList::release's missing overflow guard,
+# NativeMemmove's non-wrapping overlap-check addition -- that a checked
+# build would catch immediately in any test that exercises the path), and
+# `debug_assert!` guards actually run.
+#
+# `debug-assertions` (angr-03vl4.84): the codebase's `debug_assert!`s were
+# armed by NO cargo-test lane that also had the default features on. Every
+# default-feature lane is `--release` (debug-assertions off by inheritance),
+# and the one debug-assertions-on lane -- nightly `rust_feature_flags` --
+# is `--no-default-features`, which `#[cfg]`s the whole `vex-engine-z3`
+# block out. So the deliberately debug-only guards over the Z3 solver
+# (`SymContext::to_snapshot`'s residual/assumed accounting bound, written to
+# catch exactly the angr-03vl4.74 class of bug) had never been executed
+# anywhere. This is the lane that arms them; it stays off `release` for the
+# same reason `overflow-checks` does -- `to_snapshot`'s guard alone costs
+# two mutex locks plus a Z3 `get_assertions` query per snapshot, squarely on
+# the fork path (angr-9ke6b.220).
+#
+# NOT used for production wheels or `bench-regression`, which both still
+# build against plain `release` -- overflow-checks adds real per-op runtime
+# cost we don't want to ship or benchmark against. Also drops `release`'s
+# fat LTO / single-codegen-unit settings (same rationale as `release-fast`
+# below): overflow-checks doesn't need link-time optimization, and a
+# from-scratch fat-LTO build of this crate OOM-killed rustc on a 7.8G/0-swap
+# box the first time this profile was built.
 [profile.release-checked]
 inherits = "release"
 overflow-checks = true
+debug-assertions = true
 lto = "off"
 codegen-units = 16
 
