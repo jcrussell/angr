@@ -3,11 +3,11 @@
 //! These are the highest-volume libc stdio procedures the Python fallback
 //! still serviced (per angr-otjw spike). fflush / setvbuf are no-ops that
 //! always return 0; fwrite resolves the FILE struct's `_fileno` field via
-//! the shared [`super::fileops::read_fileno`] helper and reuses the
-//! NativeWrite path for stdout/stderr.
+//! the shared [`super::fileops::resolve_stream_fd_or_demote_all`] helper and
+//! reuses the NativeWrite path for stdout/stderr.
 
 use super::arch_word;
-use super::fileops::read_fileno;
+use super::fileops::{read_fileno, resolve_stream_fd_or_demote_all};
 use super::{NativeSimProcedure, ProcedureError, extract_concrete_arg};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
@@ -45,18 +45,10 @@ impl NativeSimProcedure for NativeFwrite {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<Option<RustBV>, ProcedureError> {
-        // Resolve the fd FIRST: write-intent bounces below must know the
+        // Resolve the fd FIRST: the write-intent bounces below must know the
         // target fd so they can demote its bounded symbolic content before
-        // falling back (angr-0xyq2 A4). An unresolvable fd (symbolic
-        // FILE* / _fileno, unmapped FILE struct, unknown arch) could alias
-        // any registered file, so it demotes everything.
-        let fd_signed = match resolve_fwrite_fd(state, &args[3]) {
-            Ok(fd) => fd,
-            Err(e) => {
-                state.file_system().demote_all_symbolic_content();
-                return Err(e);
-            }
-        };
+        // falling back (angr-0xyq2 A4, enforced by the helper).
+        let fd_signed = resolve_stream_fd_or_demote_all(state, &args[3])?;
 
         if fd_signed < 0 {
             // FILE not backed by a real fd — propagate -1 per fwrite spec.
@@ -126,16 +118,6 @@ impl NativeSimProcedure for NativeFwrite {
 
         Ok(Some(arch_word(state, total)))
     }
-}
-
-/// Resolve fwrite's `FILE *stream` argument (arg 3) to its `_fileno`.
-/// Thin wrapper: extract the concrete `FILE *` then defer to the shared
-/// [`super::fileops::read_fileno`] so the fd-offset lookup / load / cast logic
-/// lives in one place. Split out so the caller can demote-all on ANY
-/// resolution failure without repeating the error mapping.
-fn resolve_fwrite_fd(state: &RustSimState, stream: &RustBV) -> Result<i32, ProcedureError> {
-    let file_ptr = extract_concrete_arg(stream, "file_ptr")?;
-    read_fileno(state, file_ptr)
 }
 
 /// Native fflush implementation.
@@ -241,11 +223,14 @@ impl NativeSimProcedure for NativeSetbuf {
 /// content *length* is always concrete (bounded symbolic files have a
 /// concrete size), so the boolean is concrete too.
 ///
-/// Returns -1 if the fd is not tracked (matches the Python `simfd is None`
-/// → `None` short-circuit by signaling "fallback" via a non-zero status). We
-/// can't return None from a procedure with a non-void signature, so a
-/// best-effort 0 (not EOF) is the safe default — Python's `feof` returns
-/// `None` in that case, which the caller would coerce to 0 anyway.
+/// Both "no such fd" cases — a negative/closed `stream->_fileno`, and an fd
+/// `fd_pos_and_size` does not track — return a best-effort 0 (not EOF), never
+/// a distinguished error status. The Python proc short-circuits on
+/// `simfd is None` by returning `None`, which leaves the return register
+/// untouched; a native proc has no way to express that, and 0 is the safe
+/// default (a caller's `while (!feof(f))` keeps making progress rather than
+/// treating an untracked stream as exhausted). Covered by
+/// `test_feof_negative_fd_returns_zero`.
 pub(crate) struct NativeFeof;
 
 impl NativeSimProcedure for NativeFeof {
@@ -353,17 +338,7 @@ impl NativeSimProcedure for NativeFputs {
         args: &[RustBV],
     ) -> Result<Option<RustBV>, ProcedureError> {
         let str_addr = extract_concrete_arg(&args[0], "s")?;
-        let file_ptr = extract_concrete_arg(&args[1], "stream")?;
-        let fd = match read_fileno(state, file_ptr) {
-            Ok(fd) => fd,
-            Err(e) => {
-                // Unresolvable fd on a write path: any bounded symbolic
-                // file could be the target (angr-0xyq2 A4; O(1) when none
-                // attached).
-                state.file_system().demote_all_symbolic_content();
-                return Err(e);
-            }
-        };
+        let fd = resolve_stream_fd_or_demote_all(state, &args[1])?;
         if fd < 0 {
             return Ok(Some(arch_word(state, -1i64 as u64)));
         }

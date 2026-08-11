@@ -98,16 +98,7 @@ crate::declare_proc! {
     aliases = ["fputc_unlocked", "putc", "putc_unlocked"],
     call |state| {
         let byte = (c & 0xFF) as u8;
-        let fd = match crate::procedures::fileops::read_fileno(state, stream) {
-            Ok(fd) => fd,
-            Err(e) => {
-                // Unresolvable fd on a write path: any bounded symbolic
-                // file could be the target (angr-0xyq2 A4; O(1) when none
-                // attached).
-                state.file_system().demote_all_symbolic_content();
-                return Err(e);
-            }
-        };
+        let fd = crate::procedures::fileops::read_fileno_or_demote_all(state, stream)?;
         if fd < 0 {
             return Ok(Some(RustBV::concrete((-1i64 as u64) as u128, 32)));
         }

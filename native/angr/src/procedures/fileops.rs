@@ -152,6 +152,49 @@ pub(crate) fn read_fileno(state: &RustSimState, file_ptr: u64) -> Result<i32, Pr
     Ok(raw as u32 as i32)
 }
 
+/// [`read_fileno`] for a **write** path: on failure, demote every bounded
+/// symbolic file's content before propagating the error.
+///
+/// Write-intent bounces must know the target fd so they can demote its bounded
+/// symbolic content before falling back (angr-0xyq2 A4). An unresolvable fd
+/// (symbolic `_fileno`, unmapped FILE struct, unknown arch) could alias any
+/// registered file, so it demotes everything — otherwise Python takes over the
+/// write while Rust keeps serving the now-stale symbolic content. O(1) when no
+/// bounded symbolic file is attached.
+///
+/// Every native write-family proc that dispatches off a `FILE *` funnels
+/// through this (or [`resolve_stream_fd_or_demote_all`]) rather than calling
+/// [`read_fileno`] directly, so the demotion protocol cannot diverge per proc.
+pub(crate) fn read_fileno_or_demote_all(
+    state: &mut RustSimState,
+    file_ptr: u64,
+) -> Result<i32, ProcedureError> {
+    match read_fileno(state, file_ptr) {
+        Ok(fd) => Ok(fd),
+        Err(e) => {
+            state.file_system().demote_all_symbolic_content();
+            Err(e)
+        }
+    }
+}
+
+/// [`read_fileno_or_demote_all`] for callers whose `FILE *` is still a
+/// [`RustBV`]: a *symbolic* stream pointer is just as unresolvable as a
+/// symbolic `_fileno`, so it demotes on the same terms rather than bailing out
+/// of the write path with the demotion skipped.
+pub(crate) fn resolve_stream_fd_or_demote_all(
+    state: &mut RustSimState,
+    stream: &RustBV,
+) -> Result<i32, ProcedureError> {
+    match super::extract_concrete_arg(stream, "file_ptr") {
+        Ok(file_ptr) => read_fileno_or_demote_all(state, file_ptr),
+        Err(e) => {
+            state.file_system().demote_all_symbolic_content();
+            Err(e)
+        }
+    }
+}
+
 crate::declare_proc! {
     /// Native open implementation.
     ///
