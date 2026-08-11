@@ -25,6 +25,7 @@
 
 use std::cmp::{max, min};
 use std::collections::HashSet;
+use std::ops::Range;
 
 use pyo3::{exceptions::PyStopIteration, prelude::*, types::PyTuple};
 use rangemap::RangeMap;
@@ -138,6 +139,23 @@ impl SegmentList {
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn is_empty(&self) -> bool {
         self.map.is_empty()
+    }
+
+    /// Total number of bytes of `range` that are already occupied.
+    ///
+    /// `bytes_occupied` is maintained incrementally, so both `occupy` and
+    /// `release` need this same clipped-intersection sum before mutating the
+    /// map — `occupy` to avoid double-counting bytes it already owns,
+    /// `release` to subtract only what was actually there (angr-03vl4.81).
+    fn overlap_bytes(&self, range: &Range<u64>) -> u64 {
+        self.map
+            .overlapping(range.clone())
+            .map(|(r, _)| {
+                let s = max(r.start, range.start);
+                let e = min(r.end, range.end);
+                e.saturating_sub(s)
+            })
+            .sum()
     }
 }
 
@@ -310,16 +328,7 @@ impl SegmentList {
             return;
         };
         let new_range = address..end;
-        let overlapped: u64 = self
-            .map
-            .overlapping(new_range.clone())
-            .map(|(r, _)| {
-                let s = max(r.start, new_range.start);
-                let e = min(r.end, new_range.end);
-                e.saturating_sub(s)
-            })
-            .sum();
-        let added = size.saturating_sub(overlapped);
+        let added = size.saturating_sub(self.overlap_bytes(&new_range));
         self.map.insert(new_range, sort);
         self.bytes_occupied = self.bytes_occupied.saturating_add(added);
     }
@@ -341,15 +350,7 @@ impl SegmentList {
             return;
         };
         let rem = address..end;
-        let removed: u64 = self
-            .map
-            .overlapping(rem.clone())
-            .map(|(r, _)| {
-                let s = max(r.start, rem.start);
-                let e = min(r.end, rem.end);
-                e.saturating_sub(s)
-            })
-            .sum();
+        let removed = self.overlap_bytes(&rem);
         self.map.remove(rem);
         self.bytes_occupied = self.bytes_occupied.saturating_sub(removed);
     }
