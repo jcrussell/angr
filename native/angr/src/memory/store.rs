@@ -134,6 +134,15 @@ impl SymbolicMemory {
     /// `end_page_inclusive` rejects as [`MemoryError::ZeroSize`] before any
     /// page is touched — so a rejected zero-size store installs nothing, the
     /// same all-or-nothing property the permission check below has.
+    ///
+    /// # Errors
+    /// [`MemoryError::ZeroSize`] for any `value` narrower than one byte (both
+    /// branches), and — for a *symbolic* `value` — [`MemoryError::UnalignedWidth`]
+    /// when the width is a non-multiple of 8 wide enough to survive that first
+    /// guard (angr-03vl4.40); see the guard in the symbolic branch below for
+    /// why partial trailing bytes cannot be tracked. Also
+    /// [`MemoryError::Unmapped`] / [`MemoryError::Permission`] per the range
+    /// checks, all before any page is written.
     pub fn store_concrete(
         &mut self,
         addr: impl Into<Address>,
@@ -169,6 +178,20 @@ impl SymbolicMemory {
 
         // If symbolic, store in symbolic_objects
         if value.is_symbolic() {
+            // angr-03vl4.40: same guard `import_symbolic_value` carries, for
+            // the same reason. Every structure below is sized by `size`
+            // (= `width() / 8`, truncating), so a width like 12 bits tracks
+            // only 1 of its 1.5 logical bytes in `symbolic_spans` and the page
+            // bitmap; the pre-existing `ZeroSize` guard in `end_page_inclusive`
+            // only accidentally catches widths 1-7. Reject rather than store an
+            // object `extract_byte_lane` can never reconstruct.
+            let width_bits = value.width();
+            if width_bits == 0 || !width_bits.is_multiple_of(8) {
+                return Err(MemoryError::UnalignedWidth {
+                    addr: addr.raw(),
+                    width_bits,
+                });
+            }
             // angr-9ke6b.95: mirror the concrete branch's angr-1tes cleanup
             // below. A byte may be marked Multi *or* Symbolic but not both
             // (invariant documented on `SymbolicMemory`), and
@@ -188,7 +211,6 @@ impl SymbolicMemory {
                 .insert(addr, value.clone())
                 .map_or(0, |old| old.width() / 8);
             // Update reverse span index: map each byte offset to (base_addr, width)
-            let width_bits = value.width();
             let sym_bytes = width_bits / 8;
             for i in 1..sym_bytes {
                 self.symbolic_spans

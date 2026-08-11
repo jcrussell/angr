@@ -126,10 +126,11 @@ pub enum MemoryError {
     /// A symbolic value whose width is not a whole number of bytes. Memory is
     /// byte-addressed, so `width_bits / 8` truncates: a sub-byte width yields
     /// size 0 (no byte marked symbolic at all) and a width like 12 silently
-    /// drops the high nibble. `import_symbolic_value` rejects both up-front
+    /// drops the high nibble. `import_symbolic_value` (angr-sqfj8.73) and
+    /// `store_concrete`'s symbolic branch (angr-03vl4.40) both reject up-front
     /// rather than storing an object no load can reconstruct — the sibling of
-    /// [`MemoryError::ZeroSize`] on the identity-preserving import path
-    /// (angr-sqfj8.73).
+    /// [`MemoryError::ZeroSize`], which only catches the widths that truncate
+    /// all the way to size 0.
     #[error("symbolic value at 0x{addr:x} has non-byte-multiple width {width_bits}")]
     UnalignedWidth { addr: u64, width_bits: u32 },
     /// A concrete value was expected but the BV was symbolic. Defense-in-depth:
