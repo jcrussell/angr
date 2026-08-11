@@ -274,6 +274,4 @@ pub(crate) fn is_claripy_ast(obj: &Bound<'_, PyAny>) -> bool {
     obj.hasattr("op").unwrap_or(false) && obj.hasattr("args").unwrap_or(false)
 }
 
-#[cfg(test)]
-#[path = "../claripy_bridge_tests.rs"]
-mod tests;
+test_submod!("../claripy_bridge_tests.rs" => tests);

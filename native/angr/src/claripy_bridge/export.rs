@@ -1022,6 +1022,4 @@ fn rustbv_to_claripy_memo(
     }
 }
 
-#[cfg(test)]
-#[path = "export_tests.rs"]
-mod export_tests;
+test_submod!("export_tests.rs" => export_tests);
