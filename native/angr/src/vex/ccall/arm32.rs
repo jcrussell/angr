@@ -286,12 +286,21 @@ pub(super) fn arm_sym_calculate_condition(
 /// Compute ARM N (negative) flag for a given cc_op.
 pub(super) fn armg_calc_flag_n(cc_op: u64, dep1: u64, dep2: u64, ndep: u64) -> Option<u64> {
     use arm_cc_op::*;
+    // ARM is a 32-bit guest: LibVEX's armg_calculate_flag_n does all of this in
+    // `UInt`, so both the inputs and the arithmetic result must be truncated to
+    // 32 bits before bit 31 is extracted. Without the result mask, a borrowing
+    // SUB (e.g. 0 - 1) leaves the sign-extended high half in place and `>> 31`
+    // yields 0x1FFFFFFFF instead of 1 (angr-03vl4.72). Same masking discipline
+    // as armg_calc_flag_z / armg_calc_flag_c / armg_calc_flag_v below.
+    let dep1 = dep1 & 0xFFFFFFFF;
+    let dep2 = dep2 & 0xFFFFFFFF;
+    let ndep = ndep & 0xFFFFFFFF;
     match cc_op {
         ARMG_CC_OP_COPY => Some((dep1 >> arm_flag_shift::SHIFT_N) & 1),
-        ARMG_CC_OP_ADD => Some((dep1.wrapping_add(dep2)) >> 31),
-        ARMG_CC_OP_SUB => Some((dep1.wrapping_sub(dep2)) >> 31),
-        ARMG_CC_OP_ADC => Some((dep1.wrapping_add(dep2).wrapping_add(ndep)) >> 31),
-        ARMG_CC_OP_SBB => Some((dep1.wrapping_sub(dep2).wrapping_sub(ndep ^ 1)) >> 31),
+        ARMG_CC_OP_ADD => Some((dep1.wrapping_add(dep2) & 0xFFFFFFFF) >> 31),
+        ARMG_CC_OP_SUB => Some((dep1.wrapping_sub(dep2) & 0xFFFFFFFF) >> 31),
+        ARMG_CC_OP_ADC => Some((dep1.wrapping_add(dep2).wrapping_add(ndep) & 0xFFFFFFFF) >> 31),
+        ARMG_CC_OP_SBB => Some((dep1.wrapping_sub(dep2).wrapping_sub(ndep ^ 1) & 0xFFFFFFFF) >> 31),
         ARMG_CC_OP_LOGIC | ARMG_CC_OP_MUL => Some(dep1 >> 31),
         ARMG_CC_OP_MULL => Some(dep2 >> 31),
         _ => None,

@@ -340,6 +340,51 @@ fn test_arm_handle_ccall_concrete() {
     assert_eq!(result.unwrap().as_u64(), Some(1));
 }
 
+/// angr-03vl4.72: `armg_calc_flag_n` used to skip the 32-bit masking its
+/// `_z`/`_c`/`_v` siblings apply, so a borrowing SUB (0 - 1) produced
+/// `0xFFFFFFFFFFFFFFFF >> 31` = 0x1FFFFFFFF rather than the 1-bit flag.
+#[test]
+fn test_arm_flag_n_masks_to_32_bits() {
+    use arm_cc_op::*;
+    // Borrowing subtract: result is 0xFFFFFFFF, N set.
+    assert_eq!(armg_calc_flag_n(ARMG_CC_OP_SUB, 0, 1, 0), Some(1));
+    // Non-borrowing subtract with a positive result: N clear.
+    assert_eq!(armg_calc_flag_n(ARMG_CC_OP_SUB, 5, 3, 0), Some(0));
+    // Add that carries out of bit 31: only bit 31 of the truncated sum counts.
+    assert_eq!(
+        armg_calc_flag_n(ARMG_CC_OP_ADD, 0x8000_0000, 0x8000_0000, 0),
+        Some(0)
+    );
+    assert_eq!(armg_calc_flag_n(ARMG_CC_OP_ADD, 0x7FFF_FFFF, 1, 0), Some(1));
+    // ADC/SBB carry-in paths.
+    assert_eq!(armg_calc_flag_n(ARMG_CC_OP_ADC, 0x7FFF_FFFF, 0, 1), Some(1));
+    assert_eq!(armg_calc_flag_n(ARMG_CC_OP_SBB, 0, 0, 0), Some(1));
+    // Garbage in the high half of the inputs must not leak into the flag.
+    assert_eq!(
+        armg_calc_flag_n(ARMG_CC_OP_SUB, 0xDEAD_BEEF_0000_0000, 1, 0),
+        Some(1)
+    );
+    assert_eq!(
+        armg_calc_flag_n(ARMG_CC_OP_LOGIC, 0xFFFF_FFFF_0000_0001, 0, 0),
+        Some(0)
+    );
+}
+
+/// The bug's live reach: the standalone `armg_calculate_flag_n` CCall arm,
+/// taken whenever all four args are concrete (angr-03vl4.72).
+#[test]
+fn test_arm_handle_ccall_flag_n_sub_borrow() {
+    use arm_cc_op::*;
+    let args = vec![
+        RustBV::concrete(u128::from(ARMG_CC_OP_SUB), 32),
+        RustBV::concrete(0, 32),
+        RustBV::concrete(1, 32),
+        RustBV::concrete(0, 32),
+    ];
+    let result = handle_ccall("armg_calculate_flag_n", &args, 32);
+    assert_eq!(result.and_then(|bv| bv.as_u64()), Some(1));
+}
+
 // ============================================================
 // Symbolic-vs-concrete diff-fuzz for the new symbolic dispatch.
 //
