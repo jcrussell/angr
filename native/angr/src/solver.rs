@@ -387,9 +387,24 @@ impl RustSolverContext {
                 // own ref via Z3AstPtr); `Ast::wrap` takes its own ref.
                 let constraint: z3::ast::Bool =
                     unsafe { z3::ast::Ast::wrap(&z3_ctx, z3_ast.as_z3_ast()) };
-                let idx = ctx.add_constraint_tracked_indexed(constraint);
+                // Cloned (a `Z3_inc_ref`) so the residual branch below still
+                // has the Bool `add_constraint_tracked_indexed` consumes.
+                let idx = ctx.add_constraint_tracked_indexed(constraint.clone());
+                // angr-03vl4.74: same "exactly one log" invariant
+                // `add_constraint_ast` upholds above — a constraint that is
+                // live on the solver must be recorded in the assumed log or
+                // the residual log, because every reconstruction path
+                // (`to_snapshot`'s `dump_non_bv_smtlib2`, `unsat_core_assumed`,
+                // `_export_state_constraints`) rebuilds from those two logs and
+                // never from `z3_assertions`. This branch used to have no
+                // `else`, so an AST `claripy_to_rustbv` cannot lower (an FP
+                // comparison, say) was enforced in-process but vanished from
+                // `state.solver.constraints`, from `unsat_core()`, and from any
+                // snapshot/restore of the state.
                 if let Ok(bv) = claripy_to_rustbv(py, ast, &ctx) {
                     ctx.assumed_constraints_push(bv, true);
+                } else {
+                    ctx.push_residual_assertion(constraint);
                 }
                 return Ok(idx);
             }

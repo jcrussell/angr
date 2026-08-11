@@ -190,6 +190,47 @@ class TestSolverOperations:
             "reports SAT -- the tracked constraint was silently dropped"
         )
 
+    def test_add_constraint_tracked_ast_fp_constraint_is_enforced(self):
+        """add_constraint_tracked_ast() with an AST claripy_to_rustbv cannot
+        lower (an FP comparison) must still bind the solver, and must survive
+        into a fork.
+
+        Coverage gap closed for angr-03vl4.74: every existing tracked-path test
+        uses an AST that *does* convert to a RustBV, so the branch that runs
+        when the conversion fails had no test at all. That branch used to have
+        no `else`, leaving the constraint live on the Z3 solver but recorded in
+        neither the assumed log nor the residual log -- so it silently vanished
+        from every reconstruction path (snapshot/restore, unsat_core_assumed,
+        state.solver.constraints).
+
+        RustSolverContext exposes no snapshot API, so the residual-log half of
+        the fix is pinned by the Rust-side
+        `test_snapshot_tracked_residual_roundtrip`
+        (symbolic/context_tests/smtlib2_snapshot.rs); what this test pins is
+        that the FP AST reaches the fast path at all (it is Bool-sorted, so it
+        does not divert to the RustBV slow path, which would reject it with
+        UnsupportedOp) and that the fix did not break enforcement.
+        """
+        import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
+
+        ctx = RustSolverContext()
+        fp = claripy.FPS("tracked_fp_var", claripy.FSORT_DOUBLE)
+        one_five = claripy.FPV(1.5, claripy.FSORT_DOUBLE)
+        two_five = claripy.FPV(2.5, claripy.FSORT_DOUBLE)
+
+        idx = ctx.add_constraint_tracked_ast(fp == one_five)
+        assert idx == 0, "the FP constraint must take the tracked fast path"
+        assert ctx.satisfiable() is True
+
+        # Enforcement: the tracked FP constraint contradicts fp == 2.5.
+        child = ctx.fork()
+        child.add_constraint_ast(fp == two_five)
+        assert child.satisfiable() is False, (
+            "fp == 1.5 (tracked) did not bind the forked child -- the FP constraint was dropped instead of asserted"
+        )
+        assert ctx.satisfiable() is True
+
     def test_tracked_constraint_survives_fork(self):
         """add_constraint_tracked_ast() must be visible to a forked child,
         not just the live solver it was asserted on directly.

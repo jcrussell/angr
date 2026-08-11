@@ -1061,6 +1061,59 @@ fn test_snapshot_add_bv_constraint_roundtrip() {
     );
 }
 
+/// A *tracked* constraint with no `RustBV` form must round-trip via the
+/// residual text dump.
+///
+/// Regression for angr-03vl4.74. `add_constraint_tracked_ast`'s raw fast path
+/// asserts through `add_constraint_tracked_indexed` (which only logs into
+/// `z3_assertions`) and used to push an assumed entry *only* when
+/// `claripy_to_rustbv` succeeded, with no `else`. An AST the converter cannot
+/// lower — an FP comparison, say — was therefore live on the solver but absent
+/// from both reconstruction logs, so it silently vanished on snapshot/restore.
+/// `push_residual_assertion` is the missing half; this pins the shape it
+/// restores, using a plain BV-eq Bool as the stand-in for the unconvertible
+/// AST (the tracked adder cannot tell the difference — what matters is that
+/// the caller records no assumed entry).
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_snapshot_tracked_residual_roundtrip() {
+    let ctx = SymContext::new();
+    let x = RustBV::symbolic(&ctx, "trk_residual_x", 32);
+    let target = RustBV::concrete(0x2000, 32);
+    // Exactly what solver.rs's `add_constraint_tracked_ast` fast path does for
+    // an AST `claripy_to_rustbv` rejects: assert-and-track, then log residual.
+    let constraint = x.eq(&target, &ctx).to_z3_bool();
+    let idx = ctx.add_constraint_tracked_indexed(constraint.clone());
+    ctx.push_residual_assertion(constraint);
+    assert_eq!(idx, 0, "first tracked constraint gets tracker index 0");
+    assert!(ctx.is_sat());
+
+    let snap = ctx.to_snapshot();
+    assert!(snap.reassert_assumed);
+    assert_eq!(
+        snap.assumed_constraints.len(),
+        0,
+        "the tracked no-RustBV path records no assume entry"
+    );
+    assert!(
+        !snap.residual_smtlib2.is_empty(),
+        "the tracked constraint must live in the residual dump — without \
+         push_residual_assertion it is in neither log and is lost here"
+    );
+
+    let json = serde_json::to_string(&snap).expect("serialize");
+    let restored: SymContextSnapshot = serde_json::from_str(&json).expect("deserialize");
+    let ctx2 = SymContext::new();
+    ctx2.restore_from_snapshot(&restored);
+
+    assert!(ctx2.is_sat(), "restored context must stay SAT");
+    assert_eq!(
+        ctx2.eval(&x),
+        Some(0x2000),
+        "restored solver must still pin x — the tracked constraint survived"
+    );
+}
+
 /// A mixed assume + raw context: the assume class rebuilds from IR, the raw
 /// class from the residual text. Both must be present and binding after
 /// restore, with the assume entry alone in the BV-export log.

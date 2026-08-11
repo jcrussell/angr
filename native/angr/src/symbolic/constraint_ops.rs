@@ -254,6 +254,32 @@ impl SymContext {
         self.add_constraint_raw_inner(ast, false);
     }
 
+    /// Record an *already-asserted* constraint in the residual log.
+    ///
+    /// The `add_constraint_raw*` pair assert **and** log; this is the
+    /// bookkeeping half on its own, for a caller that put the constraint on
+    /// the live solver by some other route — today only
+    /// [`Self::add_constraint_tracked_indexed`], which must go through
+    /// `assert_and_track` to keep unsat-core fidelity and so cannot reuse
+    /// `add_constraint_raw`.
+    ///
+    /// Same "exactly one log" contract as [`Self::add_constraint_raw_assumed`],
+    /// from the other side: call this only for a constraint with NO RustBV
+    /// form (nothing to reconstruct it from in the assumed log). See that
+    /// method's doc comment for why double-listing corrupts
+    /// `unsat_core_assumed`.
+    ///
+    /// The caller must already have pushed the same `Bool` into
+    /// `z3_assertions`, keeping the residual log a subset of it — the
+    /// invariant `to_snapshot`'s `debug_assert!` pair checks.
+    #[cfg(feature = "vex-engine-z3")]
+    pub fn push_residual_assertion(&self, constraint: z3::ast::Bool) {
+        self.local_constraints
+            .lock()
+            .non_bv_assertions
+            .push(constraint);
+    }
+
     #[cfg(feature = "vex-engine-z3")]
     fn add_constraint_raw_inner(&self, ast: super::Z3AstPtr, log_residual: bool) {
         let ctx = z3::Context::thread_local();
