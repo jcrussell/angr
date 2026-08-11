@@ -24,8 +24,8 @@ impl VEXOps {
     /// Ity_I8 (the lane index — 0 = lowest lane). Result is one lane.
     ///
     /// For concrete `idx < count`, this is a simple bit-slice. Concrete
-    /// out-of-range indices saturate at the highest valid lane (matches
-    /// pyvex's behavior of treating `idx % count` as the effective lane).
+    /// out-of-range indices wrap (matches pyvex's behavior of treating
+    /// `idx % count` as the effective lane).
     /// Symbolic `idx` builds an ITE chain over all `count` lanes.
     pub(super) fn vec_get_elem(
         vec: RustBV,

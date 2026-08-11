@@ -205,11 +205,15 @@ pub enum Endness {
 
 /// Memory bus event.
 ///
-/// Real VEX only emits `Imbe_Fence`/`Imbe_CancelReservation`; both lifter
-/// paths collapse every fence C-tag to `Fence`, and the interpreter discards
-/// the MBE payload entirely. `SFence`/`LFence`/`MFence` are unreached in
-/// practice — retained for VEX-ABI parity and future fence-granularity
-/// honoring, see angr-36vvn.9.
+/// Real VEX only emits `Imbe_Fence`/`Imbe_CancelReservation`, so
+/// `SFence`/`LFence`/`MFence` are unreached in practice on either lifting
+/// path — and the interpreter discards the MBE payload entirely, so the
+/// distinction is moot even if one did arrive. The two lifters nonetheless
+/// differ: `libvex_lifter::mbe_event` collapses *every* C-tag to `Fence`,
+/// while `pyvex_bridge::parse_mbe_event` preserves the
+/// `Imbe_SFence`/`Imbe_LFence`/`Imbe_MFence` spellings and only defaults
+/// unrecognized ones to `Fence`. Retained for VEX-ABI parity and future
+/// fence-granularity honoring, see angr-36vvn.9.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MBusEvent {
     Fence,
