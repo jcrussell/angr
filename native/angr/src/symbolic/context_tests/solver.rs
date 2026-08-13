@@ -1129,6 +1129,215 @@ fn test_is_sat_checked_reports_timeout_as_undecided() {
     assert_eq!(ctx.is_sat_checked(), Some(true));
 }
 
+// ---------------------------------------------------------------------------
+// Shared Z3-Unknown fault-injection fixture (`with_forced_unknown`).
+//
+// `is_sat_checked` / `min` / `max` / `check_branch_feasibility` /
+// `eval_upto_checked` above each got a bespoke rig (hard-factoring +
+// wall-clock timeout, or a one-off `pin_rlimit` call) built for that specific
+// call site's already-fixed bug (angr-03vl4.62 / angr-03vl4.85 /
+// angr-ph300.43 / angr-n0irt.1). None of that plumbing was reusable as a
+// single call, so every *other* satisfiability-adjacent method on
+// `SymContext` (`eval`, `eval_wide`, `eval_many`, `solution`, `range`,
+// `range_seeded`) had never been driven through a genuine Z3 Unknown at all —
+// only through the decided Sat/Unsat cases their other tests exercise.
+//
+// `with_forced_unknown` closes that gap with one fixture reused by every test
+// below: a fresh context, an easy-but-symbolic `10 < x < 20` constraint (so
+// the first Z3 check the callback triggers is a real query, not a concrete
+// fast path), and `rlimit=1` pinned *before* the callback runs so that first
+// query — and every one after it — deterministically aborts Unknown.
+// `rlimit`, not `timeout_ms`, is what makes this reliable: see `pin_rlimit`'s
+// doc comment above (`test_pin_rlimit_reaches_the_solver` is the guard that
+// it actually reaches the solver) for why a wall-clock timeout was observed
+// to sometimes never fire under a parallel `cargo test --release` run — using
+// it here would reintroduce exactly the flakiness that rig was built to
+// avoid, on a much larger set of call sites.
+#[cfg(feature = "vex-engine-z3")]
+fn with_forced_unknown<R>(f: impl FnOnce(&SymContext) -> R) -> R {
+    let ctx = SymContext::new();
+    let x = RustBV::symbolic(&ctx, "forced_unknown_x", 32);
+    ctx.assume_true(&x.ugt(&RustBV::concrete(10, 32), &ctx));
+    ctx.assume_true(&x.ult(&RustBV::concrete(20, 32), &ctx));
+    pin_rlimit(&ctx, 1);
+    assert_z3_timeout_occurred(|| f(&ctx))
+}
+
+/// Positive confirmation that a forced-unknown fixture genuinely drove Z3 to
+/// return `Unknown` while running `f`, rather than the test merely inferring
+/// it from "well, rlimit=1 on this constraint probably does it". Reads the
+/// process-wide `z3_timeout_count` counter (bumped by every `timed_check` that
+/// sees `z3::SatResult::Unknown`, `solver_build.rs`) before and after `f` and
+/// asserts it moved. Counters are global and tests run in parallel, so this
+/// only asserts a delta, same caveat as the `>=`-bound counter tests above —
+/// but since each fixture's callback issues at most a handful of checks, any
+/// concurrent noise only makes the assertion easier to satisfy, never harder.
+#[cfg(feature = "vex-engine-z3")]
+fn assert_z3_timeout_occurred<R>(f: impl FnOnce() -> R) -> R {
+    let before = get_solver_stats()
+        .get("z3_timeout_count")
+        .copied()
+        .unwrap_or(0);
+    let result = f();
+    let after = get_solver_stats()
+        .get("z3_timeout_count")
+        .copied()
+        .unwrap_or(0);
+    assert!(
+        after > before,
+        "fixture must genuinely drive Z3 to Unknown (z3_timeout_count did not \
+         increase: before={before}, after={after})"
+    );
+    result
+}
+
+/// `eval` must not fabricate a witness when the query is undecided — it
+/// already falls through to `timed_check(..).decided() != Some(true) =>
+/// return None` before ever calling `get_model`, but that path had no direct
+/// regression test.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_eval_returns_none_under_forced_unknown() {
+    with_forced_unknown(|ctx| {
+        let x = RustBV::symbolic(ctx, "forced_unknown_x", 32);
+        assert_eq!(
+            ctx.eval(&x),
+            None,
+            "eval() must report undecided as None, never a fabricated witness"
+        );
+    });
+}
+
+/// `eval_wide` twin of the above (the >128-bit path, `Vec<u8>` return).
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_eval_wide_returns_none_under_forced_unknown() {
+    with_forced_unknown(|ctx| {
+        let x = RustBV::symbolic(ctx, "forced_unknown_x", 32);
+        assert_eq!(
+            ctx.eval_wide(&x),
+            None,
+            "eval_wide() must report undecided as None, never a fabricated witness"
+        );
+    });
+}
+
+/// `eval_many` (angr-ue4ro's single-model batch reader) must likewise refuse
+/// to hand back a partially- or fully-fabricated vector when the check that
+/// would justify it never decided.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_eval_many_returns_none_under_forced_unknown() {
+    with_forced_unknown(|ctx| {
+        let x = RustBV::symbolic(ctx, "forced_unknown_x", 32);
+        assert_eq!(
+            ctx.eval_many(&[x]),
+            None,
+            "eval_many() must report undecided as None, never a partial/fabricated vector"
+        );
+    });
+}
+
+/// Strict-deterministic `eval_many` routes through `lex_min_witness` instead
+/// (angr-op0dn.10.7) — a separate internal loop with its own
+/// `timed_check(..).decided()` gate. Same contract, different code path: an
+/// Unknown mid-loop must abort the whole joint witness to `None`, not return
+/// a witness built on a fabricated per-part minimum.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_eval_many_deterministic_returns_none_under_forced_unknown() {
+    with_forced_unknown(|ctx| {
+        ctx.set_deterministic(true);
+        let x = RustBV::symbolic(ctx, "forced_unknown_x", 32);
+        assert_eq!(
+            ctx.eval_many(&[x]),
+            None,
+            "deterministic eval_many() must report undecided as None via lex_min_witness"
+        );
+    });
+}
+
+/// `solution` answers "is this concrete value feasible?" — an undecided query
+/// cannot prove feasibility, so the conservative (and current) answer is
+/// `false`, never a spurious `true`.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_solution_is_false_under_forced_unknown() {
+    with_forced_unknown(|ctx| {
+        let x = RustBV::symbolic(ctx, "forced_unknown_x", 32);
+        assert!(
+            !ctx.solution(&x, 15),
+            "solution() must not claim a value is feasible when the query is undecided"
+        );
+    });
+}
+
+/// `range`/`range_seeded` variant of [`with_forced_unknown`].
+///
+/// Both `range` (via `min`'s and `max`'s own gates) and `range_seeded` (via
+/// its own `if !self.is_sat() { return None; }`) run an upfront
+/// satisfiability gate *before* the binary search that is actually under
+/// test. `with_forced_unknown` pins `rlimit=1` before the very first Z3
+/// check ever run on the context — which for these two callers means the
+/// upfront gate itself is what returns Unknown, and `None` propagates from
+/// there without the mid-bisection `min_val?` / `max_result?` logic ever
+/// running.
+///
+/// This variant warms `sat_cache` + `model_cache` via a plain `eval()` while
+/// the budget is still generous (mirrors `build_warm_seed_then_stalled`'s
+/// warm-then-stall shape, and the same mechanism `test_pin_rlimit_reaches_the_solver`
+/// documents as the reliable one), so the upfront gate resolves from cache
+/// for free and only the later per-iteration bisection checks are what hits
+/// the pinned rlimit.
+#[cfg(feature = "vex-engine-z3")]
+fn with_forced_unknown_mid_bisection<R>(f: impl FnOnce(&SymContext) -> R) -> R {
+    let ctx = SymContext::new();
+    let x = RustBV::symbolic(&ctx, "forced_unknown_x", 32);
+    ctx.assume_true(&x.ugt(&RustBV::concrete(10, 32), &ctx));
+    ctx.assume_true(&x.ult(&RustBV::concrete(20, 32), &ctx));
+    // Warms sat_cache (Some(true)) and model_cache while the budget is still
+    // generous, so the upfront is_sat() gate in range()/range_seeded() is a
+    // cache hit rather than a Z3 call.
+    ctx.eval(&x).expect("10 < x < 20 is satisfiable");
+    // Applied after the warm-up eval, per `pin_rlimit`'s doc comment: a later
+    // solver rebuild would clobber the params.
+    pin_rlimit(&ctx, 1);
+    assert_z3_timeout_occurred(|| f(&ctx))
+}
+
+/// `range` composes `min` and `max` via `?`; confirm that composition really
+/// does propagate an Unknown-mid-bisection abort as `None` rather than, say,
+/// a half-filled tuple.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_range_returns_none_under_forced_unknown() {
+    with_forced_unknown_mid_bisection(|ctx| {
+        let x = RustBV::symbolic(ctx, "forced_unknown_x", 32);
+        assert_eq!(
+            ctx.range(&x),
+            None,
+            "range() must report undecided as None, never a fabricated (min, max) pair"
+        );
+    });
+}
+
+/// `range_seeded`'s existing coverage (`test_range_seeded_above_128_bits_returns_none`,
+/// `test_range_seeded_unsat_returns_none`) never drove a genuine Z3 Unknown —
+/// only the width guard and a decided Unsat. Pin the same None contract for
+/// the real timeout case.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_range_seeded_returns_none_under_forced_unknown() {
+    with_forced_unknown_mid_bisection(|ctx| {
+        let x = RustBV::symbolic(ctx, "forced_unknown_x", 32);
+        assert_eq!(
+            ctx.range_seeded(&x, 12, 18),
+            None,
+            "range_seeded() must report undecided as None, never a fabricated range"
+        );
+    });
+}
+
 /// Assert `x * y == N`, `x > 1`, `y > 1` on a 1ms-budget context, returning the
 /// 64-bit factor `x`. The multiply is widened to 128 bits so the product does
 /// not overflow.
