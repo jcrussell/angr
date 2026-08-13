@@ -58,6 +58,22 @@ jobs:
           RUSTDOCFLAGS: -D warnings
       - name: Silent-fallback tagging audit
         run: python3 tools/audit_silent_fallback.py
+      # Process-rule companion to the tagging audit above (see the "What NOT
+      # to chase with more tests" analysis cited in its docstring): a new
+      # cat_b/cat_c silent_default!()/SILENT() site is exactly the "silently
+      # wrong instead of loud error" bug shape this repo's audits keep
+      # re-finding (39 historical instances), and this repo's own bug-fix
+      # commits ship a same-commit regression test 25/25 sampled times — so
+      # require the same discipline pre-merge. Diff-based, not baseline-gated
+      # like its sibling (there is no "known-untagged" set to baseline — a
+      # new site is judged solely against the current diff), but still runs
+      # `--self-test` first, same reasoning as the rounding-mode / SP-default
+      # audits above: a lint that has never been seen to fire is
+      # indistinguishable from one that cannot.
+      - name: Silent-fallback / regression-test pairing audit
+        run: |
+          python3 tools/audit_silent_fallback_test_pairing.py --self-test
+          python3 tools/audit_silent_fallback_test_pairing.py
       - name: Stale line-number-citation check
         run: python3 tools/check_line_citations.py
       # angr-91vj9.7: a `*_rm` VEX helper whose concrete closure drops the
