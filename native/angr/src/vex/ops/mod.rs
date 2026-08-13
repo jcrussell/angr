@@ -1282,6 +1282,12 @@ test_submod!(tests_float_cmp);
 
 test_submod!(tests_conversions);
 
+// Generic *_rm concrete/symbolic equivalence sweep (complements the
+// hand-written per-op rm cases above) — needs Z3 to evaluate the symbolic
+// side, same as the other rm-mode tests gated `#[cfg(feature =
+// "vex-engine-z3")]` within tests_float_arith.rs / tests_conversions.rs.
+test_submod!(z3 tests_rounding_mode_sweep);
+
 test_submod!(tests_vec_lane);
 
 test_submod!(tests_vec_shift);

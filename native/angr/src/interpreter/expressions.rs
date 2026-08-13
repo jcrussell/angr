@@ -503,7 +503,13 @@ impl<'a> VEXInterpreter<'a> {
         }
     }
 
-    fn eval_binop(
+    /// `pub(crate)` (rather than the module-private default every sibling
+    /// `eval_*` dispatcher uses) so `vex::ops::tests_rounding_mode_sweep`'s
+    /// dispatcher-selection sweep can drive evaluation through the real
+    /// entry point that had the angr-03vl4.30 bug, instead of calling
+    /// `VEXOps::binop_with_rm`/`qop_with_rm` directly the way the rest of
+    /// that file does — see the module doc comment there.
+    pub(crate) fn eval_binop(
         &mut self,
         callbacks: &PythonCallbacks,
         op: IROp,
@@ -667,7 +673,9 @@ impl<'a> VEXInterpreter<'a> {
         Ok((descr.base + index * elem_size, elem_size))
     }
 
-    fn eval_triop(
+    /// `pub(crate)` — see the doc comment on `eval_binop` above; same
+    /// dispatcher-selection-sweep reason applies here.
+    pub(crate) fn eval_triop(
         &mut self,
         callbacks: &PythonCallbacks,
         op: IROp,
@@ -706,7 +714,12 @@ impl<'a> VEXInterpreter<'a> {
     }
 
     /// `args` is the Qop's four operands in IR order (`arg1..arg4`).
-    fn eval_qop(
+    ///
+    /// `pub(crate)` — see the doc comment on `eval_binop` above; this is the
+    /// exact dispatcher the angr-03vl4.30 bug lived in (routed to
+    /// `VEXOps::qop` instead of `qop_with_rm`), so the dispatcher-selection
+    /// sweep needs to call it directly.
+    pub(crate) fn eval_qop(
         &mut self,
         callbacks: &PythonCallbacks,
         op: IROp,
