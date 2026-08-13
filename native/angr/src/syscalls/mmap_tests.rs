@@ -363,6 +363,56 @@ fn map_fixed_region_ending_exactly_at_top_of_address_space_still_maps() {
     );
 }
 
+/// Harness 6 boundary sweep for angr-03vl4.68: every page-aligned candidate
+/// in the shared `test_boundary_values` table — not just the two hand-picked
+/// targets above — must be rejected as `-1` (EINVAL) exactly when
+/// `target + length - 1` overflows `u64`, and must still map normally
+/// otherwise.
+#[test]
+fn map_fixed_boundary_sweep_rejects_exactly_the_overflowing_targets() {
+    let h = NativeMmapSyscall;
+    const LEN: u64 = 0x2000;
+    for &raw in &crate::test_boundary_values::boundary_addresses() {
+        let target = raw & !0xFFFu64; // page-align down
+        if target == 0 {
+            // addr=0 is not the MAP_FIXED path at all (`is_fixed` requires
+            // `addr != 0`) — covered separately below.
+            continue;
+        }
+        let mut state = fresh_state();
+        let overflows = target.checked_add(LEN - 1).is_none();
+
+        let outcome = h
+            .call(
+                &mut state,
+                &args(target, LEN, 0x3, ANON_PRIVATE | MAP_FIXED, ANON_FD, 0),
+            )
+            .expect("MAP_FIXED must complete natively, not fall back");
+        match outcome {
+            SyscallOutcome::Continue { ret } if overflows => {
+                assert_eq!(ret, u64::MAX, "target={target:#x} must return -1 (EINVAL)");
+                assert_eq!(
+                    state.memory().page_permissions(target >> 12),
+                    None,
+                    "target={target:#x}: a rejected wrapping MAP_FIXED must map nothing"
+                );
+            }
+            SyscallOutcome::Continue { ret } => {
+                assert_eq!(
+                    ret, target,
+                    "target={target:#x} must map at the requested address"
+                );
+                assert_eq!(
+                    state.memory().page_permissions(target >> 12),
+                    Some(Permission::RW),
+                    "target={target:#x} must be mapped"
+                );
+            }
+            other => panic!("target={target:#x}: expected Continue, got {other:?}"),
+        }
+    }
+}
+
 #[test]
 fn map_fixed_misaligned_addr_returns_einval_and_maps_nothing() {
     // angr-sqfj8.110: MAP_FIXED must land at exactly `addr`, but

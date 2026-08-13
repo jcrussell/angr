@@ -307,6 +307,15 @@ pub(crate) mod syscalls;
 #[cfg(feature = "vex-engine")]
 pub mod vex;
 
+/// Shared boundary-value tables for the integer-overflow/wraparound proactive
+/// test sweep (Harness 6, see the module doc for the full rationale). Not
+/// tied to any one subsystem — call sites span `memory`, `state::filesystem`,
+/// `syscalls`, `procedures`, `interpreter` and `symbolic`, all of which sit
+/// behind `vex-engine` — so it is declared once here at the crate root
+/// rather than nested under any of them.
+#[cfg(all(test, feature = "vex-engine"))]
+pub(crate) mod test_boundary_values;
+
 use pyo3::prelude::*;
 
 /// Wrap a value in an `Arc` whose inner type is deliberately not `Send`/`Sync`.

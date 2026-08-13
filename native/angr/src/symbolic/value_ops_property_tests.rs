@@ -968,3 +968,65 @@ fn narrow_rotate_matches_masked_u128_reference() {
         }
     }
 }
+
+/// Harness 6: the shared `test_boundary_values::boundary_widths()` table
+/// agrees with this file's own, hand-picked `BOUNDARY_WIDTHS`/`WIDE_WIDTHS`
+/// sweep above for rotl/rotr/reverse. This is the DRY cross-check the shared
+/// helper exists for (CLAUDE.md Harness 6), not a replacement for the
+/// file-local tables' much finer-grained coverage — and it does add one new
+/// data point neither hand-picked list has: `255` (odd, `>128`, not a
+/// multiple of 8), which lands in a third code path (declines the rotate
+/// fold like `WIDE_WIDTHS`, but — unlike `WIDE_WIDTHS`'s all-multiple-of-8
+/// entries — also declines the byte-reverse fold on *alignment* grounds).
+///
+/// Width `0` is skipped for rotl/rotr: `define_rotate_pair!`'s concrete arm
+/// computes `amt = a % (w as u128)`, and `% 0` is an unconditional Rust
+/// panic (not one gated by overflow-checks) regardless of profile. No VEX
+/// `IROp` has a 0-bit operand, so this is believed unreachable in practice —
+/// flagged as a candidate gap rather than exercised here, since a reproducing
+/// case would abort the whole test binary rather than fail one test.
+#[test]
+fn rotate_and_reverse_boundary_widths_cross_check_shared_table() {
+    let ctx = SymContext::new_mock();
+    for &w in &crate::test_boundary_values::boundary_widths() {
+        if w > 0 {
+            for &raw_a in &[0u128, 1, w as u128, 1u128 << 32] {
+                let (x, n) = (bv(u128::MAX, w), bv(raw_a, w));
+                let rl = x.rotl(&n, &ctx);
+                let rr = x.rotr(&n, &ctx);
+                assert_eq!(rl.width(), w, "rotl width w={w} a={raw_a}");
+                assert_eq!(rr.width(), w, "rotr width w={w} a={raw_a}");
+
+                let amt = raw_a & mask(w.min(128));
+                if w > 128 && !amt.is_multiple_of(w as u128) {
+                    assert!(rl.as_u128().is_none(), "rotl must not fold w={w} amt={amt}");
+                    assert!(rr.as_u128().is_none(), "rotr must not fold w={w} amt={amt}");
+                } else if w <= 128 {
+                    let v = mask(w);
+                    let amtn = (amt % w as u128) as u32;
+                    let want_l = if amtn == 0 {
+                        v
+                    } else {
+                        ((v << amtn) | (v >> (w - amtn))) & mask(w)
+                    };
+                    let want_r = if amtn == 0 {
+                        v
+                    } else {
+                        ((v >> amtn) | (v << (w - amtn))) & mask(w)
+                    };
+                    assert_eq!(val(&rl), want_l, "rotl w={w} a={raw_a}");
+                    assert_eq!(val(&rr), want_r, "rotr w={w} a={raw_a}");
+                }
+            }
+        }
+
+        let rv = bv(u128::MAX, w).reverse(&ctx);
+        assert_eq!(rv.width(), w, "reverse width w={w}");
+        if w.is_multiple_of(8) && w <= 128 {
+            // Byte-reversing an all-ones value is itself all-ones.
+            assert_eq!(val(&rv), mask(w), "reverse w={w}");
+        } else if w.is_multiple_of(8) {
+            assert!(rv.as_u128().is_none(), "wide reverse must not fold w={w}");
+        }
+    }
+}

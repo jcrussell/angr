@@ -359,3 +359,39 @@ fn getopt_element_near_u64_max_wraps_inline_optarg() {
     assert_eq!(call_at(&mut state, 1, ARGV_BASE), b'a' as i64);
     assert_eq!(read_optarg(&state), 1);
 }
+
+/// Harness 6 boundary sweep for angr-03vl4.44: every value in the shared
+/// `test_boundary_values` table, not just the single `u64::MAX - 7` pivot
+/// `getopt_argv_ptr_near_u64_max_wraps_element_slot` pins, must resolve
+/// argv[1]'s slot (`argv_ptr.wrapping_add(1 * ps)`) at the exact wrapped
+/// address.
+#[test]
+fn getopt_argv_ptr_boundary_sweep_wraps_element_slot() {
+    for &argv_ptr in &crate::test_boundary_values::boundary_addresses() {
+        let mut state = setup();
+        state.set_getopt_extern(GetoptExternAddrs {
+            optind: None,
+            optarg: Some(OPTARG_ADDR),
+            optopt: Some(OPTOPT_ADDR),
+        });
+        state.map_memory_data(STR_BASE, b"a\0", Permission::RWX);
+        let arg1 = STR_BASE + 2;
+        state.map_memory_data(arg1, b"-a\0", Permission::RWX);
+
+        // argv[1]'s slot is `argv_ptr + 1 * ps` — the `wrapping_add` this
+        // sweep exercises across the shared boundary table.
+        let slot1 = argv_ptr.wrapping_add(8);
+        let page = slot1 & !0xFFFu64;
+        if state.memory().page_permissions(page >> 12).is_none() {
+            state.map_memory(page, 0x1000, Permission::RWX);
+        }
+        store_ptr_at(&mut state, slot1, arg1);
+        state.set_getopt_cursor(1, 0);
+
+        assert_eq!(
+            call_at(&mut state, 2, argv_ptr),
+            b'a' as i64,
+            "argv_ptr={argv_ptr:#x} must read argv[1] through the wrapped slot {slot1:#x}"
+        );
+    }
+}

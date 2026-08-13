@@ -354,3 +354,87 @@ fn clock_gettime_ts_near_u64_max_wraps_second_field() {
     assert!(state.memory_load(ts, 8).expect("loadable").is_symbolic());
     assert!(state.memory_load(0, 8).expect("loadable").is_symbolic());
 }
+
+/// Harness 6 boundary sweep for the fixes above: every value in the shared
+/// `test_boundary_values` table — not just the single `u64::MAX - 7` pivot
+/// the two tests above pin — must complete without panicking, and (with
+/// every touched page mapped) must write the second field's fresh symbolic
+/// BV at exactly the wrapped address `tv.wrapping_add(8)`, never silently
+/// skip it or land somewhere else.
+#[test]
+fn gettimeofday_and_clock_gettime_tv_boundary_sweep_never_panics_and_wraps_correctly() {
+    let stride = 8u64;
+    // Set when some sweep value's second-field store genuinely wrapped past
+    // u64::MAX (second_addr < tv), not merely landed unwrapped near the top
+    // or was rejected outright — see the boundary_addresses doc comment for
+    // why the table needs dedicated entries to ever hit this.
+    let mut saw_genuine_wrap = false;
+    for &tv in &crate::test_boundary_values::boundary_addresses() {
+        for handler in ["gettimeofday", "clock_gettime"] {
+            let mut state = fresh_state();
+            // Map every page either 8-byte store could touch, including
+            // whatever page a wraparound of the second store lands on.
+            for a in [
+                tv,
+                tv.wrapping_add(7),
+                tv.wrapping_add(stride),
+                tv.wrapping_add(stride + 7),
+            ] {
+                let page = a & !0xFFFu64;
+                if state.memory().page_permissions(page >> 12).is_none() {
+                    state.map_memory(page, 0x1000, Permission::RW);
+                }
+            }
+
+            let outcome = if handler == "gettimeofday" {
+                NativeGettimeofdaySyscall.call(
+                    &mut state,
+                    &[RustBV::concrete(tv as u128, 64), RustBV::concrete(0, 64)],
+                )
+            } else {
+                NativeClockGettimeSyscall.call(
+                    &mut state,
+                    &[
+                        RustBV::concrete(CLOCK_REALTIME as u128, 64),
+                        RustBV::concrete(tv as u128, 64),
+                    ],
+                )
+            };
+
+            match outcome {
+                Ok(SyscallOutcome::Continue { ret }) if tv == 0 => {
+                    assert_eq!(ret, NEG_ONE, "{handler}: tv=0 must return -1");
+                }
+                Ok(SyscallOutcome::Continue { ret }) => {
+                    assert_eq!(ret, 0, "{handler}: tv={tv:#x} must succeed");
+                    let second_addr = tv.wrapping_add(stride);
+                    let second = state.memory_load(second_addr, 8).unwrap_or_else(|e| {
+                        panic!(
+                            "{handler}: tv={tv:#x} second field at wrapped addr \
+                             {second_addr:#x} unreadable: {e:?}"
+                        )
+                    });
+                    assert!(
+                        second.is_symbolic(),
+                        "{handler}: tv={tv:#x} second field must be the fresh symbolic \
+                         write at the wrapped address {second_addr:#x}, not silently skipped"
+                    );
+                    if second_addr < tv {
+                        saw_genuine_wrap = true;
+                    }
+                }
+                Ok(other) => panic!("{handler}: tv={tv:#x} unexpected outcome {other:?}"),
+                // A legitimately unreachable address (still-unmapped
+                // neighbor page, etc.) is fine — the property under test is
+                // "never panics", not "always succeeds".
+                Err(_) => {}
+            }
+        }
+    }
+    assert!(
+        saw_genuine_wrap,
+        "boundary sweep never exercised a genuine second-field wraparound \
+         (second_addr < tv) — the table may have regressed to only far-from-top \
+         (no field wraps) or right-at-top (first field already overflows) values"
+    );
+}

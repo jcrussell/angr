@@ -69,6 +69,61 @@ fn bytes_to_bv_ignores_bytes_past_the_requested_width() {
     assert_eq!(bytes_to_bv(&bytes, 32).as_u64(), Some(0x1234_5678));
 }
 
+/// Harness 6 boundary sweep for the fixes above: every width in the shared
+/// `test_boundary_values` table, not just the hand-picked 32/256 above, must
+/// convert both directions without panicking and byte-for-byte correctly —
+/// zero-filling (not aliasing) past the `u128` payload, and round-tripping
+/// exactly wherever the width lets it.
+#[test]
+fn bv_to_bytes_and_bytes_to_bv_width_boundary_sweep() {
+    for &width in &crate::test_boundary_values::boundary_widths() {
+        if width == 0 {
+            // No VEX type has width 0; out of domain for a byte-count pair
+            // whose whole job is packing/unpacking a concrete value's bytes.
+            continue;
+        }
+        let bv = RustBV::concrete(u128::MAX, width);
+        let masked = bv.as_u128().expect("Concrete always has as_u128()");
+        let bytes = bv_to_bytes(&bv);
+
+        let expected_len = (width as usize).div_ceil(8);
+        assert_eq!(bytes.len(), expected_len, "width={width}");
+        for (i, &b) in bytes.iter().enumerate() {
+            let want = if i < 16 { (masked >> (i * 8)) as u8 } else { 0 };
+            assert_eq!(b, want, "width={width} byte {i}: got {b:#x}, want {want:#x}");
+        }
+
+        let round = bytes_to_bv(&bytes, width);
+        assert_eq!(round.width(), width, "width={width}");
+        if width <= 128 {
+            assert_eq!(
+                round.as_u128(),
+                Some(masked),
+                "width={width}: round trip must be exact"
+            );
+        } else if width.is_multiple_of(8) {
+            // >128-bit, byte-aligned: bytes_to_bv assembles a Concat, so read
+            // back the low/high 128-bit lanes independently rather than
+            // trusting a re-fold to u128 (which would hide the very aliasing
+            // bug this pair exists to catch).
+            assert_eq!(
+                round.extract_no_ctx(127, 0).as_u128(),
+                Some(masked),
+                "width={width}"
+            );
+            assert_eq!(
+                round.extract_no_ctx(width - 1, 128).as_u128(),
+                Some(0),
+                "width={width}: bytes above the u128 payload must come back as 0, not aliased"
+            );
+        } else {
+            // >128 and not byte-aligned: the documented `SILENT(cat-b)`
+            // fallback in `bytes_to_bv` keeps only the low 128 bits.
+            assert_eq!(round.as_u128(), Some(masked), "width={width}");
+        }
+    }
+}
+
 // --- extract_ite_targets coverage (angr-szg45.5) ---
 //
 // The symbolic-IP fast-path that pulls concrete jump targets out of a nested

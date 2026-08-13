@@ -422,3 +422,68 @@ fn dup3_tolerates_symbolic_flags_without_python_fallback() {
     }
     assert!(state.file_system_ref().is_open(7));
 }
+
+/// Harness 6 boundary sweep for angr-03vl4.52 at the syscall-dispatch layer:
+/// `dup2_body`'s own `newfd >= NEWFD_LIMIT` check duplicates
+/// `FileSystem::dup2`'s guard (kept here so the `oldfd == newfd` early
+/// return can still precede it — see the doc comment on `dup2_body`), so it
+/// needs its own sweep rather than relying on the `FileSystem`-level one.
+/// Every u32-representable boundary value, not just the hand-picked `4096`
+/// above, must refuse at-or-above `NEWFD_LIMIT` and succeed below it, for
+/// both `dup2` and `dup3`.
+#[test]
+fn dup2_and_dup3_newfd_boundary_sweep_matches_newfd_limit() {
+    for &raw in &crate::test_boundary_values::boundary_addresses() {
+        let Ok(newfd) = u32::try_from(raw) else {
+            continue;
+        };
+
+        // dup2(0, newfd)
+        {
+            let mut state = RustSimState::new("amd64").expect("state");
+            let outcome = NativeDup2Syscall
+                .call(
+                    &mut state,
+                    &[RustBV::concrete(0, 64), RustBV::concrete(newfd as u128, 64)],
+                )
+                .unwrap_or_else(|e| panic!("dup2 newfd={newfd:#x}: {e:?}"));
+            let ret = match outcome {
+                SyscallOutcome::Continue { ret } => ret,
+                other => panic!("dup2 newfd={newfd:#x}: expected Continue, got {other:?}"),
+            };
+            if newfd as u64 >= NEWFD_LIMIT {
+                assert_eq!(ret, NEG_EBADF, "dup2 newfd={newfd:#x} must be refused");
+                assert!(!state.file_system_ref().is_open(newfd));
+            } else {
+                assert_eq!(ret, newfd as u64, "dup2 newfd={newfd:#x} must succeed");
+                assert!(state.file_system_ref().is_open(newfd));
+            }
+        }
+
+        // dup3(0, newfd, 0) — same threshold, separate dispatch code path.
+        {
+            let mut state = RustSimState::new("amd64").expect("state");
+            let outcome = NativeDup3Syscall
+                .call(
+                    &mut state,
+                    &[
+                        RustBV::concrete(0, 64),
+                        RustBV::concrete(newfd as u128, 64),
+                        RustBV::concrete(0, 64),
+                    ],
+                )
+                .unwrap_or_else(|e| panic!("dup3 newfd={newfd:#x}: {e:?}"));
+            let ret = match outcome {
+                SyscallOutcome::Continue { ret } => ret,
+                other => panic!("dup3 newfd={newfd:#x}: expected Continue, got {other:?}"),
+            };
+            if newfd as u64 >= NEWFD_LIMIT {
+                assert_eq!(ret, NEG_EBADF, "dup3 newfd={newfd:#x} must be refused");
+                assert!(!state.file_system_ref().is_open(newfd));
+            } else {
+                assert_eq!(ret, newfd as u64, "dup3 newfd={newfd:#x} must succeed");
+                assert!(state.file_system_ref().is_open(newfd));
+            }
+        }
+    }
+}

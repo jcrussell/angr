@@ -627,3 +627,178 @@ fn test_snapshot_preserves_dirty_pages() {
     };
     assert_eq!(dirty_before, dirty_after);
 }
+
+// =============================================================================
+// Harness 6 (integer-overflow/wraparound boundary sweep). Each historical fix
+// below shipped a regression test pinned to the one address its bug report
+// used; these sweep the shared `test_boundary_values` table instead, so the
+// same shape is checked at every entry rather than only the original one.
+// =============================================================================
+
+/// `end_page_inclusive`/`end_page_exclusive` (angr-9ke6b.99, angr-03vl4.34)
+/// directly, against an independent `checked_add`-based reference — not just
+/// the wrapper `store_concrete`/`map` call sites below, since a future third
+/// caller would otherwise only be covered indirectly.
+#[test]
+fn end_page_helpers_boundary_sweep_matches_checked_add_reference() {
+    for &addr in &crate::test_boundary_values::boundary_addresses() {
+        for &size in &[0u64, 1, 8, 0x1000, 0x1_0000] {
+            let inclusive = super::super::end_page_inclusive(addr, size);
+            if size == 0 {
+                assert!(
+                    matches!(inclusive, Err(MemoryError::ZeroSize { .. })),
+                    "size=0 must be ZeroSize for addr={addr:#x}"
+                );
+            } else {
+                match addr.checked_add(size - 1) {
+                    // `MemoryError` has no `PartialEq` (angr-irwe `#[non_exhaustive]`),
+                    // so unwrap the `Ok` payload rather than `assert_eq!`-ing the
+                    // whole `Result`.
+                    Some(last) => match inclusive {
+                        Ok(got) => assert_eq!(got, last >> 12, "addr={addr:#x} size={size:#x}"),
+                        Err(e) => panic!(
+                            "expected Ok({:#x}) for addr={addr:#x} size={size:#x}, got Err({e:?})",
+                            last >> 12
+                        ),
+                    },
+                    None => assert!(
+                        matches!(inclusive, Err(MemoryError::OutOfBounds { .. })),
+                        "overflowing addr={addr:#x} size={size:#x} must be OutOfBounds, got {inclusive:?}"
+                    ),
+                }
+            }
+
+            let exclusive = super::super::end_page_exclusive(addr, size);
+            match addr.checked_add(size) {
+                Some(end) => match exclusive {
+                    Ok(got) => assert_eq!(
+                        got,
+                        end.div_ceil(0x1000),
+                        "addr={addr:#x} size={size:#x}"
+                    ),
+                    Err(e) => panic!(
+                        "expected Ok for addr={addr:#x} size={size:#x}, got Err({e:?})"
+                    ),
+                },
+                None if addr.wrapping_add(size) == 0 => {
+                    // Region ends exactly at 2^64 — legal, not an overflow.
+                    match exclusive {
+                        Ok(got) => assert_eq!(got, (u64::MAX >> 12) + 1, "addr={addr:#x} size={size:#x}"),
+                        Err(e) => panic!(
+                            "expected Ok for exact-top-of-space addr={addr:#x} size={size:#x}, got Err({e:?})"
+                        ),
+                    }
+                }
+                None => assert!(
+                    matches!(exclusive, Err(MemoryError::OutOfBounds { .. })),
+                    "overflowing addr={addr:#x} size={size:#x} must be OutOfBounds, got {exclusive:?}"
+                ),
+            }
+        }
+    }
+}
+
+/// `store_concrete`/`load_concrete` (angr-03vl4.34/.35): a wraparound near
+/// the top of the address space must be rejected as `OutOfBounds`, never
+/// silently redirected into the low pages that a `u64` wrap would land on.
+#[test]
+fn store_and_load_concrete_reject_wraparound_near_top_of_address_space() {
+    let ctx = SymContext::new_mock();
+    for &addr in &crate::test_boundary_values::boundary_addresses() {
+        let mut mem = SymbolicMemory::new(Endness::Little);
+        // A real low page, so a wraparound bug (writing through address 0)
+        // would leave an observable trace instead of hitting `Unmapped`.
+        mem.map(0u64, 0x1000, Permission::RWX);
+
+        let value = RustBV::concrete(0x1122_3344_5566_7788, 64);
+        let would_overflow = addr.checked_add(7).is_none();
+        match mem.store_concrete(addr, value) {
+            Ok(()) => assert!(
+                !would_overflow,
+                "store_concrete succeeded for overflowing addr={addr:#x}"
+            ),
+            Err(MemoryError::OutOfBounds { .. }) => assert!(
+                would_overflow,
+                "store_concrete rejected a non-overflowing addr={addr:#x} as OutOfBounds"
+            ),
+            // A non-overflowing addr with no page mapped there is a
+            // legitimate Unmapped, not an overflow rejection.
+            Err(MemoryError::Unmapped { .. }) => assert!(!would_overflow),
+            Err(other) => panic!("unexpected error for addr={addr:#x}: {other:?}"),
+        }
+
+        // `addr` itself may legitimately target page 0 (the table includes
+        // 0/1/0xFFF), in which case the store above is *supposed* to have
+        // written there — only check the low page stays untouched for a
+        // `addr` whose own page is elsewhere, i.e. an actual wraparound
+        // would have to jump there.
+        if addr >= 0x1000 {
+            let low_byte = mem
+                .load_concrete(0u64, 1, &ctx)
+                .expect("low page stays mapped and readable");
+            assert_eq!(
+                low_byte.as_u64(),
+                Some(0),
+                "a wraparound store must not have landed on page 0 for addr={addr:#x}"
+            );
+        }
+    }
+}
+
+/// `map`/`unmap` (angr-03vl4.36): a wrapping request must silently install
+/// nothing — but a legal one must still map/unmap normally, so the guard
+/// isn't over-broad.
+#[test]
+fn map_and_unmap_boundary_sweep_noop_on_overflow_else_installs_and_clears() {
+    for &addr in &crate::test_boundary_values::boundary_addresses() {
+        let size = 0x2000u64; // two pages
+        let overflows = addr.checked_add(size).is_none() && addr.wrapping_add(size) != 0;
+
+        let mut mem = SymbolicMemory::new(Endness::Little);
+        mem.map(addr, size, Permission::RWX);
+        if overflows {
+            assert!(
+                !mem.is_mapped(addr),
+                "map must not install the start page for overflowing addr={addr:#x}"
+            );
+        } else {
+            assert!(
+                mem.is_mapped(addr),
+                "map must install the start page for legal addr={addr:#x}"
+            );
+            mem.unmap(addr, size);
+            assert!(
+                !mem.is_mapped(addr),
+                "unmap must clear the start page for legal addr={addr:#x}"
+            );
+        }
+    }
+}
+
+/// `add_lazy_region` (angr-03vl4.36 sibling): same overflow guard as
+/// `map`/`unmap`, checked against `lazy_region_count`/`is_addr_in_lazy_region`
+/// rather than the page table.
+#[test]
+fn add_lazy_region_boundary_sweep_matches_overflow_guard() {
+    for &addr in &crate::test_boundary_values::boundary_addresses() {
+        let size = 0x2000u64;
+        let overflows = addr.checked_add(size).is_none() && addr.wrapping_add(size) != 0;
+
+        let mut mem = SymbolicMemory::new(Endness::Little);
+        let before = mem.lazy_region_count();
+        mem.add_lazy_region(addr, size);
+        if overflows {
+            assert_eq!(
+                mem.lazy_region_count(),
+                before,
+                "a wrapping lazy region must not be registered for addr={addr:#x}"
+            );
+        } else {
+            assert_eq!(mem.lazy_region_count(), before + 1, "addr={addr:#x}");
+            assert!(
+                mem.is_addr_in_lazy_region(addr),
+                "addr={addr:#x} must be recognized as inside the region it just registered"
+            );
+        }
+    }
+}

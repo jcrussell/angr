@@ -220,3 +220,78 @@ fn getrlimit_rlim_near_u64_max_wraps_max_field() {
     );
     assert!(state.memory_load(0, 8).expect("loadable").is_symbolic());
 }
+
+/// Harness 6 boundary sweep for angr-03vl4.66: every value in the shared
+/// `test_boundary_values` table, not just the single `u64::MAX - 7` pivot
+/// above, must complete without panicking and — whenever both touched pages
+/// are mapped — must land `rlim_max` at the exact wrapped address
+/// `rlim.wrapping_add(8)`.
+#[test]
+fn getrlimit_rlim_boundary_sweep_never_panics_and_wraps_correctly() {
+    let stride = 8u64;
+    // Set when some sweep value's rlim_max store genuinely wrapped past
+    // u64::MAX (max_addr < rlim), not merely landed unwrapped near the top
+    // or was rejected outright — see the boundary_addresses doc comment for
+    // why the table needs dedicated entries to ever hit this.
+    let mut saw_genuine_wrap = false;
+    for &rlim in &crate::test_boundary_values::boundary_addresses() {
+        let mut state = fresh_state();
+        for a in [
+            rlim,
+            rlim.wrapping_add(7),
+            rlim.wrapping_add(stride),
+            rlim.wrapping_add(stride + 7),
+        ] {
+            let page = a & !0xFFFu64;
+            if state.memory().page_permissions(page >> 12).is_none() {
+                state.map_memory(page, 0x1000, Permission::RW);
+            }
+        }
+
+        let outcome = NativeGetrlimitSyscall.call(
+            &mut state,
+            &[
+                RustBV::concrete(RLIMIT_STACK as u128, 64),
+                RustBV::concrete(rlim as u128, 64),
+            ],
+        );
+
+        match outcome {
+            Ok(SyscallOutcome::Continue { ret }) => {
+                assert_eq!(ret, 0, "rlim={rlim:#x} getrlimit must succeed");
+                let cur = state
+                    .memory_load(rlim, 8)
+                    .unwrap_or_else(|e| panic!("rlim={rlim:#x} rlim_cur unreadable: {e:?}"));
+                assert_eq!(
+                    cur.as_u64(),
+                    Some(RLIMIT_STACK_CUR as u64),
+                    "rlim={rlim:#x} rlim_cur must be the concrete 8 MiB constant"
+                );
+                let max_addr = rlim.wrapping_add(stride);
+                let max = state.memory_load(max_addr, 8).unwrap_or_else(|e| {
+                    panic!(
+                        "rlim={rlim:#x} rlim_max at wrapped addr {max_addr:#x} unreadable: {e:?}"
+                    )
+                });
+                assert!(
+                    max.is_symbolic(),
+                    "rlim={rlim:#x} rlim_max must be the fresh symbolic write at the \
+                     wrapped address {max_addr:#x}, not silently skipped"
+                );
+                if max_addr < rlim {
+                    saw_genuine_wrap = true;
+                }
+            }
+            Ok(other) => panic!("rlim={rlim:#x} unexpected outcome {other:?}"),
+            // A legitimately unreachable neighbor page is fine — the
+            // property under test is "never panics", not "always succeeds".
+            Err(_) => {}
+        }
+    }
+    assert!(
+        saw_genuine_wrap,
+        "boundary sweep never exercised a genuine rlim_max wraparound (max_addr < rlim) — \
+         the table may have regressed to only far-from-top (no field wraps) or \
+         right-at-top (first field already overflows) values"
+    );
+}

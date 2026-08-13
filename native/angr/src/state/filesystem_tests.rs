@@ -219,6 +219,58 @@ fn seek_cur_and_end_clamp_instead_of_overflowing_the_signed_add() {
     assert_eq!(fs.seek(fd, i64::MIN, 2), Some(0));
 }
 
+/// Harness 6 boundary sweep for angr-03vl4.54: `offset_position` (shared by
+/// SEEK_CUR and SEEK_END) must match an independent `i128`-clamped reference
+/// at every base/delta combination drawn from the shared boundary table, not
+/// just the one hand-picked chain above.
+#[test]
+fn seek_cur_and_end_boundary_sweep_matches_i128_clamp_reference() {
+    // SEEK_SET can only directly establish a non-negative-`i64`-representable
+    // base (`offset.max(0) as u64`); the near-`u64::MAX` bases are exactly
+    // what the hand-written test above already pins via a two-step SEEK_CUR
+    // chain, so this sweep focuses on the delta side, which SEEK_CUR/SEEK_END
+    // apply uniformly regardless of how the base was reached.
+    let bases: Vec<u64> = crate::test_boundary_values::boundary_addresses()
+        .into_iter()
+        .filter(|&v| v <= i64::MAX as u64)
+        .collect();
+    let mut deltas: Vec<i64> = bases.iter().map(|&v| v as i64).collect();
+    deltas.extend(bases.iter().map(|&v| -(v as i64)));
+    deltas.push(i64::MIN);
+
+    for &base in &bases {
+        for &delta in &deltas {
+            let mut fs = FileSystem::default();
+            let fd = fs
+                .open_with_content("f".to_string(), FdFlags::ReadOnly, vec![0u8; 1])
+                .expect("fd space is not exhausted in tests");
+            assert_eq!(
+                fs.seek(fd, base as i64, 0),
+                Some(base),
+                "SEEK_SET base={base:#x}"
+            );
+
+            let want =
+                (i128::from(base) + i128::from(delta)).clamp(0, i128::from(u64::MAX)) as u64;
+            assert_eq!(
+                fs.seek(fd, delta, 1),
+                Some(want),
+                "SEEK_CUR base={base:#x} delta={delta}"
+            );
+        }
+    }
+
+    // SEEK_END: base is fixed at the 1-byte file's length (1); sweep deltas.
+    for &delta in &deltas {
+        let mut fs = FileSystem::default();
+        let fd = fs
+            .open_with_content("f".to_string(), FdFlags::ReadOnly, vec![0u8; 1])
+            .expect("fd space is not exhausted in tests");
+        let want = (i128::from(1u64) + i128::from(delta)).clamp(0, i128::from(u64::MAX)) as u64;
+        assert_eq!(fs.seek(fd, delta, 2), Some(want), "SEEK_END delta={delta}");
+    }
+}
+
 #[test]
 fn close_flips_flag_and_is_idempotent() {
     let mut fs = FileSystem::default();
@@ -318,6 +370,37 @@ fn dup2_refuses_newfd_at_or_above_max_fd() {
     assert_eq!(fs.next_fd(), MAX_FD);
 }
 
+/// Harness 6 boundary sweep for the fix above: every u32-representable value
+/// in the shared `test_boundary_values` table — not just `u32::MAX`/`MAX_FD`/
+/// `MAX_FD - 1` — must be refused at-or-above `MAX_FD` and succeed below it,
+/// bumping `next_fd` to exactly `max(next_fd, newfd + 1)`.
+#[test]
+fn dup2_newfd_boundary_sweep_matches_max_fd_threshold() {
+    for &raw in &crate::test_boundary_values::boundary_addresses() {
+        let Ok(newfd) = u32::try_from(raw) else {
+            continue;
+        };
+        let mut fs = FileSystem::default();
+        let src = fs
+            .open_with_content("f".to_string(), FdFlags::ReadWrite, b"xy".to_vec())
+            .expect("fd space is not exhausted in tests");
+        let before = fs.next_fd();
+        if newfd >= MAX_FD {
+            assert_eq!(fs.dup2(src, newfd), None, "newfd={newfd:#x} must be refused");
+            assert!(!fs.is_open(newfd));
+            assert_eq!(fs.next_fd(), before, "a refused dup2 must not move next_fd");
+        } else {
+            assert_eq!(
+                fs.dup2(src, newfd),
+                Some(newfd),
+                "newfd={newfd:#x} must succeed"
+            );
+            assert!(fs.is_open(newfd));
+            assert_eq!(fs.next_fd(), before.max(newfd + 1));
+        }
+    }
+}
+
 #[test]
 fn pipe_allocates_consecutive_read_write_ends() {
     let mut fs = FileSystem::default();
@@ -368,6 +451,52 @@ fn pipe_refuses_rather_than_wrapping_when_the_fd_space_is_exhausted() {
             fds_before,
             "a refused pipe must insert nothing"
         );
+    }
+}
+
+/// Harness 6 boundary sweep for the fix above: every u32-representable value
+/// in the shared table, used as a `next_fd` seed (via `register_fd_at`), must
+/// refuse `pipe()` exactly when the two-fd bump would overflow
+/// (`next_fd > u32::MAX - 2`) and otherwise allocate the expected
+/// consecutive pair.
+#[test]
+fn pipe_boundary_sweep_refuses_only_when_the_two_fd_bump_overflows() {
+    for &raw in &crate::test_boundary_values::boundary_addresses() {
+        let Ok(seed) = u32::try_from(raw) else {
+            continue;
+        };
+        let mut fs = FileSystem::default();
+        if seed > 0 {
+            let imported = seed - 1;
+            if !fs.register_fd_at(
+                imported,
+                "imported".to_string(),
+                FdFlags::ReadOnly,
+                Vec::new(),
+                0,
+            ) {
+                // Collided with a preregistered std stream (imported < 3);
+                // seed=0 (no import) already exercises the low end.
+                continue;
+            }
+        }
+        let next_before = fs.next_fd();
+        let would_refuse = next_before.checked_add(2).is_none();
+
+        match fs.pipe() {
+            Some((r, w)) => {
+                assert!(
+                    !would_refuse,
+                    "pipe succeeded despite next_fd={next_before:#x} overflowing the two-fd bump"
+                );
+                assert_eq!((r, w), (next_before, next_before + 1));
+                assert_eq!(fs.next_fd(), next_before + 2);
+            }
+            None => assert!(
+                would_refuse,
+                "pipe refused without cause at next_fd={next_before:#x}"
+            ),
+        }
     }
 }
 
@@ -428,6 +557,99 @@ fn open_family_refuses_rather_than_wrapping_when_the_fd_space_is_exhausted() {
             "{label} must still allocate below the wall"
         );
         assert_eq!(fs.next_fd(), u32::MAX);
+    }
+}
+
+/// Harness 6 boundary sweep for the fix above: every u32-representable value
+/// in the shared table, used as a `next_fd` seed, must refuse each of the
+/// three single-fd allocators exactly at `next_fd == u32::MAX` and otherwise
+/// allocate `next_fd` itself.
+#[test]
+fn open_family_boundary_sweep_refuses_only_at_u32_max() {
+    type Allocator = fn(&mut FileSystem) -> Option<u32>;
+    let allocators: [(&str, Allocator); 3] = [
+        ("open", |fs| fs.open("f".to_string(), FdFlags::ReadOnly)),
+        ("open_with_content", |fs| {
+            fs.open_with_content("f".to_string(), FdFlags::ReadOnly, vec![1, 2, 3])
+        }),
+        ("open_symbolic", |fs| {
+            fs.open_symbolic("f".to_string(), FdFlags::ReadOnly)
+        }),
+    ];
+
+    for &raw in &crate::test_boundary_values::boundary_addresses() {
+        let Ok(seed) = u32::try_from(raw) else {
+            continue;
+        };
+        for (label, alloc) in allocators {
+            let mut fs = FileSystem::default();
+            if seed > 0 {
+                let imported = seed - 1;
+                if !fs.register_fd_at(
+                    imported,
+                    "imported".to_string(),
+                    FdFlags::ReadOnly,
+                    Vec::new(),
+                    0,
+                ) {
+                    continue; // collided with a preregistered std stream
+                }
+            }
+            let next_before = fs.next_fd();
+            assert_eq!(
+                next_before,
+                seed.max(3),
+                "seed={seed:#x} {label}: precondition"
+            );
+            let refuses = next_before == u32::MAX;
+            let fds_before = fs.all_fds();
+
+            let got = alloc(&mut fs);
+            if refuses {
+                assert_eq!(got, None, "seed={seed:#x} {label} must refuse at u32::MAX");
+                assert_eq!(fs.next_fd(), next_before, "a refused {label} must not bump");
+                assert_eq!(
+                    fs.all_fds(),
+                    fds_before,
+                    "a refused {label} must insert nothing"
+                );
+            } else {
+                assert_eq!(
+                    got,
+                    Some(next_before),
+                    "seed={seed:#x} {label} must allocate next_fd"
+                );
+                assert_eq!(fs.next_fd(), next_before + 1);
+            }
+        }
+    }
+}
+
+/// Harness 6 boundary sweep for `register_fd_at`'s own bump: every
+/// u32-representable value in the shared table must move `next_fd` to
+/// exactly `max(next_fd_before, fd.saturating_add(1))` — including `fd ==
+/// u32::MAX`, where a plain `+ 1` would overflow (`saturating_add` is what
+/// lets [`pipe`]/[`open`]/[`dup2`]'s own `checked_add` guards above see a
+/// pinned `u32::MAX` instead of a wrapped `0`).
+#[test]
+fn register_fd_at_boundary_sweep_bumps_next_fd_by_saturating_add() {
+    for &raw in &crate::test_boundary_values::boundary_addresses() {
+        let Ok(fd) = u32::try_from(raw) else {
+            continue;
+        };
+        if fd < 3 {
+            continue; // collides with the preregistered std streams
+        }
+        let mut fs = FileSystem::default();
+        let before = fs.next_fd();
+        assert!(fs.register_fd_at(
+            fd,
+            "imported".to_string(),
+            FdFlags::ReadOnly,
+            Vec::new(),
+            0,
+        ));
+        assert_eq!(fs.next_fd(), before.max(fd.saturating_add(1)), "fd={fd:#x}");
     }
 }
 

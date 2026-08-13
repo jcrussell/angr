@@ -2548,3 +2548,76 @@ fn fstat_statbuf_near_u64_max_wraps_field_offsets() {
         S_IFREG_0755 as u32
     );
 }
+
+/// Harness 6 boundary sweep for the fix above: every value in the shared
+/// `test_boundary_values` table, not just the single `u64::MAX - 7` pivot,
+/// must complete without panicking, and — with the touched pages mapped —
+/// every `store_stat_*` field must land at exactly `buf.wrapping_add(off)`.
+#[test]
+fn fstat_statbuf_boundary_sweep_never_panics_and_wraps_field_offsets() {
+    // Set when some sweep value's st_size or st_mode store genuinely
+    // wrapped past u64::MAX (the wrapped address is less than buf), not
+    // merely landed unwrapped near the top or was rejected outright — see
+    // the boundary_addresses doc comment for why the table needs dedicated
+    // entries to ever hit this.
+    let mut saw_genuine_wrap = false;
+    for &buf in &crate::test_boundary_values::boundary_addresses() {
+        let mut state = RustSimState::new("amd64").expect("state");
+        // The amd64 layout (`write_amd64_stat`) spans offsets 0x00..0x90;
+        // map every page a sample of those wrapped addresses could land on
+        // (start/mid/near-end is enough to straddle any wraparound point).
+        for off in [0x00u64, 0x30, 0x48, 0x88] {
+            let page = buf.wrapping_add(off) & !0xFFFu64;
+            if state.memory().page_permissions(page >> 12).is_none() {
+                state.map_memory(page, 0x1000, Permission::RW);
+            }
+        }
+
+        let fd = state
+            .file_system()
+            .open_with_content(
+                "/tmp/hello".into(),
+                FdFlags::ReadOnly,
+                b"hello, world!".to_vec(),
+            )
+            .expect("fd space is not exhausted in tests");
+
+        let out = NativeFstatSyscall.call(
+            &mut state,
+            &[
+                RustBV::concrete(fd as u128, 64),
+                RustBV::concrete(buf as u128, 64),
+            ],
+        );
+        // A legitimately unreachable neighbor page is fine (this sweep maps
+        // only a start/mid/end sample, not every field's page) — the
+        // property under test is "never panics", not "always succeeds", so
+        // only the `Ok` side gets a further assertion.
+        if let Ok(outcome) = out {
+            assert_eq!(expect_continue(outcome), 0, "buf={buf:#x}");
+            let size_addr = buf.wrapping_add(0x30);
+            let mode_addr = buf.wrapping_add(0x18);
+            // st_size (offset 0x30, u64) must land at the wrapped address.
+            assert_eq!(
+                read_u64_le(&state, size_addr),
+                13,
+                "buf={buf:#x}: st_size must land at the wrapped offset"
+            );
+            // st_mode (offset 0x18, u32) likewise.
+            assert_eq!(
+                read_u32_le(&state, mode_addr),
+                S_IFREG_0755 as u32,
+                "buf={buf:#x}: st_mode must land at the wrapped offset"
+            );
+            if size_addr < buf || mode_addr < buf {
+                saw_genuine_wrap = true;
+            }
+        }
+    }
+    assert!(
+        saw_genuine_wrap,
+        "boundary sweep never exercised a genuine st_size/st_mode wraparound \
+         (wrapped addr < buf) — the table may have regressed to only far-from-top \
+         (no field wraps) or right-at-top (first field already overflows) values"
+    );
+}

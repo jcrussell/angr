@@ -952,6 +952,45 @@ fn test_multi_install_rejects_wrapping_candidate() {
     }
 }
 
+/// Harness 6 boundary sweep for the fix above: every entry in the shared
+/// `test_boundary_values` table, not just the one `u64::MAX - 1` candidate
+/// `test_multi_install_rejects_wrapping_candidate` pins, must be rejected
+/// exactly when its 4-byte range would overflow — and must still install
+/// cleanly when it does not, so the guard isn't over-broad.
+#[test]
+fn install_multi_for_candidates_boundary_sweep_rejects_wrapping_candidates() {
+    let ctx = SymContext::new_mock();
+    for &addr in &crate::test_boundary_values::boundary_addresses() {
+        let mut mem = SymbolicMemory::new(Endness::Little);
+        mem.map(0x0u64, 0x1000, Permission::RWX);
+
+        let addr_var = RustBV::symbolic(&ctx, "boundary_multi_addr", 64);
+        let value = RustBV::concrete(0xdead_beef, 32);
+        let overflows = addr.checked_add(3).is_none();
+
+        let result = mem.store_concrete_multi(&addr_var, &value, &[addr], &ctx);
+        if overflows {
+            let err = result.expect_err("wrapping candidate must be rejected");
+            assert!(
+                matches!(err, MemoryError::OutOfBounds { .. }),
+                "addr={addr:#x}: expected OutOfBounds, got {err:?}"
+            );
+            assert_eq!(
+                mem.multi_cell_count(),
+                0,
+                "addr={addr:#x}: rejection must install nothing"
+            );
+        } else {
+            result.unwrap_or_else(|e| panic!("addr={addr:#x} must install cleanly, got {e:?}"));
+            assert_eq!(
+                mem.multi_cell_count(),
+                4,
+                "addr={addr:#x}: a 4-byte value must install exactly 4 Multi cells"
+            );
+        }
+    }
+}
+
 /// `flush_multi_cells` must collapse every Multi byte into a per-byte
 /// symbolic_objects entry and mark the page-level symbolic bit so the
 /// state export pipeline picks it up. This is the export-correctness
