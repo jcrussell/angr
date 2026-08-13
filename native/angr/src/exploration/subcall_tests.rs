@@ -250,6 +250,7 @@ fn path_a_captures_caller_return_addr_via_get_return_addr() {
         // overwrites that slot with the sentinel.
         let captured = mgr
             .get_return_addr(&state)
+            .concrete()
             .expect("get_return_addr reads [sp]");
         assert_eq!(captured, caller_ret);
 
@@ -328,6 +329,7 @@ fn link_register_abi_subcall_roundtrip_resumes_at_lr() {
             // (1) the capture reads LR, not the poisoned [sp].
             let captured = mgr
                 .get_return_addr(&state)
+                .concrete()
                 .unwrap_or_else(|| panic!("{arch}: get_return_addr must read LR"));
             assert_eq!(captured, caller_ret, "{arch}: caller return address");
 

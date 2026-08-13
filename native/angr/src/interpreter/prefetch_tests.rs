@@ -28,7 +28,7 @@ fn get_stack_pointer_returns_rsp_value() {
     interp
         .registers
         .put_reg("rsp", RustBV::concrete(0x1234_5678, 64));
-    assert_eq!(interp.get_stack_pointer(), Some(0x1234_5678));
+    assert_eq!(interp.get_stack_pointer().concrete(), Some(0x1234_5678));
 }
 
 // angr-sqfj8.63: the `CallStackEntry.stack_ptr` push in
@@ -55,7 +55,7 @@ fn get_stack_pointer_or_log_substitutes_zero_for_symbolic() {
         .registers
         .put_reg("rsp", RustBV::symbolic(&ctx, "sp", 64));
     assert_eq!(
-        interp.get_stack_pointer(),
+        interp.get_stack_pointer().concrete(),
         None,
         "a symbolic SP must decline, not report a concrete value"
     );

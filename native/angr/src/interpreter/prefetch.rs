@@ -203,10 +203,12 @@ impl<'a> VEXInterpreter<'a> {
 
     /// Get the current stack pointer value (architecture-aware).
     ///
-    /// `None` when the stack pointer is symbolic or otherwise unreadable.
-    pub(crate) fn get_stack_pointer(&self) -> Option<u64> {
+    /// The inner value is `None` when the stack pointer is symbolic or
+    /// otherwise unreadable; see [`AddrOrSymbolic`] for why the raw
+    /// `Option<u64>` isn't returned directly.
+    pub(crate) fn get_stack_pointer(&self) -> AddrOrSymbolic {
         let offset = self.registers.arch().sp_offset();
-        self.registers.get_offset_u64(offset, self.ctx)
+        self.registers.get_offset_u64(offset, self.ctx).into()
     }
 
     /// [`Self::get_stack_pointer`], substituting `0` and logging when the
@@ -220,19 +222,14 @@ impl<'a> VEXInterpreter<'a> {
     // from a genuine SP of 0. Callers must go through this single logged
     // fallback rather than a bare `.unwrap_or(0)` (angr-sqfj8.63).
     pub(crate) fn get_stack_pointer_or_log(&self, context: &str) -> u64 {
-        silent_default!(
-            cat_c,
-            self.get_stack_pointer(),
-            0,
-            "get_stack_pointer() returned None ({context}); using stack_ptr=0 \
-             — likely a symbolic or unavailable stack pointer collapsed to a wrong value"
-        )
+        self.get_stack_pointer()
+            .or_log("get_stack_pointer", context)
     }
 
     /// Check if an address is in the stack region (near current RSP).
     /// Stack typically grows downward, so we check if addr is below RSP + some margin.
     fn is_stack_region(&self, addr: u64) -> bool {
-        if let Some(sp) = self.get_stack_pointer() {
+        if let Some(sp) = self.get_stack_pointer().concrete() {
             // Stack region: addresses from RSP - 1MB to RSP + 64KB
             // (stack grows down, but we allow some upward margin for locals)
             let stack_base = sp.saturating_sub(1024 * 1024); // 1MB below RSP

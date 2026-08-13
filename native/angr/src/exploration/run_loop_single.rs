@@ -449,7 +449,7 @@ impl RustExplorationManager {
                             // SP or honour `no_return` here: the guest's own `ret`
                             // advances SP, and `handle_native_resume` finishes
                             // without re-adjusting it.
-                            let setup = match self.get_return_addr(&state) {
+                            let setup = match self.get_return_addr(&state).concrete() {
                                 Some(caller_return_addr) => self
                                     .setup_native_subcall(
                                         &mut state,

@@ -44,16 +44,19 @@
 //! `See ... for the body` line on each — and those modules carry the test
 //! coverage (`pending_api.rs`, `constraints.rs`,
 //! `state_api.rs`, `stats_api.rs`). What is left at this
-//! layer is the PyO3 signature and the `#[angr_macros::steady_guarded]`
-//! placement, neither of which a Rust-level unit test can observe: the
-//! signature defaults only apply to a call made *from Python*, and guard
-//! coverage is gated mechanically by `tools/audit_steady_guard_coverage.py`.
+//! layer is the PyO3 signature and the `#[angr_macros::steady_guarded]` /
+//! `#[angr_macros::steady_guard_exempt]` choice — the signature defaults
+//! only apply to a call made *from Python*, so no Rust-level unit test can
+//! observe those, but making *some* explicit choice (not necessarily the
+//! correct one) is a compile-time obligation enforced by
+//! `#[angr_macros::steady_guard_checked]` on the `impl` block below.
 //! Sibling `manager_methods_{procedures,techniques,state}.rs` do have test
 //! modules because their methods carry filtering / stash-declaration logic of
 //! their own rather than delegating outright.
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 use super::*;
 
+#[angr_macros::steady_guard_checked]
 #[allow(
     unreachable_pub,
     reason = "pyo3 `#[pymethods]`/`#[pyclass]` surface: these items are reached from Python, not from Rust. See the `unreachable_pub` note in lib.rs (angr-9ke6b.50)."
@@ -87,6 +90,10 @@ impl RustExplorationManager {
     /// This allows Python to get a complete snapshot of the pending state
     /// including all registers, memory pages, and metadata.
     /// See `pending_api::_export_pending_state` for the body.
+    #[angr_macros::steady_guard_exempt(
+        reason = "exports one state_id-scoped state's snapshot; does not mutate exploration \
+                  config or the active stash."
+    )]
     pub fn export_pending_state(
         &mut self,
         state_id: u64,
@@ -185,6 +192,10 @@ impl RustExplorationManager {
     /// Args:
     ///     constraints: List of claripy AST constraints to add
     /// See `pending_api::_add_constraints_to_pending` for the body.
+    #[angr_macros::steady_guard_exempt(
+        reason = "syncs constraints onto one state_id-scoped state's solver; does not mutate \
+                  exploration config or the active stash."
+    )]
     pub fn add_constraints_to_pending(
         &mut self,
         py: Python<'_>,
@@ -196,6 +207,10 @@ impl RustExplorationManager {
 
     /// Add constraints from Python to a state in a stash by state ID.
     /// This is used to sync initial constraints from the Python state.
+    #[angr_macros::steady_guard_exempt(
+        reason = "syncs constraints onto one state_id-scoped state's solver; does not mutate \
+                  exploration config or the active stash."
+    )]
     pub fn add_constraints_to_state(
         &mut self,
         py: Python<'_>,
@@ -215,6 +230,10 @@ impl RustExplorationManager {
 
     /// Import raw Z3 assertion pointers to a state's solver.
     #[cfg(feature = "vex-engine-z3")]
+    #[angr_macros::steady_guard_exempt(
+        reason = "imports assertions onto one state_id-scoped state's solver; does not mutate \
+                  exploration config or the active stash."
+    )]
     pub fn import_z3_constraint_ptrs(&mut self, state_id: u64, ptrs: Vec<usize>) -> PyResult<bool> {
         self._import_z3_constraint_ptrs(state_id, ptrs)
     }
@@ -274,6 +293,10 @@ impl RustExplorationManager {
     /// Set the per-state mmap base pointer. Used by tests and by Python-side
     /// fallbacks that allocate from `state.heap.mmap_base` and need to push
     /// the advance back into Rust so subsequent native mmaps don't collide.
+    #[angr_macros::steady_guard_exempt(
+        reason = "mutates one state_id-scoped state's own mmap-base metadata; does not mutate \
+                  exploration config or the active stash."
+    )]
     pub fn set_state_mmap_base(&mut self, state_id: u64, addr: u64) -> PyResult<()> {
         self._set_state_mmap_base(state_id, addr)
     }
@@ -290,6 +313,10 @@ impl RustExplorationManager {
     /// Set the per-state posix brk pointer. Used by tests and by Python-side
     /// fallbacks (symbolic `brk` argument, collision retry) that bump
     /// `state.posix.brk` and need to push the advance back into Rust.
+    #[angr_macros::steady_guard_exempt(
+        reason = "mutates one state_id-scoped state's own posix-brk metadata; does not mutate \
+                  exploration config or the active stash."
+    )]
     pub fn set_state_posix_brk(&mut self, state_id: u64, addr: u64) -> PyResult<()> {
         self._set_state_posix_brk(state_id, addr)
     }
@@ -307,6 +334,10 @@ impl RustExplorationManager {
     /// Set the per-state heap brk pointer. Used by tests and on import to
     /// push a Python-side `state.heap.heap_location` advance back into Rust
     /// so subsequent native allocations don't collide.
+    #[angr_macros::steady_guard_exempt(
+        reason = "mutates one state_id-scoped state's own heap-brk metadata; does not mutate \
+                  exploration config or the active stash."
+    )]
     pub fn set_state_heap_brk(&mut self, state_id: u64, addr: u64) -> PyResult<()> {
         self._set_state_heap_brk(state_id, addr)
     }
@@ -318,6 +349,10 @@ impl RustExplorationManager {
 
     /// Replace the whole `symbolic_pages` map for a state. Mirrors the
     /// previous Python-side `_state_md(sid).symbolic_pages = pages` write.
+    #[angr_macros::steady_guard_exempt(
+        reason = "mutates one state_id-scoped state's own AST metadata; does not mutate \
+                  exploration config or the active stash."
+    )]
     pub fn set_state_symbolic_pages<'py>(
         &mut self,
         py: Python<'py>,
@@ -339,6 +374,10 @@ impl RustExplorationManager {
     }
 
     /// Insert/replace an entry in `hook_symbolic_memory` for a state.
+    #[angr_macros::steady_guard_exempt(
+        reason = "mutates one state_id-scoped state's own AST metadata; does not mutate \
+                  exploration config or the active stash."
+    )]
     pub fn set_state_hook_symbolic_memory(
         &mut self,
         state_id: u64,
@@ -359,6 +398,10 @@ impl RustExplorationManager {
     }
 
     /// Insert/replace an entry in `addr_to_ast` for a state.
+    #[angr_macros::steady_guard_exempt(
+        reason = "mutates one state_id-scoped state's own AST metadata; does not mutate \
+                  exploration config or the active stash."
+    )]
     pub fn set_state_addr_to_ast(
         &mut self,
         state_id: u64,
@@ -381,6 +424,10 @@ impl RustExplorationManager {
     /// Drop all per-state metadata (`symbolic_pages`, `hook_symbolic_memory`,
     /// `addr_to_ast`) for a state. No-op if the state is unknown — matches the
     /// `_state_metadata.pop(state_id, None)` semantics it replaces.
+    #[angr_macros::steady_guard_exempt(
+        reason = "clears one state_id-scoped state's own metadata; does not mutate exploration \
+                  config or the active stash."
+    )]
     pub fn clear_state_metadata(&mut self, state_id: u64) -> PyResult<()> {
         self._clear_state_metadata(state_id)
     }
@@ -412,6 +459,10 @@ impl RustExplorationManager {
     /// (addr, claripy AST) pairs for every multi-byte symbolic object whose
     /// base address falls on the given page.
     /// See `pending_api::_pending_memory_load_symbolic_page` for the body.
+    #[angr_macros::steady_guard_exempt(
+        reason = "reads pending-state memory (&mut self for internal caching only); does not \
+                  mutate exploration config or the active stash."
+    )]
     pub fn pending_memory_load_symbolic_page<'py>(
         &mut self,
         py: Python<'py>,
@@ -435,18 +486,33 @@ impl RustExplorationManager {
     /// The skip is automatically cleared after one step or when the address is used.
     /// GAP 6: Stack-based tracking allows for nested zero-length hooks.
     /// See `pending_api::_set_skip_hook_addr` for the body.
+    #[angr_macros::steady_guard_exempt(
+        reason = "self.skip_hook_stack is transient per-step runtime bookkeeping that \
+                  auto-expires (see consume_skip_hook), not sticky StepContext-snapshotted \
+                  config or the active stash."
+    )]
     pub fn set_skip_hook_addr(&mut self, addr: u64) {
         self._set_skip_hook_addr(addr)
     }
 
     /// Clear all pending skip_hook entries.
     /// See `pending_api::_clear_skip_hook_addr` for the body.
+    #[angr_macros::steady_guard_exempt(
+        reason = "self.skip_hook_stack is transient per-step runtime bookkeeping that \
+                  auto-expires (see consume_skip_hook), not sticky StepContext-snapshotted \
+                  config or the active stash."
+    )]
     pub fn clear_skip_hook_addr(&mut self) {
         self._clear_skip_hook_addr()
     }
 
     /// Clear skip entry for a specific address.
     /// See `pending_api::_clear_skip_hook_for_addr` for the body.
+    #[angr_macros::steady_guard_exempt(
+        reason = "self.skip_hook_stack is transient per-step runtime bookkeeping that \
+                  auto-expires (see consume_skip_hook), not sticky StepContext-snapshotted \
+                  config or the active stash."
+    )]
     pub fn clear_skip_hook_for_addr(&mut self, addr: u64) {
         self._clear_skip_hook_for_addr(addr)
     }
@@ -457,6 +523,10 @@ impl RustExplorationManager {
     }
 
     /// Clear error log.
+    #[angr_macros::steady_guard_exempt(
+        reason = "clears only the self.errors log accumulator; does not mutate exploration \
+                  config or the active stash."
+    )]
     pub fn clear_errors(&mut self) {
         self.errors.clear();
     }
@@ -467,6 +537,14 @@ impl RustExplorationManager {
     /// for truth the way Python's `if` would; an exception it raises (directly
     /// or from `__bool__`) propagates rather than counting as "no match".
     /// See `state_lifecycle::_move_states` for the body.
+    #[angr_macros::steady_guard_exempt(
+        reason = "routine per-step stash bookkeeping (deadended/pruned/found/avoid routing) \
+                  called by the Python driver on every batch, including while a steady \
+                  session's frontier is intentionally resident across a need_callback return; \
+                  guarding it finalizes the session on every call and starves the bounce/resume \
+                  protocol of a resident frontier to reinject into (regressed \
+                  test_steady_bounce_and_resume_counters when tried)."
+    )]
     pub fn move_states(
         &mut self,
         from_stash: &str,
@@ -478,6 +556,9 @@ impl RustExplorationManager {
 
     /// Move a single state by ID between stashes.
     /// See `state_lifecycle::_move_state` for the body.
+    #[angr_macros::steady_guard_exempt(
+        reason = "routine per-step stash bookkeeping, same rationale as move_states."
+    )]
     pub fn move_state(
         &mut self,
         state_id: u64,
@@ -488,6 +569,9 @@ impl RustExplorationManager {
     }
 
     /// Clear all states from a stash.
+    #[angr_macros::steady_guard_exempt(
+        reason = "routine per-step stash bookkeeping, same rationale as move_states."
+    )]
     pub fn clear_stash(&mut self, stash: &str) {
         self.sm.clear(stash);
     }
@@ -504,6 +588,10 @@ impl RustExplorationManager {
     /// Backs `RustStateProxy.__del__` — when a copy-proxy is GC'd by Python,
     /// the Rust-side state can be reclaimed without waiting for the whole
     /// manager to drop. Returns `true` when a state was actually dropped.
+    #[angr_macros::steady_guard_exempt(
+        reason = "routine stash bookkeeping (backs RustStateProxy.__del__), same rationale as \
+                  move_states."
+    )]
     pub fn drop_state_from_stash(&mut self, state_id: u64, stash: &str) -> bool {
         // Drop clears the root too (the state is gone for good); take_state_from
         // handles the stash removal + unindex (angr-ph300.27).
@@ -526,6 +614,7 @@ impl RustExplorationManager {
     /// to active and clear all other stashes. Returns the state ID of the
     /// moved state. This avoids constraint transfer between managers.
     /// See `state_lifecycle::_reset_for_stage` for the body.
+    #[angr_macros::steady_guarded]
     pub fn reset_for_stage(&mut self, found_state_id: u64) -> PyResult<u64> {
         self._reset_for_stage(found_state_id)
     }

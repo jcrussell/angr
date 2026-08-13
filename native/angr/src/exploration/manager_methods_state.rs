@@ -9,6 +9,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 use super::*;
 
+#[angr_macros::steady_guard_checked]
 #[allow(
     unreachable_pub,
     reason = "pyo3 `#[pymethods]`/`#[pyclass]` surface: these items are reached from Python, not from Rust. See the `unreachable_pub` note in lib.rs (angr-9ke6b.50)."
@@ -18,6 +19,7 @@ impl RustExplorationManager {
     /// Create a new RustSimState and add it to a stash.
     /// See `state_lifecycle::_create_state` for the body.
     #[pyo3(signature = (stash="active"))]
+    #[angr_macros::steady_guarded]
     pub fn create_state(&mut self, stash: &str) -> PyResult<u64> {
         self._create_state(stash)
     }
@@ -39,6 +41,12 @@ impl RustExplorationManager {
     /// Returns the merged state's ID.
     /// See `state_lifecycle::_merge_states` for the body.
     #[pyo3(signature = (state_ids, dest_stash="active"))]
+    #[angr_macros::steady_guard_exempt(
+        reason = "driven by the MergePoint native technique's per-group merge, which can fire \
+                  during ordinary exploration (not just at stage boundaries); guarding it \
+                  finalizes a live steady session on every merge and starves the bounce/resume \
+                  protocol of a resident frontier, same failure mode move_states had."
+    )]
     pub fn merge_states(&mut self, state_ids: Vec<u64>, dest_stash: &str) -> PyResult<u64> {
         self._merge_states(state_ids, dest_stash)
     }
@@ -50,6 +58,13 @@ impl RustExplorationManager {
     /// Write-through SimProc fork API (angr-t3mr). See
     /// `state_lifecycle::_fork_state_to_stash` for the body.
     #[pyo3(signature = (parent_id, stash="active"))]
+    #[angr_macros::steady_guard_exempt(
+        reason = "called from the ordinary per-callback fork dispatch path \
+                  (_add_forked_state_via_rust) and from RustStateProxy.copy(); guarding it \
+                  finalizes a live steady session on every callback-driven fork and starves the \
+                  bounce/resume protocol of a resident frontier, same failure mode move_states \
+                  had."
+    )]
     pub fn fork_state_to_stash(&mut self, parent_id: u64, stash: &str) -> PyResult<u64> {
         self._fork_state_to_stash(parent_id, stash)
     }
@@ -166,6 +181,10 @@ impl RustExplorationManager {
 
     /// Rebuild the state index after run() modifies stashes internally.
     /// Call from Python after run() returns to keep index up to date.
+    #[angr_macros::steady_guard_exempt(
+        reason = "rebuilds an internal lookup index from existing stash state; called after \
+                  run() completes, mutates no exploration config or stash membership."
+    )]
     pub fn sync_state_index(&mut self) {
         self.rebuild_state_index();
     }
@@ -178,6 +197,10 @@ impl RustExplorationManager {
 
     /// Set the PC of the pending callback state (for external initialization).
     /// See `pending_api::_set_pending_state_pc` for the body.
+    #[angr_macros::steady_guard_exempt(
+        reason = "mutates one state_id-scoped state's own PC; does not mutate exploration \
+                  config or the active stash."
+    )]
     pub fn set_pending_state_pc(&mut self, state_id: u64, pc: u64) -> PyResult<()> {
         self._set_pending_state_pc(state_id, pc)
     }
@@ -237,6 +260,10 @@ impl RustExplorationManager {
 
     /// Set register value in pending state.
     /// See `pending_api::_set_pending_register` for the body.
+    #[angr_macros::steady_guard_exempt(
+        reason = "mutates one state_id-scoped state's own register content; does not mutate \
+                  exploration config or the active stash."
+    )]
     pub fn set_pending_register(&mut self, state_id: u64, name: &str, value: u128) -> PyResult<()> {
         self._set_pending_register(state_id, name, value)
     }
@@ -246,6 +273,10 @@ impl RustExplorationManager {
     /// Used for syncing symbolic return values from SimProcedures.
     /// The handle_id should reference a RustBV in the solver's symbol table.
     /// See `pending_api::_set_pending_register_symbolic` for the body.
+    #[angr_macros::steady_guard_exempt(
+        reason = "mutates one state_id-scoped state's own register content; does not mutate \
+                  exploration config or the active stash."
+    )]
     pub fn set_pending_register_symbolic(
         &mut self,
         state_id: u64,
@@ -260,6 +291,10 @@ impl RustExplorationManager {
     /// This allows direct sync of symbolic register values from Python callbacks.
     /// The claripy AST is converted to RustBV and stored in the pending state.
     /// See `pending_api::_set_pending_register_symbolic_ast` for the body.
+    #[angr_macros::steady_guard_exempt(
+        reason = "mutates one state_id-scoped state's own register content; does not mutate \
+                  exploration config or the active stash."
+    )]
     pub fn set_pending_register_symbolic_ast(
         &mut self,
         py: Python<'_>,
@@ -277,6 +312,10 @@ impl RustExplorationManager {
     /// Import symbolic memory into a state by ID (for init-time symbolic data).
     /// See `pending_api::_import_symbolic_to_state` for the body.
     #[pyo3(signature = (state_id, addr, ast))]
+    #[angr_macros::steady_guard_exempt(
+        reason = "mutates one state_id-scoped state's own symbolic memory; does not mutate \
+                  exploration config or the active stash."
+    )]
     pub fn import_symbolic_to_state(
         &mut self,
         py: Python<'_>,
@@ -288,6 +327,10 @@ impl RustExplorationManager {
     }
 
     /// See `pending_api::_import_symbolic_memory` for the body.
+    #[angr_macros::steady_guard_exempt(
+        reason = "mutates one state_id-scoped state's own symbolic memory; does not mutate \
+                  exploration config or the active stash."
+    )]
     pub fn import_symbolic_memory(
         &mut self,
         py: Python<'_>,
@@ -306,6 +349,10 @@ impl RustExplorationManager {
     /// registry keys. Non-UTF-8 cwds are gated out by the Python caller
     /// (the Rust path model is UTF-8-lossy).
     /// See `pending_api::_set_fs_cwd` for the body.
+    #[angr_macros::steady_guard_exempt(
+        reason = "mutates one state_id-scoped state's own filesystem cwd; does not mutate \
+                  exploration config or the active stash."
+    )]
     pub fn set_fs_cwd(&mut self, state_id: u64, cwd: &str) -> PyResult<()> {
         self._set_fs_cwd(state_id, cwd)
     }
@@ -320,6 +367,10 @@ impl RustExplorationManager {
     /// and reads are served natively. Errors (not panics) on unknown
     /// `state_id`, a non-convertible AST, or a non-8-bit entry.
     /// See `pending_api::_register_file_content` for the body.
+    #[angr_macros::steady_guard_exempt(
+        reason = "mutates one state_id-scoped state's own filesystem content; does not mutate \
+                  exploration config or the active stash."
+    )]
     pub fn register_file_content(
         &mut self,
         py: Python<'_>,
@@ -339,6 +390,10 @@ impl RustExplorationManager {
     /// past the seeded content fall back to fresh symbols. Errors (not
     /// panics) on unknown `state_id`, a non-convertible AST, or a non-8-bit
     /// entry. See `pending_api::_seed_stdin_content` for the body.
+    #[angr_macros::steady_guard_exempt(
+        reason = "mutates one state_id-scoped state's own stdin fd content; does not mutate \
+                  exploration config or the active stash."
+    )]
     pub fn seed_stdin_content(
         &mut self,
         py: Python<'_>,
@@ -363,6 +418,10 @@ impl RustExplorationManager {
     /// WITHOUT bumping the native write-demotion counter. Returns `true`
     /// when registered content or fd state was cleared. Errors on unknown
     /// `state_id`. See `pending_api::_demote_file_path` for the body.
+    #[angr_macros::steady_guard_exempt(
+        reason = "mutates one state_id-scoped state's own filesystem content; does not mutate \
+                  exploration config or the active stash."
+    )]
     pub fn demote_file_path(&mut self, state_id: u64, path: &str) -> PyResult<bool> {
         self._demote_file_path(state_id, path)
     }
@@ -384,6 +443,10 @@ impl RustExplorationManager {
 
     /// Clear dirty page tracking in pending state.
     /// See `pending_api::_clear_pending_dirty_tracking` for the body.
+    #[angr_macros::steady_guard_exempt(
+        reason = "clears one state_id-scoped state's own dirty-page tracking; does not mutate \
+                  exploration config or the active stash."
+    )]
     pub fn clear_pending_dirty_tracking(&mut self, state_id: u64) -> PyResult<()> {
         self._clear_pending_dirty_tracking(state_id)
     }

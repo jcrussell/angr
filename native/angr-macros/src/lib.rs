@@ -9,7 +9,10 @@
 
 use proc_macro::TokenStream;
 use quote::{format_ident, quote, quote_spanned};
-use syn::{Data, DeriveInput, Fields, FnArg, ItemFn, Lit, Meta, Receiver, spanned::Spanned};
+use syn::{
+    Data, DeriveInput, ExprLit, Fields, FnArg, ImplItem, ItemFn, ItemImpl, Lit, Meta,
+    MetaNameValue, Receiver, spanned::Spanned,
+};
 
 /// Injects `self.steady_config_guard();` as the first statement of the
 /// annotated `&mut self` method body.
@@ -79,6 +82,130 @@ fn takes_mut_self(recv: &Receiver) -> bool {
     } else {
         recv.reference.is_some() && recv.mutability.is_some()
     }
+}
+
+/// Requires every method with a `&mut self` receiver in the annotated `impl`
+/// block — `pub` or not — to carry either `#[angr_macros::steady_guarded]`
+/// or `#[angr_macros::steady_guard_exempt(reason = "...")]` — no unlabeled
+/// third path. No visibility filter: PyO3 exposes every method in a
+/// `#[pymethods]` block to Python regardless of Rust-level visibility, so
+/// gating on `pub` would silently exempt a private mutator too.
+///
+/// [`steady_guarded`] alone is opt-in per function, so a newly added mutator
+/// can silently skip it exactly like `set_max_history` did (angr-c7xno.21).
+/// `tools/audit_steady_guard_coverage.py` closed that gap with a baseline-gated
+/// script (since removed), but only for `pub fn` names matching a fixed
+/// mutator-prefix heuristic (`set_`/`clear_`/`register_`/...) — a
+/// differently-named or non-`pub` real mutator (e.g. `clear_native_techniques`,
+/// which mutates the same `self.native_techniques` its sibling `register_*`
+/// methods guard, or `rebuild_stop_addrs`, private but still Python-callable)
+/// was invisible to it. Applying this attribute at the `impl` block level
+/// instead makes the choice mandatory for every eligible method regardless of
+/// its name or visibility, the same "opt-out derive" shape
+/// [`derive_merge_policy`] uses for struct fields.
+///
+/// `#[steady_guard_exempt]` is inert: recognized and stripped here, never
+/// itself resolved as an attribute macro. Using it outside a
+/// `#[steady_guard_checked]` impl block is a hard "cannot find attribute
+/// macro" compile error rather than a silent no-op.
+#[proc_macro_attribute]
+pub fn steady_guard_checked(attr: TokenStream, item: TokenStream) -> TokenStream {
+    steady_guard_checked_impl(attr.into(), item.into()).into()
+}
+
+/// `proc_macro2` body of [`steady_guard_checked`]; see [`steady_guarded_impl`]
+/// for why this split exists.
+fn steady_guard_checked_impl(
+    attr: proc_macro2::TokenStream,
+    item: proc_macro2::TokenStream,
+) -> proc_macro2::TokenStream {
+    let mut item_impl = match syn::parse2::<ItemImpl>(item) {
+        Ok(item_impl) => item_impl,
+        Err(err) => return err.to_compile_error(),
+    };
+
+    let mut errors = proc_macro2::TokenStream::new();
+    if !attr.is_empty() {
+        let msg = "#[steady_guard_checked] takes no arguments";
+        errors.extend(quote_spanned! { attr.span() => compile_error!(#msg); });
+    }
+
+    for item in &mut item_impl.items {
+        let ImplItem::Fn(m) = item else { continue };
+        // No visibility filter: PyO3 exposes every method in a `#[pymethods]`
+        // impl block to Python regardless of its Rust-level visibility (a
+        // private `fn` is just as callable from Python as a `pub` one), so
+        // gating on `pub` would silently exempt e.g. `rebuild_stop_addrs` —
+        // which mutates `self.stop_addrs`, a `StepContext`-snapshotted field
+        // — from ever needing a choice.
+        let receiver_ok =
+            matches!(m.sig.inputs.first(), Some(FnArg::Receiver(recv)) if takes_mut_self(recv));
+        if !receiver_ok {
+            continue;
+        }
+
+        let has_guarded = m
+            .attrs
+            .iter()
+            .any(|a| path_ends_with(a.path(), "steady_guarded"));
+        let exempt_idx = m
+            .attrs
+            .iter()
+            .position(|a| path_ends_with(a.path(), "steady_guard_exempt"));
+
+        match (has_guarded, exempt_idx) {
+            (true, Some(idx)) => {
+                let msg = format!(
+                    "fn `{}`: carries both #[steady_guarded] and #[steady_guard_exempt] — pick one",
+                    m.sig.ident
+                );
+                errors.extend(quote_spanned! { m.attrs[idx].span() => compile_error!(#msg); });
+                // Inert: consumed here regardless of which arm fired, so it is
+                // never independently resolved as an attribute macro and this
+                // case reports exactly one error rather than also tripping
+                // "cannot find attribute macro `steady_guard_exempt`".
+                m.attrs.remove(idx);
+            }
+            (false, None) => {
+                let msg = format!(
+                    "fn `{}`: a `&mut self` method in a `#[steady_guard_checked]` impl block must \
+                     carry either `#[angr_macros::steady_guarded]` (if it mutates exploration \
+                     config or the active stash) or `#[angr_macros::steady_guard_exempt(reason = \
+                     \"...\")]` (documenting why not)",
+                    m.sig.ident
+                );
+                errors.extend(quote_spanned! { m.sig.span() => compile_error!(#msg); });
+            }
+            (true, None) => {}
+            (false, Some(idx)) => {
+                let reason_ok = match m.attrs[idx].parse_args::<MetaNameValue>() {
+                    Ok(nv) if nv.path.is_ident("reason") => match &nv.value {
+                        syn::Expr::Lit(ExprLit {
+                            lit: Lit::Str(s), ..
+                        }) => !s.value().trim().is_empty(),
+                        _ => false,
+                    },
+                    _ => false,
+                };
+                if !reason_ok {
+                    let msg = "expected #[angr_macros::steady_guard_exempt(reason = \"<why this \
+                               mutator doesn't need steady_config_guard>\")] (non-empty string \
+                               literal)";
+                    errors.extend(quote_spanned! { m.attrs[idx].span() => compile_error!(#msg); });
+                }
+                m.attrs.remove(idx);
+            }
+        }
+    }
+
+    quote! { #errors #item_impl }
+}
+
+/// Whether `path`'s last segment is `name`, regardless of how it was
+/// qualified (`angr_macros::steady_guarded` vs. an imported bare
+/// `steady_guarded`).
+fn path_ends_with(path: &syn::Path, name: &str) -> bool {
+    path.segments.last().is_some_and(|s| s.ident == name)
 }
 
 /// Policy values [`derive_merge_policy`] accepts. Each names a treatment
@@ -440,6 +567,127 @@ mod steady_guarded_tests {
     fn non_function_item_reports_a_parse_error() {
         let out = expand(quote! {}, quote! { struct Nope; });
         assert!(out.contains("compile_error"), "{out}");
+    }
+}
+
+#[cfg(test)]
+mod steady_guard_checked_tests {
+    use super::steady_guard_checked_impl;
+    use quote::quote;
+
+    fn expand(item: proc_macro2::TokenStream) -> String {
+        steady_guard_checked_impl(quote! {}, item).to_string()
+    }
+
+    #[test]
+    fn guarded_and_exempt_methods_pass_without_error() {
+        let out = expand(quote! {
+            impl S {
+                #[angr_macros::steady_guarded]
+                pub fn set_x(&mut self) { self.steady_config_guard(); }
+
+                #[angr_macros::steady_guard_exempt(reason = "reads only")]
+                pub fn get_x(&mut self) -> u64 { 0 }
+            }
+        });
+        assert!(!out.contains("compile_error"), "{out}");
+        // The exempt attribute is stripped so it is never independently
+        // resolved as an attribute macro.
+        assert!(!out.contains("steady_guard_exempt"), "{out}");
+        assert!(out.contains("steady_guarded"), "{out}");
+    }
+
+    #[test]
+    fn unlabeled_mut_self_pub_fn_is_an_error() {
+        let out = expand(quote! {
+            impl S {
+                pub fn set_x(&mut self) {}
+            }
+        });
+        assert!(out.contains("must carry either"), "{out}");
+    }
+
+    #[test]
+    fn shared_self_methods_are_ignored_but_private_mut_self_is_not() {
+        let out = expand(quote! {
+            impl S {
+                pub fn get_x(&self) -> u64 { 0 }
+                fn helper(&mut self) {}
+            }
+        });
+        // A private `&mut self` method is still PyO3-callable inside a
+        // `#[pymethods]` block, so it must make the same choice a `pub` one
+        // does — exactly one error, naming `helper`, not `get_x`.
+        assert!(out.contains("fn `helper`: a"), "{out}");
+        assert!(!out.contains("fn `get_x`:"), "{out}");
+        assert_eq!(out.matches("must carry either").count(), 1, "{out}");
+    }
+
+    #[test]
+    fn private_mut_self_method_can_be_labeled() {
+        let out = expand(quote! {
+            impl S {
+                #[angr_macros::steady_guard_exempt(reason = "internal bookkeeping only")]
+                fn helper(&mut self) {}
+            }
+        });
+        assert!(!out.contains("compile_error"), "{out}");
+    }
+
+    #[test]
+    fn exempt_without_a_reason_is_an_error() {
+        for attr in [
+            quote! { #[angr_macros::steady_guard_exempt] },
+            quote! { #[angr_macros::steady_guard_exempt(reason = "  ")] },
+            quote! { #[angr_macros::steady_guard_exempt(wrong = "x")] },
+        ] {
+            let out = expand(quote! {
+                impl S {
+                    #attr
+                    pub fn set_x(&mut self) {}
+                }
+            });
+            assert!(out.contains("non-empty string"), "{attr}: {out}");
+        }
+    }
+
+    #[test]
+    fn both_guarded_and_exempt_is_an_error() {
+        let out = expand(quote! {
+            impl S {
+                #[angr_macros::steady_guarded]
+                #[angr_macros::steady_guard_exempt(reason = "x")]
+                pub fn set_x(&mut self) {}
+            }
+        });
+        assert!(out.contains("pick one"), "{out}");
+        // The exempt attribute must be stripped here too, or this case trips
+        // a second, unrelated "cannot find attribute macro" error on top of
+        // the diagnostic above. The diagnostic message legitimately mentions
+        // "steady_guard_exempt" by name, so check for the re-emitted
+        // *attribute* token specifically, not a bare substring match.
+        assert!(
+            !out.contains("# [angr_macros :: steady_guard_exempt"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn non_impl_item_reports_a_parse_error() {
+        let out = expand(quote! { fn nope() {} });
+        assert!(out.contains("compile_error"), "{out}");
+    }
+
+    #[test]
+    fn block_level_attributes_like_pymethods_are_preserved() {
+        let out = expand(quote! {
+            #[pymethods]
+            impl S {
+                #[angr_macros::steady_guarded]
+                pub fn set_x(&mut self) {}
+            }
+        });
+        assert!(out.contains("pymethods"), "{out}");
     }
 }
 

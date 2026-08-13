@@ -19,6 +19,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 use super::*;
 
+#[angr_macros::steady_guard_checked]
 #[allow(
     unreachable_pub,
     reason = "pyo3 `#[pymethods]`/`#[pyclass]` surface: these items are reached from Python, not from Rust. See the `unreachable_pub` note in lib.rs (angr-9ke6b.50)."
@@ -62,11 +63,13 @@ impl RustExplorationManager {
     /// and clear all pending single-step / callback / parked-bounce state, so
     /// the restored frontier starts from a clean manager.
     ///
-    /// Deliberately NOT `#[angr_macros::steady_guarded]` (unlike its dump-side
-    /// sibling [`Self::dump_snapshot_bytes`]): the guard must run AFTER the
-    /// fallible parse below, not as the unconditional first statement the
-    /// macro would inject — a malformed envelope should error out without
-    /// finalizing a live session that turns out not to be replaced.
+    #[angr_macros::steady_guard_exempt(
+        reason = "the guard must run AFTER the fallible parse below, not as the unconditional \
+                  first statement #[steady_guarded] would inject — a malformed envelope should \
+                  error out without finalizing a live session that turns out not to be \
+                  replaced. See the explicit self.steady_config_guard() call below (unlike its \
+                  dump-side sibling Self::dump_snapshot_bytes, which is plain #[steady_guarded])."
+    )]
     pub fn load_snapshot_bytes(&mut self, bytes: &[u8]) -> PyResult<()> {
         let restored = StashManager::load_snapshot(bytes)
             .map_err(|e| PyValueError::new_err(format!("snapshot load failed: {e}")))?;

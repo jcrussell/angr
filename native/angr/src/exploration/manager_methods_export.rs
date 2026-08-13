@@ -49,16 +49,19 @@
 //! `See ... for the body` line on each — and those modules carry the test
 //! coverage (`state_api.rs`, `state_lifecycle.rs`,
 //! `stats_api.rs`). What is left at this
-//! layer is the PyO3 signature and the `#[angr_macros::steady_guarded]`
-//! placement, neither of which a Rust-level unit test can observe: the
-//! signature defaults only apply to a call made *from Python*, and guard
-//! coverage is gated mechanically by `tools/audit_steady_guard_coverage.py`.
+//! layer is the PyO3 signature and the `#[angr_macros::steady_guarded]` /
+//! `#[angr_macros::steady_guard_exempt]` choice — the signature defaults
+//! only apply to a call made *from Python*, so no Rust-level unit test can
+//! observe those, but making *some* explicit choice (not necessarily the
+//! correct one) is a compile-time obligation enforced by
+//! `#[angr_macros::steady_guard_checked]` on the `impl` block below.
 //! Sibling `manager_methods_{procedures,techniques,state}.rs` do have test
 //! modules because their methods carry filtering / stash-declaration logic of
 //! their own rather than delegating outright.
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 use super::*;
 
+#[angr_macros::steady_guard_checked]
 #[allow(
     unreachable_pub,
     reason = "pyo3 `#[pymethods]`/`#[pyclass]` surface: these items are reached from Python, not from Rust. See the `unreachable_pub` note in lib.rs (angr-9ke6b.50)."
@@ -71,6 +74,10 @@ impl RustExplorationManager {
     /// a complete snapshot that can be used to reconstruct an angr SimState.
     /// Deferred writes (pending writes and Multi cells) are flushed first, so
     /// this is now an alias for `export_state_flushed` (angr-9ke6b.101).
+    #[angr_macros::steady_guard_exempt(
+        reason = "exports one state_id-scoped state's snapshot (flushing its own deferred \
+                  writes first); does not mutate exploration config or the active stash."
+    )]
     pub fn export_state(
         &mut self,
         state_id: u64,
@@ -86,6 +93,12 @@ impl RustExplorationManager {
     /// in the `_step_out` stash; the caller places it with `move_state()`.
     /// See `stepping::_step_state` for the body.
     #[pyo3(signature = (state_id, extra_stop_points=None))]
+    #[angr_macros::steady_guard_exempt(
+        reason = "out-of-band per-technique dispatch helper (rust_techniques.py's step_state-hook \
+                  path), same routine-per-step rationale as move_states; takes the source state \
+                  out of whichever stash it was in (including active) but parks results in the \
+                  private `_step_out` stash, and mutates no exploration config."
+    )]
     pub fn step_state(
         &mut self,
         state_id: u64,
@@ -95,6 +108,10 @@ impl RustExplorationManager {
     }
 
     /// Export a state by ID, flushing pending writes first.
+    #[angr_macros::steady_guard_exempt(
+        reason = "exports one state_id-scoped state's snapshot (flushing its own deferred \
+                  writes first); does not mutate exploration config or the active stash."
+    )]
     pub fn export_state_flushed(
         &mut self,
         state_id: u64,
@@ -107,6 +124,10 @@ impl RustExplorationManager {
     /// Flushes each state's deferred writes first (angr-9ke6b.101) — this is
     /// the primary `explore(find=...)` result API, so an unflushed export here
     /// silently drops Multi-cell bytes.
+    #[angr_macros::steady_guard_exempt(
+        reason = "exports the found stash's states (flushing each one's own deferred writes \
+                  first); does not mutate exploration config or the active stash."
+    )]
     pub fn export_found_states(&mut self) -> Vec<crate::state::ExplorationStateSnapshot> {
         self._export_found_states()
     }
@@ -125,6 +146,10 @@ impl RustExplorationManager {
     /// This is used to export Rust-computed symbolic expressions (e.g., flag
     /// computations in asisctf) to Python state memory during state export.
     #[cfg(feature = "vex-engine-z3")]
+    #[angr_macros::steady_guard_exempt(
+        reason = "read-only export of one state_id-scoped state's Z3 AST pointers; does not \
+                  mutate exploration config or the active stash."
+    )]
     pub fn get_state_symbolic_z3_asts(
         &mut self,
         state_id: u64,
@@ -224,6 +249,10 @@ impl RustExplorationManager {
     /// symbol is registered in the shared cache and the inverse
     /// `get_state_register_ast` round-trip preserves identity.
     /// See `state_api::_set_state_register_symbolic_ast` for the body.
+    #[angr_macros::steady_guard_exempt(
+        reason = "mutates one state_id-scoped state's own register content; does not mutate \
+                  exploration config or the active stash."
+    )]
     pub fn set_state_register_symbolic_ast(
         &mut self,
         py: Python<'_>,
@@ -262,6 +291,10 @@ impl RustExplorationManager {
 
     /// Set memory on a state from concrete bytes (angr-j28e write-through).
     /// See `state_api::_set_state_memory_concrete` for the body.
+    #[angr_macros::steady_guard_exempt(
+        reason = "mutates one state_id-scoped state's own memory content; does not mutate \
+                  exploration config or the active stash."
+    )]
     pub fn set_state_memory_concrete(
         &mut self,
         state_id: u64,
@@ -277,6 +310,10 @@ impl RustExplorationManager {
     /// `RustMemoryProxy.store` to mirror angr's map-on-write memory when
     /// STRICT_PAGE_ACCESS is off.
     /// See `state_api::_set_state_memory_concrete_automap` for the body.
+    #[angr_macros::steady_guard_exempt(
+        reason = "mutates one state_id-scoped state's own memory content (plus its lazy-region \
+                  map); does not mutate exploration config or the active stash."
+    )]
     pub fn set_state_memory_concrete_automap(
         &mut self,
         state_id: u64,
@@ -291,6 +328,10 @@ impl RustExplorationManager {
     /// address is concrete; symbolic addresses are not supported on the
     /// proxy write path — callers fall back to the Python engine.
     /// See `state_api::_set_state_memory_ast` for the body.
+    #[angr_macros::steady_guard_exempt(
+        reason = "mutates one state_id-scoped state's own memory content; does not mutate \
+                  exploration config or the active stash."
+    )]
     pub fn set_state_memory_ast(
         &mut self,
         py: Python<'_>,
@@ -305,6 +346,10 @@ impl RustExplorationManager {
     /// the target page so a store to an address outside any existing lazy
     /// region auto-maps instead of erroring `Unmapped` (angr-5rjbq). Used by
     /// the callback-memory-proxy symbolic-address store fallback.
+    #[angr_macros::steady_guard_exempt(
+        reason = "mutates one state_id-scoped state's own memory content (plus its lazy-region \
+                  map); does not mutate exploration config or the active stash."
+    )]
     pub fn set_state_memory_ast_automap(
         &mut self,
         py: Python<'_>,
@@ -325,6 +370,10 @@ impl RustExplorationManager {
     /// Returns `true` on success. Returns `false` if conversion or store
     /// fails (caller should fall back to the existing Python state path
     /// to keep progress).
+    #[angr_macros::steady_guard_exempt(
+        reason = "mutates one state_id-scoped state's own memory content; does not mutate \
+                  exploration config or the active stash."
+    )]
     pub fn state_memory_store_symbolic_multi<'py>(
         &mut self,
         py: Python<'py>,
@@ -364,6 +413,10 @@ impl RustExplorationManager {
     /// Returns `false` when the write was refused because the fd carried
     /// bounded symbolic content (see `RustSimState::write_fd`); the caller
     /// should treat that as a lossy fallback, not an error.
+    #[angr_macros::steady_guard_exempt(
+        reason = "mutates one state_id-scoped state's own fd-output buffer; does not mutate \
+                  exploration config or the active stash."
+    )]
     pub fn append_state_fd_output(
         &mut self,
         state_id: u64,
@@ -446,6 +499,10 @@ impl RustExplorationManager {
     /// Returns False when the fd is already known natively (nothing changes),
     /// which makes the caller's fd-table diff idempotent across the repeated
     /// callbacks that share one cached state.
+    #[angr_macros::steady_guard_exempt(
+        reason = "mutates one state_id-scoped state's own fd table; does not mutate \
+                  exploration config or the active stash."
+    )]
     pub fn register_state_fd(
         &mut self,
         state_id: u64,

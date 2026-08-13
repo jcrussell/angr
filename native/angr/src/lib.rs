@@ -197,7 +197,7 @@ macro_rules! test_submod {
 ///
 /// ```ignore
 /// // Option<T>: `None` is the failure, and there is nothing to `Display`.
-/// silent_default!(cat_c, self.get_stack_pointer(), 0, "no SP ({context})");
+/// silent_default!(cat_c, maybe_symbolic_addr, 0, "address unavailable ({context})");
 ///
 /// // Result<T, E>: `|err|` names a binding for the error, in scope for the
 /// // message. Not mentioning it is an unused-variable error under the crate's

@@ -1,0 +1,5 @@
+error: fn `set_x`: a `&mut self` method in a `#[steady_guard_checked]` impl block must carry either `#[angr_macros::steady_guarded]` (if it mutates exploration config or the active stash) or `#[angr_macros::steady_guard_exempt(reason = "...")]` (documenting why not)
+  --> tests/ui/steady_guard_checked_unlabeled.rs:12:9
+   |
+12 |     pub fn set_x(&mut self) {}
+   |         ^^

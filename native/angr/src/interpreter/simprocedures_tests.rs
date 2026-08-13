@@ -23,7 +23,7 @@ fn get_return_addr_reads_pending_concrete_store() {
     interp
         .pending_stores
         .push(0x7fff_0000, 0x0040_1122_u64.to_le_bytes().to_vec());
-    assert_eq!(interp.get_return_addr(), Some(0x0040_1122));
+    assert_eq!(interp.get_return_addr().concrete(), Some(0x0040_1122));
 }
 
 #[test]
@@ -34,7 +34,7 @@ fn get_return_addr_reads_flushed_concrete_store() {
     interp
         .all_flushed_stores
         .insert(0x7fff_0000, 0x0040_1122_u64.to_le_bytes().to_vec());
-    assert_eq!(interp.get_return_addr(), Some(0x0040_1122));
+    assert_eq!(interp.get_return_addr().concrete(), Some(0x0040_1122));
 }
 
 // angr-9ke6b.87: a symbolic store at `[sp]` pushes no placeholder bytes into
@@ -60,7 +60,7 @@ fn get_return_addr_pending_symbolic_store_shadows_stale_concrete_bytes() {
         .pending_symbolic_stores
         .insert(0x7fff_0000, RustBV::symbolic(&ctx, "ret", 64));
     assert_eq!(
-        interp.get_return_addr(),
+        interp.get_return_addr().concrete(),
         None,
         "symbolic [sp] must decline, not report the stale concrete address"
     );
@@ -77,7 +77,7 @@ fn get_return_addr_flushed_symbolic_store_shadows_stale_concrete_bytes() {
     interp
         .all_flushed_symbolic_stores
         .insert(0x7fff_0000, RustBV::symbolic(&ctx, "ret", 64));
-    assert_eq!(interp.get_return_addr(), None);
+    assert_eq!(interp.get_return_addr().concrete(), None);
 }
 
 // angr-sqfj8.62: every call site of `get_return_addr()` must route through
@@ -85,10 +85,10 @@ fn get_return_addr_flushed_symbolic_store_shadows_stale_concrete_bytes() {
 // helper's own None-handling contract (substitute 0 without panicking, the
 // same fallback value the old unwrap_or(0) sites used) so a symbolic/
 // unavailable return address doesn't crash the caller. The "every call site
-// actually uses the helper" half of the invariant is enforced by code review
-// / grep (`grep -rn 'get_return_addr().unwrap_or' native/angr/src/interpreter/`
-// should return nothing), not by this test — a compiled call site can't
-// observe whether a *different* call site regressed.
+// actually uses the helper" half of the invariant no longer needs grep: since
+// `get_return_addr()` returns `AddrOrSymbolic` (no `Default`/`From<u64>`), a
+// bare `.unwrap_or(0)` at a *different* call site fails to compile rather
+// than silently regressing.
 #[test]
 fn get_return_addr_or_log_substitutes_zero_for_symbolic() {
     let ctx = SymContext::new_mock();
@@ -113,7 +113,7 @@ fn get_return_addr_pending_concrete_beats_flushed_symbolic() {
     interp
         .pending_stores
         .push(0x7fff_0000, 0x0040_1122_u64.to_le_bytes().to_vec());
-    assert_eq!(interp.get_return_addr(), Some(0x0040_1122));
+    assert_eq!(interp.get_return_addr().concrete(), Some(0x0040_1122));
 }
 
 // On a link-register ABI nothing is pushed at the call, so `[sp]` holds an
@@ -137,5 +137,5 @@ fn get_return_addr_ignores_stack_buffers_on_link_register_abi() {
     interp
         .pending_stores
         .push(0x7fff_0000, 0xdead_beefu32.to_le_bytes().to_vec());
-    assert_eq!(interp.get_return_addr(), Some(0x8004));
+    assert_eq!(interp.get_return_addr().concrete(), Some(0x8004));
 }

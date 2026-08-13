@@ -88,9 +88,9 @@ plain `match`/`unwrap_or` with the comment. Both fallible shapes are supported:
 (the binder must be named by the caller — macro hygiene would hide a
 macro-defined one from the message). `$default` sits in tail position, so
 `return`/`continue` are legal defaults. Canonical call sites:
-`VEXInterpreter::get_stack_pointer_or_log`, both `get_return_addr_or_log`s,
-`vex::opcode_map::parse_type_or_log`, and the `Result` form in
-`exploration/state_api.rs::push_assumed_constraint_or_log`.
+`AddrOrSymbolic::or_log` (`arch/mod.rs` — what `VEXInterpreter::get_stack_pointer_or_log`
+and both `get_return_addr_or_log`s now delegate to), `vex::opcode_map::parse_type_or_log`,
+and the `Result` form in `exploration/state_api.rs::push_assumed_constraint_or_log`.
 
 `tools/audit_silent_fallback.py` gates the currently-narrow
 `return Ok(None)` / `.ok();` shapes in CI (`rust_check`) against
@@ -118,16 +118,30 @@ default value.
 `#[angr_macros::steady_guarded]` is opt-in per function, so a *new*
 `RustExplorationManager` config mutator silently inherits the bug the macro
 exists to prevent (round-3 audit caught `set_max_history` this way —
-angr-c7xno.21). `tools/audit_steady_guard_coverage.py` gates
-`native/angr/src/exploration/manager_methods*.rs` in CI (`rust_check`) against
-`tools/steady_guard_baseline.txt`, same baseline-audit pattern as the two
-checks above. Eligible = `pub fn` + `&mut self` + a mutator name prefix
-(`set_`/`clear_`/`register_`/`add_`/… — see `MUTATOR_PREFIXES`). Exempt =
-carries the attribute, **or** documents the exception with a doc line matching
-`NOT ... steady_guarded` (the convention `load_snapshot_bytes` and
-`set_parallel_frontier_residency` already use, for the cases where the guard
-cannot be the unconditional first statement the macro injects). Fixing a
-baselined gap means deleting its line, not just adding the attribute.
+angr-c7xno.21). A baseline-gated script (`tools/audit_steady_guard_coverage.py`,
+matching `pub fn` + `&mut self` + a mutator name prefix) policed this for a
+while, but a name-prefix heuristic still misses real mutators under other
+names — it never scanned `clear_native_techniques`, which mutates the same
+`self.native_techniques` its `register_*` siblings guard. The script is
+retired; coverage is now a compile-time obligation via
+`#[angr_macros::steady_guard_checked]`, applied once per file alongside
+`#[pymethods]` on every `impl RustExplorationManager` block in
+`native/angr/src/exploration/manager_methods*.rs`. It requires **every**
+`pub fn` with a `&mut self` receiver — regardless of name — to carry exactly
+one of:
+
+- `#[angr_macros::steady_guarded]` (injects the guard call), or
+- `#[angr_macros::steady_guard_exempt(reason = "...")]` (a non-empty
+  greppable rationale; the attribute is inert — consumed and stripped by
+  `steady_guard_checked`, never itself resolved as a macro)
+
+— else `compile_error!`. This replaces the `NOT ... steady_guarded` doc-line
+convention `load_snapshot_bytes` and `set_parallel_frontier_residency` used
+for guard-must-run-after-a-fallible-step cases; both now carry
+`#[steady_guard_exempt]` instead. See the `angr-macros-call-site-invariants`
+bd memory for why this — opt-out at the `impl` block level — is the second
+tier up from a baseline-gated script in the project's preferred fix order for
+this bug family.
 
 ### VEX rounding-mode threading (Rust)
 
@@ -140,7 +154,8 @@ the parameter `_rm` is Rust's *sanctioned* spelling of "unused" — so
 every sibling routed through `apply_rounding_f32`/`apply_rounding_f64`
 (angr-c7xno.85). `tools/audit_rounding_mode_threading.py` gates that shape in
 CI (`rust_check`) against `tools/rounding_mode_baseline.txt` — same
-baseline-audit pattern as the three checks above, but the baseline is **empty**
+baseline-audit pattern as the silent-fallback and line-citation checks above,
+but the baseline is **empty**
 and should stay so. Two detectors, over both `native/angr/src/vex/` and
 `native/angr/src/interpreter/`: (1) a closure inside a `fn *_rm` whose last
 parameter is `_`-prefixed, or is named `rm` and never referenced in the body;
@@ -169,10 +184,21 @@ SP of 0. Three logged `SILENT(cat-c)` helpers exist for it —
 path, which bumps a symbolic SP *symbolically* instead of concretizing it. The
 helpers were still bypassed three separate times (angr-sqfj8.62, angr-sqfj8.63,
 angr-c7xno.29), because the raw accessor and the helper are equally easy to
-reach for. `tools/audit_sp_default_zero.py` gates the shape in CI
-(`rust_check`) against `tools/sp_default_baseline.txt` — same baseline-audit
-pattern as the checks above, and like the rounding-mode one the baseline is
-**empty** and should stay so. Flags an SP/return-address accessor
+reach for. The two `VEXInterpreter` accessors (`get_stack_pointer`,
+`get_return_addr`) and the `RustExplorationManager` one (`get_return_addr`)
+now return `AddrOrSymbolic` (`arch/mod.rs`) instead of a
+bare `Option<u64>` — the newtype has no `Default`/`From<u64>`, so
+`.unwrap_or(0)` on the value itself no longer compiles; the only way back to a
+concrete `u64` is `.or_log(context)` (what the three `*_or_log` helpers now
+delegate to) or the explicit `.concrete()` escape hatch for legitimate
+pattern-matching call sites. `tools/audit_sp_default_zero.py` still gates the
+shape in CI (`rust_check`) against `tools/sp_default_baseline.txt` — same
+baseline-audit pattern as the checks above, and like the rounding-mode one the
+baseline is **empty** and should stay so — because the generic
+`get_offset_u64`/`get_sp_value` accessors are deliberately left untyped
+(shared by unrelated register reads), and because `.concrete()` reintroduces
+exactly the risk `.unwrap_or(0)` did if a caller chains it right back on.
+Flags an SP/return-address accessor
 (`get_sp`/`get_sp_value`/`get_stack_pointer`/`get_return_addr`, plus
 `get_offset_u64` when its args are SP-ish) followed by a method chain ending in
 `.unwrap_or(0)`/`.unwrap_or_default()`. Exempt by documenting the reason with
@@ -180,9 +206,9 @@ an `sp-default-ok: <why>` comment on the line above; prefer that over
 `--update-baseline`. `--self-test` runs ahead of the real check in CI, same
 reasoning as the rounding-mode gate.
 
-The four audit scripts share comment/string blanking, test-file filtering and
-`fn`-name resolution via `tools/rust_source_utils.py` — put new helpers there
-rather than copying a fifth blanker.
+The rounding-mode and SP-default audit scripts share comment/string blanking,
+test-file filtering and `fn`-name resolution via `tools/rust_source_utils.py`
+— put new helpers there rather than copying a third blanker.
 
 ### Where context lives
 
@@ -577,6 +603,10 @@ Caveats:
   some call sites but not others" bug family from the angr-9ke6b/angr-sqfj8
   audits. `#[angr_macros::steady_guarded]` injects the
   `steady_config_guard()` call `manager_methods*.rs` mutators must make;
+  `#[angr_macros::steady_guard_checked]`, applied once per file alongside
+  `#[pymethods]`, requires every `&mut self pub fn` in the block to carry
+  either that attribute or `#[angr_macros::steady_guard_exempt(reason = "...")]`
+  — see "Steady-guard coverage (Rust)" above;
   `#[derive(angr_macros::MergePolicy)]` requires every `RustSimState` field to
   carry a documented `#[merge_policy = "..."]` (validation-only — the actual
   merge logic stays hand-written in `state/fork.rs`, since several fields

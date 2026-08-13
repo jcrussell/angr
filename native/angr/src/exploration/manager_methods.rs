@@ -46,6 +46,7 @@ fn env_flag(name: &str) -> bool {
     std::env::var(name).is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
 }
 
+#[angr_macros::steady_guard_checked]
 #[allow(
     unreachable_pub,
     reason = "pyo3 `#[pymethods]`/`#[pyclass]` surface: these items are reached from Python, not from Rust. See the `unreachable_pub` note in lib.rs (angr-9ke6b.50)."
@@ -231,6 +232,7 @@ impl RustExplorationManager {
 
     /// Recompute the union of find + avoid addresses (the interpreter's
     /// block-chain stop set). Called whenever either set changes.
+    #[angr_macros::steady_guarded]
     fn rebuild_stop_addrs(&mut self) {
         self.stop_addrs = self
             .find_addrs
@@ -259,11 +261,13 @@ impl RustExplorationManager {
     /// (address-based explore without `until`/techniques); every other driver
     /// path must leave it false. Turning it off finalizes any live session.
     ///
-    /// Deliberately NOT `#[angr_macros::steady_guarded]`: the guard must fire
-    /// only on the disabling edge. Enabling residency is what lets a
-    /// worker-resident frontier stay live across a `need_callback` return in
-    /// the first place, so an unconditional guard here would finalize the
-    /// very session this call is trying to keep alive.
+    #[angr_macros::steady_guard_exempt(
+        reason = "the guard must fire only on the disabling edge, not unconditionally as the \
+                  first statement: enabling residency is what lets a worker-resident frontier \
+                  stay live across a need_callback return in the first place, so an \
+                  unconditional guard here would finalize the very session this call is trying \
+                  to keep alive. See the conditional self.steady_config_guard() call below."
+    )]
     pub fn set_parallel_frontier_residency(&mut self, enabled: bool) {
         if !enabled {
             self.steady_config_guard();
@@ -283,6 +287,10 @@ impl RustExplorationManager {
     /// in `stash_counts()` relative to the serial loop. Unlike the steady
     /// drain, this half is not session-gated.
     #[cfg(feature = "vex-engine-z3")]
+    #[angr_macros::steady_guard_exempt(
+        reason = "is the finalize/drain operation itself — the thing every #[steady_guarded] \
+                  mutator calls into via steady_config_guard(); guarding it would be circular."
+    )]
     pub fn finalize_parallel_session(&mut self, py: Python<'_>) -> PyResult<()> {
         self.finalize_steady_session(py)?;
         self.flush_parked_bounces_to_active();
@@ -290,6 +298,10 @@ impl RustExplorationManager {
     }
 
     #[cfg(not(feature = "vex-engine-z3"))]
+    #[angr_macros::steady_guard_exempt(
+        reason = "no-Z3 build has no steady session at all (steady_config_guard is a no-op \
+                  stub here); nothing to finalize or guard."
+    )]
     pub fn finalize_parallel_session(&mut self) -> PyResult<()> {
         self.flush_parked_bounces_to_active();
         Ok(())
@@ -671,6 +683,7 @@ impl RustExplorationManager {
     /// Set whether to drop terminal states (avoid/pruned/deadended) immediately.
     /// When true (default), terminal states are dropped to save memory.
     /// Set to false when states need to be recovered (e.g., factory.callable()).
+    #[angr_macros::steady_guarded]
     pub fn set_drop_terminal_states(&mut self, enabled: bool) {
         self.sm.set_drop_terminal_states(enabled);
     }
@@ -821,16 +834,22 @@ impl RustExplorationManager {
     }
 
     /// Reset accumulated execution statistics.
+    #[angr_macros::steady_guard_exempt(
+        reason = "mutates only self.profiling's accumulated stats counters, not \
+                  StepContext-snapshotted exploration config or the active stash."
+    )]
     pub fn reset_execution_stats(&mut self) {
         self.profiling.accumulated_stats.reset();
     }
 
     /// Set Python callbacks for memory/lifting.
+    #[angr_macros::steady_guarded]
     pub fn set_callbacks(&mut self, callbacks: PythonCallbacks) {
         self.callbacks = Some(callbacks);
     }
 
     /// Clear callbacks.
+    #[angr_macros::steady_guarded]
     pub fn clear_callbacks(&mut self) {
         self.callbacks = None;
     }
@@ -853,6 +872,11 @@ impl RustExplorationManager {
     /// longer call back into Python — but cycle-GC only invokes __clear__
     /// when the object is being collected, so further callbacks would not
     /// be issued.
+    #[angr_macros::steady_guard_exempt(
+        reason = "cycle-GC teardown hook invoked while the whole manager is being collected, \
+                  not a live config mutation; clears Python bound-method refs on self.callbacks \
+                  for cycle-breaking, unrelated to StepContext-snapshotted exploration config."
+    )]
     fn __clear__(&mut self) {
         if let Some(cbs) = &mut self.callbacks {
             cbs.clear_fields();

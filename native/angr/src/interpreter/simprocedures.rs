@@ -50,7 +50,15 @@ impl<'a> VEXInterpreter<'a> {
     /// (`pops_return_addr() == false`) `[sp]` holds no return address at all,
     /// so peeking there would hand back an unrelated caller local instead of
     /// deferring to the convention's link-register read.
-    pub(crate) fn get_return_addr(&self) -> Option<u64> {
+    pub(crate) fn get_return_addr(&self) -> AddrOrSymbolic {
+        self.get_return_addr_raw().into()
+    }
+
+    /// [`Self::get_return_addr`]'s implementation, kept as a plain
+    /// `Option<u64>` internally since its early-return/`?`-heavy body reads
+    /// more naturally that way; the public method wraps the result in
+    /// [`AddrOrSymbolic`] so callers can't bypass the logged fallback.
+    fn get_return_addr_raw(&self) -> Option<u64> {
         let cc_fallback = || {
             self.calling_convention.get_return_addr(
                 &self.registers,
@@ -124,13 +132,7 @@ impl<'a> VEXInterpreter<'a> {
     // this single logged fallback rather than a bare `.unwrap_or(0)`
     // (angr-sqfj8.62).
     pub(crate) fn get_return_addr_or_log(&self, context: &str) -> u64 {
-        silent_default!(
-            cat_c,
-            self.get_return_addr(),
-            0,
-            "get_return_addr() returned None ({context}); using return_addr=0 \
-             — likely a symbolic or unavailable return address collapsed to a wrong value"
-        )
+        self.get_return_addr().or_log("get_return_addr", context)
     }
 }
 

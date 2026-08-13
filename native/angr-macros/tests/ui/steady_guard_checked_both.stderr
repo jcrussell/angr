@@ -1,0 +1,5 @@
+error: fn `set_x`: carries both #[steady_guarded] and #[steady_guard_exempt] — pick one
+  --> tests/ui/steady_guard_checked_both.rs:14:5
+   |
+14 |     #[angr_macros::steady_guard_exempt(reason = "x")]
+   |     ^

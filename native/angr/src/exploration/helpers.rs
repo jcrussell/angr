@@ -606,7 +606,15 @@ impl RustExplorationManager {
     /// as the PC. On a link-register ABI `[sp]` is not the return address, so
     /// that would jump to whatever happened to be on the stack (bead
     /// angr-9ke6b.3).
-    pub(crate) fn get_return_addr(&self, state: &RustSimState) -> Option<u64> {
+    pub(crate) fn get_return_addr(&self, state: &RustSimState) -> AddrOrSymbolic {
+        self.get_return_addr_raw(state).into()
+    }
+
+    /// [`Self::get_return_addr`]'s implementation, kept as a plain
+    /// `Option<u64>` internally since its early-return/`?`-heavy body reads
+    /// more naturally that way; the public method wraps the result in
+    /// [`AddrOrSymbolic`] so callers can't bypass the logged fallback.
+    fn get_return_addr_raw(&self, state: &RustSimState) -> Option<u64> {
         let cc = &self.environment.calling_convention;
         {
             let ctx = state.solver().borrow();
@@ -628,17 +636,9 @@ impl RustExplorationManager {
     /// plausible-looking-but-wrong address forward. Mirrors
     /// `VEXInterpreter::get_return_addr_or_log` (same contract, same
     /// rationale — `angr-sqfj8.62`).
-    // SILENT(cat-c): a symbolic/unavailable return address collapsing to the
-    // literal 0 is a wrong-answer risk; route through this single logged
-    // fallback rather than a bare `.unwrap_or(0)`.
     pub(crate) fn get_return_addr_or_log(&self, state: &RustSimState, context: &str) -> u64 {
-        silent_default!(
-            cat_c,
-            self.get_return_addr(state),
-            0,
-            "get_return_addr() returned None ({context}); using return_addr=0 \
-             — likely a symbolic or unavailable return address collapsed to a wrong value"
-        )
+        self.get_return_addr(state)
+            .or_log("get_return_addr", context)
     }
 }
 

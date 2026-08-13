@@ -9,6 +9,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 use super::*;
 
+#[angr_macros::steady_guard_checked]
 #[allow(
     unreachable_pub,
     reason = "pyo3 `#[pymethods]`/`#[pyclass]` surface: these items are reached from Python, not from Rust. See the `unreachable_pub` note in lib.rs (angr-9ke6b.50)."
@@ -117,6 +118,7 @@ impl RustExplorationManager {
     }
 
     /// Clear all native techniques.
+    #[angr_macros::steady_guarded]
     pub fn clear_native_techniques(&mut self) {
         self.native_techniques.clear();
     }

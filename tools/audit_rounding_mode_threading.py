@@ -16,10 +16,9 @@ through ``apply_rounding_f32``/``apply_rounding_f64`` (angr-c7xno.85). Nothing
 flagged the divergence — the compiler is happy with a leading-underscore
 parameter, which is precisely what makes this shape invisible.
 
-This script closes the loop the same way ``tools/audit_silent_fallback.py``,
-``tools/check_line_citations.py`` and ``tools/audit_steady_guard_coverage.py``
-do: a heuristic detector plus a checked-in baseline of already-known gaps. Only
-*new* mode-dropping closures fail.
+This script closes the loop the same way ``tools/audit_silent_fallback.py`` and
+``tools/check_line_citations.py`` do: a heuristic detector plus a checked-in
+baseline of already-known gaps. Only *new* mode-dropping closures fail.
 
 Two detectors run over ``native/angr/src/vex/**/*.rs`` and
 ``native/angr/src/interpreter/**/*.rs`` (test modules excluded).

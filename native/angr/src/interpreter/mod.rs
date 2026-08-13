@@ -29,7 +29,8 @@ use pyo3::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::arch::{
-    RegisterFile, arch_from_vex, calling_conventions::CallingConvention, default_cc_for_arch,
+    AddrOrSymbolic, RegisterFile, arch_from_vex, calling_conventions::CallingConvention,
+    default_cc_for_arch,
 };
 use crate::callbacks::{
     DeferredFork, ExecutionConfig, InspectBit, PythonCallbacks, RunResult, note_inspect_error,

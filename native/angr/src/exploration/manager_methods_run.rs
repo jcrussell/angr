@@ -19,6 +19,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 use super::*;
 
+#[angr_macros::steady_guard_checked]
 #[allow(
     unreachable_pub,
     reason = "pyo3 `#[pymethods]`/`#[pyclass]` surface: these items are reached from Python, not from Rust. See the `unreachable_pub` note in lib.rs (angr-9ke6b.50)."
@@ -33,6 +34,10 @@ impl RustExplorationManager {
     /// - Need Python callback (SimProcedure, syscall)
     /// - Max steps reached
     #[pyo3(signature = (n=None))]
+    #[angr_macros::steady_guard_exempt(
+        reason = "drives the run loop itself — the entity that creates/manages a live steady \
+                  session, not a config mutation racing against one."
+    )]
     pub fn run(&mut self, py: Python<'_>, n: Option<u32>) -> PyResult<ExplorationEvent> {
         // Python re-entered the loop without resuming a parked callback: that
         // gap is driver overhead, not a bounce excursion. Drop the clock.
@@ -53,6 +58,10 @@ impl RustExplorationManager {
 
     /// Resume after a SimProcedure callback. See `resume::_resume_after_simprocedure` for the body.
     #[pyo3(signature = (state_id, new_pc, register_changes=None, memory_changes=None, new_constraints=None))]
+    #[angr_macros::steady_guard_exempt(
+        reason = "resumes one state_id-scoped pending callback; drives the run loop, does not \
+                  mutate exploration config or the active stash."
+    )]
     pub fn resume_after_simprocedure(
         &mut self,
         py: Python<'_>,
@@ -74,6 +83,10 @@ impl RustExplorationManager {
 
     /// Resume after a syscall callback.
     #[pyo3(signature = (state_id, new_pc, register_changes=None, memory_changes=None, new_constraints=None))]
+    #[angr_macros::steady_guard_exempt(
+        reason = "resumes one state_id-scoped pending callback; drives the run loop, does not \
+                  mutate exploration config or the active stash."
+    )]
     pub fn resume_after_syscall(
         &mut self,
         py: Python<'_>,
@@ -97,12 +110,20 @@ impl RustExplorationManager {
     /// Fast-path: deadend the pending callback state without full apply_changes.
     /// Used for SimProcedure continuations known to just call exit().
     /// See `resume::_deadend_pending_callback` for the body.
+    #[angr_macros::steady_guard_exempt(
+        reason = "resumes one state_id-scoped pending callback; drives the run loop, does not \
+                  mutate exploration config or the active stash."
+    )]
     pub fn deadend_pending_callback(&mut self, state_id: u64) -> PyResult<()> {
         self._deadend_pending_callback(state_id)
     }
 
     /// Resume after an error occurred during callback execution (P17).
     /// See `resume::_resume_after_error` for the body.
+    #[angr_macros::steady_guard_exempt(
+        reason = "resumes one state_id-scoped pending callback; drives the run loop, does not \
+                  mutate exploration config or the active stash."
+    )]
     pub fn resume_after_error(&mut self, state_id: u64, error_msg: &str) -> PyResult<()> {
         self._resume_after_error(state_id, error_msg)
     }
@@ -110,6 +131,10 @@ impl RustExplorationManager {
     /// Resume after Python handles a symbolic branch.
     /// See `resume::_resume_after_symbolic_branch` for the body.
     #[pyo3(signature = (state_id, true_pc, false_pc, true_constraints=None, false_constraints=None))]
+    #[angr_macros::steady_guard_exempt(
+        reason = "resumes one state_id-scoped pending callback; drives the run loop, does not \
+                  mutate exploration config or the active stash."
+    )]
     pub fn resume_after_symbolic_branch(
         &mut self,
         py: Python<'_>,
@@ -131,12 +156,20 @@ impl RustExplorationManager {
 
     /// Resume after Python evaluates a find predicate (P2).
     /// See `resume::_resume_find_predicate` for the body.
+    #[angr_macros::steady_guard_exempt(
+        reason = "resumes one state_id-scoped pending callback; drives the run loop, does not \
+                  mutate exploration config or the active stash."
+    )]
     pub fn resume_find_predicate(&mut self, state_id: u64, matched: bool) -> PyResult<()> {
         self._resume_find_predicate(state_id, matched)
     }
 
     /// Resume after Python evaluates an avoid predicate (P7).
     /// See `resume::_resume_avoid_predicate` for the body.
+    #[angr_macros::steady_guard_exempt(
+        reason = "resumes one state_id-scoped pending callback; drives the run loop, does not \
+                  mutate exploration config or the active stash."
+    )]
     pub fn resume_avoid_predicate(&mut self, state_id: u64, matched: bool) -> PyResult<()> {
         self._resume_avoid_predicate(state_id, matched)
     }

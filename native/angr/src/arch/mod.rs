@@ -399,6 +399,55 @@ fn le_bytes_to_u128(bytes: &[u8]) -> u128 {
     value
 }
 
+/// A stack-pointer or return-address read that may be symbolic/unavailable.
+///
+/// Deliberately carries no `Default`, `From<u64>`, or `Deref<Target = u64>`
+/// impl: a bare `.unwrap_or(0)` on the inner value is exactly the
+/// silently-wrong-answer bug this type exists to make uncompilable — the
+/// same `Option<u64>`-returning shape reintroduced it three times
+/// (angr-sqfj8.62, angr-sqfj8.63, angr-c7xno.29). Callers that need the two
+/// cases explicitly should use [`Self::concrete`]; callers that want the
+/// logged fallback should use [`Self::or_log`].
+#[must_use]
+pub(crate) struct AddrOrSymbolic(Option<u64>);
+
+impl AddrOrSymbolic {
+    /// The concrete address, or `None` when symbolic/unavailable.
+    pub(crate) fn concrete(&self) -> Option<u64> {
+        self.0
+    }
+
+    /// [`Self::concrete`], substituting `0` and logging when the answer is
+    /// symbolic/unavailable, instead of silently carrying a
+    /// plausible-looking-but-wrong address forward.
+    ///
+    /// `accessor` names the method that produced `self` (e.g.
+    /// `"get_stack_pointer"`) and `context` identifies the call site, so the
+    /// warning names both what collapsed to 0 and where — a `&'static str`
+    /// literal, not built with `format!`, so the common concrete-value path
+    /// pays no allocation; the interpolation only happens inside
+    /// `silent_default!`'s already-lazy None arm.
+    // SILENT(cat-c): a symbolic/unavailable address collapsing to the
+    // literal 0 is a wrong-answer risk downstream (e.g. exported verbatim as
+    // `CallStackEntry.stack_ptr`) — every caller must go through this single
+    // logged fallback rather than a bare `.unwrap_or(0)`.
+    pub(crate) fn or_log(&self, accessor: &str, context: &str) -> u64 {
+        silent_default!(
+            cat_c,
+            self.0,
+            0,
+            "{accessor}() returned None ({context}); using 0 — likely a symbolic or \
+             unavailable address collapsed to a wrong value"
+        )
+    }
+}
+
+impl From<Option<u64>> for AddrOrSymbolic {
+    fn from(value: Option<u64>) -> Self {
+        Self(value)
+    }
+}
+
 impl RegisterFile {
     /// Create a new register file for the given architecture.
     pub(crate) fn new(arch: Box<dyn Arch>) -> Self {

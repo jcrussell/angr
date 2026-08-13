@@ -27,9 +27,20 @@ found and fixed three separate times:
 Nothing stopped a new call site from reaching for the raw accessor, since the
 raw accessor and the helper are equally easy to reach for. This script closes
 that loop the same way `tools/audit_silent_fallback.py`,
-`tools/check_line_citations.py`, `tools/audit_steady_guard_coverage.py` and
-`tools/audit_rounding_mode_threading.py` do: a heuristic detector plus a
-checked-in baseline of already-known sites. Only *new* sites fail.
+`tools/check_line_citations.py` and `tools/audit_rounding_mode_threading.py`
+do: a heuristic detector plus a checked-in baseline of already-known sites.
+Only *new* sites fail.
+
+`get_stack_pointer`/`get_return_addr` now return the `AddrOrSymbolic` newtype
+(`arch/mod.rs`), which has no `Default`/`From<u64>` — a bare
+`.unwrap_or(0)` on the value itself no longer compiles. This script stays
+relevant for two reasons: the generic `get_offset_u64`/`get_sp_value`
+accessors were deliberately left untyped (shared by unrelated register
+reads), and `AddrOrSymbolic::concrete()` is an intentional escape hatch back
+to `Option<u64>` for legitimate pattern-matching call sites — one that a
+`.concrete().unwrap_or(0)` chain could just as easily misuse, which the
+regex below still catches since `.concrete()` is just another link in the
+method chain it scans.
 
 Detection heuristic — in any non-test `.rs` file under `native/angr/src/`, an
 SP/return-address accessor (see :data:`ACCESSORS`) whose call is followed by a
