@@ -723,6 +723,695 @@ fn test_parse_perm() {
     assert!(matches!(parse_opcode("Iop_Perm8x16x2"), IROp::Unmapped(_)));
 }
 
+/// Harness 5 (opcode-map completeness check, `plans/we-keep-finding-bugs-
+/// optimized-acorn.md`): every real `Iop_*` opcode name the pinned VEX
+/// version declares must be either mapped by `parse_opcode` or named in
+/// `KNOWN_UNMAPPED_GROUPS` below with a reason. A new pyvex opcode silently
+/// falling through to `IROp::Unmapped` with no allowlist entry is the
+/// op-coverage-gap shape from angr-9ke6b.160 / angr-sqfj8.113 /
+/// angr-sqfj8.117 — this test exists so the next instance is a hard failure
+/// instead of a silent perf cliff nobody notices until an audit finds it.
+///
+/// Ground truth is `vendor/pyvex_ffi.h` — the vendored cffi cdef
+/// `tools/regen-pyvex-ffi-header.py` writes from the installed pyvex's own
+/// `IROp` C enum (see that script's docstring), so it is exactly the set of
+/// opcodes this pyvex pin can emit — not a hand-maintained approximation.
+/// `libvex_lifter_tests.rs::test_vendored_header_ilgop_variant_set_is_unchanged`
+/// established this "diff against the vendored header" pattern for the
+/// sibling `ILGop_*` tag family; this reuses the same
+/// find-the-next-`Prefix_`-token extraction rather than a second one.
+///
+/// Same "diff against a foreign ground truth + self-cleaning allowlist"
+/// shape `tests/engines/rust/test_arch_offset_parity.py` already proved out
+/// for arch/register coverage against `archinfo` (its `KNOWN_MISSING`
+/// table is the direct template for `KNOWN_UNMAPPED_GROUPS` below).
+fn vendored_iop_names() -> Vec<&'static str> {
+    let header = include_str!("../../vendor/pyvex_ffi.h");
+    let mut found: Vec<&str> = Vec::new();
+    let mut rest = header;
+    while let Some(pos) = rest.find("Iop_") {
+        let tail = &rest[pos..];
+        let end = tail
+            .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+            .unwrap_or(tail.len());
+        found.push(&tail[..end]);
+        rest = &tail[end..];
+    }
+    // Iop_INVALID / Iop_LAST are enum sentinels, not real opcodes pyvex can
+    // ever hand to `parse_opcode`.
+    found.retain(|s| *s != "Iop_INVALID" && *s != "Iop_LAST");
+    found.sort_unstable();
+    found.dedup();
+    found
+}
+
+/// pyvex opcodes with no entry in `opcode_map.rs`'s `parse_*` dispatch tables —
+/// each falls through `parse_opcode` to `IROp::Unmapped`, which dispatch turns
+/// into `OpError::UnsupportedVexOp` and which the live-exploration path routes
+/// to the (slower, but still correct) Python engine. Not a wrong-answer bug —
+/// a silently-widening performance cliff, the shape behind angr-9ke6b.160,
+/// angr-sqfj8.113 and angr-sqfj8.117 ("op-coverage-gap"): a real gap with no
+/// error to notice it by. Grouped the same way `KNOWN_MISSING` groups register
+/// names in `tests/engines/rust/test_arch_offset_parity.py` — one reason per
+/// mnemonic family rather than per opcode, since libVEX enumerates every
+/// width/signedness/lane-count combination of a family as its own tag.
+///
+/// Self-cleaning: `test_known_unmapped_groups_are_still_entirely_unmapped`
+/// asserts every name here is still both a real vendored opcode and still
+/// unmapped, so implementing one reddens that test until the name is removed —
+/// it cannot rot into a permanent allowlist.
+const KNOWN_UNMAPPED_GROUPS: &[(&[&str], &str)] = &[
+    // DECIMAL_FLOAT
+    (
+        &[
+            "Iop_AddD128",
+            "Iop_AddD64",
+            "Iop_CmpD128",
+            "Iop_CmpD64",
+            "Iop_CmpExpD128",
+            "Iop_CmpExpD64",
+            "Iop_D128HItoD64",
+            "Iop_D128LOtoD64",
+            "Iop_D128toD64",
+            "Iop_D128toF128",
+            "Iop_D128toF32",
+            "Iop_D128toF64",
+            "Iop_D128toI32S",
+            "Iop_D128toI32U",
+            "Iop_D128toI64S",
+            "Iop_D128toI64U",
+            "Iop_D32toD64",
+            "Iop_D32toF128",
+            "Iop_D32toF32",
+            "Iop_D32toF64",
+            "Iop_D64HLtoD128",
+            "Iop_D64toD128",
+            "Iop_D64toD32",
+            "Iop_D64toF128",
+            "Iop_D64toF32",
+            "Iop_D64toF64",
+            "Iop_D64toI32S",
+            "Iop_D64toI32U",
+            "Iop_D64toI64S",
+            "Iop_D64toI64U",
+            "Iop_DivD128",
+            "Iop_DivD64",
+            "Iop_ExtractExpD128",
+            "Iop_ExtractExpD64",
+            "Iop_ExtractSigD128",
+            "Iop_ExtractSigD64",
+            "Iop_F128toD128",
+            "Iop_F128toD32",
+            "Iop_F128toD64",
+            "Iop_F32toD128",
+            "Iop_F32toD32",
+            "Iop_F32toD64",
+            "Iop_F64toD128",
+            "Iop_F64toD32",
+            "Iop_F64toD64",
+            "Iop_I32StoD128",
+            "Iop_I32StoD64",
+            "Iop_I32UtoD128",
+            "Iop_I32UtoD64",
+            "Iop_I64StoD128",
+            "Iop_I64StoD64",
+            "Iop_I64UtoD128",
+            "Iop_I64UtoD64",
+            "Iop_InsertExpD128",
+            "Iop_InsertExpD64",
+            "Iop_MulD128",
+            "Iop_MulD64",
+            "Iop_QuantizeD128",
+            "Iop_QuantizeD64",
+            "Iop_ReinterpD64asI64",
+            "Iop_ReinterpI64asD64",
+            "Iop_RoundD128toInt",
+            "Iop_RoundD64toInt",
+            "Iop_ShlD128",
+            "Iop_ShlD64",
+            "Iop_ShrD128",
+            "Iop_ShrD64",
+            "Iop_SignificanceRoundD128",
+            "Iop_SignificanceRoundD64",
+            "Iop_SubD128",
+            "Iop_SubD64",
+        ],
+        "IEEE 754-2008 decimal floating point (D32/D64/D128) — only PowerPC and s390x lift this, both unsupported architectures (docs/advanced-topics/rust_engine.rst); no IRType/evaluator support exists for the DFP encoding.",
+    ),
+    // BCD
+    (
+        &[
+            "Iop_BCD128toI128S",
+            "Iop_BCDAdd",
+            "Iop_BCDSub",
+            "Iop_BCDtoDPB",
+            "Iop_DPBtoBCD",
+            "Iop_I128StoBCD128",
+        ],
+        "Binary-coded-decimal <-> densely-packed-decimal conversion and BCD arithmetic — PowerPC decimal128 support, unsupported architecture.",
+    ),
+    // QUAD_FLOAT
+    (
+        &[
+            "Iop_AbsF128",
+            "Iop_AddF128",
+            "Iop_CmpF128",
+            "Iop_DivF128",
+            "Iop_F128HItoF64",
+            "Iop_F128LOtoF64",
+            "Iop_F128toF32",
+            "Iop_F128toF64",
+            "Iop_F128toI128S",
+            "Iop_F128toI32S",
+            "Iop_F128toI32U",
+            "Iop_F128toI64S",
+            "Iop_F128toI64U",
+            "Iop_F32toF128",
+            "Iop_F64HLtoF128",
+            "Iop_F64toF128",
+            "Iop_I32StoF128",
+            "Iop_I32UtoF128",
+            "Iop_I64StoF128",
+            "Iop_I64UtoF128",
+            "Iop_MAddF128",
+            "Iop_MSubF128",
+            "Iop_MulF128",
+            "Iop_NegF128",
+            "Iop_NegMAddF128",
+            "Iop_NegMSubF128",
+            "Iop_RndF128",
+            "Iop_RoundF128toInt",
+            "Iop_SqrtF128",
+            "Iop_SubF128",
+            "Iop_TruncF128toI32S",
+            "Iop_TruncF128toI32U",
+            "Iop_TruncF128toI64S",
+            "Iop_TruncF128toI64U",
+        ],
+        "128-bit (\"quad\"/F128) IEEE binary float arithmetic and conversions — PowerPC/s390x extended precision, unsupported architectures; distinct from the V128 128-bit *vector* type, which is mapped elsewhere.",
+    ),
+    // HALF_FLOAT
+    (
+        &[
+            "Iop_F16toF32",
+            "Iop_F16toF32x4",
+            "Iop_F16toF64",
+            "Iop_F16toF64x2",
+            "Iop_F32toF16",
+            "Iop_F32toF16x4",
+            "Iop_F64toF16",
+            "Iop_F64toF16x2",
+        ],
+        "F16 (half-precision) <-> F32/F64 conversion — ARMv8.2 FP16 extension; IRType::F16 exists for width-tagging but no arithmetic/conversion evaluator is wired up yet.",
+    ),
+    // PPC_R32_AND_MISC_FP
+    (
+        &[
+            "Iop_AddF64r32",
+            "Iop_DivF64r32",
+            "Iop_MAddF64r32",
+            "Iop_MSubF64r32",
+            "Iop_MulF64r32",
+            "Iop_SubF64r32",
+            "Iop_F64toI16S",
+            "Iop_RSqrtEst5GoodF64",
+            "Iop_TruncF64asF32",
+            "Iop_RoundF64toF32",
+            "Iop_RoundF64toF64_NEAREST",
+            "Iop_RoundF64toF64_NegINF",
+            "Iop_RoundF64toF64_PosINF",
+            "Iop_RoundF64toF64_ZERO",
+        ],
+        "PowerPC \"round to 32-bit precision after the op\" (*F64r32) arithmetic plus adjacent scalar FP helpers (F64toI16S, RSqrtEst5GoodF64, TruncF64asF32, RoundF64toF32, RoundF64toF64_*) — PowerPC-specific FP helper ops, not yet implemented.",
+    ),
+    // ARM32_MAXNUM_MINNUM
+    (
+        &["Iop_MaxNumF32", "Iop_MaxNumF64", "Iop_MinNumF32", "Iop_MinNumF64"],
+        "AArch32 VMAXNM/VMINNM (IEEE-754-2008 max-number/min-number), emitted by guest_arm_toIR.c — NOT PowerPC-only despite living in the same VEX enum region as the PPC F64r32 family above; ARM (32-bit) is a Supported architecture (docs/advanced-topics/rust_engine.rst), so this is a real coverage gap on a supported arch, not an unsupported-arch carve-out. Not yet implemented.",
+    ),
+    // X87_PREM
+    (
+        &[
+            "Iop_PRem1C3210F64",
+            "Iop_PRem1F64",
+            "Iop_PRemC3210F64",
+            "Iop_PRemF64",
+        ],
+        "x87 FPREM/FPREM1 partial-remainder ops — deliberately out of scope (see the parse_transcendental doc comment and test_parse_transcendental, which pins Iop_PRemF64 unmapped); no other op in this family is implemented either.",
+    ),
+    // CMP_ORD
+    (
+        &[
+            "Iop_CmpORD32S",
+            "Iop_CmpORD32U",
+            "Iop_CmpORD64S",
+            "Iop_CmpORD64U",
+        ],
+        "PowerPC \"ordered compare\" (full-width -1/0 result, not a 1-bit compare) — deliberately unmapped, pinned by test_parse_cmp_ord_stays_unmapped (angr-sqfj8.120).",
+    ),
+    // CMP_NEZ
+    (
+        &[
+            "Iop_CmpNEZ128x1",
+            "Iop_CmpNEZ16",
+            "Iop_CmpNEZ16x16",
+            "Iop_CmpNEZ16x2",
+            "Iop_CmpNEZ16x4",
+            "Iop_CmpNEZ16x8",
+            "Iop_CmpNEZ32",
+            "Iop_CmpNEZ32x2",
+            "Iop_CmpNEZ32x4",
+            "Iop_CmpNEZ32x8",
+            "Iop_CmpNEZ64",
+            "Iop_CmpNEZ64x2",
+            "Iop_CmpNEZ64x4",
+            "Iop_CmpNEZ8",
+            "Iop_CmpNEZ8x16",
+            "Iop_CmpNEZ8x32",
+            "Iop_CmpNEZ8x4",
+            "Iop_CmpNEZ8x8",
+            "Iop_CmpwNEZ32",
+            "Iop_CmpwNEZ64",
+        ],
+        "\"compare not-equal-zero\" scalar and vector family (the VEX idiom for boolean-from-integer / truthiness checks) — no IROp variant exists yet; not yet implemented.",
+    ),
+    // PPC_MISC_INT
+    (
+        &[
+            "Iop_Left16",
+            "Iop_Left32",
+            "Iop_Left64",
+            "Iop_Left8",
+            "Iop_Max32U",
+        ],
+        "PowerPC-specific integer helpers: Left{8,16,32,64} (isolate/replicate leftmost set bit, backs POWER's cntlz-adjacent idioms) and Max32U (unsigned max, used in POWER carry generation) — not yet implemented.",
+    ),
+    // EXTENDED_DIVIDE
+    (
+        &[
+            "Iop_DivModS64to64",
+            "Iop_DivS32E",
+            "Iop_DivS64E",
+            "Iop_DivU32E",
+            "Iop_DivU64E",
+        ],
+        "PowerPC \"extended\" divide (DivS32E/DivS64E/DivU32E/DivU64E, different rounding/overflow semantics than the plain DivS/DivU already mapped) and DivModS64to64 (64/64 combined divmod) — not yet implemented.",
+    ),
+    // CRYPTO
+    (
+        &[
+            "Iop_CipherLV128",
+            "Iop_CipherSV128",
+            "Iop_CipherV128",
+            "Iop_NCipherLV128",
+            "Iop_NCipherV128",
+            "Iop_SHA256",
+            "Iop_SHA512",
+        ],
+        "PowerPC/POWER8 crypto extension AES (Cipher*V128/NCipher*V128 — vcipher/vncipher) and SHA (SHA256/SHA512 — vshasigma) block ops, emitted by guest_ppc_toIR.c — NOT ARMv8; ARM64's own crypto extension (AESE/AESD/SHA1H/SHA256H) lowers through dirty-helper calls, never through parse_opcode. PowerPC is an unsupported architecture (docs/advanced-topics/rust_engine.rst). Not yet implemented.",
+    ),
+    // MULI128BY10
+    (
+        &[
+            "Iop_MulI128by10",
+            "Iop_MulI128by10Carry",
+            "Iop_MulI128by10E",
+            "Iop_MulI128by10ECarry",
+        ],
+        "128-bit multiply-by-10 with carry-out — PowerPC decimal128 helper family (pairs with the BCD group above) — not yet implemented.",
+    ),
+    // ARM_HALFSIMD_GPR
+    (
+        &[
+            "Iop_Add16x2",
+            "Iop_Add8x4",
+            "Iop_Sub16x2",
+            "Iop_Sub8x4",
+            "Iop_HAdd16Sx2",
+            "Iop_HAdd16Ux2",
+            "Iop_HAdd8Sx4",
+            "Iop_HAdd8Ux4",
+            "Iop_HSub16Sx2",
+            "Iop_HSub16Ux2",
+            "Iop_HSub8Sx4",
+            "Iop_HSub8Ux4",
+            "Iop_QAdd16Sx2",
+            "Iop_QAdd16Ux2",
+            "Iop_QAdd8Sx4",
+            "Iop_QAdd8Ux4",
+            "Iop_QSub16Sx2",
+            "Iop_QSub16Ux2",
+            "Iop_QSub8Sx4",
+            "Iop_QSub8Ux4",
+            "Iop_Sad8Ux4",
+            "Iop_QAdd32S",
+            "Iop_QSub32S",
+        ],
+        "ARMv6 \"half SIMD\" packed-integer arithmetic (2x16 or 4x8 lanes packed into a single 32-bit GPR, e.g. UADD16/SADD16/UHADD16/USAD8) — a pre-NEON packed-integer extension distinct from the D/Q-register vector families already mapped; not yet implemented.",
+    ),
+    // FIXED_POINT_CONVERT
+    (
+        &[
+            "Iop_F32ToFixed32Sx2_RZ",
+            "Iop_F32ToFixed32Sx4_RZ",
+            "Iop_F32ToFixed32Ux2_RZ",
+            "Iop_F32ToFixed32Ux4_RZ",
+            "Iop_Fixed32SToF32x2_RN",
+            "Iop_Fixed32SToF32x4_RN",
+            "Iop_Fixed32UToF32x2_RN",
+            "Iop_Fixed32UToF32x4_RN",
+            "Iop_FtoI32Sx2_RZ",
+            "Iop_FtoI32Sx4_RZ",
+            "Iop_FtoI32Ux2_RZ",
+            "Iop_FtoI32Ux4_RZ",
+            "Iop_I32StoFx2",
+            "Iop_I32StoFx4",
+            "Iop_I32UtoFx2",
+            "Iop_I32UtoFx4",
+            "Iop_QFtoI32Sx4_RZ",
+            "Iop_QFtoI32Ux4_RZ",
+        ],
+        "ARM NEON fixed-point <-> float conversion family (VCVT with an embedded fractional-bits immediate, plus the plain float<->int Fx2/Fx4 D/Q-reg forms) — not yet implemented.",
+    ),
+    // NEON_MULHI
+    (
+        &[
+            "Iop_MulHi16Sx16",
+            "Iop_MulHi16Sx4",
+            "Iop_MulHi16Sx8",
+            "Iop_MulHi16Ux16",
+            "Iop_MulHi16Ux4",
+            "Iop_MulHi16Ux8",
+            "Iop_MulHi32Sx4",
+            "Iop_MulHi32Ux4",
+            "Iop_MulHi8Sx16",
+            "Iop_MulHi8Ux16",
+            "Iop_QDMulHi16Sx4",
+            "Iop_QDMulHi16Sx8",
+            "Iop_QDMulHi32Sx2",
+            "Iop_QDMulHi32Sx4",
+            "Iop_QRDMulHi16Sx4",
+            "Iop_QRDMulHi16Sx8",
+            "Iop_QRDMulHi32Sx2",
+            "Iop_QRDMulHi32Sx4",
+        ],
+        "NEON/AVX2 \"high half of widening multiply\" (MulHi) and the ARM doubling variants (QDMulHi/QRDMulHi) — not yet implemented.",
+    ),
+    // AVX2_MUL
+    (
+        &["Iop_Mul16x16", "Iop_Mul32x8"],
+        "AVX2 256-bit packed integer multiply (16x16/32x8) — the 128-bit VMul family is mapped, this width tier is not yet implemented.",
+    ),
+    // LANE_SHUFFLE_ODD_EVEN
+    (
+        &[
+            "Iop_CatEvenLanes16x4",
+            "Iop_CatEvenLanes16x8",
+            "Iop_CatEvenLanes32x4",
+            "Iop_CatEvenLanes8x16",
+            "Iop_CatEvenLanes8x8",
+            "Iop_CatOddLanes16x4",
+            "Iop_CatOddLanes16x8",
+            "Iop_CatOddLanes32x4",
+            "Iop_CatOddLanes8x16",
+            "Iop_CatOddLanes8x8",
+            "Iop_InterleaveEvenLanes16x4",
+            "Iop_InterleaveEvenLanes16x8",
+            "Iop_InterleaveEvenLanes32x4",
+            "Iop_InterleaveEvenLanes8x16",
+            "Iop_InterleaveEvenLanes8x8",
+            "Iop_InterleaveOddLanes16x4",
+            "Iop_InterleaveOddLanes16x8",
+            "Iop_InterleaveOddLanes32x4",
+            "Iop_InterleaveOddLanes8x16",
+            "Iop_InterleaveOddLanes8x8",
+        ],
+        "Odd/even-lane deinterleave (CatOddLanes/CatEvenLanes) and interleave (InterleaveOddLanes/InterleaveEvenLanes) vector shuffles — siblings of the already-mapped InterleaveHI/InterleaveLO family; not yet implemented.",
+    ),
+    // CLZ_CTZ_WIDE
+    (
+        &[
+            "Iop_Clz64x2",
+            "Iop_Ctz16x8",
+            "Iop_Ctz32x4",
+            "Iop_Ctz64x2",
+            "Iop_Ctz8x16",
+        ],
+        "NEON Q-reg count-leading/trailing-zeros at widths beyond what parse_vector's VClz table covers (64x2) plus the whole Ctz{8,16,32,64} vector family — not yet implemented.",
+    ),
+    // AVG_WIDE
+    (
+        &[
+            "Iop_Avg16Ux16",
+            "Iop_Avg64Sx2",
+            "Iop_Avg64Ux2",
+            "Iop_Avg8Ux32",
+        ],
+        "NEON/AVX2 rounding halving-add (VAvg family) at widths beyond what parse_vector covers (64-bit lanes, AVX2 256-bit 16-lane) — not yet implemented.",
+    ),
+    // PWADDL_WIDE
+    (
+        &["Iop_PwAddL64Ux2"],
+        "NEON pairwise widening add (VPwAddL family) — the 64-bit-lane Q-reg width is the one shape parse_vector's table does not cover; not yet implemented.",
+    ),
+    // QADD_QSUB_AVX2
+    (
+        &[
+            "Iop_QAdd16Sx16",
+            "Iop_QAdd16Ux16",
+            "Iop_QAdd8Sx32",
+            "Iop_QAdd8Ux32",
+            "Iop_QSub16Sx16",
+            "Iop_QSub16Ux16",
+            "Iop_QSub8Sx32",
+            "Iop_QSub8Ux32",
+        ],
+        "AVX2 256-bit saturating add/sub (VQAdd/VQSub family) — the 128-bit and D-reg forms are mapped, this width tier is not yet implemented.",
+    ),
+    // ROL
+    (
+        &["Iop_Rol16x8", "Iop_Rol32x4", "Iop_Rol64x2", "Iop_Rol8x16"],
+        "NEON Q-reg vector rotate-left (distinct from the Shl/Shr/Sar-by-vector family already mapped) — not yet implemented.",
+    ),
+    // ROUND_F32X4
+    (
+        &[
+            "Iop_RoundF32x4_RM",
+            "Iop_RoundF32x4_RN",
+            "Iop_RoundF32x4_RP",
+            "Iop_RoundF32x4_RZ",
+        ],
+        "SSE4.1 ROUNDPS-style packed-float round-to-integer with an explicit rounding-mode suffix (RM/RN/RP/RZ) — not yet implemented.",
+    ),
+    // SH_RSH_BIDIRECTIONAL
+    (
+        &[
+            "Iop_Rsh16Sx8",
+            "Iop_Rsh16Ux8",
+            "Iop_Rsh32Sx4",
+            "Iop_Rsh32Ux4",
+            "Iop_Rsh64Sx2",
+            "Iop_Rsh64Ux2",
+            "Iop_Rsh8Sx16",
+            "Iop_Rsh8Ux16",
+            "Iop_Sh16Sx8",
+            "Iop_Sh16Ux8",
+            "Iop_Sh32Sx4",
+            "Iop_Sh32Ux4",
+            "Iop_Sh64Sx2",
+            "Iop_Sh64Ux2",
+            "Iop_Sh8Sx16",
+            "Iop_Sh8Ux16",
+        ],
+        "AArch64 NEON bidirectional shift-by-vector (SSHL/USHL-style, sign of the shift-amount lane selects direction) and its rounding variant (SRSHL/URSHL) — distinct from the ShlN/ShrN-by-immediate and Shl/Shr/Sar-by-vector families already mapped; not yet implemented.",
+    ),
+    // QSHLNSAT
+    (
+        &[
+            "Iop_QShlNsatSS16x4",
+            "Iop_QShlNsatSS16x8",
+            "Iop_QShlNsatSS32x2",
+            "Iop_QShlNsatSS32x4",
+            "Iop_QShlNsatSS64x1",
+            "Iop_QShlNsatSS64x2",
+            "Iop_QShlNsatSS8x16",
+            "Iop_QShlNsatSS8x8",
+            "Iop_QShlNsatSU16x4",
+            "Iop_QShlNsatSU16x8",
+            "Iop_QShlNsatSU32x2",
+            "Iop_QShlNsatSU32x4",
+            "Iop_QShlNsatSU64x1",
+            "Iop_QShlNsatSU64x2",
+            "Iop_QShlNsatSU8x16",
+            "Iop_QShlNsatSU8x8",
+            "Iop_QShlNsatUU16x4",
+            "Iop_QShlNsatUU16x8",
+            "Iop_QShlNsatUU32x2",
+            "Iop_QShlNsatUU32x4",
+            "Iop_QShlNsatUU64x1",
+            "Iop_QShlNsatUU64x2",
+            "Iop_QShlNsatUU8x16",
+            "Iop_QShlNsatUU8x8",
+        ],
+        "NEON saturating shift-left-by-immediate with mixed source/dest signedness (QShlNsat{SS,SU,UU}) — parse_vector maps the same-signedness QShl/QSal-by-vector family; the by-immediate mixed-signedness forms are not yet implemented.",
+    ),
+    // QAND_SHIFT_CARRY
+    (
+        &[
+            "Iop_QandQRSarNnarrow16Sto8Sx8",
+            "Iop_QandQRSarNnarrow16Sto8Ux8",
+            "Iop_QandQRSarNnarrow32Sto16Sx4",
+            "Iop_QandQRSarNnarrow32Sto16Ux4",
+            "Iop_QandQRSarNnarrow64Sto32Sx2",
+            "Iop_QandQRSarNnarrow64Sto32Ux2",
+            "Iop_QandQRShrNnarrow16Uto8Ux8",
+            "Iop_QandQRShrNnarrow32Uto16Ux4",
+            "Iop_QandQRShrNnarrow64Uto32Ux2",
+            "Iop_QandQSarNnarrow16Sto8Sx8",
+            "Iop_QandQSarNnarrow16Sto8Ux8",
+            "Iop_QandQSarNnarrow32Sto16Sx4",
+            "Iop_QandQSarNnarrow32Sto16Ux4",
+            "Iop_QandQSarNnarrow64Sto32Sx2",
+            "Iop_QandQSarNnarrow64Sto32Ux2",
+            "Iop_QandQShrNnarrow16Uto8Ux8",
+            "Iop_QandQShrNnarrow32Uto16Ux4",
+            "Iop_QandQShrNnarrow64Uto32Ux2",
+            "Iop_QandSQRsh16x8",
+            "Iop_QandSQRsh32x4",
+            "Iop_QandSQRsh64x2",
+            "Iop_QandSQRsh8x16",
+            "Iop_QandSQsh16x8",
+            "Iop_QandSQsh32x4",
+            "Iop_QandSQsh64x2",
+            "Iop_QandSQsh8x16",
+            "Iop_QandUQRsh16x8",
+            "Iop_QandUQRsh32x4",
+            "Iop_QandUQRsh64x2",
+            "Iop_QandUQRsh8x16",
+            "Iop_QandUQsh16x8",
+            "Iop_QandUQsh32x4",
+            "Iop_QandUQsh64x2",
+            "Iop_QandUQsh8x16",
+        ],
+        "ARMv8 saturating-shift-and-narrow families that also report a carry/overflow flag (QandQ{R}{Sar,Shr}Nnarrow*, QandS/UQ{R}sh*) — not yet implemented.",
+    ),
+    // QADDEXT
+    (
+        &[
+            "Iop_QAddExtSUsatUU16x8",
+            "Iop_QAddExtSUsatUU32x4",
+            "Iop_QAddExtSUsatUU64x2",
+            "Iop_QAddExtSUsatUU8x16",
+            "Iop_QAddExtUSsatSS16x8",
+            "Iop_QAddExtUSsatSS32x4",
+            "Iop_QAddExtUSsatSS64x2",
+            "Iop_QAddExtUSsatSS8x16",
+        ],
+        "ARMv8.2 saturating \"extended\" add with mixed signed/unsigned inputs (SUQADD/USQADD-style) — not yet implemented.",
+    ),
+    // POLYNOMIAL_MULADD
+    (
+        &[
+            "Iop_PolynomialMulAdd16x8",
+            "Iop_PolynomialMulAdd32x4",
+            "Iop_PolynomialMulAdd64x2",
+            "Iop_PolynomialMulAdd8x16",
+        ],
+        "ARMv8 GF(2) polynomial multiply-accumulate (PMULL-adjacent, used by CRC/AES-GCM software paths) — the plain PolynomialMul family is mapped, the fused multiply-add form is not yet implemented.",
+    ),
+    // PERM_TRIOP
+    (
+        &["Iop_Perm8x16x2"],
+        "the two-table AArch64 TBL form of Iop_Perm — deliberately unmapped because it is a triop and the whole VPerm family exists only to route to Python's two-argument _op_generic_Perm (see the parse_special doc comment, angr-sqfj8.117).",
+    ),
+    // V256_LANE_ACCESS
+    (
+        &[
+            "Iop_64x4toV256",
+            "Iop_V128HLtoV256",
+            "Iop_V256to64_0",
+            "Iop_V256to64_1",
+            "Iop_V256to64_2",
+            "Iop_V256to64_3",
+            "Iop_V256toV128_0",
+            "Iop_V256toV128_1",
+        ],
+        "AVX 256-bit lane extraction/construction (V256<->V128/I64 slicing, 64x4toV256) — not yet implemented.",
+    ),
+    // V128_MISC
+    (
+        &[
+            "Iop_Add128x1",
+            "Iop_Sub128x1",
+            "Iop_SarV128",
+            "Iop_ShlV128",
+            "Iop_ShrV128",
+            "Iop_Slice64",
+            "Iop_SliceV128",
+            "Iop_V128to32",
+            "Iop_ZeroHI112ofV128",
+            "Iop_ZeroHI120ofV128",
+            "Iop_ZeroHI64ofV128",
+            "Iop_ZeroHI96ofV128",
+        ],
+        "assorted V128 lane/bit-width helpers (128-bit-wide single-lane Add/Sub, ShlV128/ShrV128/SarV128 whole-register shift, Slice64/SliceV128, V128to32 narrowing, ZeroHI*ofV128 upper-bits clear) — not yet implemented.",
+    ),
+];
+
+/// The completeness gate: every vendored `Iop_*` name must be mapped by
+/// `parse_opcode`, or explicitly named (with a reason) in
+/// `KNOWN_UNMAPPED_GROUPS`. Fails loudly, listing every offending name, so a
+/// future VEX-pin bump that adds opcodes cannot silently grow the gap.
+#[test]
+fn test_opcode_map_completeness_against_vendored_header() {
+    let known: std::collections::HashSet<&str> = KNOWN_UNMAPPED_GROUPS
+        .iter()
+        .flat_map(|(names, _)| names.iter().copied())
+        .collect();
+
+    let mut newly_unmapped: Vec<&str> = vendored_iop_names()
+        .into_iter()
+        .filter(|name| matches!(parse_opcode(name), IROp::Unmapped(_)) && !known.contains(name))
+        .collect();
+    newly_unmapped.sort_unstable();
+
+    assert!(
+        newly_unmapped.is_empty(),
+        "{} pyvex opcode(s) have no parse_opcode mapping and no \
+         KNOWN_UNMAPPED_GROUPS entry: {newly_unmapped:?}. This is the \
+         op-coverage-gap shape from angr-9ke6b.160 / angr-sqfj8.113 / \
+         angr-sqfj8.117 — either add a parse_* arm mapping the opcode, or \
+         add a KNOWN_UNMAPPED_GROUPS entry stating why it stays unmapped.",
+        newly_unmapped.len()
+    );
+}
+
+/// The self-cleaning half of `KNOWN_UNMAPPED_GROUPS`, mirroring
+/// `test_known_missing_groups_are_still_entirely_missing` in
+/// `test_arch_offset_parity.py`: every named opcode must still be a real
+/// vendored name (catches a group rotting after a VEX-pin bump drops an
+/// opcode) and must still be unmapped (catches a group that was never
+/// cleaned up after someone implemented the opcode it names).
+#[test]
+fn test_known_unmapped_groups_are_still_entirely_unmapped() {
+    let vendored: std::collections::HashSet<&str> = vendored_iop_names().into_iter().collect();
+    for (names, reason) in KNOWN_UNMAPPED_GROUPS {
+        for &name in *names {
+            assert!(
+                vendored.contains(name),
+                "KNOWN_UNMAPPED_GROUPS entry ({reason}) names {name:?}, which \
+                 vendor/pyvex_ffi.h no longer declares — the group has rotted; drop it."
+            );
+            assert!(
+                matches!(parse_opcode(name), IROp::Unmapped(_)),
+                "KNOWN_UNMAPPED_GROUPS entry ({reason}) claims {name:?} is \
+                 unmapped, but parse_opcode now maps it — drop it from the group \
+                 so the completeness check covers it directly."
+            );
+        }
+    }
+}
+
 /// angr-sqfj8.143: `Iop_PwBitMtxXpose64x2` (PPC vgbbd) routes to
 /// `IROp::VPwBitMtxXpose` and reports a V128 result. It is the one `Pw*`
 /// opcode that is not NEON, so it is parsed by an explicit string match
