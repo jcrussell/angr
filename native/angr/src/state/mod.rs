@@ -235,7 +235,7 @@ pub(crate) fn reserve_state_id(id: u64) {
 /// pass before the Rust engine takes over; this struct only carries the
 /// already-built table pointers. `None` means the init pass never ran (e.g. a
 /// blank_state entry), in which case the native proc defers to Python.
-#[derive(Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CtypeLocPtrs {
     pub b: Option<u64>,
     pub tolower: Option<u64>,
@@ -252,7 +252,7 @@ pub struct CtypeLocPtrs {
 /// like real getopt would. `None` means the symbol was absent (statically
 /// linked away, or a blank_state with no loader pass), in which case the
 /// native proc defers to Python.
-#[derive(Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct GetoptExternAddrs {
     pub optind: Option<u64>,
     pub optarg: Option<u64>,
