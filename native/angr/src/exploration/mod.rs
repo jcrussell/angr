@@ -569,3 +569,10 @@ pub(crate) fn register_exploration(m: &Bound<'_, PyModule>) -> PyResult<()> {
 }
 
 test_submod!("mod_tests.rs" => tests);
+// Bucket x method coverage grid for the "misses a state parked outside a
+// stash" bug class (angr-sqfj8.32, angr-c7xno.21/.97, angr-03vl4.10/.15/.23);
+// generalizes the hand-written instances in `manager_methods_tests.rs` /
+// `pending_api_tests.rs`. Lives at the `mod.rs` level, not under a single
+// `manager_methods_*.rs` sibling, because it spans methods split across
+// `manager_methods.rs`, `pending_api.rs` and `run_loop.rs`.
+test_submod!("manager_methods_coverage_tests.rs" => manager_methods_coverage_tests);
