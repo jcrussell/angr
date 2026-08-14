@@ -343,6 +343,10 @@ unsafe fn marshal_const(c: *const ffi::IRConst) -> IRConst {
     } else if tag == ffi::IRConstTag::Ico_V256.0 {
         IRConst::V256(expand_v256(ico.V256))
     } else {
+        // SILENT(cat-c): defaulting to U64(0) on an unrecognized libVEX
+        // Ico_* tag silently corrupts every constant of that kind — warn so
+        // table drift is traceable.
+        log::warn!("Unknown libVEX IRConstTag discriminant {tag}; assuming Ico_U64(0)");
         IRConst::U64(0)
     }
 }

@@ -218,18 +218,172 @@ fn test_loadg_op_handles_every_vendored_variant() {
     assert_eq!(loadg_op(ffi::IRLoadGOp::ILGop_INVALID), IRLoadGOp::Unknown);
 }
 
-/// Pins the drift fallbacks of `c_endness` / `c_jumpkind` / `c_type_parse`
-/// (angr-sqfj8.119). Unlike `c_op`, none of the three has a sentinel variant
-/// that can carry the raw tag, so an out-of-range discriminant collapses to a
-/// plausible-but-possibly-wrong default; the contract is that it does so
-/// *predictably* and with a `log::warn!`. A future variant that reaches these
-/// helpers as a real tag must be added to the `enum_names` table, not left to
-/// land here.
+/// Pins the drift fallbacks of `c_endness` / `c_jumpkind` / `c_type_parse` /
+/// `marshal_const` (angr-sqfj8.119). Unlike `c_op`, none of the four has a
+/// sentinel variant that can carry the raw tag, so an out-of-range
+/// discriminant collapses to a plausible-but-possibly-wrong default; the
+/// contract is that it does so *predictably* and with a `log::warn!`. A
+/// future variant that reaches these helpers as a real tag must be added to
+/// the `enum_names` table (or, for `marshal_const`, to
+/// `VENDORED_ICO_CONST_TAGS` below), not left to land here.
 #[test]
 fn test_unknown_discriminants_fall_back_predictably() {
-    // 0 is not a valid tag for any of the three enums (libVEX bases them at
-    // 0x1100 / 0x1200 / 0x1A00-style offsets), so it exercises the miss path.
+    // 0 is not a valid tag for any of the four enums (libVEX bases them at
+    // 0x1100 / 0x1200 / 0x1300 / 0x1A00-style offsets), so it exercises the
+    // miss path.
     assert_eq!(c_endness(ffi::IREndness(0)), Endness::Little);
     assert_eq!(c_jumpkind(ffi::IRJumpKind(0)), JumpKind::Boring);
     assert_eq!(c_type_parse(ffi::IRType(0)), IRType::I64);
+
+    let unknown_const = ffi::IRConst {
+        tag: ffi::IRConstTag(0),
+        Ico: ffi::_IRConst__bindgen_ty_1 { U64: 0 },
+    };
+    assert_eq!(
+        unsafe { marshal_const(&unknown_const) },
+        IRConst::U64(0)
+    );
+}
+
+/// Every `Ico_*` const-tag the vendored cffi cdef defines today.
+///
+/// `marshal_const` matches these by raw discriminant value (not by name, the
+/// way `parse_opcode` matches `Iop_*`), so completeness here is checked by
+/// calling it directly rather than diffing a string dispatch table — see
+/// `test_marshal_const_handles_every_vendored_variant` below. Keep this list
+/// in sync with `test_vendored_header_ico_const_tag_set_is_unchanged`.
+const VENDORED_ICO_CONST_TAGS: &[&str] = &[
+    "Ico_U1",
+    "Ico_U8",
+    "Ico_U16",
+    "Ico_U32",
+    "Ico_U64",
+    "Ico_F32",
+    "Ico_F32i",
+    "Ico_F64",
+    "Ico_F64i",
+    "Ico_V128",
+    "Ico_V256",
+];
+
+/// Tripwire for a VEX pin bump that grows `IRConstTag` — mirrors
+/// `test_vendored_header_ilgop_variant_set_is_unchanged` above for the
+/// `Ico_*` family. If this breaks, teach `marshal_const` the new tag before
+/// updating `VENDORED_ICO_CONST_TAGS`.
+#[test]
+fn test_vendored_header_ico_const_tag_set_is_unchanged() {
+    let header = include_str!("../../vendor/pyvex_ffi.h");
+
+    let mut found: Vec<&str> = Vec::new();
+    let mut rest = header;
+    while let Some(pos) = rest.find("Ico_") {
+        let tail = &rest[pos..];
+        let end = tail
+            .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+            .unwrap_or(tail.len());
+        found.push(&tail[..end]);
+        rest = &tail[end..];
+    }
+    found.sort_unstable();
+    found.dedup();
+
+    let mut expected: Vec<&str> = VENDORED_ICO_CONST_TAGS.to_vec();
+    expected.sort_unstable();
+
+    assert_eq!(
+        found, expected,
+        "vendored pyvex_ffi.h Ico_* set changed; teach marshal_const the new \
+         tag(s) before updating this list"
+    );
+}
+
+/// The completeness gate itself: every currently-vendored `Ico_*` tag must
+/// marshal to something other than `marshal_const`'s unknown-tag fallback
+/// (`IRConst::U64(0)`) — the op-coverage-gap shape `opcode_map_tests.rs`
+/// gates for `Iop_*`, applied here to const tags. Each case sets a
+/// non-default payload so a tag that silently fell through to the fallback
+/// is distinguishable from one that was genuinely (and correctly) marshalled
+/// — a tag landing on the fallback would report `U64(0)` regardless of the
+/// payload set here, so a mismatch against the expected non-default value
+/// only happens if the tag is actually unhandled.
+#[test]
+fn test_marshal_const_handles_every_vendored_variant() {
+    let cases: &[(ffi::IRConstTag, ffi::_IRConst__bindgen_ty_1, IRConst)] = &[
+        (
+            ffi::IRConstTag::Ico_U1,
+            ffi::_IRConst__bindgen_ty_1 { U1: 1 },
+            IRConst::U1(true),
+        ),
+        (
+            ffi::IRConstTag::Ico_U8,
+            ffi::_IRConst__bindgen_ty_1 { U8: 0x7a },
+            IRConst::U8(0x7a),
+        ),
+        (
+            ffi::IRConstTag::Ico_U16,
+            ffi::_IRConst__bindgen_ty_1 { U16: 0x7aab },
+            IRConst::U16(0x7aab),
+        ),
+        (
+            ffi::IRConstTag::Ico_U32,
+            ffi::_IRConst__bindgen_ty_1 { U32: 0x7aab_cdee },
+            IRConst::U32(0x7aab_cdee),
+        ),
+        (
+            ffi::IRConstTag::Ico_U64,
+            ffi::_IRConst__bindgen_ty_1 {
+                U64: 0xdead_beef_0000_0001,
+            },
+            IRConst::U64(0xdead_beef_0000_0001),
+        ),
+        (
+            ffi::IRConstTag::Ico_F32,
+            ffi::_IRConst__bindgen_ty_1 { F32: 1.5 },
+            IRConst::F32(1.5),
+        ),
+        (
+            ffi::IRConstTag::Ico_F32i,
+            // Bit pattern of 1.5f32.
+            ffi::_IRConst__bindgen_ty_1 { F32i: 0x3fc0_0000 },
+            IRConst::F32(1.5),
+        ),
+        (
+            ffi::IRConstTag::Ico_F64,
+            ffi::_IRConst__bindgen_ty_1 { F64: 1.5 },
+            IRConst::F64(1.5),
+        ),
+        (
+            ffi::IRConstTag::Ico_F64i,
+            // Bit pattern of 1.5f64.
+            ffi::_IRConst__bindgen_ty_1 {
+                F64i: 0x3ff8_0000_0000_0000,
+            },
+            IRConst::F64(1.5),
+        ),
+        (
+            ffi::IRConstTag::Ico_V128,
+            ffi::_IRConst__bindgen_ty_1 { V128: 0x0001 },
+            IRConst::V128(expand_v128(0x0001)),
+        ),
+        (
+            ffi::IRConstTag::Ico_V256,
+            ffi::_IRConst__bindgen_ty_1 { V256: 0x0000_0001 },
+            IRConst::V256(expand_v256(0x0000_0001)),
+        ),
+    ];
+
+    assert_eq!(
+        cases.len(),
+        VENDORED_ICO_CONST_TAGS.len(),
+        "add a case for every tag in VENDORED_ICO_CONST_TAGS"
+    );
+
+    for (tag, payload, expected) in cases {
+        let c = ffi::IRConst {
+            tag: *tag,
+            Ico: *payload,
+        };
+        let got = unsafe { marshal_const(&c) };
+        assert_eq!(got, *expected, "tag {tag:?} did not marshal as expected");
+    }
 }
