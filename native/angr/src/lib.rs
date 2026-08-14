@@ -254,6 +254,8 @@ test_submod!("silent_default_tests.rs" => silent_default_tests);
 pub mod fuzz_api {
     #[cfg(feature = "vex-engine")]
     pub use crate::procedures::format_common::{parse_length_modifier, parse_width_digits};
+    #[cfg(feature = "vex-engine")]
+    pub use crate::procedures::getopt::fuzz_exports::parse_optstring;
     #[cfg(feature = "vex-engine-z3")]
     pub use crate::symbolic::fuzz_exports::{
         parse_binary_to_bytes, parse_decimal_to_bytes, parse_hex_to_bytes,
