@@ -147,6 +147,27 @@ const VENDORED_ILGOP_TAGS: &[&str] = &[
     "ILGop_8Sto32",
 ];
 
+/// Scans `header` for every distinct identifier starting with `prefix`
+/// (alphanumeric/`_` run immediately following the match), sorted and
+/// deduped. Shared by the vendored-header completeness tripwires below (one
+/// per `Ixx_`-style tag family) so a new family adds a call, not a copy of
+/// the scan loop.
+fn scan_vendored_header_tags<'h>(header: &'h str, prefix: &str) -> Vec<&'h str> {
+    let mut found: Vec<&str> = Vec::new();
+    let mut rest = header;
+    while let Some(pos) = rest.find(prefix) {
+        let tail = &rest[pos..];
+        let end = tail
+            .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+            .unwrap_or(tail.len());
+        found.push(&tail[..end]);
+        rest = &tail[end..];
+    }
+    found.sort_unstable();
+    found.dedup();
+    found
+}
+
 /// Tripwire for a VEX pin bump that grows `IRLoadGOp`.
 ///
 /// The two lifting paths diverge here on purpose: `pyvex_bridge::parse_loadg_op`
@@ -161,19 +182,7 @@ const VENDORED_ILGOP_TAGS: &[&str] = &[
 #[test]
 fn test_vendored_header_ilgop_variant_set_is_unchanged() {
     let header = include_str!("../../vendor/pyvex_ffi.h");
-
-    let mut found: Vec<&str> = Vec::new();
-    let mut rest = header;
-    while let Some(pos) = rest.find("ILGop_") {
-        let tail = &rest[pos..];
-        let end = tail
-            .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
-            .unwrap_or(tail.len());
-        found.push(&tail[..end]);
-        rest = &tail[end..];
-    }
-    found.sort_unstable();
-    found.dedup();
+    let found = scan_vendored_header_tags(header, "ILGop_");
 
     let mut expected: Vec<&str> = VENDORED_ILGOP_TAGS.to_vec();
     expected.sort_unstable();
@@ -273,19 +282,7 @@ const VENDORED_ICO_CONST_TAGS: &[&str] = &[
 #[test]
 fn test_vendored_header_ico_const_tag_set_is_unchanged() {
     let header = include_str!("../../vendor/pyvex_ffi.h");
-
-    let mut found: Vec<&str> = Vec::new();
-    let mut rest = header;
-    while let Some(pos) = rest.find("Ico_") {
-        let tail = &rest[pos..];
-        let end = tail
-            .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
-            .unwrap_or(tail.len());
-        found.push(&tail[..end]);
-        rest = &tail[end..];
-    }
-    found.sort_unstable();
-    found.dedup();
+    let found = scan_vendored_header_tags(header, "Ico_");
 
     let mut expected: Vec<&str> = VENDORED_ICO_CONST_TAGS.to_vec();
     expected.sort_unstable();
