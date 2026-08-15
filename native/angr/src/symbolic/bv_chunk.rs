@@ -85,14 +85,32 @@ where
     Ok(())
 }
 
+/// Little-endian byte `i` of a `u128` payload, and `0` once `i` reaches
+/// [`MAX_CONCRETE_CHUNK`].
+///
+/// The bare `(val >> (i * 8)) as u8` this replaces is only correct below the
+/// payload: at `i >= 16` the shift amount reaches 128, which panics under
+/// `overflow-checks` (the `release-checked` profile CI runs `cargo test` with)
+/// and otherwise wraps mod 128, repeating the low bytes in a 16-byte cycle —
+/// the memory-corruption shape of angr-5aj8 and the register shape of
+/// angr-0jh0j.1/.2. Zero is the *correct* answer there, not a fallback: a
+/// `Concrete` wider than 128 bits stores only these low bits and the ones above
+/// them are implicitly zero (see `value_ops::bits_beyond_storage`).
+pub fn u128_le_byte(val: u128, i: usize) -> u8 {
+    if i >= MAX_CONCRETE_CHUNK {
+        return 0;
+    }
+    (val >> (i * 8)) as u8
+}
+
 /// Unpack the low `size` bytes of a `u128` into a little-endian byte vector.
 ///
-/// `size` must be `<= MAX_CONCRETE_CHUNK`; for `i >= 16` the `val >> (i * 8)`
-/// shift wraps mod 128 and would repeat earlier bytes (callers that need wider
-/// reads chunk first — see [`load_concrete_bytes_chunked`]). Read-side
-/// counterpart of the pack loop in [`store_concrete_bytes_chunked`].
+/// Callers that need more than `MAX_CONCRETE_CHUNK` bytes of *data* must chunk
+/// first (see [`load_concrete_bytes_chunked`]) — a single `u128` has no more to
+/// give, and per [`u128_le_byte`] every further byte here is zero.
+/// Read-side counterpart of the pack loop in [`store_concrete_bytes_chunked`].
 pub fn u128_to_le_bytes(val: u128, size: usize) -> Vec<u8> {
-    (0..size).map(|i| (val >> (i * 8)) as u8).collect()
+    (0..size).map(|i| u128_le_byte(val, i)).collect()
 }
 
 /// Read `size` bytes at `addr` in `<= 16`-byte chunks via the caller-supplied

@@ -949,6 +949,73 @@ fn x87_control_registers_round_trip_through_register_names() {
     }
 }
 
+/// The name-keyed `get_reg`/`put_reg` path reaches registers the u128
+/// `register_names()` channel deliberately excludes — x86/amd64 `fpreg` is 64
+/// bytes — and used to compose them straight into a `u128`. Reading shifted
+/// past bit 127 (panic under `overflow-checks`, 16-byte-cycle garbage
+/// otherwise, angr-0jh0j.1) and writing did the same in reverse
+/// (angr-0jh0j.2). Neither had a test: the sibling
+/// `x87_control_registers_round_trip_through_register_names` only asserts
+/// fpreg's *absence* from `register_names()`.
+#[test]
+fn fpreg_wider_than_u128_reads_and_writes_without_shift_overflow() {
+    let ctx = SymContext::new();
+    for arch in [
+        arch_from_name("AMD64").unwrap(),
+        arch_from_name("X86").unwrap(),
+    ] {
+        let arch_name = arch.name();
+        let size = arch.register_size("fpreg").unwrap();
+        assert!(
+            size as usize > MAX_CONCRETE_CHUNK,
+            "{arch_name}: fpreg must be wider than a u128 for this test to bite"
+        );
+        let mut regs = RegisterFile::new(arch);
+
+        // Write: a u128-representable value into a 512-bit register. The bytes
+        // above the payload are the value's own implicit zeros, not a wrapped
+        // copy of the low 16.
+        assert!(
+            regs.put_reg("fpreg", RustBV::concrete(0xdead_beef, size * 8)),
+            "{arch_name}: put_reg(fpreg) rejected"
+        );
+        let offset = regs.arch().register_offset("fpreg").unwrap() as usize;
+        let stored = &regs.data[offset..offset + size as usize];
+        assert_eq!(
+            &stored[..4],
+            &[0xef, 0xbe, 0xad, 0xde],
+            "{arch_name}: fpreg low bytes"
+        );
+        assert!(
+            stored[4..].iter().all(|&b| b == 0),
+            "{arch_name}: bytes above the u128 payload must be zero, not a \
+             wrapped repeat of the low 16"
+        );
+
+        // Read: exact, and not representable as a u128 — which is what makes
+        // the Python `get_register` surface report a clean error instead of a
+        // truncated number.
+        let got = regs.get_reg("fpreg", &ctx).expect("register readable");
+        assert_eq!(got.width(), size * 8, "{arch_name}: fpreg read width");
+        assert_eq!(
+            got.as_u128(),
+            None,
+            "{arch_name}: a >128-bit read has no concrete representation"
+        );
+        // Byte 0 of the composed value is still the byte that was written.
+        assert_eq!(
+            got.extract(7, 0, &ctx).as_u128(),
+            Some(0xef),
+            "{arch_name}: fpreg byte 0 survives composition"
+        );
+        assert_eq!(
+            got.extract(size * 8 - 1, size * 8 - 8, &ctx).as_u128(),
+            Some(0),
+            "{arch_name}: fpreg top byte"
+        );
+    }
+}
+
 /// `RegisterFile::merge` with symbolic values of *different* widths at the
 /// same offset — one path wrote `eax` (32-bit), the other `rax` (64-bit).
 /// The merge used to keep `self`'s value and silently drop `other`'s, so the

@@ -174,9 +174,18 @@ def _known_missing_reason(rust_arch: str, name: str) -> str | None:
     return None
 
 
-# Wider than any register we probe; set_register truncates to Rust's width, so
-# an all-ones write paints exactly register_size(name) bytes with 0xFF.
+# set_register truncates to Rust's width, so an all-ones write paints exactly
+# min(register_size(name), _PROBE_MAX_BYTES) bytes with 0xFF.
 _ALL_ONES = (1 << 128) - 1
+
+# The probe's reach, in bytes. ``set_register`` takes a ``u128``, so the value
+# it writes has at most 16 non-zero bytes no matter how wide the register is —
+# a 64-byte register like amd64/x86 ``fpreg`` keeps implicit zeros above the
+# payload, which a fresh state already holds, so the changed-byte span stops at
+# 16. This used to read 64 because the byte-store loop shift-wrapped mod 128 and
+# repeated the low 16 bytes four times (angr-0jh0j.2); the span shrinking is the
+# fix landing, not the offset table drifting.
+_PROBE_MAX_BYTES = 16
 
 
 @functools.cache
@@ -247,9 +256,11 @@ def test_register_offset_and_size_match_archinfo(rust_arch, arch_id, name, arch_
         )
         return
 
-    assert probed == (arch_offset, arch_size), (
+    expected = (arch_offset, min(arch_size, _PROBE_MAX_BYTES))
+    assert probed == expected, (
         f"{rust_arch}.{name}: Rust table says offset/size {probed}, "
-        f"archinfo {arch_id} says {(arch_offset, arch_size)}. "
+        f"archinfo {arch_id} says {(arch_offset, arch_size)} "
+        f"(probe reach {expected}). "
         "The Rust register table has drifted from the VEX guest-state layout."
     )
 
@@ -308,3 +319,34 @@ def test_guest_state_size_covers_every_archinfo_register(rust_arch, arch_id):
         f"{rust_arch} guest state is {actual} bytes but archinfo {arch_id} "
         f"places registers up to byte {needed}; the tail registers are unreachable."
     )
+
+
+@pytest.mark.parametrize("rust_arch", ["amd64", "x86"])
+def test_register_wider_than_u128_reads_and_writes_cleanly(rust_arch):
+    """``fpreg`` (64 B) survives the name-keyed accessors without corruption.
+
+    ``fpreg`` is deliberately absent from the bulk ``register_names()`` u128
+    export channel for its width, but ``set_register`` / ``get_register``
+    resolve the offset table directly and reached it anyway. Reading composed
+    64 bytes into a ``u128``, shifting past bit 127 — a panic under the
+    ``release-checked`` profile CI runs ``cargo test`` with, 16-byte-cycle
+    garbage otherwise (angr-0jh0j.1); writing did the same in reverse and
+    painted the low 16 bytes four times across the register (angr-0jh0j.2).
+
+    Contract now: the write stores the value it was given (implicit zeros above
+    the ``u128`` payload, not a wrapped repeat), and the read declines with a
+    clean ``ValueError`` because no ``u128`` can carry 512 bits back to Python.
+    """
+    state = RustSimState(rust_arch)
+    offset, size = archinfo.arch_from_id(ARCHES[rust_arch]).registers["fpreg"]
+    assert size > _PROBE_MAX_BYTES, "fpreg must be wider than a u128 for this test to bite"
+
+    state.set_register("fpreg", _ALL_ONES)
+    raw = bytes(state.get_registers_raw())[offset : offset + size]
+    assert raw[:_PROBE_MAX_BYTES] == b"\xff" * _PROBE_MAX_BYTES
+    assert raw[_PROBE_MAX_BYTES:] == bytes(size - _PROBE_MAX_BYTES), (
+        "bytes above the u128 payload must stay zero, not repeat the low 16"
+    )
+
+    with pytest.raises(ValueError, match="cannot read register fpreg"):
+        state.get_register("fpreg")

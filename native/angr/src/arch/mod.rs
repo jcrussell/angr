@@ -36,7 +36,7 @@ pub(crate) use calling_conventions::{
 pub(crate) use mips::{MIPS32, MIPS64};
 pub(crate) use x86::X86;
 
-use crate::symbolic::RustBV;
+use crate::symbolic::{MAX_CONCRETE_CHUNK, RustBV, u128_le_byte};
 use crate::vex::VexArch;
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
@@ -387,13 +387,21 @@ impl TryFrom<RegisterFileData> for RegisterFile {
 
 /// Compose little-endian `bytes` (lowest index = LSB) into a `u128`.
 ///
-/// Callers are responsible for passing at most 16 bytes; a longer slice would
-/// shift past the width of a `u128` and the excess is dropped. Every in-tree
-/// caller slices a register-sized span, which is at most 8 bytes on every
-/// supported arch (angr-sqfj8.7).
+/// Callers must pass at most [`MAX_CONCRETE_CHUNK`] bytes: a longer slice
+/// shifts past the width of a `u128`, which panics under `overflow-checks` and
+/// otherwise wraps the shift amount mod 128, folding the excess bytes back over
+/// the low ones. The merge scan slices `arch.bits() / 8`, at most 8 bytes on
+/// every supported arch (angr-sqfj8.7); `RegisterFile::get` used to be a
+/// counterexample — `fpreg` is 64 bytes wide — and now routes any register past
+/// the cap through `compose_range` instead (angr-0jh0j.1).
 fn le_bytes_to_u128(bytes: &[u8]) -> u128 {
+    debug_assert!(
+        bytes.len() <= MAX_CONCRETE_CHUNK,
+        "le_bytes_to_u128 takes at most {MAX_CONCRETE_CHUNK} bytes, got {}",
+        bytes.len()
+    );
     let mut value: u128 = 0;
-    for (i, &byte) in bytes.iter().enumerate() {
+    for (i, &byte) in bytes.iter().take(MAX_CONCRETE_CHUNK).enumerate() {
         value |= (byte as u128) << (i * 8);
     }
     value
@@ -585,6 +593,22 @@ impl RegisterFile {
             return RustBV::zero(size * 8);
         }
 
+        // A `Concrete` is backed by a `u128`, so a register wider than
+        // `MAX_CONCRETE_CHUNK` has no concrete representation at all: composing
+        // its bytes here would shift past bit 127 (panic under
+        // `overflow-checks`, silent 16-byte-cycle garbage otherwise) and the
+        // result could not hold the upper bytes even if it did not. x86/amd64's
+        // `fpreg` is 64 bytes and reachable by name through `get_reg`, which is
+        // how this went uncaught while the bulk `register_names()` export
+        // excluded fpreg for the same width reason (angr-0jh0j.1). Compose
+        // byte-wise instead: `concat` declines to fold past 128 bits, so the
+        // value stays exact as a `Concat` tree — and `as_u128()` then reports
+        // `None`, giving name-keyed Python callers the clean "cannot read
+        // register fpreg" they already expect.
+        if size as usize > MAX_CONCRETE_CHUNK {
+            return self.compose_range(offset, size, ctx);
+        }
+
         RustBV::concrete(le_bytes_to_u128(&self.data[start..end]), size * 8)
     }
 
@@ -625,7 +649,7 @@ impl RegisterFile {
         let data = Arc::make_mut(&mut self.data);
         for i in 0..size {
             if start + i < len {
-                data[start + i] = (v >> (i * 8)) as u8;
+                data[start + i] = u128_le_byte(v, i);
             }
         }
     }
@@ -701,7 +725,15 @@ impl RegisterFile {
             return;
         }
 
-        // Store concrete value
+        // Store concrete value.
+        //
+        // `size` may exceed `MAX_CONCRETE_CHUNK` — `set_register("fpreg", ..)`
+        // builds a 512-bit `Concrete` from a `u128` — so the byte extraction
+        // goes through `u128_le_byte`, which yields the implicit zeros above the
+        // payload instead of shift-wrapping the low 16 bytes back over the
+        // remaining 48 (angr-0jh0j.2). Those zeros are the value being written,
+        // not a truncation: a `Concrete` wider than 128 bits *is* its low bits
+        // zero-extended.
         if let Some(v) = value.as_u128() {
             let start = offset as usize;
             let end = start + size as usize;
@@ -709,7 +741,7 @@ impl RegisterFile {
             if end <= self.data.len() {
                 let data = Arc::make_mut(&mut self.data);
                 for i in 0..size as usize {
-                    data[start + i] = (v >> (i * 8)) as u8;
+                    data[start + i] = u128_le_byte(v, i);
                 }
                 // Clear any symbolic overlay at this offset
                 self.symbolic.remove(&offset);
