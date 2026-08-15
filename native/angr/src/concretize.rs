@@ -121,8 +121,20 @@ impl ConcretizationResult {
 /// choice.
 pub fn strided_addrs(base: u64, stride: u64, count: u64) -> Vec<u64> {
     (0..count)
-        .map(|i| base.wrapping_add(i.wrapping_mul(stride)))
+        .map(|i| strided_addr_at(base, stride, i))
         .collect()
+}
+
+/// The `i`-th address of a [`ConcretizationResult::Strided`] pattern —
+/// `base + i * stride`, wrapping for the reason [`strided_addrs`] documents.
+///
+/// Callers that walk the pattern by index instead of materializing the whole
+/// list (`SymbolicMemory::build_strided_ite_tree`, which recurses over a
+/// balanced index range) go through this so both spellings expand the same
+/// pattern to the same addresses.
+#[inline]
+pub fn strided_addr_at(base: u64, stride: u64, i: u64) -> u64 {
+    base.wrapping_add(i.wrapping_mul(stride))
 }
 
 /// Candidate count `K` for a concretization result, used by the

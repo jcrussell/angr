@@ -297,11 +297,10 @@ impl SymbolicMemory {
             if let Some(&(base_addr, _width_bits)) = self.symbolic_spans.get(&addr)
                 && let Some(sym) = self.symbolic_objects.get(&base_addr)
             {
-                let base_offset = addr - base_addr;
                 let sym_bytes = sym.width() / 8;
-                if base_offset < sym_bytes as u64 && base_offset + size as u64 <= sym_bytes as u64 {
+                if addr.range_in(size as u64, base_addr, sym_bytes as u64) {
                     let total_bits = sym.width();
-                    let off_bits = base_offset as u32 * 8;
+                    let off_bits = (addr - base_addr) as u32 * 8;
                     // BE: bytes [off, off+size) of the wide BV occupy bits
                     //     [total-1-off_bits : total-off_bits-size*8].
                     // LE: same byte range occupies bits
@@ -897,7 +896,7 @@ impl SymbolicMemory {
             && let Some(sym) = self.symbolic_objects.get(&base_addr)
         {
             let sym_size = sym.width() / 8;
-            if addr + size as u64 <= base_addr + sym_size as u64 {
+            if addr.range_in(size as u64, base_addr, sym_size as u64) {
                 return Some((base_addr, sym));
             }
         }
@@ -914,7 +913,7 @@ impl SymbolicMemory {
         // stale (e.g. test setups that bypass `import_symbolic_value`).
         for (&sym_addr, sym_val) in &self.symbolic_objects {
             let sym_size = sym_val.width() / 8;
-            if sym_addr <= addr && addr + size as u64 <= sym_addr + sym_size as u64 {
+            if addr.range_in(size as u64, sym_addr, sym_size as u64) {
                 return Some((sym_addr, sym_val));
             }
         }

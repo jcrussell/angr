@@ -79,6 +79,40 @@ impl Address {
     pub const fn page_offset(self) -> u16 {
         (self.0 & PAGE_MASK) as u16
     }
+
+    /// Byte offset of `self` inside the region `[base, base + region_size)`,
+    /// or `None` when `self` lies outside it.
+    ///
+    /// The wrapping-distance containment test (bd memory
+    /// `invariant-address-containment-wrapping-distance`): the natural
+    /// spelling `self >= base && self < base + region_size` forms
+    /// `base + region_size`, which wraps for a region abutting the top of the
+    /// guest address space — and with `[profile.release]` overflow-checks off
+    /// that silently reports *every* in-region address as outside. Comparing
+    /// the wrapping distance instead never forms that sum and agrees with the
+    /// naive form for every non-wrapping region.
+    #[inline]
+    pub fn offset_in(self, base: Address, region_size: u64) -> Option<u64> {
+        // overflow-ok: `Sub<Address> for Address` is `wrapping_sub` — the
+        // wrapping distance is exactly what this test wants.
+        let off = self - base;
+        (off < region_size).then_some(off)
+    }
+
+    /// Whether `[self, self + size)` lies entirely inside
+    /// `[base, base + region_size)`.
+    ///
+    /// The range form of [`offset_in`](Self::offset_in), for the "is this load
+    /// covered by that wider symbolic object?" test. A zero-`size` access is
+    /// contained iff its start is.
+    #[inline]
+    pub fn range_in(self, size: u64, base: Address, region_size: u64) -> bool {
+        match self.offset_in(base, region_size) {
+            // overflow-ok: `offset_in` returned `Some`, so `off < region_size`.
+            Some(off) => size <= region_size - off,
+            None => false,
+        }
+    }
 }
 
 impl From<u64> for Address {
@@ -130,3 +164,5 @@ impl std::fmt::Display for Address {
         write!(f, "0x{:x}", self.0)
     }
 }
+
+test_submod!("address_containment_tests.rs" => address_containment_tests);

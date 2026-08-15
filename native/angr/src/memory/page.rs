@@ -173,6 +173,8 @@ impl PageBitmap {
             let mut bits = word;
             while bits != 0 {
                 let bit = bits.trailing_zeros() as u16;
+                // overflow-ok: `word_idx < BITMAP_WORDS` and `bit < 64`, so the
+                // sum is a page offset < PAGE_SIZE — far below `u16::MAX`.
                 offsets.push(base + bit);
                 bits &= bits - 1; // Clear lowest set bit
             }
@@ -306,6 +308,30 @@ pub struct MemoryPage {
 }
 
 impl MemoryPage {
+    /// End offset of the page-local range `[offset, offset + len)`, clamped to
+    /// the page end.
+    ///
+    /// The five accessors below (`load_concrete`, `store_concrete`,
+    /// `mark_symbolic`, `clear_symbolic`, `mark_multi`/`clear_multi`) each
+    /// open-coded `(offset as usize + len).min(PAGE_SIZE as usize)`, and the
+    /// single-byte pair spelled it `offset + 1` in `u16` — which *wraps* to 0
+    /// for `offset == u16::MAX`, turning a `set_range`/`clear_range` into a
+    /// silent no-op rather than the out-of-range panic the bitmap index would
+    /// otherwise raise (angr-xloth.4). Widening to `usize` first makes the sum
+    /// exact for any `u16` offset and any real slice length, and the clamp
+    /// makes the cast back to `u16` lossless.
+    ///
+    /// `offset` past the page end yields an end *below* `offset`, i.e. an empty
+    /// range for the bitmap helpers and a panicking slice index for `data` —
+    /// both matching the pre-existing release behaviour of a caller that
+    /// violates the `debug_assert!`s.
+    #[inline]
+    fn clamped_end(offset: u16, len: usize) -> u16 {
+        (offset as usize)
+            .saturating_add(len)
+            .min(PAGE_SIZE as usize) as u16
+    }
+
     /// Create a new zeroed page.
     pub fn new(base_addr: u64, permissions: Permission) -> Self {
         MemoryPage {
@@ -421,26 +447,26 @@ impl MemoryPage {
     /// Load bytes from this page (concrete only).
     pub fn load_concrete(&self, offset: u16, size: u16) -> Vec<u8> {
         let start = offset as usize;
-        let end = (start + size as usize).min(PAGE_SIZE as usize);
+        let end = Self::clamped_end(offset, size as usize) as usize;
         self.data[start..end].to_vec()
     }
 
     /// Store bytes to this page (concrete).
     pub fn store_concrete(&mut self, offset: u16, bytes: &[u8]) {
         debug_assert!(
-            (offset as usize + bytes.len()) <= PAGE_SIZE as usize,
+            (offset as usize).saturating_add(bytes.len()) <= PAGE_SIZE as usize,
             "store_concrete: offset {} + len {} exceeds PAGE_SIZE {}",
             offset,
             bytes.len(),
             PAGE_SIZE
         );
+        let loop_end = Self::clamped_end(offset, bytes.len());
         // Copy-on-write: if shared, make a unique copy
         let data = Arc::make_mut(&mut self.data);
         let start = offset as usize;
-        let end = (start + bytes.len()).min(PAGE_SIZE as usize);
-        data[start..end].copy_from_slice(&bytes[..(end - start)]);
+        let end = loop_end as usize;
+        data[start..end].copy_from_slice(&bytes[..end.saturating_sub(start)]);
 
-        let loop_end = (offset as usize + bytes.len()).min(PAGE_SIZE as usize) as u16;
         // Clear symbolic bitmap bits for overwritten bytes
         self.symbolic_bitmap.clear_range(offset, loop_end);
         // A concrete overwrite also clears any Multi-cell marker — the cell
@@ -453,10 +479,10 @@ impl MemoryPage {
     /// Mark bytes as symbolic.
     pub fn mark_symbolic(&mut self, offset: u16, size: u16) {
         debug_assert!(
-            (offset as usize + size as usize) <= PAGE_SIZE as usize,
+            (offset as usize).saturating_add(size as usize) <= PAGE_SIZE as usize,
             "mark_symbolic: offset {offset} + size {size} exceeds PAGE_SIZE {PAGE_SIZE}"
         );
-        let loop_end = ((offset as usize) + (size as usize)).min(PAGE_SIZE as usize) as u16;
+        let loop_end = Self::clamped_end(offset, size as usize);
         self.symbolic_bitmap.set_range(offset, loop_end);
     }
 
@@ -469,10 +495,10 @@ impl MemoryPage {
     /// "symbolic bytes not fully tracked". Drops the bitmap when empty.
     pub fn clear_symbolic(&mut self, offset: u16, size: u16) {
         debug_assert!(
-            (offset as usize + size as usize) <= PAGE_SIZE as usize,
+            (offset as usize).saturating_add(size as usize) <= PAGE_SIZE as usize,
             "clear_symbolic: offset {offset} + size {size} exceeds PAGE_SIZE {PAGE_SIZE}"
         );
-        let loop_end = ((offset as usize) + (size as usize)).min(PAGE_SIZE as usize) as u16;
+        let loop_end = Self::clamped_end(offset, size as usize);
         self.symbolic_bitmap.clear_range(offset, loop_end);
     }
 
@@ -491,7 +517,8 @@ impl MemoryPage {
             (offset as usize) < PAGE_SIZE as usize,
             "mark_multi: offset {offset} out of range"
         );
-        self.multi_bitmap.set_range(offset, offset + 1);
+        self.multi_bitmap
+            .set_range(offset, Self::clamped_end(offset, 1));
     }
 
     /// Check if this page has any Multi bytes.
@@ -516,7 +543,8 @@ impl MemoryPage {
     /// `SymbolicMemory::multi_objects`. Drops the page-level bitmap when
     /// it becomes empty.
     pub fn clear_multi(&mut self, offset: u16) {
-        self.multi_bitmap.clear_range(offset, offset + 1);
+        self.multi_bitmap
+            .clear_range(offset, Self::clamped_end(offset, 1));
     }
 
     /// Fork this page (O(1) for concrete pages, bitmap clone for symbolic).

@@ -76,7 +76,7 @@
 //! untrusted address needs a reviewed, reasoned `#[allow]`.
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
-use crate::concretize::{AddressConcretizer, ConcretizationResult};
+use crate::concretize::{AddressConcretizer, ConcretizationResult, strided_addrs};
 use crate::symbolic::{
     RustBV, SymContext, record_concretize_disjunction, record_mem_ite_depth,
     record_mem_lazy_page_fault, record_mem_store, record_mem_store_symbolic_addr,
@@ -439,7 +439,7 @@ impl SymbolicMemory {
         count: u64,
         ctx: &SymContext,
     ) -> Result<(), MemoryError> {
-        let addrs: Vec<u64> = (0..count).map(|i| base + i * stride).collect();
+        let addrs = strided_addrs(base, stride, count);
         self.store_eager_ite_candidates(addr_expr, value, &addrs, ctx)
     }
 
@@ -526,7 +526,7 @@ impl SymbolicMemory {
                 count,
             } => {
                 let (base, stride, count) = (*base, *stride, *count);
-                let addrs: Vec<u64> = (0..count).map(|i| base + i * stride).collect();
+                let addrs = strided_addrs(base, stride, count);
                 self.install_multi_for_candidates_safe(&addr, &value, &addrs, ctx)?;
                 Ok(Some(result))
             }
@@ -575,7 +575,7 @@ impl SymbolicMemory {
                 stride,
                 count,
             } => {
-                let addrs: Vec<u64> = (0..*count).map(|i| base + i * stride).collect();
+                let addrs = strided_addrs(*base, *stride, *count);
                 self.install_multi_for_candidates_safe(addr, &value, &addrs, ctx)
             }
             // Return error so caller can fall back to Python's memory model,
@@ -897,7 +897,7 @@ impl SymbolicMemory {
                 count,
             } => {
                 let (base, stride, count) = (*base, *stride, *count);
-                let addrs_v: Vec<u64> = (0..count).map(|i| base + i * stride).collect();
+                let addrs_v = strided_addrs(base, stride, count);
                 self.install_multi_for_candidates(&addr, &value, &addrs_v, ctx)?;
                 Ok(Some(result))
             }

@@ -15,6 +15,7 @@
 //! parent module, so callers in `memory/mod.rs` keep using `self.method(...)`.
 use std::sync::Arc;
 
+use crate::concretize::strided_addr_at;
 use crate::symbolic::{RustBV, SymContext};
 
 use super::{MemoryError, SymbolicMemory};
@@ -113,6 +114,7 @@ impl SymbolicMemory {
 
         // Build the balanced tree recursively
         let pattern = StridedPattern { base, stride, size };
+        // overflow-ok: `count == 0` is rejected above, so `count - 1 >= 0`.
         self.build_strided_ite_tree(addr_expr, &pattern, 0, count - 1, ctx)
     }
 
@@ -136,13 +138,13 @@ impl SymbolicMemory {
 
         // Base case: single element
         if lo == hi {
-            let addr = base + lo * stride;
+            let addr = strided_addr_at(base, stride, lo);
             return self.load_concrete_lazy(addr, size, ctx);
         }
 
         // Split at midpoint for balanced tree
         let mid = (lo + hi) / 2;
-        let mid_addr = base + mid * stride;
+        let mid_addr = strided_addr_at(base, stride, mid);
 
         // Build condition: addr <= mid_addr
         let mid_const = RustBV::concrete(mid_addr as u128, addr_expr.width());

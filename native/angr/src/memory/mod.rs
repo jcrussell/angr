@@ -37,7 +37,7 @@ use std::cell::RefCell;
 use im::OrdMap;
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::concretize::{AddressConcretizer, ConcretizationResult};
+use crate::concretize::{AddressConcretizer, ConcretizationResult, strided_addrs};
 use crate::symbolic::{RustBV, SymContext};
 use crate::vex::Endness;
 
@@ -903,8 +903,8 @@ impl SymbolicMemory {
                     stride,
                     count,
                 } => {
-                    for i in 0..count {
-                        self.materialize_pending_ite(base + i * stride, &pw, ctx)?;
+                    for candidate in strided_addrs(base, stride, count) {
+                        self.materialize_pending_ite(candidate, &pw, ctx)?;
                     }
                 }
                 ConcretizationResult::TooLarge { .. } | ConcretizationResult::Failed(_) => {

@@ -6,20 +6,13 @@
 # which one applies) or documenting a genuine non-risk with an
 # `overflow-ok:` comment are both preferable; growing it needs a reason in
 # the commit message.
-native/angr/src/memory/ite_builder.rs	build_strided_ite_tree	base+lo
-native/angr/src/memory/ite_builder.rs	build_strided_ite_tree	base+mid
-native/angr/src/memory/ite_builder.rs	load_strided_balanced	count-1
 native/angr/src/memory/load.rs	assemble_load_with_multi	addr+i
 native/angr/src/memory/load.rs	assemble_load_with_multi	byte_addr-base_addr
-native/angr/src/memory/load.rs	containing_wider_sym	addr+size
-native/angr/src/memory/load.rs	containing_wider_sym	base_addr+sym_size
-native/angr/src/memory/load.rs	containing_wider_sym	sym_addr+sym_size
 native/angr/src/memory/load.rs	extract_byte_lane	byte_offset+1
 native/angr/src/memory/load.rs	extract_byte_lane	total_bits-byte_offset
 native/angr/src/memory/load.rs	load_concrete_common	addr+i
 native/angr/src/memory/load.rs	load_concrete_common	addr-base_addr
 native/angr/src/memory/load.rs	load_concrete_common	addr-sym_addr
-native/angr/src/memory/load.rs	load_concrete_common	base_offset+size
 native/angr/src/memory/load.rs	load_concrete_common	off_bits+size
 native/angr/src/memory/load.rs	load_concrete_common	offset+i
 native/angr/src/memory/load.rs	load_concrete_common	total_bits-size
@@ -33,21 +26,11 @@ native/angr/src/memory/merge.rs	merge	page_base+u64
 native/angr/src/memory/mod.rs	bytes_all_marked_symbolic	addr+i
 native/angr/src/memory/mod.rs	compute_wider_load_fingerprint	addr+i
 native/angr/src/memory/mod.rs	end_page_inclusive	size-1
-native/angr/src/memory/mod.rs	flush_pending_writes	base+i
 native/angr/src/memory/mod.rs	map_data	current_addr+bytes_in_page
 native/angr/src/memory/mod.rs	map_data	usize-page_offset
 native/angr/src/memory/mod.rs	read_concrete_bytes_for_lift	max_size-result.len
 native/angr/src/memory/mod.rs	read_concrete_bytes_for_lift	offset_in_page+i
 native/angr/src/memory/multi.rs	flush_multi_cells	start_addr+b
-native/angr/src/memory/page.rs	clear_multi	offset+1
-native/angr/src/memory/page.rs	clear_symbolic	usize+size
-native/angr/src/memory/page.rs	load_concrete	start+size
-native/angr/src/memory/page.rs	mark_multi	offset+1
-native/angr/src/memory/page.rs	mark_symbolic	usize+size
-native/angr/src/memory/page.rs	set_offsets	base+bit
-native/angr/src/memory/page.rs	store_concrete	end-start
-native/angr/src/memory/page.rs	store_concrete	start+bytes.len
-native/angr/src/memory/page.rs	store_concrete	usize+bytes.len
 native/angr/src/memory/store.rs	clear_symbolic_bitmap_range	PAGE_SIZE-page_offset
 native/angr/src/memory/store.rs	clear_symbolic_bitmap_range	end-cur
 native/angr/src/memory/store.rs	store_concrete	PAGE_SIZE-page_offset
@@ -57,8 +40,4 @@ native/angr/src/memory/store.rs	store_concrete	addr+old_sym_bytes
 native/angr/src/memory/store.rs	store_concrete	addr+size
 native/angr/src/memory/store.rs	store_concrete	current_addr+bytes_in_page
 native/angr/src/memory/store.rs	store_concrete_le_bytes_automap_internal	addr+off
-native/angr/src/memory/store.rs	store_strided	base+i
-native/angr/src/memory/store.rs	store_symbolic_unified	base+i
-native/angr/src/memory/store.rs	store_symbolic_unified_multi	base+i
-native/angr/src/memory/store.rs	store_with_concretization	base+i
 native/angr/src/memory/symbolic_objects.rs	import_symbolic_value	addr+i
