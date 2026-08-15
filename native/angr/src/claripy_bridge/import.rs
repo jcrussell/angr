@@ -11,7 +11,8 @@ use pyo3::prelude::*;
 use pyo3::types::PyTuple;
 
 use crate::symbolic::{
-    RustBV, RustBVHandle, RustSymbolTable, SymContext, SymbolKind, check_extract_bounds,
+    RustBV, RustBVHandle, RustSymbolTable, SymContext, SymbolKind, check_bv_width,
+    check_extract_bounds,
 };
 
 use super::cache::{
@@ -42,6 +43,14 @@ pub(crate) fn try_handle_to_rustbv(
 /// Try to extract a concrete BVV value directly from a claripy AST.
 /// Returns Some((value, width)) if the AST is a BVV, None otherwise.
 /// This is much cheaper than full claripy_to_rustbv conversion.
+///
+/// A width past [`check_bv_width`]'s cap yields `None` rather than the pair:
+/// this is a *fast path* for the `"BVV"` arm of [`claripy_to_rustbv_depth`],
+/// and that arm now refuses such a width, so returning the pair here would let
+/// the shortcut accept what the general path rejects (and hand
+/// `solver::RustSolverContext::eval_batch` an absurd width to build a
+/// `RustBV::concrete` from — angr-0jh0j.8). Callers fall back to the general
+/// path, which reports the refusal as a catchable error.
 #[inline]
 pub(crate) fn try_extract_bvv(ast: &Bound<'_, PyAny>) -> Option<(u128, u32)> {
     let op: String = ast.getattr("op").ok()?.extract().ok()?;
@@ -52,7 +61,34 @@ pub(crate) fn try_extract_bvv(ast: &Bound<'_, PyAny>) -> Option<(u128, u32)> {
     let args_tuple = args.cast::<PyTuple>().ok()?;
     let value: u128 = extract_int_value(args_tuple.get_item(0).ok()?).ok()?;
     let width: u32 = args_tuple.get_item(1).ok()?.extract().ok()?;
+    // SILENT(cat-a): every `?` above already means "not a plain BVV, use the
+    // general path"; an over-cap width is the same answer for the same reason.
+    check_bv_width("BVV", width).ok()?;
     Some((value, width))
+}
+
+/// Width of an extension whose result width is *derived* from its operand.
+///
+/// The `"ZeroExt"` / `"SignExt"` arms of [`claripy_to_rustbv_depth`] compute
+/// `source_width + extend_bits` from a caller-chosen `extend_bits`. Both halves
+/// of that need guarding at this trust boundary: the sum wraps in the shipped
+/// `release` profile (no overflow checks), which would make `new_width` come out
+/// *smaller* than the source and silently violate the narrowing precondition
+/// `value_ops::zero_extend_into` only `debug_assert!`s; and an unwrapped sum can
+/// still be an absurd width Z3 would allocate a multi-gigabit sort for. So:
+/// `checked_add` to refuse rather than saturate (an identity, not a size — see
+/// bd memory `invariant-overflow-fix-refuse-not-saturate-identities`), then
+/// [`check_bv_width`] on the sum. Mirrors `solver::handle_api`'s
+/// `reject_concat_overflow`, the same guard for the other derived-width op at
+/// the other trust boundary.
+fn extended_width(op: &str, source_width: u32, extend_bits: u32) -> Result<u32, BridgeError> {
+    let new_width = source_width.checked_add(extend_bits).ok_or_else(|| {
+        BridgeError::InvalidArgs(format!(
+            "{op}: width {source_width} + {extend_bits} overflows u32"
+        ))
+    })?;
+    check_bv_width(op, new_width).map_err(BridgeError::InvalidArgs)?;
+    Ok(new_width)
 }
 
 /// Convert a claripy AST to a RustBV.
@@ -214,6 +250,10 @@ fn claripy_to_rustbv_depth(
                 .map_err(|e| BridgeError::TypeMismatch(e.to_string()))?;
             let value: u128 = extract_int_value(args_tuple.get_item(0)?)?;
             let width: u32 = args_tuple.get_item(1)?.extract()?;
+            // The claripy boundary is a trust boundary just like the handle
+            // API: a caller-chosen width reaches Z3 as a sort allocation
+            // (angr-0jh0j.8).
+            check_bv_width("BVV", width).map_err(BridgeError::InvalidArgs)?;
             Ok(RustBV::concrete(value, width))
         }
 
@@ -244,6 +284,7 @@ fn claripy_to_rustbv_depth(
             } else {
                 ast.getattr("length")?.extract()?
             };
+            check_bv_width("BVS", width).map_err(BridgeError::InvalidArgs)?;
 
             Ok(import_symbolic_leaf(
                 ast,
@@ -295,7 +336,7 @@ fn claripy_to_rustbv_depth(
             }
             let extend_bits: u32 = args_list[0].extract()?;
             let val = claripy_to_rustbv_depth(py, &args_list[1], ctx, depth + 1)?;
-            let new_width = val.width() + extend_bits;
+            let new_width = extended_width("ZeroExt", val.width(), extend_bits)?;
             Ok(val.zero_extend(new_width, ctx))
         }
 
@@ -306,7 +347,7 @@ fn claripy_to_rustbv_depth(
             }
             let extend_bits: u32 = args_list[0].extract()?;
             let val = claripy_to_rustbv_depth(py, &args_list[1], ctx, depth + 1)?;
-            let new_width = val.width() + extend_bits;
+            let new_width = extended_width("SignExt", val.width(), extend_bits)?;
             Ok(val.sign_extend(new_width, ctx))
         }
 

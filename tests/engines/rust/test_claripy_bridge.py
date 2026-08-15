@@ -135,3 +135,79 @@ class TestClaripyBridgeImport:
         ctx.add_constraint_ast(flag)
         # Second, separate import of the same leaf: it must see the constraint.
         assert set(ctx.eval_upto(claripy.If(flag, claripy.BVV(0xAA, 8), claripy.BVV(0xBB, 8)), 4)) == {0xAA}
+
+
+class TestClaripyBridgeWidthBounds:
+    """import.rs must bound caller-chosen widths (angr-0jh0j.8).
+
+    ``width_guards.rs``'s module doc names *two* trust boundaries — the handle
+    API in ``solver/handle_api.rs`` and this one — but only the ``Extract`` arm
+    here actually called into it. ``BVV``/``BVS`` took their width straight from
+    the claripy AST, and ``ZeroExt``/``SignExt`` derived one with unchecked
+    ``u32`` addition, so a Python-chosen width reached Z3 as a multi-gigabit
+    sort allocation (or, once the sum wrapped, as a silently *narrowing*
+    extension).
+
+    The probes below go through ``RustSolverContext.min``, which propagates the
+    bridge error rather than swallowing it: ``eval`` falls back to claripy's own
+    Z3 AST when conversion fails, which would hand the huge width to Z3 anyway
+    — by claripy's doing, not the engine's.
+    """
+
+    # Mirrors symbolic/width_guards.rs::MAX_BV_WIDTH.
+    MAX_BV_WIDTH = 1 << 20
+
+    @classmethod
+    def setup_class(cls):
+        from angr.exploration.rust_manager import _setup_shared_z3_context
+
+        _setup_shared_z3_context()
+
+    def _ctx(self):
+        from angr.rustylib.vex_engine import RustSolverContext
+
+        return RustSolverContext()
+
+    def test_bvv_width_above_cap_is_refused(self):
+        import claripy
+
+        over = self.MAX_BV_WIDTH + 1
+        with pytest.raises(ValueError, match=str(over)):
+            self._ctx().min(claripy.BVV(0, over))
+
+    def test_bvs_width_above_cap_is_refused(self):
+        import claripy
+
+        over = self.MAX_BV_WIDTH + 1
+        with pytest.raises(ValueError, match=str(over)):
+            self._ctx().min(claripy.BVS("wide_leaf", over))
+
+    @pytest.mark.parametrize("op_name", ["ZeroExt", "SignExt"])
+    def test_extension_past_cap_is_refused(self, op_name):
+        import claripy
+
+        op = getattr(claripy, op_name)
+        with pytest.raises(ValueError, match=op_name):
+            self._ctx().min(op(self.MAX_BV_WIDTH, claripy.BVS(f"ext_{op_name}", 8)))
+
+    @pytest.mark.parametrize("op_name", ["ZeroExt", "SignExt"])
+    def test_extension_that_wraps_u32_is_refused(self, op_name):
+        """8 + (2**32 - 4) wraps to 4 — a *narrowing* extension the release
+        profile (no overflow checks) would otherwise accept silently."""
+        import claripy
+
+        op = getattr(claripy, op_name)
+        with pytest.raises(ValueError, match="overflows u32"):
+            self._ctx().min(op(2**32 - 4, claripy.BVS(f"wrap_{op_name}", 8)))
+
+    def test_ordinary_widths_still_convert(self):
+        """The guards are a ceiling, not a new precondition: everyday widths
+        keep converting. (That the cap itself is *inclusive* is pinned by
+        ``import_tests.rs::test_extended_width_refuses_overflow_and_absurd_widths``
+        — asserting it from here would make Z3 build a 1-Mibit sort.)"""
+        import claripy
+
+        ctx = self._ctx()
+        assert ctx.min(claripy.BVV(0x1234, 32)) == 0x1234
+        assert ctx.min(claripy.ZeroExt(24, claripy.BVV(0xAB, 8))) == 0xAB
+        assert ctx.min(claripy.SignExt(24, claripy.BVV(0x7F, 8))) == 0x7F

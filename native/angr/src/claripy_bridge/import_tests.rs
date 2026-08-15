@@ -106,3 +106,33 @@ fn test_import_symbolic_leaf_falls_through_when_id_has_no_canonical_name() {
         );
     });
 }
+
+/// angr-0jh0j.8: `ZeroExt`/`SignExt` derive their result width from a
+/// caller-chosen `extend_bits`, so the derivation itself is the guard site —
+/// there is no width *argument* for `check_bv_width` to sit on. Both halves
+/// must refuse: the `u32` sum wrapping (which would come out narrower than the
+/// source) and a non-wrapping sum past `MAX_BV_WIDTH`.
+#[test]
+fn test_extended_width_refuses_overflow_and_absurd_widths() {
+    use crate::symbolic::MAX_BV_WIDTH;
+
+    let msg = |r: Result<u32, BridgeError>| match r {
+        Ok(w) => panic!("expected a refusal, got width {w}"),
+        Err(e) => e.to_string(),
+    };
+
+    // Wraparound: 8 + (u32::MAX - 3) is 4 in wrapping arithmetic, i.e. a
+    // *narrowing* "extension" the release profile would accept silently.
+    let wrapped = msg(extended_width("ZeroExt", 8, u32::MAX - 3));
+    assert!(wrapped.contains("ZeroExt"), "{wrapped}");
+    assert!(wrapped.contains("overflows u32"), "{wrapped}");
+
+    // No wraparound, but still an absurd sort for Z3 to allocate.
+    let absurd = msg(extended_width("SignExt", 8, MAX_BV_WIDTH));
+    assert!(absurd.contains("SignExt"), "{absurd}");
+    assert!(absurd.contains(&MAX_BV_WIDTH.to_string()), "{absurd}");
+
+    // The cap itself stays constructible, and a plain extension is untouched.
+    assert_eq!(extended_width("ZeroExt", 8, MAX_BV_WIDTH - 8).unwrap(), MAX_BV_WIDTH);
+    assert_eq!(extended_width("SignExt", 32, 32).unwrap(), 64);
+}
