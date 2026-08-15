@@ -421,11 +421,12 @@ impl RustExplorationManager {
                                     && let Ok(ret_bv) = state.memory_load(sp, state.arch().bytes())
                                     && let Some(ret_addr) = ret_bv.as_u64()
                                 {
-                                    let ptr_size = state.arch().bytes() as u64;
-                                    state.set_sp(RustBV::concrete(
-                                        (sp + ptr_size) as u128,
-                                        state.arch().bits(),
-                                    ));
+                                    // Same shared helper as the branch above:
+                                    // hand-rolling `sp + ptr_size` here wrapped
+                                    // silently (or panicked under
+                                    // overflow-checks) for a guest-influenced SP
+                                    // near u64::MAX (angr-0jh0j.16).
+                                    advance_sp_past_return_addr(&mut state, pops_return_addr);
                                     state.set_pc(ret_addr);
                                 }
                             }

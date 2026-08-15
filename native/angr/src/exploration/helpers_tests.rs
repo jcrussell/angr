@@ -997,6 +997,21 @@ fn advance_sp_past_return_addr_keeps_symbolic_sp_symbolic() {
     assert_eq!(sp.width(), 64, "the bump preserves SP width");
 }
 
+/// A guest-influenced SP within a pointer of `u64::MAX` must wrap, not panic:
+/// `run_loop_single::step_one`'s `[sp]`-read fallback used to hand-roll a bare
+/// `sp + ptr_size` here, which panics under `overflow-checks` (the
+/// `release-checked` profile CI runs `cargo test` with) and silently wraps in
+/// the shipped release build (angr-0jh0j.16).
+#[test]
+fn advance_sp_past_return_addr_wraps_at_u64_max() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.set_sp(RustBV::concrete((u64::MAX - 3) as u128, 64));
+
+    advance_sp_past_return_addr(&mut state, true);
+
+    assert_eq!(state.get_sp().as_u64(), Some(4));
+}
+
 // ---------------------------------------------------------------------------
 // record_reconvergence_sample — the per-step (pc, callstack-return-addr-chain)
 // collision sampler (angr-11djq.16, angr-03vl4.27). Counters only, so the whole
