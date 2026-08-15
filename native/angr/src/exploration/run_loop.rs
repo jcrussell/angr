@@ -418,6 +418,29 @@ impl RustExplorationManager {
             .iter_mut()
             .map(|(state, _, _)| state)
     }
+
+    /// Every `RustSimState` a pending callback carries that must track
+    /// manager-wide per-state config in lockstep with `.state` itself: the
+    /// live continuation plus (if present) the pre-branch snapshot deferred
+    /// forks are materialized from (angr-sqfj8.32) — the second bucket of
+    /// live states outside every stash (see
+    /// [`parked_bounce_states`](Self::parked_bounce_states) for the third).
+    /// Named to match that sibling so a broadcast author reaching for "every
+    /// live state" finds both together.
+    ///
+    /// Does NOT cover `pending.fork_snapshots` — those carry a raw
+    /// `SymContext`/solver, not a `RustSimState` (`set_deterministic` and
+    /// `_active_states_map_memory` reach `fork_snapshots` directly for that
+    /// reason). Use this for the common case of a per-state broadcast; fall
+    /// back to hand-rolling `pending_callbacks.values_mut()` when
+    /// `fork_snapshots` also needs to be reached.
+    pub(crate) fn pending_callback_states_mut(
+        &mut self,
+    ) -> impl Iterator<Item = &mut RustSimState> {
+        self.pending_callbacks.values_mut().flat_map(|pending| {
+            std::iter::once(&mut pending.state).chain(pending.pre_callback_snapshot.as_mut())
+        })
+    }
 }
 
 test_submod!(z3 "run_loop_tests.rs" => tests);

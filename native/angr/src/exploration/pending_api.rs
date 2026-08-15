@@ -79,11 +79,13 @@ impl RustExplorationManager {
                 state.map_memory_data(addr, data, permissions);
             }
         }
+        for state in self.pending_callback_states_mut() {
+            state.map_memory_data(addr, data, permissions);
+        }
+        // fork_snapshots carries a raw memory sidecar, not a RustSimState, so
+        // it's outside pending_callback_states_mut's reach -- see that
+        // function's doc comment.
         for pending in self.pending_callbacks.values_mut() {
-            pending.state.map_memory_data(addr, data, permissions);
-            if let Some(snapshot) = pending.pre_callback_snapshot.as_mut() {
-                snapshot.map_memory_data(addr, data, permissions);
-            }
             for snapshot in pending.fork_snapshots.values_mut() {
                 if let Some(memory) = snapshot.memory.as_mut() {
                     memory.map_data(addr, data, permissions);

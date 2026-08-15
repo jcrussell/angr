@@ -149,12 +149,25 @@ impl StashManager {
     }
 
     /// Direct access to the underlying stashes HashMap for entry() API.
+    ///
+    /// This is NOT every live state in a `RustExplorationManager` — a state
+    /// parked in `pending_callbacks` or `pending_parallel_bounces` lives in
+    /// no stash and is invisible here. A manager-wide broadcast (e.g.
+    /// `set_deterministic`, `set_max_history`, `_active_states_map_memory`)
+    /// must also reach `RustExplorationManager::pending_callback_states_mut`
+    /// and `parked_bounce_states_mut` (both in `exploration/run_loop.rs`) —
+    /// see those three functions for the canonical shape, and the
+    /// `invariant-*-covers-pending` bd memories for why this keeps
+    /// recurring. Single-state lookups don't have this problem:
+    /// `find_state`/`find_state_mut` (`exploration/helpers.rs`) already check
+    /// `pending_callbacks` first.
     #[inline]
     pub fn stashes_mut(&mut self) -> &mut HashMap<String, VecDeque<RustSimState>> {
         &mut self.stashes
     }
 
-    /// Direct immutable access to the underlying stashes HashMap.
+    /// Direct immutable access to the underlying stashes HashMap. See
+    /// [`stashes_mut`](Self::stashes_mut) for the pending-state caveat.
     #[inline]
     pub fn stashes(&self) -> &HashMap<String, VecDeque<RustSimState>> {
         &self.stashes

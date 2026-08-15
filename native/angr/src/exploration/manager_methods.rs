@@ -789,13 +789,9 @@ impl RustExplorationManager {
         // Parked states and the pre-branch snapshots their deferred forks are
         // materialized from, mirroring `set_deterministic`. `fork_snapshots`
         // needs nothing: a `BranchSnapshot` carries solver/registers/memory
-        // only — no history buffers — and the state a deferred fork is built
-        // from is `pre_callback_snapshot`, which is covered here.
-        for pending in self.pending_callbacks.values_mut() {
-            pending.state.set_max_history(max);
-            if let Some(snapshot) = pending.pre_callback_snapshot.as_mut() {
-                snapshot.set_max_history(max);
-            }
+        // only — no history buffers.
+        for state in self.pending_callback_states_mut() {
+            state.set_max_history(max);
         }
         // Parked parallel bounces are a third bucket living in no stash
         // (angr-03vl4.10); see `parked_bounce_states`.
