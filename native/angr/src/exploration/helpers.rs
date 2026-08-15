@@ -392,13 +392,40 @@ impl RustExplorationManager {
 
     /// Find an immutable reference to a state by ID using the index.
     /// Falls back to linear scan if the index is stale.
+    ///
+    /// Searches all THREE buckets a live `RustSimState` can sit in, in the
+    /// order a duplicate id must resolve: `pending_callbacks` (a hash lookup;
+    /// an in-flight callback owns the only live copy), then the stashes, then
+    /// `pending_parallel_bounces` (angr-eukuf). The parked-bounce leg comes
+    /// last because an id can legitimately be resident in a stash *and* parked
+    /// — `flush_parked_bounces_to_active` drops the parked copy as the
+    /// redundant duplicate in exactly that case, so the stash copy is the one
+    /// carrying the path forward and must win here too.
     pub(crate) fn find_state(&self, state_id: impl Into<StateId>) -> Option<&RustSimState> {
         let sid = state_id.into();
         // Check pending callback states first (during find_predicate evaluation)
         if let Some(pending) = self.pending_callbacks.get(&sid) {
             return Some(&pending.state);
         }
-        self.sm.find_state(sid.raw())
+        if let Some(state) = self.sm.find_state(sid.raw()) {
+            return Some(state);
+        }
+        self.find_parked_bounce(sid)
+    }
+
+    /// Linear scan of the parked parallel-bounce queue, the third bucket's leg
+    /// of [`find_state`](Self::find_state).
+    ///
+    /// Linear rather than indexed because the queue is empty in
+    /// single-threaded mode and holds at most one wave's worth of bounces
+    /// otherwise; `state_index` deliberately tracks stash membership only.
+    #[inline]
+    fn find_parked_bounce(&self, sid: StateId) -> Option<&RustSimState> {
+        if self.pending_parallel_bounces.is_empty() {
+            return None;
+        }
+        self.parked_bounce_states()
+            .find(|state| state.state_id() == sid.raw())
     }
 
     /// Find a mutable reference to a state by ID using the index.
@@ -411,6 +438,11 @@ impl RustExplorationManager {
     /// at angr-4scu memory / angr-qj30 registers) would fail with
     /// "state N not found" any time a Python SimProc wrote to
     /// `state.regs.<name>` or `state.memory.store(...)` during a callback.
+    ///
+    /// Also mirrors its parked-bounce fallback and bucket precedence
+    /// (angr-eukuf): a write through this lookup while a wave's bounce queue
+    /// is parked must land on the state the next `run()` will dispatch, not be
+    /// silently dropped on the floor with a "state N not found".
     pub(crate) fn find_state_mut(
         &mut self,
         state_id: impl Into<StateId>,
@@ -419,7 +451,19 @@ impl RustExplorationManager {
         if let Some(pending) = self.pending_callbacks.get_mut(&sid) {
             return Some(&mut pending.state);
         }
-        self.sm.find_state_mut(sid.raw())
+        if let Some(state) = self.sm.find_state_mut(sid.raw()) {
+            return Some(state);
+        }
+        if self.pending_parallel_bounces.is_empty() {
+            return None;
+        }
+        // Field access rather than `parked_bounce_states_mut`, whose `&mut
+        // self` receiver would conflict with the `pending_callbacks` borrow
+        // the early return above holds for the whole function.
+        self.pending_parallel_bounces
+            .iter_mut()
+            .map(|(state, _, _)| state)
+            .find(|state| state.state_id() == sid.raw())
     }
 
     /// Compute a hash for a state's register tuple for uniqueness checking.

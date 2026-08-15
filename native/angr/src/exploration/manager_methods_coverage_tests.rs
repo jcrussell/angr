@@ -6,8 +6,8 @@
 //! instances of this bug by hand: one `#[test]` per (method, bucket) pair
 //! that was found broken by an audit. That shape does not scale — a NEW
 //! bucket (there have been three so far: the stashes, `pending_callbacks`,
-//! and `pending_parallel_bounces` — see `pending_api.rs`'s "Only two places
-//! hold states" and `run_loop.rs`'s "third bucket" doc comments) or a NEW
+//! and `pending_parallel_bounces` — see `pending_api.rs::_parent_of`'s
+//! bucket census and `run_loop.rs`'s "third bucket" doc comments) or a NEW
 //! "applies to every state" method means writing another bespoke test from
 //! scratch, and nothing forces that to happen.
 //!
@@ -94,8 +94,10 @@ fn park(mgr: &mut RustExplorationManager, bucket: Bucket) -> u64 {
 
 /// Find a parked state by id wherever it lives — the shared "find" half of
 /// the pair, searching all three known storage locations. Deliberately
-/// independent of [`RustExplorationManager::find_state`], which does not
-/// search `pending_parallel_bounces`.
+/// independent of [`RustExplorationManager::find_state`] (which searches the
+/// same three since angr-eukuf) so a regression in that lookup shows up as a
+/// failure of the `with_state` column below, not as every other column
+/// silently losing its state.
 fn find_anywhere(mgr: &RustExplorationManager, id: u64) -> Option<&RustSimState> {
     if let Some(state) = mgr.sm.stashes().values().flatten().find(|s| s.state_id() == id) {
         return Some(state);
@@ -334,4 +336,100 @@ fn census_excludes_pending_callback() {
 #[test]
 fn census_reflects_parallel_bounce() {
     assert_census_reflects(Bucket::ParallelBounce);
+}
+
+// ===========================================================================
+// Column: with_state / with_state_mut (find_state lookup, angr-eukuf)
+// ===========================================================================
+
+/// The read path's contract covers every bucket: `find_state` /
+/// `find_state_mut` must reach any state the manager still holds, since
+/// `with_state`/`with_state_mut` are how ~54 Python-facing methods (the
+/// write-through proxy shims included) address a state by id. A miss is not a
+/// wrong answer but a `state N not found` `PyValueError` — or, for the
+/// internal `_parent_of` walk, a silently truncated ancestry.
+///
+/// The read leg pins the *identity* of what was found (its pc, unique per
+/// bucket in [`park`]) rather than mere `is_some()`, and the write leg mutates
+/// through `with_state_mut` and re-reads via the independent
+/// [`find_anywhere`], so a lookup that hands back some other bucket's state,
+/// or a copy the mutation does not stick to, fails too.
+fn assert_with_state_reaches(bucket: Bucket) {
+    Python::initialize();
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    let id = park(&mut mgr, bucket);
+    let pc = find_anywhere(&mgr, id).expect("parked state").pc();
+
+    let seen = mgr
+        .with_state(id, |state| Ok(state.pc()))
+        .unwrap_or_else(|err| panic!("{bucket:?} with_state({id}) failed: {err}"));
+    assert_eq!(seen, pc, "{bucket:?} with_state reaches the parked state");
+
+    const NEW_PC: u64 = 0x40_8000;
+    mgr.with_state_mut(id, |state| {
+        state.set_pc(NEW_PC);
+        Ok(())
+    })
+    .unwrap_or_else(|err| panic!("{bucket:?} with_state_mut({id}) failed: {err}"));
+    assert_eq!(
+        find_anywhere(&mgr, id).expect("parked state").pc(),
+        NEW_PC,
+        "{bucket:?} with_state_mut writes through to the parked state",
+    );
+}
+
+#[test]
+fn with_state_reaches_active_stash() {
+    assert_with_state_reaches(Bucket::ActiveStash);
+}
+
+#[test]
+fn with_state_reaches_other_stash() {
+    assert_with_state_reaches(Bucket::OtherStash);
+}
+
+#[test]
+fn with_state_reaches_pending_callback() {
+    assert_with_state_reaches(Bucket::PendingCallback);
+}
+
+#[test]
+fn with_state_reaches_parallel_bounce() {
+    assert_with_state_reaches(Bucket::ParallelBounce);
+}
+
+/// An id can be resident in a stash *and* parked in
+/// `pending_parallel_bounces` at once; `flush_parked_bounces_to_active` drops
+/// the parked copy as the redundant duplicate in that case, so the stash copy
+/// is the one carrying the path forward and `find_state` must return it — the
+/// parked-bounce leg is a fallback, not an override.
+#[test]
+fn find_state_prefers_the_stash_copy_over_a_duplicate_parked_bounce() {
+    Python::initialize();
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    const RESIDENT_PC: u64 = 0x40_1000;
+    let mut state = RustSimState::new("amd64").expect("state");
+    state.set_pc(RESIDENT_PC);
+    let id = state.state_id();
+
+    // A same-id parked copy sitting at a different pc — snapshot round-trip
+    // preserves the id, as `flush_drops_parked_bounce_whose_id_is_already_resident`
+    // in `run_loop_tests.rs` relies on.
+    let mut duplicate = RustSimState::from_snapshot(state.to_snapshot()).expect("round-trip");
+    duplicate.set_pc(0x40_7000);
+    mgr.sm.push(STASH_ACTIVE, state);
+    mgr.pending_parallel_bounces
+        .push((duplicate, BounceKind::Hook { addr: 0x40_9000 }, id));
+    let resident_pc = RESIDENT_PC;
+
+    assert_eq!(
+        mgr.find_state(id).expect("state").pc(),
+        resident_pc,
+        "the stash copy wins over the duplicate parked bounce",
+    );
+    assert_eq!(
+        mgr.find_state_mut(id).expect("state").pc(),
+        resident_pc,
+        "find_state_mut agrees with find_state on precedence",
+    );
 }

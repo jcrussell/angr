@@ -483,11 +483,13 @@ impl RustExplorationManager {
 
     /// Look up the parent id of an arbitrary state the manager still holds.
     ///
-    /// Only two places hold states: `pending_callbacks` and the stashes, and
-    /// `find_state` already searches both (pending first, as a direct hash
-    /// lookup). A state that is in neither has been consumed by a fork or
-    /// dropped, so its parent link is unrecoverable — hence the best-effort
-    /// walk in `_get_pending_ancestry`.
+    /// Three places hold live states: `pending_callbacks`, the stashes, and
+    /// `pending_parallel_bounces`, and `find_state` searches all three
+    /// (pending first, as a direct hash lookup; parked bounces last).
+    /// A state in none of them has been consumed by a fork or dropped, so its
+    /// parent link is unrecoverable — hence the best-effort walk in
+    /// `_get_pending_ancestry`. Before angr-eukuf the parked-bounce leg was
+    /// missing, and an ancestor parked there truncated that walk early.
     fn _parent_of(&self, state_id: u64) -> Option<u64> {
         self.find_state(state_id).and_then(RustSimState::parent_id)
     }
