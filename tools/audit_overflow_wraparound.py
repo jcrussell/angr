@@ -15,7 +15,9 @@ This was round 4's dominant bug class (``invariant-proc-address-arith-wrapping``
 ``invariant-overflow-fix-refuse-not-saturate-identities``): 3 P1s and a
 double-digit count of P2/P3s across memory/, interpreter/, symbolic/,
 state/, syscalls/ and procedures/, all now fixed by hand but with nothing
-stopping the same shape from being reintroduced. Every fixed site uses a
+stopping the same shape from being reintroduced. exploration/ joined them in
+bd angr-goev1, after the SP/return-address half of the family recurred there
+four more times (see :data:`SUBSYSTEMS`). Every fixed site uses a
 ``.wrapping_*()``/``.saturating_*()``/``.checked_*()`` *method call* rather
 than a bare operator, so this script's heuristic is simple: flag a bare
 ``+``/``-`` binary operator where at least one operand's name looks like an
@@ -28,7 +30,7 @@ and ``tools/audit_sp_default_zero.py`` do: a heuristic detector plus a
 checked-in baseline of already-triaged sites. Only *new* sites fail.
 
 Detection heuristic -- in any non-test ``.rs`` file under
-``native/angr/src/{memory,interpreter,symbolic,state,syscalls,procedures}/``,
+``native/angr/src/{memory,interpreter,symbolic,state,syscalls,procedures,exploration}/``,
 a bare ``+`` or ``-`` (not ``+=``/``-=``/``->``, not unary) whose left or
 right operand is a simple identifier / dotted field access (or, on the
 right, a numeric literal) whose last ``_``-separated component is one of
@@ -41,6 +43,11 @@ A rationale longer than that must keep ``overflow-ok:`` on one of those two
 lines, or the site stays a GAP -- the escape hatch for arithmetic that only *looks*
 address-shaped (e.g. a bounds-checked ``usize`` loop counter that can never
 reach a guest-controlled value).
+
+Note that :func:`rust_source_utils.is_test_file` skips whole ``*_tests.rs``
+files, but an inline ``#[cfg(test)] mod tests`` inside a scanned source file is
+*not* skipped -- test arithmetic there needs an ``overflow-ok:`` marker like
+any other site.
 
 Usage::
 
@@ -66,10 +73,14 @@ from rust_source_utils import blank_noise, enclosing_fn, is_test_file
 # Repo layout: this file lives at <repo>/tools/audit_overflow_wraparound.py
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SRC_DIR = REPO_ROOT / "native" / "angr" / "src"
-# The 6 subsystems the round-4 retrospective named. vex/ has its own written
-# convention (invariant-rust-concrete-arith-must-wrap) and can be folded in
-# as a later extension.
-SUBSYSTEMS = ("memory", "interpreter", "symbolic", "state", "syscalls", "procedures")
+# The 6 subsystems the round-4 retrospective named, plus exploration/ (bd
+# angr-goev1): the SP/return-address arithmetic family kept recurring there
+# (angr-sqfj8.62, angr-sqfj8.63, angr-c7xno.29, angr-0jh0j.16) with no gate in
+# that directory at all -- the AddrOrSymbolic newtype closed the `.unwrap_or(0)`
+# half at compile time, but the bare `sp + ptr_size` half had nothing.
+# vex/ has its own written convention (invariant-rust-concrete-arith-must-wrap)
+# and can be folded in as a later extension.
+SUBSYSTEMS = ("memory", "interpreter", "symbolic", "state", "syscalls", "procedures", "exploration")
 SCAN_DIRS = tuple(SRC_DIR / s for s in SUBSYSTEMS)
 BASELINE_PATH = REPO_ROOT / "tools" / "overflow_baseline.txt"
 

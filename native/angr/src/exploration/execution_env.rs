@@ -73,9 +73,14 @@ pub(crate) fn prefer_native_dispatch(
     prefer_library_hooks: bool,
     addr: u64,
 ) -> bool {
+    // `saturating_add`, not `+`: `base` comes from CLE's loaded-object map and
+    // `data.len()` from the region blob, so a region that runs to the top of
+    // the address space would wrap the exclusive end to a small value and make
+    // the range test reject every address that is genuinely inside it. Clipping
+    // the end at `u64::MAX` keeps such a region matching its own tail.
     let in_binary = binary_regions
         .iter()
-        .any(|(base, data)| addr >= *base && addr < *base + data.len() as u64);
+        .any(|(base, data)| addr >= *base && addr < base.saturating_add(data.len() as u64));
     if !in_binary {
         return true;
     }
@@ -173,5 +178,23 @@ mod tests {
     fn unknown_main_range_falls_back_to_the_gate() {
         assert!(!prefer_native_dispatch(&regions(), None, false, 0x400100));
         assert!(prefer_native_dispatch(&regions(), None, true, 0x400100));
+    }
+
+    /// A region whose extent runs to the top of the address space must still
+    /// match its own tail. With a bare `base + data.len()` the exclusive end
+    /// wraps to a small value, `addr < end` is false for every address in the
+    /// region, and the hook is misrouted to the native registry as if it were
+    /// an extern stub. `saturating_add` clips the end at `u64::MAX` instead.
+    #[test]
+    fn region_at_the_top_of_the_address_space_does_not_wrap() {
+        let base = u64::MAX - 0x0f;
+        let regions = vec![(base, Arc::new(vec![0u8; 0x10]))];
+        // Inside the region and outside the main object => a library hook, so
+        // the gate decides; it must NOT be treated as an extern stub.
+        assert!(!prefer_native_dispatch(&regions, MAIN, false, base));
+        assert!(prefer_native_dispatch(&regions, MAIN, true, base));
+        // Below the region is still an extern stub either way.
+        // overflow-ok: `base` is a test constant well below `u64::MAX`.
+        assert!(prefer_native_dispatch(&regions, MAIN, false, base - 1));
     }
 }

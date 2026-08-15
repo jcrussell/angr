@@ -513,6 +513,8 @@ pub(super) fn handle_symbolic_jump_target_core(
         },
     );
 
+    // overflow-ok: `usize` capacity hint over two in-memory `Vec`s of forked
+    // states; their combined length is already bounded by what fits in RAM.
     let mut succ = Vec::with_capacity(1 + target_forks.len() + deferred_out.len());
     succ.push((first_state, RoutingTag::main()));
     succ.extend(target_forks);

@@ -163,6 +163,8 @@ impl RustExplorationManager {
             log::warn!(
                 "sync_constraints_from_python: {}/{} constraints failed to convert",
                 failed_count,
+                // overflow-ok: both are `usize` tallies over the one Python
+                // constraint list this fn walks, so the sum is that list's length.
                 failed_count + success_count
             );
         }
@@ -210,6 +212,8 @@ impl RustExplorationManager {
                 log::debug!(
                     "P14: State became UNSAT with partial constraint sync ({}/{} failed). Pruning.",
                     failed_count,
+                    // overflow-ok: both are `usize` tallies over the one Python
+                    // constraint list this fn walks, so the sum is that list's length.
                     failed_count + success_count
                 );
                 return Ok(false);

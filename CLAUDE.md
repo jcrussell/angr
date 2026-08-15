@@ -226,7 +226,10 @@ runtime net, not a static one.
 against `tools/overflow_baseline.txt`, same baseline + `--self-test`-first
 pattern as the two gates above. It flags a bare `+`/`-` whose operand name is
 address/size/offset/count-shaped, in
-`native/angr/src/{memory,interpreter,symbolic,state,syscalls,procedures}/`.
+`native/angr/src/{memory,interpreter,symbolic,state,syscalls,procedures,exploration}/`
+(`exploration/` added in bd `angr-goev1` — it is where the SP/return-address
+arithmetic family kept recurring, and the `AddrOrSymbolic` newtype only closed
+the `.unwrap_or(0)` half of it).
 Every safe spelling is a *method call*, so no exclusion list for already-fixed
 sites is needed — the operator scan simply never matches them. Exempt a site
 that only looks address-shaped with an `overflow-ok: <why>` comment on the
@@ -234,9 +237,9 @@ flagged line or **either of the two lines above** — note that for a multi-line
 expression the flagged line is the *continuation* carrying the operator, not
 the statement start, and it is the literal `overflow-ok:` token that must land
 in that window, not merely some line of the rationale comment. Prefer that over
-`--update-baseline`. All six scanned directories are now fully triaged (bd
-`angr-xloth`): the baseline is **empty** and, like the rounding-mode and
-SP-default ones, should stay so.
+`--update-baseline`. All seven scanned directories are now fully triaged (bd
+`angr-xloth`, `angr-goev1`): the baseline is **empty** and, like the
+rounding-mode and SP-default ones, should stay so.
 
 The rounding-mode, SP-default and overflow audit scripts share comment/string
 blanking, test-file filtering and `fn`-name resolution via
