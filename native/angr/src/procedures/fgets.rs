@@ -73,6 +73,8 @@ pub(crate) fn store_symbolic_line(
     read_id: u64,
 ) -> Result<RustBV, ProcedureError> {
     let bits = state.arch().bits();
+    // overflow-ok: every caller guards size >= 1 before reaching here (the
+    // `call` block's size==0 fast path, or MAX_GETS_SIZE for gets()).
     let read_count = size - 1;
     let (real_size, constraints, store_bytes) = {
         let ctx = state.solver().borrow();
@@ -218,6 +220,7 @@ crate::declare_proc! {
             )));
         }
 
+        // overflow-ok: size == 0 returned above, so size >= 1 here.
         let read_count = size - 1; // fgets reads at most size-1 bytes
         let read_id = symbol_counter("fgets");
         let short_reads = state.has_option("SHORT_READS");

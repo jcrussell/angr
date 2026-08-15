@@ -76,6 +76,15 @@ jobs:
           python3 tools/audit_silent_fallback_test_pairing.py
       - name: Stale line-number-citation check
         run: python3 tools/check_line_citations.py
+      # bd angr-qwyti.3: interpreting a Z3 check() outcome must go through the
+      # single forcing-function SatOutcome::decided, which turns Unknown
+      # (timeout/incompleteness) into None so every call site is forced to
+      # decide what a timeout means. Conflating Unknown with Unsat is the
+      # angr-ph300.43 / angr-n0irt.1 bug class — it fabricates extrema,
+      # permanently pins sat_cache=false, and prunes feasible branches. This
+      # script has existed since 8c3dae2fa but was never wired into CI.
+      - name: SatResult boolean-collapse audit
+        run: python3 tools/audit_satresult.py
       # angr-91vj9.7: a `*_rm` VEX helper whose concrete closure drops the
       # rounding mode compiles cleanly (a `_rm` parameter is the *sanctioned*
       # spelling of "unused"), so the symbolic and concrete paths can silently
@@ -98,6 +107,19 @@ jobs:
         run: |
           python3 tools/audit_sp_default_zero.py --self-test
           python3 tools/audit_sp_default_zero.py
+      # angr-03vl4 round-4 retrospective: integer overflow/wraparound on
+      # guest-controlled or Z3-derived address/size values was the dominant
+      # bug class (3 P1s, 6 subsystems) -- [profile.release] has no
+      # overflow-checks, so a bare +/- silently wraps in the shipped .so
+      # instead of panicking. Same baseline + `--self-test`-first shape as
+      # the rounding-mode / SP-default audits above. The baseline currently
+      # holds 99 pre-existing sites in memory/interpreter/symbolic/state
+      # deferred for triage (angr-xloth) -- syscalls/ and procedures/ are
+      # fully clean.
+      - name: Integer overflow / wraparound audit
+        run: |
+          python3 tools/audit_overflow_wraparound.py --self-test
+          python3 tools/audit_overflow_wraparound.py
 
   rust_test:
     strategy:

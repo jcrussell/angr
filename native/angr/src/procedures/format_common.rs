@@ -101,6 +101,7 @@ pub fn parse_width_digits(fmt: &[u8], start: usize) -> (usize, usize) {
             .saturating_add((fmt[i] - b'0') as usize);
         i += 1;
     }
+    // overflow-ok: i only ever increments from its initial value of `start`.
     (width, i - start)
 }
 
@@ -114,6 +115,8 @@ pub fn parse_length_modifier(fmt: &[u8], start: usize) -> (LengthModifier, usize
     }
     match fmt[start] {
         b'l' => {
+            // overflow-ok: start is a usize index into an in-memory format
+            // string, nowhere near usize::MAX.
             if start + 1 < fmt.len() && fmt[start + 1] == b'l' {
                 (LengthModifier::LongLong, 2)
             } else {
@@ -121,6 +124,7 @@ pub fn parse_length_modifier(fmt: &[u8], start: usize) -> (LengthModifier, usize
             }
         }
         b'h' => {
+            // overflow-ok: same as the 'l' arm above.
             if start + 1 < fmt.len() && fmt[start + 1] == b'h' {
                 (LengthModifier::Char, 2)
             } else {

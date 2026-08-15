@@ -373,6 +373,7 @@ fn pad_and_push(
         output.extend_from_slice(value);
         return;
     }
+    // overflow-ok: width > value.len() is guaranteed by the early return above.
     let pad_count = width - value.len();
     let pad_char = if zero_pad { b'0' } else { b' ' };
 
@@ -507,6 +508,7 @@ impl NativeSimProcedure for NativeSnprintf {
 
         // Write output to destination, respecting size limit
         if size > 0 {
+            // overflow-ok: size >= 1 is guaranteed by the enclosing `if size > 0`.
             let write_len = output.len().min(size - 1);
             // Write truncated output + always null-terminate at write_len.
             write_cstr(state, dest, &output[..write_len])?;

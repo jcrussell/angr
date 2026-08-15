@@ -90,6 +90,7 @@ fn range_collides(state: &RustSimState, addr: u64, size: u64) -> bool {
     // Overflow → treat as collision (fall back). Checked here rather than
     // leaning on `range_covering`'s saturating add: a wrapping request is a
     // caller error, not a range clamped to the top page.
+    // overflow-ok: size == 0 returned above, so size >= 1 here.
     if addr.checked_add(size - 1).is_none() {
         return true;
     }
@@ -193,6 +194,7 @@ fn do_mmap(
     // 0` fast path returned above. Linux rejects an unrepresentable fixed
     // range with -EINVAL, so return -1 rather than falling back to Python,
     // whose `map_region` would wrap just as silently.
+    // overflow-ok: the length == 0 fast path returned above, so length >= 1.
     if is_fixed && candidate.checked_add(length - 1).is_none() {
         return Ok(SyscallOutcome::Continue { ret: u64::MAX });
     }

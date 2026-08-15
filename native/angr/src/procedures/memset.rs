@@ -98,6 +98,8 @@ crate::declare_proc! {
 
             // Fill memory using 8-byte chunks where possible.
             let mut offset: u64 = 0;
+            // overflow-ok: offset is bounded by `size`, a natively-serviced
+            // length capped well below u64::MAX.
             while offset + 8 <= size {
                 state.memory_store(dest.wrapping_add(offset), chunk_bv.clone())?;
                 offset += 8;

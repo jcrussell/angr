@@ -539,7 +539,10 @@ impl NativeSyscall for NativeDeallocateSyscall {
         // as a no-op.
         let mut allowed = 0u64;
         while allowed < aligned_length {
-            let probe = addr + allowed;
+            // wrapping_add: aligned_length rounds length up to the next page,
+            // so addr+allowed can exceed the addr.checked_add(length) bound
+            // already validated above by up to one page.
+            let probe = addr.wrapping_add(allowed);
             if !state.memory().is_mapped(probe) {
                 break;
             }

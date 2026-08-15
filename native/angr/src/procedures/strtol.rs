@@ -237,6 +237,7 @@ fn build_symbolic_accumulator(
         let dec_value = byte_8.sub(&zero_byte, ctx).zero_extend(result_bits, ctx);
 
         let (is_digit, digit_value) = if base > 10 {
+            // overflow-ok: base > 10 is guaranteed by the enclosing `if`.
             let max_alpha = (base - 10 - 1) as u8;
             let lower_lo = RustBV::concrete(b'a' as u128, 8);
             let lower_hi = RustBV::concrete((b'a' + max_alpha) as u128, 8);
@@ -346,6 +347,8 @@ fn run_strtol(
                 // and benchmarks expect this.
                 addr.wrapping_add(prefix_end as u64)
             } else {
+                // overflow-ok: prefix_end/consumed are usize offsets into the
+                // parsed input string, nowhere near usize::MAX.
                 addr.wrapping_add((prefix_end + consumed) as u64)
             };
             state.memory_store(end, arch_word(state, end_addr))?;

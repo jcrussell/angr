@@ -73,6 +73,7 @@ impl NativeSyscall for NativeBrkSyscall {
         // `bounded_value` rather than `extract_bounded_concrete_arg` — the
         // `BoundedArg` match is what makes the refusal arm mandatory
         // (angr-91vj9.1).
+        // overflow-ok: new_brk < current returned above, so new_brk >= current.
         match bounded_value("brk growth", new_brk - current, MAX_BRK_GROWTH) {
             BoundedArg::Within(_) => {}
             BoundedArg::Exceeds => return Ok(SyscallOutcome::Continue { ret: current }),
@@ -95,9 +96,11 @@ impl NativeSyscall for NativeBrkSyscall {
         };
 
         if need_map {
-            // Align up: pages [aligned_start, aligned_end).
-            let aligned_start = (current + PAGE_MASK) & !PAGE_MASK;
-            let aligned_end = (new_brk + PAGE_MASK) & !PAGE_MASK;
+            // Align up: pages [aligned_start, aligned_end). wrapping_add since
+            // new_brk is a guest-controlled concrete value bounded only by
+            // MAX_BRK_GROWTH relative to `current`, not by an absolute cap.
+            let aligned_start = current.wrapping_add(PAGE_MASK) & !PAGE_MASK;
+            let aligned_end = new_brk.wrapping_add(PAGE_MASK) & !PAGE_MASK;
 
             // Collision check: if any page in the new range is already
             // mapped, fall back to Python so its SimMemoryError-driven
@@ -116,7 +119,11 @@ impl NativeSyscall for NativeBrkSyscall {
 
             // Map the new pages with RWX (matches Python `map_region(..., 7)`).
             let memory = state.memory_mut();
-            memory.map(aligned_start, aligned_end - aligned_start, Permission::RWX);
+            memory.map(
+                aligned_start,
+                aligned_end.wrapping_sub(aligned_start),
+                Permission::RWX,
+            );
         }
 
         state.set_posix_brk(new_brk);

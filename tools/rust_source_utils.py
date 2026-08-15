@@ -65,14 +65,16 @@ def blank_noise(src: str) -> str:
 
 def is_test_file(path: Path | str) -> bool:
     """True for the repo's Rust test-module naming conventions."""
-    rel = Path(path).as_posix()
-    name = Path(path).name
+    p = Path(path)
+    rel = p.as_posix()
+    name = p.name
     return (
         name.endswith("_tests.rs")
         or name.startswith("tests_")
         or name in ("test_helpers.rs", "property_tests.rs")
         or "/tests/" in rel
         or rel.startswith("tests/")
+        or any(part.endswith("_tests") for part in p.parent.parts)
     )
 
 

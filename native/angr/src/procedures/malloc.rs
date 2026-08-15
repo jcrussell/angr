@@ -59,6 +59,8 @@ crate::declare_proc! {
         // Zero-fill the allocated memory
         if total > 0 {
             let mut offset = 0u64;
+            // overflow-ok: offset is bounded by `total`, itself capped by
+            // check_max(total, MAX_ALLOC_SIZE) above -- nowhere near u64::MAX.
             while offset + 8 <= total {
                 let bv = RustBV::concrete(0, 64);
                 state.memory_store(addr.wrapping_add(offset), bv)?;

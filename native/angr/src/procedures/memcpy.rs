@@ -173,6 +173,8 @@ pub(super) fn copy_forward(
     let mut offset: usize = 0;
 
     // Copy in 8-byte chunks where possible
+    // overflow-ok: offset is bounded by `size`, a natively-copied length
+    // capped well below usize::MAX (native memcpy/memmove size limits).
     while offset + 8 <= size {
         let value = state.memory_load(src.wrapping_add(offset as u64), 8)?;
         state.memory_store(dst.wrapping_add(offset as u64), value)?;
