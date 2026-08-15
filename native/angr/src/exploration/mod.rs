@@ -23,7 +23,9 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
 
 use self::selection_policy::SelectionPolicy;
-use crate::arch::{AddrOrSymbolic, ExtractionError, arch_from_name, default_cc_for_arch};
+use crate::arch::{
+    AddrOrSymbolic, ExtractionError, MAX_EXTRACT_ARGS, arch_from_name, default_cc_for_arch,
+};
 use crate::callbacks::{DeferredFork, ExecutionConfig, PythonCallbacks, RunResult};
 use crate::claripy_bridge::{ast_export_err, ast_import_err, claripy_to_rustbv, rustbv_to_claripy};
 use crate::interpreter::{DCAS_UNSUPPORTED_REASON, ExecutionStats, VECRET_GSPTR_REASON};

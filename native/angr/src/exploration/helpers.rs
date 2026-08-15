@@ -679,11 +679,22 @@ pub(crate) struct ArgExtractAbi<'a> {
 /// Every procedure ABI supplies a stack window, so `RegisterOverflow` is
 /// reachable only from the syscall adapters. MIPS O32 is the one syscall ABI
 /// that spills (args 5+ at `sp+16`).
+///
+/// `num_args` is rejected above [`MAX_EXTRACT_ARGS`]
+/// ([`ExtractionError::TooManyArgs`]) *before* the result vector is reserved:
+/// the count arrives verbatim from Python, and reserving it unchecked aborts
+/// the host process rather than failing (see the constant's doc).
 pub(crate) fn extract_args_with_abi(
     abi: &ArgExtractAbi<'_>,
     state: &RustSimState,
     num_args: usize,
 ) -> Result<Vec<RustBV>, ExtractionError> {
+    if num_args > MAX_EXTRACT_ARGS {
+        return Err(ExtractionError::TooManyArgs {
+            requested: num_args,
+            max: MAX_EXTRACT_ARGS,
+        });
+    }
     let ptr_size = abi.pointer_size;
     let mut args = Vec::with_capacity(num_args);
     for &offset in abi.arg_registers.iter().take(num_args) {
@@ -698,10 +709,17 @@ pub(crate) fn extract_args_with_abi(
                 available: abi.arg_registers.len(),
             })?;
         let sp = state.get_sp().as_u64().ok_or(ExtractionError::SpSymbolic)?;
-        let stack_start = sp + stack_offset;
+        // Guest-controlled SP: both additions wrap rather than panicking, the
+        // same choice `advance_sp_past_return_addr` makes below and what the
+        // hardware does at the top of the address space. A wrapped slot is
+        // almost never mapped, so the load reports `StackUnmapped` and the
+        // dispatcher falls back to Python (angr-0jh0j.24).
+        let stack_start = sp.wrapping_add(stack_offset);
         let already = args.len();
+        // `already <= num_args`: the register loop is `take(num_args)`, and
+        // this branch only runs when `args.len() < num_args`.
         for i in 0..(num_args - already) {
-            let addr = stack_start + (i as u64 * ptr_size as u64);
+            let addr = stack_start.wrapping_add(i as u64 * ptr_size as u64);
             let value =
                 state
                     .memory_load(addr, ptr_size)

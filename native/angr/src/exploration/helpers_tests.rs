@@ -163,6 +163,78 @@ fn amd64_extract_procedure_args_unmapped_stack() {
     }
 }
 
+/// An absurd `num_args` — `register_simprocedure` stores the Python-supplied
+/// count verbatim, and `step_one` only widens it — must be declined *before*
+/// the result vector is reserved. Reserving it aborts the host process
+/// (`capacity overflow` panic, or `handle_alloc_error` for a huge-but-not-
+/// overflowing count), which no `catch_unwind` can contain (angr-0jh0j.23).
+#[test]
+fn amd64_extract_procedure_args_rejects_absurd_num_args() {
+    let mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    let mut state = RustSimState::new("amd64").expect("amd64 state");
+    // Concrete, mapped stack: the request must be refused on the count alone,
+    // not incidentally by a stack-read failure.
+    let sp: u64 = 0x7fff_f000;
+    state.map_memory(sp, 0x1000, crate::memory::Permission::RW);
+    state.set_sp(RustBV::concrete(sp as u128, 64));
+
+    for requested in [MAX_EXTRACT_ARGS + 1, 1usize << 63] {
+        match mgr.extract_procedure_args(&state, requested) {
+            Err(ExtractionError::TooManyArgs { requested: r, max }) => {
+                assert_eq!(r, requested);
+                assert_eq!(max, MAX_EXTRACT_ARGS);
+            }
+            other => panic!("expected TooManyArgs for {requested}, got {other:?}"),
+        }
+    }
+
+    // The syscall adapter shares the helper, so it is bounded too — and the
+    // count check precedes the RegisterOverflow branch it would otherwise hit.
+    match mgr.extract_syscall_args(&state, usize::MAX) {
+        Err(ExtractionError::TooManyArgs { .. }) => {}
+        other => panic!("expected TooManyArgs, got {other:?}"),
+    }
+}
+
+/// An SP at the top of the address space must wrap the stack-slot arithmetic
+/// rather than overflow it: `sp + stack_arg_offset()` panics under
+/// overflow-checks and silently wraps in the shipped release build, where the
+/// documented contract is a clean `StackUnmapped` fallback to Python
+/// (angr-0jh0j.24).
+#[test]
+fn amd64_extract_procedure_args_wraps_sp_at_the_top_of_memory() {
+    let mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    let mut state = RustSimState::new("amd64").expect("amd64 state");
+    // amd64 spills at [sp + 8], so this SP puts the first stack slot at 4.
+    let sp: u64 = u64::MAX - 3;
+    state.set_sp(RustBV::concrete(sp as u128, 64));
+
+    match mgr.extract_procedure_args(&state, 8) {
+        Err(ExtractionError::StackUnmapped { arg_index, addr }) => {
+            assert_eq!(arg_index, 6);
+            assert_eq!(addr, 4, "stack slot address must wrap, not overflow");
+        }
+        other => panic!("expected StackUnmapped, got {other:?}"),
+    }
+}
+
+/// The bound is a backstop for nonsense counts, not a tightening of the
+/// supported range: a request *at* `MAX_EXTRACT_ARGS` still extracts, spilling
+/// the 58 args past the 6-register window off the stack.
+#[test]
+fn amd64_extract_procedure_args_allows_the_maximum() {
+    let mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    let mut state = RustSimState::new("amd64").expect("amd64 state");
+    let sp: u64 = 0x7fff_f000;
+    state.map_memory(sp, 0x1000, crate::memory::Permission::RW);
+    state.set_sp(RustBV::concrete(sp as u128, 64));
+
+    let args = mgr
+        .extract_procedure_args(&state, MAX_EXTRACT_ARGS)
+        .expect("max args extract");
+    assert_eq!(args.len(), MAX_EXTRACT_ARGS);
+}
+
 // --- compute_register_tuple_hash (helpers.rs) ----------------------------
 // The concrete branch runs during the fauxware uniqueness integration test,
 // but the symbolic-sentinel disambiguation and missing-register branches are

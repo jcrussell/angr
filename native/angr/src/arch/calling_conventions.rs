@@ -54,7 +54,30 @@ pub(crate) enum ExtractionError {
         "extract_args: requested {requested} arguments but ABI exposes only {available} registers and no stack path"
     )]
     RegisterOverflow { requested: usize, available: usize },
+    /// The requested argument count exceeds [`MAX_EXTRACT_ARGS`]. Only
+    /// reachable from a caller-supplied count (`register_simprocedure`'s
+    /// `num_args` crosses the Python boundary verbatim), so the request is a
+    /// misconfiguration rather than anything the guest can drive.
+    #[error("extract_args: requested {requested} arguments, exceeding the maximum of {max}")]
+    TooManyArgs { requested: usize, max: usize },
 }
+
+/// Upper bound on the argument count `extract_args_with_abi` will honor.
+///
+/// `num_args` reaches that helper straight from Python
+/// (`RustExplorationManager::register_simprocedure` stores it verbatim, and
+/// `run_loop_single::step_one` only widens it with `.max()`), so without a
+/// bound the first statement — a `Vec::with_capacity(num_args)` — turns an
+/// ordinary API call like `register_simprocedure(addr, "foo", 1 << 63, false)`
+/// into a `capacity overflow` panic or an `alloc::handle_alloc_error` abort
+/// that no `catch_unwind` can contain (angr-0jh0j.23).
+///
+/// 64 is generous by two orders of magnitude against real ABIs: the widest
+/// register window here is 8, the largest `num_args()` any native procedure
+/// declares is 5, and `MAX_VARARGS` in `procedures::fortify_printf` is 6.
+/// A request above it declines cleanly, which makes the dispatcher fall back
+/// to the Python SimProcedure rather than crash the host process.
+pub(crate) const MAX_EXTRACT_ARGS: usize = 64;
 
 /// Calling convention trait: the per-ABI facts argument extraction, native
 /// sub-calls and return-value stores need.
