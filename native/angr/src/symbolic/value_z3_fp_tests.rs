@@ -665,17 +665,70 @@ fn test_fp_convert_f_to_f_symbolic_rm_matches_concrete() {
 // Symbolic operands + solver interaction
 // ---------------------------------------------------------------------------
 
+/// Nudge `v` by `n` ULPs (`n` may be negative), staying inside one binade.
+/// Used to build the neighbours of an FP solution by IEEE bit pattern rather
+/// than by arithmetic, which would itself round.
+fn ulps(v: f64, n: i64) -> f64 {
+    f64::from_bits(v.to_bits().wrapping_add_signed(n))
+}
+
 /// The FP builder must produce a *constrainable* term, not just something that
 /// evaluates: solve for `x` in `x + 1.5 == 4.0` through the Z3 FP theory.
+///
+/// Deliberately does *not* assert `x == 2.5`. 4.0 does have a unique encoding,
+/// but that pins the *sum*, not `x`: under round-to-nearest-even the solution
+/// set is `{2.5, 2.5 + 1 ULP}`, because the latter's exact sum
+/// `4.0 + 0.5 ULP(4.0)` is a tie that rounds down to 4.0 (4.0's significand is
+/// even). Which of the two Z3 hands back is its own choice, so asserting one of
+/// them reported a model preference as an engine bug (angr-63g3w). The
+/// solution set itself is pinned by
+/// `test_fp_add_symbolic_solution_set_is_exactly_rne`.
 #[test]
 fn test_fp_add_with_symbolic_operand_solves() {
     let ctx = SymContext::new();
     let x = RustBV::symbolic(&ctx, "x", 64);
     let sum = fp_expr(FloatOpKind::Add, FloatPrec::F64, vec![x.clone(), bv64(1.5)]);
-    // Compare on the IEEE bits: 4.0 has a unique encoding, so this pins x.
     ctx.assume_true(&sum.eq(&bv64(4.0), &ctx));
     assert!(ctx.is_sat());
-    assert_eq!(eval_f64(&ctx, &x), 2.5);
+    // Whatever model comes back must satisfy the constraint under Rust's own
+    // RNE add — an unconstrained fresh variable would not.
+    let solved = eval_f64(&ctx, &x);
+    assert_eq!(
+        solved + 1.5,
+        4.0,
+        "solved x = {solved:?} does not satisfy x + 1.5 == 4.0 under Rust's RNE add"
+    );
+}
+
+/// Pin the solution set of `x + 1.5 == 4.0` one candidate at a time, which the
+/// single-model assertion in `test_fp_add_with_symbolic_operand_solves` cannot
+/// do. This is what makes that test's relaxation safe: it is also a rounding-mode
+/// check, since a plain `Add` emitted with the wrong mode has a *different*
+/// solution set — RTZ additionally admits `2.5 + 2 ULP` (its exact sum
+/// `4.0 + 1 ULP(4.0)` truncates back to 4.0), and RU/RNA reject `2.5 + 1 ULP`.
+#[test]
+fn test_fp_add_symbolic_solution_set_is_exactly_rne() {
+    for (candidate, expect_sat) in [
+        (2.5f64, true),
+        (ulps(2.5, 1), true),
+        (ulps(2.5, 2), false),
+        (ulps(2.5, -1), false),
+    ] {
+        let ctx = SymContext::new();
+        let x = RustBV::symbolic(&ctx, "x", 64);
+        let sum = fp_expr(FloatOpKind::Add, FloatPrec::F64, vec![x.clone(), bv64(1.5)]);
+        ctx.assume_true(&sum.eq(&bv64(4.0), &ctx));
+        ctx.assume_true(&x.eq(&bv64(candidate), &ctx));
+        assert_eq!(
+            ctx.is_sat(),
+            expect_sat,
+            "x = {candidate:?} (bits {:#018x}) + 1.5 == 4.0",
+            candidate.to_bits()
+        );
+        // Cross-check the expectation against Rust's concrete RNE add, so the
+        // table cannot drift away from IEEE semantics unnoticed.
+        assert_eq!(candidate + 1.5 == 4.0, expect_sat, "concrete cross-check");
+    }
 }
 
 /// An unsatisfiable FP constraint must be reported unsat — a builder that
