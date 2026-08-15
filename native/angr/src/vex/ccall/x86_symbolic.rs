@@ -490,35 +490,3 @@ pub(super) fn sym_pack_eflags(flags: &SymFlags, ret_bits: u32, ctx: &SymContext)
         &flags.of, &flags.sf, &flags.zf, &flags.pf, &flags.cf, ret_bits, ctx,
     )
 }
-
-/// Symbolic eflags computation for SUB/CMP: flags from dep1 - dep2 packed at ret_bits.
-pub(super) fn symbolic_eflags_sub(
-    nbits: u32,
-    dep1: &RustBV,
-    dep2: &RustBV,
-    ctx: &SymContext,
-    ret_bits: u32,
-) -> RustBV {
-    sym_pack_eflags(&sym_flags_sub(nbits, dep1, dep2, ctx), ret_bits, ctx)
-}
-
-/// Symbolic eflags computation for ADD: flags from dep1 + dep2 packed at ret_bits.
-pub(super) fn symbolic_eflags_add(
-    nbits: u32,
-    dep1: &RustBV,
-    dep2: &RustBV,
-    ctx: &SymContext,
-    ret_bits: u32,
-) -> RustBV {
-    sym_pack_eflags(&sym_flags_add(nbits, dep1, dep2, ctx), ret_bits, ctx)
-}
-
-/// Symbolic eflags computation for LOGIC: flags from result in dep1 packed at ret_bits.
-pub(super) fn symbolic_eflags_logic(
-    nbits: u32,
-    dep1: &RustBV,
-    ctx: &SymContext,
-    ret_bits: u32,
-) -> RustBV {
-    sym_pack_eflags(&sym_flags_logic(nbits, dep1, ctx), ret_bits, ctx)
-}

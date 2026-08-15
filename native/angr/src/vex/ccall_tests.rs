@@ -788,6 +788,96 @@ fn rflags_c_inc_dec_symbolic_dep_preserves_carry() {
     }
 }
 
+/// angr-0jh0j.71: the symbolic `*_calculate_eflags_all` branch used to
+/// enumerate Sub/Add/Logic by hand and drop every other category to the Python
+/// ccall (30x wall-clock, angr-9ke6b.88), even though `sym_flags_for_category`
+/// already built flags for all of them. Every non-Copy cc_op both arches decode
+/// must now resolve natively; iterating the decoder rather than a hand-written
+/// list means a newly mapped cc_op is covered the day it lands.
+#[test]
+fn eflags_all_symbolic_covers_every_cc_op() {
+    let ctx = crate::symbolic::SymContext::new_mock();
+    for (name, arch) in [
+        ("amd64g_calculate_eflags_all", CcArch::Amd64),
+        ("x86g_calculate_eflags_all", CcArch::X86),
+    ] {
+        let mut seen = 0;
+        // cc_op 0 is COPY on both arches and takes the mask shortcut above.
+        for cc_op in 1..64u64 {
+            let Some(info) = cc_op_info(arch, cc_op) else {
+                continue;
+            };
+            assert_ne!(info.category, OpCategory::Copy, "{name} cc_op={cc_op}");
+            seen += 1;
+            // A symbolic cc_dep1 declines the concrete fast path, forcing the
+            // symbolic branch this test is about.
+            let args = vec![
+                RustBV::concrete(cc_op as u128, 64),
+                RustBV::symbolic(&ctx, format!("{name}_d1_{cc_op}"), 64),
+                RustBV::concrete(0x5a, 64),
+                RustBV::concrete(1, 64),
+            ];
+            assert!(
+                handle_ccall_with_ctx(name, &args, 64, Some(&ctx)).is_some(),
+                "{name} cc_op={cc_op} ({:?}) fell back to Python",
+                info.category
+            );
+        }
+        assert!(seen > 10, "{name} decoded only {seen} cc_ops");
+    }
+}
+
+/// Value half of `eflags_all_symbolic_covers_every_cc_op`: the packed symbolic
+/// answer must equal the concrete `calculate_eflags_all_*` reference for every
+/// cc_op, not merely be non-`None`. Pins cc_dep1 with a constraint so the
+/// symbolic path runs while the answer stays evaluable.
+// Symbolic solving: `add_bv_constraint` / `eval` only exist with the Z3-backed
+// engine (angr-9ke6b.236, see bd memory `vex-engine-z3-test-gate-invariant`).
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn diff_fuzz_eflags_all_symbolic_matches_concrete() {
+    let mut rng = Lcg::new(0x0ef1_a5a1);
+    for (name, arch) in [
+        ("amd64g_calculate_rflags_all", CcArch::Amd64),
+        ("x86g_calculate_eflags_all", CcArch::X86),
+    ] {
+        for cc_op in 1..64u64 {
+            if cc_op_info(arch, cc_op).is_none() {
+                continue;
+            }
+            for _ in 0..2 {
+                let d1 = rng.next();
+                let d2 = rng.next();
+                // ADC/SBB read cc_ndep as the incoming carry; the rotates read
+                // it as packed flags. Keeping it in {0,1} is valid for both.
+                let nd = rng.next() & flag_mask::G_CC_MASK_C;
+                // Fresh context per case: the constraint pins the symbol to d1.
+                let ctx = crate::symbolic::SymContext::new_mock();
+                let sym_d1 = RustBV::symbolic(&ctx, "eflags_all_d1", 64);
+                ctx.add_bv_constraint(&sym_d1, d1 as u128);
+                let args = vec![
+                    RustBV::concrete(cc_op as u128, 64),
+                    sym_d1,
+                    RustBV::concrete(d2 as u128, 64),
+                    RustBV::concrete(nd as u128, 64),
+                ];
+                let got = handle_ccall_with_ctx(name, &args, 64, Some(&ctx))
+                    .expect("every decoded cc_op must resolve natively");
+                let want = match arch {
+                    CcArch::Amd64 => calculate_eflags_all_amd64(cc_op, d1, d2, nd),
+                    CcArch::X86 => calculate_eflags_all_x86(cc_op, d1, d2, nd),
+                }
+                .expect("concrete reference must also decode");
+                assert_eq!(
+                    ctx.eval(&got),
+                    Some(want as u128),
+                    "{name} cc_op={cc_op} d1={d1:x} d2={d2:x} nd={nd:x}"
+                );
+            }
+        }
+    }
+}
+
 /// An out-of-range condition code must defer to Python (`None`) rather than
 /// silently answering "condition false", matching `eval_sym_condition`.
 /// Covers both `calculate_condition` arms: the COPY shortcut and the

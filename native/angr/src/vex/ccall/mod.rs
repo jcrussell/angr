@@ -698,25 +698,27 @@ pub fn handle_ccall_with_ctx(
                 return Some(result);
             }
 
-            // Symbolic SUB/ADD/LOGIC eflags computation
+            // Symbolic eflags computation. Route every non-Copy category
+            // through the shared `SymFlags` builder rather than enumerating a
+            // handful here — same reuse as the eflags_c branch above. Before
+            // angr-0jh0j.71 this covered only Sub/Add/Logic, so a PUSHF/LAHF
+            // after a symbolic ADC/SBB/shift/rotate/multiply fell back to the
+            // Python ccall (30x wall-clock, measured on angr-9ke6b.88) even
+            // though `sym_flags_for_category` already handled the category.
+            // Copy is unreachable here: the only cc_op mapping to it is 0,
+            // returned above.
             let arch = CcArch::from_ccall_name(name);
-            if let Some(info) = cc_op_info(arch, cc_op) {
-                let nb = info.nbits;
-                let result = match info.category {
-                    OpCategory::Sub => Some(symbolic_eflags_sub(
-                        nb, &args[1], &args[2], sym_ctx, ret_bits,
-                    )),
-                    OpCategory::Add => Some(symbolic_eflags_add(
-                        nb, &args[1], &args[2], sym_ctx, ret_bits,
-                    )),
-                    OpCategory::Logic => {
-                        Some(symbolic_eflags_logic(nb, &args[1], sym_ctx, ret_bits))
-                    }
-                    _ => None,
-                };
-                if result.is_some() {
-                    return result;
-                }
+            if let Some(info) = cc_op_info(arch, cc_op)
+                && let Ok(flags) = sym_flags_for_category(
+                    info.category,
+                    info.nbits,
+                    &args[1],
+                    &args[2],
+                    &args[3],
+                    sym_ctx,
+                )
+            {
+                return Some(sym_pack_eflags(&flags, ret_bits, sym_ctx));
             }
         }
 
