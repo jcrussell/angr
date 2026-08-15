@@ -861,14 +861,20 @@ fn wide_sdiv_srem_degenerate_to_unsigned() {
                 let (x, y) = (bv(a, w), bv(b, w));
                 // Both operands are non-negative (sign bit past the storage),
                 // so bvsdiv/bvsrem equal bvudiv/bvurem. Division by zero stays
-                // total: x / 0 == -1 == all-ones for x >= 0, and x % 0 == x.
-                let want_div = if b == 0 { u128::MAX } else { a / b };
+                // total (x / 0 == -1 == all-ones for x >= 0), but all-ones is
+                // not representable up here, so that one case declines the
+                // fold instead — see `wide_div_by_zero_declines_the_concrete_fold`
+                // (angr-nknv1). `x % 0 == x` is representable and still folds.
                 let want_rem = if b == 0 { a } else { a % b };
-                assert_eq!(
-                    val(&x.sdiv(&y, &ctx)),
-                    want_div,
-                    "sdiv w={w} a={a:#x} b={b:#x}"
-                );
+                let got_div = x.sdiv(&y, &ctx);
+                if b == 0 {
+                    assert!(
+                        got_div.as_u128().is_none(),
+                        "sdiv by zero must not fold w={w} a={a:#x}"
+                    );
+                } else {
+                    assert_eq!(val(&got_div), a / b, "sdiv w={w} a={a:#x} b={b:#x}");
+                }
                 assert_eq!(
                     val(&x.srem(&y, &ctx)),
                     want_rem,
@@ -1087,6 +1093,81 @@ fn wide_sign_extend_of_negative_source_declines_the_concrete_fold() {
             let got_pos = bv(pos, from).sign_extend(to, &ctx);
             assert_eq!(val(&got_pos), pos, "sext({from}->{to}) v={pos:#x}");
         }
+    }
+}
+
+// angr-nknv1: `all_ones_mask` saturates to `u128::MAX` above 128 bits, so the
+// `x & all_ones -> x` / `x | all_ones -> all_ones` arms used to fire against a
+// concrete that is really the ordinary number `2^128 - 1`. Against a SYMBOLIC
+// operand both shortcuts are then wrong: the AND must clear bits `[128..w)`
+// (returning `x` keeps them) and the OR must keep them (returning
+// `Self::ones(w)` = `2^128 - 1` drops them). Both must stay symbolic above the
+// ceiling, and both must still fire at or below it.
+#[test]
+fn wide_and_or_against_saturated_all_ones_decline_the_simplification() {
+    let ctx = SymContext::new_mock();
+    for &w in &WIDE_WIDTHS {
+        let x = RustBV::symbolic(&ctx, "x", w);
+        let ones = bv(u128::MAX, w);
+        for (name, got, op) in [
+            ("x & ones", x.and(&ones, &ctx), BVOp::And),
+            ("ones & x", ones.and(&x, &ctx), BVOp::And),
+            ("x | ones", x.or(&ones, &ctx), BVOp::Or),
+            ("ones | x", ones.or(&x, &ctx), BVOp::Or),
+        ] {
+            assert_eq!(got.width(), w, "{name} width w={w}");
+            assert!(got.as_u128().is_none(), "{name} must not fold w={w}");
+            assert_eq!(got.op(), Some(&op), "{name} op w={w}");
+        }
+    }
+    // At or below the ceiling `u128::MAX` masked to `w` really is all-ones, so
+    // both simplifications must still fire.
+    for &w in &[1u32, 8, 64, 127, 128] {
+        let x = RustBV::symbolic(&ctx, "x", w);
+        let ones = bv(u128::MAX, w);
+        for (name, got) in [
+            ("x & ones", x.and(&ones, &ctx)),
+            ("ones & x", ones.and(&x, &ctx)),
+        ] {
+            assert_eq!(got.width(), w, "{name} width w={w}");
+            assert!(got.op().is_none() && got.is_symbolic(), "{name} w={w}");
+        }
+        assert_eq!(val(&x.or(&ones, &ctx)), mask(w), "x | ones w={w}");
+        assert_eq!(val(&ones.or(&x, &ctx)), mask(w), "ones | x w={w}");
+    }
+}
+
+// angr-nknv1: `x / 0` is all-ones, which `RustBV::ones` cannot represent above
+// 128 bits (it saturates to `2^128 - 1`), so both division folds must decline
+// there and let Z3's equally-total bvudiv/bvsdiv answer at the declared width.
+#[test]
+fn wide_div_by_zero_declines_the_concrete_fold() {
+    let ctx = SymContext::new_mock();
+    for &w in &WIDE_WIDTHS {
+        for &a in &wide_payloads() {
+            let zero = bv(0, w);
+            for (name, got, op) in [
+                ("udiv", bv(a, w).udiv(&zero, &ctx), BVOp::UDiv),
+                ("sdiv", bv(a, w).sdiv(&zero, &ctx), BVOp::SDiv),
+            ] {
+                assert_eq!(got.width(), w, "{name} width w={w} a={a:#x}");
+                assert!(
+                    got.as_u128().is_none(),
+                    "{name} by zero must not fold w={w} a={a:#x}"
+                );
+                assert_eq!(got.op(), Some(&op), "{name} op w={w} a={a:#x}");
+            }
+            // A non-zero divisor still folds: both operands are logically
+            // non-negative up here, so signed division degenerates to unsigned.
+            let d = bv(3, w);
+            assert_eq!(val(&bv(a, w).udiv(&d, &ctx)), a / 3, "udiv w={w} a={a:#x}");
+            assert_eq!(val(&bv(a, w).sdiv(&d, &ctx)), a / 3, "sdiv w={w} a={a:#x}");
+        }
+    }
+    // Below the ceiling all-ones is representable and `x / 0` still folds.
+    for &w in &[1u32, 8, 64, 128] {
+        assert_eq!(val(&bv(1, w).udiv(&bv(0, w), &ctx)), mask(w), "udiv w={w}");
+        assert_eq!(val(&bv(1, w).sdiv(&bv(0, w), &ctx)), mask(w), "sdiv w={w}");
     }
 }
 

@@ -391,7 +391,11 @@ impl RustBV {
         /// Unsigned division, consuming both arguments.
         udiv_into,
         |lhs, rhs, _ctx| {
-            (Some(a), Some(b)) => {
+            // `x / 0` is all-ones, which `Self::ones` cannot represent above
+            // 128 bits, so the guard declines that one case and the `_` arm
+            // keeps the UDiv symbolic — Z3's bvudiv is total the same way
+            // (angr-nknv1).
+            (Some(a), Some(b)) if b != 0 || !bits_beyond_storage(lhs.width()) => {
                 if b == 0 {
                     Self::ones(lhs.width())
                 } else {
@@ -411,17 +415,15 @@ impl RustBV {
         /// Signed division, consuming both arguments.
         sdiv_into,
         |lhs, rhs, _ctx| {
-            (Some(a), Some(b)) => {
+            // Same `x / 0` decline as `udiv`: above 128 bits the all-ones
+            // quotient is unrepresentable, so leave it to Z3 (angr-nknv1).
+            (Some(a), Some(b)) if b != 0 || !bits_beyond_storage(lhs.width()) => {
                 let width = lhs.width();
                 if sign_bit_beyond_storage(width) {
                     // Both operands are logically non-negative, so bvsdiv
-                    // degenerates to bvudiv (and x / 0 == -1 == all-ones for
-                    // every x >= 0). angr-03vl4.58.
-                    if b == 0 {
-                        Self::ones(width)
-                    } else {
-                        Self::concrete(a / b, width)
-                    }
+                    // degenerates to bvudiv. `b == 0` cannot reach here — the
+                    // arm guard declined it at this width.
+                    Self::concrete(a / b, width)
                 } else {
                     let a_signed = sign_extend(a, width);
                     if b == 0 {
@@ -545,9 +547,11 @@ impl RustBV {
             (Some(a), Some(b)) => Self::concrete(a & b, lhs.width()),
             // x & 0 → 0
             (_, Some(0)) | (Some(0), _) => Self::zero(lhs.width()),
-            // x & all_ones → x
-            (None, Some(v)) if v == Self::all_ones_mask(lhs.width()) => lhs,
-            (Some(v), None) if v == Self::all_ones_mask(rhs.width()) => rhs,
+            // x & all_ones → x (only when the concrete really is all-ones —
+            // see `is_all_ones`; above 128 bits it never is, and the `_` arm
+            // keeps the And symbolic so Z3 clears bits [128..width) itself)
+            (None, Some(v)) if is_all_ones(v, lhs.width()) => lhs,
+            (Some(v), None) if is_all_ones(v, rhs.width()) => rhs,
             _ => {
                 let width = lhs.width();
                 let (l, r) = lhs.canonicalize_commutative(rhs);
@@ -566,9 +570,11 @@ impl RustBV {
             // x | 0 → x
             (None, Some(0)) => lhs,
             (Some(0), None) => rhs,
-            // x | all_ones → all_ones
-            (_, Some(v)) if v == Self::all_ones_mask(lhs.width()) => Self::ones(lhs.width()),
-            (Some(v), _) if v == Self::all_ones_mask(lhs.width()) => Self::ones(lhs.width()),
+            // x | all_ones → all_ones (`is_all_ones` also keeps the result
+            // representable: `Self::ones` saturates above 128 bits, where it
+            // would drop the symbolic operand's bits [128..width))
+            (_, Some(v)) if is_all_ones(v, lhs.width()) => Self::ones(lhs.width()),
+            (Some(v), _) if is_all_ones(v, lhs.width()) => Self::ones(lhs.width()),
             _ => {
                 let width = lhs.width();
                 let (l, r) = lhs.canonicalize_commutative(rhs);
@@ -1499,6 +1505,22 @@ fn bits_beyond_storage(width: u32) -> bool {
 #[inline]
 fn concrete_arith_fits(width: u32, exact: Option<u128>) -> bool {
     !bits_beyond_storage(width) || exact.is_some()
+}
+
+/// `true` when the concrete `v` really is the all-ones value of a `width`-bit
+/// vector, i.e. when an "operand is all-ones" simplification may fire
+/// (angr-nknv1).
+///
+/// [`RustBV::all_ones_mask`] saturates at the u128 payload, so above 128 bits
+/// it returns `2^128 - 1` rather than `2^width - 1`; a `Concrete` cannot hold
+/// the width's all-ones value there at all (see [`RustBV::ones`]). A bare
+/// comparison against the mask therefore misidentifies the ordinary number
+/// `2^128 - 1` as all-ones, and the shortcut it unlocks (`x & ones → x`,
+/// `x | ones → ones`) is wrong for a symbolic `x`: the AND must clear bits
+/// `[128..width)` and the OR must keep them.
+#[inline]
+fn is_all_ones(v: u128, width: u32) -> bool {
+    !bits_beyond_storage(width) && v == RustBV::all_ones_mask(width)
 }
 
 /// `true` when the sign bit of a `width`-bit `Concrete` lies beyond the u128

@@ -582,6 +582,14 @@ impl RustBV {
     }
 
     /// Create a bitvector with all bits set to 1.
+    ///
+    /// **Payload-limited above 128 bits.** A `Concrete` stores a `u128`, so at
+    /// `width > 128` this yields `2^128 - 1` — an ordinary number roughly
+    /// `2^(width-128)` times too small, *not* the width's all-ones value, which
+    /// simply has no `Concrete` representation. Callers on a path a `width > 128`
+    /// vector can reach must decline instead of materialising this (see
+    /// `value_ops::is_all_ones` and the `x / 0` arms of `udiv`/`sdiv`);
+    /// `value_ops::bits_beyond_storage` is the predicate to gate on.
     #[inline]
     pub fn ones(width: u32) -> Self {
         RustBV::Concrete {
