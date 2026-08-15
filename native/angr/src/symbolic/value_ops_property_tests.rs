@@ -1181,44 +1181,47 @@ fn wide_div_by_zero_declines_the_concrete_fold() {
 /// fold like `WIDE_WIDTHS`, but — unlike `WIDE_WIDTHS`'s all-multiple-of-8
 /// entries — also declines the byte-reverse fold on *alignment* grounds).
 ///
-/// Width `0` is skipped for rotl/rotr: `define_rotate_pair!`'s concrete arm
-/// computes `amt = a % (w as u128)`, and `% 0` is an unconditional Rust
-/// panic (not one gated by overflow-checks) regardless of profile. No VEX
-/// `IROp` has a 0-bit operand, so this is believed unreachable in practice —
-/// flagged as a candidate gap rather than exercised here, since a reproducing
-/// case would abort the whole test binary rather than fail one test.
+/// Width `0` is exercised for rotl/rotr too, and is the regression case for
+/// angr-309bq: `define_rotate_pair!`'s concrete arm used to compute
+/// `amt = a % (w as u128)` unconditionally, and `% 0` is a Rust panic in every
+/// profile (not one gated by overflow-checks). No VEX `IROp` has a 0-bit
+/// operand, but `RustSolverContext::create_concrete(0, 0)` + `op_rotl` reaches
+/// it from Python, so the rotate now folds to the 0-bit identity instead.
 #[test]
 fn rotate_and_reverse_boundary_widths_cross_check_shared_table() {
     let ctx = SymContext::new_mock();
     for &w in &crate::test_boundary_values::boundary_widths() {
-        if w > 0 {
-            for &raw_a in &[0u128, 1, w as u128, 1u128 << 32] {
-                let (x, n) = (bv(u128::MAX, w), bv(raw_a, w));
-                let rl = x.rotl(&n, &ctx);
-                let rr = x.rotr(&n, &ctx);
-                assert_eq!(rl.width(), w, "rotl width w={w} a={raw_a}");
-                assert_eq!(rr.width(), w, "rotr width w={w} a={raw_a}");
+        for &raw_a in &[0u128, 1, w as u128, 1u128 << 32] {
+            let (x, n) = (bv(u128::MAX, w), bv(raw_a, w));
+            let rl = x.rotl(&n, &ctx);
+            let rr = x.rotr(&n, &ctx);
+            assert_eq!(rl.width(), w, "rotl width w={w} a={raw_a}");
+            assert_eq!(rr.width(), w, "rotr width w={w} a={raw_a}");
 
-                let amt = raw_a & mask(w.min(128));
-                if w > 128 && !amt.is_multiple_of(w as u128) {
-                    assert!(rl.as_u128().is_none(), "rotl must not fold w={w} amt={amt}");
-                    assert!(rr.as_u128().is_none(), "rotr must not fold w={w} amt={amt}");
-                } else if w <= 128 {
-                    let v = mask(w);
-                    let amtn = (amt % w as u128) as u32;
-                    let want_l = if amtn == 0 {
-                        v
-                    } else {
-                        ((v << amtn) | (v >> (w - amtn))) & mask(w)
-                    };
-                    let want_r = if amtn == 0 {
-                        v
-                    } else {
-                        ((v >> amtn) | (v << (w - amtn))) & mask(w)
-                    };
-                    assert_eq!(val(&rl), want_l, "rotl w={w} a={raw_a}");
-                    assert_eq!(val(&rr), want_r, "rotr w={w} a={raw_a}");
-                }
+            let amt = raw_a & mask(w.min(128));
+            if w == 0 {
+                // The only 0-bit value is the empty one; rotating it by any
+                // amount is the identity, and must not divide by the width.
+                assert_eq!(val(&rl), 0, "rotl w=0 a={raw_a}");
+                assert_eq!(val(&rr), 0, "rotr w=0 a={raw_a}");
+            } else if w > 128 && !amt.is_multiple_of(w as u128) {
+                assert!(rl.as_u128().is_none(), "rotl must not fold w={w} amt={amt}");
+                assert!(rr.as_u128().is_none(), "rotr must not fold w={w} amt={amt}");
+            } else if w <= 128 {
+                let v = mask(w);
+                let amtn = (amt % w as u128) as u32;
+                let want_l = if amtn == 0 {
+                    v
+                } else {
+                    ((v << amtn) | (v >> (w - amtn))) & mask(w)
+                };
+                let want_r = if amtn == 0 {
+                    v
+                } else {
+                    ((v >> amtn) | (v << (w - amtn))) & mask(w)
+                };
+                assert_eq!(val(&rl), want_l, "rotl w={w} a={raw_a}");
+                assert_eq!(val(&rr), want_r, "rotr w={w} a={raw_a}");
             }
         }
 

@@ -330,6 +330,7 @@ impl RustSolverContext {
 
     /// Concatenate two values (a becomes high bits).
     pub fn op_concat(&self, a_id: u64, b_id: u64) -> PyResult<RustBVHandle> {
+        self.reject_concat_overflow(a_id, b_id)?;
         self.opt_op(&[a_id, b_id], |table, ctx| table.op_concat(a_id, b_id, ctx))
     }
 
@@ -485,6 +486,35 @@ impl RustSolverContext {
                 "op_ite: then/else width mismatch: \
                  {then_width}-bit vs {else_width}-bit operands"
             )));
+        }
+        Ok(())
+    }
+
+    /// Reject an `op_concat` whose result width exceeds [`MAX_BV_WIDTH`].
+    ///
+    /// [`MAX_BV_WIDTH`]: crate::symbolic::MAX_BV_WIDTH
+    ///
+    /// `op_concat` is the one width-*growing* op in this file that
+    /// [`check_width`](Self::check_width) does not already cover: the caller
+    /// never names the result width, `RustBV::concat_owned` just adds the two
+    /// operand widths, and nothing below validates the sum. Repeated
+    /// self-concatenation (`h = op_concat(h, h)`) doubles it each call, so a
+    /// handful of calls reaches the multi-gigabit `Z3_mk_concat` sort
+    /// `check_bv_width` exists to refuse (angr-c7xno.94) and ~32 calls wrap the
+    /// `u32` — leaving an `Expression` node whose recorded width is small and
+    /// wrong while its Z3 AST is enormous, which then mis-validates every later
+    /// [`check_extract_bounds`] against the wrapped width (angr-0jh0j.73). A
+    /// missing handle is left to the op's own `invalid_handle_id` path.
+    pub(super) fn reject_concat_overflow(&self, a_id: u64, b_id: u64) -> PyResult<()> {
+        if let (Some(a_width), Some(b_width)) = (self.source_width(a_id), self.source_width(b_id)) {
+            // Refuse rather than saturate: a saturated width would be a wrong
+            // answer, not a smaller one (`invariant-overflow-fix-refuse-not-saturate-identities`).
+            let Some(result_width) = a_width.checked_add(b_width) else {
+                return Err(PyValueError::new_err(format!(
+                    "op_concat: result width {a_width} + {b_width} overflows u32"
+                )));
+            };
+            Self::check_width("op_concat", result_width)?;
         }
         Ok(())
     }

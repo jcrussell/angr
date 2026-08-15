@@ -134,7 +134,9 @@ macro_rules! define_signed_cmp_pair {
 /// amount mod width BEFORE narrowing u128→u32 (so amounts ≥ 2^32 don't
 /// truncate to 0 — see `invariant-concrete-shift-clamp-before-narrow`), then
 /// special-cases `amt == 0` so the complementary `v $comp (w - amt)` never
-/// shifts a u128 by its full width (a debug abort under panic=abort). A
+/// shifts a u128 by its full width (a debug abort under panic=abort), and
+/// treats `w == 0` as that same identity case so the reduction never divides
+/// by zero (angr-309bq). A
 /// non-trivial rotate at `width > 128` declines the fold entirely (see the
 /// in-arm comment). The two directions differ only in which shift is `$main`
 /// vs `$comp` and in the symbolic-fallthrough `$op`.
@@ -156,7 +158,14 @@ macro_rules! define_rotate_pair {
             let w = self.width();
             match (self.as_u128(), amount.as_u128()) {
                 (Some(v), Some(a)) => {
-                    let amt = (a % w as u128) as u32;
+                    // `w == 0` is a supported degenerate value (see
+                    // `MAX_BV_WIDTH`'s doc in `symbolic::width_guards`) and is
+                    // reachable from Python via `create_concrete(0, 0)` +
+                    // `op_rotl` — the `a % w` reduction below would be an
+                    // unconditional `% 0` panic in every profile (angr-309bq).
+                    // Every rotate of a 0-bit value is the identity, so it
+                    // takes the `amt == 0` arm.
+                    let amt = if w == 0 { 0 } else { (a % w as u128) as u32 };
                     if amt == 0 {
                         // Rotation by a multiple of the width is the identity,
                         // at every width — no shift performed, so this arm is

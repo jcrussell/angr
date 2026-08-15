@@ -390,6 +390,56 @@ fn test_creation_and_extends_reject_absurd_widths() {
     assert!(ctx.create_concrete(0, 0).is_ok());
 }
 
+/// angr-0jh0j.73: `op_concat` is the width-growing op whose result width the
+/// caller never names, so `test_creation_and_extends_reject_absurd_widths`
+/// above cannot cover it — `h = op_concat(h, h)` doubles the width per call,
+/// which reaches the cap in ~21 calls and wraps the `u32` in ~32.
+#[test]
+fn test_concat_rejects_result_width_above_cap() {
+    let ctx = RustSolverContext::new();
+    let mut h = c(&ctx, 1, 1);
+    let mut refused = None;
+
+    for _ in 0..24 {
+        let result = ctx.op_concat(h, h);
+        if result.is_err() {
+            refused = Some(err_msg(result));
+            break;
+        }
+        let next = result.unwrap();
+        assert!(
+            next.width() <= MAX_BV_WIDTH,
+            "concat produced width {} above the cap",
+            next.width()
+        );
+        h = next.id();
+    }
+
+    let msg = refused.expect("repeated self-concat must be refused before the cap is passed");
+    assert!(msg.contains("op_concat"), "{msg}");
+
+    // A concat that stays inside the cap is untouched.
+    let byte = c(&ctx, 0xff, 8);
+    assert_eq!(ctx.op_concat(byte, byte).unwrap().width(), 16);
+}
+
+/// angr-309bq: `create_concrete(0, 0)` is a supported degenerate value, and
+/// rotating one reduced the amount `mod width` — an unconditional `% 0` panic
+/// (a process abort under `panic="abort"`) reachable straight from Python.
+/// Every rotate of the empty bitvector is the identity instead.
+#[test]
+fn test_rotate_zero_width_folds_to_identity() {
+    let ctx = RustSolverContext::new();
+    let z = c(&ctx, 0, 0);
+
+    for (name, handle) in [
+        ("op_rotl", ctx.op_rotl(z, z).unwrap()),
+        ("op_rotr", ctx.op_rotr(z, z).unwrap()),
+    ] {
+        assert_eq!(handle.width(), 0, "{name} must stay 0-bit");
+    }
+}
+
 // =============================================================================
 // Constraint + query methods (need a real solver)
 // =============================================================================
