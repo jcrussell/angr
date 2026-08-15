@@ -278,3 +278,56 @@ fn test_second_level_merge_over_adopted_multi_page_does_not_panic() {
         "m==0 keeps the value adopted by the first merge"
     );
 }
+
+/// Collapsing a self-side Multi cell into a plain merge ITE must also *retire*
+/// the cell: drop the `multi_objects` payload and clear the page's
+/// `multi_bitmap` bit (angr-0jh0j.31).
+///
+/// Leaving them behind made the freshly-merged value unreachable —
+/// `load_concrete_common`'s `range_has_multi` check dispatches a Multi-marked
+/// byte to the Multi path before `symbolic_objects` is consulted, so every later
+/// load returned the stale single-arm payload, and `flush_multi_cells` wrote that
+/// stale value back over the merged entry on export.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_collapsed_multi_side_is_retired_from_the_multi_sidecar() {
+    let ctx = SymContext::new();
+    let addr = Address(ADDR);
+
+    let mut a = SymbolicMemory::new(Endness::Little);
+    a.set_multi_alternatives(
+        addr,
+        MultiPayload::from_alternatives(vec![multi_cell(RustBV::concrete(1, 1), 0x11)]),
+    );
+
+    // b maps the page and writes a different concrete byte, so the byte diverges.
+    let mut b = SymbolicMemory::new(Endness::Little);
+    b.map(ADDR & !0xfff, PAGE_SIZE, Permission::RW);
+    b.store_concrete(addr, RustBV::concrete(0x22, 8))
+        .expect("other-arm concrete write");
+
+    // `m == 1` selects other's 0x22 at this byte.
+    assert!(a.merge(&b, &RustBV::concrete(1, 1), &ctx));
+
+    assert!(
+        a.get_multi_alternatives(addr).is_none(),
+        "the superseded Multi payload must be dropped"
+    );
+    assert!(
+        !a.pages
+            .get(&addr.page_num())
+            .expect("page present")
+            .is_multi(addr.page_offset()),
+        "the superseded multi_bitmap bit must be cleared"
+    );
+    // With the bit cleared, the load reaches the merged `symbolic_objects` cell
+    // instead of being intercepted by the stale Multi path.
+    let loaded = a
+        .load(RustBV::concrete(ADDR as u128, 64), 1, &ctx)
+        .expect("load of the merged byte");
+    assert_eq!(
+        loaded.as_u128(),
+        Some(0x22),
+        "the merged value is reachable, not shadowed by the stale Multi cell"
+    );
+}

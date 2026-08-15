@@ -205,3 +205,82 @@ fn every_address_keyed_sidecar_survives_other_only_merge() {
         "dirty_pages"
     );
 }
+
+/// A wide (>1-byte) symbolic object that diverges inside the *both-pages-present*
+/// per-byte walk must contribute its per-byte **lanes**, resolved through the
+/// `symbolic_spans` reverse index, not `symbolic_objects[byte]` alone
+/// (angr-0jh0j.30).
+///
+/// Before the fix `merge_byte_value` consulted only `symbolic_objects`, which is
+/// keyed at an object's base address, so:
+///   * every interior byte fell through to the page's concrete placeholder,
+///     discarding the object's real content;
+///   * the base byte got the whole 32-bit object, feeding a width-32 `then` and a
+///     width-8 `else` into `RustBV::ite_into` — a `debug_assert` trip here, a
+///     malformed-width `Ite` node in the shipped release build.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn wide_symbolic_divergence_merges_per_byte_lanes() {
+    let ctx = SymContext::new();
+    let addr = Address(0xa000);
+
+    let arm = |name: &str| {
+        let mut m = SymbolicMemory::new(Endness::Little);
+        m.map(addr, 0x1000, Permission::RWX);
+        m.store_concrete(addr, RustBV::symbolic(&ctx, name, 32))
+            .expect("wide symbolic store");
+        m
+    };
+
+    let (mut a, b) = (arm("wide_a"), arm("wide_b"));
+    assert!(a.merge(&b, &RustBV::symbolic(&ctx, "m", 1), &ctx));
+
+    for i in 0..4u64 {
+        let cell = a
+            .get_symbolic_object(addr + i)
+            .unwrap_or_else(|| panic!("byte {i} of the diverged wide object must merge"));
+        assert_eq!(
+            cell.width(),
+            8,
+            "byte {i} merges to a byte-wide ITE, not the whole wide object"
+        );
+        assert!(
+            cell.is_symbolic(),
+            "byte {i} keeps the arms' symbolic content instead of the page placeholder"
+        );
+    }
+}
+
+/// The semantic half of [`wide_symbolic_divergence_merges_per_byte_lanes`]: with
+/// a *concrete* merge condition selecting `other`, every byte's ITE folds to
+/// `other`'s value, so the whole wide read resolves. Before the fix bytes 1..4
+/// of `self` merged against a concrete-0 placeholder and byte 0's ITE was
+/// width-mismatched, so this load could not resolve to `other`'s value.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn wide_symbolic_divergence_resolves_under_a_concrete_merge_cond() {
+    let ctx = SymContext::new();
+    let addr = Address(0xa000);
+
+    let mut a = SymbolicMemory::new(Endness::Little);
+    a.map(addr, 0x1000, Permission::RWX);
+    a.store_concrete(addr, RustBV::symbolic(&ctx, "wide_a", 32))
+        .expect("wide symbolic store");
+
+    let mut b = SymbolicMemory::new(Endness::Little);
+    b.map(addr, 0x1000, Permission::RWX);
+    b.store_concrete(addr, RustBV::concrete(0xdead_beef, 32))
+        .expect("wide concrete store");
+
+    // `m == 1` selects `other` at every byte.
+    assert!(a.merge(&b, &RustBV::concrete(1, 1), &ctx));
+
+    let loaded = a
+        .load(RustBV::concrete(addr.raw() as u128, 64), 4, &ctx)
+        .expect("load of the merged wide object");
+    assert_eq!(
+        loaded.as_u128(),
+        Some(0xdead_beef),
+        "m==1 folds every lane to other's byte"
+    );
+}

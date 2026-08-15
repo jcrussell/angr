@@ -17,6 +17,7 @@ use super::multi::{MultiAlternative, MultiPayload};
 use super::page::PAGE_SIZE;
 use super::{Address, MemoryPage, PendingWrite, SymbolicMemory};
 use crate::symbolic::{RustBV, SymContext};
+use crate::vex::Endness;
 
 impl SymbolicMemory {
     /// Merge another memory into this one using a merge condition.
@@ -44,7 +45,8 @@ impl SymbolicMemory {
             self_pages.union(&other_pages).copied().collect();
 
         // Collect merge operations first to avoid borrow conflicts
-        let mut merge_ops: Vec<(u64, Address, RustBV)> = Vec::new(); // (page_num, addr, ite_val)
+        // (page_num, addr, ite_val, self_side_was_multi)
+        let mut merge_ops: Vec<(u64, Address, RustBV, bool)> = Vec::new();
         let mut pages_to_add: Vec<(u64, MemoryPage)> = Vec::new();
         // Multi-cell unions (M3-2b, angr-op0dn.11.2.2): a byte that is Multi
         // on *both* arms merges to a single lazy Multi cell whose alternatives
@@ -144,25 +146,29 @@ impl SymbolicMemory {
                         // against the other side (concrete / plain-symbolic).
                         let self_val = Self::merge_byte_value(
                             &self.symbolic_objects,
+                            &self.symbolic_spans,
                             &self.multi_objects,
                             addr,
                             s_byte,
                             s_sym,
                             s_multi,
+                            self.endness,
                             ctx,
                         );
                         let other_val = Self::merge_byte_value(
                             &other.symbolic_objects,
+                            &other.symbolic_spans,
                             &other.multi_objects,
                             addr,
                             o_byte,
                             o_sym,
                             o_multi,
+                            other.endness,
                             ctx,
                         );
 
                         let ite_val = merge_cond_other.ite(&other_val, &self_val, ctx);
-                        merge_ops.push((page_num, addr, ite_val));
+                        merge_ops.push((page_num, addr, ite_val, s_multi));
                     }
                 }
                 (None, Some(op)) => {
@@ -203,7 +209,22 @@ impl SymbolicMemory {
         }
 
         // Apply collected merge operations
-        for (page_num, addr, ite_val) in merge_ops {
+        for (page_num, addr, ite_val, s_was_multi) in merge_ops {
+            // A byte reaching `merge_ops` merged to a plain-Symbolic ITE, so a
+            // Multi cell `self` still holds here has been *superseded* — the
+            // both-Multi union branch `continue`d above, so this is exactly
+            // the `s_multi && !o_multi` collapse. Leaving the payload and its
+            // bitmap bit behind made the freshly-merged value unreachable:
+            // `load_concrete_common`'s `range_has_multi` check dispatches
+            // Multi-marked bytes to the Multi path before `symbolic_objects`
+            // is ever consulted, and `flush_multi_cells` would later overwrite
+            // the merged entry with the stale single-arm payload
+            // (angr-0jh0j.31). Gated on the flag rather than calling the
+            // no-op-safe `clear_multi_at` unconditionally so the common
+            // Multi-free merge keeps its per-byte cost at zero map lookups.
+            if s_was_multi {
+                self.clear_multi_at(addr);
+            }
             self.symbolic_objects.insert(addr, ite_val);
             self.symbolic_spans.insert(addr, (addr, 8));
             let offset_in_page = addr.page_offset();
@@ -314,30 +335,80 @@ impl SymbolicMemory {
     /// BV, read a plain-Symbolic byte from `symbolic_objects`, or fall back to
     /// the concrete page byte. Shared by the two arms of the byte-merge loop so
     /// Multi and plain-symbolic bytes both feed the same `ITE(cond, other,
-    /// self)` (angr-op0dn.11.2.2). Takes the two side tables by reference so it
-    /// can serve either `self` or `other` without a borrow conflict.
+    /// self)` (angr-op0dn.11.2.2). Takes the side tables by reference so it can
+    /// serve either `self` or `other` without a borrow conflict.
+    ///
+    /// The result is always **8 bits wide** — the caller ITEs it against the
+    /// other arm's byte, and `RustBV::ite_into` only `debug_assert`s the two
+    /// widths agree, so returning a wider object here would build a
+    /// malformed-width `Ite` in a release build (angr-0jh0j.30).
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "a pure per-byte extractor over \
+        two arms' side tables; bundling the six by-value byte descriptors into a \
+        struct would add a type whose only purpose is to be destructured one line later"
+    )]
     fn merge_byte_value(
         symbolic_objects: &FxHashMap<Address, RustBV>,
+        symbolic_spans: &FxHashMap<Address, (Address, u32)>,
         multi_objects: &FxHashMap<Address, MultiPayload>,
         addr: Address,
         concrete_byte: u8,
         is_sym: bool,
         is_multi: bool,
+        endness: Endness,
         ctx: &SymContext,
     ) -> RustBV {
         if is_multi {
             multi_objects
                 .get(&addr)
                 .map(|p| p.collapse(concrete_byte, ctx))
-                .unwrap_or_else(|| RustBV::concrete(concrete_byte as u128, 8))
+                .unwrap_or_else(|| RustBV::concrete(u128::from(concrete_byte), 8))
         } else if is_sym {
-            symbolic_objects
-                .get(&addr)
-                .cloned()
-                .unwrap_or_else(|| RustBV::concrete(concrete_byte as u128, 8))
+            silent_default!(
+                cat_c,
+                Self::symbolic_byte_lane(symbolic_objects, symbolic_spans, addr, endness, ctx),
+                RustBV::concrete(u128::from(concrete_byte), 8),
+                "merge: byte {addr:?} is marked symbolic by the page bitmap but no \
+                 symbolic_objects/symbolic_spans entry resolves it; merging the concrete \
+                 placeholder {concrete_byte:#04x} instead"
+            )
         } else {
-            RustBV::concrete(concrete_byte as u128, 8)
+            RustBV::concrete(u128::from(concrete_byte), 8)
         }
+    }
+
+    /// Resolve the 8-bit lane a page-bitmap-symbolic byte carries, mirroring
+    /// `try_byte_merge_load`'s two-step lookup: `symbolic_objects[addr]` names
+    /// an object *based* at this byte (take lane 0), otherwise the
+    /// `symbolic_spans` reverse index names the wider object this byte lies
+    /// inside (take the lane at its offset).
+    ///
+    /// Consulting only `symbolic_objects` — which is keyed at an object's base
+    /// address alone — silently dropped every interior byte of a wide symbolic
+    /// value onto the page's concrete placeholder, and handed the base byte the
+    /// whole wide object instead of its lane (angr-0jh0j.30).
+    ///
+    /// Returns `None` when the sidecars disagree with the bitmap (missing
+    /// entry, stale span width, out-of-range offset) so the caller can log and
+    /// fall back.
+    fn symbolic_byte_lane(
+        symbolic_objects: &FxHashMap<Address, RustBV>,
+        symbolic_spans: &FxHashMap<Address, (Address, u32)>,
+        addr: Address,
+        endness: Endness,
+        ctx: &SymContext,
+    ) -> Option<RustBV> {
+        if let Some(sym) = symbolic_objects.get(&addr) {
+            return Self::extract_byte_lane(sym, 0, endness, ctx);
+        }
+        let &(base_addr, base_width) = symbolic_spans.get(&addr)?;
+        let sym = symbolic_objects.get(&base_addr)?;
+        if sym.width() != base_width {
+            return None;
+        }
+        let offset = u32::try_from(addr.raw().wrapping_sub(base_addr.raw())).ok()?;
+        Self::extract_byte_lane(sym, offset, endness, ctx)
     }
 
     /// Guard a deferred symbolic store with a merge condition, composing with
