@@ -206,9 +206,40 @@ an `sp-default-ok: <why>` comment on the line above; prefer that over
 `--update-baseline`. `--self-test` runs ahead of the real check in CI, same
 reasoning as the rounding-mode gate.
 
-The rounding-mode and SP-default audit scripts share comment/string blanking,
-test-file filtering and `fn`-name resolution via `tools/rust_source_utils.py`
-— put new helpers there rather than copying a third blanker.
+### Integer overflow / wraparound (Rust)
+
+`[profile.release]` sets no `overflow-checks`, so a bare `+`/`-` on a
+guest-controlled or Z3-derived address/size value silently *wraps* in the
+shipped `.so` rather than panicking — a range check or allocation size
+becomes a wrong answer instead of a crash. That was the dominant bug class of
+the angr-03vl4 round-4 retrospective (3 P1s across 6 subsystems); see bd
+memories `invariant-proc-address-arith-wrapping`,
+`invariant-rust-concrete-arith-must-wrap` and
+`invariant-overflow-fix-refuse-not-saturate-identities` for which of
+`wrapping_*` / `saturating_*` / `checked_*` a given site wants — address
+arithmetic wraps, but a size or identity must refuse rather than saturate.
+`cargo test --profile release-checked` does enable overflow-checks, but only
+catches a site some test happens to drive near a 64-bit boundary; it is a
+runtime net, not a static one.
+
+`tools/audit_overflow_wraparound.py` gates the shape in CI (`rust_check`)
+against `tools/overflow_baseline.txt`, same baseline + `--self-test`-first
+pattern as the two gates above. It flags a bare `+`/`-` whose operand name is
+address/size/offset/count-shaped, in
+`native/angr/src/{memory,interpreter,symbolic,state,syscalls,procedures}/`.
+Every safe spelling is a *method call*, so no exclusion list for already-fixed
+sites is needed — the operator scan simply never matches them. Exempt a site
+that only looks address-shaped with an `overflow-ok: <why>` comment on the
+line above (or trailing), naming the upstream guard that makes it safe;
+prefer that over `--update-baseline`. `syscalls/` and `procedures/` are fully
+triaged and must stay at zero baselined sites; the baseline's remaining 99
+entries are hot-path `memory/`/`interpreter/`/`symbolic/`/`state/` sites
+awaiting per-site triage under bd `angr-xloth`.
+
+The rounding-mode, SP-default and overflow audit scripts share comment/string
+blanking, test-file filtering and `fn`-name resolution via
+`tools/rust_source_utils.py` — put new helpers there rather than copying a
+fourth blanker.
 
 ### Where context lives
 
