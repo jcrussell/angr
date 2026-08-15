@@ -47,7 +47,11 @@ pub(super) fn sign_extend_to_i64(val: u64, nbits: u32) -> i64 {
         if (val & sign_bit) != 0 {
             (val | !mask) as i64
         } else {
-            val as i64
+            // Mask off bits above the operand width: with the sign bit clear,
+            // returning `val` verbatim would keep any garbage the caller left
+            // there (nbits=8, val=0x100 is the 8-bit value 0, not 256) and
+            // corrupt calc_flags_smul's hi/CF/OF. See angr-0jh0j.69.
+            (val & mask) as i64
         }
     }
 }
@@ -344,6 +348,14 @@ pub(super) fn calc_flags_sbb(nbits: u32, cc_dep1: u64, cc_dep2: u64, cc_ndep: u6
 pub(super) fn calc_flags_umul(nbits: u32, cc_dep1: u64, cc_dep2: u64) -> Flags {
     let mask = get_mask(nbits);
 
+    // Defensively mask operands to the operand width before multiplying, matching
+    // calc_flags_add/calc_flags_sub and the symbolic sym_flags_umul (which
+    // extract_to_nbits both operands). `lo` is insensitive to garbage above the
+    // width, but `hi` is computed from the full 64-bit product and would pick up
+    // cross-term corruption from it, silently wrecking CF/OF (angr-0jh0j.69).
+    let cc_dep1 = cc_dep1 & mask;
+    let cc_dep2 = cc_dep2 & mask;
+
     let lo = (cc_dep1.wrapping_mul(cc_dep2)) & mask;
 
     // For proper overflow detection, we need to check if the result
@@ -370,7 +382,9 @@ pub(super) fn calc_flags_umul(nbits: u32, cc_dep1: u64, cc_dep2: u64) -> Flags {
 pub(super) fn calc_flags_smul(nbits: u32, cc_dep1: u64, cc_dep2: u64) -> Flags {
     let mask = get_mask(nbits);
 
-    // Sign-extend operands
+    // Sign-extend operands. `sign_extend_to_i64` masks to the operand width on
+    // both branches, so garbage above bit(nbits-1) cannot reach the product —
+    // the calc_flags_umul masking above, done one level down (angr-0jh0j.69).
     let arg1_signed = sign_extend_to_i64(cc_dep1, nbits);
     let arg2_signed = sign_extend_to_i64(cc_dep2, nbits);
 

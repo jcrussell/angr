@@ -437,10 +437,10 @@ fn sym_flags_to_tuple(
 #[test]
 fn diff_fuzz_sym_flags_sub() {
     // VEX always feeds calc_flags_sub args pre-masked to the operand width
-    // (the cc_dep IRExpr is typed to nbits). Mask the random inputs to
-    // match that invariant before diffing — otherwise calc_flags_sub's
-    // unmasked u64 compare for CF would disagree with the symbolic path's
-    // nbits-correct CF (the symbolic side is the precise one).
+    // (the cc_dep IRExpr is typed to nbits), so the random inputs are masked
+    // to match that invariant. The concrete path masks defensively too
+    // (angr-36vvn.3), so the garbage-high-bits case is not a divergence —
+    // `diff_fuzz_sym_flags_unmasked_inputs` covers it explicitly.
     let mut rng = Lcg::new(0x5ab_5e3d);
     for nbits in [8u32, 16, 32, 64] {
         let m = get_mask(nbits);
@@ -644,6 +644,63 @@ fn diff_fuzz_sym_flags_smul() {
             assert_eq!(sym, conc, "nbits={nbits} d1={d1:x} d2={d2:x}");
         }
     }
+}
+
+/// angr-0jh0j.69: the `diff_fuzz_sym_flags_*` tests above all pre-mask their
+/// random inputs, so none of them could see a concrete path that reads bits
+/// above the operand width. The symbolic builders `extract_to_nbits` their
+/// operands unconditionally, so they are the reference for what garbage high
+/// bits must do: nothing. Only the categories whose concrete implementations
+/// mask defensively are listed — the shift/rotate/inc/dec ones take an
+/// already-computed result rather than raw operands.
+#[test]
+fn diff_fuzz_sym_flags_unmasked_inputs() {
+    let mut rng = Lcg::new(0x9a5c_0f69);
+    for category in [
+        OpCategory::Add,
+        OpCategory::Sub,
+        OpCategory::Adc,
+        OpCategory::Sbb,
+        OpCategory::Logic,
+        OpCategory::Umul,
+        OpCategory::Smul,
+    ] {
+        for nbits in [8u32, 16, 32] {
+            let m = get_mask(nbits);
+            for _ in 0..200 {
+                let d1 = rng.next();
+                let d2 = rng.next();
+                let nd = rng.next() & flag_mask::G_CC_MASK_C;
+                let conc = flags_to_tuple(compute_flags_from_category(category, nbits, d1, d2, nd));
+                let sym = sym_flags_to_tuple(category, nbits, d1, d2, nd);
+                assert_eq!(sym, conc, "{category:?} nbits={nbits} d1={d1:x} d2={d2:x}");
+                // The garbage above the width must not change the answer at all.
+                let masked =
+                    flags_to_tuple(compute_flags_from_category(category, nbits, d1 & m, d2 & m, nd));
+                assert_eq!(
+                    masked, conc,
+                    "{category:?} nbits={nbits} d1={d1:x} d2={d2:x} garbage changed the flags"
+                );
+            }
+        }
+    }
+}
+
+/// Hand-checked instance of the `sign_extend_to_i64` half of angr-0jh0j.69:
+/// with the sign bit clear the non-negative branch used to return `val`
+/// verbatim, so an 8-bit operand of 0 spelled `0x100` multiplied as 256.
+#[test]
+fn sign_extend_to_i64_drops_bits_above_the_width() {
+    assert_eq!(sign_extend_to_i64(0x100, 8), 0);
+    assert_eq!(sign_extend_to_i64(0xFF80, 8), -128);
+    assert_eq!(sign_extend_to_i64(0x1_0000, 16), 0);
+    // 0x02 * 0x03 is 6, CF/OF clear; the garbage in bits 8+ must not make the
+    // 8-bit product overflow its low half.
+    assert_eq!(
+        flags_to_tuple(calc_flags_smul(8, 0xFF00 | 0x02, 0xAB00 | 0x03)),
+        flags_to_tuple(calc_flags_smul(8, 0x02, 0x03))
+    );
+    assert_eq!(calc_flags_umul(8, 0xFF00 | 0x02, 0xAB00 | 0x03).cf, 0);
 }
 
 /// The 64-bit UMUL/SMUL builders widen the operands to a 128-bit product —
