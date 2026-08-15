@@ -310,8 +310,14 @@ impl RustSimState {
         }
         let idx = best?;
         let (addr, sz) = self.cgc_sinkholes.swap_remove(idx);
+        // overflow-ok: `idx` was only selected from entries with `sz >= length`.
         let remaining = sz - length;
-        let chosen = addr + remaining;
+        // angr-xloth.1: the freelist is fed by the guest-controlled CGC
+        // `deallocate` handler (`syscalls/cgc.rs`), so a sinkhole may name a
+        // region running past the top of the address space. Guest address
+        // arithmetic wraps — see bd memory
+        // `invariant-rust-concrete-arith-must-wrap`.
+        let chosen = addr.wrapping_add(remaining);
         if remaining > 0 {
             self.cgc_sinkholes.push((addr, remaining));
         }

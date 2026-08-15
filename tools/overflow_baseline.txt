@@ -87,13 +87,6 @@ native/angr/src/memory/store.rs	store_symbolic_unified	base+i
 native/angr/src/memory/store.rs	store_symbolic_unified_multi	base+i
 native/angr/src/memory/store.rs	store_with_concretization	base+i
 native/angr/src/memory/symbolic_objects.rs	import_symbolic_value	addr+i
-native/angr/src/state/export.rs	memory_load	offset+size
-native/angr/src/state/filesystem/ops.rs	write_bytes_at	start+data.len
-native/angr/src/state/filesystem/symbolic.rs	read_sym	start+n
-native/angr/src/state/filesystem/symbolic.rs	read_sym_at	start+n
-native/angr/src/state/process.rs	cgc_take_max_sinkhole	addr+remaining
-native/angr/src/state/process.rs	cgc_take_max_sinkhole	sz-length
-native/angr/src/state/snapshot.rs	to_serialized	1+body.len
 native/angr/src/symbolic/bv_chunk.rs	load_concrete_bytes_chunked	addr+offset
 native/angr/src/symbolic/bv_chunk.rs	load_concrete_bytes_chunked	size-offset
 native/angr/src/symbolic/bv_chunk.rs	store_concrete_bytes_chunked	addr+offset

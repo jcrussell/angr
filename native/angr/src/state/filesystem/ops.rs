@@ -304,6 +304,8 @@ impl FileSystem {
             .entry(fd)
             .or_insert_with(|| FileDescriptor::new(String::new(), FdFlags::WriteOnly));
         let start = start as usize;
+        // overflow-ok: the `start.saturating_add(data.len()) > MAX_FS_FILE_SIZE`
+        // refusal above bounds both terms by `MAX_FS_FILE_SIZE` (0x100_0000).
         let end = start + data.len();
         if end > desc.content.len() {
             desc.content.resize(end, 0);

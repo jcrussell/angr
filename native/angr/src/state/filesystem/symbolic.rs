@@ -144,6 +144,8 @@ impl FileSystem {
         // reaching a panic even if that reasoning ever stops holding.
         let desc = Arc::make_mut(&mut self.fds).get_mut(&fd)?;
         let content = desc.content_sym.as_ref()?;
+        // overflow-ok: the peek block clamped `start` to `content.len()` and
+        // `n` to `content.len() - start`, so `start + n <= content.len()`.
         let bytes = content[start..start + n].to_vec();
         desc.position += n as u64;
         Some(bytes)
@@ -162,6 +164,8 @@ impl FileSystem {
         let content = desc.content_sym.as_ref()?;
         let start = (offset as usize).min(content.len());
         let n = count.min(content.len() - start);
+        // overflow-ok: `start` is clamped to `content.len()` and `n` to
+        // `content.len() - start`, so `start + n <= content.len()`.
         Some(content[start..start + n].to_vec())
     }
 

@@ -170,15 +170,20 @@ impl ExplorationStateSnapshot {
     }
 
     /// Load bytes from memory at a given address.
-    /// Returns None if the address is not mapped.
+    /// Returns None if the address is not mapped, or if `size` is so large
+    /// that `offset + size` cannot be represented (`size` arrives straight
+    /// from Python across `#[pymethods]`, so it is untrusted: a bare `+`
+    /// would wrap and let an out-of-range request pass the `<= len` bound
+    /// check and return a short, wrong slice).
     pub fn memory_load(&self, addr: u64, size: usize) -> Option<Vec<u8>> {
         let page_addr = addr & !0xFFF;
         let offset = (addr & 0xFFF) as usize;
+        let end = offset.checked_add(size)?;
 
         // Find the page
         for page in &self.memory_pages {
-            if page.0 == page_addr && offset + size <= page.1.len() {
-                return Some(page.1[offset..offset + size].to_vec());
+            if page.0 == page_addr && end <= page.1.len() {
+                return Some(page.1[offset..end].to_vec());
             }
         }
         None

@@ -104,6 +104,15 @@ fn test_export_full_memory_pages_and_load_boundary() {
     );
     // Unmapped address → None.
     assert_eq!(snap.memory_load(0x30_0000, 1), None);
+    // angr-xloth.1: `size` crosses the `#[pymethods]` boundary untrusted, so a
+    // value that makes `offset + size` wrap must be refused rather than
+    // sneaking under the `<= page.len()` bound check and returning a short,
+    // wrong slice. offset here is 0x100, so usize::MAX - 0xFF wraps to 0.
+    assert_eq!(
+        snap.memory_load(0x10_0100, usize::MAX - 0xFF),
+        None,
+        "a size that overflows offset+size must be refused, not wrapped"
+    );
 
     // Concrete-only page → no symbolic offsets; unknown page → empty too.
     assert!(snap.get_symbolic_offsets(0x10_0000).is_empty());

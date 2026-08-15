@@ -353,6 +353,8 @@ impl RustSimState {
                 || serde_json::to_vec(&snap).expect("snapshot encode"),
             );
             crate::migrate_phase_timers::set_serializing(prev);
+            // overflow-ok: `body` is a live `Vec`, so its length is at most
+            // `isize::MAX`; the version byte cannot push it past `usize::MAX`.
             let mut out = Vec::with_capacity(1 + body.len());
             out.push(SNAPSHOT_VERSION);
             out.extend_from_slice(&body);

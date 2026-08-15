@@ -178,6 +178,20 @@ fn test_cgc_take_max_sinkhole_splits_low_end_stays_high_end_returned() {
     assert_eq!(s.cgc_sinkholes(), &[(0x4000, 0xC00)]);
 }
 
+/// angr-xloth.1: the freelist is fed by the guest-controlled CGC `deallocate`
+/// handler, so a sinkhole may name a region running past the top of the address
+/// space. `addr + remaining` must wrap like 64-bit guest address arithmetic
+/// rather than panicking under `--profile release-checked`.
+#[test]
+fn test_cgc_take_max_sinkhole_wraps_at_top_of_address_space() {
+    let mut s = RustSimState::new("amd64").unwrap();
+    s.cgc_add_sinkhole(u64::MAX - 0xFF, 0x1000);
+
+    // (u64::MAX - 0xFF) is 2^64 - 0x100, so + (0x1000 - 0x100) wraps to 0xE00.
+    assert_eq!(s.cgc_take_max_sinkhole(0x100), Some(0xE00));
+    assert_eq!(s.cgc_sinkholes(), &[(u64::MAX - 0xFF, 0xF00)]);
+}
+
 /// `heap_alloc_aligned` with `alignment` 0 or 1 is exactly `heap_alloc`: the
 /// address is the unmodified brk even when that brk is oddly aligned.
 #[test]
