@@ -89,8 +89,11 @@ pub(super) fn parse_hex_to_bytes(s: &str, width: u32) -> Option<Vec<u8>> {
     // Copy to result (right-aligned, big-endian)
     let offset = byte_len.saturating_sub(hex_bytes.len());
     for (i, &b) in hex_bytes.iter().enumerate() {
-        if offset + i < byte_len {
-            result[offset + i] = b;
+        // overflow-ok: `offset <= byte_len` (the `saturating_sub` above) and
+        // `i < hex_bytes.len() <= s.len()`, both far below `usize::MAX`.
+        let idx = offset + i;
+        if idx < byte_len {
+            result[idx] = b;
         }
     }
 
@@ -128,6 +131,8 @@ pub(super) fn parse_binary_to_bytes(s: &str, width: u32) -> Option<Vec<u8>> {
     );
     let bit_offset = (byte_len * 8).saturating_sub(bits.len());
     for (i, &bit) in bits.iter().enumerate() {
+        // overflow-ok: the `assert!` above bounds `bits.len()` (and so `i`) by
+        // `byte_len * 8`, and `bit_offset <= byte_len * 8` by construction.
         let bit_pos = bit_offset + i;
         let byte_idx = bit_pos / 8;
         let bit_idx = 7 - (bit_pos % 8);
@@ -153,6 +158,7 @@ pub(super) fn parse_decimal_to_bytes(s: &str, width: u32) -> Option<Vec<u8>> {
         // (truncation to width, matching the hex/binary decoders). The old
         // code copied the *leading* (high, zero) bytes of `src` for
         // byte_len < 16, silently zeroing every real value (angr-ph300.35).
+        // overflow-ok: `copy` is `<=` both operands it is subtracted from.
         let copy = byte_len.min(16);
         result[byte_len - copy..].copy_from_slice(&src[16 - copy..]);
         return Some(result);

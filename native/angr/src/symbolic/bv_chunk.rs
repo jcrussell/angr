@@ -72,6 +72,8 @@ where
     while offset < data.len() {
         let remaining = data.len() - offset;
         let chunk_size = remaining.min(MAX_CONCRETE_CHUNK);
+        // overflow-ok: `offset < data.len()` and `chunk_size <= data.len() -
+        // offset`, so the end index is at most `data.len()` (<= `isize::MAX`).
         let chunk = &data[offset..offset + chunk_size];
         let width = (chunk_size * 8) as u32;
         let mut value: u128 = 0;
@@ -79,7 +81,12 @@ where
             value |= (b as u128) << (i * 8);
         }
         let bv = RustBV::concrete(value, width);
-        store(addr + offset as u64, bv)?;
+        // Guest address arithmetic wraps mod 2^64 (a range starting near the top
+        // of the address space continues at 0), per
+        // `invariant-rust-concrete-arith-must-wrap`. A bare `+` here panics
+        // under `overflow-checks` — and `panic = "abort"` makes that SIGABRT the
+        // whole Python process — while release wraps anyway (angr-xloth.2).
+        store(addr.wrapping_add(offset as u64), bv)?;
         offset += chunk_size;
     }
     Ok(())
@@ -150,8 +157,11 @@ where
     let mut out = Vec::with_capacity(size.min(MAX_CONCRETE_LOAD_BYTES) as usize);
     let mut offset = 0u32;
     while offset < size {
+        // overflow-ok: `offset < size` is the loop condition.
         let chunk_size = (size - offset).min(MAX_CONCRETE_CHUNK as u32);
-        out.extend_from_slice(&load(addr + offset as u64, chunk_size)?);
+        // Wraps mod 2^64 for the same reason the store side does — see
+        // `store_concrete_bytes_chunked`.
+        out.extend_from_slice(&load(addr.wrapping_add(offset as u64), chunk_size)?);
         offset += chunk_size;
     }
     Ok(out)

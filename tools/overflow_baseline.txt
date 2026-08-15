@@ -87,14 +87,3 @@ native/angr/src/memory/store.rs	store_symbolic_unified	base+i
 native/angr/src/memory/store.rs	store_symbolic_unified_multi	base+i
 native/angr/src/memory/store.rs	store_with_concretization	base+i
 native/angr/src/memory/symbolic_objects.rs	import_symbolic_value	addr+i
-native/angr/src/symbolic/bv_chunk.rs	load_concrete_bytes_chunked	addr+offset
-native/angr/src/symbolic/bv_chunk.rs	load_concrete_bytes_chunked	size-offset
-native/angr/src/symbolic/bv_chunk.rs	store_concrete_bytes_chunked	addr+offset
-native/angr/src/symbolic/bv_chunk.rs	store_concrete_bytes_chunked	offset+chunk_size
-native/angr/src/symbolic/bv_codec.rs	make_bv_from_bytes	start+i
-native/angr/src/symbolic/parse.rs	parse_binary_to_bytes	bit_offset+i
-native/angr/src/symbolic/parse.rs	parse_decimal_to_bytes	byte_len-copy
-native/angr/src/symbolic/parse.rs	parse_hex_to_bytes	offset+i
-native/angr/src/symbolic/snapshot_fork_ops.rs	to_snapshot	assumed_len+non_bv_count
-native/angr/src/symbolic/solving_ops.rs	u128_to_be_bytes_width	16-byte_len
-native/angr/src/symbolic/solving_ops.rs	u128_to_be_bytes_width	byte_len-16

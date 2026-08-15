@@ -98,6 +98,8 @@ pub(super) fn make_bv_from_bytes(bytes: &[u8], width: u32) -> z3::ast::BV {
     let read = |start: usize, count: usize| -> u64 {
         let mut val: u64 = 0;
         for i in 0..count {
+            // overflow-ok: `start <= width.div_ceil(8)` and `count <= 8`, both
+            // far below `usize::MAX` (`width` is a `u32` bit count).
             val = (val << 8) | (bytes.get(start + i).copied().unwrap_or(0) as u64);
         }
         val

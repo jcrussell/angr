@@ -81,9 +81,11 @@ fn u128_to_be_bytes_width(value: u128, width: u32) -> Vec<u8> {
     let byte_len = width.div_ceil(8) as usize;
     let bytes = value.to_be_bytes();
     if byte_len <= 16 {
+        // overflow-ok: guarded by this branch's `byte_len <= 16`.
         bytes[16 - byte_len..].to_vec()
     } else {
         let mut result = vec![0u8; byte_len];
+        // overflow-ok: guarded by the `else`, i.e. `byte_len > 16`.
         result[byte_len - 16..].copy_from_slice(&bytes);
         result
     }

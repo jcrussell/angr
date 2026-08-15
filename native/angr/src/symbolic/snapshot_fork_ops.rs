@@ -151,6 +151,8 @@ impl SymContext {
                      never reached the solver"
                 );
                 debug_assert!(
+                    // overflow-ok: both operands are live in-memory assertion
+                    // counts (`Vec::len`); their sum cannot near `usize::MAX`.
                     z3_count <= assumed_len + non_bv_count,
                     "solver assertion count ({z3_count}) exceeds assume \
                      ({assumed_len}) + residual ({non_bv_count}) — a caller \

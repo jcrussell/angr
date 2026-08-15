@@ -118,6 +118,37 @@ fn store_concrete_bytes_chunked_splits_at_16_with_le_packing() {
     assert_eq!(seen[0].2, Some(expected));
 }
 
+/// A range that runs off the top of the 64-bit address space continues at 0
+/// instead of aborting the process. The bare `addr + offset` both helpers used
+/// panics under `overflow-checks` — with `panic = "abort"` that SIGABRTs
+/// CPython — and wraps in the shipped `.so` anyway, so wrapping is both the
+/// crash fix and the semantics guest address arithmetic already has
+/// (angr-xloth.2).
+#[test]
+fn chunked_helpers_wrap_past_the_top_of_the_address_space() {
+    let base = u64::MAX - 23; // exactly 24 bytes left above `base`
+    let data = vec![0u8; 40];
+    let mut stored = Vec::new();
+    store_concrete_bytes_chunked::<String, _>(base, &data, |a, _bv| {
+        stored.push(a);
+        Ok(())
+    })
+    .expect("chunked store");
+    assert_eq!(
+        stored,
+        vec![base, base.wrapping_add(16), base.wrapping_add(32)]
+    );
+    assert!(stored[2] < base, "third chunk must have wrapped to the bottom");
+
+    let mut loaded = Vec::new();
+    load_concrete_bytes_chunked::<String, _>(base, 40, |a, n| {
+        loaded.push(a);
+        Ok(vec![0u8; n as usize])
+    })
+    .expect("chunked read");
+    assert_eq!(loaded, stored);
+}
+
 /// An empty buffer stores nothing, and a failing sink aborts before the next
 /// chunk (no partially-written tail beyond the failing chunk).
 #[test]
