@@ -984,17 +984,29 @@ impl SymContext {
 
     /// Evaluate a bitvector and return up to n solutions as byte arrays (big-endian).
     /// Handles values of any width without truncation.
+    ///
+    /// Lenient form: like [`eval_upto`](Self::eval_upto) the bare `Vec` cannot
+    /// say *why* enumeration stopped. Callers whose correctness depends on the
+    /// set being complete want
+    /// [`eval_upto_wide_checked`](Self::eval_upto_wide_checked).
     #[cfg(feature = "vex-engine-z3")]
     pub fn eval_upto_wide(&self, bv: &RustBV, n: usize) -> Vec<Vec<u8>> {
+        self.eval_upto_wide_checked(bv, n).values
+    }
+
+    /// [`eval_upto_wide`](Self::eval_upto_wide) plus the stop reason — see
+    /// [`Enumeration`].
+    #[cfg(feature = "vex-engine-z3")]
+    pub fn eval_upto_wide_checked(&self, bv: &RustBV, n: usize) -> Enumeration<Vec<u8>> {
         let width = bv.width();
 
         // Fast path for concrete values
         if let Some(v) = bv.as_u128() {
-            return vec![u128_to_be_bytes_width(v, width)];
+            return Enumeration::decided(vec![u128_to_be_bytes_width(v, width)]);
         }
 
         if n == 0 {
-            return vec![];
+            return Enumeration::decided(vec![]);
         }
 
         let ast = bv.to_z3_ast();
@@ -1009,16 +1021,12 @@ impl SymContext {
         // every witness is `width` bits wide, so all byte vectors have the same
         // length and big-endian lexicographic order coincides with numeric
         // order (angr-op0dn.10.1).
-        // No `_checked` sibling: every caller of the wide path (the Python
-        // `eval_upto` bridge) treats the result as a sample, not as a complete
-        // feasible set. Add one the day one doesn't (angr-03vl4.85).
         self.enumerate_distinct(
             &ast,
             n,
             |result| extract_bv_value_wide(result, width),
             |bytes| make_bv_from_bytes(bytes, width),
         )
-        .values
     }
 
     /// Get the minimum value of a bitvector using binary search (O(log N)).
@@ -1477,10 +1485,16 @@ impl SymContext {
 
     #[cfg(not(feature = "vex-engine-z3"))]
     pub fn eval_upto_wide(&self, bv: &RustBV, n: usize) -> Vec<Vec<u8>> {
+        self.eval_upto_wide_checked(bv, n).values
+    }
+
+    /// See the Z3 twin — without Z3 the stop reason is always "decided".
+    #[cfg(not(feature = "vex-engine-z3"))]
+    pub fn eval_upto_wide_checked(&self, bv: &RustBV, n: usize) -> Enumeration<Vec<u8>> {
         if n == 0 {
-            return vec![];
+            return Enumeration::decided(vec![]);
         }
-        self.eval_wide(bv).map(|v| vec![v]).unwrap_or_default()
+        Enumeration::decided(self.eval_wide(bv).map(|v| vec![v]).unwrap_or_default())
     }
 
     #[cfg(not(feature = "vex-engine-z3"))]

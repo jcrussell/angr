@@ -550,6 +550,18 @@ The same distinction governs the Rust side: only a decided unsat prunes
 (see ``SymContext::is_sat_checked`` and
 ``check_branch_feasibility``).
 
+``eval_upto()`` is lenient in the same way: an enumeration cut short by
+an undecided Z3 query returns a short list, indistinguishable from an
+exhaustive one. Code whose correctness depends on the set being
+*complete* — anything that concludes "only these values are possible" —
+should call ``eval_upto_checked()``, which returns the list for a
+decided enumeration and ``None`` when Z3 stopped deciding part-way
+through. A non-``None`` result of exactly ``n`` values may still have
+hit the cap; request ``n + 1`` and treat ``len > n`` as an overflow,
+which is the same contract the Rust-side ``Enumeration`` carries
+(``SymContext::eval_upto_checked`` /
+``SymContext::eval_upto_wide_checked``).
+
 For the build-time wiring that makes a shared ``libz3.so`` possible,
 the ``SymContext`` lifecycle across forks, and the push/pop discipline
 that ``RustSolverContext`` / ``SharedLineageSolver`` both rely on,

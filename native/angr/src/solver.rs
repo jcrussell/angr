@@ -529,69 +529,40 @@ impl RustSolverContext {
     }
 
     /// Evaluate a claripy AST and return up to n solutions.
+    ///
+    /// Lenient, claripy-compatible form: an enumeration cut short by a Z3
+    /// Unknown (timeout) is indistinguishable from an exhaustive one — both
+    /// come back as a short list. Callers whose correctness depends on the set
+    /// being complete — anything that would conclude "only these values are
+    /// possible" — should use [`eval_upto_checked`](Self::eval_upto_checked)
+    /// (angr-0qqun, the PyO3 twin of the angr-03vl4.85 internal fix).
     pub fn eval_upto(
         &self,
         py: Python<'_>,
         ast: &Bound<'_, PyAny>,
         n: usize,
     ) -> PyResult<Py<PyAny>> {
-        let result_list = pyo3::types::PyList::empty(py);
+        Ok(self.eval_upto_enumerate(py, ast, n)?.0)
+    }
 
-        // Fast path: concrete BVV has exactly one solution
-        if n > 0
-            && let Some((value, _width)) = try_extract_bvv(ast)
-        {
-            result_list.append(value.into_pyobject(py)?)?;
-            return Ok(result_list.into());
-        }
-
-        let ctx = self.i().ctx();
-        let bv = match claripy_to_rustbv(py, ast, &ctx) {
-            Ok(bv) => bv,
-            Err(_) => {
-                // Z3 fast path for complex expressions
-                #[cfg(feature = "vex-engine-z3")]
-                {
-                    let Ok(z3_ast) = extract_z3_ast_ptr(py, ast) else {
-                        return Ok(result_list.into());
-                    };
-                    match z3_ast_to_eval_bv(&z3_ast) {
-                        Some(bv) => bv,
-                        None => {
-                            return Err(PyRuntimeError::new_err(format!(
-                                "eval_upto: Z3 AST has unsupported sort kind {:?} (expected BV or Bool)",
-                                z3_ast.sort_kind()
-                            )));
-                        }
-                    }
-                }
-                #[cfg(not(feature = "vex-engine-z3"))]
-                {
-                    return Ok(result_list.into());
-                }
-            }
-        };
-
-        // The wide/narrow split follows the width of the BV we actually built
-        // (claripy import, Bool→1-bit lowering, or Z3 sort), not a separately
-        // read claripy `.length` that could disagree with it (angr-9ke6b.202).
-        if bv.width() > 128 {
-            // Wide values: use eval_upto_wide to get full-precision bytes
-            let results = ctx.eval_upto_wide(&bv, n);
-            let int_class = py.get_type::<pyo3::types::PyInt>();
-            for bytes in results {
-                let py_bytes = pyo3::types::PyBytes::new(py, &bytes);
-                let py_int = int_class.call_method1("from_bytes", (py_bytes, "big"))?;
-                result_list.append(py_int)?;
-            }
-        } else {
-            // Standard path: u128 values
-            let results = ctx.eval_upto(&bv, n);
-            for v in results {
-                result_list.append(v.into_pyobject(py)?)?;
-            }
-        }
-        Ok(result_list.into())
+    /// [`eval_upto`](Self::eval_upto) with the undecided case preserved: the
+    /// list of solutions for a decided enumeration, `None` when Z3 returned
+    /// Unknown part-way through and the set is therefore not known to be
+    /// complete.
+    ///
+    /// Mirrors [`satisfiable_checked`](Self::satisfiable_checked): `None` means
+    /// "the solver gave up", never "no solutions". Note that a non-`None`
+    /// result of exactly `n` values may still have hit the cap — request
+    /// `n + 1` and treat `len > n` as an overflow, same as the Rust-side
+    /// `Enumeration` contract.
+    pub fn eval_upto_checked(
+        &self,
+        py: Python<'_>,
+        ast: &Bound<'_, PyAny>,
+        n: usize,
+    ) -> PyResult<Option<Py<PyAny>>> {
+        let (values, undecided) = self.eval_upto_enumerate(py, ast, n)?;
+        Ok((!undecided).then_some(values))
     }
 
     /// Get the minimum value of a claripy AST.
@@ -905,6 +876,84 @@ impl RustSolverContext {
         self.inner
             .as_ref()
             .expect("RustSolverContext used after close()")
+    }
+
+    /// Shared body of [`eval_upto`](Self::eval_upto) and
+    /// [`eval_upto_checked`](Self::eval_upto_checked): the solution list plus
+    /// the `undecided` flag from the underlying [`Enumeration`].
+    ///
+    /// Every early return here is a *decided* outcome — a concrete fast path,
+    /// or an expression this bridge cannot convert at all (the latter yields an
+    /// empty list, which is what the lenient API has always returned and is not
+    /// a Z3 verdict). Only the two `_checked` enumerations below can set the
+    /// flag.
+    ///
+    /// [`Enumeration`]: crate::symbolic::Enumeration
+    fn eval_upto_enumerate(
+        &self,
+        py: Python<'_>,
+        ast: &Bound<'_, PyAny>,
+        n: usize,
+    ) -> PyResult<(Py<PyAny>, bool)> {
+        let result_list = pyo3::types::PyList::empty(py);
+
+        // Fast path: concrete BVV has exactly one solution
+        if n > 0
+            && let Some((value, _width)) = try_extract_bvv(ast)
+        {
+            result_list.append(value.into_pyobject(py)?)?;
+            return Ok((result_list.into(), false));
+        }
+
+        let ctx = self.i().ctx();
+        let bv = match claripy_to_rustbv(py, ast, &ctx) {
+            Ok(bv) => bv,
+            Err(_) => {
+                // Z3 fast path for complex expressions
+                #[cfg(feature = "vex-engine-z3")]
+                {
+                    let Ok(z3_ast) = extract_z3_ast_ptr(py, ast) else {
+                        return Ok((result_list.into(), false));
+                    };
+                    match z3_ast_to_eval_bv(&z3_ast) {
+                        Some(bv) => bv,
+                        None => {
+                            return Err(PyRuntimeError::new_err(format!(
+                                "eval_upto: Z3 AST has unsupported sort kind {:?} (expected BV or Bool)",
+                                z3_ast.sort_kind()
+                            )));
+                        }
+                    }
+                }
+                #[cfg(not(feature = "vex-engine-z3"))]
+                {
+                    return Ok((result_list.into(), false));
+                }
+            }
+        };
+
+        // The wide/narrow split follows the width of the BV we actually built
+        // (claripy import, Bool→1-bit lowering, or Z3 sort), not a separately
+        // read claripy `.length` that could disagree with it (angr-9ke6b.202).
+        let undecided = if bv.width() > 128 {
+            // Wide values: use eval_upto_wide to get full-precision bytes
+            let results = ctx.eval_upto_wide_checked(&bv, n);
+            let int_class = py.get_type::<pyo3::types::PyInt>();
+            for bytes in &results.values {
+                let py_bytes = pyo3::types::PyBytes::new(py, bytes);
+                let py_int = int_class.call_method1("from_bytes", (py_bytes, "big"))?;
+                result_list.append(py_int)?;
+            }
+            results.undecided
+        } else {
+            // Standard path: u128 values
+            let results = ctx.eval_upto_checked(&bv, n);
+            for v in results.values {
+                result_list.append(v.into_pyobject(py)?)?;
+            }
+            results.undecided
+        };
+        Ok((result_list.into(), undecided))
     }
 
     /// Create a RustSolverContext from an existing SymContext.

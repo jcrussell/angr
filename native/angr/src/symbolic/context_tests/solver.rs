@@ -1608,6 +1608,50 @@ fn test_eval_upto_checked_not_flagged_when_decided() {
     );
 }
 
+/// The >128-bit twin (angr-0qqun). `eval_upto_wide` had no `_checked` sibling
+/// because its only caller — the PyO3 `eval_upto` bridge — treated the result
+/// as a sample; that stopped being true once `RustSolverContext::
+/// eval_upto_checked` needed the flag for wide expressions too.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_eval_upto_wide_checked_flags_undecided() {
+    with_forced_unknown(|ctx| {
+        let wide = RustBV::symbolic(ctx, "forced_unknown_wide", 256);
+        let enumeration = ctx.eval_upto_wide_checked(&wide, 4);
+        assert!(
+            enumeration.values.is_empty(),
+            "an undecided first query yields no witnesses"
+        );
+        assert!(
+            enumeration.undecided,
+            "the wide path must flag a Z3-Unknown stop, not return a short Vec \
+             indistinguishable from an exhausted set"
+        );
+    });
+}
+
+/// Companion to the above: the wide path must not flag a decided enumeration.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_eval_upto_wide_checked_not_flagged_when_decided() {
+    let ctx = SymContext::new();
+    let wide = RustBV::symbolic(&ctx, "decided_wide_x", 256);
+    let a = wide.eq(&RustBV::concrete(0x10, 256), &ctx);
+    let b = wide.eq(&RustBV::concrete(0x20, 256), &ctx);
+    ctx.assume_true(&a.or(&b, &ctx));
+
+    let enumeration = ctx.eval_upto_wide_checked(&wide, 8);
+    assert_eq!(
+        enumeration.values.len(),
+        2,
+        "both feasible 256-bit values are reachable"
+    );
+    assert!(
+        !enumeration.undecided,
+        "stopping on a decided Unsat means the set really is exhausted"
+    );
+}
+
 /// End-to-end consequence of the above, and the reason the flag exists: the
 /// address concretizer must not turn a timeout-truncated prefix into a
 /// `Single`/`Multiple`, which every consumer (ITE load default arm, store

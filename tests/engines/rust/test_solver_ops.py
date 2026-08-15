@@ -120,6 +120,67 @@ class TestSolverOperations:
         assert ctx.max(x, signed=False) is None
         assert ctx.eval_upto(x, 5) == []
 
+    def test_eval_upto_checked_matches_eval_upto_when_decided(self):
+        """eval_upto_checked() returns the same solutions as eval_upto() for
+        every decided enumeration, and never None.
+
+        angr-0qqun: the PyO3 surface routed through the values-only
+        eval_upto, so a Python caller could not tell a timeout-truncated
+        prefix from an exhaustive set. The checked form mirrors
+        satisfiable_checked(): None means "Z3 gave up", never "no solutions".
+        The undecided branch itself is driven from Rust
+        (test_eval_upto_wide_checked_flags_undecided in
+        symbolic/context_tests/solver.rs) -- there is no rlimit knob on the
+        Python surface, and a wall-clock timeout is not deterministic enough
+        for a test.
+        """
+        import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
+
+        # Narrow (<=128-bit) path.
+        ctx = RustSolverContext()
+        x = claripy.BVS("x", 32)
+        ctx.add_constraint_ast(x > 3)
+        ctx.add_constraint_ast(x < 7)
+        checked = ctx.eval_upto_checked(x, 8)
+        assert checked is not None, "a decided enumeration must not report undecided"
+        assert set(checked) == {4, 5, 6}
+
+        # Hitting the caller's cap is still a decided stop.
+        capped = ctx.eval_upto_checked(x, 1)
+        assert capped is not None
+        assert len(capped) == 1
+
+        # Concrete fast path never consults the solver.
+        assert ctx.eval_upto_checked(claripy.BVV(0x1234, 32), 4) == [0x1234]
+
+        # UNSAT is decided too: an empty list, not None.
+        unsat = RustSolverContext()
+        y = claripy.BVS("y", 32)
+        unsat.add_constraint_ast(y > 100)
+        unsat.add_constraint_ast(y < 50)
+        assert unsat.eval_upto_checked(y, 5) == []
+
+    def test_eval_upto_checked_wide_values(self):
+        """The >128-bit branch of eval_upto_checked() returns full-precision
+        Python ints, same as eval_upto().
+
+        Guards the eval_upto_wide_checked() sibling added alongside it: the
+        wide path previously had no checked variant at all.
+        """
+        import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
+
+        ctx = RustSolverContext()
+        w = claripy.BVS("w", 256)
+        big = 1 << 200
+        ctx.add_constraint_ast(claripy.Or(w == big, w == big + 1))
+
+        checked = ctx.eval_upto_checked(w, 8)
+        assert checked is not None
+        assert set(checked) == {big, big + 1}
+        assert set(checked) == set(ctx.eval_upto(w, 8))
+
     def test_unsat_core_reports_contributing_indices(self):
         """add_constraint_tracked_ast() + unsat_core() reports the indices
         of the constraints participating in the UNSAT core.
