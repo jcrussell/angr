@@ -12,7 +12,8 @@ use super::*;
 use crate::errors::MapPyErr;
 use crate::memory::Permission;
 use crate::symbolic::{
-    RustBV, load_concrete_bytes_chunked, store_concrete_bytes_chunked, u128_to_le_bytes,
+    RustBV, check_concrete_load_size, load_concrete_bytes_chunked, store_concrete_bytes_chunked,
+    u128_to_le_bytes,
 };
 use pyo3::exceptions::PyValueError;
 use pyo3::types::{PyAny, PyDict};
@@ -488,6 +489,8 @@ impl PyRustSimState {
     /// lives in `symbolic::load_concrete_bytes_chunked`, shared with the
     /// `exploration` memory-get entry points (angr-9ke6b.230).
     pub fn memory_load(&self, addr: u64, size: u32) -> PyResult<Vec<u8>> {
+        // angr-0jh0j.11: caller-supplied `size` reaches a `Vec<u8>` reservation.
+        check_concrete_load_size("memory_load", size).map_err(PyValueError::new_err)?;
         load_concrete_bytes_chunked(addr, size, |chunk_addr, chunk_size| {
             let bv = self
                 .inner

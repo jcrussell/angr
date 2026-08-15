@@ -56,6 +56,48 @@ fn load_concrete_bytes_chunked_zero_size_never_calls_source() {
     assert_eq!(calls, 0);
 }
 
+/// angr-0jh0j.11: the boundary guard accepts everything up to and including
+/// `MAX_CONCRETE_LOAD_BYTES` and refuses one byte past it, naming the op so the
+/// Python-side message says which entry point declined.
+#[test]
+fn check_concrete_load_size_bounds_are_inclusive() {
+    assert!(check_concrete_load_size("op", 0).is_ok());
+    assert!(check_concrete_load_size("op", 4096).is_ok());
+    assert!(check_concrete_load_size("op", MAX_CONCRETE_LOAD_BYTES).is_ok());
+
+    for oversize in [MAX_CONCRETE_LOAD_BYTES + 1, u32::MAX] {
+        let err = check_concrete_load_size("get_state_memory", oversize)
+            .expect_err("must refuse an over-limit read");
+        assert!(err.contains("get_state_memory"), "message names the op: {err}");
+        assert!(err.contains(&oversize.to_string()), "message names the size: {err}");
+    }
+}
+
+/// angr-0jh0j.11 (defence in depth): a `size` that slipped past
+/// `check_concrete_load_size` must not turn the up-front reservation into a
+/// multi-gigabyte allocation before a single chunk has been proven readable.
+/// The first chunk here fails, so the read allocates the *cap*, not `u32::MAX`.
+#[test]
+fn load_concrete_bytes_chunked_caps_the_up_front_reservation() {
+    let mut calls = 0usize;
+    let res = load_concrete_bytes_chunked::<String, _>(0x3000, u32::MAX, |_a, _n| {
+        calls += 1;
+        Err("unmapped".to_string())
+    });
+    assert!(res.is_err());
+    assert_eq!(calls, 1, "must fail on the first chunk, not pre-read the range");
+}
+
+/// The cap only bounds the *reservation*: a read larger than one chunk but
+/// (well) under the cap still returns every byte, so the `min` cannot be
+/// mistaken for a truncating clamp.
+#[test]
+fn load_concrete_bytes_chunked_reservation_cap_does_not_truncate() {
+    let out = load_concrete_bytes_chunked::<String, _>(0, 33, |_a, n| Ok(vec![0x5a; n as usize]))
+        .expect("chunked read");
+    assert_eq!(out, vec![0x5a; 33]);
+}
+
 /// Write side, same 16-byte boundary: each chunk gets its own address and a
 /// width matching its byte count, and the low chunk's payload is little-endian
 /// packed. A single 40-byte `RustBV::concrete` would shift-overflow (angr-5aj8).

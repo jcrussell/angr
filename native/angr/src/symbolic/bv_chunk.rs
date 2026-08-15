@@ -21,6 +21,38 @@ use super::RustBV;
 /// (`u128` = 16 bytes). The reason every helper here loops.
 pub const MAX_CONCRETE_CHUNK: usize = 16;
 
+/// Largest byte count accepted by a memory-read entry point that materializes
+/// the range into a `Vec<u8>` (or a single `RustBV`) for Python.
+///
+/// The `size` on `RustExplorationManager.get_state_memory` /
+/// `get_state_memory_ast` / `get_pending_memory` / `pending_memory_load` and
+/// `RustSimState.memory_load` is caller-supplied and crosses the PyO3 boundary
+/// verbatim, so a script that derives it from guest-controlled data can ask for
+/// `u32::MAX` bytes. 16 MiB is four thousand pages — orders of magnitude past
+/// any real read (a buffer, a string, a stack frame, a segment) — while still
+/// refusing the ~4 GiB request that would OOM or hang the host regardless of
+/// whether the range is even mapped (angr-0jh0j.11, same DoS class as
+/// angr-c7xno.67/.80/.81/.94).
+pub const MAX_CONCRETE_LOAD_BYTES: u32 = 0x100_0000;
+
+/// Reject a memory-read byte count above [`MAX_CONCRETE_LOAD_BYTES`], naming
+/// `op` in the message.
+///
+/// Returns the message rather than a typed error for the same reason
+/// [`check_bv_width`](super::check_bv_width) does: the callers report through
+/// different channels, and this module stays free of `pyo3`. Every Python-facing
+/// entry point that ends in [`load_concrete_bytes_chunked`] — or in a single
+/// `memory_load` of the whole range — calls this first.
+pub fn check_concrete_load_size(op: &str, size: u32) -> Result<(), String> {
+    if size > MAX_CONCRETE_LOAD_BYTES {
+        return Err(format!(
+            "{op}: size {size} exceeds the maximum supported memory-read size \
+             {MAX_CONCRETE_LOAD_BYTES}"
+        ));
+    }
+    Ok(())
+}
+
 /// Pack a concrete byte slice into `<= 16`-byte `RustBV::concrete` chunks and
 /// store each via the caller-supplied sink.
 ///
@@ -86,11 +118,18 @@ pub fn u128_to_le_bytes(val: u128, size: usize) -> Vec<u8> {
 ///
 /// `size == 0` yields an empty vector without invoking the source at all,
 /// matching [`store_concrete_bytes_chunked`]'s empty-slice behavior.
+///
+/// The up-front reservation is capped at [`MAX_CONCRETE_LOAD_BYTES`] so an
+/// unvalidated `size` cannot turn this into an immediate multi-gigabyte
+/// allocation before a single chunk has been proven readable; past that cap the
+/// vector grows as chunks actually arrive. That is defence in depth, not the
+/// guard — Python-facing callers refuse such a `size` outright via
+/// [`check_concrete_load_size`] (angr-0jh0j.11).
 pub fn load_concrete_bytes_chunked<E, F>(addr: u64, size: u32, mut load: F) -> Result<Vec<u8>, E>
 where
     F: FnMut(u64, u32) -> Result<Vec<u8>, E>,
 {
-    let mut out = Vec::with_capacity(size as usize);
+    let mut out = Vec::with_capacity(size.min(MAX_CONCRETE_LOAD_BYTES) as usize);
     let mut offset = 0u32;
     while offset < size {
         let chunk_size = (size - offset).min(MAX_CONCRETE_CHUNK as u32);

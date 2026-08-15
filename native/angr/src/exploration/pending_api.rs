@@ -383,6 +383,9 @@ impl RustExplorationManager {
         addr: u64,
         size: u32,
     ) -> PyResult<Vec<u8>> {
+        // angr-0jh0j.11: caller-supplied `size` reaches a `Vec<u8>` reservation.
+        crate::symbolic::check_concrete_load_size("get_pending_memory", size)
+            .map_err(PyValueError::new_err)?;
         self.with_pending(state_id, |pending| {
             crate::symbolic::load_concrete_bytes_chunked(addr, size, |a, n| {
                 let bv = pending.state.memory_load(a, n).py_value_err()?;
@@ -702,6 +705,9 @@ impl RustExplorationManager {
         addr: u64,
         size: u32,
     ) -> PyResult<Vec<u8>> {
+        // angr-0jh0j.11: caller-supplied `size` reaches a `Vec<u8>` reservation.
+        crate::symbolic::check_concrete_load_size("pending_memory_load", size)
+            .map_err(PyValueError::new_err)?;
         self.with_pending(state_id, |pending| {
             // One solver borrow for the whole range, not one per 16-byte chunk.
             let solver_ref = pending.state.solver();

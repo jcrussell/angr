@@ -764,6 +764,12 @@ impl RustExplorationManager {
         addr: u64,
         size: u32,
     ) -> PyResult<Option<Vec<u8>>> {
+        // angr-0jh0j.11: `size` is caller-supplied and reaches a `Vec<u8>`
+        // reservation. Refuse an absurd one loudly rather than through the
+        // `Ok(None)` "unreadable" channel — an over-limit size is a caller bug,
+        // not a memory-permission answer.
+        crate::symbolic::check_concrete_load_size("get_state_memory", size)
+            .map_err(PyValueError::new_err)?;
         self.with_state(state_id, |state| {
             // Sentinel: never escapes this closure — the match below turns it
             // back into the `Ok(None)` this method's contract promises.
@@ -805,6 +811,11 @@ impl RustExplorationManager {
         addr: u64,
         size: u32,
     ) -> PyResult<Option<Py<PyAny>>> {
+        // angr-0jh0j.11: this one loads the whole range as a single BV, so an
+        // unbounded `size` becomes a `size * 8`-bit Z3 sort rather than a
+        // `Vec` reservation — same caller, same refusal.
+        crate::symbolic::check_concrete_load_size("get_state_memory_ast", size)
+            .map_err(PyValueError::new_err)?;
         self.with_state(state_id, |state| match state.memory_load(addr, size) {
             Ok(bv) => {
                 let claripy = py.import("claripy")?;

@@ -134,7 +134,8 @@ mod width_guards;
 mod z3_ast_ptr;
 
 pub use bv_chunk::{
-    MAX_CONCRETE_CHUNK, load_concrete_bytes_chunked, store_concrete_bytes_chunked, u128_to_le_bytes,
+    MAX_CONCRETE_CHUNK, MAX_CONCRETE_LOAD_BYTES, check_concrete_load_size,
+    load_concrete_bytes_chunked, store_concrete_bytes_chunked, u128_to_le_bytes,
 };
 pub use context::{DEFAULT_SOLVER_TIMEOUT_MS, SymContext, SymContextSnapshot};
 pub use handle::RustBVHandle;
