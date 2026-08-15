@@ -461,7 +461,9 @@ impl<'a> VEXInterpreter<'a> {
                 // block's default exit. When a VEX IRSB contains multiple
                 // Ist_Exit statements, using the block fallthrough would
                 // skip all code between this exit and the end of the block.
-                let false_target = self.current_insn_addr + self.current_insn_len as u64;
+                let false_target = self
+                    .current_insn_addr
+                    .wrapping_add(self.current_insn_len as u64);
 
                 // Skip expensive rustbv_to_claripy conversion for the condition.
                 // The condition is stored in stored_conditions (below) as a RustBV,

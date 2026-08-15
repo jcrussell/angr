@@ -36,7 +36,7 @@ use crate::callbacks::{
     DeferredFork, ExecutionConfig, InspectBit, PythonCallbacks, RunResult, note_inspect_error,
 };
 use crate::claripy_bridge::{claripy_to_rustbv, is_claripy_ast, try_handle_to_rustbv};
-use crate::concretize::{AddressConcretizer, ConcretizationResult};
+use crate::concretize::{AddressConcretizer, ConcretizationResult, strided_addrs};
 use crate::memory::{MemoryError, Permission, SymbolicMemory};
 use crate::symbolic::{
     BVOp, RustBV, RustSymbolTable, SymContext, record_mem_load, record_mem_store, record_vex_binop,

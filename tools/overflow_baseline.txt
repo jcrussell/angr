@@ -6,31 +6,6 @@
 # which one applies) or documenting a genuine non-risk with an
 # `overflow-ok:` comment are both preferable; growing it needs a reason in
 # the commit message.
-native/angr/src/interpreter/concrete_memory.rs	is_in_binary	region.base+region.size
-native/angr/src/interpreter/concrete_memory.rs	read	addr-self.base
-native/angr/src/interpreter/concrete_memory.rs	read	offset+size
-native/angr/src/interpreter/concrete_memory.rs	read_concrete_prefix	addr-region.base
-native/angr/src/interpreter/concrete_memory.rs	read_concrete_prefix	region.base+region.size
-native/angr/src/interpreter/execution.rs	get_or_lift_block	addr+max_bytes
-native/angr/src/interpreter/execution.rs	get_or_lift_block	hook_addr-addr
-native/angr/src/interpreter/exits.rs	eval_next_addr_concretized	base+i
-native/angr/src/interpreter/exits.rs	eval_next_addr_concretized	count-1
-native/angr/src/interpreter/expressions.rs	load_symbolic_addr	base+i
-native/angr/src/interpreter/expressions.rs	regarray_offset	descr.base+index
-native/angr/src/interpreter/expressions.rs	symbolic_overlap_load	addr-s_addr
-native/angr/src/interpreter/pending_store.rs	push	addr+offset
-native/angr/src/interpreter/pending_store.rs	push	new_off+overlap_len
-native/angr/src/interpreter/pending_store.rs	push	overlap_end-overlap_start
-native/angr/src/interpreter/pending_store.rs	push	overlap_start-addr
-native/angr/src/interpreter/pending_store.rs	push	s_off+overlap_len
-native/angr/src/interpreter/pending_store.rs	try_load	addr+size
-native/angr/src/interpreter/pending_store.rs	try_load	addr-store_addr
-native/angr/src/interpreter/pending_store.rs	try_load	off+size
-native/angr/src/interpreter/pending_store.rs	try_load	offset+size
-native/angr/src/interpreter/pending_store.rs	try_load	s_addr+s_data.len
-native/angr/src/interpreter/statements.rs	handle_exit_stmt	self.current_insn_addr+self.current_insn_len
-native/angr/src/interpreter/statements_store.rs	handle_symbolic_store	base+i
-native/angr/src/interpreter/statements_store.rs	invalidate_code_for_concretization	region.base+region.size
 native/angr/src/memory/ite_builder.rs	build_strided_ite_tree	base+lo
 native/angr/src/memory/ite_builder.rs	build_strided_ite_tree	base+mid
 native/angr/src/memory/ite_builder.rs	load_strided_balanced	count-1

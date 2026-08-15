@@ -436,3 +436,17 @@ fn test_under_max_solutions_still_enumerates_completely() {
         other => panic!("expected Multiple, got {other:?}"),
     }
 }
+
+#[test]
+fn strided_addrs_wraps_at_the_top_of_the_address_space() {
+    assert_eq!(strided_addrs(0x1000, 4, 3), vec![0x1000, 0x1004, 0x1008]);
+    assert_eq!(strided_addrs(0x1000, 4, 0), Vec::<u64>::new());
+    // Base near the top: the third address wraps rather than panicking under
+    // `--profile release-checked` (angr-xloth.3).
+    assert_eq!(
+        strided_addrs(u64::MAX - 3, 2, 4),
+        vec![u64::MAX - 3, u64::MAX - 1, 0, 2]
+    );
+    // A huge stride wraps in the multiply too.
+    assert_eq!(strided_addrs(0, u64::MAX, 3), vec![0, u64::MAX, u64::MAX - 1]);
+}

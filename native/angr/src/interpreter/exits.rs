@@ -141,14 +141,18 @@ impl<'a> VEXInterpreter<'a> {
                 // Convert strided to explicit list, but check limit first
                 let num_targets = count as usize;
                 if num_targets > self.config.max_symbolic_ip_targets {
-                    let max = base + (count - 1) * stride;
+                    // The address arithmetic wraps, matching `strided_addrs`
+                    // in the sibling arm below.
+                    // overflow-ok: `count >= 1` here — this arm is only
+                    // reached when `num_targets` exceeds an unsigned limit.
+                    let max = base.wrapping_add((count - 1).wrapping_mul(stride));
                     Ok(ConcretizedJump::TooMany {
                         min: base,
                         max,
                         limit: self.config.max_symbolic_ip_targets,
                     })
                 } else {
-                    let targets: Vec<u64> = (0..count).map(|i| base + i * stride).collect();
+                    let targets = strided_addrs(base, stride, count);
                     Ok(ConcretizedJump::Multiple {
                         targets,
                         expr: next_val,

@@ -27,6 +27,26 @@ pub(crate) struct PendingStoreBuffer {
     byte_index: FxHashMap<u64, usize>,
 }
 
+/// Byte range of a `size`-byte load at `addr` within a store buffer of length
+/// `s_len` based at `s_addr`, or `None` when that store does not fully cover
+/// the load.
+///
+/// The distance is computed with `wrapping_sub` so neither `s_addr + s_len`
+/// nor `addr + size` is ever formed: a store may sit at the top of the guest
+/// address space and wrap, which is exactly how `push` indexes its bytes. A
+/// load below the store's base wraps to a huge offset and so fails the bounds
+/// check, which is what the old `s_addr <= addr` guard did.
+fn covering_range(
+    s_addr: u64,
+    s_len: usize,
+    addr: u64,
+    size: usize,
+) -> Option<std::ops::Range<usize>> {
+    let off = usize::try_from(addr.wrapping_sub(s_addr)).ok()?;
+    let end = off.checked_add(size)?;
+    (end <= s_len).then_some(off..end)
+}
+
 impl PendingStoreBuffer {
     pub(crate) fn with_capacity(cap: usize) -> Self {
         Self {
@@ -61,17 +81,24 @@ impl PendingStoreBuffer {
             let s_end = s_addr.saturating_add(s_data.len() as u64);
             let overlap_start = addr.max(*s_addr);
             let overlap_end = new_end.min(s_end);
+            // Neither end can outrun its buffer: both came from a
+            // `saturating_add`, which only ever *under*-estimates a range that
+            // crosses the top of the address space, so `end - base` stays
+            // `<= buffer.len()`.
             if overlap_start < overlap_end {
-                let s_off = (overlap_start - *s_addr) as usize;
-                let new_off = (overlap_start - addr) as usize;
-                let overlap_len = (overlap_end - overlap_start) as usize;
-                s_data[s_off..s_off + overlap_len]
-                    .copy_from_slice(&data[new_off..new_off + overlap_len]);
+                let s_off = (overlap_start - *s_addr) as usize; // overflow-ok: overlap_start = max(addr, s_addr)
+                let new_off = (overlap_start - addr) as usize; // overflow-ok: overlap_start = max(addr, s_addr)
+                let overlap_len = (overlap_end - overlap_start) as usize; // overflow-ok: guarded by the `if`
+                let s_range = s_off..s_off + overlap_len; // overflow-ok: overlap_end <= saturating s_end
+                let new_range = new_off..new_off + overlap_len; // overflow-ok: overlap_end <= saturating new_end
+                s_data[s_range].copy_from_slice(&data[new_range]);
             }
         }
 
         for offset in 0..len {
-            self.byte_index.insert(addr + offset, idx);
+            // Guest addresses wrap at the top of the address space; `try_load`
+            // recovers the byte offset with the matching `wrapping_sub`.
+            self.byte_index.insert(addr.wrapping_add(offset), idx);
         }
         self.stores.push((addr, data));
     }
@@ -110,18 +137,14 @@ impl PendingStoreBuffer {
         let (store_addr, store_data) = &self.stores[idx];
         // store_addr <= addr is guaranteed: byte_index[addr] = idx means
         // store idx covers the byte at addr.
-        let load_end = addr.checked_add(size as u64)?;
-        let store_end = store_addr.saturating_add(store_data.len() as u64);
-        if load_end <= store_end {
-            let offset = (addr - store_addr) as usize;
-            return Some(&store_data[offset..offset + size]);
+        if let Some(range) = covering_range(*store_addr, store_data.len(), addr, size) {
+            return Some(&store_data[range]);
         }
         // The most recent store covering addr is smaller than the load.
         // Fall back to reverse scan to find an earlier fully-covering store.
         for (s_addr, s_data) in self.stores.iter().rev() {
-            if *s_addr <= addr && addr + size as u64 <= *s_addr + s_data.len() as u64 {
-                let off = (addr - *s_addr) as usize;
-                return Some(&s_data[off..off + size]);
+            if let Some(range) = covering_range(*s_addr, s_data.len(), addr, size) {
+                return Some(&s_data[range]);
             }
         }
         None

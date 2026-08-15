@@ -214,6 +214,8 @@ impl<'a> VEXInterpreter<'a> {
             }
             let s_hi = s_addr.saturating_add((bv.width() / 8) as u64);
             if load_hi <= s_hi {
+                // overflow-ok: the `s_addr > addr` continue above proves
+                // `s_addr <= addr`, and `load_hi <= s_hi` bounds the extract.
                 let off_bits = (addr - s_addr) * 8;
                 let hi_bit = (off_bits + (size as u64) * 8 - 1) as u32;
                 return Some(bv.extract(hi_bit, off_bits as u32, self.ctx));
@@ -417,7 +419,7 @@ impl<'a> VEXInterpreter<'a> {
                 count,
             } => {
                 // Strided access pattern - generate addresses and build ITE chain in Rust
-                let addrs: Vec<u64> = (0..*count).map(|i| base + i * stride).collect();
+                let addrs = strided_addrs(*base, *stride, *count);
                 self.dispatch_multi_load(callbacks, &addrs, addr_val, size)
             }
             ConcretizationResult::TooLarge { min, max, .. } => {
@@ -670,7 +672,22 @@ impl<'a> VEXInterpreter<'a> {
         }
         let elem_size = descr.elemTy.bytes();
         let index = ((idx as u32).wrapping_add(bias)) % descr.nElems;
-        Ok((descr.base + index * elem_size, elem_size))
+        // A register-file offset is an identity, not an address: wrapping it
+        // would silently name a *different* register, so refuse instead
+        // (bd memory `invariant-overflow-fix-refuse-not-saturate-identities`).
+        // Same trust boundary as the `nElems == 0` check above — `base`,
+        // `nElems` and `elemTy` all arrive unvalidated from the lifter.
+        let offset = index
+            .checked_mul(elem_size)
+            .and_then(|delta| descr.base.checked_add(delta))
+            .ok_or_else(|| {
+                CbExecutionError::InvalidIR(format!(
+                    "{site} register array descriptor overflows the register file: \
+                     base={} nElems={} elem_size={elem_size}",
+                    descr.base, descr.nElems
+                ))
+            })?;
+        Ok((offset, elem_size))
     }
 
     /// `pub(crate)` — see the doc comment on `eval_binop` above; same

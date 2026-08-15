@@ -132,3 +132,36 @@ fn try_load_exact_requires_base_match() {
     // Loading at offset within the store should fail (not an exact base match).
     assert!(buf.try_load_exact(0x101, 4).is_none());
 }
+
+#[test]
+fn store_wrapping_past_the_top_of_the_address_space() {
+    // A store based at u64::MAX - 3 covers MAX-3..=MAX and then 0..=3.
+    // `push` indexes those bytes with `wrapping_add` and `try_load` recovers
+    // the offset with the matching `wrapping_sub`; under
+    // `--profile release-checked` the pre-angr-xloth.3 `addr + offset` /
+    // `addr - store_addr` pair panicked instead (angr-xloth.3).
+    let base = u64::MAX - 3;
+    let mut buf = PendingStoreBuffer::with_capacity(4);
+    buf.push(base, vec![10, 11, 12, 13, 14, 15, 16, 17]);
+
+    assert_eq!(buf.try_load(base, 4).unwrap(), &[10, 11, 12, 13]);
+    // The wrapped tail: address 0 is the 5th byte of the store.
+    assert_eq!(buf.try_load(0, 4).unwrap(), &[14, 15, 16, 17]);
+    assert_eq!(buf.try_load(2, 2).unwrap(), &[16, 17]);
+    // Past the end of the wrapped range is still a miss.
+    assert!(buf.try_load(4, 1).is_none());
+    // ...and so is a load that would run off the end of the store.
+    assert!(buf.try_load(3, 2).is_none());
+}
+
+#[test]
+fn load_at_top_of_address_space_does_not_overflow() {
+    // The reverse-scan fallback used to compute `addr + size` directly, which
+    // overflows for a load abutting u64::MAX (angr-xloth.3).
+    let mut buf = PendingStoreBuffer::with_capacity(4);
+    buf.push(u64::MAX - 7, vec![1, 2, 3, 4, 5, 6, 7, 8]);
+    // Narrower, later store over the same base forces the reverse scan.
+    buf.push(u64::MAX - 7, vec![9, 10]);
+    assert_eq!(buf.try_load(u64::MAX - 7, 8).unwrap(), &[9, 10, 3, 4, 5, 6, 7, 8]);
+    assert!(buf.try_load(u64::MAX, 8).is_none());
+}

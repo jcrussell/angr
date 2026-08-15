@@ -104,10 +104,25 @@ impl ConcretizationResult {
                 base,
                 stride,
                 count,
-            } => Some((0..*count).map(|i| base + i * stride).collect()),
+            } => Some(strided_addrs(*base, *stride, *count)),
             _ => None,
         }
     }
+}
+
+/// Expand a [`ConcretizationResult::Strided`] pattern into its explicit
+/// address list: `base, base+stride, ..., base+(count-1)*stride`.
+///
+/// The arithmetic wraps rather than panicking: `base`, `stride` and `count`
+/// are all Z3-derived from a symbolic address expression, so nothing upstream
+/// bounds `base + (count-1) * stride` to 64 bits, and a guest address space
+/// wraps at the top (bd memory `invariant-rust-concrete-arith-must-wrap`).
+/// Shared by every interpreter/memory `Strided` arm so they agree on that
+/// choice.
+pub fn strided_addrs(base: u64, stride: u64, count: u64) -> Vec<u64> {
+    (0..count)
+        .map(|i| base.wrapping_add(i.wrapping_mul(stride)))
+        .collect()
 }
 
 /// Candidate count `K` for a concretization result, used by the

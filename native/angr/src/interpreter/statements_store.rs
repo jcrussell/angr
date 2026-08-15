@@ -159,8 +159,11 @@ impl<'a> VEXInterpreter<'a> {
                 stride,
                 count,
             } => {
-                for i in 0..*count {
-                    let addr = base.saturating_add(i.saturating_mul(*stride));
+                // `strided_addrs` (wrapping), not the saturating arithmetic this
+                // used to open-code: the addresses invalidated here must be the
+                // same ones `handle_symbolic_store`'s `Strided` arm goes on to
+                // write, or a wrapped store escapes code-cache invalidation.
+                for addr in strided_addrs(*base, *stride, *count) {
                     if self.is_in_binary(addr) {
                         self.invalidate_code_at(addr, data_size);
                     }
@@ -171,7 +174,11 @@ impl<'a> VEXInterpreter<'a> {
                 // intersects any loaded binary region, drop the entire
                 // block cache to be safe.
                 let intersects_binary = self.concrete_memory.iter().any(|region| {
-                    let region_end = region.base + region.size;
+                    // overflow-ok: `saturating_add` — a region abutting the top
+                    // of the address space clamps to `u64::MAX`, which only
+                    // widens this intersection test (more cache invalidation,
+                    // never less).
+                    let region_end = region.base.saturating_add(region.size);
                     *min < region_end && *max >= region.base
                 });
                 if intersects_binary {
@@ -484,7 +491,7 @@ impl<'a> VEXInterpreter<'a> {
                 stride,
                 count,
             } => {
-                let addrs: Vec<u64> = (0..*count).map(|i| base + i * stride).collect();
+                let addrs = strided_addrs(*base, *stride, *count);
                 self.dispatch_multi_store(callbacks, &addrs, addr_val, data_val)
             }
             ConcretizationResult::TooLarge { min, max, .. } => {

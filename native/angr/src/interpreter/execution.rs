@@ -489,11 +489,14 @@ impl<'a> VEXInterpreter<'a> {
             self.rust_memory.as_ref().and_then(|rust_mem| {
                 let mut max_bytes = VEX_MAX_BYTES;
                 for &hook_addr in self.hook_addrs.iter() {
-                    if hook_addr > addr && hook_addr < addr + max_bytes as u64 {
-                        let limit = (hook_addr - addr) as usize;
-                        if limit > 0 && limit < max_bytes {
-                            max_bytes = limit;
-                        }
+                    // Distance rather than `hook_addr < addr + max_bytes`: the
+                    // lift window is guest-PC-relative and `addr + max_bytes`
+                    // overflows for a block at the top of the address space.
+                    // A `hook_addr` below `addr` wraps to a huge delta and so
+                    // fails the `< max_bytes` test, as the old `>` guard did.
+                    let delta = hook_addr.wrapping_sub(addr);
+                    if delta > 0 && delta < max_bytes as u64 {
+                        max_bytes = delta as usize;
                     }
                 }
                 rust_mem.read_concrete_bytes_for_lift(addr, max_bytes)

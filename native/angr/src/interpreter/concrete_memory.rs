@@ -15,17 +15,36 @@ pub(crate) struct ConcreteMemoryRegion {
 }
 
 impl ConcreteMemoryRegion {
+    /// Byte offset of `addr` within this region, wrapping at the top of the
+    /// address space. An `addr` below `base` (or past the region) yields a
+    /// value `>= self.size`, which is what makes the single-comparison
+    /// containment tests below overflow-free: `base + size` is never formed.
+    #[inline]
+    fn offset_of(&self, addr: u64) -> u64 {
+        addr.wrapping_sub(self.base)
+    }
+
+    /// Whether `addr` falls inside this region. Equivalent to
+    /// `addr >= base && addr < base + size` for a region that does not wrap,
+    /// but cannot overflow for one abutting the top of the address space.
+    #[inline]
+    pub(crate) fn contains(&self, addr: u64) -> bool {
+        self.offset_of(addr) < self.size
+    }
+
     /// Read bytes from this region. Returns None if out of bounds.
     #[inline]
     pub(crate) fn read(&self, addr: u64, size: usize) -> Option<&[u8]> {
-        if addr < self.base {
+        // An `addr` below `base` wraps to a huge offset here, so it fails the
+        // bounds check below exactly as the old explicit `addr < self.base`
+        // guard did. `checked_add` because a wrapped offset plus `size` would
+        // otherwise wrap back into range and index the slice out of bounds.
+        let offset = usize::try_from(self.offset_of(addr)).ok()?;
+        let end = offset.checked_add(size)?;
+        if end > self.data.len() {
             return None;
         }
-        let offset = (addr - self.base) as usize;
-        if offset + size > self.data.len() {
-            return None;
-        }
-        Some(&self.data[offset..offset + size])
+        Some(&self.data[offset..end])
     }
 }
 
@@ -107,8 +126,10 @@ impl<'a> VEXInterpreter<'a> {
     #[cfg(feature = "libvex-ffi")]
     pub(super) fn read_concrete_prefix(&self, addr: u64, max_size: usize) -> Option<&[u8]> {
         for region in self.concrete_memory.iter() {
-            if addr >= region.base && addr < region.base + region.size {
-                let offset = (addr - region.base) as usize;
+            if region.contains(addr) {
+                // overflow-ok: `contains` proves the wrapping offset is
+                // `< region.size`, i.e. an in-bounds index into `data`.
+                let offset = region.offset_of(addr) as usize;
                 let end = offset.saturating_add(max_size).min(region.data.len());
                 return Some(&region.data[offset..end]);
             }
@@ -121,6 +142,8 @@ impl<'a> VEXInterpreter<'a> {
     pub(crate) fn is_in_binary(&self, addr: u64) -> bool {
         self.concrete_memory
             .iter()
-            .any(|region| addr >= region.base && addr < region.base + region.size)
+            .any(|region| region.contains(addr))
     }
 }
+
+test_submod!("concrete_memory_tests.rs" => tests);
