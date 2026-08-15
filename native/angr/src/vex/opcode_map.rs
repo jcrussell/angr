@@ -458,6 +458,15 @@ fn parse_float(op_str: &str) -> Option<IROp> {
     tuple_arms!(op_str; "Iop_MAdd" => FMAdd { "F32" => F32, "F64" => F64 });
     tuple_arms!(op_str; "Iop_MSub" => FMSub { "F32" => F32, "F64" => F64 });
 
+    // IEEE-754-2008 max-number / min-number (AArch32 VMAXNM / VMINNM, emitted
+    // by guest_arm_toIR.c). Scalar `F32`/`F64` shapes only — VEX declares no
+    // vector `Iop_MaxNum*x*`; the packed ARM forms lift to `Iop_Max32Fx4` &c.
+    // These must be matched *before* the `Iop_Max`/`Iop_Min` vector arms below
+    // would ever see them, which the exact-suffix `tuple_arms!` match gives
+    // for free ("Iop_MaxNumF32" never equals "Iop_Max" + a vector suffix).
+    tuple_arms!(op_str; "Iop_MaxNum" => FMaxNum { "F32" => F32, "F64" => F64 });
+    tuple_arms!(op_str; "Iop_MinNum" => FMinNum { "F32" => F32, "F64" => F64 });
+
     // Scalar-in-vector float ops (SSE scalar: ADDSS, SUBSS, MULSS, DIVSS, etc.).
     scalar_arms!(op_str; "Iop_Add"  => VFAddS  { "32F0x4" => F32, "64F0x2" => F64 });
     scalar_arms!(op_str; "Iop_Sub"  => VFSubS  { "32F0x4" => F32, "64F0x2" => F64 });

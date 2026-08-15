@@ -77,6 +77,8 @@ pub fn iropclass(op: &IROp) -> VexOpFamily {
         | IROp::FSqrt(_)
         | IROp::FMAdd(_)
         | IROp::FMSub(_)
+        | IROp::FMaxNum(_)
+        | IROp::FMinNum(_)
         | IROp::FCmpEQ(_)
         | IROp::FCmpLT(_)
         | IROp::FCmpLE(_)

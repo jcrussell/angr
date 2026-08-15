@@ -109,6 +109,13 @@ pub enum IROp {
     FMAdd(IRType),
     /// Fused multiply-sub: a*b - c (with rounding mode)
     FMSub(IRType),
+    /// IEEE-754-2008 `maxNum` (`Iop_MaxNumF32`/`Iop_MaxNumF64`) — AArch32
+    /// VMAXNM. Differs from the compare-and-select `VFMax` lane op: when
+    /// exactly one operand is NaN, the *other* operand is returned.
+    FMaxNum(IRType),
+    /// IEEE-754-2008 `minNum` (`Iop_MinNumF32`/`Iop_MinNumF64`) — AArch32
+    /// VMINNM. See [`IROp::FMaxNum`] for the NaN contract.
+    FMinNum(IRType),
 
     // Float comparisons
     FCmpEQ(IRType),
@@ -896,7 +903,9 @@ impl IROp {
             | IROp::FAbs(t)
             | IROp::FSqrt(t)
             | IROp::FMAdd(t)
-            | IROp::FMSub(t) => Some(*t),
+            | IROp::FMSub(t)
+            | IROp::FMaxNum(t)
+            | IROp::FMinNum(t) => Some(*t),
 
             IROp::FCmpEQ(_) | IROp::FCmpLT(_) | IROp::FCmpLE(_) => Some(IRType::I1),
 

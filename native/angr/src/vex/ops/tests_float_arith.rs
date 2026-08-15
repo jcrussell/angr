@@ -406,3 +406,96 @@ fn test_qop_with_rm_rejects_non_quaternary() {
         other => panic!("expected NotQuaternary, got {other:?}"),
     }
 }
+
+// ---------------------------------------------------------------------------
+// angr-0bh1z: Iop_MaxNumF32/64, Iop_MinNumF32/64 (AArch32 VMAXNM/VMINNM).
+// ---------------------------------------------------------------------------
+
+/// Ordinary (no-NaN) pairs behave like plain max/min at both widths.
+#[test]
+fn test_max_num_min_num_concrete_ordinary() {
+    let ctx = SymContext::new_mock();
+
+    let a32 = RustBV::concrete(1.5f32.to_bits() as u128, 32);
+    let b32 = RustBV::concrete((-2.5f32).to_bits() as u128, 32);
+    let max = VEXOps::binop(IROp::FMaxNum(IRType::F32), a32.clone(), b32.clone(), &ctx).unwrap();
+    let min = VEXOps::binop(IROp::FMinNum(IRType::F32), a32, b32, &ctx).unwrap();
+    assert_eq!(f32::from_bits(max.as_u64().unwrap() as u32), 1.5);
+    assert_eq!(f32::from_bits(min.as_u64().unwrap() as u32), -2.5);
+
+    let a64 = RustBV::concrete(1.5f64.to_bits() as u128, 64);
+    let b64 = RustBV::concrete((-2.5f64).to_bits() as u128, 64);
+    let max = VEXOps::binop(IROp::FMaxNum(IRType::F64), a64.clone(), b64.clone(), &ctx).unwrap();
+    let min = VEXOps::binop(IROp::FMinNum(IRType::F64), a64, b64, &ctx).unwrap();
+    assert_eq!(f64::from_bits(max.as_u64().unwrap()), 1.5);
+    assert_eq!(f64::from_bits(min.as_u64().unwrap()), -2.5);
+}
+
+/// The whole point of maxNum/minNum: with exactly one NaN operand the *other*
+/// operand is returned, from either side. The compare-and-select `VFMax`/
+/// `VFMin` lane ops deliberately do not do this.
+#[test]
+fn test_max_num_min_num_propagates_the_non_nan_operand() {
+    let ctx = SymContext::new_mock();
+    let nan = RustBV::concrete(f32::NAN.to_bits() as u128, 32);
+    let num = RustBV::concrete(3.25f32.to_bits() as u128, 32);
+
+    for op in [IROp::FMaxNum(IRType::F32), IROp::FMinNum(IRType::F32)] {
+        let nan_left = VEXOps::binop(op, nan.clone(), num.clone(), &ctx).unwrap();
+        let nan_right = VEXOps::binop(op, num.clone(), nan.clone(), &ctx).unwrap();
+        assert_eq!(
+            f32::from_bits(nan_left.as_u64().unwrap() as u32),
+            3.25,
+            "{op:?} with NaN on the left"
+        );
+        assert_eq!(
+            f32::from_bits(nan_right.as_u64().unwrap() as u32),
+            3.25,
+            "{op:?} with NaN on the right"
+        );
+    }
+
+    // Both NaN -> NaN.
+    let both = VEXOps::binop(IROp::FMaxNum(IRType::F32), nan.clone(), nan, &ctx).unwrap();
+    assert!(f32::from_bits(both.as_u64().unwrap() as u32).is_nan());
+}
+
+/// `maxNum(+0,-0) = +0` and `minNum(+0,-0) = -0`, in both operand orders —
+/// the ARM ARM FPMax/FPMin contract that `f32::max` explicitly does not pin.
+#[test]
+fn test_max_num_min_num_signed_zero() {
+    let ctx = SymContext::new_mock();
+    let pos = RustBV::concrete(0.0f32.to_bits() as u128, 32);
+    let neg = RustBV::concrete((-0.0f32).to_bits() as u128, 32);
+
+    let bits = |bv: RustBV| bv.as_u64().unwrap() as u32;
+    for (l, r) in [(pos.clone(), neg.clone()), (neg.clone(), pos.clone())] {
+        let max = VEXOps::binop(IROp::FMaxNum(IRType::F32), l.clone(), r.clone(), &ctx).unwrap();
+        let min = VEXOps::binop(IROp::FMinNum(IRType::F32), l, r, &ctx).unwrap();
+        assert_eq!(bits(max), 0.0f32.to_bits(), "maxNum(+0,-0) must be +0");
+        assert_eq!(bits(min), (-0.0f32).to_bits(), "minNum(+0,-0) must be -0");
+    }
+}
+
+/// Symbolic maxNum: constraining `maxNum(x, 2.0) == 5.0` forces x == 5.0, so
+/// the Z3 `fp.max` wiring actually propagates rather than minting a fresh
+/// unconstrained symbol.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_max_num_symbolic_constraint() {
+    let ctx = SymContext::new_mock();
+    let x = RustBV::symbolic(&ctx, "x", 32);
+    let two = RustBV::concrete(2.0f32.to_bits() as u128, 32);
+
+    let m = VEXOps::binop(IROp::FMaxNum(IRType::F32), x.clone(), two, &ctx).unwrap();
+    let five = RustBV::concrete(5.0f32.to_bits() as u128, 32);
+    ctx.add_constraint(m.to_z3_ast().eq(five.to_z3_ast()));
+    assert!(ctx.is_sat(), "expected SAT after FMaxNum symbolic constraint");
+
+    let model_x = ctx.eval(&x).expect("eval(x) returned None");
+    let result_f = f32::from_bits(model_x as u32);
+    assert!(
+        (result_f - 5.0).abs() < 1e-6,
+        "Expected x == 5.0, got {result_f}"
+    );
+}

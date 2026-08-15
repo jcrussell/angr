@@ -124,6 +124,14 @@ pub enum FloatOpKind {
     Sub,
     Mul,
     Div,
+    /// IEEE-754-2008 `maxNum` / `minNum` (SMT-LIB `fp.max` / `fp.min`): when
+    /// exactly one operand is NaN the *other* operand is returned, unlike the
+    /// plain compare-and-select `FMax`/`FMin` lane ops in
+    /// `vex::ops::lane_traits`, which propagate whichever operand the compare
+    /// happens to fall through to. Backs `IROp::FMaxNum`/`FMinNum` (ARM32
+    /// VMAXNM/VMINNM).
+    MaxNum,
+    MinNum,
     // Unary.
     Sqrt,
     Neg,
@@ -205,6 +213,8 @@ impl FloatOpKind {
             | FloatOpKind::Sub
             | FloatOpKind::Mul
             | FloatOpKind::Div
+            | FloatOpKind::MaxNum
+            | FloatOpKind::MinNum
             | FloatOpKind::CmpEq
             | FloatOpKind::CmpLt
             | FloatOpKind::CmpLe

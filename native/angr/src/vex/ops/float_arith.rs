@@ -161,6 +161,40 @@ impl VEXOps {
         )
     }
 
+    /// `Iop_MaxNumF32`/`Iop_MaxNumF64` — AArch32 VMAXNM.
+    pub(super) fn float_max_num(
+        left: RustBV,
+        right: RustBV,
+        ty: IRType,
+        _ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
+        Self::float_arith_scalar(
+            left,
+            right,
+            ty,
+            FloatOpKind::MaxNum,
+            |a, b| num_min_max(a, b, /*want_max=*/ true),
+            |a, b| num_min_max(a, b, /*want_max=*/ true),
+        )
+    }
+
+    /// `Iop_MinNumF32`/`Iop_MinNumF64` — AArch32 VMINNM.
+    pub(super) fn float_min_num(
+        left: RustBV,
+        right: RustBV,
+        ty: IRType,
+        _ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
+        Self::float_arith_scalar(
+            left,
+            right,
+            ty,
+            FloatOpKind::MinNum,
+            |a, b| num_min_max(a, b, /*want_max=*/ false),
+            |a, b| num_min_max(a, b, /*want_max=*/ false),
+        )
+    }
+
     /// Fused multiply-add: a*b + c
     pub(super) fn float_madd(
         a: RustBV,
@@ -220,4 +254,55 @@ impl VEXOps {
         let prec = float_prec_of(ty).ok_or(OpError::InvalidFloatType(ty))?;
         Ok(build_float_expr(FloatOpKind::Fms, prec, vec![a, b, c]))
     }
+}
+
+/// Minimal float facade for [`num_min_max`], so the f32 and f64 bodies of
+/// `Iop_MaxNumF*`/`Iop_MinNumF*` are written once instead of twice.
+trait IeeeNum: Copy + PartialOrd {
+    fn is_nan(self) -> bool;
+    fn is_sign_negative(self) -> bool;
+}
+
+macro_rules! impl_ieee_num {
+    ($t:ty) => {
+        impl IeeeNum for $t {
+            fn is_nan(self) -> bool {
+                <$t>::is_nan(self)
+            }
+            fn is_sign_negative(self) -> bool {
+                <$t>::is_sign_negative(self)
+            }
+        }
+    };
+}
+impl_ieee_num!(f32);
+impl_ieee_num!(f64);
+
+/// Concrete IEEE-754-2008 `maxNum` (`want_max`) / `minNum` on one scalar pair.
+///
+/// Deliberately *not* `f32::max`/`f64::max`: those map to LLVM `maxnum`, which
+/// documents ±0 as "may return either operand". The ARM ARM's FPMax/FPMin --
+/// which VMAXNM/VMINNM defer to once NaNs are out of the way -- pin
+/// `maxNum(+0,-0) = +0` and `minNum(+0,-0) = -0`, and this op's whole reason
+/// to exist is the corner cases the plain compare-and-select `FMax`/`FMin`
+/// lane ops in `vex::ops::lane_traits` get differently.
+fn num_min_max<T: IeeeNum>(a: T, b: T, want_max: bool) -> T {
+    // Exactly-one-NaN: return the other operand (this is what makes it
+    // *maxNum*, not max). Both-NaN falls out as `b`, itself a NaN.
+    if a.is_nan() {
+        return b;
+    }
+    if b.is_nan() {
+        return a;
+    }
+    if a == b {
+        // Reached for equal magnitudes and, the case that matters, for
+        // `-0.0 == 0.0` -- which the ordered compare below cannot separate.
+        return if a.is_sign_negative() == want_max {
+            b
+        } else {
+            a
+        };
+    }
+    if (a > b) == want_max { a } else { b }
 }

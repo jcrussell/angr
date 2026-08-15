@@ -674,6 +674,26 @@ fn test_parse_vec_cmp_eq_shapes() {
     }
 }
 
+/// angr-0bh1z: the four IEEE-754-2008 max-number/min-number opcodes (AArch32
+/// VMAXNM/VMINNM) were unmapped on ARM32, a Supported architecture. They must
+/// stay distinct from the compare-and-select `Iop_Max32Fx4`-style vector ops,
+/// which parse to `VFMax`/`VFMin` and have different NaN behaviour.
+#[test]
+fn test_parse_max_num_min_num() {
+    assert_eq!(parse_opcode("Iop_MaxNumF32"), IROp::FMaxNum(IRType::F32));
+    assert_eq!(parse_opcode("Iop_MaxNumF64"), IROp::FMaxNum(IRType::F64));
+    assert_eq!(parse_opcode("Iop_MinNumF32"), IROp::FMinNum(IRType::F32));
+    assert_eq!(parse_opcode("Iop_MinNumF64"), IROp::FMinNum(IRType::F64));
+    // The vector Max/Min family is untouched by the new arms.
+    assert_eq!(
+        parse_opcode("Iop_Max32Fx4"),
+        IROp::VFMax {
+            elem: IRType::F32,
+            count: 4
+        }
+    );
+}
+
 /// angr-9ke6b.233: `IROp::Raw` had no producer, so every x87 / FRECPX
 /// transcendental parsed to `Unmapped` and the libm fast paths in
 /// `vex::transcendentals` were dead outside their own unit tests.
@@ -944,11 +964,9 @@ const KNOWN_UNMAPPED_GROUPS: &[(&[&str], &str)] = &[
         ],
         "PowerPC \"round to 32-bit precision after the op\" (*F64r32) arithmetic plus adjacent scalar FP helpers (F64toI16S, RSqrtEst5GoodF64, TruncF64asF32, RoundF64toF32, RoundF64toF64_*) — PowerPC-specific FP helper ops, not yet implemented.",
     ),
-    // ARM32_MAXNUM_MINNUM
-    (
-        &["Iop_MaxNumF32", "Iop_MaxNumF64", "Iop_MinNumF32", "Iop_MinNumF64"],
-        "AArch32 VMAXNM/VMINNM (IEEE-754-2008 max-number/min-number), emitted by guest_arm_toIR.c — NOT PowerPC-only despite living in the same VEX enum region as the PPC F64r32 family above; ARM (32-bit) is a Supported architecture (docs/advanced-topics/rust_engine.rst), so this is a real coverage gap on a supported arch, not an unsupported-arch carve-out. Not yet implemented.",
-    ),
+    // (The ARM32 VMAXNM/VMINNM group that used to sit here — Iop_MaxNumF32/F64,
+    // Iop_MinNumF32/F64 — was dropped when angr-0bh1z implemented them as
+    // IROp::FMaxNum/FMinNum; test_parse_max_num_min_num pins the mapping.)
     // X87_PREM
     (
         &[

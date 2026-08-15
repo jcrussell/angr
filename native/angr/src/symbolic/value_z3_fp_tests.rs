@@ -793,6 +793,8 @@ fn test_every_float_op_kind_builds_at_declared_width() {
             FloatOpKind::Abs,
             FloatOpKind::Fma,
             FloatOpKind::Fms,
+            FloatOpKind::MaxNum,
+            FloatOpKind::MinNum,
             FloatOpKind::CmpEq,
             FloatOpKind::CmpLt,
             FloatOpKind::CmpLe,
@@ -837,6 +839,8 @@ fn test_every_float_op_kind_builds_at_declared_width() {
                 | FloatOpKind::Abs
                 | FloatOpKind::Fma
                 | FloatOpKind::Fms
+                | FloatOpKind::MaxNum
+                | FloatOpKind::MinNum
                 | FloatOpKind::CmpEq
                 | FloatOpKind::CmpLt
                 | FloatOpKind::CmpLe

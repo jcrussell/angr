@@ -352,6 +352,8 @@ impl VEXOps {
             | IROp::FSub(_)
             | IROp::FMul(_)
             | IROp::FDiv(_)
+            | IROp::FMaxNum(_)
+            | IROp::FMinNum(_)
             | IROp::FCmpEQ(_)
             | IROp::FCmpLT(_)
             | IROp::FCmpLE(_)
@@ -528,6 +530,10 @@ impl VEXOps {
             IROp::FSub(ty) => Self::float_sub(left, right, ty, ctx),
             IROp::FMul(ty) => Self::float_mul(left, right, ty, ctx),
             IROp::FDiv(ty) => Self::float_div(left, right, ty, ctx),
+
+            // IEEE-754-2008 maxNum/minNum (ARM32 VMAXNM/VMINNM).
+            IROp::FMaxNum(ty) => Self::float_max_num(left, right, ty, ctx),
+            IROp::FMinNum(ty) => Self::float_min_num(left, right, ty, ctx),
 
             // FP comparisons.
             IROp::FCmpEQ(ty) => Self::float_cmp_eq(left, right, ty, ctx),

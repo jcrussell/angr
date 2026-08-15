@@ -593,8 +593,8 @@ impl RustBV {
         use z3::ast::{Ast, BV, Bool, Float, RoundingMode};
         use z3_sys::{
             Z3_mk_bool_sort, Z3_mk_fpa_abs, Z3_mk_fpa_add, Z3_mk_fpa_div, Z3_mk_fpa_eq,
-            Z3_mk_fpa_fma, Z3_mk_fpa_is_nan, Z3_mk_fpa_leq, Z3_mk_fpa_lt, Z3_mk_fpa_mul,
-            Z3_mk_fpa_neg, Z3_mk_fpa_sqrt, Z3_mk_fpa_sub,
+            Z3_mk_fpa_fma, Z3_mk_fpa_is_nan, Z3_mk_fpa_leq, Z3_mk_fpa_lt, Z3_mk_fpa_max,
+            Z3_mk_fpa_min, Z3_mk_fpa_mul, Z3_mk_fpa_neg, Z3_mk_fpa_sqrt, Z3_mk_fpa_sub,
         };
 
         // RoundToInt has a non-Float operand (the rm BV) and needs its own path.
@@ -683,6 +683,11 @@ impl RustBV {
                 FloatOpKind::Sub => Z3_mk_fpa_sub(raw_ctx, rm_raw, raw_a, raw_b()),
                 FloatOpKind::Mul => Z3_mk_fpa_mul(raw_ctx, rm_raw, raw_a, raw_b()),
                 FloatOpKind::Div => Z3_mk_fpa_div(raw_ctx, rm_raw, raw_a, raw_b()),
+                // `fp.max` / `fp.min` are exact (no rounding), and return the
+                // non-NaN operand when exactly one side is NaN — the
+                // IEEE-754-2008 maxNum/minNum contract `IROp::FMaxNum` needs.
+                FloatOpKind::MaxNum => Z3_mk_fpa_max(raw_ctx, raw_a, raw_b()),
+                FloatOpKind::MinNum => Z3_mk_fpa_min(raw_ctx, raw_a, raw_b()),
                 FloatOpKind::Sqrt => Z3_mk_fpa_sqrt(raw_ctx, rm_raw, raw_a),
                 FloatOpKind::Neg => Z3_mk_fpa_neg(raw_ctx, raw_a),
                 FloatOpKind::Abs => Z3_mk_fpa_abs(raw_ctx, raw_a),
