@@ -227,6 +227,35 @@ fn test_op_ite_selects_by_condition() {
     );
 }
 
+/// angr-0jh0j.72: `op_ite`'s then/else pair must agree in width, exactly as a
+/// binop's two operands must. With a *symbolic* condition there is no
+/// `as_u128` fast-fold to pick a side, so a mismatch survives into an `Ite`
+/// expression node and only trips Z3's sort check at materialization — a
+/// process abort under `panic=abort`, not a catchable error. The concrete
+/// condition is checked too: the guard must not depend on which side folds.
+#[test]
+fn test_op_ite_rejects_mismatched_then_else_width() {
+    let ctx = RustSolverContext::new();
+    let sym_cond = ctx.create_symbolic("hapi_ite_cond", 1).unwrap().id();
+    let then_v = c(&ctx, 0xaa, 16);
+    let else_v = c(&ctx, 0x55, 8);
+
+    for (name, msg) in [
+        ("symbolic cond", err_msg(ctx.op_ite(sym_cond, then_v, else_v))),
+        (
+            "concrete cond",
+            err_msg(ctx.op_ite(c(&ctx, 1, 1), then_v, else_v)),
+        ),
+    ] {
+        assert!(msg.contains("width mismatch"), "{name}: {msg}");
+        assert!(msg.contains("16-bit vs 8-bit"), "{name}: {msg}");
+    }
+
+    // Equal widths still go through, in either operand order.
+    let ok = ctx.op_ite(sym_cond, then_v, c(&ctx, 0x55, 16)).unwrap();
+    assert_eq!(ok.width(), 16);
+}
+
 // =============================================================================
 // op_* wrappers — error paths
 // =============================================================================

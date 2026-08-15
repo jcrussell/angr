@@ -335,6 +335,7 @@ impl RustSolverContext {
 
     /// If-then-else: if cond then then_val else else_val.
     pub fn op_ite(&self, cond_id: u64, then_id: u64, else_id: u64) -> PyResult<RustBVHandle> {
+        self.reject_ite_width_mismatch(then_id, else_id)?;
         self.opt_op(&[cond_id, then_id, else_id], |table, ctx| {
             table.op_ite(cond_id, then_id, else_id, ctx)
         })
@@ -456,6 +457,33 @@ impl RustSolverContext {
             return Err(PyValueError::new_err(format!(
                 "{op}: to_width {to_width} < source width {width}; \
                  use op_truncate/op_extract to narrow"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Reject an `op_ite` whose then/else operands disagree in width.
+    ///
+    /// The `then`/`else` pair is the same hazard the `op_binary!` macro's
+    /// [`BinaryOpError::WidthMismatch`] arm rejects for the ~25 binop-routed
+    /// ops — two operand widths that must match before they reach a single Z3
+    /// node — but `op_ite` goes through
+    /// [`opt_op`](Self::opt_op) instead and so inherits none of that guard.
+    /// `RustBV::ite_into` only `debug_assert`s the equality, which is compiled
+    /// out of the shipped release profile, so a symbolic condition (no
+    /// `as_u128` fast-fold) builds an `Ite` expression with mismatched
+    /// then/else and hands mismatched sorts to `Z3_mk_ite` at materialization —
+    /// a process abort under `panic=abort` rather than a catchable `PyErr`
+    /// (angr-0jh0j.72). A missing handle is left to the op's own
+    /// `invalid_handle_id` path.
+    pub(super) fn reject_ite_width_mismatch(&self, then_id: u64, else_id: u64) -> PyResult<()> {
+        if let (Some(then_width), Some(else_width)) =
+            (self.source_width(then_id), self.source_width(else_id))
+            && then_width != else_width
+        {
+            return Err(PyValueError::new_err(format!(
+                "op_ite: then/else width mismatch: \
+                 {then_width}-bit vs {else_width}-bit operands"
             )));
         }
         Ok(())
