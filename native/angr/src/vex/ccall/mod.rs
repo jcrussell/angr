@@ -850,6 +850,31 @@ pub fn handle_ccall_with_ctx(
             return Some(RustBV::concrete(result as u128, ret_bits));
         }
 
+        // Symbolic path: concrete cc_op with (possibly) symbolic deps. Mirrors
+        // the arm64g_calculate_flag_* arm below; the arm_sym_flag_* helpers
+        // cover all 8 ARM cc_ops and are already used by
+        // arm_sym_calculate_condition (angr-0jh0j.70).
+        if let (Some(cc_op), Some(sym_ctx)) = (args[0].as_u64(), ctx) {
+            let bit = match name {
+                "armg_calculate_flag_n" => {
+                    arm_sym_flag_n(cc_op, &args[1], &args[2], &args[3], sym_ctx)
+                }
+                "armg_calculate_flag_z" => {
+                    arm_sym_flag_z(cc_op, &args[1], &args[2], &args[3], sym_ctx)
+                }
+                "armg_calculate_flag_c" => {
+                    arm_sym_flag_c(cc_op, &args[1], &args[2], &args[3], sym_ctx)
+                }
+                "armg_calculate_flag_v" => {
+                    arm_sym_flag_v(cc_op, &args[1], &args[2], &args[3], sym_ctx)
+                }
+                _ => None,
+            };
+            if let Some(bit) = bit {
+                return Some(bit.zero_extend(ret_bits, sym_ctx));
+            }
+        }
+
         return None;
     }
 

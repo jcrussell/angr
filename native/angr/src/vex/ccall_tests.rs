@@ -1207,6 +1207,87 @@ fn diff_fuzz_arm64_sym_calculate_condition() {
     }
 }
 
+/// The four ARM32 individual-flag CCalls must resolve natively for *every*
+/// cc_op when a dep is symbolic — no `_ => None` gap that silently sends a
+/// whole cc_op back to the Python ccall (angr-0jh0j.70). Iterates the cc_op
+/// range rather than a hand-written list so a newly added cc_op is covered
+/// automatically.
+#[test]
+fn arm32_flag_ccalls_symbolic_cover_every_cc_op() {
+    let ctx = crate::symbolic::SymContext::new_mock();
+    for name in [
+        "armg_calculate_flag_n",
+        "armg_calculate_flag_z",
+        "armg_calculate_flag_c",
+        "armg_calculate_flag_v",
+    ] {
+        // COPY..MULL is the whole ARMG_CC_OP_* space (libvex_guest_arm.h).
+        for cc_op in arm_cc_op::ARMG_CC_OP_COPY..=arm_cc_op::ARMG_CC_OP_MULL {
+            // A symbolic cc_dep1 declines the concrete fast path, forcing the
+            // symbolic branch this test is about.
+            let args = vec![
+                RustBV::concrete(u128::from(cc_op), 32),
+                RustBV::symbolic(&ctx, format!("{name}_d1_{cc_op}"), 32),
+                RustBV::concrete(0x5a, 32),
+                RustBV::concrete(1, 32),
+            ];
+            assert!(
+                handle_ccall_with_ctx(name, &args, 32, Some(&ctx)).is_some(),
+                "{name} cc_op={cc_op} fell back to Python"
+            );
+        }
+    }
+}
+
+/// Value half of `arm32_flag_ccalls_symbolic_cover_every_cc_op`: the symbolic
+/// answer must equal the concrete `armg_calc_flag_*` reference, not merely be
+/// non-`None`. Pins cc_dep1 with a constraint so the symbolic dispatch runs
+/// while the answer stays evaluable.
+// Symbolic solving: `add_bv_constraint` / `eval` only exist with the Z3-backed
+// engine (angr-9ke6b.236, see bd memory `vex-engine-z3-test-gate-invariant`).
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn diff_fuzz_arm32_flag_ccalls_symbolic_matches_concrete() {
+    let mut rng = Lcg::new(0x0a11_3200);
+    for (name, conc) in [
+        (
+            "armg_calculate_flag_n",
+            armg_calc_flag_n as fn(u64, u64, u64, u64) -> Option<u64>,
+        ),
+        ("armg_calculate_flag_z", armg_calc_flag_z),
+        ("armg_calculate_flag_c", armg_calc_flag_c),
+        ("armg_calculate_flag_v", armg_calc_flag_v),
+    ] {
+        for cc_op in arm_cc_op::ARMG_CC_OP_COPY..=arm_cc_op::ARMG_CC_OP_MULL {
+            for _ in 0..2 {
+                let d1 = rng.next() & 0xFFFF_FFFF;
+                let d2 = rng.next() & 0xFFFF_FFFF;
+                // ADC/SBB read cc_ndep as the incoming carry; MUL/MULL read it
+                // as oldC:oldV. Keeping it in {0,3} is valid for both.
+                let nd = rng.next() & 3;
+                // Fresh context per case: the constraint pins the symbol to d1.
+                let ctx = crate::symbolic::SymContext::new_mock();
+                let sym_d1 = RustBV::symbolic(&ctx, "arm32_flag_d1", 32);
+                ctx.add_bv_constraint(&sym_d1, u128::from(d1));
+                let args = vec![
+                    RustBV::concrete(u128::from(cc_op), 32),
+                    sym_d1,
+                    RustBV::concrete(u128::from(d2), 32),
+                    RustBV::concrete(u128::from(nd), 32),
+                ];
+                let got = handle_ccall_with_ctx(name, &args, 32, Some(&ctx))
+                    .expect("every ARM cc_op must resolve natively");
+                let want = conc(cc_op, d1, d2, nd).expect("concrete reference must also decode");
+                assert_eq!(
+                    ctx.eval(&got),
+                    Some(u128::from(want)),
+                    "{name} cc_op={cc_op} d1={d1:x} d2={d2:x} nd={nd:x}"
+                );
+            }
+        }
+    }
+}
+
 /// Diff-fuzz each individual symbolic flag builder against its concrete
 /// counterpart across all cc_ops.
 #[test]
