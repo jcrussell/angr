@@ -34,9 +34,11 @@ right operand is a simple identifier / dotted field access (or, on the
 right, a numeric literal) whose last ``_``-separated component is one of
 :data:`NAME_COMPONENTS`.
 
-A site is exempt when the line above it (or its own trailing comment)
-carries a marker matching :data:`EXEMPT_RE`, i.e. ``overflow-ok:`` followed
-by a rationale -- the escape hatch for arithmetic that only *looks*
+A site is exempt when the marker :data:`EXEMPT_RE` -- ``overflow-ok:``
+followed by a rationale -- appears within the scan window: the site's own
+line (so a trailing comment works) or either of the **two** lines above it.
+A rationale longer than that must keep ``overflow-ok:`` on one of those two
+lines, or the site stays a GAP -- the escape hatch for arithmetic that only *looks*
 address-shaped (e.g. a bounds-checked ``usize`` loop counter that can never
 reach a guest-controlled value).
 
