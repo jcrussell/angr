@@ -308,7 +308,12 @@ impl RustBV {
         /// that already own the operands should prefer this.
         add_into,
         |lhs, rhs, _ctx| {
-            (Some(a), Some(b)) => Self::concrete(a.wrapping_add(b), lhs.width()),
+            // The guard declines the fold when the sum carries past bit 127 at
+            // a width the payload cannot represent it in; the `_` arm then
+            // keeps the Add symbolic (see `concrete_arith_fits`).
+            (Some(a), Some(b)) if concrete_arith_fits(lhs.width(), a.checked_add(b)) => {
+                Self::concrete(a.wrapping_add(b), lhs.width())
+            }
             // x + 0 → x
             (None, Some(0)) => lhs,
             // 0 + x → x
@@ -327,7 +332,12 @@ impl RustBV {
         /// Subtract two bitvectors, consuming both arguments.
         sub_into,
         |lhs, rhs, _ctx| {
-            (Some(a), Some(b)) => Self::concrete(a.wrapping_sub(b), lhs.width()),
+            // Declines when the difference borrows past bit 127 (`a < b`, so the
+            // true result `a - b + 2^width` needs bits ≥ 128 that the payload
+            // has not got) — see `concrete_arith_fits`.
+            (Some(a), Some(b)) if concrete_arith_fits(lhs.width(), a.checked_sub(b)) => {
+                Self::concrete(a.wrapping_sub(b), lhs.width())
+            }
             // x - 0 → x
             (None, Some(0)) => lhs,
             _ => {
@@ -343,7 +353,12 @@ impl RustBV {
         /// Multiply two bitvectors, consuming both arguments.
         mul_into,
         |lhs, rhs, ctx| {
-            (Some(a), Some(b)) => Self::concrete(a.wrapping_mul(b), lhs.width()),
+            // Declines when the product overflows the payload; both operands
+            // are then non-zero, so the `x * 0` arms below stay unreachable for
+            // the declined case and the `_` arm keeps the Mul symbolic.
+            (Some(a), Some(b)) if concrete_arith_fits(lhs.width(), a.checked_mul(b)) => {
+                Self::concrete(a.wrapping_mul(b), lhs.width())
+            }
             // x * 0 → 0
             (_, Some(0)) | (Some(0), _) => Self::zero(lhs.width()),
             // x * 1 → x
@@ -492,8 +507,16 @@ impl RustBV {
     #[inline]
     pub fn neg_into(self, _ctx: &SymContext) -> Self {
         match self.as_u128() {
-            Some(v) => Self::concrete((!v).wrapping_add(1), self.width()),
-            None => {
+            // -0 → 0 at every width, including above the storage ceiling.
+            Some(0) => Self::zero(self.width()),
+            // Negation is `not` + 1, so it inherits `not_into`'s ceiling: at
+            // `width > 128` the true `2^width - v` sets every bit in
+            // `[128..width)`, none of which the payload can hold, so decline
+            // the fold and let Z3 negate at the declared width (angr-0jh0j.52).
+            Some(v) if !bits_beyond_storage(self.width()) => {
+                Self::concrete((!v).wrapping_add(1), self.width())
+            }
+            _ => {
                 // neg(neg(x)) → x
                 if let RustBV::Expression {
                     op: BVOp::Neg,
@@ -582,8 +605,12 @@ impl RustBV {
     #[inline]
     pub fn not_into(self, _ctx: &SymContext) -> Self {
         match self.as_u128() {
-            Some(v) => Self::concrete(!v, self.width()),
-            None => {
+            // Above the storage ceiling the `[128..width)` bits are implicit
+            // zeros that a true NOT has to turn into ones — unrepresentable in
+            // the u128 payload, so decline the fold and let Z3 complement at
+            // the declared width (angr-0jh0j.52).
+            Some(v) if !bits_beyond_storage(self.width()) => Self::concrete(!v, self.width()),
+            _ => {
                 // not(not(x)) → x
                 if let RustBV::Expression {
                     op: BVOp::Not,
@@ -1012,10 +1039,13 @@ impl RustBV {
         }
         let extend_bits = to_width - self.width();
         match self.as_u128() {
-            Some(v) => {
-                let extended = sign_extend_to(v, self.width(), to_width);
-                Self::concrete(extended, to_width)
-            }
+            // `sign_extend_to` returns `None` when the fill would need bits the
+            // u128 payload cannot hold (negative source, `to_width > 128`);
+            // that case takes the same Expression path as a symbolic operand.
+            Some(v) => match sign_extend_to(v, self.width(), to_width) {
+                Some(extended) => Self::concrete(extended, to_width),
+                None => Self::expr_node(to_width, BVOp::SignExt(extend_bits), [self]),
+            },
             None => Self::expr_node(to_width, BVOp::SignExt(extend_bits), [self]),
         }
     }
@@ -1440,6 +1470,37 @@ fn try_zext_const_cmp_fold(
     }
 }
 
+/// `true` when a `width`-bit value has conceptual bits above the u128 payload
+/// a `Concrete` actually stores.
+///
+/// This is the storage ceiling every concrete fast path in this file is
+/// sensitive to: at `width > 128` the bits `[128..width)` are implicit zeros
+/// with nowhere to be written, so a fold whose true result would need one of
+/// them must decline (fall back to an `Expression`) rather than emit a
+/// smaller, wrong number — see `define_rotate_pair!`, `reverse_owned`,
+/// `concrete_arith_fits` and `sign_extend_to`.
+/// [`sign_bit_beyond_storage`] is the signed-semantics corollary.
+#[inline]
+fn bits_beyond_storage(width: u32) -> bool {
+    width > 128
+}
+
+/// `true` when a concrete arithmetic result fits the `width`-bit `Concrete`
+/// payload, i.e. when the fold may proceed (angr-0jh0j.51).
+///
+/// `exact` is the operation's `checked_*` result: `None` means the true
+/// mathematical result crossed bit 127. Below the storage ceiling that carry
+/// is simply the mod-2^width wraparound the width itself mandates, and
+/// `RustBV::concrete` masks it away; above it (`width > 128`) the carried bit
+/// is a *real* bit of the result — `2^128` is an ordinary 200-bit number — that
+/// the payload cannot hold, so the caller must decline the fold and let the
+/// operation stay an `Expression` (Z3 computes it exactly at the declared
+/// width).
+#[inline]
+fn concrete_arith_fits(width: u32, exact: Option<u128>) -> bool {
+    !bits_beyond_storage(width) || exact.is_some()
+}
+
 /// `true` when the sign bit of a `width`-bit `Concrete` lies beyond the u128
 /// the node actually stores, which makes the value logically non-negative.
 ///
@@ -1452,7 +1513,7 @@ fn try_zext_const_cmp_fold(
 /// instead of reading bit 127 as the sign.
 #[inline]
 fn sign_bit_beyond_storage(width: u32) -> bool {
-    width > 128
+    bits_beyond_storage(width)
 }
 
 /// Sign-extend a value from `width` bits to i128.
@@ -1479,7 +1540,14 @@ fn sign_extend(value: u128, width: u32) -> i128 {
 }
 
 /// Sign-extend a value from one width to another (staying in u128).
-fn sign_extend_to(value: u128, from_width: u32, to_width: u32) -> u128 {
+///
+/// `None` means the extension has no u128 representation and the caller must
+/// decline the concrete fold (angr-0jh0j.53): widening a *negative* source past
+/// the storage ceiling needs every bit of `[128..to_width)` set, and those bits
+/// do not exist in a `Concrete`'s payload. Folding anyway would turn a negative
+/// number into a specific, much smaller, non-negative one — which every
+/// `sign_bit_beyond_storage`-gated signed op would then read as non-negative.
+fn sign_extend_to(value: u128, from_width: u32, to_width: u32) -> Option<u128> {
     if from_width >= to_width || from_width >= 128 {
         // `from_width >= to_width`: no widening, value is already correct.
         // `from_width >= 128`: the sign bit (position `from_width - 1 >= 128`)
@@ -1488,7 +1556,7 @@ fn sign_extend_to(value: u128, from_width: u32, to_width: u32) -> u128 {
         // no-op (== zero-extend). This arm also avoids the `1u128 << (from_width
         // - 1)` overflow the `else` shift would hit at `from_width >= 128`
         // (panic under debug / `panic = "abort"`, wraps mod 128 in release).
-        value
+        Some(value)
     } else {
         // `from_width < to_width <= 128`, so `from_width < 128` and the
         // `1u128 << from_width` shifts below are in range. `to_width` can be
@@ -1498,15 +1566,21 @@ fn sign_extend_to(value: u128, from_width: u32, to_width: u32) -> u128 {
         // to-mask to `u128::MAX` at width 128, matching `mask()` in the tests.
         let sign_bit = 1u128 << (from_width - 1);
         if value & sign_bit != 0 {
+            if bits_beyond_storage(to_width) {
+                // The sign fill has to reach bit `to_width - 1 >= 128`; the
+                // mask below can only ever set bits up to 127, so there is no
+                // correct concrete answer here. Decline (angr-0jh0j.53).
+                return None;
+            }
             let to_mask = if to_width >= 128 {
                 u128::MAX
             } else {
                 (1u128 << to_width) - 1
             };
             let extension_mask = to_mask & !((1u128 << from_width) - 1);
-            value | extension_mask
+            Some(value | extension_mask)
         } else {
-            value
+            Some(value)
         }
     }
 }

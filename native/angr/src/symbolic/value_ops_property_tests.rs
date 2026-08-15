@@ -345,7 +345,8 @@ fn prop_sign_extend_matches_reference(v: u128, ws: u8, extra: u8) -> bool {
     let ctx = SymContext::new_mock();
     let w = w64(ws);
     let w2 = w + (extra % 64) as u32; // >= w, <= 127
-    let expected = sign_extend_to(v & mask(w), w, w2) & mask(w2);
+    // w2 <= 127, so the fold never declines (see `sign_extend_to`).
+    let expected = sign_extend_to(v & mask(w), w, w2).expect("w2 <= 128 always folds") & mask(w2);
     val(&bv(v, w).sign_extend(w2, &ctx)) == expected
 }
 
@@ -565,7 +566,8 @@ fn boundary_sign_extend_matches_reference() {
                 continue; // sign_extend only widens
             }
             for &v in &boundary_values(w) {
-                let want = sign_extend_to(v & mask(w), w, to) & mask(to);
+                let want = sign_extend_to(v & mask(w), w, to).expect("to <= 128 always folds")
+                    & mask(to);
                 let got = val(&bv(v, w).sign_extend(to, &ctx));
                 assert_eq!(got, want, "sext({w}->{to}) v={v:#x}");
             }
@@ -965,6 +967,125 @@ fn narrow_rotate_matches_masked_u128_reference() {
                 assert_eq!(val(&x.rotl(&n, &ctx)), want_l, "rotl w={w} v={v:#x} a={a}");
                 assert_eq!(val(&x.rotr(&n, &ctx)), want_r, "rotr w={w} v={v:#x} a={a}");
             }
+        }
+    }
+}
+
+// angr-0jh0j.51: the add/sub/mul concrete fast paths at width > 128. Below the
+// storage ceiling a carry out of bit 127 IS the mod-2^width wraparound the width
+// mandates; above it the carried bit is an ordinary bit of the result (2^128 is
+// a perfectly good 200-bit number) that the u128 payload cannot hold, so the
+// fold has to decline instead of emitting a smaller, wrong number.
+#[test]
+fn wide_arith_declines_the_fold_when_the_result_leaves_the_payload() {
+    let ctx = SymContext::new_mock();
+    for &w in &WIDE_WIDTHS {
+        for &a in &wide_payloads() {
+            for &b in &wide_payloads() {
+                for (name, got, op, exact) in [
+                    (
+                        "add",
+                        bv(a, w).add(&bv(b, w), &ctx),
+                        BVOp::Add,
+                        a.checked_add(b),
+                    ),
+                    (
+                        "sub",
+                        bv(a, w).sub(&bv(b, w), &ctx),
+                        BVOp::Sub,
+                        a.checked_sub(b),
+                    ),
+                    (
+                        "mul",
+                        bv(a, w).mul(&bv(b, w), &ctx),
+                        BVOp::Mul,
+                        a.checked_mul(b),
+                    ),
+                ] {
+                    assert_eq!(got.width(), w, "{name} width w={w} a={a:#x} b={b:#x}");
+                    match exact {
+                        // Fits the payload: the fold still fires and is exact.
+                        Some(v) => assert_eq!(val(&got), v, "{name} w={w} a={a:#x} b={b:#x}"),
+                        // Crosses bit 127: must stay symbolic so Z3 computes it
+                        // at the declared width.
+                        None => {
+                            assert!(
+                                got.as_u128().is_none(),
+                                "{name} must not fold w={w} a={a:#x} b={b:#x}"
+                            );
+                            assert_eq!(
+                                got.op(),
+                                Some(&op),
+                                "{name} op w={w} a={a:#x} b={b:#x}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// angr-0jh0j.52: not/neg at width > 128. A true NOT must set every bit of
+// `[128..w)` (they start at the implicit-zero storage floor), and a true
+// negation `2^w - v` sets them too for any non-zero v — neither is
+// representable, so both decline.
+#[test]
+fn wide_not_and_neg_decline_the_concrete_fold() {
+    let ctx = SymContext::new_mock();
+    for &w in &WIDE_WIDTHS {
+        for &v in &wide_payloads() {
+            let not = bv(v, w).not(&ctx);
+            assert_eq!(not.width(), w, "not width w={w} v={v:#x}");
+            assert!(not.as_u128().is_none(), "not must not fold w={w} v={v:#x}");
+            assert_eq!(not.op(), Some(&BVOp::Not), "not op w={w} v={v:#x}");
+
+            let neg = bv(v, w).neg(&ctx);
+            assert_eq!(neg.width(), w, "neg width w={w} v={v:#x}");
+            if v == 0 {
+                // -0 is 0 at every width and stays foldable.
+                assert_eq!(val(&neg), 0, "neg of zero w={w}");
+            } else {
+                assert!(neg.as_u128().is_none(), "neg must not fold w={w} v={v:#x}");
+                assert_eq!(neg.op(), Some(&BVOp::Neg), "neg op w={w} v={v:#x}");
+            }
+        }
+    }
+}
+
+// angr-0jh0j.53: sign-extending a NEGATIVE narrow source to a target width
+// above the storage ceiling. The sign fill has to reach bit `to - 1 >= 128`,
+// which `sign_extend_to`'s u128 mask arithmetic cannot express — folding anyway
+// turned e.g. a 32-bit -1 widened to 200 bits into 2^128 - 1, a non-negative
+// number ~2^72 times too small, that every `sign_bit_beyond_storage`-gated
+// signed op would then read as non-negative.
+#[test]
+fn wide_sign_extend_of_negative_source_declines_the_concrete_fold() {
+    let ctx = SymContext::new_mock();
+    for &from in &[1u32, 8, 32, 64, 127, 128] {
+        for &to in &WIDE_WIDTHS {
+            let neg = 1u128 << (from - 1); // sign bit set => negative source
+            let got = bv(neg, from).sign_extend(to, &ctx);
+            assert_eq!(got.width(), to, "sext({from}->{to}) width");
+            if from >= 128 {
+                // The source's own sign bit is already beyond storage, so the
+                // value is logically non-negative and the extension is a no-op.
+                assert_eq!(val(&got), neg, "sext({from}->{to}) v={neg:#x}");
+            } else {
+                assert!(
+                    got.as_u128().is_none(),
+                    "sext({from}->{to}) of negative v={neg:#x} must not fold"
+                );
+                assert_eq!(
+                    got.op(),
+                    Some(&BVOp::SignExt(to - from)),
+                    "sext({from}->{to}) op"
+                );
+            }
+            // A non-negative source is a plain zero-extend and still folds.
+            let pos = neg - 1;
+            let got_pos = bv(pos, from).sign_extend(to, &ctx);
+            assert_eq!(val(&got_pos), pos, "sext({from}->{to}) v={pos:#x}");
         }
     }
 }
