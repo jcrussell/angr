@@ -6,24 +6,3 @@
 # which one applies) or documenting a genuine non-risk with an
 # `overflow-ok:` comment are both preferable; growing it needs a reason in
 # the commit message.
-native/angr/src/memory/load.rs	assemble_load_with_multi	addr+i
-native/angr/src/memory/load.rs	assemble_load_with_multi	byte_addr-base_addr
-native/angr/src/memory/load.rs	extract_byte_lane	byte_offset+1
-native/angr/src/memory/load.rs	extract_byte_lane	total_bits-byte_offset
-native/angr/src/memory/load.rs	load_concrete_common	addr+i
-native/angr/src/memory/load.rs	load_concrete_common	addr-base_addr
-native/angr/src/memory/load.rs	load_concrete_common	addr-sym_addr
-native/angr/src/memory/load.rs	load_concrete_common	off_bits+size
-native/angr/src/memory/load.rs	load_concrete_common	offset+i
-native/angr/src/memory/load.rs	load_concrete_common	total_bits-size
-native/angr/src/memory/load.rs	range_has_multi	addr+i
-native/angr/src/memory/load.rs	try_byte_merge_load	addr+i
-native/angr/src/memory/load.rs	try_byte_merge_load	byte_addr-base_addr
-native/angr/src/memory/load.rs	try_partial_overwrite_load	addr+i
-native/angr/src/memory/mod.rs	bytes_all_marked_symbolic	addr+i
-native/angr/src/memory/mod.rs	compute_wider_load_fingerprint	addr+i
-native/angr/src/memory/mod.rs	end_page_inclusive	size-1
-native/angr/src/memory/mod.rs	map_data	current_addr+bytes_in_page
-native/angr/src/memory/mod.rs	map_data	usize-page_offset
-native/angr/src/memory/mod.rs	read_concrete_bytes_for_lift	max_size-result.len
-native/angr/src/memory/mod.rs	read_concrete_bytes_for_lift	offset_in_page+i

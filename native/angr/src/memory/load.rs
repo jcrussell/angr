@@ -98,6 +98,9 @@ impl SymbolicMemory {
         size: u32,
         ctx: &SymContext,
     ) -> Option<Result<RustBV, MemoryError>> {
+        // A range straddling the top of the space probes page 0, matching the
+        // guest's own pointer wraparound and what the store side recorded.
+        // overflow-ok: `Address + u64` is `wrapping_add` (see `address.rs`).
         let has_wider_sym_claim = self.symbolic_objects.contains_key(&addr)
             || (0..size as u64).any(|i| self.symbolic_spans.contains_key(&(addr + i)));
         if has_wider_sym_claim && !self.bytes_all_marked_symbolic(addr, size) {
@@ -249,6 +252,8 @@ impl SymbolicMemory {
         // `is_empty()` fast-path, mirroring `load_concrete_lazy_inner`'s
         // `multi_objects.is_empty()` guard, to skip up to `size` empty-table
         // `contains_key` probes per concrete load.
+        // Matching the guest's own pointer wraparound.
+        // overflow-ok: `Address + u64` is `wrapping_add` (see `address.rs`).
         let has_inner_overlap = !self.symbolic_objects.is_empty()
             && (1..size as u64).any(|i| self.symbolic_objects.contains_key(&(addr + i)));
         if has_inner_overlap {
@@ -284,7 +289,11 @@ impl SymbolicMemory {
                     // Endianness determines which bits correspond to byte 0.
                     // BE: byte 0 = MSB → hi = total_bits-1, lo = total_bits-size*8.
                     // LE: byte 0 = LSB → hi = size*8-1, lo = 0.
+                    // The `sym.width() > size * 8` guard above bounds both
+                    // `- size * 8` terms, and `size == 0` was rejected at the top
+                    // of this fn, so `size * 8 - 1` cannot underflow either.
                     let (hi, lo) = match self.endness {
+                        // overflow-ok: bounded by the `sym.width()` guard above.
                         Endness::Big => (total_bits - 1, total_bits - size * 8),
                         Endness::Little => (size * 8 - 1, 0),
                     };
@@ -300,15 +309,22 @@ impl SymbolicMemory {
                 let sym_bytes = sym.width() / 8;
                 if addr.range_in(size as u64, base_addr, sym_bytes as u64) {
                     let total_bits = sym.width();
+                    // `Sub<Address> for Address` is `wrapping_sub`, and the
+                    // `range_in` guard above makes the distance a real in-region
+                    // offset. overflow-ok: `off + size <= sym_bytes`.
                     let off_bits = (addr - base_addr) as u32 * 8;
                     // BE: bytes [off, off+size) of the wide BV occupy bits
                     //     [total-1-off_bits : total-off_bits-size*8].
                     // LE: same byte range occupies bits
                     //     [off_bits+size*8-1 : off_bits].
+                    // The same `range_in` guard gives `off_bits + size * 8 <=
+                    // total_bits`, with `size >= 1`.
                     let (hi, lo) = match self.endness {
+                        // overflow-ok: bounded by the `range_in` guard above.
                         Endness::Big => {
                             (total_bits - off_bits - 1, total_bits - off_bits - size * 8)
                         }
+                        // overflow-ok: bounded by the `range_in` guard above.
                         Endness::Little => (off_bits + size * 8 - 1, off_bits),
                     };
                     return Ok(sym.extract(hi, lo, ctx));
@@ -343,6 +359,8 @@ impl SymbolicMemory {
             bytes = page.load_concrete(offset, size as u16);
             // Check symbolic markers
             for i in 0..size as u16 {
+                // overflow-ok: this is the `start_page == end_page` arm, so the
+                // whole load fits in one page — `offset + i < PAGE_SIZE`.
                 if page.is_symbolic(offset + i) {
                     has_symbolic = true;
                     break;
@@ -352,6 +370,8 @@ impl SymbolicMemory {
             // Slow path: load spans multiple pages
             bytes = Vec::with_capacity(size as usize);
             for i in 0..size {
+                // overflow-ok: `Address + u64` is `wrapping_add` (see `address.rs`),
+                // matching the guest's own pointer wraparound.
                 let byte_addr = addr + i as u64;
                 let page_num = byte_addr.page_num();
                 let offset = byte_addr.page_offset();
@@ -386,6 +406,8 @@ impl SymbolicMemory {
             let mut parts: Vec<RustBV> = Vec::new();
             let mut all_found = true;
             for i in 0..size {
+                // overflow-ok: `Address + u64` is `wrapping_add` (see `address.rs`),
+                // matching the guest's own pointer wraparound.
                 let byte_addr = addr + i as u64;
                 if let Some(sym) = self.symbolic_objects.get(&byte_addr) {
                     if sym.width() == 8 {
@@ -415,6 +437,10 @@ impl SymbolicMemory {
             // symbolic_objects when spans is stale/missing.
             if let Some((sym_addr, sym_val)) = self.containing_wider_sym(addr, size) {
                 let total_bits = sym_val.width();
+                // `Sub<Address> for Address` is `wrapping_sub`; every
+                // `containing_wider_sym` return path is gated on `range_in`, so
+                // overflow-ok: the distance is a real in-region byte offset with
+                // `off_bits + size * 8 <= total_bits`.
                 let off_bits = (addr - sym_addr) as u32 * 8;
                 // Mirror of fast-path angr-v1q2 fix: the wide BV's byte
                 // layout depends on memory endianness.
@@ -422,7 +448,9 @@ impl SymbolicMemory {
                 //     [total-1-off_bits : total-off_bits-size*8].
                 // LE: same byte range occupies bits [off_bits+size*8-1 : off_bits].
                 let (hi, lo) = match self.endness {
+                    // overflow-ok: bounded by `containing_wider_sym`'s `range_in`.
                     Endness::Big => (total_bits - off_bits - 1, total_bits - off_bits - size * 8),
+                    // overflow-ok: bounded by `containing_wider_sym`'s `range_in`.
                     Endness::Little => (off_bits + size * 8 - 1, off_bits),
                 };
                 return Ok(sym_val.extract(hi, lo, ctx));
@@ -718,6 +746,8 @@ impl SymbolicMemory {
     /// The `is_empty()` guard keeps the common all-concrete load free of up
     /// to `size` empty-map probes.
     pub(super) fn range_has_multi(&self, addr: Address, size: u32) -> bool {
+        // Matching the guest's own pointer wraparound.
+        // overflow-ok: `Address + u64` is `wrapping_add` (see `address.rs`).
         !self.multi_objects.is_empty()
             && (0..size as u64).any(|i| self.multi_objects.contains_key(&(addr + i)))
     }
@@ -774,6 +804,8 @@ impl SymbolicMemory {
         let mut total_ite_depth: u32 = 0;
         let mut byte_parts: Vec<RustBV> = Vec::with_capacity(size as usize);
         for i in 0..size {
+            // overflow-ok: `Address + u64` is `wrapping_add` (see `address.rs`),
+            // matching the guest's own pointer wraparound.
             let byte_addr = addr + i as u64;
             let page_num = byte_addr.page_num();
             let offset = byte_addr.page_offset();
@@ -824,6 +856,9 @@ impl SymbolicMemory {
                             description: "symbolic span width mismatch".to_string(),
                         });
                     }
+                    // `extract_byte_lane` refuses any offset (including a wrapped
+                    // one from a stale span) that overruns `sym`, so:
+                    // overflow-ok: `Sub<Address> for Address` is `wrapping_sub`.
                     let off_in_sym = (byte_addr - base_addr) as u32;
                     Self::extract_byte_lane(sym, off_in_sym, self.endness, ctx).ok_or_else(
                         || MemoryError::SymbolicAddress {
@@ -923,6 +958,8 @@ impl SymbolicMemory {
     fn try_byte_merge_load(&self, addr: Address, size: u32, ctx: &SymContext) -> Option<RustBV> {
         let mut byte_parts: Vec<RustBV> = Vec::with_capacity(size as usize);
         for i in 0..size {
+            // overflow-ok: `Address + u64` is `wrapping_add` (see `address.rs`),
+            // matching the guest's own pointer wraparound.
             let byte_addr = addr + i as u64;
             let part = if let Some(sym) = self.symbolic_objects.get(&byte_addr) {
                 Self::extract_byte_lane(sym, 0, self.endness, ctx)?
@@ -931,6 +968,9 @@ impl SymbolicMemory {
                 if sym.width() != base_width {
                     return None;
                 }
+                // `extract_byte_lane` refuses any offset (including a wrapped one
+                // from a stale span) that overruns `sym`, so:
+                // overflow-ok: `Sub<Address> for Address` is `wrapping_sub`.
                 let offset = (byte_addr - base_addr) as u32;
                 Self::extract_byte_lane(sym, offset, self.endness, ctx)?
             } else {
@@ -956,13 +996,24 @@ impl SymbolicMemory {
         ctx: &SymContext,
     ) -> Option<RustBV> {
         let total_bits = sym.width();
-        if (byte_offset + 1) * 8 > total_bits {
+        // angr-xloth.4: `byte_offset` reaches here as a *wrapping* `Address`
+        // difference (`assemble_load_with_multi` / `try_byte_merge_load` both
+        // form `(byte_addr - base_addr) as u32`), so a stale `symbolic_spans`
+        // entry whose base sits above the byte yields a near-`u32::MAX` offset.
+        // Spelled `(byte_offset + 1) * 8` that wrapped to a small value with
+        // release overflow-checks off, passing the bounds check below and
+        // handing the BE arm an underflowed `total_bits - byte_offset * 8 - 1`.
+        // Refuse: an offset with no representable bit position is out of range.
+        let end_bit = byte_offset.checked_add(1)?.checked_mul(8)?;
+        if end_bit > total_bits {
             return None;
         }
         Some(match endness {
             Endness::Little => sym.extract(byte_offset * 8 + 7, byte_offset * 8, ctx),
+            // overflow-ok: `end_bit <= total_bits` above bounds both terms.
             Endness::Big => sym.extract(
                 total_bits - byte_offset * 8 - 1,
+                // overflow-ok: `end_bit <= total_bits` above bounds this too.
                 total_bits - byte_offset * 8 - 8,
                 ctx,
             ),

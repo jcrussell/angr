@@ -235,3 +235,39 @@ fn test_wide_linear_scan_big_endian() {
         "BE linear scan expected 0x{expected:08x}"
     );
 }
+
+/// angr-xloth.4: `extract_byte_lane`'s bounds check used to be spelled
+/// `(byte_offset + 1) * 8 > total_bits`. Both callers form `byte_offset` as a
+/// *wrapping* `Address` difference (`(byte_addr - base_addr) as u32`), so a
+/// stale `symbolic_spans` entry whose base sits above the byte produces a
+/// near-`u32::MAX` offset — and with release overflow-checks off that product
+/// wrapped to a small value, passing the check and handing the BE arm an
+/// underflowed `total_bits - byte_offset * 8 - 1`. The guard is now
+/// `checked_add`/`checked_mul`, so an unrepresentable offset is refused.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_extract_byte_lane_refuses_wrapping_byte_offset() {
+    let ctx = SymContext::new_mock();
+    let sym = RustBV::symbolic(&ctx, "wide64", 64);
+    for endness in [Endness::Little, Endness::Big] {
+        // (2^29) * 8 == 2^32 → the old `(off + 1) * 8` wrapped to 0.
+        let wrapped = (1u32 << 29) - 1;
+        assert!(
+            SymbolicMemory::extract_byte_lane(&sym, wrapped, endness, &ctx).is_none(),
+            "{endness:?}: offset whose bit position overflows u32 must be refused"
+        );
+        assert!(
+            SymbolicMemory::extract_byte_lane(&sym, u32::MAX, endness, &ctx).is_none(),
+            "{endness:?}: u32::MAX offset must be refused, not wrap to lane 0"
+        );
+        // The in-range lanes still work.
+        assert!(
+            SymbolicMemory::extract_byte_lane(&sym, 7, endness, &ctx).is_some(),
+            "{endness:?}: last in-range lane must still extract"
+        );
+        assert!(
+            SymbolicMemory::extract_byte_lane(&sym, 8, endness, &ctx).is_none(),
+            "{endness:?}: first out-of-range lane must still be refused"
+        );
+    }
+}

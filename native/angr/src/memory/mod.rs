@@ -172,6 +172,8 @@ pub(super) fn end_page_inclusive(addr: u64, size: u64) -> Result<u64, MemoryErro
         return Err(MemoryError::ZeroSize { addr });
     }
     let last = addr
+        // overflow-ok: the `size == 0` early-return above is exactly the guard
+        // that makes `size - 1` unable to underflow.
         .checked_add(size - 1)
         .ok_or(MemoryError::OutOfBounds { addr, size })?;
     Ok(last >> 12)
@@ -462,6 +464,8 @@ impl SymbolicMemory {
     /// the wider-sym fast paths or they will return a stale extract.
     pub(super) fn bytes_all_marked_symbolic(&self, addr: Address, size: u32) -> bool {
         for i in 0..size {
+            // overflow-ok: `Address + u64` is `wrapping_add` (see `address.rs`),
+            // matching the guest's own pointer wraparound.
             let byte_addr = addr + i as u64;
             let page_num = byte_addr.page_num();
             let offset = byte_addr.page_offset();
@@ -488,6 +492,8 @@ impl SymbolicMemory {
     ) -> Option<Vec<ByteFingerprint>> {
         let mut fp = Vec::with_capacity(size as usize);
         for i in 0..size {
+            // overflow-ok: `Address + u64` is `wrapping_add` (see `address.rs`),
+            // matching the guest's own pointer wraparound.
             let byte_addr = addr + i as u64;
             let page_num = byte_addr.page_num();
             let offset = byte_addr.page_offset();
@@ -666,6 +672,8 @@ impl SymbolicMemory {
         while !remaining.is_empty() {
             let page_num = current_addr.page_num();
             let page_offset = current_addr.page_offset() as usize;
+            // overflow-ok: `Address::page_offset` masks with `PAGE_MASK`, so
+            // `page_offset < PAGE_SIZE` and the difference is in `1..=PAGE_SIZE`.
             let bytes_in_page = (PAGE_SIZE as usize - page_offset).min(remaining.len());
 
             // Get or create page, modify in place (COW handled by Arc::make_mut in store_concrete)
@@ -676,6 +684,9 @@ impl SymbolicMemory {
             page.store_concrete(page_offset as u16, &remaining[..bytes_in_page]);
 
             remaining = &remaining[bytes_in_page..];
+            // A mapping that runs off the top of the space wraps to page 0 just
+            // as the guest's pointer arithmetic would.
+            // overflow-ok: `Address + u64` is `wrapping_add` (see `address.rs`).
             current_addr = current_addr + bytes_in_page as u64;
         }
     }
@@ -730,11 +741,16 @@ impl SymbolicMemory {
                 None => break,
             };
             let offset_in_page = current.page_offset();
+            // overflow-ok: the `while result.len() < max_size` loop condition is
+            // the guard — the difference is at least 1 on every iteration.
             let remaining = max_size - result.len();
             let to_read = remaining.min((PAGE_SIZE - (current.raw() & PAGE_MASK)) as usize);
             // Stop at the first symbolic byte; native lift can't use it.
             let mut concrete_run = 0usize;
             for i in 0..to_read {
+                // `to_read` is clamped to `PAGE_SIZE - offset_in_page` just above.
+                // overflow-ok: the sum therefore stays below `PAGE_SIZE` (4096) —
+                // well inside `u16`, and inside the page's own offset domain.
                 if page.is_symbolic(offset_in_page + i as u16) {
                     break;
                 }
