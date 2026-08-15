@@ -301,3 +301,153 @@ fn state_symbolic_info_uses_both_page_and_offset() {
         "total_sym_objs=0 at_0x1234=None page=unmapped",
     );
 }
+
+// ---------------------------------------------------------------------------
+// Constraint import: undecided vs proven-unsat (angr-zoav9)
+// ---------------------------------------------------------------------------
+
+/// Park a state in `found` whose satisfiability query aborts to Z3 Unknown:
+/// the easy `10 < x < 20` set under `rlimit=1`, the same rig
+/// `state/tests/solver_gate.rs::test_survives_sat_prune_keeps_an_undecided_state`
+/// uses (an rlimit beats a wall-clock timeout because it is deterministic).
+#[cfg(feature = "vex-engine-z3")]
+fn undecided_state_in(mgr: &mut RustExplorationManager, name: &str) -> u64 {
+    let state = RustSimState::new("amd64").expect("amd64 state");
+    {
+        let ctx = state.solver().borrow();
+        let x = RustBV::symbolic(&ctx, name, 32);
+        ctx.assume_true(&x.ugt(&RustBV::concrete(10, 32), &ctx));
+        ctx.assume_true(&x.ult(&RustBV::concrete(20, 32), &ctx));
+        ctx.pin_rlimit_for_test(1);
+    }
+    let state_id = state.state_id();
+    mgr.sm.push(STASH_FOUND, state);
+    state_id
+}
+
+/// Lift the pinned rlimit so the same state decides instantly — proves the
+/// preceding `None` came from the budget, not from a poisoned solver.
+#[cfg(feature = "vex-engine-z3")]
+fn unpin_rlimit(mgr: &RustExplorationManager, state_id: u64) {
+    mgr.find_state(state_id)
+        .expect("state found")
+        .solver()
+        .borrow()
+        .pin_rlimit_for_test(0);
+}
+
+/// `add_constraints_to_state` reports an undecided post-import satisfiability
+/// query as `False` (claripy-shaped, lenient), while the `_checked` sibling
+/// keeps it distinguishable as `None`. Without the split, a Python caller that
+/// drops the state on `False` deletes a state Z3 never proved contradictory
+/// (`invariant-z3-unknown-not-unsat`).
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn add_constraints_to_state_separates_undecided_from_unsat() {
+    Python::initialize();
+    Python::attach(|py| {
+        let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+        let state_id = undecided_state_in(&mut mgr, "add_constraints_undecided_x");
+        // Empty list: the import itself is a no-op, so the only thing under
+        // test is how the satisfiability verdict is reported. (A non-empty
+        // list would need claripy, which the cargo-test binary has no
+        // guaranteed venv for.)
+        let empty = pyo3::types::PyList::empty(py);
+
+        assert_eq!(
+            mgr.add_constraints_to_state_checked(py, state_id, &empty)
+                .expect("state found"),
+            None,
+            "an aborted (Unknown) satisfiability query must stay distinguishable",
+        );
+        assert!(
+            !mgr.add_constraints_to_state(py, state_id, &empty)
+                .expect("state found"),
+            "the lenient form is what makes the checked one necessary: it \
+             collapses the same Unknown into False",
+        );
+
+        unpin_rlimit(&mgr, state_id);
+        assert_eq!(
+            mgr.add_constraints_to_state_checked(py, state_id, &empty)
+                .expect("state found"),
+            Some(true),
+        );
+    });
+}
+
+/// The checked form is not a blanket "keep": a *proven* contradiction still
+/// comes back as `Some(false)`, matching the lenient form exactly.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn add_constraints_to_state_checked_still_reports_a_proven_unsat() {
+    Python::initialize();
+    Python::attach(|py| {
+        let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+        let state = RustSimState::new("amd64").expect("amd64 state");
+        {
+            let ctx = state.solver().borrow();
+            let x = RustBV::symbolic(&ctx, "add_constraints_unsat_x", 32);
+            let five = RustBV::concrete(5, 32);
+            ctx.assume_true(&x.eq(&five, &ctx));
+            ctx.assume_true(&x.eq(&five, &ctx).not(&ctx));
+        }
+        let state_id = state.state_id();
+        mgr.sm.push(STASH_FOUND, state);
+        let empty = pyo3::types::PyList::empty(py);
+
+        assert_eq!(
+            mgr.add_constraints_to_state_checked(py, state_id, &empty)
+                .expect("state found"),
+            Some(false),
+        );
+        assert!(
+            !mgr.add_constraints_to_state(py, state_id, &empty)
+                .expect("state found"),
+        );
+    });
+}
+
+/// Same split on the raw-Z3-pointer import path, which shares the verdict
+/// contract with `add_constraints_to_state`.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn import_z3_constraint_ptrs_separates_undecided_from_unsat() {
+    Python::initialize();
+    Python::attach(|_py| {
+        let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+
+        // Donor state supplies a live Bool-sorted assertion pointer; it stays
+        // in the stash so the AST outlives the import.
+        let donor = RustSimState::new("amd64").expect("amd64 state");
+        {
+            let ctx = donor.solver().borrow();
+            let y = RustBV::symbolic(&ctx, "import_ptrs_donor_y", 32);
+            ctx.assume_true(&y.ugt(&RustBV::concrete(3, 32), &ctx));
+        }
+        let donor_id = donor.state_id();
+        mgr.sm.push(STASH_FOUND, donor);
+        let ptrs = mgr
+            ._export_z3_constraint_ptrs(donor_id)
+            .expect("donor found");
+        assert!(!ptrs.is_empty(), "donor must export at least one assertion");
+
+        let state_id = undecided_state_in(&mut mgr, "import_ptrs_undecided_x");
+        assert_eq!(
+            mgr.import_z3_constraint_ptrs_checked(state_id, ptrs.clone())
+                .expect("state found"),
+            None,
+        );
+        assert!(
+            !mgr.import_z3_constraint_ptrs(state_id, ptrs.clone())
+                .expect("state found"),
+        );
+
+        unpin_rlimit(&mgr, state_id);
+        assert_eq!(
+            mgr.import_z3_constraint_ptrs_checked(state_id, ptrs)
+                .expect("state found"),
+            Some(true),
+        );
+    });
+}

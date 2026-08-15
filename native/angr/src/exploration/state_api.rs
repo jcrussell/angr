@@ -150,12 +150,20 @@ impl RustExplorationManager {
     // Constraint sync (state-keyed)
     // -------------------------------------------------------------------------
 
+    /// Import `constraints` onto the state's solver and report the resulting
+    /// satisfiability in the *decided-only* form: `None` means the solver gave
+    /// up (Z3 Unknown), never "unsatisfiable" (`invariant-z3-unknown-not-unsat`).
+    ///
+    /// The lenient `bool` that Python's `add_constraints_to_state` returns is
+    /// this value collapsed at the `#[pymethods]` wrapper in
+    /// `manager_methods_constraints.rs`, which also exposes the undecided
+    /// signal as `add_constraints_to_state_checked`.
     pub(crate) fn _add_constraints_to_state(
         &mut self,
         py: Python<'_>,
         state_id: u64,
         constraints: &Bound<'_, pyo3::types::PyList>,
-    ) -> PyResult<bool> {
+    ) -> PyResult<Option<bool>> {
         self.with_state_mut(state_id, |state| {
             let solver_ref = state.solver();
             let added = {
@@ -163,7 +171,7 @@ impl RustExplorationManager {
                 import_python_constraints(py, &sym_ctx, constraints, "initial")
             };
             log::debug!("Added {added} initial constraints to state {state_id}");
-            Ok(state.satisfiable())
+            Ok(state.satisfiable_checked())
         })
     }
 
@@ -176,12 +184,15 @@ impl RustExplorationManager {
         })
     }
 
+    /// Import raw Z3 assertion pointers onto the state's solver, reporting the
+    /// resulting satisfiability in the same decided-only form as
+    /// `_add_constraints_to_state` — `None` is "Z3 gave up", not "unsat".
     #[cfg(feature = "vex-engine-z3")]
     pub(crate) fn _import_z3_constraint_ptrs(
         &mut self,
         state_id: u64,
         ptrs: Vec<usize>,
-    ) -> PyResult<bool> {
+    ) -> PyResult<Option<bool>> {
         // angr-33t9: validate every pointer is a Bool-sorted AST in the active
         // thread-local Z3 context BEFORE handing it to `add_constraint_raw`'s
         // unsafe wrap. This catches the realistic misuse cases — null in the
@@ -241,7 +252,7 @@ impl RustExplorationManager {
                 ptrs.len(),
                 state_id
             );
-            Ok(state.satisfiable())
+            Ok(state.satisfiable_checked())
         })
     }
 

@@ -1308,6 +1308,78 @@ class TestImportZ3ConstraintPtrsValidation:
         assert after == before + 1, f"expected 1 constraint to be added; got before={before} after={after}"
 
 
+class TestConstraintImportCheckedVariants:
+    """angr-zoav9: the constraint-import calls have lenient and checked forms.
+
+    ``add_constraints_to_state`` / ``import_z3_constraint_ptrs`` return a
+    plain bool, so a Z3 Unknown (timeout) after the import reads as ``False``
+    — indistinguishable from a proven contradiction, and a caller that drops
+    the state on ``False`` would delete a very likely feasible state
+    (``invariant-z3-unknown-not-unsat``). The ``*_checked`` siblings report
+    the undecided case as ``None``.
+
+    Only the *decided* half is pinned here: there is no rlimit/timeout knob on
+    the Python surface, and a wall-clock timeout is not deterministic. The
+    undecided branch is driven from Rust instead, in
+    ``exploration/state_api_tests.rs`` (``*_separates_undecided_from_unsat``).
+    """
+
+    def test_add_constraints_checked_matches_lenient_when_sat(self, fauxware_project):
+        """A satisfiable import returns ``True`` from both forms."""
+        import claripy
+
+        proj = fauxware_project
+        state = proj.factory.entry_state()
+        mgr = RustExplorationManager(proj, [state])
+        sid = next(iter(mgr._rust_mgr.get_state_ids("active")))
+
+        x = claripy.BVS("zoav9_sat_x", 32)
+        assert mgr._rust_mgr.add_constraints_to_state_checked(sid, [x > 10]) is True
+        assert mgr._rust_mgr.add_constraints_to_state(sid, [x < 20]) is True
+
+    def test_add_constraints_checked_reports_proven_unsat_as_false(self, fauxware_project):
+        """A *decided* contradiction is ``False``, not ``None`` — the checked
+        form must not degrade into a blanket "keep"."""
+        import claripy
+
+        proj = fauxware_project
+        state = proj.factory.entry_state()
+        mgr = RustExplorationManager(proj, [state])
+        sid = next(iter(mgr._rust_mgr.get_state_ids("active")))
+
+        x = claripy.BVS("zoav9_unsat_x", 32)
+        assert mgr._rust_mgr.add_constraints_to_state_checked(sid, [x == 5, x == 6]) is False
+
+    def test_import_z3_ptrs_checked_matches_lenient_when_sat(self, fauxware_project):
+        """The raw-Z3-pointer path carries the same contract."""
+        import claripy
+
+        proj = fauxware_project
+        state = proj.factory.entry_state()
+        mgr = RustExplorationManager(proj, [state])
+        sid = next(iter(mgr._rust_mgr.get_state_ids("active")))
+
+        # Hold a strong ref to the z3 wrapper so the AST outlives the call
+        # (same refcount discipline as TestImportZ3ConstraintPtrsValidation).
+        bool_ast = claripy.backends.z3.convert(claripy.BVS("zoav9_ptr_x", 32) == 0x1234)
+        assert mgr._rust_mgr.import_z3_constraint_ptrs_checked(sid, [bool_ast.as_ast().value]) is True
+
+    def test_import_z3_ptrs_checked_reports_proven_unsat_as_false(self, fauxware_project):
+        """Two contradictory assertions decide Unsat, so ``False`` is right."""
+        import claripy
+
+        proj = fauxware_project
+        state = proj.factory.entry_state()
+        mgr = RustExplorationManager(proj, [state])
+        sid = next(iter(mgr._rust_mgr.get_state_ids("active")))
+
+        y = claripy.BVS("zoav9_ptr_unsat_y", 32)
+        eq7 = claripy.backends.z3.convert(y == 7)
+        ne7 = claripy.backends.z3.convert(y != 7)
+        ptrs = [eq7.as_ast().value, ne7.as_ast().value]
+        assert mgr._rust_mgr.import_z3_constraint_ptrs_checked(sid, ptrs) is False
+
+
 class TestDebugSolverInfo:
     """angr-sqfj8.59: cover ``debug_solver_info``, previously caller-less.
 

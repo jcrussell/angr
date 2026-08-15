@@ -207,6 +207,12 @@ impl RustExplorationManager {
 
     /// Add constraints from Python to a state in a stash by state ID.
     /// This is used to sync initial constraints from the Python state.
+    ///
+    /// Lenient form, kept claripy-shaped: an undecided satisfiability query
+    /// (Z3 Unknown / timeout) reads as `False`, exactly like
+    /// `RustSolverContext::satisfiable`. A caller that would *drop* the state
+    /// on `False` must use `add_constraints_to_state_checked` instead — see
+    /// `invariant-z3-unknown-not-unsat`.
     #[angr_macros::steady_guard_exempt(
         reason = "syncs constraints onto one state_id-scoped state's solver; does not mutate \
                   exploration config or the active stash."
@@ -217,6 +223,34 @@ impl RustExplorationManager {
         state_id: u64,
         constraints: &Bound<'_, pyo3::types::PyList>,
     ) -> PyResult<bool> {
+        let checked = self._add_constraints_to_state(py, state_id, constraints)?;
+        Ok(silent_default!(
+            cat_c,
+            checked,
+            false,
+            "add_constraints_to_state: Z3 returned Unknown for state {state_id} after the \
+             import; reporting not-satisfiable (use add_constraints_to_state_checked to \
+             tell this apart from a proven contradiction)"
+        ))
+    }
+
+    /// `add_constraints_to_state`, but reporting an undecided satisfiability
+    /// query as `None` rather than collapsing it into `False`.
+    ///
+    /// Mirrors the `satisfiable` / `satisfiable_checked` pair on
+    /// `RustSolverContext`: `None` means "the solver gave up", never "no
+    /// solutions". The constraints are imported either way — only the returned
+    /// verdict differs.
+    #[angr_macros::steady_guard_exempt(
+        reason = "syncs constraints onto one state_id-scoped state's solver; does not mutate \
+                  exploration config or the active stash."
+    )]
+    pub fn add_constraints_to_state_checked(
+        &mut self,
+        py: Python<'_>,
+        state_id: u64,
+        constraints: &Bound<'_, pyo3::types::PyList>,
+    ) -> PyResult<Option<bool>> {
         self._add_constraints_to_state(py, state_id, constraints)
     }
 
@@ -229,12 +263,39 @@ impl RustExplorationManager {
     }
 
     /// Import raw Z3 assertion pointers to a state's solver.
+    ///
+    /// Lenient form — see `add_constraints_to_state` for why `False` here can
+    /// also mean "Z3 gave up", and `import_z3_constraint_ptrs_checked` for the
+    /// form that tells the two apart.
     #[cfg(feature = "vex-engine-z3")]
     #[angr_macros::steady_guard_exempt(
         reason = "imports assertions onto one state_id-scoped state's solver; does not mutate \
                   exploration config or the active stash."
     )]
     pub fn import_z3_constraint_ptrs(&mut self, state_id: u64, ptrs: Vec<usize>) -> PyResult<bool> {
+        let checked = self._import_z3_constraint_ptrs(state_id, ptrs)?;
+        Ok(silent_default!(
+            cat_c,
+            checked,
+            false,
+            "import_z3_constraint_ptrs: Z3 returned Unknown for state {state_id} after the \
+             import; reporting not-satisfiable (use import_z3_constraint_ptrs_checked to \
+             tell this apart from a proven contradiction)"
+        ))
+    }
+
+    /// `import_z3_constraint_ptrs`, but reporting an undecided satisfiability
+    /// query as `None` rather than collapsing it into `False`.
+    #[cfg(feature = "vex-engine-z3")]
+    #[angr_macros::steady_guard_exempt(
+        reason = "imports assertions onto one state_id-scoped state's solver; does not mutate \
+                  exploration config or the active stash."
+    )]
+    pub fn import_z3_constraint_ptrs_checked(
+        &mut self,
+        state_id: u64,
+        ptrs: Vec<usize>,
+    ) -> PyResult<Option<bool>> {
         self._import_z3_constraint_ptrs(state_id, ptrs)
     }
 

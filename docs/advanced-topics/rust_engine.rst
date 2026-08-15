@@ -562,6 +562,16 @@ which is the same contract the Rust-side ``Enumeration`` carries
 (``SymContext::eval_upto_checked`` /
 ``SymContext::eval_upto_wide_checked``).
 
+The two constraint-import entry points on ``RustExplorationManager``
+follow the same pair convention: ``add_constraints_to_state()`` and
+``import_z3_constraint_ptrs()`` return the lenient bool (an undecided
+post-import query reads as ``False``, with a ``[rust:WARN]`` line),
+while ``add_constraints_to_state_checked()`` and
+``import_z3_constraint_ptrs_checked()`` return ``None`` for that case.
+The constraints are imported either way — only the reported verdict
+differs — so a caller that prunes on ``False`` should use the checked
+form.
+
 For the build-time wiring that makes a shared ``libz3.so`` possible,
 the ``SymContext`` lifecycle across forks, and the push/pop discipline
 that ``RustSolverContext`` / ``SharedLineageSolver`` both rely on,
