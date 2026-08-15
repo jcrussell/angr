@@ -107,6 +107,8 @@ impl SymbolicMemory {
                             continue;
                         }
 
+                        // overflow-ok: `Add<u64> for Address` is `wrapping_add`
+                        // and `i` is a page offset, so `i < PAGE_SIZE`.
                         let addr = base_addr + i as u64;
 
                         // Both-Multi lazy union (design-doc merge rule): keep
@@ -184,6 +186,8 @@ impl SymbolicMemory {
                     let mut adopted = op.clone();
                     let page_base = Address(page_num << 12);
                     for offset in op.multi_offsets() {
+                        // overflow-ok: `Address` arithmetic is wrapping, and
+                        // `offset` is a u16 page offset (`< PAGE_SIZE`).
                         let addr = page_base + u64::from(offset);
                         match other.multi_objects.get(&addr) {
                             Some(payload) => multi_ops.push((addr, payload.clone())),
@@ -266,6 +270,7 @@ impl SymbolicMemory {
                 // one map over (angr-91vj9.3).
                 self.symbolic_spans.insert(addr, (addr, width));
                 for i in 1..u64::from(width / 8) {
+                    // overflow-ok: `Address` arithmetic is wrapping (see above).
                     self.symbolic_spans.insert(addr + i, (addr, width));
                 }
                 merged = true;

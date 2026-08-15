@@ -20,9 +20,6 @@ native/angr/src/memory/load.rs	range_has_multi	addr+i
 native/angr/src/memory/load.rs	try_byte_merge_load	addr+i
 native/angr/src/memory/load.rs	try_byte_merge_load	byte_addr-base_addr
 native/angr/src/memory/load.rs	try_partial_overwrite_load	addr+i
-native/angr/src/memory/merge.rs	merge	addr+i
-native/angr/src/memory/merge.rs	merge	base_addr+i
-native/angr/src/memory/merge.rs	merge	page_base+u64
 native/angr/src/memory/mod.rs	bytes_all_marked_symbolic	addr+i
 native/angr/src/memory/mod.rs	compute_wider_load_fingerprint	addr+i
 native/angr/src/memory/mod.rs	end_page_inclusive	size-1
@@ -30,14 +27,3 @@ native/angr/src/memory/mod.rs	map_data	current_addr+bytes_in_page
 native/angr/src/memory/mod.rs	map_data	usize-page_offset
 native/angr/src/memory/mod.rs	read_concrete_bytes_for_lift	max_size-result.len
 native/angr/src/memory/mod.rs	read_concrete_bytes_for_lift	offset_in_page+i
-native/angr/src/memory/multi.rs	flush_multi_cells	start_addr+b
-native/angr/src/memory/store.rs	clear_symbolic_bitmap_range	PAGE_SIZE-page_offset
-native/angr/src/memory/store.rs	clear_symbolic_bitmap_range	end-cur
-native/angr/src/memory/store.rs	store_concrete	PAGE_SIZE-page_offset
-native/angr/src/memory/store.rs	store_concrete	addr+i
-native/angr/src/memory/store.rs	store_concrete	addr+old_bytes
-native/angr/src/memory/store.rs	store_concrete	addr+old_sym_bytes
-native/angr/src/memory/store.rs	store_concrete	addr+size
-native/angr/src/memory/store.rs	store_concrete	current_addr+bytes_in_page
-native/angr/src/memory/store.rs	store_concrete_le_bytes_automap_internal	addr+off
-native/angr/src/memory/symbolic_objects.rs	import_symbolic_value	addr+i

@@ -203,6 +203,8 @@ impl SymbolicMemory {
             // otherwise flush a stale `multi_bitmap` back over the clear.
             if !self.multi_objects.is_empty() {
                 for i in 0..size {
+                    // overflow-ok: `Add<u64> for Address` is `wrapping_add` — a
+                    // store straddling the top wraps like the guest's own math.
                     self.clear_multi_at(addr + i as u64);
                 }
             }
@@ -213,6 +215,7 @@ impl SymbolicMemory {
             // Update reverse span index: map each byte offset to (base_addr, width)
             let sym_bytes = width_bits / 8;
             for i in 1..sym_bytes {
+                // overflow-ok: `Address` arithmetic is wrapping (see above).
                 self.symbolic_spans
                     .insert(addr + i as u64, (addr, width_bits));
             }
@@ -230,14 +233,18 @@ impl SymbolicMemory {
             // stale `symbolic_bitmap` back over the clear.
             if old_sym_bytes > size {
                 for i in size..old_sym_bytes {
+                    // overflow-ok: `Address` arithmetic is wrapping (see above).
                     self.symbolic_spans.remove(&(addr + i as u64));
                 }
+                // overflow-ok: `Address` arithmetic is wrapping (see above); the
+                // `old_sym_bytes > size` guard keeps the range non-empty.
                 self.clear_symbolic_bitmap_range(addr + size as u64, addr + old_sym_bytes as u64);
             }
             // Mark pages as having symbolic bytes — batch per-page
             let mut current_page_num = u64::MAX;
             let mut current_page: Option<MemoryPage> = None;
             for i in 0..size {
+                // overflow-ok: `Address` arithmetic is wrapping (see above).
                 let byte_addr = addr + i as u64;
                 let page_num = byte_addr.page_num();
                 let offset = byte_addr.page_offset();
@@ -284,6 +291,8 @@ impl SymbolicMemory {
         while !remaining.is_empty() {
             let page_num = current_addr.page_num();
             let page_offset = current_addr.page_offset();
+            // overflow-ok: `Address::page_offset` masks with `PAGE_MASK`, so
+            // `page_offset < PAGE_SIZE` and the difference is in `1..=PAGE_SIZE`.
             let bytes_in_page = ((PAGE_SIZE - page_offset as u64) as usize).min(remaining.len());
 
             if let Some(page) = self.pages.get_mut(&page_num) {
@@ -293,6 +302,8 @@ impl SymbolicMemory {
             }
 
             remaining = &remaining[bytes_in_page..];
+            // overflow-ok: `Address` arithmetic is wrapping; a store straddling
+            // the top of the address space walks into page 0 like the guest.
             current_addr = current_addr + bytes_in_page as u64;
         }
 
@@ -300,6 +311,7 @@ impl SymbolicMemory {
         if let Some(old_sym) = self.symbolic_objects.remove(&addr) {
             let old_bytes = old_sym.width() / 8;
             for i in 1..old_bytes {
+                // overflow-ok: `Address` arithmetic is wrapping (see above).
                 self.symbolic_spans.remove(&(addr + i as u64));
             }
             // angr-7qon: if the concrete write doesn't cover the full
@@ -314,6 +326,8 @@ impl SymbolicMemory {
             // were never touched by `mark_symbolic` and remain whatever
             // they were prior to the sym store.
             if old_bytes > size {
+                // overflow-ok: `Address` arithmetic is wrapping (see above); the
+                // `old_bytes > size` guard keeps the range non-empty.
                 self.clear_symbolic_bitmap_range(addr + size as u64, addr + old_bytes as u64);
             }
         }
@@ -330,6 +344,7 @@ impl SymbolicMemory {
         // over the new page byte and returning the old Multi value.
         if !self.multi_objects.is_empty() {
             for i in 0..size {
+                // overflow-ok: `Address` arithmetic is wrapping (see above).
                 let byte_addr = addr + i as u64;
                 if self.multi_objects.remove(&byte_addr).is_some() {
                     self.bump_multi_version(byte_addr);
@@ -354,8 +369,10 @@ impl SymbolicMemory {
         while cur < end {
             let page_num = cur.page_num();
             let page_offset = cur.page_offset();
-            let bytes_in_page =
-                ((PAGE_SIZE - page_offset as u64) as usize).min((end - cur) as usize);
+            // overflow-ok: `page_offset()` masks, so it is `< PAGE_SIZE`.
+            let to_page_end = (PAGE_SIZE - page_offset as u64) as usize;
+            // overflow-ok: the loop condition holds `cur < end`.
+            let bytes_in_page = to_page_end.min((end - cur) as usize);
             if let Some(page) = self.pages.get_mut(&page_num) {
                 page.clear_symbolic(page_offset, bytes_in_page as u16);
                 self.dirty_pages.insert(page_num);
@@ -1049,6 +1066,8 @@ impl SymbolicMemory {
         while off < total {
             let cs = (total - off).min(16);
             let chunk_addr = match self.endness {
+                // overflow-ok: `Address` arithmetic is wrapping; `off < total`
+                // and `cs = (total - off).min(16)`, so `total - off - cs >= 0`.
                 Endness::Little => addr + off as u64,
                 Endness::Big => addr + (total - off - cs) as u64,
             };

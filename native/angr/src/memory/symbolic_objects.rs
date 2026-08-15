@@ -56,6 +56,7 @@ impl SymbolicMemory {
         // Update reverse span index
         let sym_bytes = width_bits / 8;
         for i in 1..sym_bytes {
+            // overflow-ok: `Add<u64> for Address` is `wrapping_add`, like the guest.
             self.symbolic_spans
                 .insert(addr + i as u64, (addr, width_bits));
         }
@@ -63,6 +64,7 @@ impl SymbolicMemory {
         // Mark pages as having symbolic bytes
         // Create pages if they don't exist (critical for stack addresses)
         for i in 0..sym_bytes {
+            // overflow-ok: `Address` arithmetic is wrapping (see above).
             let byte_addr = addr + i as u64;
             let page_num = byte_addr.page_num();
             let offset = byte_addr.page_offset();

@@ -480,6 +480,7 @@ impl SymbolicMemory {
                 self.symbolic_objects.insert(start_addr, acc);
                 let width_bits = (run_len * 8) as u32;
                 for b in 1..run_len {
+                    // overflow-ok: `Add<u64> for Address` is `wrapping_add`.
                     self.symbolic_spans
                         .insert(start_addr + b as u64, (start_addr, width_bits));
                 }
