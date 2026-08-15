@@ -255,3 +255,16 @@ def test_live_pin_clears_every_in_gate_sample_recorded_on_the_bead():
         assert run_regression.timing_regression_pct(pin, read, 0.15, FLOOR) is None, read
     # ...and the pin still fails a genuine regression: fast mode plus 50%.
     assert run_regression.timing_regression_pct(pin, 3.3, 0.15, FLOOR) is not None
+
+
+def test_cmu_pin_clears_the_in_gate_tail_that_reddened_iter16():
+    # angr-97aww. The three reads that failed the iter16 gate, plus the worst
+    # single sample in the last 300 ralph gate runs (1.31). Against the 1.001
+    # the bulk refresh captured, 11 of those 300 were over the 15% bar; with
+    # the pin none of these is.
+    in_gate_reads = [1.17, 1.25, 1.26, 1.31]
+    pin = run_regression.PINNED_RUST_TIMES["cmu_binary_bomb_partial"]
+    for read in in_gate_reads:
+        assert run_regression.timing_regression_pct(pin, read, 0.15, FLOOR) is None, read
+    # ...and the pin still reds on a real regression: the p50 (1.05) plus ~38%.
+    assert run_regression.timing_regression_pct(pin, 1.45, 0.15, FLOOR) is not None

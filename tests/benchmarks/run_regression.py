@@ -420,6 +420,19 @@ PINNED_RUST_TIMES = {
     # so it can never resolve a regression finer than ~25% anyway, and the
     # steps=513 count gate (this bench's real reason to exist) is unaffected.
     "cow_fork_scaling": 2.8,
+    # angr-97aww. Load-sensitive the same way, and for the same reason: the
+    # bench's in-gate `Rust:` timing over the last 300 ralph gate runs reads
+    # p50 1.05, p95 1.15, p99 1.19, max 1.31, so the 1.001 the 2026-07-29 bulk
+    # refresh captured is a quiet-host low. Its 15% bar of 1.151 was exceeded by
+    # 11 of those 300 runs (3.7%) — a false red roughly every 27 iterations,
+    # which is how iter16 reddened (1.17/1.25/1.26 in-gate while a revert of
+    # that iteration's commit re-measured the same 1.08-1.27 spread). 1.15
+    # gives a 1.3225 bar that clears the observed in-gate maximum, and still
+    # reds on anything that moves the p50 past +31%. Not a BIMODAL_BENCHMARKS
+    # member: the two modes in the full 1580-run history belong to older code,
+    # and its callback/state/step counts are stable, so only the timing bar
+    # needs widening.
+    "cmu_binary_bomb_partial": 1.15,
 }
 
 
