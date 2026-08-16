@@ -87,14 +87,7 @@ use super::{
 use crate::state::{MAX_FD, RustSimState};
 use crate::symbolic::RustBV;
 
-/// `-EBADF` as a 64-bit two's-complement value. The kernel ABI returns
-/// negative errno in the return register on failure; truncation to the
-/// arch's register width happens in the dispatcher when it writes the
-/// `Continue { ret }` value.
-const NEG_EBADF: u64 = (-9_i64) as u64;
-/// `-ENOTTY` (Linux errno 25) for the `TIOCGWINSZ` ioctl on a
-/// non-terminal fd.
-const NEG_ENOTTY: u64 = (-25_i64) as u64;
+use super::errno::{NEG_EBADF, NEG_ENOTTY};
 
 /// Upper bound on `newfd` that Python `procedures/posix/dup.py` enforces
 /// (the default ulimits ceiling). Out-of-range values return EBADF.

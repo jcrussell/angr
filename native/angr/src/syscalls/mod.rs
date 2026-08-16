@@ -62,6 +62,7 @@ pub(crate) mod brk;
 pub(crate) mod cgc;
 pub(crate) mod concurrency;
 pub(crate) mod directory;
+pub(crate) mod errno;
 pub(crate) mod exit;
 pub(crate) mod fd_io;
 pub(crate) mod file_descriptor;

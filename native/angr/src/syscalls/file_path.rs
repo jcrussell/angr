@@ -187,11 +187,9 @@ use crate::symbolic::RustBV;
 /// against this exact unsigned value.
 const AT_FDCWD_UNSIGNED: u64 = 4_294_967_196;
 
-/// `-1` (as `u64`) — kernel ABI failure return for `open` / `openat` /
-/// `close` mirroring `procedures/posix/open.py::run` (`return -1`).
-/// The dispatcher truncates to `arch().bits()` when writing the return
-/// register.
-const NEG_ONE: u64 = u64::MAX;
+// `NEG_ONE` is the kernel-ABI failure return for `open` / `openat` /
+// `close` here, mirroring `procedures/posix/open.py::run` (`return -1`).
+use super::errno::NEG_ONE;
 
 /// The shared `*at` dirfd policy: `true` when this handler can resolve
 /// `path` on its own, i.e. the path is absolute (dirfd irrelevant) or

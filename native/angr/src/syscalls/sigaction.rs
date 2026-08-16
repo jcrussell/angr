@@ -16,8 +16,7 @@ use super::{NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
-/// `-EINVAL` as a 64-bit two's-complement value (rax bit pattern).
-const NEG_EINVAL: u64 = (-22_i64) as u64;
+use super::errno::NEG_EINVAL;
 
 pub(crate) struct NativeRtSigactionSyscall;
 

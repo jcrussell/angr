@@ -41,8 +41,7 @@ use super::{NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg, f
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
-/// Linux: -1 as a 64-bit two's-complement value (sentinel "error" rax).
-const NEG_ONE: u64 = u64::MAX;
+use super::errno::NEG_ONE;
 
 const CLOCK_REALTIME: u64 = 0;
 

@@ -45,10 +45,7 @@ use super::{NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg, s
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
-/// `-EFAULT` as a 64-bit two's-complement value (kernel-ABI negative errno).
-const NEG_EFAULT: u64 = (-14_i64) as u64;
-/// `-ERANGE` as a 64-bit two's-complement value (kernel-ABI negative errno).
-const NEG_ERANGE: u64 = (-34_i64) as u64;
+use super::errno::{NEG_EFAULT, NEG_ERANGE};
 
 /// Upper bound on path lengths we walk from memory. Matches the
 /// `PATH_MAX` Linux constant. A symbolic byte mid-scan terminates the
