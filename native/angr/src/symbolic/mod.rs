@@ -138,9 +138,6 @@ pub use bv_chunk::{
     load_concrete_bytes_chunked, store_concrete_bytes_chunked, u128_le_byte, u128_to_le_bytes,
 };
 pub use context::{DEFAULT_SOLVER_TIMEOUT_MS, SymContext, SymContextSnapshot};
-// angr-0jh0j.9: `claripy_bridge::export`'s concrete-operand fold for
-// `BVOp::Clz`/`BVOp::Ctz` shares these with `RustBV::{clz,ctz}_into` rather
-// than keeping its own copy of the width adjustment.
 pub use handle::RustBVHandle;
 #[cfg(test)]
 pub use registry::clear_global_registry;
@@ -159,6 +156,13 @@ pub use stats::{
 };
 pub use table::{BinaryOpError, RustSymbolTable};
 pub use value::{BVOp, FloatOpKind, FloatPrec, RustBV};
+// angr-0jh0j.9: `claripy_bridge::export`'s concrete-operand fold for
+// `BVOp::Clz`/`BVOp::Ctz` shares these with `RustBV::{clz,ctz}_into` rather
+// than keeping its own copy of the width adjustment. `claripy_bridge` is the
+// re-export's only consumer and is itself `#[cfg(feature = "vex-engine")]`, so
+// the gate must match or the no-default-features build warns unused-imports
+// (angr-9hkr6).
+#[cfg(feature = "vex-engine")]
 pub(crate) use value_ops::{concrete_clz, concrete_ctz};
 pub use width_guards::{MAX_BV_WIDTH, check_bv_width, check_extract_bounds};
 #[cfg(feature = "vex-engine-z3")]

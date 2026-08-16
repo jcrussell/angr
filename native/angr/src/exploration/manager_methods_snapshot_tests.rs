@@ -106,6 +106,11 @@ fn load_snapshot_clears_the_pre_restore_pending_world() {
         mgr.current_stepping_state_id = Some(StateId::new(pending_id));
         mgr.parallel_real_workers = 4;
         mgr.set_skip_hook_addr(0x40_1000);
+        // `must_run_serial` only exists in the `vex-engine-z3` build — without
+        // z3 there are no parallel coordinators to route away from, so the
+        // predicate has nothing to decide (angr-9hkr6). The skip-hook clear it
+        // observes is asserted directly below either way.
+        #[cfg(feature = "vex-engine-z3")]
         assert!(mgr.must_run_serial(), "skip entry forces serial pre-restore");
 
         mgr.load_snapshot_bytes(&empty).expect("load");
@@ -121,6 +126,7 @@ fn load_snapshot_clears_the_pre_restore_pending_world() {
             "angr-0jh0j.12: pre-restore skip-hook tokens cleared — otherwise the \
              restored session skips a same-address hook once"
         );
+        #[cfg(feature = "vex-engine-z3")]
         assert!(
             !mgr.must_run_serial(),
             "angr-0jh0j.12: a leaked skip entry would keep forcing the restored \
