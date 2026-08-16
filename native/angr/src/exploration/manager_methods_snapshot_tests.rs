@@ -104,6 +104,9 @@ fn load_snapshot_clears_the_pre_restore_pending_world() {
             bounced_id,
         ));
         mgr.current_stepping_state_id = Some(StateId::new(pending_id));
+        mgr.parallel_real_workers = 4;
+        mgr.set_skip_hook_addr(0x40_1000);
+        assert!(mgr.must_run_serial(), "skip entry forces serial pre-restore");
 
         mgr.load_snapshot_bytes(&empty).expect("load");
 
@@ -113,6 +116,16 @@ fn load_snapshot_clears_the_pre_restore_pending_world() {
             "parked bounces cleared"
         );
         assert_eq!(mgr.current_stepping_state_id, None);
+        assert!(
+            mgr.skip_hook_stack.is_empty(),
+            "angr-0jh0j.12: pre-restore skip-hook tokens cleared — otherwise the \
+             restored session skips a same-address hook once"
+        );
+        assert!(
+            !mgr.must_run_serial(),
+            "angr-0jh0j.12: a leaked skip entry would keep forcing the restored \
+             session serial (must_run_serial reads a bare is_empty())"
+        );
     });
 }
 

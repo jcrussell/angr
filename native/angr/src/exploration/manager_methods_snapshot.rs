@@ -63,6 +63,17 @@ impl RustExplorationManager {
     /// and clear all pending single-step / callback / parked-bounce state, so
     /// the restored frontier starts from a clean manager.
     ///
+    /// angr-0jh0j.12: `skip_hook_stack` is part of that pending world even
+    /// though its entries auto-expire (`consume_skip_hook` prunes on
+    /// `expiry <= self.steps`, and `self.steps` is manager-level so it is NOT
+    /// rewound by the restore). Expiry only helps a session that keeps
+    /// stepping: `must_run_serial` reads the stack with a bare `is_empty()`,
+    /// so a leaked pre-restore entry forces the restored session serial until
+    /// something consumes it, and a same-address hook in the restored world
+    /// would be silently skipped once. Clearing here is also why
+    /// `set_skip_hook_addr`'s `#[steady_guard_exempt]` reason ("transient
+    /// per-step runtime bookkeeping") stays true across a snapshot boundary.
+    ///
     /// angr-0jh0j.13: the swap is also a bulk `STASH_ACTIVE` *departure* for
     /// every pre-restore active state, so `SelectionPolicy::on_state_removed`
     /// fires for each one before `self.sm` is overwritten — a memoizing policy
@@ -95,6 +106,7 @@ impl RustExplorationManager {
         self.pending_callbacks.clear();
         self.pending_parallel_bounces.clear();
         self.current_stepping_state_id = None;
+        self.skip_hook_stack.clear();
         for state_id in self.sm.state_ids(STASH_ACTIVE) {
             self.policy.on_state_removed(state_id);
         }
