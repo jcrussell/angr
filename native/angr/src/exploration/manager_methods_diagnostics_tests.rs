@@ -156,3 +156,76 @@ fn analyze_constraint_sharing_walks_all_stashes_and_skips_empty_states() {
         "the non-active stash's two constraints are folded in too"
     );
 }
+
+/// angr-0jh0j.15: the stashes are not the whole population. A state parked in
+/// `pending_callbacks` (plus the `pre_callback_snapshot` deferred forks are
+/// materialized from) or in `pending_parallel_bounces` lives in NO stash, so
+/// the stash loop alone silently undercounts the census by however many states
+/// a mid-exploration callback or bounce happens to be holding — the same
+/// third-bucket gap swept for `set_max_history` in angr-03vl4.10.
+///
+/// Each parked state carries a distinct constraint value so the assertion
+/// pins *which* buckets were reached, not merely that some total went up.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn analyze_constraint_sharing_walks_parked_callback_and_bounce_states() {
+    use crate::exploration::core_outcome::BounceKind;
+    use crate::exploration::{CallbackReason, PendingCallback};
+    use rustc_hash::FxHashMap;
+
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+
+    let stashed = RustSimState::new("amd64").expect("state");
+    assume_bv(&stashed, RustBV::concrete(1, 64));
+    mgr.sm.push(STASH_ACTIVE, stashed);
+
+    // Parked pending callback: the live continuation and its pre-callback
+    // snapshot each carry their own solver, so both must be folded in.
+    let parked = RustSimState::new("amd64").expect("state");
+    assume_bv(&parked, RustBV::concrete(2, 64));
+    let pre_callback_snapshot = parked.fork();
+    assume_bv(&pre_callback_snapshot, RustBV::concrete(3, 64));
+    let sid = parked.state_id();
+    mgr.pending_callbacks.insert(
+        StateId::new(sid),
+        PendingCallback {
+            state: parked,
+            pre_callback_snapshot: Some(pre_callback_snapshot),
+            reason: CallbackReason::Syscall { num: Some(60) },
+            jumpkind: None,
+            solver_ctx: None,
+            deferred_forks: Vec::new(),
+            stored_conditions: FxHashMap::default(),
+            fork_snapshots: FxHashMap::default(),
+        },
+    );
+
+    // Parked parallel bounce: the third bucket. Uses an unreplayable kind so
+    // the walk cannot be passing merely because a flush would have rescued it.
+    let bounced = RustSimState::new("amd64").expect("state");
+    assume_bv(&bounced, RustBV::concrete(4, 64));
+    let bounced_id = bounced.state_id();
+    mgr.pending_parallel_bounces.push((
+        bounced,
+        BounceKind::SyscallPython { num: Some(60) },
+        bounced_id,
+    ));
+
+    let out = mgr.analyze_constraint_sharing();
+    assert_eq!(
+        out.get("states_analyzed").copied(),
+        Some(4),
+        "1 stashed + parked callback state + its pre-callback snapshot + \
+         1 parked bounce"
+    );
+    assert_eq!(
+        out.get("constraints_analyzed").copied(),
+        Some(5),
+        "the snapshot inherits the parked state's constraint and adds one"
+    );
+    assert_eq!(
+        out.get("unique_shapes").copied(),
+        Some(4),
+        "values 1..=4; the snapshot's inherited copy of 2 is a repeat shape"
+    );
+}

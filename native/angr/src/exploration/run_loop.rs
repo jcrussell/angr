@@ -441,6 +441,18 @@ impl RustExplorationManager {
             std::iter::once(&mut pending.state).chain(pending.pre_callback_snapshot.as_mut())
         })
     }
+
+    /// `&self` half of
+    /// [`pending_callback_states_mut`](Self::pending_callback_states_mut), for
+    /// a read-only manager-wide walk that only reaches *through* the state
+    /// (`analyze_constraint_sharing` folds each one's solver into a sharing
+    /// census). Same coverage and same `fork_snapshots` caveat as the `&mut`
+    /// half.
+    pub(crate) fn pending_callback_states(&self) -> impl Iterator<Item = &RustSimState> {
+        self.pending_callbacks.values().flat_map(|pending| {
+            std::iter::once(&pending.state).chain(pending.pre_callback_snapshot.as_ref())
+        })
+    }
 }
 
 test_submod!(z3 "run_loop_tests.rs" => tests);

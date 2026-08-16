@@ -10,7 +10,7 @@
 //! - **Solver profiling**: `get_solver_stats`, `reset_solver_stats` (static,
 //!   process-global Z3 counters).
 //! - **Constraint-sharing analysis**: `analyze_constraint_sharing` — walks
-//!   every stash's assumed-constraint DAG and reports pointer- vs
+//!   every live state's assumed-constraint DAG and reports pointer- vs
 //!   structural-identity sharing (angr-zdho).
 //!
 //! Split out of the former `manager_methods_stats` in angr-03vl4.25; the
@@ -59,22 +59,33 @@ impl RustExplorationManager {
     ///   - `constraints_analyzed` — total `(RustBV, bool)` pairs folded in.
     ///
     /// Walks ALL stashes (so it's deterministic across exploration
-    /// outcomes — no `find`/`avoid` bias).
+    /// outcomes — no `find`/`avoid` bias), plus the two buckets of live
+    /// states that live in NO stash: the ones parked in `pending_callbacks`
+    /// and in `pending_parallel_bounces` (angr-0jh0j.15, same third-bucket
+    /// gap `set_max_history` was swept for in angr-03vl4.10). A parked state
+    /// is a real state whose constraints a later step can observe, so
+    /// omitting it undercounted the census by however many states a
+    /// mid-exploration callback or bounce happened to be holding.
     pub fn analyze_constraint_sharing(&self) -> std::collections::HashMap<String, u64> {
         let mut walk = crate::symbolic::ConstraintSharingWalk::new();
         let mut states_analyzed: u64 = 0;
         let mut constraints_analyzed: u64 = 0;
-        for stash in self.sm.stashes().values() {
-            for state in stash.iter() {
-                let ctx = state.solver().borrow();
-                let n_constraints = ctx.assumed_constraint_count();
-                if n_constraints == 0 {
-                    continue;
-                }
-                ctx.fold_sharing_walk(&mut walk);
-                states_analyzed += 1;
-                constraints_analyzed = constraints_analyzed.saturating_add(n_constraints as u64);
+        let every_live_state = self
+            .sm
+            .stashes()
+            .values()
+            .flat_map(|stash| stash.iter())
+            .chain(self.pending_callback_states())
+            .chain(self.parked_bounce_states());
+        for state in every_live_state {
+            let ctx = state.solver().borrow();
+            let n_constraints = ctx.assumed_constraint_count();
+            if n_constraints == 0 {
+                continue;
             }
+            ctx.fold_sharing_walk(&mut walk);
+            states_analyzed += 1;
+            constraints_analyzed = constraints_analyzed.saturating_add(n_constraints as u64);
         }
         let stats = walk.into_stats();
         let mut out = std::collections::HashMap::new();
