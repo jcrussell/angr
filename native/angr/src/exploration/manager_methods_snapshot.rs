@@ -63,6 +63,24 @@ impl RustExplorationManager {
     /// and clear all pending single-step / callback / parked-bounce state, so
     /// the restored frontier starts from a clean manager.
     ///
+    /// angr-0jh0j.13: the swap is also a bulk `STASH_ACTIVE` *departure* for
+    /// every pre-restore active state, so `SelectionPolicy::on_state_removed`
+    /// fires for each one before `self.sm` is overwritten — a memoizing policy
+    /// (`LoopHeadRoundRobin::key_cache`) would otherwise keep a per-`state_id`
+    /// memo entry no `select` can ever revisit, the same leak the per-state
+    /// removal paths in `state_lifecycle.rs` and `native_technique.rs` notify
+    /// for. The notify runs *after* `steady_config_guard()` so it also covers
+    /// the states that guard drains back into the outgoing active stash.
+    ///
+    /// The mirror *arrival* side is deliberately NOT routed through
+    /// `push_active`/`on_fork` the way `helpers.rs::push_to_stash` routes the
+    /// Python move/insert APIs: this is a whole-world replacement, and the
+    /// restored active deque already *is* the frontier in the order the
+    /// snapshot recorded. Re-pushing each state through `on_fork` would let a
+    /// position-choosing policy reorder a deque whose order the dump preserved
+    /// on purpose, and buys nothing — a lazily-memoizing policy populates its
+    /// side table on the next `select`.
+    ///
     #[angr_macros::steady_guard_exempt(
         reason = "the guard must run AFTER the fallible parse below, not as the unconditional \
                   first statement #[steady_guarded] would inject — a malformed envelope should \
@@ -77,6 +95,9 @@ impl RustExplorationManager {
         self.pending_callbacks.clear();
         self.pending_parallel_bounces.clear();
         self.current_stepping_state_id = None;
+        for state_id in self.sm.state_ids(STASH_ACTIVE) {
+            self.policy.on_state_removed(state_id);
+        }
         self.sm = restored;
         Ok(())
     }

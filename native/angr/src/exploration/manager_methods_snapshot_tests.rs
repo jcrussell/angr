@@ -179,3 +179,87 @@ fn dump_flushes_parked_bounces_into_the_envelope() {
         );
     });
 }
+
+// on_state_removed wiring for the wholesale `self.sm` swap (angr-0jh0j.13)
+//
+// A snapshot load is a bulk STASH_ACTIVE departure for the entire pre-restore
+// frontier, but it removes no state one at a time, so the per-removal-site
+// audits that fixed `state_lifecycle.rs` / `native_technique.rs` never saw it.
+// A memoizing policy (LoopHeadRoundRobin::key_cache) leaks one memo entry per
+// discarded state without the notify. Stash contents after the load are
+// identical either way, so a spy policy's call log is the only observable.
+// ---------------------------------------------------------------------------
+
+/// Records every `state_id` passed to `on_state_removed`; forwards the deque
+/// operations to `Fifo` so nothing else changes. Same shape as the `SpyPolicy`
+/// in `state_lifecycle_tests.rs`, minus the `on_fork` log this file's contract
+/// has nothing to say about (the restore side deliberately does not fire it —
+/// see `load_snapshot_bytes`).
+#[derive(Default)]
+struct RemovalSpy {
+    removed: std::sync::Mutex<Vec<u64>>,
+}
+
+impl selection_policy::SelectionPolicy for RemovalSpy {
+    fn select(
+        &self,
+        active: &mut std::collections::VecDeque<RustSimState>,
+    ) -> Option<RustSimState> {
+        selection_policy::Fifo.select(active)
+    }
+
+    fn on_fork(&self, active: &mut std::collections::VecDeque<RustSimState>, state: RustSimState) {
+        selection_policy::Fifo.on_fork(active, state);
+    }
+
+    fn name(&self) -> &'static str {
+        "removal-spy"
+    }
+
+    fn on_state_removed(&self, state_id: u64) {
+        self.removed.lock().expect("spy poisoned").push(state_id);
+    }
+}
+
+/// Every pre-restore ACTIVE state must be notified as removed — and only those:
+/// a state sitting in a terminal stash never entered the policy's deque, so
+/// notifying for it would be a spurious eviction.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn load_snapshot_notifies_policy_for_every_pre_restore_active_state() {
+    Python::initialize();
+    Python::attach(|py| {
+        // A donor manager supplies the envelope, so the restored ids are
+        // disjoint from the discarded ones and the assertion stays unambiguous.
+        let mut donor = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+        donor
+            .sm
+            .push(STASH_ACTIVE, RustSimState::new("amd64").expect("state"));
+        let bytes = donor.dump_snapshot_bytes(py).as_bytes().to_vec();
+
+        let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+        let spy = std::sync::Arc::new(RemovalSpy::default());
+        mgr.policy = spy.clone();
+        let (a, b, found) = (
+            RustSimState::new("amd64").expect("state"),
+            RustSimState::new("amd64").expect("state"),
+            RustSimState::new("amd64").expect("state"),
+        );
+        let (id_a, id_b, id_found) = (a.state_id(), b.state_id(), found.state_id());
+        mgr.sm.push(STASH_ACTIVE, a);
+        mgr.sm.push(STASH_ACTIVE, b);
+        mgr.sm.push(STASH_FOUND, found);
+
+        mgr.load_snapshot_bytes(&bytes).expect("load");
+
+        let mut removed = spy.removed.lock().expect("spy poisoned").clone();
+        removed.sort_unstable();
+        let mut expected = vec![id_a, id_b];
+        expected.sort_unstable();
+        assert_eq!(
+            removed, expected,
+            "the swap must notify for every discarded ACTIVE state ({id_found} was in FOUND \
+             and must not be notified)"
+        );
+    });
+}
