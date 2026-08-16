@@ -83,6 +83,23 @@ impl VEXOps {
         ))
     }
 
+    /// The three per-lane saturation bounds for an `elem_width`-bit lane, as
+    /// concrete `elem_width`-wide BVs: `(signed max, signed min, unsigned max)`.
+    /// The signed min is the sign bit alone — the two's-complement pattern for
+    /// `-2^(elem_width-1)` truncated to the lane width.
+    ///
+    /// Shared by the symbolic per-lane fallbacks of `vec_int_saturating` and
+    /// `vec_qshl_sat`, which clamp to the same three constants (angr-0jh0j.66).
+    #[inline]
+    fn saturation_bound_bvs(elem_width: u32) -> (RustBV, RustBV, RustBV) {
+        let sign_bit: u128 = 1u128 << (elem_width - 1);
+        (
+            RustBV::concrete(sign_bit - 1, elem_width),
+            RustBV::concrete(sign_bit, elem_width),
+            RustBV::concrete(Self::low_bit_mask_u128(elem_width), elem_width),
+        )
+    }
+
     /// NEON binary saturating narrow (Iop_QNarrowBin{N}{S/U}to{N/2}{S/U}x{M}).
     /// Saturating analog of `vec_narrow_bin` — `left` fills the low half,
     /// `right` the high half, via the shared `narrow_lanes` driver.
@@ -272,15 +289,7 @@ impl VEXOps {
         //             cap      = (-1)/2 + ~top_r   (signed semantics).
         //   unsigned add: cap_cond = ULT(res, a); cap = -1.
         //   unsigned sub: cap_cond = UGT(res, a); cap =  0.
-        let smax_bv = RustBV::concrete(
-            ((1u128 << (elem_width - 1)) - 1) & ((!0u128) >> (128 - elem_width)),
-            elem_width,
-        );
-        let smin_bv = RustBV::concrete(
-            (1u128 << (elem_width - 1)) & ((!0u128) >> (128 - elem_width)),
-            elem_width,
-        );
-        let umax_bv = RustBV::concrete((!0u128) >> (128 - elem_width), elem_width);
+        let (smax_bv, smin_bv, umax_bv) = Self::saturation_bound_bvs(elem_width);
         let zero_bv = RustBV::concrete(0, elem_width);
 
         let mut elements: Vec<RustBV> = Vec::with_capacity(count as usize);
@@ -452,15 +461,7 @@ impl VEXOps {
         // (count ≥ width → 0 or sign-fill) match the "out of range" branches
         // of QShl/QSal, so no explicit width guards are needed; overflow is
         // detected by the `(shl >> amt) != a` round-trip check.
-        let smax_bv = RustBV::concrete(
-            ((1u128 << (elem_width - 1)) - 1) & ((!0u128) >> (128 - elem_width)),
-            elem_width,
-        );
-        let smin_bv = RustBV::concrete(
-            (1u128 << (elem_width - 1)) & ((!0u128) >> (128 - elem_width)),
-            elem_width,
-        );
-        let umax_bv = RustBV::concrete((!0u128) >> (128 - elem_width), elem_width);
+        let (smax_bv, smin_bv, umax_bv) = Self::saturation_bound_bvs(elem_width);
         let zero_bv = RustBV::concrete(0, elem_width);
         let bit_one = RustBV::concrete(1, 1);
 
