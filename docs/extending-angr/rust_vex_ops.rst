@@ -161,8 +161,11 @@ delegates to ``left.add_into(right, ctx)``. Symbolic vs. concrete is
 the ``RustBV`` method's responsibility — the dispatch layer doesn't
 care. That's why so many arithmetic arms are one-liners.
 
-**Test.** A representative unit test from the
-``#[cfg(test)] mod tests`` block at the bottom of ``ops/mod.rs``:
+**Test.** A representative unit test, from ``ops/tests_core.rs`` — the
+per-family test sibling for the core integer/logic ops (angr-9hleg split
+the former monolithic ``ops_tests.rs`` by family; the ``tests_*.rs``
+files are declared at the bottom of ``ops/mod.rs`` via
+``test_submod!``):
 
 .. code-block:: rust
 
@@ -200,33 +203,49 @@ the macro:
 .. code-block:: rust
 
    IROp::MullU(ty) => Self::widening_mul(left, right, ty, false, ctx),
-   IROp::MullS(ty) => Self::widening_mul(left, right, ty, true,  ctx),
+   IROp::MullS(ty) => Self::widening_mul(left, right, ty, true, ctx),
 
-   fn widening_mul(left: RustBV, right: RustBV, ty: IRType, signed: bool,
-                   ctx: &SymContext) -> Result<RustBV, OpError> {
+**ops/int_arith.rs** — the helper itself. It is a ``pub(super)`` method on
+``impl VEXOps`` in a child module of ``ops``, so the dispatch arm above
+still reaches it as ``Self::widening_mul``:
+
+.. code-block:: rust
+
+   pub(super) fn widening_mul(left: RustBV, right: RustBV, ty: IRType,
+                              signed: bool, ctx: &SymContext)
+       -> Result<RustBV, OpError>
+   {
        let in_width = ty.bits();
        let out_width = in_width * 2;
-       let (left_ext, right_ext) = if signed {
-           ( left.sign_extend_into(out_width, ctx),
-             right.sign_extend_into(out_width, ctx) )
-       } else {
-           ( left.zero_extend_into(out_width, ctx),
-             right.zero_extend_into(out_width, ctx) )
-       };
+
+       // Extend both operands
+       let left_ext = left.extend_into(out_width, signed, ctx);
+       let right_ext = right.extend_into(out_width, signed, ctx);
+
        Ok(left_ext.mul_into(right_ext, ctx))
    }
 
+Note the single ``extend_into(width, signed, ctx)`` call rather than an
+``if signed { sign_extend_into } else { zero_extend_into }`` split: the
+signedness is already a parameter here, so branching on it just to pick
+between two ``RustBV`` methods duplicates a choice ``extend_into``
+already makes.
+
 Things to take away:
 
-* Helpers belong on ``impl VEXOps`` (or as free functions in the same
-  file). Keep them ``#[inline]`` and avoid taking ``&mut`` state — VEX
-  ops are pure transforms over ``RustBV`` plus the solver context.
+* Helpers belong on ``impl VEXOps`` — either in ``ops/mod.rs`` or, for a
+  whole family, in a child module of ``ops`` declared with ``mod`` (as
+  ``int_arith`` is), with the methods ``pub(super)`` so the dispatch
+  arms can still call them. Keep them ``#[inline]`` and avoid taking
+  ``&mut`` state — VEX ops are pure transforms over ``RustBV`` plus the
+  solver context.
 * When the helper needs both a concrete and a symbolic path (typical
   for FP and vector ops, see ``FloatLaneOp`` in ``ops/lane_traits.rs``),
   use the trait/struct-pair pattern: each implementation
   supplies *both* branches so the compiler stops you from forgetting
   one.
-* The unit test demonstrates both width and overflow behavior:
+* The unit test — in ``ops/tests_int_arith.rs``, the sibling matching
+  the source module — demonstrates both width and overflow behavior:
 
   .. code-block:: rust
 
@@ -352,8 +371,15 @@ doesn't know it yet. The end-to-end recipe:
 
 6. **Test.** Add one happy-path test plus an edge case (overflow,
    width=0, signed/unsigned boundary, symbolic fallback — whatever
-   applies). Keep the test in the same module's ``#[cfg(test)] mod
-   tests`` block — there's no separate test crate for VEX ops.
+   applies). Put it in the ``ops/tests_<family>.rs`` sibling that
+   matches the source module you touched (``tests_core.rs``,
+   ``tests_int_arith.rs``, ``tests_vec_shift.rs``, …), declared from
+   ``ops/mod.rs`` with ``test_submod!(...)`` — use the
+   ``test_submod!(z3 ...)`` form when the file needs a real Z3 context.
+   Shared SIMD lane-test helpers live in ``ops/test_helpers.rs``. There
+   is still no separate test crate for VEX ops: every ``tests_*.rs`` is
+   a child module of ``ops``, so ``use super::*`` reaches its private
+   items.
 
 7. **Build and run.** ``cargo check --manifest-path
    native/angr/Cargo.toml --release`` for the fast loop;
