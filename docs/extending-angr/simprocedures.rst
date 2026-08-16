@@ -551,14 +551,30 @@ Dispatch and registration
 ^^^^^^^^^^^^^^^^^^^^^^^^^
 
 The engine looks up native procedures by **name** through
-``NativeProcedureRegistry``. Registration is hand-written in
-``NativeProcedureRegistry::new`` (``procedures/mod.rs``):
+``NativeProcedureRegistry``. Registration is list-driven: a single
+``register_procs!`` invocation in ``NativeProcedureRegistry::new``
+(``procedures/mod.rs``) names every procedure struct, one bare path per
+row:
 
 .. code-block:: rust
 
-   registry.register(Arc::new(strlen::NativeStrlen));
-   registry.register(Arc::new(memcpy::NativeMemcpy));
-   registry.register(Arc::new(malloc::NativeMalloc));
+   register_procs!(
+       registry,
+       [
+           strlen::NativeStrlen,
+           // aliases() covers memmove_unlocked etc.
+           memcpy::NativeMemcpy,
+           malloc::NativeMalloc,
+       ]
+   );
+
+The macro (``procedures/macros.rs``) wraps each row in ``Arc::new(..)``
+and calls ``register``, which also installs every name the procedure's
+``aliases()`` returns. Do **not** hand-write
+``registry.register(Arc::new(..))`` call sites — the list is what makes a
+declared-but-unregistered procedure a ``dead_code`` build failure rather
+than a silently unreachable one, and it mirrors the ``register_syscalls!``
+table in ``syscalls/mod.rs``.
 
 Every angr SimProcedure that has a matching name in the registry is
 intercepted before its Python ``run()`` would be invoked. The dispatcher
@@ -633,10 +649,13 @@ Regression coverage for this contract lives at
 
 For a contributor: adding a new procedure means (1) writing a module
 under ``native/angr/src/procedures/``, (2) declaring it ``pub mod`` from
-``mod.rs``, and (3) adding a single ``registry.register(...)`` line in
-``NativeProcedureRegistry::new``. The acceptance bar is then a handful
-of ``#[cfg(test)] mod tests`` cases exercising the happy path, the
-symbolic-arg fallback, and any edge cases (zero-size, max-size, etc.).
+``mod.rs``, and (3) adding a single row to the ``register_procs!`` list in
+``NativeProcedureRegistry::new``. The acceptance bar is then a handful of
+test cases exercising the happy path, the symbolic-arg fallback, and any
+edge cases (zero-size, max-size, etc.), written in a sibling
+``<proc>_tests.rs`` file pulled in by ``test_submod!`` — see
+*Testing a native procedure* below for why an inline ``#[cfg(test)] mod
+tests`` block is not the convention here.
 
 Worked example 1: concrete-only — ``strlen``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
