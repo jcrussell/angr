@@ -33,9 +33,13 @@
 //! - **`state-lifecycle-stats-api`** — the bodies for `create_state` /
 //!   `add_state` / `merge_states` / `move_states` / `move_state` /
 //!   `reset_for_stage` all live in THIS file (Rust core), with thin PyO3
-//!   wrappers in `mod.rs`. Python-side dispatcher is
+//!   wrappers in the `manager_methods_*.rs` family — `create_state` /
+//!   `add_state` / `merge_states` in `manager_methods_state.rs`,
+//!   `move_states` / `move_state` / `reset_for_stage` in
+//!   `manager_methods_constraints.rs` (see the header above for why they are
+//!   no longer in `mod.rs`). Python-side dispatcher is
 //!   `angr/exploration/rust_manager.py`. When extending lifecycle, edit
-//!   here first; the wrapper in `mod.rs` should remain a single-line
+//!   here first; the wrapper should remain a single-line
 //!   `self._method_name(...)`.
 //! - **`state-cache-pinning`** (Python-side) — `_cleanup_state_cache` must
 //!   pin `_state_roots`, `_current_callback_state_id`, and

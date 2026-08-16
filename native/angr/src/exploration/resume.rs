@@ -28,7 +28,8 @@ use super::*;
 
 impl RustExplorationManager {
     /// Inner body of the pymethods-exposed `resume_after_simprocedure`.
-    /// See the wrapper in `mod.rs` for the public Python signature.
+    /// See the wrapper in `manager_methods_run.rs` for the public Python
+    /// signature.
     pub(crate) fn _resume_after_simprocedure(
         &mut self,
         py: Python<'_>,
