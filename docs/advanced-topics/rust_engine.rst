@@ -991,20 +991,22 @@ ordering, branch enumeration, eval answer)?"*:
      - **Not output-affecting.** Per-stash order is the VecDeque
        (FIFO/LIFO is honored). Cross-stash iteration only writes the
        same value to every state or finds a unique ``state_id``.
-    * - ``state/mod.rs`` ``symbolic_pages`` / ``hook_symbolic_memory`` /
+   * - ``state/mod.rs`` ``symbolic_pages`` / ``hook_symbolic_memory`` /
        ``addr_to_ast``
      - Yes (``state_api.rs:_get_state_symbolic_pages`` etc. dump into
        ``PyDict``)
      - **Not output-affecting.** Python consumers read by key; the
        resulting ``PyDict`` is data-equivalent run-to-run. Iteration
        order leaks only into ``dict.__repr__`` for debug prints.
-    * - ``state/mod.rs`` ``simprocedures`` / ``vex_fallback_addrs`` /
+   * - ``state/mod.rs`` ``simprocedures`` / ``vex_fallback_addrs`` /
        ``simprocedure_fallback_by_name``
      - Lookup-only
      - **Not output-affecting.**
-   * - ``claripy_bridge/cache.rs`` ``CLARIPY_AST_CACHE`` + ``deepcopy_memo``
+   * - ``claripy_bridge/cache.rs`` ``AST_CACHE`` +
+       ``EXPRESSION_BY_OPERANDS_PTR``
      - Lookup-only (LRU caches)
-     - **Not output-affecting.** Keyed by Python id / hash.
+     - **Not output-affecting.** Keyed by claripy AST hash / operands
+       ``Arc`` pointer.
    * - ``vex/lifter.rs`` IRSB lift cache
      - Lookup-only
      - **Not output-affecting.**
@@ -5636,10 +5638,10 @@ alone — fixing any one in isolation does not enable parallelism.
    unless the per-solve cost is enormous.
 
 **3. Claripy bridge thread-local AST caches**
-   (``native/angr/src/claripy_bridge/cache.rs``). The three
+   (``native/angr/src/claripy_bridge/cache.rs``). The two
    caches documented in the ``claripy-bridge-thread-local-caches``
-   memory (``AST_CACHE``, ``CLARIPY_AST_CACHE``,
-   ``EXPRESSION_BY_OPERANDS_PTR``) are intentionally ``thread_local!``
+   memory (``AST_CACHE``, ``EXPRESSION_BY_OPERANDS_PTR``)
+   are intentionally ``thread_local!``
    to avoid lock contention on the hot path. They are **already correct
    for multi-threading** in the sense that each thread has its own
    instance and no cross-thread synchronization is needed. Cost:
@@ -5754,23 +5756,30 @@ the lock.
 ``clear_ast_cache()`` (declared at
 ``native/angr/src/claripy_bridge/cache.rs::clear_ast_cache``,
 exposed to Python via ``native/angr/src/engine.rs::clear_ast_cache``)
-atomically clears all three thread-local caches in the bridge:
+atomically clears both thread-local caches in the bridge:
 
 - ``AST_CACHE`` (LRU, ``claripy_bridge/cache.rs``)
-- ``CLARIPY_AST_CACHE`` (unbounded ``HashMap``, ``claripy_bridge/cache.rs``)
 - ``EXPRESSION_BY_OPERANDS_PTR`` (LRU, ``claripy_bridge/cache.rs``)
+
+(A third, ``CLARIPY_AST_CACHE``, existed until angr-4xaga.2 removed it;
+the C2/C6 renumbering note in ``claripy_bridge/mod.rs``'s module rustdoc
+records that change.)
 
 Cross-cache invariant C3 (documented in-file) makes a partial clear
 incorrect by design; the single entry point enforces it.
+``claripy_bridge/cache.rs::clear_worker_local_caches`` is a
+threading-intent alias for the same function, so a parallel worker's
+task-boundary flush reads as worker-scoped.
 
-``clear_all_caches()`` (``claripy_bridge/cache.rs::clear_all_caches``)
-additionally clears
-the process-global ``SymbolicIdentityRegistry``. It is **deliberately
-not** exposed to Python because the registry is shared across all
-managers in the process — clearing it from one manager would
-invalidate live symbol IDs held by another. The only Python-side
-flush path is ``RustExplorationManager.cleanup()`` (gated by the
-``clear_caches_on_cleanup`` constructor flag, default ``False``), so
+``claripy_bridge/cache.rs::reset_for_new_exploration`` additionally
+clears the process-global ``SymbolicIdentityRegistry``. It is
+``#[cfg(test)]``-only, and so reachable from neither Python nor the
+shipped ``.so``, because the registry is shared across all managers in
+the process — clearing it from one manager would invalidate live symbol
+IDs held by another (see ``reset_for_new_exploration``'s own rustdoc,
+and angr-izov2 for the renamed-BVS failure that follows). The only
+Python-side flush path is ``RustExplorationManager.cleanup()`` (gated by
+the ``clear_caches_on_cleanup`` constructor flag, default ``False``), so
 manager teardown never reaches the global registry.
 
 Refcount discipline (Z3 ASTs)

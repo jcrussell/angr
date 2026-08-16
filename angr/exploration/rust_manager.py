@@ -7082,8 +7082,8 @@ class RustExplorationManager(
         """Release this manager's hold on per-process AST caches.
 
         Flushes the Rust-side thread-local claripy AST translation caches
-        (``AST_CACHE`` / ``CLARIPY_AST_CACHE`` / ``EXPRESSION_CACHE`` /
-        ``EXPRESSION_BY_OPERANDS_PTR`` in ``claripy_bridge``). Those caches
+        (``AST_CACHE`` and ``EXPRESSION_BY_OPERANDS_PTR`` in
+        ``claripy_bridge/cache.rs``). Those caches
         outlive a single manager because they are thread-local, so without
         a flush they accumulate O(n) across managers in Callable-heavy
         workloads — see ``docs/advanced-topics/rust_engine.rst`` for the
