@@ -88,6 +88,7 @@
 //!    (e.g., new SimProcedure dispatch helpers) should preserve that
 //!    discipline on the Python side.
 
+use angr_macros::{callback_setters, inspect_test_entries};
 use pyo3::class::{PyTraverseError, PyVisit};
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
@@ -167,10 +168,18 @@ pub(crate) use require_callback;
 /// **Adding a callback** means editing exactly two places: the `struct`
 /// definition (for the doc comment + type) and this list. Forgetting the
 /// list is a *compile* error, not a silent leak — `clear_fields` destructures
-/// `Self` exhaustively (no `..`), so an unlisted field has no binding.
+/// `Self` exhaustively (no `..`), so an unlisted field has no binding — and
+/// the `set_<slot>` PyO3 setter is generated from this list too, so the new
+/// slot is Python-settable without a third edit.
+///
+/// Anything after the consumer macro's name is passed through ahead of the
+/// field list, which is how the `callback_setters!` proc macro (which needs
+/// to know the type it is writing an `impl` block for) is driven from here:
+/// `with_callback_fields!(callback_setters PythonCallbacks =>)`.
 macro_rules! with_callback_fields {
-    ($m:ident) => {
+    ($m:ident $($prefix:tt)*) => {
         $m! {
+            $($prefix)*
             memory_load,
             memory_store,
             memory_store_batch,
@@ -235,18 +244,22 @@ pub struct PythonCallbacks {
     pub memory_store: Option<Py<PyAny>>,
     /// Callback for batched memory stores: fn(stores: list[tuple[int, bytes]]) -> None
     /// This is more efficient than individual stores when multiple stores can be batched.
+    /// Unset falls back to individual `memory_store` calls.
     pub memory_store_batch: Option<Py<PyAny>>,
     /// Callback for batched memory loads: fn(loads: list[tuple[int, int]]) -> list[tuple[bytes, bool, object | None]]
     /// Each tuple in input is (address, size). Returns list of (data, is_symbolic, ast_or_none).
     /// This is more efficient than individual loads when multiple loads can be batched.
+    /// Unset falls back to individual `memory_load` calls.
     pub memory_load_batch: Option<Py<PyAny>>,
     /// Callback for lifting a block: fn(addr: u64) -> irsb_json
+    /// The IRSB comes back as a JSON string.
     pub lift_block: Option<Py<PyAny>>,
     /// Callback for dirty helper calls: fn(name: str, args: list\[int\], ret_ty_bits: int) -> (bytes, bool, object | None)
     /// This handles VEX dirty calls to helper functions (CPUID, RDTSC, etc.)
     pub dirty_call: Option<Py<PyAny>>,
     /// Callback for fetching a single 4KB page: fn(page_addr: u64) -> (bytes, permissions: u8, is_mapped: bool)
     /// This is used for on-demand page loading when Rust memory encounters an unmapped page.
+    /// `is_mapped == False` means the page does not exist in Python memory either.
     pub fetch_page: Option<Py<PyAny>>,
     /// Callback for batched page fetching: fn(page_addrs: list[u64]) -> list[(bytes, u8, bool)]
     /// Returns list of (data, permissions, is_mapped) for each requested page.
@@ -255,11 +268,19 @@ pub struct PythonCallbacks {
     /// This is called when storing a symbolic value to memory. The AST is reconstructed from
     /// the Rust expression tree, preserving the original symbolic expression structure.
     /// This allows symbolic values to be properly stored without data loss.
+    ///
+    /// The address is **concrete** here — `_value` names the symbolic side. The
+    /// symbolic-*address* variant is `memory_store_symbolic_full`; the
+    /// `dispatch` module docs table them side by side.
     pub memory_store_symbolic_value: Option<Py<PyAny>>,
     /// Callback for storing symbolic data at a symbolic address.
     /// Called when the address cannot be concretized (too many possibilities).
     /// Takes (addr_ast: claripy.AST, data_ast: claripy.AST) -> None
     /// Python should use state.memory.store(addr_ast, data_ast).
+    ///
+    /// "full" because both sides cross as ASTs, so the data may be symbolic or
+    /// concrete — versus the `int` address taken by
+    /// `memory_store_symbolic_value`.
     pub memory_store_symbolic_full: Option<Py<PyAny>>,
     /// Callback for loading data at a symbolic address.
     /// Called when the address cannot be concretized (too many possibilities).
@@ -271,6 +292,8 @@ pub struct PythonCallbacks {
     /// Takes (addr: int, name: str | None) -> (name: str, num_args: int, no_return: bool) | None
     /// If returns None, the function is truly unmodeled and state should be deadended.
     /// If returns info, Rust will register the function as a SimProcedure and retry.
+    /// The Python side is expected to consult `project._sim_procedures` and
+    /// angr's procedure registry.
     pub resolve_function: Option<Py<PyAny>>,
     /// Callback for state.inspect mem_read events.
     /// Signature:
@@ -484,6 +507,13 @@ pub struct PythonCallbacks {
         std::sync::Arc<std::sync::RwLock<Option<std::collections::HashSet<u64>>>>,
 }
 
+// The 30 `set_<slot>` PyO3 setters, generated from the one `with_callback_fields!`
+// list so a setter cannot write a slot other than the one it is named for
+// (angr-0jh0j.6). It expands to its own `#[pymethods] impl` block — see
+// `angr_macros::callback_setters` for why it cannot live inside the hand-written
+// one below. Per-slot prose belongs on the struct field's doc comment.
+with_callback_fields!(callback_setters PythonCallbacks =>);
+
 #[allow(
     unreachable_pub,
     reason = "pyo3 `#[pymethods]`/`#[pyclass]` surface: these items are reached from Python, not from Rust. See the `unreachable_pub` note in lib.rs (angr-9ke6b.50)."
@@ -509,270 +539,6 @@ impl PythonCallbacks {
             };
         }
         with_callback_fields!(empty_holder)
-    }
-
-    /// Set the memory load callback.
-    ///
-    /// The callback should have signature:
-    /// `fn(addr: int, size: int) -> tuple[bytes, bool, object | None]`
-    ///
-    /// Returns (concrete_bytes, is_symbolic, symbolic_ast_or_none).
-    pub fn set_memory_load(&mut self, cb: Py<PyAny>) {
-        self.memory_load = Some(cb);
-    }
-
-    /// Set the memory store callback.
-    ///
-    /// The callback should have signature:
-    /// `fn(addr: int, data: bytes) -> None`
-    pub fn set_memory_store(&mut self, cb: Py<PyAny>) {
-        self.memory_store = Some(cb);
-    }
-
-    /// Set the batched memory store callback.
-    ///
-    /// The callback should have signature:
-    /// `fn(stores: list[tuple[int, bytes]]) -> None`
-    ///
-    /// This is called with a batch of stores for efficiency. Each element is
-    /// a (address, data) tuple. If not set, falls back to individual stores.
-    pub fn set_memory_store_batch(&mut self, cb: Py<PyAny>) {
-        self.memory_store_batch = Some(cb);
-    }
-
-    /// Set the batched memory load callback.
-    ///
-    /// The callback should have signature:
-    /// `fn(loads: list[tuple[int, int]]) -> list[tuple[bytes, bool, object | None]]`
-    ///
-    /// Each tuple in input is (address, size). Returns list of (data, is_symbolic, ast_or_none).
-    /// This is called with a batch of loads for efficiency, reducing FFI overhead.
-    /// If not set, falls back to individual loads.
-    pub fn set_memory_load_batch(&mut self, cb: Py<PyAny>) {
-        self.memory_load_batch = Some(cb);
-    }
-
-    /// Set the block lifting callback.
-    ///
-    /// The callback should have signature:
-    /// `fn(addr: int) -> str`
-    ///
-    /// Returns the IRSB as a JSON string.
-    pub fn set_lift_block(&mut self, cb: Py<PyAny>) {
-        self.lift_block = Some(cb);
-    }
-
-    /// Set the dirty call callback.
-    ///
-    /// The callback should have signature:
-    /// `fn(name: str, args: list\[int\], ret_ty_bits: int) -> tuple[bytes, bool, object | None]`
-    ///
-    /// This handles VEX dirty calls to helper functions like CPUID, RDTSC, etc.
-    /// Returns (concrete_bytes, is_symbolic, symbolic_ast_or_none).
-    pub fn set_dirty_call(&mut self, cb: Py<PyAny>) {
-        self.dirty_call = Some(cb);
-    }
-
-    /// Set the page fetch callback.
-    ///
-    /// The callback should have signature:
-    /// `fn(page_addr: int) -> tuple[bytes, int, bool]`
-    ///
-    /// Returns (page_data_4kb, permissions, is_mapped).
-    /// If is_mapped is False, the page doesn't exist in Python memory.
-    pub fn set_fetch_page(&mut self, cb: Py<PyAny>) {
-        self.fetch_page = Some(cb);
-    }
-
-    /// Set the batched page fetch callback.
-    ///
-    /// The callback should have signature:
-    /// `fn(page_addrs: list\[int\]) -> list[tuple[bytes, int, bool]]`
-    ///
-    /// Each result is (page_data_4kb, permissions, is_mapped).
-    pub fn set_batch_fetch_pages(&mut self, cb: Py<PyAny>) {
-        self.batch_fetch_pages = Some(cb);
-    }
-
-    /// Set the symbolic **value** store callback — concrete address, data
-    /// carried as an AST (`_value` names the symbolic side). The
-    /// symbolic-*address* variant is `set_memory_store_symbolic_full`; the
-    /// `dispatch` module docs table them side by side.
-    ///
-    /// The callback should have signature:
-    /// `fn(addr: int, ast: claripy.AST) -> None`
-    ///
-    /// This is called when storing a symbolic value to memory. The AST
-    /// is the fully reconstructed claripy expression from the Rust engine,
-    /// preserving the original symbolic structure (e.g., `x + 10 ^ 0x42`
-    /// instead of a fresh symbolic variable).
-    pub fn set_memory_store_symbolic_value(&mut self, cb: Py<PyAny>) {
-        self.memory_store_symbolic_value = Some(cb);
-    }
-
-    /// Set the callback for storing at a **symbolic address** — "full" because
-    /// both sides cross as ASTs, so the data may be symbolic or concrete.
-    /// Used when the address cannot be concretized (too many possibilities).
-    ///
-    /// The callback should have signature:
-    /// `fn(addr: claripy.AST, data: claripy.AST) -> None` — note `addr` is an
-    /// AST here, versus the `int` taken by `set_memory_store_symbolic_value`.
-    pub fn set_memory_store_symbolic_full(&mut self, cb: Py<PyAny>) {
-        self.memory_store_symbolic_full = Some(cb);
-    }
-
-    /// Set the callback for loading data at a symbolic address.
-    /// Used when the address cannot be concretized (too many possibilities).
-    pub fn set_memory_load_symbolic_full(&mut self, cb: Py<PyAny>) {
-        self.memory_load_symbolic_full = Some(cb);
-    }
-
-    /// Set the callback for resolving unmodeled function calls.
-    ///
-    /// The callback should have signature:
-    /// `fn(addr: int, name: str | None) -> tuple[str, int, bool] | None`
-    ///
-    /// If the function can be resolved, return (name, num_args, no_return).
-    /// If not, return None to deadend the state.
-    ///
-    /// This is called when execution reaches a function that isn't hooked.
-    /// The callback should check project._sim_procedures and angr's procedure registry.
-    pub fn set_resolve_function(&mut self, cb: Py<PyAny>) {
-        self.resolve_function = Some(cb);
-    }
-
-    /// Set the inspect mem_read callback.
-    ///
-    /// The callback should have signature:
-    /// `fn(state_id: int, when: str, addr: int, size: int, value_ast: object | None, endness: str) -> None`
-    pub fn set_inspect_mem_read(&mut self, cb: Py<PyAny>) {
-        self.inspect_mem_read = Some(cb);
-    }
-
-    /// Set the inspect mem_write callback.
-    ///
-    /// The callback should have signature:
-    /// `fn(state_id: int, when: str, addr: int, size: int, value_ast: object | None, endness: str) -> None`
-    pub fn set_inspect_mem_write(&mut self, cb: Py<PyAny>) {
-        self.inspect_mem_write = Some(cb);
-    }
-
-    /// Set the inspect reg_read callback.
-    ///
-    /// Signature: `fn(state_id: int, when: str, offset: int, size: int,
-    ///                value_ast: object | None) -> None`
-    pub fn set_inspect_reg_read(&mut self, cb: Py<PyAny>) {
-        self.inspect_reg_read = Some(cb);
-    }
-
-    /// Set the inspect reg_write callback.
-    pub fn set_inspect_reg_write(&mut self, cb: Py<PyAny>) {
-        self.inspect_reg_write = Some(cb);
-    }
-
-    /// Set the inspect instruction callback.
-    ///
-    /// Signature: `fn(state_id: int, when: str, addr: int) -> None`.
-    pub fn set_inspect_instruction(&mut self, cb: Py<PyAny>) {
-        self.inspect_instruction = Some(cb);
-    }
-
-    /// Set the inspect irsb (block) callback.
-    pub fn set_inspect_irsb(&mut self, cb: Py<PyAny>) {
-        self.inspect_irsb = Some(cb);
-    }
-
-    /// Set the inspect exit (conditional branch) callback.
-    ///
-    /// Signature: `fn(state_id: int, when: str, target: int, jumpkind: str,
-    ///                guard_ast: object) -> None`.
-    pub fn set_inspect_exit(&mut self, cb: Py<PyAny>) {
-        self.inspect_exit = Some(cb);
-    }
-
-    /// Set the inspect call (function-entry) callback.
-    ///
-    /// Signature: `fn(state_id: int, when: str, function_address: int) -> None`.
-    /// Fires twice per Ijk_Call exit (before/after the frame push).
-    pub fn set_inspect_call(&mut self, cb: Py<PyAny>) {
-        self.inspect_call = Some(cb);
-    }
-
-    /// Set the inspect return (function-exit) callback.
-    ///
-    /// Signature: `fn(state_id: int, when: str, function_address: int) -> None`.
-    /// Fires twice per Ijk_Ret exit (before/after the frame pop).
-    pub fn set_inspect_return(&mut self, cb: Py<PyAny>) {
-        self.inspect_return = Some(cb);
-    }
-
-    /// Set the inspect tmp_read (VEX `RdTmp`) callback.
-    ///
-    /// Signature: `fn(state_id: int, when: str, tmp_num: int,
-    ///                value_ast: object | None) -> None`.
-    pub fn set_inspect_tmp_read(&mut self, cb: Py<PyAny>) {
-        self.inspect_tmp_read = Some(cb);
-    }
-
-    /// Set the inspect tmp_write (VEX `WrTmp`) callback.
-    ///
-    /// Signature: `fn(state_id: int, when: str, tmp_num: int,
-    ///                value_ast: object | None) -> None`.
-    pub fn set_inspect_tmp_write(&mut self, cb: Py<PyAny>) {
-        self.inspect_tmp_write = Some(cb);
-    }
-
-    /// Set the inspect statement (per VEX IR statement) callback.
-    ///
-    /// Signature: `fn(state_id: int, when: str, stmt_idx: int) -> None`.
-    pub fn set_inspect_statement(&mut self, cb: Py<PyAny>) {
-        self.inspect_statement = Some(cb);
-    }
-
-    /// Set the inspect expr (per VEX IR expression eval) callback.
-    ///
-    /// Signature: `fn(state_id: int, when: str, expr_result: object | None)
-    ///                 -> None`.
-    pub fn set_inspect_expr(&mut self, cb: Py<PyAny>) {
-        self.inspect_expr = Some(cb);
-    }
-
-    /// Set the inspect address_concretization callback.
-    ///
-    /// Signature: `fn(state_id: int, when: str, action: str,
-    ///                addr_ast: object, result: list\[int\] | None) -> None`.
-    pub fn set_inspect_address_concretization(&mut self, cb: Py<PyAny>) {
-        self.inspect_address_concretization = Some(cb);
-    }
-
-    /// Set the inspect symbolic_variable callback.
-    ///
-    /// Signature: `fn(state_id: int, when: str, name: str, size: int,
-    ///                expr_ast: object) -> None`.
-    pub fn set_inspect_symbolic_variable(&mut self, cb: Py<PyAny>) {
-        self.inspect_symbolic_variable = Some(cb);
-    }
-
-    /// Set the inspect fork callback.
-    ///
-    /// Signature: `fn(state_id: int, when: str) -> None`.
-    pub fn set_inspect_fork(&mut self, cb: Py<PyAny>) {
-        self.inspect_fork = Some(cb);
-    }
-
-    /// Set the inspect constraints callback.
-    ///
-    /// Signature: `fn(state_id: int, when: str, added_constraints: list) -> Any`.
-    pub fn set_inspect_constraints(&mut self, cb: Py<PyAny>) {
-        self.inspect_constraints = Some(cb);
-    }
-
-    /// Set the inspect vex_lift callback (native-lift dispatch origin).
-    ///
-    /// Signature: `fn(state_id: int, when: str, addr: int, size: int | None,
-    ///                buff: bytes | None) -> None`.
-    pub fn set_inspect_vex_lift(&mut self, cb: Py<PyAny>) {
-        self.inspect_vex_lift = Some(cb);
     }
 
     /// Set the inspect-enabled bitmask. Bit N = `InspectEvent` variant N.
@@ -845,245 +611,6 @@ impl PythonCallbacks {
             .load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// Test entry point: invoke the registered mem_read callback directly.
-    /// Lets the marshalling round-trip be exercised before VEX dispatch
-    /// sites are wired (uq4n.3). Returns whatever Python returned.
-    #[pyo3(name = "call_inspect_mem_read")]
-    #[pyo3(signature = (state_id, when, addr, size, value_ast, endness))]
-    pub fn py_call_inspect_mem_read(
-        &self,
-        state_id: i64,
-        when: &str,
-        addr: u64,
-        size: u32,
-        value_ast: Option<Py<PyAny>>,
-        endness: &str,
-    ) -> PyResult<Option<Py<PyAny>>> {
-        self.call_inspect_mem_read(state_id, when, addr, size, value_ast.as_ref(), endness)
-    }
-
-    /// Test entry point: invoke the registered mem_write callback directly.
-    #[pyo3(name = "call_inspect_mem_write")]
-    #[pyo3(signature = (state_id, when, addr, size, value_ast, endness))]
-    pub fn py_call_inspect_mem_write(
-        &self,
-        state_id: i64,
-        when: &str,
-        addr: u64,
-        size: u32,
-        value_ast: Option<Py<PyAny>>,
-        endness: &str,
-    ) -> PyResult<Option<Py<PyAny>>> {
-        self.call_inspect_mem_write(state_id, when, addr, size, value_ast.as_ref(), endness)
-    }
-
-    /// Test entry point: invoke the registered reg_read callback directly.
-    #[pyo3(name = "call_inspect_reg_read")]
-    #[pyo3(signature = (state_id, when, offset, size, value_ast))]
-    pub fn py_call_inspect_reg_read(
-        &self,
-        state_id: i64,
-        when: &str,
-        offset: u32,
-        size: u32,
-        value_ast: Option<Py<PyAny>>,
-    ) -> PyResult<()> {
-        self.call_inspect_reg_read(state_id, when, offset, size, value_ast.as_ref())
-    }
-
-    /// Test entry point: invoke the registered reg_write callback directly.
-    #[pyo3(name = "call_inspect_reg_write")]
-    #[pyo3(signature = (state_id, when, offset, size, value_ast))]
-    pub fn py_call_inspect_reg_write(
-        &self,
-        state_id: i64,
-        when: &str,
-        offset: u32,
-        size: u32,
-        value_ast: Option<Py<PyAny>>,
-    ) -> PyResult<()> {
-        self.call_inspect_reg_write(state_id, when, offset, size, value_ast.as_ref())
-    }
-
-    /// Test entry point: invoke the registered instruction callback directly.
-    #[pyo3(name = "call_inspect_instruction")]
-    pub fn py_call_inspect_instruction(
-        &self,
-        state_id: i64,
-        when: &str,
-        addr: u64,
-    ) -> PyResult<()> {
-        self.call_inspect_instruction(state_id, when, addr)
-    }
-
-    /// Test entry point: invoke the registered irsb callback directly.
-    #[pyo3(name = "call_inspect_irsb")]
-    pub fn py_call_inspect_irsb(&self, state_id: i64, when: &str, addr: u64) -> PyResult<()> {
-        self.call_inspect_irsb(state_id, when, addr)
-    }
-
-    /// Test entry point: invoke the registered exit callback directly.
-    #[pyo3(name = "call_inspect_exit")]
-    #[pyo3(signature = (state_id, when, target, jumpkind, guard_ast))]
-    pub fn py_call_inspect_exit(
-        &self,
-        state_id: i64,
-        when: &str,
-        target: u64,
-        jumpkind: &str,
-        guard_ast: Option<Py<PyAny>>,
-    ) -> PyResult<()> {
-        self.call_inspect_exit(state_id, when, target, jumpkind, guard_ast.as_ref())
-    }
-
-    /// Test entry point: invoke the registered call callback directly.
-    #[pyo3(name = "call_inspect_call")]
-    pub fn py_call_inspect_call(
-        &self,
-        state_id: i64,
-        when: &str,
-        function_address: u64,
-    ) -> PyResult<()> {
-        self.call_inspect_call(state_id, when, function_address)
-    }
-
-    /// Test entry point: invoke the registered return callback directly.
-    #[pyo3(name = "call_inspect_return")]
-    pub fn py_call_inspect_return(
-        &self,
-        state_id: i64,
-        when: &str,
-        function_address: u64,
-    ) -> PyResult<()> {
-        self.call_inspect_return(state_id, when, function_address)
-    }
-
-    /// Test entry point: invoke the registered tmp_read callback directly.
-    #[pyo3(name = "call_inspect_tmp_read")]
-    #[pyo3(signature = (state_id, when, tmp_num, value_ast))]
-    pub fn py_call_inspect_tmp_read(
-        &self,
-        state_id: i64,
-        when: &str,
-        tmp_num: u32,
-        value_ast: Option<Py<PyAny>>,
-    ) -> PyResult<()> {
-        self.call_inspect_tmp_read(state_id, when, tmp_num, value_ast.as_ref())
-    }
-
-    /// Test entry point: invoke the registered tmp_write callback directly.
-    #[pyo3(name = "call_inspect_tmp_write")]
-    #[pyo3(signature = (state_id, when, tmp_num, value_ast))]
-    pub fn py_call_inspect_tmp_write(
-        &self,
-        state_id: i64,
-        when: &str,
-        tmp_num: u32,
-        value_ast: Option<Py<PyAny>>,
-    ) -> PyResult<()> {
-        self.call_inspect_tmp_write(state_id, when, tmp_num, value_ast.as_ref())
-    }
-
-    /// Test entry point: invoke the registered statement callback directly.
-    #[pyo3(name = "call_inspect_statement")]
-    pub fn py_call_inspect_statement(
-        &self,
-        state_id: i64,
-        when: &str,
-        stmt_idx: u32,
-    ) -> PyResult<()> {
-        self.call_inspect_statement(state_id, when, stmt_idx)
-    }
-
-    /// Test entry point: invoke the registered expr callback directly.
-    #[pyo3(name = "call_inspect_expr")]
-    #[pyo3(signature = (state_id, when, expr_result))]
-    pub fn py_call_inspect_expr(
-        &self,
-        state_id: i64,
-        when: &str,
-        expr_result: Option<Py<PyAny>>,
-    ) -> PyResult<()> {
-        self.call_inspect_expr(state_id, when, expr_result.as_ref())
-    }
-
-    /// Test entry point: invoke the address_concretization callback directly.
-    #[pyo3(name = "call_inspect_address_concretization")]
-    #[pyo3(signature = (state_id, when, action, addr_ast, result))]
-    pub fn py_call_inspect_address_concretization(
-        &self,
-        state_id: i64,
-        when: &str,
-        action: &str,
-        addr_ast: Py<PyAny>,
-        result: Option<Vec<u64>>,
-    ) -> PyResult<()> {
-        self.call_inspect_address_concretization(state_id, when, action, &addr_ast, result)
-    }
-
-    /// Test entry point: invoke the symbolic_variable callback directly.
-    #[pyo3(name = "call_inspect_symbolic_variable")]
-    #[pyo3(signature = (state_id, when, name, size, expr_ast))]
-    pub fn py_call_inspect_symbolic_variable(
-        &self,
-        state_id: i64,
-        when: &str,
-        name: &str,
-        size: u32,
-        expr_ast: Py<PyAny>,
-    ) -> PyResult<()> {
-        self.call_inspect_symbolic_variable(state_id, when, name, size, &expr_ast)
-    }
-
-    /// Test entry point: invoke the registered fork callback directly.
-    #[pyo3(name = "call_inspect_fork")]
-    pub fn py_call_inspect_fork(&self, state_id: i64, when: &str) -> PyResult<()> {
-        self.call_inspect_fork(state_id, when)
-    }
-
-    /// Test entry point: invoke the registered constraints callback directly.
-    ///
-    /// `guard_ast` is a claripy AST standing in for the branch guard the
-    /// production caller passes as the state's own `RustBV` — a type Python
-    /// cannot construct — so it is imported into a throwaway `SymContext`
-    /// first. What that leaves under test is the marshalling half of
-    /// `call_inspect_constraints`: the `assumed_guard_to_claripy` export
-    /// (including the `is_true == false` `claripy.Not(..)` wrap) and the
-    /// `(state_id, when, [constraint])` call shape.
-    #[pyo3(name = "call_inspect_constraints")]
-    #[pyo3(signature = (state_id, when, guard_ast, is_true))]
-    pub fn py_call_inspect_constraints(
-        &self,
-        py: Python<'_>,
-        state_id: i64,
-        when: &str,
-        guard_ast: &Bound<'_, PyAny>,
-        is_true: bool,
-    ) -> PyResult<()> {
-        let ctx = crate::symbolic::SymContext::new();
-        let guard = crate::claripy_bridge::claripy_to_rustbv(py, guard_ast, &ctx)
-            .map_err(|e| crate::claripy_bridge::ast_import_err("inspect constraints guard", e))?;
-        self.call_inspect_constraints(state_id, when, &guard, is_true)
-    }
-
-    /// Test entry point: invoke the registered vex_lift callback directly.
-    ///
-    /// Mirrors the native libVEX lift path's two fires: BEFORE passes
-    /// `size=None` plus the byte buffer handed to libVEX, AFTER passes the
-    /// lifted IRSB's size and no buffer.
-    #[pyo3(name = "call_inspect_vex_lift")]
-    #[pyo3(signature = (state_id, when, addr, size=None, buff=None))]
-    pub fn py_call_inspect_vex_lift(
-        &self,
-        state_id: i64,
-        when: &str,
-        addr: u64,
-        size: Option<u32>,
-        buff: Option<Vec<u8>>,
-    ) -> PyResult<()> {
-        self.call_inspect_vex_lift(state_id, when, addr, size, buff.as_deref())
-    }
-
     /// Whether the three *unconditionally invoked* callbacks are set:
     /// `memory_load`, `memory_store`, `lift_block`.
     ///
@@ -1126,6 +653,219 @@ impl PythonCallbacks {
     /// containing object is being collected anyway.
     fn __clear__(&mut self) {
         self.clear_fields();
+    }
+}
+
+// The `call_inspect_*` Python test entry points. Each entry is written against
+// a `self.forward(..)` placeholder that `inspect_test_entries!` rewrites to
+// `call_inspect_<entry name>`, so the Rust method name, the Python-visible name
+// and the dispatch method under test all derive from one ident — a copy-paste
+// between the identically-typed pairs (mem_read/mem_write, reg_read/reg_write,
+// tmp_read/tmp_write, call/return) can no longer test the sibling (angr-0jh0j.6).
+//
+// These exist so the marshalling round-trip can be exercised from Python
+// without driving a VEX dispatch site (uq4n.3); they return whatever the
+// registered breakpoint returned.
+inspect_test_entries! {
+    PythonCallbacks =>
+
+    /// Test entry point: invoke the registered mem_read callback directly.
+    #[pyo3(signature = (state_id, when, addr, size, value_ast, endness))]
+    pub fn mem_read(
+        &self,
+        state_id: i64,
+        when: &str,
+        addr: u64,
+        size: u32,
+        value_ast: Option<Py<PyAny>>,
+        endness: &str,
+    ) -> PyResult<Option<Py<PyAny>>> {
+        self.forward(state_id, when, addr, size, value_ast.as_ref(), endness)
+    }
+
+    /// Test entry point: invoke the registered mem_write callback directly.
+    #[pyo3(signature = (state_id, when, addr, size, value_ast, endness))]
+    pub fn mem_write(
+        &self,
+        state_id: i64,
+        when: &str,
+        addr: u64,
+        size: u32,
+        value_ast: Option<Py<PyAny>>,
+        endness: &str,
+    ) -> PyResult<Option<Py<PyAny>>> {
+        self.forward(state_id, when, addr, size, value_ast.as_ref(), endness)
+    }
+
+    /// Test entry point: invoke the registered reg_read callback directly.
+    #[pyo3(signature = (state_id, when, offset, size, value_ast))]
+    pub fn reg_read(
+        &self,
+        state_id: i64,
+        when: &str,
+        offset: u32,
+        size: u32,
+        value_ast: Option<Py<PyAny>>,
+    ) -> PyResult<()> {
+        self.forward(state_id, when, offset, size, value_ast.as_ref())
+    }
+
+    /// Test entry point: invoke the registered reg_write callback directly.
+    #[pyo3(signature = (state_id, when, offset, size, value_ast))]
+    pub fn reg_write(
+        &self,
+        state_id: i64,
+        when: &str,
+        offset: u32,
+        size: u32,
+        value_ast: Option<Py<PyAny>>,
+    ) -> PyResult<()> {
+        self.forward(state_id, when, offset, size, value_ast.as_ref())
+    }
+
+    /// Test entry point: invoke the registered instruction callback directly.
+    pub fn instruction(&self, state_id: i64, when: &str, addr: u64) -> PyResult<()> {
+        self.forward(state_id, when, addr)
+    }
+
+    /// Test entry point: invoke the registered irsb callback directly.
+    pub fn irsb(&self, state_id: i64, when: &str, addr: u64) -> PyResult<()> {
+        self.forward(state_id, when, addr)
+    }
+
+    /// Test entry point: invoke the registered exit callback directly.
+    #[pyo3(signature = (state_id, when, target, jumpkind, guard_ast))]
+    pub fn exit(
+        &self,
+        state_id: i64,
+        when: &str,
+        target: u64,
+        jumpkind: &str,
+        guard_ast: Option<Py<PyAny>>,
+    ) -> PyResult<()> {
+        self.forward(state_id, when, target, jumpkind, guard_ast.as_ref())
+    }
+
+    /// Test entry point: invoke the registered call callback directly.
+    pub fn call(&self, state_id: i64, when: &str, function_address: u64) -> PyResult<()> {
+        self.forward(state_id, when, function_address)
+    }
+
+    /// Test entry point: invoke the registered return callback directly.
+    pub fn r#return(&self, state_id: i64, when: &str, function_address: u64) -> PyResult<()> {
+        self.forward(state_id, when, function_address)
+    }
+
+    /// Test entry point: invoke the registered tmp_read callback directly.
+    #[pyo3(signature = (state_id, when, tmp_num, value_ast))]
+    pub fn tmp_read(
+        &self,
+        state_id: i64,
+        when: &str,
+        tmp_num: u32,
+        value_ast: Option<Py<PyAny>>,
+    ) -> PyResult<()> {
+        self.forward(state_id, when, tmp_num, value_ast.as_ref())
+    }
+
+    /// Test entry point: invoke the registered tmp_write callback directly.
+    #[pyo3(signature = (state_id, when, tmp_num, value_ast))]
+    pub fn tmp_write(
+        &self,
+        state_id: i64,
+        when: &str,
+        tmp_num: u32,
+        value_ast: Option<Py<PyAny>>,
+    ) -> PyResult<()> {
+        self.forward(state_id, when, tmp_num, value_ast.as_ref())
+    }
+
+    /// Test entry point: invoke the registered statement callback directly.
+    pub fn statement(&self, state_id: i64, when: &str, stmt_idx: u32) -> PyResult<()> {
+        self.forward(state_id, when, stmt_idx)
+    }
+
+    /// Test entry point: invoke the registered expr callback directly.
+    #[pyo3(signature = (state_id, when, expr_result))]
+    pub fn expr(
+        &self,
+        state_id: i64,
+        when: &str,
+        expr_result: Option<Py<PyAny>>,
+    ) -> PyResult<()> {
+        self.forward(state_id, when, expr_result.as_ref())
+    }
+
+    /// Test entry point: invoke the address_concretization callback directly.
+    #[pyo3(signature = (state_id, when, action, addr_ast, result))]
+    pub fn address_concretization(
+        &self,
+        state_id: i64,
+        when: &str,
+        action: &str,
+        addr_ast: Py<PyAny>,
+        result: Option<Vec<u64>>,
+    ) -> PyResult<()> {
+        self.forward(state_id, when, action, &addr_ast, result)
+    }
+
+    /// Test entry point: invoke the symbolic_variable callback directly.
+    #[pyo3(signature = (state_id, when, name, size, expr_ast))]
+    pub fn symbolic_variable(
+        &self,
+        state_id: i64,
+        when: &str,
+        name: &str,
+        size: u32,
+        expr_ast: Py<PyAny>,
+    ) -> PyResult<()> {
+        self.forward(state_id, when, name, size, &expr_ast)
+    }
+
+    /// Test entry point: invoke the registered fork callback directly.
+    pub fn fork(&self, state_id: i64, when: &str) -> PyResult<()> {
+        self.forward(state_id, when)
+    }
+
+    /// Test entry point: invoke the registered constraints callback directly.
+    ///
+    /// `guard_ast` is a claripy AST standing in for the branch guard the
+    /// production caller passes as the state's own `RustBV` — a type Python
+    /// cannot construct — so it is imported into a throwaway `SymContext`
+    /// first. What that leaves under test is the marshalling half of
+    /// `call_inspect_constraints`: the `assumed_guard_to_claripy` export
+    /// (including the `is_true == false` `claripy.Not(..)` wrap) and the
+    /// `(state_id, when, [constraint])` call shape.
+    #[pyo3(signature = (state_id, when, guard_ast, is_true))]
+    pub fn constraints(
+        &self,
+        py: Python<'_>,
+        state_id: i64,
+        when: &str,
+        guard_ast: &Bound<'_, PyAny>,
+        is_true: bool,
+    ) -> PyResult<()> {
+        let ctx = crate::symbolic::SymContext::new();
+        let guard = crate::claripy_bridge::claripy_to_rustbv(py, guard_ast, &ctx)
+            .map_err(|e| crate::claripy_bridge::ast_import_err("inspect constraints guard", e))?;
+        self.forward(state_id, when, &guard, is_true)
+    }
+
+    /// Test entry point: invoke the registered vex_lift callback directly.
+    ///
+    /// Mirrors the native libVEX lift path's two fires: BEFORE passes
+    /// `size=None` plus the byte buffer handed to libVEX, AFTER passes the
+    /// lifted IRSB's size and no buffer.
+    #[pyo3(signature = (state_id, when, addr, size=None, buff=None))]
+    pub fn vex_lift(
+        &self,
+        state_id: i64,
+        when: &str,
+        addr: u64,
+        size: Option<u32>,
+        buff: Option<Vec<u8>>,
+    ) -> PyResult<()> {
+        self.forward(state_id, when, addr, size, buff.as_deref())
     }
 }
 
