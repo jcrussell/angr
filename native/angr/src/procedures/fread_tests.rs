@@ -260,6 +260,45 @@ fn test_fread_zero_count() {
     assert_eq!(result.unwrap().as_u64(), Some(0));
 }
 
+/// `size * nmemb` is guest-controlled, so `NativeFread`'s `total` saturates.
+/// `size = 2^63, nmemb = 2` is the shape that distinguishes that from a plain
+/// `*`: the wrapping product is exactly 0, which would take the zero-count
+/// early return and report "0 items read" for a request of 2^64 bytes.
+/// Saturation pins it at `u64::MAX` so the `MAX_FREAD_SIZE` gate rejects to
+/// Python instead (and, under `--profile release-checked`, a plain `*` would
+/// panic here).
+#[test]
+fn test_fread_size_times_nmemb_saturates_instead_of_wrapping() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory(0x2000, 0x1000, Permission::RWX);
+
+    // Concrete (not content_sym) backing, so the read_sym fast path is
+    // skipped and the oversize gate is the branch under test.
+    let fd = state
+        .file_system()
+        .open_with_content("a.txt".to_string(), FdFlags::ReadOnly, b"hello".to_vec())
+        .expect("fd space is not exhausted in tests");
+    let file_ptr = 0x2800;
+    write_file_struct(&mut state, file_ptr, fd);
+
+    let result = NativeFread.call(
+        &mut state,
+        &[
+            RustBV::concrete(0x2000, 64),
+            RustBV::concrete(1u128 << 63, 64), // size
+            RustBV::concrete(2, 64),           // nmemb
+            RustBV::concrete(file_ptr as u128, 64),
+        ],
+    );
+    match result {
+        Err(ProcedureError::Other(msg)) => assert!(
+            msg.contains(&u64::MAX.to_string()),
+            "saturated total should appear in the rejection: {msg}"
+        ),
+        other => panic!("expected oversize rejection, got {other:?}"),
+    }
+}
+
 #[test]
 fn test_fread_unopened_fd_falls_back() {
     let mut state = RustSimState::new("amd64").unwrap();

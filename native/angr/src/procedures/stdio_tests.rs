@@ -125,6 +125,42 @@ fn test_fwrite_too_large() {
     assert!(result.is_err());
 }
 
+/// `size * nmemb` is guest-controlled, so both of `NativeFwrite`'s
+/// multiplications (the zero-total no-op gate and the byte-count `total`)
+/// saturate. `size = 2^63, nmemb = 2` is the shape that distinguishes them
+/// from a plain `*`: the wrapping product is exactly 0, which would take the
+/// zero-total early return and report a *successful* no-op write for a
+/// request of 2^64 bytes. Saturation pins the product at `u64::MAX` so the
+/// oversize gate rejects to Python instead (and, under
+/// `--profile release-checked`, a plain `*` would panic here).
+#[test]
+fn test_fwrite_size_times_nmemb_saturates_instead_of_wrapping() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    let file_ptr = 0x10000u64;
+    setup_file_struct(&mut state, file_ptr, 1);
+
+    let result = NativeFwrite.call(
+        &mut state,
+        &[
+            RustBV::concrete(0x1000, 64),
+            RustBV::concrete(1u128 << 63, 64), // size
+            RustBV::concrete(2, 64),           // nmemb
+            RustBV::concrete(file_ptr as u128, 64),
+        ],
+    );
+    match result {
+        Err(ProcedureError::Other(msg)) => assert!(
+            msg.contains(&u64::MAX.to_string()),
+            "saturated total should appear in the rejection: {msg}"
+        ),
+        other => panic!("expected oversize rejection, got {other:?}"),
+    }
+    assert!(
+        state.stdout_buffer().is_empty(),
+        "nothing written for a rejected fwrite"
+    );
+}
+
 #[test]
 fn test_fflush_returns_zero() {
     let mut state = RustSimState::new("amd64").unwrap();
