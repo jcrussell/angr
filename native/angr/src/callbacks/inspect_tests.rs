@@ -15,8 +15,15 @@
 //!    `mem_write` maps a Python `None` return to `None` and anything else to
 //!    `Some`.
 //!
+//! 5. `fire_constraints_bp` (the wired body of `call_inspect_constraints`)
+//!    fires the BP with the exported guard, and *drops* the event rather than
+//!    propagating when the export fails.
+//!
 //! Only `call_inspect_constraints` touches claripy, and only on the *wired*
-//! path; every assertion here stays claripy-free.
+//! path. The cargo-test interpreter has no claripy installed, so the two tests
+//! for invariant 5 hand `fire_constraints_bp` a stand-in module object
+//! (`CLARIPY_STUBS`) instead of going through the `py.import("claripy")` in
+//! `call_inspect_constraints`; nothing here needs the real package.
 
 use super::*;
 use pyo3::types::{PyDict, PyList};
@@ -327,5 +334,108 @@ fn inspect_errors_from_the_bp_action_propagate() {
             .call_inspect_mem_read(1, "before", 0x1000, 4, None, "Iend_LE")
             .expect_err("BP exception must propagate");
         assert!(err.to_string().contains("bp exploded"), "got {err}");
+    });
+}
+
+/// Stand-in `claripy` modules for the two `fire_constraints_bp` tests below.
+///
+/// `good` is the smallest object `assumed_guard_to_claripy` accepts: a `BVV`
+/// factory whose result carries a `.length` (so the 1-bit-BV branch is taken)
+/// and an `__eq__` that builds the `guard == BVV(bit, 1)` comparison. `boom`
+/// raises out of `BVV`, which is the only claripy call a `Concrete` guard
+/// makes — that is how the export is driven into failure without needing a
+/// real (unexportable) guard shape.
+const CLARIPY_STUBS: &std::ffi::CStr = c"_calls = []
+def bp(state_id, when, added):
+    _calls.append((state_id, when, [a.tag for a in added]))
+
+class _Ast:
+    def __init__(self, tag, length):
+        self.tag = tag
+        self.length = length
+    def __eq__(self, other):
+        return _Ast(('eq', self.tag, other.tag), None)
+
+class _Good:
+    def BVV(self, value, width):
+        return _Ast(('BVV', int(value), width), width)
+
+class _Boom:
+    def BVV(self, value, width):
+        raise ValueError('export exploded')
+
+good = _Good()
+boom = _Boom()
+";
+
+/// Positive control for `constraints_export_failure_drops_the_event`: with a
+/// claripy that exports cleanly, the BP *is* called with the materialized
+/// one-element `added_constraints` list. Without this the failure test could
+/// pass for the wrong reason (a stub that never reaches the export at all).
+#[test]
+fn constraints_bp_fires_with_the_exported_guard() {
+    Python::initialize();
+    Python::attach(|py| {
+        let globals = defs(py, CLARIPY_STUBS);
+        let mut cb = PythonCallbacks::new();
+        cb.set_inspect_constraints(obj(&globals, "bp"));
+        let guard = crate::symbolic::RustBV::concrete(1, 1);
+        let claripy = globals.get_item("good").unwrap().unwrap();
+
+        PythonCallbacks::fire_constraints_bp(
+            py,
+            &obj(&globals, "bp"),
+            &claripy,
+            7,
+            "before",
+            &guard,
+            true,
+        )
+        .expect("wired export must succeed");
+
+        let calls = recorder(&globals, "_calls");
+        assert_eq!(calls.len(), 1, "BP must fire exactly once");
+        let call = calls.get_item(0).unwrap();
+        assert_eq!(call.get_item(0).unwrap().extract::<i64>().unwrap(), 7);
+        assert_eq!(call.get_item(1).unwrap().extract::<String>().unwrap(), "before");
+        // One constraint, and it is the `guard == BVV(1, 1)` comparison
+        // `assumed_guard_to_claripy` builds for a 1-bit BV guard.
+        let tags = call.get_item(2).unwrap();
+        assert_eq!(tags.len().unwrap(), 1);
+        let tag = format!("{}", tags.get_item(0).unwrap());
+        assert!(tag.contains("eq") && tag.contains("BVV"), "got {tag}");
+    });
+}
+
+/// angr-0jh0j.5: the `SILENT(cat-b)` arm — an export failure drops the event
+/// (`Ok(())`, BP not called) rather than propagating. `constraints` is an
+/// observation-only breakpoint on a hot fork-guard path, so turning this into
+/// a propagated error would abort the fork over a failed *notification*.
+#[test]
+fn constraints_export_failure_drops_the_event() {
+    Python::initialize();
+    Python::attach(|py| {
+        let globals = defs(py, CLARIPY_STUBS);
+        let guard = crate::symbolic::RustBV::concrete(1, 1);
+        let claripy = globals.get_item("boom").unwrap().unwrap();
+
+        for (when, is_true) in [("before", true), ("after", false)] {
+            PythonCallbacks::fire_constraints_bp(
+                py,
+                &obj(&globals, "bp"),
+                &claripy,
+                7,
+                when,
+                &guard,
+                is_true,
+            )
+            .expect("a failed export must not propagate out of an inspect hook");
+        }
+
+        assert_eq!(
+            recorder(&globals, "_calls").len(),
+            0,
+            "BP must not fire with an unmaterialized constraint"
+        );
     });
 }

@@ -365,9 +365,12 @@ impl PythonCallbacks {
     /// when the polarity is false — and handed to the BP as a one-element
     /// `added_constraints` list.
     ///
-    /// Caller gates on `inspect_event_enabled(InspectBit::Constraints)`. A claripy import or
-    /// export failure drops the event (returns `Ok(())`): a BP that cannot
-    /// be materialized must not halt exploration.
+    /// Caller gates on `inspect_event_enabled(InspectBit::Constraints)`. An
+    /// export failure drops the event (returns `Ok(())`): a BP that cannot be
+    /// materialized must not halt exploration. A failure to import `claripy`
+    /// at all propagates instead — that is not a per-guard shape problem, and
+    /// the fork-guard caller (`add_fork_guard_constraint` in
+    /// `exploration/fork_materialize.rs`) logs and drops it there.
     pub(crate) fn call_inspect_constraints(
         &self,
         state_id: i64,
@@ -377,31 +380,51 @@ impl PythonCallbacks {
     ) -> PyResult<()> {
         self.with_inspect_cb(self.inspect_constraints.as_ref(), (), |py, cb| {
             let claripy = py.import("claripy")?;
-            let constraint = match crate::claripy_bridge::assumed_guard_to_claripy(
-                py,
-                guard,
-                claripy.as_any(),
-                is_true,
-            ) {
-                Ok(c) => c,
-                // SILENT(cat-b): a guard that will not export to claripy costs
-                // the user this one `constraints` BP fire and nothing else —
-                // the guard itself is already lowered into the state's `RustBV`
-                // constraint set, and this native path never honors a BP's
-                // mutated `added_constraints` anyway (see the doc comment), so
-                // the analysis result is unaffected. Loud failure is the wrong
-                // trade: an observability hook must not abort exploration.
-                // Stays at `debug!` rather than `warn!` because the fork-guard
-                // add site is hot and a systematically-unexportable guard shape
-                // would repeat the message per fork.
-                Err(e) => {
-                    log::debug!("constraints inspect export failed (state {state_id}): {e}");
-                    return Ok(());
-                }
-            };
-            cb.call1(py, (state_id, when, vec![constraint]))?;
-            Ok(())
+            Self::fire_constraints_bp(py, cb, claripy.as_any(), state_id, when, guard, is_true)
         })
+    }
+
+    /// Body of [`Self::call_inspect_constraints`] once the callback slot is
+    /// known-wired and `claripy` is in hand.
+    ///
+    /// Split out so a test can drive the export-failure arm below with a
+    /// stand-in `claripy` module: the cargo-test interpreter has no claripy,
+    /// so going through `call_inspect_constraints` would fail at the `import`
+    /// and never reach the arm (angr-0jh0j.5). Production has exactly one
+    /// caller.
+    fn fire_constraints_bp(
+        py: Python<'_>,
+        cb: &Py<PyAny>,
+        claripy_mod: &Bound<'_, PyAny>,
+        state_id: i64,
+        when: &str,
+        guard: &crate::symbolic::RustBV,
+        is_true: bool,
+    ) -> PyResult<()> {
+        let constraint = match crate::claripy_bridge::assumed_guard_to_claripy(
+            py,
+            guard,
+            claripy_mod,
+            is_true,
+        ) {
+            Ok(c) => c,
+            // SILENT(cat-b): a guard that will not export to claripy costs
+            // the user this one `constraints` BP fire and nothing else —
+            // the guard itself is already lowered into the state's `RustBV`
+            // constraint set, and this native path never honors a BP's
+            // mutated `added_constraints` anyway (see the doc comment), so
+            // the analysis result is unaffected. Loud failure is the wrong
+            // trade: an observability hook must not abort exploration.
+            // Stays at `debug!` rather than `warn!` because the fork-guard
+            // add site is hot and a systematically-unexportable guard shape
+            // would repeat the message per fork.
+            Err(e) => {
+                log::debug!("constraints inspect export failed (state {state_id}): {e}");
+                return Ok(());
+            }
+        };
+        cb.call1(py, (state_id, when, vec![constraint]))?;
+        Ok(())
     }
 
     /// Invoke the Python inspect vex_lift callback for a block served by the
