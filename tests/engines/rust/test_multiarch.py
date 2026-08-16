@@ -608,18 +608,17 @@ class TestMultiArchSupport:
         rather than being unilaterally more correct. This test pins that
         decision: it reds if either side changes convention alone.
 
-        The vectors travel through *memory* (``vldr``/``vstr``) rather than
-        ``state.regs.d1``: ARM's ``REGISTER_NAMES`` (``arch/arm.rs``) exports
-        no VFP register, so a preset d-register never reaches Rust and a
-        computed one never comes back (angr-l8kfw, found while confirming
-        this one).
+        The vectors are preset straight into ``state.regs.d1``/``d2`` and the
+        answer read back out of ``state.regs.d0``, which only works because
+        angr-l8kfw made the ARM VFP registers canonical (and therefore
+        exported); the first cut of this test had to route them through memory
+        (``vldr``/``vstr``) because a preset d-register never reached Rust and
+        a computed one never came back.
         """
-        # vldr d1, [r0] ; vldr d2, [r0, #8] ; <op> d0, d1, d2 ;
-        # vstr d0, [r0, #16] ; b .
-        shellcode = bytes.fromhex("001b90ed" + "022b90ed" + op_bytes + "040b80ed" + "feffffea")
+        # <op> d0, d1, d2 ; b .
+        shellcode = bytes.fromhex(op_bytes + "feffffea")
         proj = angr.load_shellcode(shellcode, arch="ARMEL", load_address=0x1000)
 
-        BUF = 0x4000
         # Per-lane values that are all distinct and all but lane 0 (0x80)
         # non-negative, so sign-fill vs zero-fill shows up in one lane.
         VEC = 0x0102040810204080
@@ -627,13 +626,12 @@ class TestMultiArchSupport:
 
         def fresh_state():
             st = proj.factory.blank_state(addr=0x1000)
-            st.regs.r0 = BUF
-            st.memory.store(BUF, VEC, size=8, endness="Iend_LE")
-            st.memory.store(BUF + 8, AMTS, size=8, endness="Iend_LE")
+            st.regs.d1 = VEC
+            st.regs.d2 = AMTS
             return st
 
         def result_of(state):
-            return state.solver.eval(state.memory.load(BUF + 16, 8, endness="Iend_LE"))
+            return state.solver.eval(state.regs.d0)
 
         py_simgr = proj.factory.simulation_manager(fresh_state())
         py_simgr.step()
@@ -656,6 +654,58 @@ class TestMultiArchSupport:
             f"VEX-generic unsigned reading (real ARM32 hardware would give "
             f"0x{hardware:016x} — see the docstring)"
         )
+
+    @pytest.mark.parametrize(
+        ("arch_name", "shellcode_hex", "width", "src_regs", "dst_regs"),
+        [
+            # vmov d0, d1 ; vmov d2, d31 ; b .   (vmov Dd, Dm == vorr Dd, Dm, Dm)
+            ("ARMEL", "110121f2" + "bf212ff2" + "feffffea", 64, ("d1", "d31"), ("d0", "d2")),
+            # mov v0.16b, v1.16b ; mov v2.16b, v31.16b ; b .
+            ("AArch64", "201ca14e" + "e21fbf4e" + "00000014", 128, ("q1", "q31"), ("q0", "q2")),
+        ],
+    )
+    def test_vector_registers_cross_the_python_boundary(self, arch_name, shellcode_hex, width, src_regs, dst_regs):
+        """A Python-set vector register reaches Rust, and Rust's value comes back.
+
+        Regression for angr-l8kfw. ARM's d0-d31 and AArch64's q0-q31 used to
+        live in the per-arch ``ALIASES`` table (``native/angr/src/arch/arm.rs``,
+        ``arm64.rs``) rather than ``CANONICAL``, so they were absent from
+        ``REGISTER_NAMES``. That list is what
+        ``RustStateSyncMixin._supported_register_names`` filters on and what
+        ``RustSimState::export_full`` walks for ``named_registers``, so the
+        round trip was broken in *both* directions and each side silently read
+        0 — the arch-table sweep
+        (``arch::mod_tests::every_narrow_canonical_register_is_exported``)
+        never saw them because it walks ``canonical_registers()`` only.
+
+        The guest *copies* each preset source register into a destination the
+        Python side never wrote, so a passing assertion needs both halves: the
+        preset must reach Rust (import) and Rust's result must come back
+        (export). Asserting on the preset register alone would pass vacuously
+        off the Python state's own copy.
+        """
+        proj = angr.load_shellcode(bytes.fromhex(shellcode_hex), arch=arch_name, load_address=0x1000)
+
+        mask = (1 << width) - 1
+        values = {name: (0x1122334455667788AABBCCDDEEFF0011 + idx) & mask for idx, name in enumerate(src_regs)}
+
+        state = proj.factory.blank_state(addr=0x1000)
+        for name, value in values.items():
+            setattr(state.regs, name, value)
+
+        mgr = RustExplorationManager(proj, [state])
+        mgr.run(max_steps=1)
+        out = list(mgr.active) + list(mgr.deadended) + list(mgr.errored)
+        assert out, f"{arch_name}: expected at least one state after run"
+
+        exported = out[0]
+        for src, dst in zip(src_regs, dst_regs, strict=True):
+            got = exported.solver.eval(getattr(exported.regs, dst))
+            assert got == values[src], (
+                f"{arch_name}: guest copied {src} (preset {values[src]:#x}) into {dst}, "
+                f"which reads back {got:#x} — the vector-register channel is broken "
+                "(angr-l8kfw)"
+            )
 
     def test_arm32_offsets_match_archinfo(self):
         """ARM32 register offsets are ground-truth-checked against archinfo,

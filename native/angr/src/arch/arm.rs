@@ -134,41 +134,22 @@ const CANONICAL: &[RegEntry] = &[
     ("cc_dep1", offsets::CC_DEP1, 4),
     ("cc_dep2", offsets::CC_DEP2, 4),
     ("cc_ndep", offsets::CC_NDEP, 4),
-];
-
-const ALIASES: &[RegEntry] = &[
-    // r11/r13/r14/r15 alternate names.
-    //
-    // "ip" is R15T, the PC — NOT r12 (angr-itm3u, angr-690nc). The ARM ABI
-    // calls r12 the intra-procedure-call scratch register "ip", but
-    // archinfo/angr use "ip" as the architecture-independent *instruction
-    // pointer* alias on every arch (ARMEL: (68, 4) = R15T). The ABI reading
-    // lived here once and made a Python-side write through the name "ip" land
-    // in r12 instead of the PC — a silent cross-register corruption. r12 stays
-    // reachable as "r12".
-    ("ip", offsets::R15T, 4),
-    ("fp", offsets::R11, 4),
-    // Architecture-independent frame-pointer name, mirroring archinfo's
-    // ArchARMEL bp=(52,4) and the `bp`/`fp` interchangeability documented on
-    // `Arch::bp_offset` (angr-03vl4.1).
-    ("bp", offsets::R11, 4),
-    ("r13", offsets::R13, 4),
-    ("r14", offsets::R14, 4),
-    ("r15", offsets::R15T, 4),
-    ("r15t", offsets::R15T, 4),
-    // Flags
+    // Saturation / GE flag storage. Distinct guest-state words, not aliases of
+    // anything — the AMD64 analogue is `dflag`/`acflag`/`idflag`, which are
+    // canonical there for the same reason.
     ("qflag32", offsets::QFLAG32, 4),
     ("geflag0", offsets::GEFLAG0, 4),
     ("geflag1", offsets::GEFLAG1, 4),
     ("geflag2", offsets::GEFLAG2, 4),
     ("geflag3", offsets::GEFLAG3, 4),
-    // Emulation note + chunk-marker/syscall bookkeeping (VEX 108-127 block)
-    ("emnote", offsets::EMNOTE, 4),
-    ("cmstart", offsets::CMSTART, 4),
-    ("cmlen", offsets::CMLEN, 4),
-    ("nraddr", offsets::NRADDR, 4),
-    ("ip_at_syscall", offsets::IP_AT_SYSCALL, 4),
-    // VFP/NEON D registers (64-bit)
+    // VFP/NEON D registers (64-bit).
+    //
+    // Canonical, not aliases (angr-l8kfw): each `dN` is 8 bytes of distinct
+    // guest storage, and `register_names` is what drives both directions of the
+    // Python boundary. While these sat in `ALIASES` they were absent from
+    // `REGISTER_NAMES`, so a Python-set `state.regs.d1` was dropped by
+    // `_sync_registers_to_rust` and a Rust-computed `d0` never came back in
+    // `export_full`'s `named_registers` — both silently reading 0.
     ("d0", offsets::D0, 8),
     ("d1", offsets::D1, 8),
     ("d2", offsets::D2, 8),
@@ -201,7 +182,44 @@ const ALIASES: &[RegEntry] = &[
     ("d29", offsets::D29, 8),
     ("d30", offsets::D30, 8),
     ("d31", offsets::D31, 8),
-    // Q registers (128-bit, overlap pairs of D registers)
+    // FP status/control word and the user-mode thread pointer.
+    ("fpscr", offsets::FPSCR, 4),
+    ("tpidruro", offsets::TPIDRURO, 4),
+    ("itstate", offsets::ITSTATE, 4),
+];
+
+const ALIASES: &[RegEntry] = &[
+    // r11/r13/r14/r15 alternate names.
+    //
+    // "ip" is R15T, the PC — NOT r12 (angr-itm3u, angr-690nc). The ARM ABI
+    // calls r12 the intra-procedure-call scratch register "ip", but
+    // archinfo/angr use "ip" as the architecture-independent *instruction
+    // pointer* alias on every arch (ARMEL: (68, 4) = R15T). The ABI reading
+    // lived here once and made a Python-side write through the name "ip" land
+    // in r12 instead of the PC — a silent cross-register corruption. r12 stays
+    // reachable as "r12".
+    ("ip", offsets::R15T, 4),
+    ("fp", offsets::R11, 4),
+    // Architecture-independent frame-pointer name, mirroring archinfo's
+    // ArchARMEL bp=(52,4) and the `bp`/`fp` interchangeability documented on
+    // `Arch::bp_offset` (angr-03vl4.1).
+    ("bp", offsets::R11, 4),
+    ("r13", offsets::R13, 4),
+    ("r14", offsets::R14, 4),
+    ("r15", offsets::R15T, 4),
+    ("r15t", offsets::R15T, 4),
+    // Emulation note + chunk-marker/syscall bookkeeping (VEX 108-127 block)
+    ("emnote", offsets::EMNOTE, 4),
+    ("cmstart", offsets::CMSTART, 4),
+    ("cmlen", offsets::CMLEN, 4),
+    ("nraddr", offsets::NRADDR, 4),
+    ("ip_at_syscall", offsets::IP_AT_SYSCALL, 4),
+    // Q registers (128-bit, overlap pairs of D registers).
+    //
+    // These stay aliases deliberately (angr-l8kfw): archinfo's `ArchARMEL`
+    // has no `qN` entries at all, so exporting one would make
+    // `_sync_registers_to_rust`'s `getattr(state.regs, "q0")` raise, and the
+    // bytes already round-trip through the canonical `dN` pair they overlap.
     ("q0", offsets::D0, 16),
     ("q1", offsets::D2, 16),
     ("q2", offsets::D4, 16),
@@ -218,15 +236,14 @@ const ALIASES: &[RegEntry] = &[
     ("q13", offsets::D26, 16),
     ("q14", offsets::D28, 16),
     ("q15", offsets::D30, 16),
-    // Other
-    ("fpscr", offsets::FPSCR, 4),
-    ("tpidruro", offsets::TPIDRURO, 4),
-    ("itstate", offsets::ITSTATE, 4),
 ];
 
 const REGISTER_NAMES: &[&str] = &[
     "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9", "r10", "r11", "r12", "sp", "lr",
-    "pc", "cc_op", "cc_dep1", "cc_dep2", "cc_ndep",
+    "pc", "cc_op", "cc_dep1", "cc_dep2", "cc_ndep", "qflag32", "geflag0", "geflag1", "geflag2",
+    "geflag3", "d0", "d1", "d2", "d3", "d4", "d5", "d6", "d7", "d8", "d9", "d10", "d11", "d12",
+    "d13", "d14", "d15", "d16", "d17", "d18", "d19", "d20", "d21", "d22", "d23", "d24", "d25",
+    "d26", "d27", "d28", "d29", "d30", "d31", "fpscr", "tpidruro", "itstate",
 ];
 
 impl Arch for ARM {
