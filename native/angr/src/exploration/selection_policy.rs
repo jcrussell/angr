@@ -614,10 +614,6 @@ impl SelectionPolicy for DirectedCfgDistance {
         }
         let beam = &ranked[..beam_len];
 
-        // Held across the beam's min-by-key scan and the post-remove count
-        // bump — the scan reads `dispatched` per beam member, so it cannot be
-        // dropped earlier.
-        #[allow(clippy::significant_drop_tightening)]
         let mut dispatched = self
             .dispatched
             .lock()
