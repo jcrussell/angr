@@ -38,6 +38,25 @@ fn is_dispatch_fabricate_family(op: &IROp) -> bool {
     )
 }
 
+/// Width of the fresh symbolic [`VEXInterpreter::vex_op_fallback`] fabricates
+/// for an unsupported op. Normally the op's own `result_type()`; when that is
+/// `None` — an unmapped VEX op, the only way to reach the fallback — the widest
+/// *value* operand stands in. A hardcoded 64 (what `eval_unop`/`eval_triop`/
+/// `eval_qop` each used before angr-0jh0j.28, while `eval_binop` already did
+/// this) fabricates a wrongly-narrow placeholder for a 128-bit+ float/vector
+/// op, and a wrongly-wide one for a byte/short op.
+///
+/// `value_widths` deliberately excludes a Triop/Qop rounding-mode operand: `rm`
+/// is I32 metadata, not a value, so letting it participate would be a no-op at
+/// best and (for a sub-32-bit op) a widening at worst.
+fn fabricated_result_width(op: &IROp, value_widths: &[u32]) -> u32 {
+    op.result_type().map(|t| t.bits()).unwrap_or_else(|| {
+        // SILENT(cat-a): every caller passes at least one operand width, so the
+        // empty-slice arm is unreachable; 64 keeps the helper total.
+        value_widths.iter().copied().max().unwrap_or(64)
+    })
+}
+
 /// Opt-in escape hatch (`ANGR_RUST_FABRICATE_UNSUPPORTED_IROP`) for the
 /// symbolic-operand arm of [`VEXInterpreter::vex_op_fallback`], the
 /// condition-flag arm of [`VEXInterpreter::eval_ccall`], and the
@@ -485,6 +504,7 @@ impl<'a> VEXInterpreter<'a> {
         record_vex_unop(iropclass(&op));
         let arg_val = self.eval_expr_with_callbacks(callbacks, arg, tyenv)?;
         let arg_is_sym = arg_val.is_symbolic();
+        let fallback_width = fabricated_result_width(&op, &[arg_val.width()]);
         match VEXOps::unop(op, arg_val, self.ctx) {
             Ok(v) => Ok(v),
             // NEON scaffolding: surface explicitly rather than letting the
@@ -499,8 +519,12 @@ impl<'a> VEXInterpreter<'a> {
             // Fallback for unsupported unary ops (e.g., float conversions).
             Err(e) => {
                 self.stats.python_vex_unop_fallback_count += 1;
-                let width = op.result_type().map(|t| t.bits()).unwrap_or(64);
-                self.vex_op_fallback(e, arg_is_sym, width, format!("unsup_unop_{:x}", self.pc))
+                self.vex_op_fallback(
+                    e,
+                    arg_is_sym,
+                    fallback_width,
+                    format!("unsup_unop_{:x}", self.pc),
+                )
             }
         }
     }
@@ -522,10 +546,7 @@ impl<'a> VEXInterpreter<'a> {
         record_vex_binop(iropclass(&op));
         let left_val = self.eval_expr_with_callbacks(callbacks, left, tyenv)?;
         let right_val = self.eval_expr_with_callbacks(callbacks, right, tyenv)?;
-        let fallback_width = op
-            .result_type()
-            .map(|t| t.bits())
-            .unwrap_or(left_val.width().max(right_val.width()));
+        let fallback_width = fabricated_result_width(&op, &[left_val.width(), right_val.width()]);
         let any_sym = left_val.is_symbolic() || right_val.is_symbolic();
         match VEXOps::binop(op, left_val, right_val, self.ctx) {
             Ok(v) => Ok(v),
@@ -711,7 +732,7 @@ impl<'a> VEXInterpreter<'a> {
         let v2 = self.eval_expr_with_callbacks(callbacks, arg2, tyenv)?;
         let v3 = self.eval_expr_with_callbacks(callbacks, arg3, tyenv)?;
         let any_sym = v2.is_symbolic() || v3.is_symbolic() || rm.is_symbolic();
-        let width = op.result_type().map(|t| t.bits()).unwrap_or(64);
+        let width = fabricated_result_width(&op, &[v2.width(), v3.width()]);
         match VEXOps::binop_with_rm(op, rm, v2, v3, self.ctx) {
             Ok(v) => Ok(v),
             // NEON scaffolding: surface explicitly rather than letting the
@@ -753,7 +774,7 @@ impl<'a> VEXInterpreter<'a> {
         let v3 = self.eval_expr_with_callbacks(callbacks, args[2], tyenv)?;
         let v4 = self.eval_expr_with_callbacks(callbacks, args[3], tyenv)?;
         let any_sym = v2.is_symbolic() || v3.is_symbolic() || v4.is_symbolic() || rm.is_symbolic();
-        let width = op.result_type().map(|t| t.bits()).unwrap_or(64);
+        let width = fabricated_result_width(&op, &[v2.width(), v3.width(), v4.width()]);
         match VEXOps::qop_with_rm(op, rm, v2, v3, v4, self.ctx) {
             Ok(v) => Ok(v),
             // NEON scaffolding: surface explicitly rather than letting the

@@ -631,3 +631,28 @@ fn regarray_offset_rotates_and_rejects_zero_nelems() {
         other => panic!("expected InvalidIR, got {other:?}"),
     }
 }
+
+/// angr-0jh0j.28: a known `result_type()` always wins, regardless of how wide
+/// the operands happen to be.
+#[test]
+fn fabricated_result_width_prefers_the_ops_own_result_type() {
+    // Comparisons are I1 even though both operands are 64-bit.
+    assert_eq!(fabricated_result_width(&IROp::CmpEQ(IRType::I64), &[64, 64]), 1);
+    // ...and a widening multiply is wider than either operand.
+    assert_eq!(fabricated_result_width(&IROp::MullU(IRType::I32), &[32, 32]), 64);
+}
+
+/// angr-0jh0j.28: for an unmapped op — the only way to reach the fabricate
+/// fallback — the widest value operand stands in, not a hardcoded 64. The
+/// unop/triop/qop dispatchers used to hardcode it, so a 128-bit vector op
+/// fabricated a 64-bit placeholder and a byte op a 64-bit one.
+#[test]
+fn fabricated_result_width_falls_back_to_the_widest_operand() {
+    let unmapped = IROp::Unmapped("Iop_MadeUp128");
+    assert!(unmapped.result_type().is_none(), "test premise");
+    assert_eq!(fabricated_result_width(&unmapped, &[128]), 128);
+    assert_eq!(fabricated_result_width(&unmapped, &[64, 128, 64]), 128);
+    assert_eq!(fabricated_result_width(&unmapped, &[8]), 8);
+    // Empty is unreachable from the dispatchers but must stay total.
+    assert_eq!(fabricated_result_width(&unmapped, &[]), 64);
+}
