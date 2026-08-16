@@ -4937,14 +4937,21 @@ versioned byte envelope. Three Python entry points:
    resumed = RustExplorationManager.load_from_disk("/tmp/run.snap", project)
    resumed.explore(find=0x4006ed, num_find=1)
 
-On-disk envelope is ``[STASH_SNAPSHOT_VERSION: u8] ++ serde_json(...)``.
+On-disk envelope is ``[STASH_SNAPSHOT_VERSION: u8] ++
+[process_token: u64 little-endian] ++ serde_json(...)`` — the JSON body
+starts at byte 9, not byte 1. The 8-byte process token rides in the
+header rather than the body so that ``load_snapshot`` knows whether the
+symbol-id space is foreign *before* it deserializes anything — see the
+cross-process paragraph at the end of this section, and
+``StashManager::dump_snapshot`` in ``native/angr/src/stash.rs``.
 A stale version byte fails the load fast with ``ValueError``
-(``"version mismatch ..."``); an empty file fails with
-``ValueError`` (``"empty snapshot envelope"``). The
+(``"version mismatch ..."``); an envelope shorter than the 9-byte header
+fails with ``ValueError`` (``"truncated stash snapshot header"``); an
+empty file fails with ``ValueError`` (``"empty snapshot envelope"``). The
 ``STASH_SNAPSHOT_VERSION`` constant lives at
 ``native/angr/src/stash.rs`` and bumps on any breaking shape change
 to the per-state codec (``RustSimStateSnapshot`` at
- ``native/angr/src/state/mod.rs``).
+``native/angr/src/state/snapshot.rs``).
 
 What is captured:
 
