@@ -147,7 +147,6 @@ impl<'a> VEXInterpreter<'a> {
                 let size = value.width().div_ceil(8);
                 self.dispatch_reg_write_inspect(callbacks, *offset, size, &value);
                 self.registers.put(*offset, value);
-                self.mark_register_dirty(*offset);
 
                 Ok(StmtResult::Continue)
             }
@@ -250,7 +249,6 @@ impl<'a> VEXInterpreter<'a> {
 
                 // Write to the register file
                 self.registers.put(offset, data_val);
-                self.mark_register_dirty(offset);
 
                 Ok(StmtResult::Continue)
             }

@@ -214,10 +214,6 @@ pub(crate) struct VEXInterpreter<'a> {
     concrete_memory: Arc<Vec<ConcreteMemoryRegion>>,
     /// Address concretizer for handling symbolic addresses.
     concretizer: AddressConcretizer,
-    /// Bitset tracking which register offsets have been modified.
-    /// Each bit represents a 4-byte aligned offset (offset / 4).
-    /// A u128 covers 512 bytes of register space (128 * 4 = 512).
-    dirty_registers: u128,
     /// Pending concrete stores to batch for efficiency.
     /// Each entry is (address, data_bytes). Wrapped in a buffer that maintains
     /// a per-byte-address index so loads can fast-skip the reverse scan.
@@ -415,7 +411,6 @@ impl<'a> VEXInterpreter<'a> {
             next_condition_id: 0,
             concrete_memory: Arc::new(Vec::new()),
             concretizer: AddressConcretizer::new(),
-            dirty_registers: 0,
             pending_stores: PendingStoreBuffer::with_capacity(256),
             all_flushed_stores: FxHashMap::default(),
             all_flushed_symbolic_stores: FxHashMap::default(),
@@ -676,17 +671,6 @@ impl<'a> VEXInterpreter<'a> {
         id
     }
 
-    /// Mark the 4-byte register slot containing `offset` as dirty.
-    /// Bitset is 128 bits wide (covers offsets [0, 512)); writes beyond
-    /// that fall back to the always-sync slow path.
-    #[inline]
-    pub(crate) fn mark_register_dirty(&mut self, offset: u32) {
-        let bit_index = offset / 4;
-        if bit_index < 128 {
-            self.dirty_registers |= 1u128 << bit_index;
-        }
-    }
-
     /// Flush pending stores to Python via batch callback.
     ///
     /// This sends all buffered stores in a single callback, reducing
@@ -871,7 +855,6 @@ impl<'a> VEXInterpreter<'a> {
             next_condition_id: self.next_condition_id,
             concrete_memory: Arc::clone(&self.concrete_memory), // Share concrete memory (read-only)
             concretizer: self.concretizer.clone(),              // Share concretizer settings
-            dirty_registers: 0,                                 // Fresh dirty tracking for fork
             pending_stores: PendingStoreBuffer::with_capacity(256), // Fresh store buffer for fork
             all_flushed_stores: FxHashMap::default(),
             all_flushed_symbolic_stores: FxHashMap::default(),

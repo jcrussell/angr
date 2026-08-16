@@ -152,25 +152,6 @@ fn put_concrete_writes_register() {
 }
 
 #[test]
-fn put_marks_register_dirty() {
-    let ctx = SymContext::new_mock();
-    let mut interp = new_interp(&ctx);
-    let irsb = make_irsb_with_temps(0x1000, &[]);
-    assert_eq!(interp.dirty_registers, 0);
-    let stmt = IRStmt::Put {
-        offset: 16, // RAX -> bit index 4
-        data: IRExpr::Const(IRConst::U64(1)),
-    };
-    with_python(|cb| {
-        interp
-            .execute_stmt_with_callbacks(cb, &stmt, &irsb)
-            .expect("put");
-    });
-    assert_ne!(interp.dirty_registers, 0);
-    assert_eq!(interp.dirty_registers & (1u128 << 4), 1u128 << 4);
-}
-
-#[test]
 fn wrtmp_concrete_writes_temp() {
     let ctx = SymContext::new_mock();
     let mut interp = new_interp(&ctx);
