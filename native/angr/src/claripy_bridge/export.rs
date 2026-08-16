@@ -909,31 +909,20 @@ fn rustbv_to_claripy_memo(
                     if let Some(operand) = operands.first()
                         && let Some(concrete_val) = operand.as_u128()
                     {
-                        let result = match op {
-                            BVOp::Clz => {
-                                // Count leading zeros, adjusting for width
-                                if concrete_val == 0 {
-                                    width as u128
-                                } else {
-                                    let leading = concrete_val.leading_zeros();
-                                    // Adjust for actual bit width (128 - width)
-                                    (leading - (128 - width)) as u128
-                                }
-                            }
-                            BVOp::Ctz => {
-                                // Count trailing zeros
-                                if concrete_val == 0 {
-                                    width as u128
-                                } else {
-                                    concrete_val.trailing_zeros().min(width) as u128
-                                }
-                            }
-                            BVOp::Popcount => {
-                                // Count ones
-                                concrete_val.count_ones() as u128
-                            }
+                        // angr-0jh0j.9: the leading/trailing-zero width
+                        // adjustment lives in `symbolic::value_ops` next to
+                        // `RustBV::{clz,ctz}_into`. The copy that used to sit
+                        // here spelled Clz as `leading_zeros() - (128 -
+                        // width)`, which underflows for `width > 128` — a case
+                        // this arm is reachable in, since `RustBVData`'s
+                        // `Expression` arm rebuilds a `Clz` node on snapshot
+                        // load without re-running `clz_into`'s fold.
+                        let result = u128::from(match op {
+                            BVOp::Clz => crate::symbolic::concrete_clz(concrete_val, width),
+                            BVOp::Ctz => crate::symbolic::concrete_ctz(concrete_val, width),
+                            BVOp::Popcount => concrete_val.count_ones(),
                             _ => unreachable!(),
-                        };
+                        });
                         return claripy_mod
                             .call_method1("BVV", (result as i64, width))
                             .map(std::convert::Into::into);

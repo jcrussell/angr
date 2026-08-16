@@ -1261,12 +1261,8 @@ impl RustBV {
     pub fn clz_into(self, _ctx: &SymContext) -> Self {
         match self.as_u128() {
             Some(v) => {
-                let leading = if v == 0 {
-                    self.width()
-                } else {
-                    self.width() - (128 - v.leading_zeros())
-                };
-                Self::concrete(leading as u128, self.width())
+                let leading = concrete_clz(v, self.width());
+                Self::concrete(u128::from(leading), self.width())
             }
             None => {
                 let width = self.width();
@@ -1286,12 +1282,8 @@ impl RustBV {
     pub fn ctz_into(self, _ctx: &SymContext) -> Self {
         match self.as_u128() {
             Some(v) => {
-                let trailing = if v == 0 {
-                    self.width()
-                } else {
-                    v.trailing_zeros().min(self.width())
-                };
-                Self::concrete(trailing as u128, self.width())
+                let trailing = concrete_ctz(v, self.width());
+                Self::concrete(u128::from(trailing), self.width())
             }
             None => {
                 let width = self.width();
@@ -1322,6 +1314,45 @@ impl RustBV {
 // =============================================================================
 // Helper Functions
 // =============================================================================
+
+/// Number of leading zero bits of `value` read as a `width`-bit bitvector.
+///
+/// Shared by `RustBV::clz_into` and the concrete-operand fold for `BVOp::Clz`
+/// in `claripy_bridge::export::rustbv_to_claripy_memo`, which used to carry
+/// its own copy spelled `value.leading_zeros() - (128 - width)` — unguarded
+/// `u32` arithmetic that underflows for `width > 128` (a panic under
+/// `release-checked`, a wrapped near-`u32::MAX` count folded into the exported
+/// `claripy.BVV` in the shipped release profile). angr-0jh0j.9.
+///
+/// Spelled `width - significant_bits` instead, which is well-defined for every
+/// `width` a `u128`-representable value fits in. `saturating_sub` covers only
+/// the impossible-by-construction case where `value` does not fit in `width`
+/// bits at all; zero leading zeros is the right answer there, and unlike a
+/// size or an identity a bit *count* has no meaningful "refuse" value.
+#[inline]
+pub(crate) fn concrete_clz(value: u128, width: u32) -> u32 {
+    if value == 0 {
+        return width;
+    }
+    let significant_bits = 128 - value.leading_zeros();
+    width.saturating_sub(significant_bits)
+}
+
+/// Number of trailing zero bits of `value` read as a `width`-bit bitvector.
+///
+/// Sibling of [`concrete_clz`], shared by `RustBV::ctz_into` and the same
+/// `claripy_bridge::export` fold. This one never had the underflow — the
+/// `.min(width)` clamp is the whole adjustment — but it is duplicated at the
+/// same two sites, so it moves here with its sibling rather than leaving one
+/// half of the pair copy-pasted.
+#[inline]
+pub(crate) fn concrete_ctz(value: u128, width: u32) -> u32 {
+    if value == 0 {
+        width
+    } else {
+        value.trailing_zeros().min(width)
+    }
+}
 
 /// angr-g7nq: comparison-op tag for `try_zext_const_cmp_fold`. The `Swapped`
 /// variants describe the case where the ZeroExt operand sits on the right of
@@ -1821,3 +1852,10 @@ impl ExtractTarget for RustBVExtractTarget {
 // Whole-module gate keeps the no-default-features / vex-engine nightly `cargo
 // test` combos compiling; default (z3-on) build still runs every test here.
 test_submod!(z3 "value_ops_property_tests.rs" => value_ops_property_tests);
+
+// angr-0jh0j.9: the `Clz`/`Ctz` concrete-fold helpers are plain integer math
+// with no Z3 in reach, so this submod is deliberately *not* z3-gated — the
+// width > 128 underflow it pins would otherwise go unchecked in the no-z3
+// `cargo test` combos, which are exactly where a wrapped count is hardest to
+// notice.
+test_submod!("value_ops_bitcount_tests.rs" => value_ops_bitcount_tests);
