@@ -1,3 +1,40 @@
+//! Lazy Multi cells: the `MultiPayload` data structure and the whole
+//! install → collapse → cache → coalesce lifecycle around it.
+//!
+//! A symbolic-address store whose concretization yields a *candidate set*
+//! (see `AddressConcretizer::write_range_applies`) installs one lazy Multi
+//! cell per covered byte — a disjunction of `(addr == cand) -> byte` guarded
+//! alternatives — instead of eagerly folding an ITE into `symbolic_objects`.
+//! Loads must then reconstruct that disjunction, and a later concrete store
+//! must invalidate it. These tests cover both halves plus the caches that sit
+//! between them.
+//!
+//! Organized by the delivery phases that built the feature, each under its own
+//! banner and each still the regression home for its own invariants:
+//!
+//! - **Phase 1.1** (angr-me3z) — `MultiPayload`/`MultiAlternative` themselves
+//!   and their sidecar storage (`multi_objects`, `multi_bitmap`) round-trips.
+//! - **Phase 1.2** (angr-n082) — collapse of installed cells on the lazy load
+//!   path (`load_concrete_lazy_inner` → `assemble_load_with_multi`).
+//! - **Phase 1.3** (angr-aija) — the store-side helpers
+//!   `store_concrete_multi` / `store_symbolic_unified_multi`.
+//! - **Phase 2** (angr-qh5u) — end-to-end install via
+//!   `install_multi_for_candidates`, lazy-region safety, and Multi/concrete
+//!   interaction.
+//! - **Phase 3** (angr-j0n4) — the per-load collapse cache.
+//! - **Phase 4.1** (angr-mmdh.1) — the wider-load collapse cache.
+//! - **Phase 4.2** (angr-mmdh.2) — `flush_multi_cells` run coalescing,
+//!   including its stop at the address-space wrap.
+//! - **angr-1tes** — a concrete overwrite must clear the `multi_objects` entry,
+//!   not just the page bitmap bit, so the stale alternative cannot resurface.
+//! - **angr-9ke6b.96** — the non-lazy `load_concrete` path (behind
+//!   `RustSimState::memory_load`) must dispatch to `assemble_load_with_multi`
+//!   as well, since `install_multi_for_candidates` never sets the page's
+//!   symbolic bit.
+//!
+//! Merge-time Multi semantics live in the sibling `merge_multi` module, not
+//! here.
+
 use super::super::*;
 
 // ============================================================================
