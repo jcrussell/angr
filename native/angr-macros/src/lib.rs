@@ -392,21 +392,25 @@ fn derive_merge_policy_impl(input: proc_macro2::TokenStream) -> proc_macro2::Tok
             .iter()
             .filter(|a| a.path().is_ident("merge_manual"))
             .collect();
-        let manual = match manual_attrs.as_slice() {
-            [] => false,
-            [attr] => {
+        let manual = if manual_attrs.is_empty() {
+            false
+        } else {
+            if manual_attrs.len() > 1 {
+                let msg = format!("field `{name}` has more than one #[merge_manual] attribute");
+                errors.extend(quote_spanned! { field.span() => compile_error!(#msg); });
+            }
+            // Every attribute's reason is checked, not just the sole one in the
+            // non-duplicate case: a field carrying both a duplicate-attribute
+            // typo and a blank reason has two problems, and reporting them one
+            // compile at a time costs the contributor a needless round-trip.
+            for attr in &manual_attrs {
                 if str_attr_value(attr).is_none_or(|v| v.trim().is_empty()) {
                     let msg = "expected #[merge_manual = \"<why the generated body cannot \
                                express this policy>\"] (non-empty string literal)";
                     errors.extend(quote_spanned! { attr.span() => compile_error!(#msg); });
                 }
-                true
             }
-            _ => {
-                let msg = format!("field `{name}` has more than one #[merge_manual] attribute");
-                errors.extend(quote_spanned! { field.span() => compile_error!(#msg); });
-                true
-            }
+            true
         };
 
         let Some(policy) = policy else { continue };
@@ -882,6 +886,26 @@ mod merge_policy_tests {
             }
         });
         assert!(out.contains("more than one #[merge_manual]"), "{out}");
+        // Well-formed reasons on both copies: the duplicate is the only problem.
+        assert_eq!(out.matches("compile_error").count(), 1, "{out}");
+    }
+
+    #[test]
+    fn duplicate_merge_manual_also_reports_each_blank_reason() {
+        // Two independent typos on one field must surface in one compile, not
+        // one per rebuild — so the reason check runs over *every* copy of the
+        // attribute, not just the sole one in the non-duplicate case.
+        let out = expand(quote! {
+            struct S {
+                #[merge_policy = "max"]
+                #[merge_manual = "  "]
+                #[merge_manual = "ok"]
+                f: u64,
+            }
+        });
+        assert!(out.contains("more than one #[merge_manual]"), "{out}");
+        assert!(out.contains("non-empty string literal"), "{out}");
+        assert_eq!(out.matches("compile_error").count(), 2, "{out}");
     }
 
     #[test]

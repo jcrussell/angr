@@ -1,0 +1,11 @@
+error: field `arch` has more than one #[merge_manual] attribute
+ --> tests/ui/merge_manual_duplicate_blank_reason.rs:7:5
+  |
+7 |     #[merge_policy = "self_wins"]
+  |     ^
+
+error: expected #[merge_manual = "<why the generated body cannot express this policy>"] (non-empty string literal)
+ --> tests/ui/merge_manual_duplicate_blank_reason.rs:8:5
+  |
+8 |     #[merge_manual = "  "]
+  |     ^
