@@ -412,7 +412,7 @@ A fourth, quieter status — *parse-succeeds / dispatch-fabricates
 matrix. It covers opcodes that parse to a concrete ``IROp`` variant
 but have no dispatch arm. The symbolic-operand fabricate path is now
 counted (``vex_bypass_fabricate_count``, angr-s6miz), and the three
-known families (``Perm8x*`` / ``Pclmul*`` / ``Crc32C``) route to Python
+known families (``Perm*`` / ``Pclmul*`` / ``Crc32C``) route to Python
 fallback instead of fabricating.
 
 Source of truth: ``native/angr/src/vex/opcode_map.rs``
@@ -703,15 +703,21 @@ These opcodes parse (``opcode_map.rs``) but were unhandled in dispatch
      - Count
      - Classification
      - Provenance / fix path
-   * - x86 byte permute / table-shuffle
-       (``Iop_Perm8x{8,16,32}``)
-     - 3
+   * - Lane permute / table-shuffle
+       (``Iop_Perm8x{8,16}`` / ``Iop_Perm32x{4,8}``)
+     - 4
      - **must-fallback**
-     - Parses to ``IROp::VPerm { elem: I8 }`` (search ``"Iop_Perm8x8"``
-       in ``opcode_map.rs``) but not in the ``binop`` vector-int routing list,
-       so ``binop_misc`` returns ``NotBinary``. Deterministic shuffle —
+     - Parses to ``IROp::VPerm`` at two element widths — ``elem: I8`` for
+       the ``Perm8x*`` pair (x86 ``PSHUFB``, NEON ``TBL``/``TBX``) and
+       ``elem: I32`` for the ``Perm32x*`` pair (AVX2 ``VPERMD``); search
+       ``"Iop_Perm8x8"`` in ``opcode_map.rs`` (``parse_special``) for the
+       whole block. Not in the ``binop`` vector-int routing list, so
+       ``binop_misc`` returns ``NotBinary``. Deterministic shuffle —
        fabricating drops the data dependency. Add a ``vec_perm`` arm or
-       route to Python.
+       route to Python. ``Iop_Perm8x16x2`` (two-table AArch64 ``TBL``) is
+       deliberately **not** mapped: it is a triop, and Python's
+       ``_op_generic_Perm`` — the fallback target the whole family exists
+       to reach — is two-argument.
    * - x86 carry-less multiply
        (``Iop_PclmulLQLQ`` / ``HQHQ`` / ``LQHQ`` / ``HQLQ``)
      - 4
@@ -741,7 +747,7 @@ angr Python does the same). The audit found **no other** concrete
 either dispatched (``Raw`` included — it routes into
 ``transcendentals.rs``) or is a sentinel (``NeonUnimplemented`` /
 ``Unmapped``). So the BYPASS surface is exactly these three
-families (8 opcode strings).
+families (9 opcode strings).
 
 No tracked benchmark drives a *symbolic* path through them today (x86
 crypto/shuffle code is rare in the CTF corpus and usually hooked at the
