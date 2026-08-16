@@ -128,6 +128,23 @@ const CANONICAL: &[RegEntry] = &[
     ("fpround", offsets::FPROUND, 4),
     ("fc3210", offsets::FC3210, 4),
     ("ftop", offsets::FTOP, 4),
+    // Segment selectors (16-bit) and the segment-base descriptor tables. Each
+    // is distinct guest storage no other canonical entry covers, and all eight
+    // exist in `archinfo.ArchX86().registers` at the same offset/width, so
+    // rules 1 and 3 of `invariant-arch-canonical-is-the-python-export-gate`
+    // both put them here rather than in `ALIASES` — where they used to sit,
+    // which kept them out of `REGISTER_NAMES` and so out of *both* directions
+    // of the Python boundary (angr-2uw03). They are amd64's `fs_const`/
+    // `gs_const` analogue: TLS-aware x86 code reads `gs`, and `mov ax, gs`
+    // must produce a value Python can see.
+    ("cs", offsets::CS, 2),
+    ("ds", offsets::DS, 2),
+    ("es", offsets::ES, 2),
+    ("fs", offsets::FS, 2),
+    ("gs", offsets::GS, 2),
+    ("ss", offsets::SS, 2),
+    ("ldt", offsets::LDT, 8),
+    ("gdt", offsets::GDT, 8),
 ];
 
 // Aliases: alternate names, sub-registers, and segments.
@@ -168,24 +185,20 @@ const ALIASES: &[RegEntry] = &[
     ("d", offsets::DFLAG, 4),
     ("id", offsets::IDFLAG, 4),
     ("ac", offsets::ACFLAG, 4),
-    // Segments (16-bit selectors)
-    ("cs", offsets::CS, 2),
-    ("ds", offsets::DS, 2),
-    ("es", offsets::ES, 2),
-    ("fs", offsets::FS, 2),
-    ("gs", offsets::GS, 2),
-    ("ss", offsets::SS, 2),
-    // VEX bookkeeping tail (see the offsets note above).
+    // VEX bookkeeping tail (see the offsets note above). `sc_class` stays here
+    // with the rest of the tail rather than joining the selectors in
+    // `CANONICAL`: it is `guest_SC_CLASS`, VEX's record of *how* the current
+    // syscall was entered (int $0x80 / sysenter / syscall), not architectural
+    // guest state a guest instruction can read or write. Rule 4 of
+    // `invariant-arch-canonical-is-the-python-export-gate` keeps that whole
+    // block alias-only on every arch, and amd64 — the reference — has no
+    // equivalent field to export (angr-2uw03).
     ("emnote", offsets::EMNOTE, 4),
     ("cmstart", offsets::CMSTART, 4),
     ("cmlen", offsets::CMLEN, 4),
     ("nraddr", offsets::NRADDR, 4),
     ("sc_class", offsets::SC_CLASS, 4),
     ("ip_at_syscall", offsets::IP_AT_SYSCALL, 4),
-    // Segment-base descriptor tables (archinfo.ArchX86: 8B each, zero-init).
-    // Surfaced for TLS-aware analyses that read state.regs.ldt/gdt.
-    ("ldt", offsets::LDT, 8),
-    ("gdt", offsets::GDT, 8),
 ];
 
 // Registers exported to / imported from Python (see `Arch::register_names`).
@@ -199,7 +212,8 @@ const ALIASES: &[RegEntry] = &[
 const REGISTER_NAMES: &[&str] = &[
     "eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi", "eip", "cc_op", "cc_dep1", "cc_dep2",
     "cc_ndep", "dflag", "idflag", "acflag", "sseround", "xmm0", "xmm1", "xmm2", "xmm3", "xmm4",
-    "xmm5", "xmm6", "xmm7", "fptag", "fpround", "fc3210", "ftop",
+    "xmm5", "xmm6", "xmm7", "fptag", "fpround", "fc3210", "ftop", "cs", "ds", "es", "fs", "gs",
+    "ss", "ldt", "gdt",
 ];
 
 impl Arch for X86 {

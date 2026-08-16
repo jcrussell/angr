@@ -466,6 +466,52 @@ class TestMultiArchSupport:
         raw2 = state2.get_registers_raw()
         assert int.from_bytes(raw2[576:584], "little") == 0, "fcsr write leaked into guest_ULR (offset 576)"
 
+    def test_x86_segment_selectors_cross_the_python_boundary(self):
+        """A Python-set x86 segment selector reaches Rust, and Rust's value
+        comes back.
+
+        Regression for angr-2uw03, the x86 half of the angr-l8kfw /
+        angr-n2556 class. ``cs``/``ds``/``es``/``fs``/``gs``/``ss`` and
+        ``ldt``/``gdt`` used to sit in ``ALIASES`` (``native/angr/src/arch/x86.rs``)
+        rather than ``CANONICAL``, so they never reached ``REGISTER_NAMES`` —
+        the list ``RustStateSyncMixin._supported_register_names`` filters on
+        and ``RustSimState::export_full`` walks for ``named_registers``. Both
+        directions were silently dropped, each side reading 0, which matters
+        for real i386 code: Linux sets ``%gs`` for TLS.
+
+        Both assertions are on a register the *guest* wrote, never on a preset
+        one — a preset value survives in the Python state's own copy, so
+        asserting on it would pass vacuously with the channel fully broken.
+        ``mov ebx, gs`` carries the imported selector out on the known-good GPR
+        channel; ``mov gs, ax`` carries a GPR value into the selector file.
+        """
+        # mov ebx, gs ; mov gs, ax ; jmp .
+        code = bytes([0x8C, 0xEB, 0x8E, 0xE8, 0xEB, 0xFE])
+        proj = angr.load_shellcode(code, arch="x86", load_address=0x1000)
+
+        state = proj.factory.blank_state(addr=0x1000)
+        state.regs.ebx = 0
+        state.regs.eax = 0x0033
+        state.regs.gs = 0x0063
+
+        mgr = RustExplorationManager(proj, [state])
+        mgr.run(max_steps=1)
+        states = list(mgr.active) + list(mgr.deadended) + list(mgr.errored)
+        assert states, "expected at least one state after run"
+        out = states[0]
+
+        got_ebx = out.solver.eval(out.regs.ebx)
+        assert got_ebx == 0x63, (
+            f"guest ran `mov ebx, gs` with gs preset to 0x63, but ebx reads back {got_ebx:#x} — "
+            f"the selector import channel is broken (angr-2uw03)"
+        )
+
+        got_gs = out.solver.eval(out.regs.gs)
+        assert got_gs == 0x33, (
+            f"guest ran `mov gs, ax` with eax preset to 0x33, but gs reads back {got_gs:#x} — "
+            f"the selector export channel is broken (angr-2uw03)"
+        )
+
     @pytest.mark.parametrize("arch_name", ["MIPS32", "MIPS64"])
     def test_mips_fpu_registers_cross_the_python_boundary(self, arch_name):
         """A Python-set MIPS FPU register reaches Rust, and Rust's value comes back.
