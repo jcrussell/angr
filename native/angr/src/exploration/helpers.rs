@@ -320,7 +320,18 @@ impl RustExplorationManager {
     /// `push_back`. Behaviourally identical for every built-in policy (all
     /// append), but a stateful `on_fork` would otherwise silently skip its
     /// bookkeeping for exactly those states. Any other destination is a plain
-    /// indexed push.
+    /// indexed push — via `StashManager::push_checked`, not `push`, so a
+    /// Python-supplied typo still gets `ensure_stash`'s unknown-stash warning
+    /// (dropping that was the one behaviour difference between this helper and
+    /// the raw `ensure_stash().push_back` pairs it replaced).
+    ///
+    /// This is the sanctioned insertion path for every `state_lifecycle.rs`
+    /// entry point whose destination stash comes from the Python caller
+    /// (`_create_state`, `_add_state`, `_fork_state_to_stash`, `_merge_states`,
+    /// `_move_state`, `_move_states`) — a *move* into active counts as an
+    /// insertion for policy purposes even though it is not a fork, because it
+    /// is the exact mirror of the `on_state_removed` notification those same
+    /// paths already fire when a state *leaves* active (angr-1o7i0).
     ///
     /// Not for terminal stashes — those want `push_or_drop_terminal`, which
     /// honors `drop_terminal_states` and bumps the per-stash counters.
@@ -329,7 +340,7 @@ impl RustExplorationManager {
         if stash == STASH_ACTIVE {
             self.sm.push_active(&*self.policy, state);
         } else {
-            self.sm.push(stash, state);
+            self.sm.push_checked(stash, state);
         }
     }
 

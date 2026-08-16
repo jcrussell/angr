@@ -34,11 +34,16 @@
 //!     `DirectedCfgDistance` ranks by `(distance, i)`; `RandomSelection` draws from
 //!     a seeded SplitMix64). No policy may leave a tie unresolved.
 //!   * **The fork-insertion chokepoint** — `policy.on_fork` is the only place
-//!     forks enter `active` (`helpers.rs::push_to_active_or_drop` →
-//!     `StashManager::push_active` in `stash.rs`). Successors arrive in
+//!     *any* state enters `active`, whether it is a run-loop successor
+//!     (`helpers.rs::push_to_active_or_drop`) or a Python-API insertion/move
+//!     (`helpers.rs::push_to_stash`, used by every `state_lifecycle.rs` entry
+//!     point that takes a caller-supplied destination stash); both funnel into
+//!     `StashManager::push_active` in `stash.rs`. Successors arrive in
 //!     `forks_out` `Vec` order from `core_outcome_handlers.rs`, and every
 //!     built-in appends with `push_back`, so the deque order is a pure function
-//!     of the emission order.
+//!     of the emission order. The mirror obligation is
+//!     `policy.on_state_removed` on every departure from `active` that does not
+//!     go through `policy.select`.
 //!
 //! **No hash-order may enter selection.** The per-policy `HashMap`/`HashSet`
 //! fields (`CoverageGuided::seen`, `FindDirected::seen`,

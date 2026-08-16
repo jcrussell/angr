@@ -303,6 +303,21 @@ impl StashManager {
         self.entry(stash).push_back(state);
     }
 
+    /// [`Self::push`] for a stash name that originated in Python.
+    ///
+    /// Identical except that the get-or-create goes through
+    /// [`Self::ensure_stash`] rather than [`Self::entry`], so a typo'd
+    /// destination (`"actve"`) is warned about once instead of silently
+    /// becoming an invisible stash. The sole caller is
+    /// `RustExplorationManager::push_to_stash`, which is the insertion path for
+    /// every `state_lifecycle.rs` entry point whose destination the Python
+    /// caller chose.
+    pub fn push_checked(&mut self, stash: &str, state: RustSimState) {
+        let state_id = state.state_id();
+        self.index(state_id, stash);
+        self.ensure_stash(stash).push_back(state);
+    }
+
     /// Pop the next active state chosen by `policy` (BFS front / DFS back /
     /// future coverage-guided / …), keeping the state index in sync.
     pub fn pop_active(&mut self, policy: &dyn SelectionPolicy) -> Option<RustSimState> {

@@ -81,8 +81,7 @@ impl RustExplorationManager {
         // Propagate per-state history cap
         state.set_max_history(self.environment.max_history);
 
-        self.index_state(state_id, stash);
-        self.sm.ensure_stash(stash).push_back(state);
+        self.push_to_stash(stash, state);
 
         Ok(state_id)
     }
@@ -133,8 +132,7 @@ impl RustExplorationManager {
         // (which inherit via `index_state` calls during the run loop).
         self.sm.set_root(state_id, state_id);
 
-        self.index_state(state_id, stash);
-        self.sm.ensure_stash(stash).push_back(forked);
+        self.push_to_stash(stash, forked);
     }
 
     /// Fork an existing state (looked up by ID, including the pending callback
@@ -173,8 +171,7 @@ impl RustExplorationManager {
         let root_state_id = self.sm.get_root(parent_id).unwrap_or(parent_id);
         self.sm.set_root(new_id, root_state_id);
 
-        self.index_state(new_id, stash);
-        self.sm.ensure_stash(stash).push_back(forked);
+        self.push_to_stash(stash, forked);
 
         Ok(new_id)
     }
@@ -262,10 +259,6 @@ impl RustExplorationManager {
         if filter_fn.is_none() {
             if let Some(mut from) = self.sm.remove(from_stash) {
                 let count = from.len();
-                // Update index for all moved states
-                for state in from.iter() {
-                    self.sm.index(state.state_id(), to_stash);
-                }
                 // Leaving STASH_ACTIVE outside `policy.select` — notify so a
                 // memoizing policy (LoopHeadRoundRobin's key_cache) doesn't leak
                 // a memo entry (angr-myzjx.25).
@@ -274,8 +267,13 @@ impl RustExplorationManager {
                         self.policy.on_state_removed(state.state_id());
                     }
                 }
-                let to = self.sm.ensure_stash(to_stash);
-                to.append(&mut from);
+                // `push_to_stash` per state, not an index loop + bulk `append`:
+                // entering STASH_ACTIVE must go through `policy.on_fork`, the
+                // mirror of the `on_state_removed` notification above
+                // (angr-1o7i0). Indexing is folded into the push.
+                for state in from.drain(..) {
+                    self.push_to_stash(to_stash, state);
+                }
                 self.sm.insert(from_stash, VecDeque::new());
                 return Ok(count);
             }
@@ -331,14 +329,14 @@ impl RustExplorationManager {
                 self.policy.on_state_removed(state.state_id());
             }
         }
-        // Update index and destination stash after releasing from-stash borrow
-        for state in &moved {
-            self.sm.index(state.state_id(), to_stash);
-        }
+        // Index + push into the destination after releasing the from-stash
+        // borrow. `.rev()` restores ascending source order (`moved` was
+        // collected back-to-front so the removals don't shift indices), and
+        // `push_to_stash` routes an active destination through `policy.on_fork`
+        // — see the no-filter path above (angr-1o7i0).
         let count = moved.len();
-        let to = self.sm.ensure_stash(to_stash);
         for state in moved.into_iter().rev() {
-            to.push_back(state);
+            self.push_to_stash(to_stash, state);
         }
         Ok(count)
     }
@@ -370,8 +368,7 @@ impl RustExplorationManager {
             if from_stash == STASH_ACTIVE {
                 self.policy.on_state_removed(state_id);
             }
-            self.index_state(state_id, to_stash);
-            self.sm.ensure_stash(to_stash).push_back(state);
+            self.push_to_stash(to_stash, state);
             Ok(true)
         } else {
             Ok(false)

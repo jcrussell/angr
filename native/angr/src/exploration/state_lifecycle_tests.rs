@@ -218,11 +218,13 @@ fn reset_for_stage_errors_on_unknown_state() {
 // notified id.
 // ---------------------------------------------------------------------------
 
-/// Records every `state_id` passed to `on_state_removed`; forwards the deque
-/// operations to `Lifo` so nothing else changes.
+/// Records every `state_id` passed to `on_state_removed` (and, for
+/// angr-1o7i0, to `on_fork`); forwards the deque operations to `Lifo` so
+/// nothing else changes.
 #[derive(Default)]
 struct SpyPolicy {
     removed: std::sync::Mutex<Vec<u64>>,
+    forked: std::sync::Mutex<Vec<u64>>,
 }
 
 impl selection_policy::SelectionPolicy for SpyPolicy {
@@ -234,6 +236,10 @@ impl selection_policy::SelectionPolicy for SpyPolicy {
     }
 
     fn on_fork(&self, active: &mut std::collections::VecDeque<RustSimState>, state: RustSimState) {
+        self.forked
+            .lock()
+            .expect("spy poisoned")
+            .push(state.state_id());
         selection_policy::Lifo.on_fork(active, state);
     }
 
@@ -344,6 +350,148 @@ fn move_states_filtered_from_active_notifies_moved_only() {
         sorted_removed(&spy),
         expected,
         "only the filtered-out (moved) active states are notified",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// on_fork wiring for the Python insert/move APIs (angr-1o7i0)
+//
+// The mirror of the block above: `on_state_removed` covers every departure
+// from STASH_ACTIVE outside `policy.select`, and `policy.on_fork` must cover
+// every *arrival* outside the run loop. Each of these entry points takes a
+// caller-supplied destination stash that can be "active", and each used to
+// insert with a raw `index_state` + `ensure_stash().push_back`. Stash contents
+// are byte-identical either way, so the spy's `forked` log is the only
+// observable — same test-design constraint as
+// `merge_point_release_and_merge_go_through_on_fork` in
+// `native_technique_tests.rs`.
+// ---------------------------------------------------------------------------
+
+fn sorted_forked(spy: &SpyPolicy) -> Vec<u64> {
+    let mut v = spy.forked.lock().expect("spy poisoned").clone();
+    v.sort_unstable();
+    v
+}
+
+/// `_move_states` (no-filter branch) draining into STASH_ACTIVE must route
+/// every relocated state through `on_fork`, and must preserve source order
+/// (the built-in policies all append, so per-state pushes land back-to-back in
+/// drain order — the bulk `append` this replaced had the same order).
+#[test]
+fn move_states_all_into_active_go_through_on_fork() {
+    let (mut mgr, spy) = spy_mgr();
+    let mut ids = Vec::new();
+    for v in [0x1u128, 0x2, 0x3] {
+        let mut s = RustSimState::new("amd64").expect("state");
+        s.set_register("rax", RustBV::concrete(v, 64));
+        ids.push(s.state_id());
+        mgr.sm.push("found", s);
+    }
+
+    mgr._move_states("found", STASH_ACTIVE, None)
+        .expect("move found->active");
+
+    let mut expected = ids.clone();
+    expected.sort_unstable();
+    assert_eq!(
+        sorted_forked(&spy),
+        expected,
+        "every state moved into STASH_ACTIVE must enter through on_fork",
+    );
+    assert_eq!(
+        mgr.sm.state_ids(STASH_ACTIVE),
+        ids,
+        "source order is preserved across the per-state pushes",
+    );
+}
+
+/// `_move_states` filtered branch moving into STASH_ACTIVE: only the states
+/// that pass the filter reach `on_fork`, still in source order.
+#[test]
+fn move_states_filtered_into_active_go_through_on_fork() {
+    let (mut mgr, spy) = spy_mgr();
+    let mut all = Vec::new();
+    for v in [0x10u128, 0x20, 0x30] {
+        let mut s = RustSimState::new("amd64").expect("state");
+        s.set_register("rax", RustBV::concrete(v, 64));
+        all.push(s.state_id());
+        mgr.sm.push("found", s);
+    }
+    let keep: Vec<u64> = all[..2].to_vec();
+
+    Python::initialize();
+    Python::attach(|py| {
+        let keep_set = keep.clone();
+        let filter = pyo3::types::PyCFunction::new_closure(
+            py,
+            None,
+            None,
+            move |args, _kwargs| -> pyo3::PyResult<bool> {
+                let id: u64 = args.get_item(0)?.extract()?;
+                Ok(keep_set.contains(&id))
+            },
+        )
+        .expect("closure")
+        .into_any()
+        .unbind();
+
+        mgr._move_states("found", STASH_ACTIVE, Some(filter))
+            .expect("filtered move");
+    });
+
+    let mut expected = keep.clone();
+    expected.sort_unstable();
+    assert_eq!(
+        sorted_forked(&spy),
+        expected,
+        "only the states that actually moved into active reach on_fork",
+    );
+    assert_eq!(
+        mgr.sm.state_ids(STASH_ACTIVE),
+        keep,
+        "the filtered moves land in source order",
+    );
+}
+
+/// The single-state entry points — `_create_state`, `_fork_state_to_stash`,
+/// `_move_state` — must all route an `active` destination through `on_fork`
+/// too. A non-active destination must NOT (`push_to_stash`'s other arm is a
+/// plain indexed push).
+#[test]
+fn single_state_inserts_into_active_go_through_on_fork() {
+    let (mut mgr, spy) = spy_mgr();
+
+    let created = mgr._create_state(STASH_ACTIVE).expect("create active");
+    let forked = mgr
+        ._fork_state_to_stash(created, STASH_ACTIVE)
+        .expect("fork into active");
+    // Parked elsewhere, then moved back in: a move is not a fork, but it is
+    // the exact mirror of the on_state_removed the reverse move fires.
+    let parked = mgr._create_state("found").expect("create found");
+    assert!(
+        mgr._move_state(parked, "found", STASH_ACTIVE)
+            .expect("move found->active"),
+    );
+    // Destination that is not active: no on_fork.
+    let elsewhere = mgr._create_state("deferred").expect("create deferred");
+
+    let mut expected = vec![created, forked, parked];
+    expected.sort_unstable();
+    assert_eq!(
+        sorted_forked(&spy),
+        expected,
+        "create/fork/move into active all hit on_fork; the 'deferred' \
+         create ({elsewhere}) and the 'found' create must not",
+    );
+    assert_eq!(
+        mgr.sm.state_ids(STASH_ACTIVE),
+        vec![created, forked, parked],
+        "arrival order is preserved",
+    );
+    assert_eq!(
+        mgr.sm.find_state(elsewhere).map(RustSimState::state_id),
+        Some(elsewhere),
+        "the non-active insert is still indexed by push_to_stash's other arm",
     );
 }
 
