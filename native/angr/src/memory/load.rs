@@ -80,7 +80,10 @@ use crate::symbolic::{
 use crate::vex::Endness;
 
 use super::page::{PAGE_SIZE, Permission};
-use super::{Address, MemoryError, SymbolicMemory, end_page_inclusive};
+use super::{
+    Address, MemoryError, SymbolicMemory, check_access_size, end_page_inclusive,
+    fabricate_width_bits,
+};
 
 impl SymbolicMemory {
     /// angr-jvjf partial-overwrite guard (shared by `load_concrete` and
@@ -126,14 +129,27 @@ impl SymbolicMemory {
     /// can identify the origin. The N suffix is sourced from a process-wide
     /// atomic to keep Z3 symbol names unique across SymbolicMemory instances
     /// without an `&mut self` borrow (this hook fires on a read-only path).
+    ///
+    /// Infallible, so the width below has no error channel of its own: it goes
+    /// through `fabricate_width_bits` rather than a bare `size * 8`. The
+    /// memory-side callers ([`SymbolicMemory::load_symbolic`] /
+    /// [`SymbolicMemory::load_symbolic_unified`]) run `check_access_size`
+    /// ahead of their AVOID_MULTIVALUED_READS short-circuit, and the
+    /// interpreter-side ones (`interpreter/expressions.rs`,
+    /// `interpreter/concretize_cache.rs`) pass a VEX type width, so the clamp
+    /// is defense-in-depth on both (angr-0jh0j.35).
     pub(crate) fn unconstrained_read_value(&self, size: u32, ctx: &SymContext) -> RustBV {
         use std::sync::atomic::{AtomicU64, Ordering};
         static UNC_READ_ID: AtomicU64 = AtomicU64::new(0);
         if self.zero_fill_unconstrained {
-            RustBV::concrete(0, size * 8)
+            RustBV::concrete(0, fabricate_width_bits(size))
         } else {
             let id = UNC_READ_ID.fetch_add(1, Ordering::Relaxed);
-            RustBV::symbolic(ctx, format!("symbolic_read_unconstrained_{id}"), size * 8)
+            RustBV::symbolic(
+                ctx,
+                format!("symbolic_read_unconstrained_{id}"),
+                fabricate_width_bits(size),
+            )
         }
     }
 
@@ -219,6 +235,12 @@ impl SymbolicMemory {
         if size == 0 {
             return Err(MemoryError::ZeroSize { addr: addr.raw() });
         }
+        // angr-0jh0j.35: and the upper bound, for the mirror-image reason —
+        // `size * 8` wraps in release past `MAX_ACCESS_BYTES`, so every width
+        // computed below (including `size * 8 - 1`) would be wrong rather than
+        // loud. One guard here covers every path behind this body; see
+        // `check_access_size`.
+        check_access_size(addr.raw(), size)?;
         // angr-9ke6b.96: Multi cells supersede plain Symbolic (memory
         // `invariant-multi-vs-symbolic-cell-states`), and the page
         // `symbolic_bitmap` is NOT set for a Multi byte — so none of the
@@ -514,6 +536,13 @@ impl SymbolicMemory {
         ctx: &SymContext,
         concretizer: &AddressConcretizer,
     ) -> Result<RustBV, MemoryError> {
+        // angr-0jh0j.35: the width bound has to be checked *here*, not only in
+        // `SymbolicMemory::load_concrete_common` — the AVOID_MULTIVALUED_READS
+        // short-circuit below reaches
+        // `SymbolicMemory::unconstrained_read_value`, which computes `size * 8`
+        // without ever touching a page.
+        check_access_size(addr.as_u64().unwrap_or(0), size)?;
+
         // Fast path: concrete address
         if let Some(concrete_addr) = addr.as_u64() {
             return self.load_concrete_lazy(Address(concrete_addr), size, ctx);
@@ -562,6 +591,14 @@ impl SymbolicMemory {
     ///
     /// # Returns
     /// The loaded value, or a fresh unconstrained symbolic value if unmapped.
+    ///
+    /// Like `SymbolicMemory::unconstrained_read_value` the fabricate branch
+    /// has no error channel, so it takes its width from
+    /// `fabricate_width_bits`. Note the interaction with
+    /// `check_access_size`: an oversize `size` makes the inner
+    /// `load_concrete_lazy` *fail*, which lands here rather than propagating —
+    /// this is the one path where refusing upstream still has to fabricate
+    /// something (angr-0jh0j.35).
     pub fn load_concrete_or_unconstrained(
         &self,
         addr: impl Into<Address>,
@@ -573,7 +610,7 @@ impl SymbolicMemory {
             Ok(value) => value,
             Err(_) => {
                 if self.zero_fill_unconstrained {
-                    RustBV::concrete(0, size * 8)
+                    RustBV::concrete(0, fabricate_width_bits(size))
                 } else {
                     // angr-03vl4.41: the name must be unique *process-wide*, not
                     // just within one ITE-tree build. `RustBV::from_parts` lowers
@@ -582,7 +619,10 @@ impl SymbolicMemory {
                     // reads that stringify the same would literally alias in the
                     // solver. `SymContext::new_bv` suffixes the globally-monotonic
                     // `next_id()`, which no per-call counter can collide with.
-                    ctx.new_bv(&format!("unc_mem_{:x}", addr.raw()), size * 8)
+                    ctx.new_bv(
+                        &format!("unc_mem_{:x}", addr.raw()),
+                        fabricate_width_bits(size),
+                    )
                 }
             }
         }
@@ -617,6 +657,12 @@ impl SymbolicMemory {
         ctx: &SymContext,
         concretizer: &AddressConcretizer,
     ) -> Result<RustBV, MemoryError> {
+        // angr-0jh0j.35: same up-front width bound as
+        // `SymbolicMemory::load_symbolic` — the AVOID_MULTIVALUED_READS
+        // short-circuit and the all-unmapped `mem_all_unmapped_*` fabricate
+        // below both compute `size * 8` off any page path.
+        check_access_size(addr.as_u64().unwrap_or(0), size)?;
+
         // Fast path: concrete address
         if let Some(concrete_addr) = addr.as_u64() {
             return self.load_concrete_lazy(Address(concrete_addr), size, ctx);

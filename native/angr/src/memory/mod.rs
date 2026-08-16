@@ -140,6 +140,67 @@ pub enum MemoryError {
     /// into a recoverable error if that guard is ever bypassed.
     #[error("expected concrete value at 0x{addr:x}, found symbolic")]
     UnexpectedSymbolic { addr: u64 },
+    /// An access whose byte count cannot be expressed as a BV width. The
+    /// upper-bound sibling of [`MemoryError::ZeroSize`]: the load family
+    /// computes its result width as `size * 8` in `u32` at a dozen sites
+    /// (`SymbolicMemory::load_concrete_common` and everything behind it), and
+    /// `[profile.release]` sets no `overflow-checks`, so a `size` above
+    /// `MAX_ACCESS_BYTES` wraps to a *narrow* width instead of panicking —
+    /// `size == 1 << 29` yields width 0. Rejected up-front by
+    /// `check_access_size` (angr-0jh0j.35).
+    #[error("memory access at 0x{addr:x} is too large ({size} bytes)")]
+    SizeTooLarge { addr: u64, size: u32 },
+}
+
+/// Largest byte count whose bit width (`size * 8`) still fits in the `u32`
+/// that [`RustBV`] widths are expressed in.
+///
+/// 512 MiB - 1. Deliberately the *arithmetic* bound rather than a
+/// policy-chosen "realistic access size": every `size` this admits behaves
+/// exactly as it did before the bound existed, so `check_access_size` is
+/// purely a refusal of already-broken inputs, not a new limit on callers.
+pub(super) const MAX_ACCESS_BYTES: u32 = u32::MAX / 8;
+
+/// Reject an access whose `size * 8` bit width would overflow `u32`.
+///
+/// angr-0jh0j.35: `size` reaches the load family from Python
+/// (`_pending_memory_load` in `exploration/pending_api.rs` forwards a
+/// caller-supplied size to `SymbolicMemory::load_concrete`), and the width
+/// arithmetic behind it is bare `*`/`-` on `u32`. Past `MAX_ACCESS_BYTES`
+/// the product wraps, so `size * 8 - 1` underflows and the extract/fabricate
+/// paths mint a BV of the wrong width instead of failing — the silently-wrong
+/// outcome the `size == 0` guard on [`end_page_inclusive`] exists to prevent
+/// at the other end of the range. Per
+/// `invariant-overflow-fix-refuse-not-saturate-identities` a size may
+/// generally saturate, but not here: clamping the *width* would hand back a
+/// BV that does not match the bytes requested, so refuse instead and let the
+/// caller bounce to Python.
+///
+/// The store side needs no equivalent: every `store_*` entry point derives
+/// `size` as `value.width() / 8`, which is `<= u32::MAX / 8` by construction
+/// (see `SymbolicMemory::store_concrete`).
+pub(super) fn check_access_size(addr: u64, size: u32) -> Result<(), MemoryError> {
+    if size > MAX_ACCESS_BYTES {
+        return Err(MemoryError::SizeTooLarge { addr, size });
+    }
+    Ok(())
+}
+
+/// Bit width for the *infallible* fabricate paths —
+/// `SymbolicMemory::unconstrained_read_value` and
+/// `SymbolicMemory::load_concrete_or_unconstrained`'s error fallback — which
+/// mint a BV of `size * 8` bits with no error channel to refuse on.
+///
+/// Every route into those two runs `check_access_size` first (the load entry
+/// points) or derives `size` from a VEX type width (the interpreter's
+/// AVOID_MULTIVALUED_READS hooks), so the clamp is unreachable
+/// defense-in-depth. It exists because the alternative at an unreachable site
+/// is not "no clamp" but a *wrapped* width: `size == 1 << 29` would ask Z3 for
+/// a 0-bit bitvector. Clamping keeps the fabricated value merely too narrow —
+/// wrong, but structurally valid and inspectable — rather than invalid
+/// (angr-0jh0j.35).
+pub(super) fn fabricate_width_bits(size: u32) -> u32 {
+    size.min(MAX_ACCESS_BYTES) * 8
 }
 
 /// Inclusive number of the last page touched by `[addr, addr + size)`.

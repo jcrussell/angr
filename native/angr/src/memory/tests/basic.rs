@@ -207,6 +207,54 @@ fn test_zero_size_access_is_rejected_not_looped() {
 }
 
 #[test]
+fn test_oversize_access_is_rejected_not_width_wrapped() {
+    // angr-0jh0j.35, the upper-bound sibling of the zero-size test above: the
+    // load family computes its result width as `size * 8` in u32, which wraps
+    // in release past `MAX_ACCESS_BYTES` (u32::MAX / 8). `size == 1 << 29`
+    // wraps to width 0 — a BV Z3 cannot represent — and `size * 8 - 1` in the
+    // wider-sym extract underflows on top of that.
+    //
+    // Mutation check: this test DOES differentiate the fix. Without the
+    // `check_access_size` guard, `load_concrete` would run the byte loop over
+    // half a billion addresses before minting an invalid BV, so the pre-fix
+    // behaviour is "hangs then panics", not "returns a wrong value" — which is
+    // also why the assertion below is on the error variant and not on a value.
+    let ctx = SymContext::new_mock();
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    mem.map(0x0, 0x1000, Permission::RWX);
+
+    let too_big = MAX_ACCESS_BYTES + 1; // 1 << 29, the first wrapping size
+    for &addr in &[0u64, 0x400] {
+        assert!(
+            matches!(
+                mem.load_concrete(addr, too_big, &ctx),
+                Err(MemoryError::SizeTooLarge { size, .. }) if size == too_big
+            ),
+            "oversize load at 0x{addr:x} must be a clean error"
+        );
+        assert!(
+            matches!(
+                mem.load_concrete_lazy(addr, too_big, &ctx),
+                Err(MemoryError::SizeTooLarge { .. })
+            ),
+            "oversize lazy load at 0x{addr:x} must be a clean error"
+        );
+    }
+
+    // The bound is exactly the arithmetic one, so it rejects nothing that used
+    // to work: the largest width-representable size passes the guard itself.
+    // (Asserted on the guard rather than on a `load_concrete` call — a 512 MiB
+    // load that got past the guard would walk half a billion byte addresses.)
+    assert!(check_access_size(0, MAX_ACCESS_BYTES).is_ok());
+    assert_eq!(MAX_ACCESS_BYTES.checked_mul(8), Some(u32::MAX - 7));
+
+    // The infallible fabricate path clamps rather than wrapping: an oversize
+    // `size` yields a too-narrow-but-valid BV, not a 0-width one.
+    assert_eq!(fabricate_width_bits(too_big), MAX_ACCESS_BYTES * 8);
+    assert_eq!(fabricate_width_bits(4), 32);
+}
+
+#[test]
 fn test_wraparound_access_is_rejected_not_silently_redirected() {
     // Regression (angr-03vl4.34/.35): the mirror image of the size == 0
     // underflow above. `end_page_inclusive`/`end_page_exclusive` used bare `+`,

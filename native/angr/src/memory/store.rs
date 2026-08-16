@@ -135,6 +135,13 @@ impl SymbolicMemory {
     /// page is touched — so a rejected zero-size store installs nothing, the
     /// same all-or-nothing property the permission check below has.
     ///
+    /// angr-0jh0j.35: the store side needs no upper-bound sibling of that
+    /// guard (the load side's `check_access_size`). `size` is not caller-
+    /// supplied here — it is `value.width() / 8`, so `size * 8 <= u32::MAX` by
+    /// construction and none of the width arithmetic behind this entry point
+    /// can wrap. Keep it derived that way; a `store_*` variant that took a
+    /// separate `size` argument would need the explicit check.
+    ///
     /// # Errors
     /// [`MemoryError::ZeroSize`] for any `value` narrower than one byte (both
     /// branches), and — for a *symbolic* `value` — [`MemoryError::UnalignedWidth`]
