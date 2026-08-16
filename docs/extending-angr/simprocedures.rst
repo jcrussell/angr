@@ -789,6 +789,8 @@ into the next instruction and into forked successor states. Source:
        struct = NativeMalloc,
        args = [size: concrete],
        call |state| {
+           check_max(size, MAX_ALLOC_SIZE)?;
+
            let addr = state.heap_alloc(size);
            Ok(Some(arch_word(state, addr)))
        }
@@ -811,6 +813,17 @@ Things to take away from this example:
 * Side-effects on ``RustSimState`` (heap, fd table, posix env) are
   the *only* state the engine considers durable — write through
   ``state`` methods, not through globals or thread-locals.
+* **Cap the request before bumping the heap.**
+  ``check_max(size, MAX_ALLOC_SIZE)?`` (``procedures/mod.rs`` and
+  ``malloc.rs`` respectively) is not optional boilerplate: ``size`` is
+  guest-controlled, and the classic ``malloc(len - 1)`` underflow pattern
+  arrives here as a near-``u64::MAX`` request that would grow the bump
+  heap without bound. The ``?`` returns ``ProcedureError::MaxIterations``,
+  which the dispatcher treats as a clean deferral to the Python
+  ``SimProcedure`` — the oversized case is *handed off*, not failed.
+  Every allocator-shaped procedure in the file (``calloc`` after its
+  ``checked_mul``, ``realloc``, ``memalign``, ``posix_memalign``) caps the
+  same way; ``malloc`` was the lone hole until angr-03vl4.53.
 * ``free`` (in the same file) just calls ``state.heap_free`` and
   returns ``Ok(None)``. The bump allocator can't actually reclaim
   memory; ``heap_free`` exists for bookkeeping.
