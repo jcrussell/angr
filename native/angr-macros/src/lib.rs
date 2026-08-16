@@ -286,9 +286,19 @@ const MECHANICAL_MERGE_POLICIES: &[&str] = &["self_wins", "union", "max", "min",
 ///
 /// - `warn_config_divergence(&str, bool)` must be in scope (used by the
 ///   generated `warn_on_diverge` bodies).
-/// - `union` fields must be `bool`, `max`/`min` fields `Ord`, and
-///   `warn_on_diverge` fields `PartialEq` — otherwise the generated body does
-///   not compile and the field needs `#[merge_manual = "<why>"]`.
+/// - the field type must satisfy what its policy's generated body actually
+///   asks for — otherwise the body does not compile and the field needs
+///   `#[merge_manual = "<why>"]`:
+///   - `self_wins`: `Clone` (the body is `self.<f>.clone()`).
+///   - `union`: `bool`.
+///   - `max`/`min`: `Copy + Ord`. `Ord` alone is not enough: the body folds
+///     with `self.<f>` as the seed and calls `Ord::max`/`Ord::min`, both of
+///     which take their operands *by value*, so a non-`Copy` `Ord` type
+///     (`String`, `Vec<T>`, a `BigNum` newtype) fails to move out from behind
+///     `&self` rather than failing an `Ord` bound.
+///   - `warn_on_diverge`: `Clone + PartialEq` — `PartialEq` for the `!=`
+///     divergence test, `Clone` because the value it then keeps is returned
+///     the same way `self_wins` returns it.
 ///
 /// # Example
 ///
@@ -312,6 +322,17 @@ const MECHANICAL_MERGE_POLICIES: &[&str] = &["self_wins", "union", "max", "min",
 /// assert!(a.merge_field_tainted(&[&b]));
 /// assert_eq!(a.merge_field_depth(&[&b]), 7);
 /// // No `merge_field_memory` — `delegate` is hand-written by definition.
+/// ```
+///
+/// The `Copy` half of the `max`/`min` requirement, pinned: `String` is `Ord`,
+/// but the generated fold cannot move it out from behind `&self`.
+///
+/// ```compile_fail
+/// #[derive(angr_macros::MergePolicy)]
+/// struct Config {
+///     #[merge_policy = "max"]
+///     name: String,
+/// }
 /// ```
 #[proc_macro_derive(MergePolicy, attributes(merge_policy, merge_manual))]
 pub fn derive_merge_policy(input: TokenStream) -> TokenStream {
