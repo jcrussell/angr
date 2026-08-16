@@ -457,8 +457,9 @@ For the other four the derive is validation-only: the label proves a
 conscious choice was made, and the merge line stays hand-written
 because a per-field derive cannot express it safely.
 
-A ``delegate`` label ends the guarantee at that field's type, so the
-derive is applied at three levels, each with a behavioural test:
+A ``delegate`` label marks exactly where the compile-time guarantee
+*ends*, so the derive is applied to every delegate target that has its
+own hand-written merge:
 
 .. list-table::
    :header-rows: 1
@@ -473,16 +474,24 @@ derive is applied at three levels, each with a behavioural test:
    * - ``SymbolicMemory`` (the ``memory`` field)
      - ``memory/mod.rs``
      - ``memory/tests/merge_sidecars.rs``
+   * - ``RegisterFile`` (the ``registers`` field)
+     - ``arch/mod.rs``
+     - ``arch/mod_tests.rs``
    * - ``HeapMetadata`` (the ``heap_metadata`` field)
      - ``state/types.rs``
      - ``state/tests/merge_property.rs``
 
-The lower two exist because the bug family recurred one level below the
-top-level derive: ``SymbolicMemory::merge`` adopted an other-only
+The lower three exist because the bug family recurred one level below
+the top-level derive: ``SymbolicMemory::merge`` adopted an other-only
 page's ``multi_bitmap`` but never copied the matching ``multi_objects``
 payloads, because that sidecar is a flat map on ``SymbolicMemory``
 rather than nested in ``MemoryPage``. Any new address-keyed sidecar map
 now fails to compile until it declares how ``merge`` treats it.
+
+The remaining ``delegate`` field, ``solver``, is deliberately *not*
+derived: ``SymContext`` sits behind an ``Rc<RefCell<...>>`` and is a
+single shared context both merge arms already point at, so
+``RustSimState::merge`` reuses it rather than combining it per-field.
 
 Architecture support matrix
 ---------------------------
