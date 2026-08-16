@@ -586,10 +586,15 @@ If Option A is chosen, a staged rollout:
       This is a selective ``drop_terminal_states``: the full symbolic state of
       dead paths is not recoverable through the parallel path, but it removes the
       ~50 % terminal-join serde that would otherwise be paid at any steal
-      fraction. Surplus selection is FIFO (coldest first) under an idle-gated
-      trigger (sibling starving ``&&`` local backlog ≥ 2, mirroring the
-      ``record_migration_sample`` model) plus a high-water cap; local consumption
-      is LIFO (hottest child next). The crossbeam per-worker
+      fraction. As delivered by this increment, surplus selection was FIFO
+      (coldest first) under an idle-gated trigger (sibling starving ``&&``
+      local backlog ≥ 2, mirroring the ``record_migration_sample`` model) plus
+      a high-water cap, and local consumption was LIFO (hottest child next).
+      **Both ends are now policy-decided, not hardcoded** — see
+      `State-selection policy seam`_ below; the triggers are unchanged, but
+      *which* state each of them picks comes from the configured
+      ``SelectionPolicy``, whose production default is ``Fifo``, not ``Lifo``.
+      The crossbeam per-worker
       ``Worker``/``Stealer`` are gone (a ``Stealer`` is ``Send`` and would move
       the irreducibly ``!Send`` ``RustSimState`` across threads); the injector is
       the only cross-thread channel. ``run_instrumented`` reports
@@ -850,6 +855,57 @@ benchmark-time risk is higher: every existing bench may regress by
 the lock-acquisition overhead, with no upside on
 ``mma_howtouse``-shaped workloads (which dominate the slower-bench
 set).
+
+
+State-selection policy seam
+---------------------------
+
+Neither end of the ordering described in the ``angr-729vn`` callout above is
+hardcoded any more. Both the *which state do I step next* decision and the
+*which state do I ship away* decision go through the ``SelectionPolicy`` trait
+in ``exploration/selection_policy.rs`` (landed by ``angr-a32jl.1``, extended
+for the offload side by ``angr-03vl4.19``). The trait has four hooks:
+
+* ``select`` — pop the next active state (the run loop's only removal path);
+* ``on_fork`` — where a freshly-forked successor lands in the active deque
+  (the only insertion path);
+* ``select_for_offload`` — the offload-side *mirror* of ``select``: which end
+  of a worker's local deque ``scheduler_worker.rs::offload_one`` detaches for
+  the shared ``Injector``. The default implementation pops the **back**, which
+  is the coldest end for every built-in but ``Lifo``;
+* ``on_state_removed`` — eviction notice for states that leave ``active``
+  without going through ``select`` (cross-worker migration), so memoizing
+  policies do not leak per-``state_id`` side-table entries (``angr-ua7fd``).
+
+Seven policies ship: ``Fifo``, ``Lifo``, ``RandomSelection``,
+``CoverageGuided``, ``LoopHeadRoundRobin``, ``DirectedCfgDistance`` and
+``FindDirected``. The production default is
+``selection_policy::default_policy()`` — **``Fifo`` (BFS), not ``Lifo``**;
+``RustExplorationManager``'s constructor installs it and the
+``set_state_selection_*`` methods swap it. For the user-facing spelling of
+those knobs (``exploration_strategy=``, the DFS technique shim) read
+:doc:`rust_engine`; this section is only the rationale for the seam existing.
+
+The parallel stack threads the manager's configured policy down rather than
+naming one of its own: ``run_loop_wave.rs`` passes it to
+``WaveJob::new_with_policy``, ``run_loop_steady.rs`` to
+``RunSession::new_with_policy``, and it reaches each worker through
+``WorkTransport``. The no-argument constructors default to ``Lifo`` for
+back-compat with the pre-seam tests only — production never uses them. Getting
+this wrong is not cosmetic: the offload path *did* hardcode ``pop_front``
+while production ran ``Fifo``, so every default-policy offload shipped away
+exactly the state ``select`` was about to hand back for free, paying a full Z3
+detach/reattach round-trip for nothing (``angr-03vl4.19``). The scheduler
+tests now drive ``default_policy()`` instead of naming a policy, which is what
+keeps them from drifting from production again.
+
+Single-worker exploration is *order-deterministic* under every built-in — the
+module header of ``selection_policy.rs`` states that contract and the
+``test_<policy>_selection_trace_deterministic`` guards enforce it. That
+contract does **not** extend to the parallel path: steal order is
+design-nondeterministic, so what is gated there is set-equality of the
+found-set across worker counts
+(``tests/benchmarks/run_findall_gate.py``, nightly).
 
 
 Distributed (cross-machine) migration — measured KILL
