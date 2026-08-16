@@ -467,6 +467,71 @@ class TestMultiArchSupport:
         assert int.from_bytes(raw2[576:584], "little") == 0, "fcsr write leaked into guest_ULR (offset 576)"
 
     @pytest.mark.parametrize("arch_name", ["MIPS32", "MIPS64"])
+    def test_mips_fpu_registers_cross_the_python_boundary(self, arch_name):
+        """A Python-set MIPS FPU register reaches Rust, and Rust's value comes back.
+
+        Regression for angr-n2556, the MIPS half of the angr-l8kfw class.
+        ``f0``-``f31`` and ``fir``/``fccr``/``fexr``/``fenr``/``fcsr`` used to
+        sit in ``ALIASES_MIPS32`` / ``ALIASES_MIPS64``
+        (``native/angr/src/arch/mips.rs``) rather than the ``CANONICAL_*``
+        tables, so they never reached ``REGISTER_NAMES_MIPS32/64``. That list
+        is what ``RustStateSyncMixin._supported_register_names`` filters on and
+        what ``RustSimState::export_full`` walks for ``named_registers``, so
+        the round trip was broken in *both* directions with each side silently
+        reading 0.
+
+        Every assertion is on a register the *guest* wrote, never on a preset
+        one — the preset value survives in the Python state's own copy, so
+        asserting on it would pass vacuously with the channel fully broken.
+        ``cfc1``/``ctc1`` carry ``fcsr`` in each direction against the
+        known-good GPR channel; ``mov.d`` copies the ``f`` file.
+
+        The ``f0`` assertion checks *which half* loosely on purpose. VEX models
+        FR=0, so ``mov.d`` lifts to F32 copies of the ``fN_lo`` sub-fields, and
+        Rust's register file stores whole registers host-little-endian while
+        angr's stores them at ``arch.register_endness`` (``Iend_BE`` here) — so
+        the two engines disagree on which 32-bit half ``f2_lo`` names. That
+        convention gap is a separate defect; this test is about the channel, so
+        it only requires that the preset word crossed and landed in one half.
+        """
+        # cfc1 $v1,$31 ; ctc1 $v0,$31 ; mov.d $f0,$f2 ; b . ; nop
+        # (both MIPS ids default to big-endian)
+        code = struct.pack(">IIIII", 0x4443F800, 0x44C2F800, 0x46201006, 0x1000FFFF, 0x00000000)
+        proj = angr.load_shellcode(code, arch=arch_name, load_address=0x1000)
+
+        state = proj.factory.blank_state(addr=0x1000)
+        state.regs.v0 = 0xDEADBEEF
+        state.regs.v1 = 0
+        state.regs.fcsr = 0xCAFE
+        state.regs.f0 = 0
+        state.regs.f2 = 0xAABBCCDD11223344
+
+        mgr = RustExplorationManager(proj, [state])
+        mgr.run(max_steps=1)
+        states = list(mgr.active) + list(mgr.deadended) + list(mgr.errored)
+        assert states, f"{arch_name}: expected at least one state after run"
+        out = states[0]
+
+        got_v1 = out.solver.eval(out.regs.v1)
+        assert got_v1 == 0xCAFE, (
+            f"{arch_name}: guest ran `cfc1 $v1, $31` with fcsr preset to 0xcafe, but v1 reads back "
+            f"{got_v1:#x} — the fcsr import channel is broken (angr-n2556)"
+        )
+
+        got_fcsr = out.solver.eval(out.regs.fcsr)
+        assert got_fcsr == 0xDEADBEEF, (
+            f"{arch_name}: guest ran `ctc1 $v0, $31` with v0 preset to 0xdeadbeef, but fcsr reads "
+            f"back {got_fcsr:#x} — the fcsr export channel is broken (angr-n2556)"
+        )
+
+        got_f0 = out.solver.eval(out.regs.f0)
+        halves = (got_f0 >> 32, got_f0 & 0xFFFFFFFF)
+        assert 0 in halves and (0xAABBCCDD in halves or 0x11223344 in halves), (
+            f"{arch_name}: guest copied f2 (preset 0xaabbccdd11223344) into f0, which reads back "
+            f"{got_f0:#x} — the f-register channel is broken (angr-n2556)"
+        )
+
+    @pytest.mark.parametrize("arch_name", ["MIPS32", "MIPS64"])
     def test_mips_sync_reg_map_matches_archinfo(self, arch_name):
         """MIPS GPR sync-back tables ground-truth-checked against archinfo.
 
