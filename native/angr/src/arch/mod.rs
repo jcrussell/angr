@@ -320,6 +320,18 @@ pub struct RegisterFile {
     /// live register file's architecture.
     #[merge_policy = "in_place_self"]
     arch: Box<dyn Arch>,
+    /// Big-endian register-storage adapter: byte offset -> `(base, size)` of the
+    /// widest canonical register covering it, or `(0, 0)` where no canonical
+    /// register does. `None` on a little-endian register file, where
+    /// [`Self::mirror_offset`] is the identity and this costs nothing.
+    ///
+    /// See [`Self::mirror_offset`] for what it is for. `Arc`-shared so
+    /// [`Self::fork`] stays O(1); immutable after construction.
+    ///
+    /// Merge-invariant: derived purely from `arch` + the state's endianness,
+    /// both of which merge arms share as fork siblings.
+    #[merge_policy = "in_place_self"]
+    containment: Option<Arc<Vec<(u32, u32)>>>,
 }
 
 /// Serde shadow form for [`RegisterFile`].
@@ -343,15 +355,24 @@ pub struct RegisterFileData {
     pub data: Vec<u8>,
     pub symbolic: BTreeMap<u32, RustBV>,
     pub arch_name: String,
+    /// Whether the register file was created for a big-endian target — the
+    /// `containment` adapter is rebuilt from this plus `arch_name` rather than
+    /// serialized. Defaults to `false` so a snapshot written before this field
+    /// existed still loads (every such snapshot was little-endian: the
+    /// big-endian path did not exist yet).
+    #[serde(default)]
+    pub register_be: bool,
 }
 
 impl From<RegisterFile> for RegisterFileData {
     fn from(rf: RegisterFile) -> Self {
         let arch_name = rf.arch.name().to_string();
+        let register_be = rf.containment.is_some();
         RegisterFileData {
             data: Arc::unwrap_or_clone(rf.data),
             symbolic: rf.symbolic.into_iter().collect(),
             arch_name,
+            register_be,
         }
     }
 }
@@ -377,10 +398,12 @@ impl TryFrom<RegisterFileData> for RegisterFile {
         let copy_len = d.data.len().min(size);
         data[..copy_len].copy_from_slice(&d.data[..copy_len]);
         let symbolic: FxHashMap<u32, RustBV> = d.symbolic.into_iter().collect();
+        let containment = (d.register_be).then(|| build_containment(arch.as_ref()));
         Ok(RegisterFile {
             data: Arc::new(data),
             symbolic,
             arch,
+            containment,
         })
     }
 }
@@ -456,15 +479,111 @@ impl From<Option<u64>> for AddrOrSymbolic {
     }
 }
 
+/// Build the byte-offset -> widest-covering-canonical-register table backing
+/// [`RegisterFile::mirror_offset`].
+///
+/// A byte no canonical register covers keeps the `(0, 0)` sentinel; a real
+/// register at base 0 always has a nonzero size, so `size == 0` is an
+/// unambiguous "not covered". Widest wins, because a nested canonical entry
+/// (x86's `eax` inside `rax`, both at offset 16) is a *view* of the wider
+/// register's bytes, and mirroring has to happen relative to the storage unit
+/// the whole register occupies.
+fn build_containment(arch: &dyn Arch) -> Arc<Vec<(u32, u32)>> {
+    let mut table = vec![(0u32, 0u32); arch.state_size()];
+    for &(_, base, size) in arch.canonical_registers() {
+        for byte in base..base.saturating_add(size) {
+            if let Some(slot) = table.get_mut(byte as usize)
+                && slot.1 < size
+            {
+                *slot = (base, size);
+            }
+        }
+    }
+    Arc::new(table)
+}
+
 impl RegisterFile {
-    /// Create a new register file for the given architecture.
+    /// Create a new little-endian register file for the given architecture.
+    ///
+    /// Equivalent to [`Self::new_with_endian`] with `is_le = true`. Every
+    /// architecture this crate models has `Arch::is_little_endian() == true`
+    /// hardcoded (the real answer is per-state, see that method's docs), so
+    /// this is the right default for the standalone `VEXInterpreter` and for
+    /// tests; state construction goes through [`Self::new_with_endian`].
     pub(crate) fn new(arch: Box<dyn Arch>) -> Self {
+        Self::new_with_endian(arch, true)
+    }
+
+    /// Create a new register file for the given architecture and target byte
+    /// order.
+    ///
+    /// `is_le` is the *state's* endianness (the `little_endian` override
+    /// threaded through `RustSimState::with_solver_endian`), not
+    /// `Arch::is_little_endian`. On a big-endian target it turns on the
+    /// [`Self::mirror_offset`] adapter; see there for why.
+    pub(crate) fn new_with_endian(arch: Box<dyn Arch>, is_le: bool) -> Self {
         let size = arch.state_size();
+        let containment = (!is_le).then(|| build_containment(arch.as_ref()));
         RegisterFile {
             data: Arc::new(vec![0; size]),
             symbolic: FxHashMap::default(),
             arch,
+            containment,
         }
+    }
+
+    /// Map a VEX register offset into this file's little-endian storage,
+    /// mirroring it inside its containing register on a big-endian target.
+    ///
+    /// angr's Python `SimState` stores the register file as a flat byte array
+    /// in `arch.register_endness` — `Iend_BE` for MIPS32/MIPS64/ARMEB — so on
+    /// those targets a register's MSB sits at its *lowest* byte offset. This
+    /// file's storage is unconditionally little-endian instead, which agrees
+    /// with Python for any access that covers a whole named register (the two
+    /// engines exchange registers as integers, converted with
+    /// `register_endness` on the Python side — see `rust_state_sync.py`) but
+    /// *disagrees* for a VEX Get/Put narrower than the register containing it.
+    /// MIPS `mov.d $f0, $f2` is the canonical case: VEX models FR=0, so it
+    /// lifts to an F32 copy of the `fN_lo` sub-field at each register's base
+    /// offset, and the two engines then pick opposite 32-bit halves
+    /// (angr-fuhmm).
+    ///
+    /// Rather than making every byte<->value composition in this struct (and
+    /// its merge scan, its snapshot image, `get_sp_value`, the symbolic overlay
+    /// bit arithmetic) endianness-aware, the storage stays little-endian and
+    /// the *offset* is mirrored at the door: an access of `size` bytes at
+    /// `offset`, inside a canonical register spanning `[base, base + reg_size)`,
+    /// reads the storage at `base + reg_size - (offset - base) - size`. The map
+    /// is an involution, so overlay keys written through [`Self::put`] and read
+    /// back through [`Self::get`] stay consistent, and a whole-register access
+    /// (`offset == base`, `size == reg_size`) is the identity.
+    ///
+    /// Identity — i.e. today's behaviour — for a little-endian file, for an
+    /// offset no canonical register covers (the VEX bookkeeping tail), and for
+    /// a range that straddles two registers, which is meaningless under either
+    /// model.
+    fn mirror_offset(&self, offset: u32, size: u32) -> u32 {
+        let Some(table) = self.containment.as_ref() else {
+            return offset;
+        };
+        let Some(&(base, reg_size)) = table.get(offset as usize) else {
+            return offset;
+        };
+        // Not covered by any canonical register.
+        if reg_size == 0 || size == 0 {
+            return offset;
+        }
+        // overflow-ok: `offset`/`size` are VEX guest-state coordinates bounded
+        // by `state_size()` (a few KiB) and a register width; the checked forms
+        // below refuse rather than wrap anyway.
+        let Some(end) = offset.checked_add(size) else {
+            return offset;
+        };
+        // Straddles the end of the containing register (or runs past it).
+        if end > base.saturating_add(reg_size) {
+            return offset;
+        }
+        base + reg_size - (offset - base) - size
     }
 
     /// Get the architecture.
@@ -527,6 +646,7 @@ impl RegisterFile {
 
     /// Read a register value by offset and size.
     pub(crate) fn get(&self, offset: u32, size: u32, ctx: &crate::symbolic::SymContext) -> RustBV {
+        let offset = self.mirror_offset(offset, size);
         // Check for symbolic value at this exact offset
         if let Some(sym) = self.symbolic.get(&offset) {
             if sym.width() == size * 8 {
@@ -658,6 +778,7 @@ impl RegisterFile {
     pub(crate) fn put(&mut self, offset: u32, value: RustBV) {
         let size = value.width() / 8;
         let write_bits = value.width();
+        let offset = self.mirror_offset(offset, size);
 
         // Check if this write is to a SUB-REGISTER of a wider symbolic value.
         // E.g., writing cl (8-bit at offset 12) when ecx (32-bit at offset 12)
@@ -861,6 +982,7 @@ impl RegisterFile {
             data: Arc::clone(&self.data),
             symbolic: self.symbolic.clone(),
             arch: self.arch.clone(),
+            containment: self.containment.clone(),
         }
     }
 
@@ -878,6 +1000,7 @@ impl RegisterFile {
                 .map(|(&off, bv)| (off, bv.translate_into(target_ctx)))
                 .collect(),
             arch: self.arch.clone(),
+            containment: self.containment.clone(),
         }
     }
 

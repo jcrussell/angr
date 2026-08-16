@@ -646,6 +646,7 @@ fn serde_unknown_arch_name_is_rejected() {
         data: vec![0u8; AMD64.state_size()],
         symbolic: BTreeMap::new(),
         arch_name: "not_a_real_arch".to_string(),
+        register_be: false,
     };
     let s = serde_json::to_string(&bad).expect("serialize");
     // `RegisterFile` is not `Debug`, so unwrap the error by hand rather than
@@ -669,6 +670,7 @@ fn serde_known_arch_name_round_trips() {
         data: vec![0u8; 4],
         symbolic: BTreeMap::new(),
         arch_name: "X86".to_string(),
+        register_be: false,
     };
     let s = serde_json::to_string(&bad).expect("serialize");
     let restored: RegisterFile = serde_json::from_str(&s).expect("deserialize");
@@ -1383,4 +1385,99 @@ fn get_composes_past_end_of_concrete_backing() {
         got.extract(15, 0, &ctx).is_symbolic(),
         "the overlay survives into the low bytes"
     );
+}
+
+/// angr-fuhmm: on a big-endian target, a VEX access narrower than the
+/// register containing it must select the same half angr's Python engine
+/// does. Python stores the register file in `arch.register_endness`
+/// (`Iend_BE` for MIPS), so the register's MSB sits at its lowest byte
+/// offset; this file stores little-endian and mirrors the offset instead
+/// (see `RegisterFile::mirror_offset`). MIPS `mov.d` under FR=0 is the case
+/// that surfaced it: VEX lifts it to an F32 copy of `fN_lo` at the
+/// register's *base* offset.
+#[test]
+fn be_register_file_mirrors_sub_register_access() {
+    let ctx = SymContext::new_mock();
+    let mut regs = RegisterFile::new_with_endian(Box::new(MIPS32), false);
+    let f2 = regs.arch().register_offset("f2").unwrap();
+    let f0 = regs.arch().register_offset("f0").unwrap();
+
+    // Whole-register access is unaffected — that is the crossing the
+    // Python<->Rust value-level sync already agreed on.
+    regs.put_reg("f2", RustBV::concrete(0xAABB_CCDD_1122_3344, 64));
+    assert_eq!(
+        regs.get_reg("f2", &ctx).unwrap().as_u64(),
+        Some(0xAABB_CCDD_1122_3344)
+    );
+
+    // GET:I32 at f2's base offset is `f2_lo`; big-endian storage puts the
+    // HIGH word there.
+    let lo_field = regs.get(f2, 4, &ctx);
+    assert_eq!(lo_field.as_u64(), Some(0xAABB_CCDD), "f2_lo reads high word");
+    // ...and the second half of the register holds the low word.
+    assert_eq!(regs.get(f2 + 4, 4, &ctx).as_u64(), Some(0x1122_3344));
+
+    // PUT:I32 at f0's base offset lands in f0's high word, exactly as the
+    // Python engine reports after `mov.d $f0, $f2`.
+    regs.put(f0, lo_field);
+    assert_eq!(
+        regs.get_reg("f0", &ctx).unwrap().as_u64(),
+        Some(0xAABB_CCDD_0000_0000)
+    );
+}
+
+/// The little-endian path must be byte-for-byte what it was before
+/// angr-fuhmm: no containment table, `mirror_offset` the identity.
+#[test]
+fn le_register_file_does_not_mirror() {
+    let ctx = SymContext::new_mock();
+    let mut regs = RegisterFile::new_with_endian(Box::new(MIPS32), true);
+    let f2 = regs.arch().register_offset("f2").unwrap();
+    regs.put_reg("f2", RustBV::concrete(0xAABB_CCDD_1122_3344, 64));
+    assert_eq!(regs.get(f2, 4, &ctx).as_u64(), Some(0x1122_3344));
+    assert!(regs.containment.is_none());
+}
+
+/// `mirror_offset` is an involution on the ranges it moves, and the identity
+/// on whole registers, on the uncovered VEX bookkeeping tail, and on a range
+/// that straddles two registers.
+#[test]
+fn mirror_offset_is_an_involution_and_identity_where_it_must_be() {
+    let regs = RegisterFile::new_with_endian(Box::new(MIPS32), false);
+    let f0 = regs.arch().register_offset("f0").unwrap();
+    let f0_size = regs.arch().register_size("f0").unwrap();
+
+    for size in [1u32, 2, 4] {
+        for byte in 0..f0_size - size {
+            let m = regs.mirror_offset(f0 + byte, size);
+            assert_eq!(
+                regs.mirror_offset(m, size),
+                f0 + byte,
+                "mirror is an involution at +{byte} size {size}"
+            );
+        }
+    }
+    // Whole register: identity.
+    assert_eq!(regs.mirror_offset(f0, f0_size), f0);
+    // Straddling f0/f1: identity (meaningless under either model).
+    assert_eq!(regs.mirror_offset(f0 + 4, 8), f0 + 4);
+    // Past the end of the guest state: identity, no panic.
+    let tail = regs.arch().state_size() as u32;
+    assert_eq!(regs.mirror_offset(tail + 16, 4), tail + 16);
+    // Degenerate size: identity, no underflow.
+    assert_eq!(regs.mirror_offset(f0, 0), f0);
+}
+
+/// A big-endian register file survives the snapshot round-trip with its
+/// adapter intact — `register_be` is serialized, `containment` rebuilt.
+#[test]
+fn be_register_file_survives_serde_round_trip() {
+    let ctx = SymContext::new_mock();
+    let mut regs = RegisterFile::new_with_endian(Box::new(MIPS32), false);
+    regs.put_reg("f2", RustBV::concrete(0xAABB_CCDD_1122_3344, 64));
+    let bytes = serde_json::to_string(&regs).expect("serialize");
+    let restored: RegisterFile = serde_json::from_str(&bytes).expect("deserialize");
+    assert!(restored.containment.is_some());
+    let f2 = restored.arch().register_offset("f2").unwrap();
+    assert_eq!(restored.get(f2, 4, &ctx).as_u64(), Some(0xAABB_CCDD));
 }

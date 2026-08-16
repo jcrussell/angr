@@ -79,7 +79,7 @@ impl RustSimState {
 
         Ok(RustSimState {
             vex_arch,
-            registers: RegisterFile::new(arch.clone()),
+            registers: RegisterFile::new_with_endian(arch.clone(), is_le),
             memory: Self::new_state_memory(endness),
             solver,
             pc: 0,

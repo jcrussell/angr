@@ -486,13 +486,14 @@ class TestMultiArchSupport:
         ``cfc1``/``ctc1`` carry ``fcsr`` in each direction against the
         known-good GPR channel; ``mov.d`` copies the ``f`` file.
 
-        The ``f0`` assertion checks *which half* loosely on purpose. VEX models
-        FR=0, so ``mov.d`` lifts to F32 copies of the ``fN_lo`` sub-fields, and
-        Rust's register file stores whole registers host-little-endian while
-        angr's stores them at ``arch.register_endness`` (``Iend_BE`` here) — so
-        the two engines disagree on which 32-bit half ``f2_lo`` names. That
-        convention gap is a separate defect; this test is about the channel, so
-        it only requires that the preset word crossed and landed in one half.
+        The ``f0`` assertion is a strict engine-vs-engine equality, and doubles
+        as the regression for angr-fuhmm. VEX models FR=0, so ``mov.d`` lifts
+        to F32 copies of the ``fN_lo`` sub-fields at each register's *base*
+        offset. angr's register file is stored at ``arch.register_endness``
+        (``Iend_BE`` here), so that base offset names the register's HIGH word;
+        Rust's storage is unconditionally little-endian and used to name the
+        low one, which made the two engines pick opposite halves. The fix is
+        ``RegisterFile::mirror_offset`` (``native/angr/src/arch/mod.rs``).
         """
         # cfc1 $v1,$31 ; ctc1 $v0,$31 ; mov.d $f0,$f2 ; b . ; nop
         # (both MIPS ids default to big-endian)
@@ -525,10 +526,26 @@ class TestMultiArchSupport:
         )
 
         got_f0 = out.solver.eval(out.regs.f0)
-        halves = (got_f0 >> 32, got_f0 & 0xFFFFFFFF)
-        assert 0 in halves and (0xAABBCCDD in halves or 0x11223344 in halves), (
-            f"{arch_name}: guest copied f2 (preset 0xaabbccdd11223344) into f0, which reads back "
-            f"{got_f0:#x} — the f-register channel is broken (angr-n2556)"
+        assert got_f0 != 0, (
+            f"{arch_name}: guest copied f2 (preset 0xaabbccdd11223344) into f0, which reads back 0 "
+            f"— the f-register channel is broken (angr-n2556)"
+        )
+
+        # Same block on the vanilla Python engine: the two must agree on which
+        # 32-bit half `f2_lo` names, not merely that a word crossed
+        # (angr-fuhmm).
+        py_state = proj.factory.blank_state(addr=0x1000)
+        py_state.regs.v0 = 0xDEADBEEF
+        py_state.regs.v1 = 0
+        py_state.regs.fcsr = 0xCAFE
+        py_state.regs.f0 = 0
+        py_state.regs.f2 = 0xAABBCCDD11223344
+        py_out = proj.factory.simulation_manager(py_state).step().active[0]
+        want_f0 = py_out.solver.eval(py_out.regs.f0)
+        assert got_f0 == want_f0 == 0xAABBCCDD00000000, (
+            f"{arch_name}: after `mov.d $f0, $f2` the Rust engine reads f0 as {got_f0:#x} and the "
+            f"Python engine as {want_f0:#x}. angr stores registers big-endian here, so VEX's F32 "
+            f"copy of `f2_lo` at f2's base offset moves the HIGH word (angr-fuhmm)"
         )
 
     @pytest.mark.parametrize("arch_name", ["MIPS32", "MIPS64"])
