@@ -451,3 +451,263 @@ fn import_z3_constraint_ptrs_separates_undecided_from_unsat() {
         );
     });
 }
+
+// ---------------------------------------------------------------------------
+// Concrete memory get/set (angr-0jh0j.26)
+// ---------------------------------------------------------------------------
+
+/// Push `state` into `found` and hand back its id — the two-line preamble
+/// every state-keyed accessor test below shares.
+#[cfg(feature = "vex-engine-z3")]
+fn stash_found(mgr: &mut RustExplorationManager, state: RustSimState) -> u64 {
+    let state_id = state.state_id();
+    mgr.sm.push(STASH_FOUND, state);
+    state_id
+}
+
+/// `_get_state_memory` has three distinct answers and they must stay
+/// distinct: bytes for a readable range, `Ok(None)` for an unreadable one
+/// (unmapped / no SAT witness — a *memory* answer), and `Err` for both a
+/// missing `state_id` and an over-cap `size` (caller bugs, which must not be
+/// laundered through the `Ok(None)` channel — angr-0jh0j.11).
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn get_state_memory_separates_unreadable_from_caller_error() {
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    let mut state = RustSimState::new("amd64").expect("amd64 state");
+    state.map_memory(0x1000, 0x1000, Permission::RW);
+    let state_id = stash_found(&mut mgr, state);
+
+    mgr._set_state_memory_concrete(state_id, 0x1010, b"hello")
+        .expect("store into a mapped page");
+    assert_eq!(
+        mgr._get_state_memory(state_id, 0x1010, 5)
+            .expect("state found"),
+        Some(b"hello".to_vec()),
+    );
+
+    assert_eq!(
+        mgr._get_state_memory(state_id, 0x9_0000, 4)
+            .expect("state found"),
+        None,
+        "an unmapped range is an Ok(None) memory answer, not an error",
+    );
+
+    let err = mgr
+        ._get_state_memory(state_id, 0x1010, crate::symbolic::MAX_CONCRETE_LOAD_BYTES + 1)
+        .expect_err("an over-cap size must raise");
+    assert!(
+        err.to_string().contains("get_state_memory"),
+        "the refusal names the op: {err}",
+    );
+    // The size check runs before the state lookup, so an unknown id still has
+    // to raise on its own account for a legal size.
+    assert!(
+        mgr._get_state_memory(state_id + 999, 0x1010, 4).is_err(),
+        "a missing state_id is an error, never Ok(None)",
+    );
+}
+
+/// The `_automap` suffix on the concrete-store pair is the whole difference
+/// between a lost write and a landed one: `memory_store` refuses an address
+/// outside every mapped page and lazy region, and the callback-memory proxy
+/// gets to *choose* such an address (angr-ijwp0). Pin both halves — plain
+/// store refuses, automap widens the lazy region and the bytes read back.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn set_state_memory_concrete_automap_accepts_what_the_plain_store_refuses() {
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    let state_id = stash_found(&mut mgr, RustSimState::new("amd64").expect("amd64 state"));
+
+    assert!(
+        mgr._set_state_memory_concrete(state_id, 0x5_0000, b"xy")
+            .is_err(),
+        "precondition: the plain store must refuse an unmapped address",
+    );
+    mgr._set_state_memory_concrete_automap(state_id, 0x5_0000, b"xy")
+        .expect("automap store must map the page and land the write");
+    assert_eq!(
+        mgr._get_state_memory(state_id, 0x5_0000, 2)
+            .expect("state found"),
+        Some(b"xy".to_vec()),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// File-descriptor inspection (angr-0jh0j.26)
+// ---------------------------------------------------------------------------
+
+/// The fd-output family fans out from one `FileSystem` buffer per fd, so a
+/// getter wired to the wrong fd would still look plausible in isolation.
+/// Pin that `_get_state_stdout` is fd 1 specifically, that `_has_*` agrees
+/// with `_get_*` per fd, and that a missing state answers `false` rather than
+/// raising (the `find_state`-based getters deliberately have no `PyResult`).
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn state_fd_output_accessors_are_per_fd() {
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    let state_id = stash_found(&mut mgr, RustSimState::new("amd64").expect("amd64 state"));
+
+    assert!(!mgr._has_state_fd_output(state_id, 1));
+    assert!(
+        mgr._append_state_fd_output(state_id, 1, b"out".to_vec())
+            .expect("state found"),
+    );
+    assert!(
+        mgr._append_state_fd_output(state_id, 2, b"err".to_vec())
+            .expect("state found"),
+    );
+
+    assert_eq!(mgr._get_state_stdout(state_id).expect("state found"), b"out");
+    assert_eq!(
+        mgr._get_state_fd_output(state_id, 2).expect("state found"),
+        b"err",
+    );
+    assert!(mgr._has_state_fd_output(state_id, 1));
+    assert!(!mgr._has_state_fd_output(state_id, 3), "untouched fd is empty");
+    assert!(
+        !mgr._has_state_fd_output(state_id + 999, 1),
+        "a missing state_id answers false rather than panicking",
+    );
+}
+
+/// `_register_state_fd` is the inbound half of the callback fd sync, and its
+/// `false` return is what keeps that sync idempotent across the repeated
+/// callbacks sharing one cached state. Pin the round-trip through
+/// `_get_state_open_fds` / `_get_state_fd_content`, the re-register refusal,
+/// and `_has_state_extra_fds`, whose whole job is to stay `false` for the
+/// three standard descriptors so the common case skips the fd export.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn register_state_fd_round_trips_and_refuses_a_duplicate() {
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    let state_id = stash_found(&mut mgr, RustSimState::new("amd64").expect("amd64 state"));
+
+    assert!(
+        !mgr._has_state_extra_fds(state_id),
+        "precondition: a fresh state has nothing above stderr",
+    );
+    assert!(
+        mgr._register_state_fd(state_id, 3, "/tmp/f".to_string(), 0, b"data".to_vec(), 2)
+            .expect("state found"),
+    );
+    assert!(mgr._has_state_extra_fds(state_id));
+    assert_eq!(
+        mgr._get_state_fd_content(state_id, 3).expect("state found"),
+        b"data",
+    );
+
+    let fds = mgr._get_state_open_fds(state_id).expect("state found");
+    let entry = fds
+        .iter()
+        .find(|e| e.0 == 3)
+        .expect("fd 3 present in the export");
+    assert_eq!(
+        (entry.1.as_str(), entry.2, entry.4, entry.5),
+        ("/tmp/f", 2u64, 4usize, true),
+        "name / position / content-len / is_open survive the round-trip: {entry:?}",
+    );
+
+    assert!(
+        !mgr._register_state_fd(state_id, 3, "/tmp/other".to_string(), 0, vec![], 0)
+            .expect("state found"),
+        "re-registering a known fd changes nothing and reports false",
+    );
+    assert_eq!(
+        mgr._get_state_fd_content(state_id, 3).expect("state found"),
+        b"data",
+        "the refused re-register must not have clobbered the content",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Call stack / history / heap getters (angr-0jh0j.26)
+// ---------------------------------------------------------------------------
+
+/// The three history-shaped getters each flatten a struct into a tuple, so a
+/// swapped field would type-check silently. Pin the field order of
+/// `CallStackEntry` and `HistoryEntry` as exported, plus the depth accessor
+/// and the allocated/freed split `_get_state_heap_metadata` returns.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn call_stack_history_and_heap_getters_preserve_field_order() {
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    let mut state = RustSimState::new("amd64").expect("amd64 state");
+    state.push_call(0x400_100, 0x400_200, 0x400_105, 0x7fff_0000);
+    state.add_history_entry(0x400_100, 3, 0x400_200);
+    let kept = state.heap_alloc(0x20);
+    let freed = state.heap_alloc(0x10);
+    assert_eq!(state.heap_free(freed), Some(0x10));
+    let state_id = stash_found(&mut mgr, state);
+
+    assert_eq!(
+        mgr._get_state_call_stack(state_id).expect("state found"),
+        vec![(0x400_100, 0x400_200, 0x400_105, 0x7fff_0000)],
+        "(call_site, callee, return, stack_ptr) order",
+    );
+    assert_eq!(
+        mgr._get_state_call_stack_depth(state_id)
+            .expect("state found"),
+        1,
+    );
+    assert_eq!(
+        mgr._get_state_detailed_history(state_id)
+            .expect("state found"),
+        vec![(0x400_100, 3, 0x400_200)],
+        "(addr, jumpkind, jump_target) order",
+    );
+
+    let (allocated, freed_list) = mgr._get_state_heap_metadata(state_id).expect("state found");
+    assert_eq!(
+        allocated,
+        vec![(kept, 0x20)],
+        "the freed allocation leaves `allocated`, the live one stays",
+    );
+    assert_eq!(freed_list, vec![freed]);
+}
+
+// ---------------------------------------------------------------------------
+// stdin symbol eval (angr-0jh0j.26)
+// ---------------------------------------------------------------------------
+
+/// A Z3 const's identity is `(name, sort)`, so `_eval_stdin_symbol` must
+/// rebuild the symbol at the width the caller recorded — a hardcoded width 8
+/// minted a *different*, unconstrained const for the 32/64-bit symbols
+/// `scanf("%d")` records, and eval then answered an arbitrary model value
+/// (angr-ph300.18). Constrain a 32-bit stdin symbol to a value no 8-bit
+/// const could produce, so a width regression cannot pass by luck.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn eval_stdin_symbol_reconstructs_the_symbol_at_the_recorded_width() {
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    let mut state = RustSimState::new("amd64").expect("amd64 state");
+    state.record_stdin_symbol("stdin_scanf_0".to_string(), 32);
+    {
+        let ctx = state.solver().borrow();
+        let sym = RustBV::symbolic(&ctx, "stdin_scanf_0", 32);
+        ctx.assume_true(&sym.eq(&RustBV::concrete(0x4142_4344, 32), &ctx));
+    }
+    let state_id = stash_found(&mut mgr, state);
+
+    assert_eq!(
+        mgr._get_state_stdin_symbols(state_id).expect("state found"),
+        vec![("stdin_scanf_0".to_string(), 32)],
+    );
+    assert!(mgr._has_state_stdin_symbols(state_id));
+    assert_eq!(
+        mgr._eval_stdin_symbol(state_id, "stdin_scanf_0", 32),
+        Some(0x4142_4344),
+    );
+    // Same name at the wrong width is a different const: unconstrained, and
+    // 8 bits cannot hold the constrained value under any model.
+    let narrow = mgr
+        ._eval_stdin_symbol(state_id, "stdin_scanf_0", 8)
+        .expect("an unconstrained const still evals");
+    assert!(narrow <= 0xff, "width 8 yields an 8-bit value: {narrow:#x}");
+
+    assert_eq!(
+        mgr._eval_stdin_symbol(state_id + 999, "stdin_scanf_0", 32),
+        None,
+        "a missing state_id answers None rather than minting a bare context",
+    );
+}
