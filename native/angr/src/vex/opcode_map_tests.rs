@@ -1209,11 +1209,10 @@ const KNOWN_UNMAPPED_GROUPS: &[(&[&str], &str)] = &[
         ],
         "ARM doubling variants of the high-half widening multiply (VQDMULH/VQRDMULH: product doubled, then saturated, with the rounding form adding a half-ULP first) — the plain MulHi family is mapped, these are not yet implemented.",
     ),
-    // AVX2_MUL
-    (
-        &["Iop_Mul16x16", "Iop_Mul32x8"],
-        "AVX2 256-bit packed integer multiply (16x16/32x8) — the 128-bit VMul family is mapped, this width tier is not yet implemented.",
-    ),
+    // (The AVX2_MUL group that used to sit here — Iop_Mul16x16/Mul32x8 — was
+    // dropped in angr-li4ox.1: vec_int_lane_op already gates its concrete fast
+    // path on total_width <= 128, so the widening was a parse-table entry only.
+    // test_parse_vmul_routing pins all 8 shapes.)
     // LANE_SHUFFLE_ODD_EVEN
     (
         &[
@@ -1260,20 +1259,10 @@ const KNOWN_UNMAPPED_GROUPS: &[(&[&str], &str)] = &[
         &["Iop_PwAddL64Ux2"],
         "NEON pairwise widening add (VPwAddL family) — the 64-bit-lane Q-reg width is the one shape parse_vector's table does not cover; not yet implemented.",
     ),
-    // QADD_QSUB_AVX2
-    (
-        &[
-            "Iop_QAdd16Sx16",
-            "Iop_QAdd16Ux16",
-            "Iop_QAdd8Sx32",
-            "Iop_QAdd8Ux32",
-            "Iop_QSub16Sx16",
-            "Iop_QSub16Ux16",
-            "Iop_QSub8Sx32",
-            "Iop_QSub8Ux32",
-        ],
-        "AVX2 256-bit saturating add/sub (VQAdd/VQSub family) — the 128-bit and D-reg forms are mapped, this width tier is not yet implemented.",
-    ),
+    // (The QADD_QSUB_AVX2 group that used to sit here — the eight
+    // Iop_{QAdd,QSub}{8S,8U}x32 / {16S,16U}x16 shapes — was dropped in
+    // angr-li4ox.1: vec_int_saturating already gates its concrete fast path on
+    // total_width <= 128. test_parse_vqaddsub_routing pins the V256 tier.)
     // ROL
     (
         &["Iop_Rol16x8", "Iop_Rol32x4", "Iop_Rol64x2", "Iop_Rol8x16"],

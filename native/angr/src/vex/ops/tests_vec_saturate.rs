@@ -489,8 +489,10 @@ fn test_vqadd_8sx8_symbolic_matches_python_ref() {
 
 /// Parse routing: Iop_QAdd / Iop_QSub variants land on VQAdd / VQSub with
 /// the expected (elem, count, signed) decomposition. Covers a sampling
-/// across D-reg (total=64) and Q-reg (total=128) shapes plus both
-/// signedness conventions.
+/// across D-reg (total=64), Q-reg (total=128) and AVX2 (total=256) shapes
+/// plus both signedness conventions. The 256-bit tier is
+/// `VPADDS{B,W}`/`VPADDUS{B,W}` and their `VPSUB*` twins, so it exists only
+/// for 8- and 16-bit lanes (angr-li4ox.1).
 #[test]
 fn test_parse_vqaddsub_routing() {
     use crate::vex::opcode_map::parse_opcode;
@@ -503,6 +505,10 @@ fn test_parse_vqaddsub_routing() {
         ("Iop_QAdd8Ux16", IRType::I8, 16, false),
         ("Iop_QAdd16Sx8", IRType::I16, 8, true),
         ("Iop_QAdd64Sx2", IRType::I64, 2, true),
+        ("Iop_QAdd8Sx32", IRType::I8, 32, true),
+        ("Iop_QAdd8Ux32", IRType::I8, 32, false),
+        ("Iop_QAdd16Sx16", IRType::I16, 16, true),
+        ("Iop_QAdd16Ux16", IRType::I16, 16, false),
     ];
     for (op, e, c, s) in qadd_cases {
         match parse_opcode(op) {
@@ -523,6 +529,10 @@ fn test_parse_vqaddsub_routing() {
         ("Iop_QSub8Sx8", IRType::I8, 8, true),
         ("Iop_QSub32Ux4", IRType::I32, 4, false),
         ("Iop_QSub64Sx2", IRType::I64, 2, true),
+        ("Iop_QSub8Sx32", IRType::I8, 32, true),
+        ("Iop_QSub8Ux32", IRType::I8, 32, false),
+        ("Iop_QSub16Sx16", IRType::I16, 16, true),
+        ("Iop_QSub16Ux16", IRType::I16, 16, false),
     ];
     for (op, e, c, s) in qsub_cases {
         match parse_opcode(op) {
@@ -536,6 +546,101 @@ fn test_parse_vqaddsub_routing() {
                 assert_eq!(signed, *s, "{op}: signed");
             }
             other => panic!("{op}: expected VQSub, got {other:?}"),
+        }
+    }
+}
+
+/// The AVX2 256-bit tier angr-li4ox.1 mapped, all four semantics at once:
+/// `Iop_{QAdd,QSub}8{S,U}x32` (`VPADDSB`/`VPADDUSB`/`VPSUBSB`/`VPSUBUSB`).
+/// 256 bits is past the 16-byte concrete backing store, so the operands are
+/// built as a `Concat` of two 128-bit concretes and the result is checked one
+/// lane at a time (bd `invariant-concrete-bv-u128-16-byte-limit`, hazard
+/// family 3) — i.e. this drives the symbolic per-lane path
+/// `vec_int_saturating` falls through to when its `total_width <= 128`
+/// concrete fast path declines. The reference is `i8`/`u8`
+/// `saturating_add`/`saturating_sub`, which shares no arithmetic with the
+/// sign-bit-relationship algorithm under test.
+#[test]
+fn test_vqaddsub_8x32_avx2_256_bit() {
+    let ctx = SymContext::new_mock();
+
+    // Low lane first. Covers both clamp directions (0x7F+0x7F, 0x80+0x80),
+    // unsigned overflow/underflow, and no-saturation lanes.
+    let l: [u8; 32] = [
+        0x7F, 0x80, 0x00, 0xFF, 0x01, 0x40, 0xC0, 0x7F, 0x80, 0x05, 0xFE, 0x10, 0x00, 0x7F, 0x80,
+        0x33, 0xAA, 0x55, 0x01, 0xFF, 0x7E, 0x81, 0x20, 0x00, 0x0F, 0xF0, 0x3C, 0xC3, 0x11, 0xEE,
+        0x64, 0x9C,
+    ];
+    let r: [u8; 32] = [
+        0x7F, 0x80, 0xFF, 0x01, 0x02, 0x40, 0xC0, 0x01, 0xFF, 0x05, 0x03, 0xF0, 0x00, 0x00, 0xFF,
+        0x33, 0x56, 0xAB, 0xFF, 0xFF, 0x03, 0x7F, 0xE0, 0x80, 0xF1, 0x0F, 0xC4, 0x3D, 0xEF, 0x12,
+        0x9C, 0x64,
+    ];
+
+    let pack = |lanes: &[u8; 32]| {
+        let mut halves = [0u128; 2];
+        for (i, lane) in lanes.iter().enumerate() {
+            halves[i / 16] |= (*lane as u128) << ((i % 16) * 8);
+        }
+        RustBV::concrete(halves[1], 128).concat_into(RustBV::concrete(halves[0], 128), &ctx)
+    };
+
+    type LaneFn = fn(u8, u8) -> u8;
+    let cases: [(&str, IROp, LaneFn); 4] = [
+        (
+            "Iop_QAdd8Sx32",
+            IROp::VQAdd {
+                elem: IRType::I8,
+                count: 32,
+                signed: true,
+            },
+            |a, b| (a as i8).saturating_add(b as i8) as u8,
+        ),
+        (
+            "Iop_QAdd8Ux32",
+            IROp::VQAdd {
+                elem: IRType::I8,
+                count: 32,
+                signed: false,
+            },
+            u8::saturating_add,
+        ),
+        (
+            "Iop_QSub8Sx32",
+            IROp::VQSub {
+                elem: IRType::I8,
+                count: 32,
+                signed: true,
+            },
+            |a, b| (a as i8).saturating_sub(b as i8) as u8,
+        ),
+        (
+            "Iop_QSub8Ux32",
+            IROp::VQSub {
+                elem: IRType::I8,
+                count: 32,
+                signed: false,
+            },
+            u8::saturating_sub,
+        ),
+    ];
+
+    for (name, op, expected_lane) in cases {
+        let result = VEXOps::binop(op, pack(&l), pack(&r), &ctx).unwrap();
+        assert_eq!(result.width(), 256, "{name}: result width");
+
+        for i in 0..32u32 {
+            let low = i * 8;
+            let extracted = result.extract(low + 7, low, &ctx);
+            let got = ctx.eval(&extracted).expect("eval(lane) returned None");
+            let idx = i as usize;
+            assert_eq!(
+                got,
+                u128::from(expected_lane(l[idx], r[idx])),
+                "{name} lane {i}: {:#04x}, {:#04x}",
+                l[idx],
+                r[idx]
+            );
         }
     }
 }

@@ -358,3 +358,97 @@ fn test_vec_cmp_avx2_256_bit_i32x8() {
         }
     }
 }
+
+// =========================================================================
+// VMul — the AVX2 256-bit tier angr-li4ox.1 mapped (Iop_Mul16x16/Mul32x8).
+// =========================================================================
+
+/// Parse routing: every mapped `Iop_Mul{N}x{M}` shape lands on `VMul` with the
+/// expected `(elem, count)` decomposition, across all three width tiers —
+/// D-reg (total=64), Q-reg/SSE (128) and AVX2 (256). The 8-bit lane stops at
+/// the Q-reg tier and there is no 64-bit packed multiply at any width, so this
+/// table is also the pin on what the parse table must *not* grow (angr-li4ox.1).
+#[test]
+fn test_parse_vmul_routing() {
+    use crate::vex::opcode_map::parse_opcode;
+
+    let cases: &[(&str, IRType, u8)] = &[
+        ("Iop_Mul8x8", IRType::I8, 8),
+        ("Iop_Mul8x16", IRType::I8, 16),
+        ("Iop_Mul16x4", IRType::I16, 4),
+        ("Iop_Mul16x8", IRType::I16, 8),
+        ("Iop_Mul16x16", IRType::I16, 16),
+        ("Iop_Mul32x2", IRType::I32, 2),
+        ("Iop_Mul32x4", IRType::I32, 4),
+        ("Iop_Mul32x8", IRType::I32, 8),
+    ];
+    for (op, e, c) in cases {
+        match parse_opcode(op) {
+            IROp::VMul { elem, count } => {
+                assert_eq!(elem, *e, "{op}: elem");
+                assert_eq!(count, *c, "{op}: count");
+            }
+            other => panic!("{op}: expected VMul, got {other:?}"),
+        }
+    }
+}
+
+/// Iop_Mul16x16 — the AVX2 `VPMULLW` shape. 256 bits is past the 16-byte
+/// concrete backing store, so the operands are built as a `Concat` of two
+/// 128-bit concretes and the result is checked one lane at a time (bd
+/// `invariant-concrete-bv-u128-16-byte-limit`, hazard family 3). This is the
+/// path `vec_int_lane_op` takes when its `total_width <= 128` concrete fast
+/// path declines: per-lane `extract` + symbolic `IMul` + `concat_le_elements`.
+#[test]
+fn test_vec_mul_16x16_avx2_256_bit() {
+    let ctx = SymContext::new_mock();
+
+    // Low lane first. Covers the wrapping cases the width-preserving multiply
+    // must truncate (0xFFFF*0xFFFF, 0x8000*2), identity/zero lanes, and a
+    // plain no-wrap lane.
+    let l: [u16; 16] = [
+        0xFFFF, 0x8000, 0, 1, 3, 0x1234, 0x00FF, 0x0100, 7, 0xABCD, 2, 0x7FFF, 0xFFFF, 0x5555,
+        0x0F0F, 12345,
+    ];
+    let r: [u16; 16] = [
+        0xFFFF, 2, 0x1234, 0xBEEF, 5, 0x0010, 0x00FF, 0x0100, 0, 1, 0x8000, 2, 0x0002, 0x0003,
+        0xF0F0, 3,
+    ];
+
+    let pack = |lanes: &[u16; 16]| {
+        let mut halves = [0u128; 2];
+        for (i, lane) in lanes.iter().enumerate() {
+            halves[i / 8] |= (*lane as u128) << ((i % 8) * 16);
+        }
+        RustBV::concrete(halves[1], 128).concat_into(RustBV::concrete(halves[0], 128), &ctx)
+    };
+
+    let result = VEXOps::binop(
+        IROp::VMul {
+            elem: IRType::I16,
+            count: 16,
+        },
+        pack(&l),
+        pack(&r),
+        &ctx,
+    )
+    .unwrap();
+    assert_eq!(result.width(), 256);
+
+    for i in 0..16u32 {
+        let low = i * 16;
+        let extracted = result.extract(low + 15, low, &ctx);
+        let got = ctx.eval(&extracted).expect("eval(lane) returned None");
+        let idx = i as usize;
+        // Reference is the wrapping u16 product, computed independently of the
+        // lane loop under test.
+        let expected = l[idx].wrapping_mul(r[idx]);
+        assert_eq!(
+            got,
+            u128::from(expected),
+            "lane {i}: {:#06x} * {:#06x}",
+            l[idx],
+            r[idx]
+        );
+    }
+}

@@ -645,7 +645,16 @@ fn parse_vector(op_str: &str) -> Option<IROp> {
 
     // NEON saturating add/sub — Iop_QAdd{N}{S/U}x{M} / Iop_QSub{N}{S/U}x{M}.
     // Per-lane saturating arithmetic; S/U selects clamp range. D-reg
-    // (total=64) and Q-reg (total=128) variants.
+    // (total=64), Q-reg (total=128) and AVX2 (total=256) variants. The 256-bit
+    // tier is `VPADDS{B,W}`/`VPADDUS{B,W}` and their `VPSUB*` twins, hence
+    // 8/16-bit lanes only — `vendor/pyvex_ffi.h` declares no `Iop_QAdd32*x8`
+    // or `Iop_QAdd64*x4` (angr-li4ox.1).
+    //
+    // Widening this table to V256 needs no evaluator change:
+    // `VEXOps::vec_int_saturating` gates its u128 concrete fast path on
+    // `total_width <= 128` and otherwise runs the symbolic per-lane path,
+    // whose `concat_le_elements` keeps a symbolic `Concat` above 128 bits
+    // (bd `invariant-concrete-bv-u128-16-byte-limit`, hazard family 3).
     vec_signed_arms!(op_str; "Iop_QAdd" => VQAdd {
         "8Sx8" => (I8, 8, true), "16Sx4" => (I16, 4, true),
         "32Sx2" => (I32, 2, true), "64Sx1" => (I64, 1, true),
@@ -655,6 +664,8 @@ fn parse_vector(op_str: &str) -> Option<IROp> {
         "32Sx4" => (I32, 4, true), "64Sx2" => (I64, 2, true),
         "8Ux16" => (I8, 16, false), "16Ux8" => (I16, 8, false),
         "32Ux4" => (I32, 4, false), "64Ux2" => (I64, 2, false),
+        "8Sx32" => (I8, 32, true), "16Sx16" => (I16, 16, true),
+        "8Ux32" => (I8, 32, false), "16Ux16" => (I16, 16, false),
     });
     vec_signed_arms!(op_str; "Iop_QSub" => VQSub {
         "8Sx8" => (I8, 8, true), "16Sx4" => (I16, 4, true),
@@ -665,6 +676,8 @@ fn parse_vector(op_str: &str) -> Option<IROp> {
         "32Sx4" => (I32, 4, true), "64Sx2" => (I64, 2, true),
         "8Ux16" => (I8, 16, false), "16Ux8" => (I16, 8, false),
         "32Ux4" => (I32, 4, false), "64Ux2" => (I64, 2, false),
+        "8Sx32" => (I8, 32, true), "16Sx16" => (I16, 16, true),
+        "8Ux32" => (I8, 32, false), "16Ux16" => (I16, 16, false),
     });
 
     // NEON vector shift by vector — `Iop_Shl{N}x{M}` / `Iop_Shr{N}x{M}` /
@@ -838,11 +851,17 @@ fn parse_vector(op_str: &str) -> Option<IROp> {
         _ => {}
     }
 
-    // Vector multiply: 8-bit is NEON-only (VMUL.I8); 16/32-bit are SSE+NEON.
+    // Vector multiply: 8-bit is NEON-only (VMUL.I8); 16/32-bit are SSE+NEON,
+    // and their AVX2 256-bit tier is `VPMULLW`/`VPMULLD` (no 8-bit or 64-bit
+    // packed-multiply opcode exists at that width). Like the VQAdd/VQSub table
+    // above, the V256 shapes need no evaluator change:
+    // `VEXOps::vec_int_lane_op` gates its u128 concrete fast path on
+    // `total_width <= 128` and falls through to the symbolic per-lane path
+    // (angr-li4ox.1).
     vec_arms!(op_str; "Iop_Mul" => VMul {
         "8x8" => (I8, 8), "8x16" => (I8, 16),
-        "16x4" => (I16, 4), "16x8" => (I16, 8),
-        "32x2" => (I32, 2), "32x4" => (I32, 4),
+        "16x4" => (I16, 4), "16x8" => (I16, 8), "16x16" => (I16, 16),
+        "32x2" => (I32, 2), "32x4" => (I32, 4), "32x8" => (I32, 8),
     });
     // High half of the widening vector multiply — Iop_MulHi{N}{U,S}x{M}
     // (SSE PMULHW/PMULHUW, NEON VMULH, AVX2 256-bit forms). Width-preserving:
