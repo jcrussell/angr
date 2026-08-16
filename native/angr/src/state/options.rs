@@ -192,14 +192,17 @@ impl RustSimState {
     /// symex-relevant subset that native SimProcedures consult is threaded
     /// across the FFI in `_add_rust_state`.
     pub fn set_option(&mut self, name: &str, enabled: bool) {
-        let opts = Arc::make_mut(&mut self.sim_options);
+        // Peek before the CoW clone — see module-level `arc-make-mut-cow`.
         if enabled {
-            opts.insert(name.to_string());
+            if !self.sim_options.contains(name) {
+                Arc::make_mut(&mut self.sim_options).insert(name.to_string());
+            }
             // No longer "removed since fork" if it was — see `removed_sim_options`.
             if self.removed_sim_options.contains(name) {
                 Arc::make_mut(&mut self.removed_sim_options).remove(name);
             }
-        } else if opts.remove(name) {
+        } else if self.sim_options.contains(name) {
+            Arc::make_mut(&mut self.sim_options).remove(name);
             Arc::make_mut(&mut self.removed_sim_options).insert(name.to_string());
         }
     }

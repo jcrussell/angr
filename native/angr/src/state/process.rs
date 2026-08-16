@@ -88,13 +88,18 @@ impl RustSimState {
         if self.removed_env_keys.contains(&key) {
             Arc::make_mut(&mut self.removed_env_keys).remove(&key);
         }
-        Arc::make_mut(&mut self.environment).insert(key, value);
+        // Peek before the CoW clone — see module-level `arc-make-mut-cow`.
+        // Re-setting a key to the value it already holds is a no-op.
+        if self.environment.get(&key) != Some(&value) {
+            Arc::make_mut(&mut self.environment).insert(key, value);
+        }
     }
 
     /// Remove an environment variable. Returns true if the key was present.
     pub fn unsetenv(&mut self, key: &[u8]) -> bool {
-        let env = Arc::make_mut(&mut self.environment);
-        if env.remove(key).is_some() {
+        // Peek before the CoW clone — see module-level `arc-make-mut-cow`.
+        if self.environment.contains_key(key) {
+            Arc::make_mut(&mut self.environment).remove(key);
             Arc::make_mut(&mut self.removed_env_keys).insert(key.to_vec());
             true
         } else {

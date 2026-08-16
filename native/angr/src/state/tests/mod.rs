@@ -39,6 +39,9 @@
 //!   ones against a specific expected value reasoned from
 //!   `fork.rs::RustSimState::merge`. Additive to (not a replacement for) the
 //!   deeper per-family coverage the other `merge_*` modules provide.
+//! - `cow_peek`: the `arc-make-mut-cow` peek-before-clone half — no-op
+//!   `add_hook`/`remove_hook`/`set_option`/`setenv`/`unsetenv` calls must keep
+//!   sharing their `Arc` with a forked sibling.
 //! - `heap`: the heap and CGC allocators themselves (not their merge).
 //! - `export`: `export_full`'s dump shape.
 //!
@@ -46,6 +49,7 @@
 //! angr-c2cv had in turn pulled out of `state.rs`'s in-file `mod tests`.
 
 mod basics;
+mod cow_peek;
 mod export;
 mod filesystem_demote;
 mod filesystem_state;

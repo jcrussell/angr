@@ -122,7 +122,8 @@
 //!   already-closed fd, clearing an empty hook set). `Arc`-wrapping a
 //!   field mutated on every fork (e.g. `RegisterFile.symbolic`) is a net
 //!   loss — the `make_mut` churn offsets the savings. See `FileSystem`
-//!   methods, `clear_hooks`, and `set_env_var` for the pattern.
+//!   methods, `clear_hooks`/`add_hook`/`remove_hook`, `set_option`, and
+//!   `setenv`/`unsetenv`/`clearenv` for the pattern.
 //! - **`arc-collection-iter`** — `Arc<HashSet<u64>>` and `Arc<Vec<T>>` do
 //!   NOT implement `IntoIterator` for `&Self`. After `Arc`-wrapping
 //!   `hooks` / `environment` / `fs.fds`, `for x in &self.field` becomes

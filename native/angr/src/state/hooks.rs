@@ -16,7 +16,10 @@ impl RustSimState {
 
     /// Add a hook address.
     pub fn add_hook(&mut self, addr: u64) {
-        Arc::make_mut(&mut self.hooks).insert(addr);
+        // Peek before the CoW clone — see module-level `arc-make-mut-cow`.
+        if !self.hooks.contains(&addr) {
+            Arc::make_mut(&mut self.hooks).insert(addr);
+        }
         // No longer "removed since fork" if it was — see `removed_hooks`.
         if self.removed_hooks.contains(&addr) {
             Arc::make_mut(&mut self.removed_hooks).remove(&addr);
@@ -25,7 +28,9 @@ impl RustSimState {
 
     /// Remove a hook address.
     pub fn remove_hook(&mut self, addr: u64) {
-        if Arc::make_mut(&mut self.hooks).remove(&addr) {
+        // Peek before the CoW clone — see module-level `arc-make-mut-cow`.
+        if self.hooks.contains(&addr) {
+            Arc::make_mut(&mut self.hooks).remove(&addr);
             Arc::make_mut(&mut self.removed_hooks).insert(addr);
         }
     }
