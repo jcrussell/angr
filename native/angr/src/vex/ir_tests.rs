@@ -116,7 +116,9 @@ fn test_packed_lane_result_type_tracks_mapped_width() {
         ("Iop_Abs32x4", IRType::V128),
         ("Iop_Min8Sx32", IRType::V256),
         ("Iop_Max16Ux16", IRType::V256),
-        ("Iop_Abs64x4", IRType::V256),
+        // No `Iop_Abs*` 256-bit shape exists in this VEX pin, so the Abs family
+        // tops out at Q-reg here (angr-0jh0j.62).
+        ("Iop_Abs64x2", IRType::V128),
         ("Iop_Add32Fx2", IRType::I64),
         ("Iop_Sub32Fx2", IRType::I64),
         ("Iop_Mul32Fx2", IRType::I64),

@@ -829,13 +829,11 @@ fn test_vavg_8sx8_symbolic_universal_signed() {
 fn test_parse_avg_routing() {
     use crate::vex::opcode_map::parse_opcode;
 
+    // D-reg Avg is unsigned-and-8/16-bit-lane only in libVEX; the signed D-reg
+    // shapes and `Avg32{S,U}x2` do not exist (angr-0jh0j.62).
     let cases: &[(&str, IRType, u8, bool)] = &[
         ("Iop_Avg8Ux8", IRType::I8, 8, false),
         ("Iop_Avg16Ux4", IRType::I16, 4, false),
-        ("Iop_Avg32Ux2", IRType::I32, 2, false),
-        ("Iop_Avg8Sx8", IRType::I8, 8, true),
-        ("Iop_Avg16Sx4", IRType::I16, 4, true),
-        ("Iop_Avg32Sx2", IRType::I32, 2, true),
         ("Iop_Avg8Ux16", IRType::I8, 16, false),
         ("Iop_Avg16Ux8", IRType::I16, 8, false),
         ("Iop_Avg32Ux4", IRType::I32, 4, false),

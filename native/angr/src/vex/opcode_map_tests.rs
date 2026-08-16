@@ -58,6 +58,49 @@ fn test_parse_cmp_ord_stays_unmapped() {
     }
 }
 
+/// angr-0jh0j.62: seventeen table arms named opcode strings `vendor/pyvex_ffi.h`
+/// never declares — copy-paste from an adjacent real table (the `Sal64x1` D-reg
+/// shape onto `Shl`/`Shr`/`Sar`, the Q-reg `QNarrowBin32Sto16Ux8` suffix into
+/// the D-reg block), or a 256-bit tier invented for families that stop at
+/// Q-reg. Unreachable, but they overstate real libVEX coverage, which is how
+/// `Iop_Perm8x32` masked the two real `Iop_Perm32x{4,8}` shapes going unmapped
+/// (angr-sqfj8.117). Pin them as absent so a future widening pass has to check
+/// the header rather than copy a sibling table.
+#[test]
+fn test_dead_opcode_strings_stay_unmapped() {
+    for absent in [
+        // Only Iop_Sal64x1 exists at D-reg 64-bit-lane width.
+        "Iop_Shl64x1",
+        "Iop_Shr64x1",
+        "Iop_Sar64x1",
+        // D-reg Avg is unsigned, 8/16-bit-lane only.
+        "Iop_Avg8Sx8",
+        "Iop_Avg16Sx4",
+        "Iop_Avg32Sx2",
+        "Iop_Avg32Ux2",
+        // Signed-source/unsigned-dest 32-bit narrow is Q-reg-only.
+        "Iop_QNarrowBin32Sto16Ux4",
+        // AVX2 integer min/max covers 8/16/32-bit lanes; the 64-bit-lane
+        // 256-bit forms are float (Iop_Min64Fx4 / Iop_Max64Fx4).
+        "Iop_Min64Sx4",
+        "Iop_Min64Ux4",
+        "Iop_Max64Sx4",
+        "Iop_Max64Ux4",
+        // No 256-bit Abs family exists in this pin, integer or float.
+        "Iop_Abs8x32",
+        "Iop_Abs16x16",
+        "Iop_Abs32x8",
+        "Iop_Abs64x4",
+        // Iop_1Sto16 is real; Iop_1Uto16 is not.
+        "Iop_1Uto16",
+    ] {
+        assert!(
+            matches!(parse_opcode(absent), IROp::Unmapped(_)),
+            "{absent} is not declared in vendor/pyvex_ffi.h and must stay unmapped"
+        );
+    }
+}
+
 #[test]
 fn test_parse_conversion() {
     assert_eq!(

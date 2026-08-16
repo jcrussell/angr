@@ -421,11 +421,12 @@ fn test_vsar_8x16_symbolic_matches_python_ref() {
 #[test]
 fn test_parse_vshift_routing() {
     use crate::vex::opcode_map::parse_opcode;
+    // Only `Sal` has a D-reg 64-bit-lane form (`Iop_Sal64x1`); libVEX declares
+    // no `Iop_Shl64x1` / `Shr64x1` / `Sar64x1` (angr-0jh0j.62).
     let shl_cases: &[(&str, IRType, u8)] = &[
         ("Iop_Shl8x8", IRType::I8, 8),
         ("Iop_Shl16x4", IRType::I16, 4),
         ("Iop_Shl32x2", IRType::I32, 2),
-        ("Iop_Shl64x1", IRType::I64, 1),
         ("Iop_Shl8x16", IRType::I8, 16),
         ("Iop_Shl16x8", IRType::I16, 8),
         ("Iop_Shl32x4", IRType::I32, 4),
@@ -454,7 +455,6 @@ fn test_parse_vshift_routing() {
         ("Iop_Shr8x8", IRType::I8, 8),
         ("Iop_Shr16x4", IRType::I16, 4),
         ("Iop_Shr32x2", IRType::I32, 2),
-        ("Iop_Shr64x1", IRType::I64, 1),
         ("Iop_Shr8x16", IRType::I8, 16),
         ("Iop_Shr16x8", IRType::I16, 8),
         ("Iop_Shr32x4", IRType::I32, 4),
@@ -474,7 +474,6 @@ fn test_parse_vshift_routing() {
         ("Iop_Sar8x8", IRType::I8, 8),
         ("Iop_Sar16x4", IRType::I16, 4),
         ("Iop_Sar32x2", IRType::I32, 2),
-        ("Iop_Sar64x1", IRType::I64, 1),
         ("Iop_Sar8x16", IRType::I8, 16),
         ("Iop_Sar16x8", IRType::I16, 8),
         ("Iop_Sar32x4", IRType::I32, 4),

@@ -369,8 +369,11 @@ fn parse_conversion(op_str: &str) -> Option<IROp> {
         "32Sto64" => (I32, I64),
     });
     // Zero extensions (NtoM format: extend N-bit to M-bit unsigned).
+    // The I1 source has no 16-bit destination here: libVEX declares
+    // `Iop_1Uto8/32/64` but no `Iop_1Uto16`, even though the signed table's
+    // `Iop_1Sto16` above is real (angr-0jh0j.62).
     cast_arms!(op_str; "Iop_" => ZeroExtend {
-        "1Uto8"   => (I1, I8),   "1Uto16"  => (I1, I16),  "1Uto32"  => (I1, I32),  "1Uto64"  => (I1, I64),
+        "1Uto8"   => (I1, I8),   "1Uto32"  => (I1, I32),  "1Uto64"  => (I1, I64),
         "8Uto16"  => (I8, I16),  "8Uto32"  => (I8, I32),  "8Uto64"  => (I8, I64),
         "16Uto32" => (I16, I32), "16Uto64" => (I16, I64),
         "32Uto64" => (I32, I64),
@@ -670,8 +673,13 @@ fn parse_vector(op_str: &str) -> Option<IROp> {
     // semantics — counts ≥ lane width produce zero or sign-fill). `Sal` shares
     // semantics with `Shl` on two's complement; libVEX emits both names from
     // ARM SSHL/USHL decomposition (positive-count branches).
+    //
+    // Only `Sal` has a D-reg 64-bit-lane form: `vendor/pyvex_ffi.h` declares
+    // `Iop_Sal64x1` but no `Iop_Shl64x1` / `Iop_Shr64x1` / `Iop_Sar64x1`, so the
+    // other three tables stop at `32x2` (angr-0jh0j.62 — the `64x1` arms were
+    // copy-pasted from `Sal` and could never match).
     vec_arms!(op_str; "Iop_Shl" => VShl {
-        "8x8" => (I8, 8), "16x4" => (I16, 4), "32x2" => (I32, 2), "64x1" => (I64, 1),
+        "8x8" => (I8, 8), "16x4" => (I16, 4), "32x2" => (I32, 2),
         "8x16" => (I8, 16), "16x8" => (I16, 8), "32x4" => (I32, 4), "64x2" => (I64, 2),
     });
     vec_arms!(op_str; "Iop_Sal" => VShl {
@@ -679,11 +687,11 @@ fn parse_vector(op_str: &str) -> Option<IROp> {
         "8x16" => (I8, 16), "16x8" => (I16, 8), "32x4" => (I32, 4), "64x2" => (I64, 2),
     });
     vec_arms!(op_str; "Iop_Shr" => VShr {
-        "8x8" => (I8, 8), "16x4" => (I16, 4), "32x2" => (I32, 2), "64x1" => (I64, 1),
+        "8x8" => (I8, 8), "16x4" => (I16, 4), "32x2" => (I32, 2),
         "8x16" => (I8, 16), "16x8" => (I16, 8), "32x4" => (I32, 4), "64x2" => (I64, 2),
     });
     vec_arms!(op_str; "Iop_Sar" => VSar {
-        "8x8" => (I8, 8), "16x4" => (I16, 4), "32x2" => (I32, 2), "64x1" => (I64, 1),
+        "8x8" => (I8, 8), "16x4" => (I16, 4), "32x2" => (I32, 2),
         "8x16" => (I8, 16), "16x8" => (I16, 8), "32x4" => (I32, 4), "64x2" => (I64, 2),
     });
 
@@ -742,10 +750,14 @@ fn parse_vector(op_str: &str) -> Option<IROp> {
     // `Iop_Avg{N}{S/U}x{M}`. Binary; output shape matches inputs. Both D-reg
     // (total=64) and Q-reg (total=128) variants exist for 8/16/32-bit lanes.
     // Maps to ARM URHADD/SRHADD; SSE PAVGB/PAVGW (unsigned-only) lifts here too.
+    //
+    // The D-reg (total=64) half is **unsigned-only** and 8/16-bit-lane only:
+    // `vendor/pyvex_ffi.h` declares just `Iop_Avg8Ux8` / `Iop_Avg16Ux4` there —
+    // no signed D-reg forms and no `Iop_Avg32{S,U}x2` at all (angr-0jh0j.62;
+    // the signed arms contradicted this family's own "unsigned-only" note
+    // above). Q-reg (total=128) has both signednesses for 8/16/32-bit lanes.
     vec_signed_arms!(op_str; "Iop_Avg" => VAvg {
-        "8Sx8"  => (I8, 8, true),  "8Ux8"  => (I8, 8, false),
-        "16Sx4" => (I16, 4, true), "16Ux4" => (I16, 4, false),
-        "32Sx2" => (I32, 2, true), "32Ux2" => (I32, 2, false),
+        "8Ux8"  => (I8, 8, false), "16Ux4" => (I16, 4, false),
         "8Sx16" => (I8, 16, true), "8Ux16" => (I8, 16, false),
         "16Sx8" => (I16, 8, true), "16Ux8" => (I16, 8, false),
         "32Sx4" => (I32, 4, true), "32Ux4" => (I32, 4, false),
@@ -919,11 +931,14 @@ fn parse_vector(op_str: &str) -> Option<IROp> {
         "64Sto32Ux2" => (I64, 2, true,  false),
         "64Uto32Ux2" => (I64, 2, false, false),
     });
+    // The binary family's D-reg (x8/x4) block has no `32Sto16Ux4`: libVEX only
+    // declares the signed-source/unsigned-dest 32-bit narrow at Q-reg width, as
+    // `Iop_QNarrowBin32Sto16Ux8` (mapped below). angr-0jh0j.62 removed the D-reg
+    // arm, which was the Q-reg suffix miscopied into this block.
     vec_qnarrow_arms!(op_str; "Iop_QNarrowBin" => VQNarrowBin {
         "16Sto8Sx8"  => (I16, 8,  true,  true),
         "16Sto8Ux8"  => (I16, 8,  true,  false),
         "32Sto16Sx4" => (I32, 4,  true,  true),
-        "32Sto16Ux4" => (I32, 4,  true,  false),
         "16Sto8Sx16" => (I16, 16, true,  true),
         "16Sto8Ux16" => (I16, 16, true,  false),
         "16Uto8Ux16" => (I16, 16, false, false),
@@ -982,33 +997,40 @@ fn parse_vector(op_str: &str) -> Option<IROp> {
     });
 
     // Packed integer min/max — signed (S suffix) and unsigned (U suffix).
+    // The AVX2 256-bit block covers 8/16/32-bit lanes only: the sole 64-bit-lane
+    // 256-bit min/max libVEX declares are the *float* `Iop_Min64Fx4` /
+    // `Iop_Max64Fx4` (routed via parse_float), so `64{S,U}x4` integer arms were
+    // dead and are gone (angr-0jh0j.62). 64-bit lanes stop at Q-reg width.
     vec_signed_arms!(op_str; "Iop_Min" => VMin {
         "8Sx8" => (I8, 8, true), "8Sx16" => (I8, 16, true), "8Sx32" => (I8, 32, true),
         "16Sx4" => (I16, 4, true), "16Sx8" => (I16, 8, true), "16Sx16" => (I16, 16, true),
         "32Sx2" => (I32, 2, true), "32Sx4" => (I32, 4, true), "32Sx8" => (I32, 8, true),
-        "64Sx2" => (I64, 2, true), "64Sx4" => (I64, 4, true),
+        "64Sx2" => (I64, 2, true),
         "8Ux8" => (I8, 8, false), "8Ux16" => (I8, 16, false), "8Ux32" => (I8, 32, false),
         "16Ux4" => (I16, 4, false), "16Ux8" => (I16, 8, false), "16Ux16" => (I16, 16, false),
         "32Ux2" => (I32, 2, false), "32Ux4" => (I32, 4, false), "32Ux8" => (I32, 8, false),
-        "64Ux2" => (I64, 2, false), "64Ux4" => (I64, 4, false),
+        "64Ux2" => (I64, 2, false),
     });
     vec_signed_arms!(op_str; "Iop_Max" => VMax {
         "8Sx8" => (I8, 8, true), "8Sx16" => (I8, 16, true), "8Sx32" => (I8, 32, true),
         "16Sx4" => (I16, 4, true), "16Sx8" => (I16, 8, true), "16Sx16" => (I16, 16, true),
         "32Sx2" => (I32, 2, true), "32Sx4" => (I32, 4, true), "32Sx8" => (I32, 8, true),
-        "64Sx2" => (I64, 2, true), "64Sx4" => (I64, 4, true),
+        "64Sx2" => (I64, 2, true),
         "8Ux8" => (I8, 8, false), "8Ux16" => (I8, 16, false), "8Ux32" => (I8, 32, false),
         "16Ux4" => (I16, 4, false), "16Ux8" => (I16, 8, false), "16Ux16" => (I16, 16, false),
         "32Ux2" => (I32, 2, false), "32Ux4" => (I32, 4, false), "32Ux8" => (I32, 8, false),
-        "64Ux2" => (I64, 2, false), "64Ux4" => (I64, 4, false),
+        "64Ux2" => (I64, 2, false),
     });
 
-    // Packed integer absolute value — Iop_Abs{N}x{M}.
+    // Packed integer absolute value — Iop_Abs{N}x{M}. D-reg (8x8/16x4/32x2) and
+    // Q-reg (8x16/16x8/32x4/64x2) only: this VEX pin declares no 256-bit `Abs`
+    // family at all, integer or float, so the `8x32`/`16x16`/`32x8`/`64x4` arms
+    // were dead (angr-0jh0j.62).
     vec_arms!(op_str; "Iop_Abs" => VAbs {
-        "8x8" => (I8, 8), "8x16" => (I8, 16), "8x32" => (I8, 32),
-        "16x4" => (I16, 4), "16x8" => (I16, 8), "16x16" => (I16, 16),
-        "32x2" => (I32, 2), "32x4" => (I32, 4), "32x8" => (I32, 8),
-        "64x2" => (I64, 2), "64x4" => (I64, 4),
+        "8x8" => (I8, 8), "8x16" => (I8, 16),
+        "16x4" => (I16, 4), "16x8" => (I16, 8),
+        "32x2" => (I32, 2), "32x4" => (I32, 4),
+        "64x2" => (I64, 2),
     });
 
     // NEON integer reciprocal estimate — Iop_RecipEst32Ux{2,4} (URECPE) and
