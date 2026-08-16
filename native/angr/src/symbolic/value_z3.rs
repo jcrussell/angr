@@ -502,7 +502,8 @@ impl RustBV {
             BVOp::Clz | BVOp::Ctz => {
                 let ast = operands[0].to_z3_ast_cached(cache);
                 let one = z3::ast::BV::from_u64(1, 1);
-                let mut result = z3::ast::BV::from_u64(width as u64, width);
+                let acc_w = bitcount_acc_width(width);
+                let mut result = z3::ast::BV::from_u64(width as u64, acc_w);
                 // Clz: iterate LSB->MSB so the MSB test is outermost.
                 // Ctz: iterate MSB->LSB so the LSB test is outermost.
                 let positions: Vec<u32> = match op {
@@ -515,24 +516,25 @@ impl RustBV {
                         BVOp::Clz => width - 1 - pos,
                         _ => pos, // ctz: trailing zeros == index of lowest set bit
                     };
-                    let val = z3::ast::BV::from_u64(leading_count as u64, width);
+                    let val = z3::ast::BV::from_u64(leading_count as u64, acc_w);
                     result = cond.ite(&val, &result);
                 }
-                result
+                widen_bitcount_result(result, acc_w, width)
             }
             BVOp::Popcount => {
-                // Sum of the zero-extended individual bits; fits in `width`.
+                // Sum of the zero-extended individual bits; fits in `acc_w`.
                 let ast = operands[0].to_z3_ast_cached(cache);
-                let mut acc = if width > 1 {
-                    ast.extract(0, 0).zero_ext(width - 1)
+                let acc_w = bitcount_acc_width(width);
+                let mut acc = if acc_w > 1 {
+                    ast.extract(0, 0).zero_ext(acc_w - 1)
                 } else {
                     ast.extract(0, 0)
                 };
                 for pos in 1..width {
-                    let ext = ast.extract(pos, pos).zero_ext(width - 1);
+                    let ext = ast.extract(pos, pos).zero_ext(acc_w - 1);
                     acc = acc.bvadd(ext);
                 }
-                acc
+                widen_bitcount_result(acc, acc_w, width)
             }
 
             // Floating-point operations via Z3 FP theory.
@@ -1120,6 +1122,42 @@ fn collect_concat_leaves<'a>(bv: &'a RustBV, out: &mut Vec<&'a RustBV>) {
         collect_concat_leaves(&operands[1], out);
     } else {
         out.push(bv);
+    }
+}
+
+/// Width at which the Clz/Ctz/Popcount encodings in
+/// [`RustBV::build_z3_ast_cached`] accumulate, before a single `zero_ext` back
+/// out to the operand width.
+///
+/// All three ops return a value in `0..=width`, so `width.ilog2() + 1` bits
+/// always suffice — and building the ladder there instead of at the operand
+/// width is what keeps a wide bitcount op affordable. The encodings are
+/// inherently `O(width)` *nodes* (one per bit position; Z3 has no native
+/// bitcount to delegate to), but accumulating at the operand width made each
+/// of those nodes `width` bits wide too: the Clz/Ctz ladder alone allocated
+/// `width` constants of `width` bits, i.e. `O(width^2)` bytes — ~137 GiB at
+/// [`MAX_BV_WIDTH`](super::MAX_BV_WIDTH), and a comparable blow-up in
+/// bit-blasted boolean variables for Popcount's adder chain. Accumulating at
+/// `O(log width)` bits makes that `O(width * log width)` (angr-0jh0j.54).
+///
+/// `width == 0` maps to 0, preserving the degenerate zero-width `RustBV` the
+/// old code produced for it. `min(width)` is defensive only — `ilog2(w) + 1`
+/// never exceeds `w` for `w >= 1` — and keeps [`widen_bitcount_result`]'s
+/// subtraction well-defined by construction.
+#[cfg(feature = "vex-engine-z3")]
+fn bitcount_acc_width(width: u32) -> u32 {
+    (u32::BITS - width.leading_zeros()).min(width)
+}
+
+/// Zero-extend a bitcount ladder built at [`bitcount_acc_width`] back to the
+/// op's declared result `width`. A no-op when the two already agree (narrow
+/// operands, where `acc_w == width`).
+#[cfg(feature = "vex-engine-z3")]
+fn widen_bitcount_result(acc: z3::ast::BV, acc_w: u32, width: u32) -> z3::ast::BV {
+    if acc_w < width {
+        acc.zero_ext(width - acc_w)
+    } else {
+        acc
     }
 }
 

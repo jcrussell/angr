@@ -1744,3 +1744,80 @@ fn test_popcount_matches_concrete_when_operand_pinned() {
         "symbolic popcount of a pinned operand must match concrete count_ones"
     );
 }
+
+// angr-0jh0j.54: the Clz/Ctz/Popcount Z3 encodings accumulate at
+// `value_z3::bitcount_acc_width` bits and `zero_ext` once at the end, rather
+// than building the whole ladder at the operand width (which allocated
+// `width` constants of `width` bits each). This is the only bitcount test
+// above 64 bits, and it guards both halves of that change: the operand width
+// exceeds the accumulator width, so the final widening step actually runs (a
+// missing or mis-sized one is a Z3 sort mismatch), and an accumulator too
+// narrow to hold `width` would truncate the ladder's constants and skew every
+// one of the three expected counts. The sibling tests above sit at 32 bits,
+// where `acc_w == width` and neither failure mode is reachable.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_bitcount_ops_above_64_bits_match_concrete() {
+    const WIDTH: u32 = 256;
+    let val: u128 = 0x0000_f0f0_0000_00ff_0000_0000_0000_0010;
+
+    let ctx = SymContext::new();
+    let x = RustBV::symbolic(&ctx, "wide_bitcount_x", WIDTH);
+    ctx.assume_true(&x.eq(&RustBV::concrete(val, WIDTH), &ctx));
+
+    // The pinned value's high 128 bits are zero, so its leading-zero count is
+    // the u128 count plus the 128 bits of headroom.
+    let clz = ctx.eval(&x.clz(&ctx)).expect("clz must be evaluable");
+    assert_eq!(
+        clz,
+        u128::from(WIDTH - 128) + u128::from(val.leading_zeros()),
+        "256-bit clz of a pinned operand must match the concrete count"
+    );
+
+    let ctz = ctx.eval(&x.ctz(&ctx)).expect("ctz must be evaluable");
+    assert_eq!(
+        ctz,
+        u128::from(val.trailing_zeros()),
+        "256-bit ctz of a pinned operand must match the concrete count"
+    );
+
+    let pc = ctx
+        .eval(&x.popcount(&ctx))
+        .expect("popcount must be evaluable");
+    assert_eq!(
+        pc,
+        u128::from(val.count_ones()),
+        "256-bit popcount of a pinned operand must match the concrete count"
+    );
+}
+
+// angr-0jh0j.54: the no-bit-set default. `clz`/`ctz` of an all-zero operand
+// is `width` itself — the one value the accumulator must be sized to hold, and
+// the only one that pins `bitcount_acc_width` to `ilog2(width) + 1` rather than
+// merely "wide enough for the largest bit index". An accumulator one bit
+// narrower truncates the ladder's default constant (256 -> 0 at 8 bits) and
+// still satisfies the pinned-operand test above, so this case is what makes
+// that test's sibling non-vacuous.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_bitcount_ops_above_64_bits_on_zero_operand() {
+    const WIDTH: u32 = 256;
+
+    let ctx = SymContext::new();
+    let x = RustBV::symbolic(&ctx, "wide_bitcount_zero_x", WIDTH);
+    ctx.assume_true(&x.eq(&RustBV::zero(WIDTH), &ctx));
+
+    for (name, bv) in [("clz", x.clz(&ctx)), ("ctz", x.ctz(&ctx))] {
+        let got = ctx.eval(&bv).unwrap_or_else(|| panic!("{name} must be evaluable"));
+        assert_eq!(
+            got,
+            u128::from(WIDTH),
+            "{name} of an all-zero 256-bit operand must be the full width"
+        );
+    }
+
+    let pc = ctx
+        .eval(&x.popcount(&ctx))
+        .expect("popcount must be evaluable");
+    assert_eq!(pc, 0, "popcount of an all-zero operand must be 0");
+}
