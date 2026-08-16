@@ -354,6 +354,13 @@ impl RustSymbolTable {
     /// fork-then-read-only case. Handle ids stay valid across the fork because
     /// `next_id` continues from the parent's counter, so neither side reissues
     /// an id the other already bound.
+    ///
+    /// This is the *only* way to copy a table: `RustSymbolTable` deliberately
+    /// does not implement [`Clone`]. A `Clone` forwarding to `fork` existed and
+    /// had zero call sites, so nothing would have caught it drifting out of
+    /// sync with the real copy semantics. Leaving it unimplemented means a
+    /// container that grows a `#[derive(Clone)]` fails to compile instead of
+    /// silently picking up a second, unexercised copy path (angr-0jh0j.57).
     pub fn fork(&self) -> Self {
         let symbols = Arc::clone(&self.symbols.read());
         let next_id = self.next_id.load(Ordering::SeqCst);
@@ -367,12 +374,6 @@ impl RustSymbolTable {
 impl Default for RustSymbolTable {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-impl Clone for RustSymbolTable {
-    fn clone(&self) -> Self {
-        self.fork()
     }
 }
 
