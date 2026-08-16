@@ -564,6 +564,27 @@ mod steady_guarded_tests {
     }
 
     #[test]
+    fn both_validations_fire_together_on_a_doubly_misused_attribute() {
+        // The two checks are independent and accumulate into `errors` rather
+        // than returning early, so a contributor who made both mistakes sees
+        // both messages from one compile instead of one per rebuild.
+        let out = expand(quote! { every = "step" }, quote! { fn set_x(&self) {} });
+        assert!(out.contains("takes no arguments"), "{out}");
+        assert!(out.contains("requires a `&mut self` receiver"), "{out}");
+        assert_eq!(out.matches("compile_error").count(), 2, "{out}");
+        // Receiver rejection still wins over injection, and the function still
+        // reaches the compiler so its callers do not fail a second way.
+        assert!(!out.contains(INJECTED), "{out}");
+        assert!(out.contains("fn set_x"), "{out}");
+        // Argument diagnostic first: it is spanned at the attribute, which
+        // sorts above the signature a reader scans downward from.
+        assert!(
+            out.find("takes no arguments") < out.find("requires a `&mut self` receiver"),
+            "{out}"
+        );
+    }
+
+    #[test]
     fn non_function_item_reports_a_parse_error() {
         let out = expand(quote! {}, quote! { struct Nope; });
         assert!(out.contains("compile_error"), "{out}");

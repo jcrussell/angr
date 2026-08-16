@@ -1,0 +1,11 @@
+error: #[steady_guarded] takes no arguments — the guard call it injects is not configurable; write a bare `#[angr_macros::steady_guarded]`
+  --> tests/ui/steady_guarded_both_misuses.rs:12:35
+   |
+12 |     #[angr_macros::steady_guarded(every = "step")]
+   |                                   ^^^^^
+
+error: #[steady_guarded] requires a `&mut self` receiver — it injects `self.steady_config_guard();`, which takes `&mut self`
+  --> tests/ui/steady_guarded_both_misuses.rs:13:5
+   |
+13 |     fn set_x(&self) {}
+   |     ^^

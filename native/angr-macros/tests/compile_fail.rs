@@ -15,6 +15,12 @@
 //! `to_string().contains(...)` unit test, which cannot see what rustc renders
 //! or whether a second error drowns it out (angr-0jh0j.76).
 //!
+//! Where two of a macro's validations can fire on the *same* invocation, the
+//! combination gets its own case too (`steady_guarded_both_misuses.rs`): the
+//! bodies accumulate diagnostics instead of returning at the first one, and
+//! only rustc can confirm it renders both rather than truncating
+//! (angr-0jh0j.79).
+//!
 //! The snapshots carry rustc's own rendering of the span, so they are
 //! toolchain-sensitive; that is safe here because `rust-toolchain.toml` pins
 //! the compiler. A snapshot diff immediately after a toolchain bump means
