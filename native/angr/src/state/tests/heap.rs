@@ -192,6 +192,48 @@ fn test_cgc_take_max_sinkhole_wraps_at_top_of_address_space() {
     assert_eq!(s.cgc_sinkholes(), &[(u64::MAX - 0xFF, 0xF00)]);
 }
 
+/// A bump that would carry `heap_brk` past the top of the address space pins
+/// it at `u64::MAX` instead of wrapping to a low, already-mapped address —
+/// see `advance_brk` in `state/process.rs` (angr-0jh0j.50). Non-vacuity: with
+/// the old `wrapping_add` the new brk would be 0x0FFF and the *next*
+/// allocation would hand out a page-zero address.
+#[test]
+fn test_heap_alloc_saturates_brk_instead_of_wrapping() {
+    let mut s = RustSimState::new("amd64").unwrap();
+    s.set_heap_brk(u64::MAX - 0x0FFF);
+
+    let addr = s.heap_alloc(0x2000);
+    assert_eq!(addr, u64::MAX - 0x0FFF, "the returned address is the old brk");
+    assert_eq!(s.heap_brk(), u64::MAX, "brk saturates rather than wrapping");
+
+    // A follow-up allocation stays at the top of the space; it must never come
+    // back below the previous allocation.
+    let addr2 = s.heap_alloc(16);
+    assert_eq!(addr2, u64::MAX);
+    assert_eq!(s.heap_brk(), u64::MAX);
+}
+
+/// Same guarantee for `heap_alloc_aligned`, whose align-up is a second place
+/// the brk can run off the top: rounding `u64::MAX - 1` up to 0x1000 saturates
+/// to the highest representable aligned address instead of wrapping to 0.
+#[test]
+fn test_heap_alloc_aligned_saturates_brk_instead_of_wrapping() {
+    let mut s = RustSimState::new("amd64").unwrap();
+    s.set_heap_brk(u64::MAX - 1);
+
+    let top_aligned = 0xFFFF_FFFF_FFFF_F000u64;
+    let addr = s.heap_alloc_aligned(8, 0x1000);
+    assert_eq!(
+        addr, top_aligned,
+        "align-up saturates to the top aligned address, not 0"
+    );
+    assert_eq!(
+        s.heap_brk(),
+        top_aligned + 16,
+        "the bump proceeds from the saturated, aligned address"
+    );
+}
+
 /// `heap_alloc_aligned` with `alignment` 0 or 1 is exactly `heap_alloc`: the
 /// address is the unmodified brk even when that brk is oddly aligned.
 #[test]
@@ -262,7 +304,9 @@ fn test_heap_alloc_aligned_records_requested_size_at_aligned_address() {
 /// small (or zero) bump. `procedures/malloc.rs` caps guest sizes long before
 /// this, but the state-layer allocator must not depend on that to stay sane —
 /// the wrapping form panicked under `[profile.release-checked]` and produced
-/// aliasing allocations under `[profile.release]`.
+/// aliasing allocations under `[profile.release]`. Since angr-0jh0j.50 the
+/// *bump* saturates too (`advance_brk`), so such a size leaves the brk pinned
+/// at `u64::MAX` rather than wrapped around below the address it just returned.
 #[test]
 fn test_heap_alloc_saturates_instead_of_wrapping_the_size_rounding() {
     for size in [u64::MAX, u64::MAX - 1, u64::MAX - 14] {
@@ -271,16 +315,10 @@ fn test_heap_alloc_saturates_instead_of_wrapping_the_size_rounding() {
 
         let addr = s.heap_alloc(size);
         assert_eq!(addr, 0x1000);
-        assert_ne!(
+        assert_eq!(
             s.heap_brk(),
-            0x1000,
-            "heap_alloc({size:#x}) must not leave the brk in place"
-        );
-        assert!(
-            s.heap_brk() < 0x1000,
-            "a >2^63 bump wraps the address space, but only after saturating \
-             the rounding: brk={:#x}",
-            s.heap_brk()
+            u64::MAX,
+            "heap_alloc({size:#x}) must move the brk forward, saturating"
         );
         assert_eq!(s.heap_metadata().alloc_size(addr), Some(size));
 
@@ -289,6 +327,6 @@ fn test_heap_alloc_saturates_instead_of_wrapping_the_size_rounding() {
         s.set_heap_brk(0x1000);
         let addr = s.heap_alloc_aligned(size, 0x40);
         assert_eq!(addr, 0x1000);
-        assert_ne!(s.heap_brk(), 0x1000);
+        assert_eq!(s.heap_brk(), u64::MAX);
     }
 }

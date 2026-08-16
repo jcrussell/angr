@@ -347,12 +347,12 @@ impl RustSimState {
     /// Aligns size up to 16 bytes (matching angr's SimHeapBrk).
     ///
     /// Callers that take a guest-controlled size (`procedures/malloc.rs`) cap it
-    /// at `MAX_ALLOC_SIZE` first; the rounding here is nonetheless saturating so
-    /// no caller can wrap the bump — see `round_alloc_size`.
+    /// at `MAX_ALLOC_SIZE` first; neither the rounding nor the bump relies on
+    /// that — see `round_alloc_size` and `advance_brk`.
     pub fn heap_alloc(&mut self, size: u64) -> u64 {
         let aligned = round_alloc_size(size);
         let addr = self.heap_brk;
-        self.heap_brk = addr.wrapping_add(aligned);
+        self.heap_brk = advance_brk(addr, aligned);
         self.heap_metadata.record_alloc(addr, size);
         addr
     }
@@ -361,14 +361,20 @@ impl RustSimState {
     /// `alignment` (must be a power of 2). The size bump is rounded up to 16,
     /// matching `heap_alloc`, so consecutive allocations remain aligned.
     /// Falls back to `heap_alloc` semantics when `alignment` is 0 or 1.
+    ///
+    /// Both the align-up and the bump go through `advance_brk`, so neither
+    /// depends on the caller having bounded `size`.
     pub fn heap_alloc_aligned(&mut self, size: u64, alignment: u64) -> u64 {
         if alignment <= 1 {
             return self.heap_alloc(size);
         }
+        // overflow-ok: the `alignment <= 1` guard above makes this non-zero.
         let mask = alignment - 1;
-        let addr = self.heap_brk.wrapping_add(mask) & !mask;
+        // Align-up saturates to `u64::MAX` before masking, i.e. to the highest
+        // representable aligned address — see `advance_brk`.
+        let addr = advance_brk(self.heap_brk, mask) & !mask;
         let aligned = round_alloc_size(size);
-        self.heap_brk = addr.wrapping_add(aligned);
+        self.heap_brk = advance_brk(addr, aligned);
         self.heap_metadata.record_alloc(addr, size);
         addr
     }
@@ -394,4 +400,35 @@ impl RustSimState {
 /// bump `>= size` for every request the 64-bit address space can hold.
 fn round_alloc_size(size: u64) -> u64 {
     size.saturating_add(15) & !15
+}
+
+/// Advance the heap bump pointer by `delta`, saturating at `u64::MAX`.
+///
+/// The bump pointer is an *identity* allocator — every value it hands out
+/// names a distinct live object — so per CLAUDE.md's "Integer overflow /
+/// wraparound" rules it must not wrap: a wrapped `heap_brk` lands *below*
+/// where it started and the next `heap_alloc` aliases memory that is already
+/// mapped (the binary's own text/data), silently corrupting it. Saturating
+/// still aliases, but at the top of the address space, where the aliased
+/// stores fault as unmapped and bounce to Python instead of returning a wrong
+/// answer.
+///
+/// Refusing outright (`checked_add` + `Option`, the shape
+/// `invariant-overflow-fix-refuse-not-saturate-identities` prefers for
+/// identities) would mean threading a failure through `heap_alloc`'s `-> u64`
+/// contract and its ten-odd `procedures/` call sites for a case no caller can
+/// currently reach — `procedures/malloc.rs` caps a single request at
+/// `MAX_ALLOC_SIZE` (1 MiB), so exhausting 64 bits would take ~2^44 requests.
+/// The `log::warn!` is what makes the saturation non-silent; the local guard
+/// is defense-in-depth for a *future* caller (a new syscall handler or test
+/// helper) that skips that cap, which is exactly the situation
+/// `round_alloc_size`'s saturation already anticipates on the size side
+/// (angr-0jh0j.50).
+fn advance_brk(brk: u64, delta: u64) -> u64 {
+    silent_default!(
+        cat_c,
+        brk.checked_add(delta),
+        u64::MAX,
+        "heap_brk bump overflowed: {brk:#x} + {delta:#x}; pinning brk at u64::MAX"
+    )
 }
