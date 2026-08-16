@@ -14,7 +14,7 @@
 //!     struct = NativeStrlen,
 //!     args = [addr: concrete],
 //!     call |state| {
-//!         scan_for_null(state, addr, MAX_STRLEN as u64)
+//!         scan_for_null(state, addr, MAX_STRLEN as u64, /*require_null=*/true)
 //!     }
 //! }
 //! ```

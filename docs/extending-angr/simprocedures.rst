@@ -675,7 +675,7 @@ bailing out. Source:
        struct = NativeStrlen,
        args = [addr: concrete],
        call |state| {
-           scan_for_null(state, addr, MAX_STRLEN as u64)
+           scan_for_null(state, addr, MAX_STRLEN as u64, /*require_null=*/true)
        }
    }
 
@@ -850,42 +850,59 @@ Things to take away from this example:
 Worked example 4: format strings — ``printf`` / ``scanf`` / ``sprintf``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-The ``printf``/``scanf``/``sprintf``/``snprintf``/``sscanf`` family parses
-the format string itself, so its concreteness boundary is sharper than the
+The ``printf``/``scanf``/``sprintf``/``snprintf`` family parses the format
+string itself, so its concreteness boundary is sharper than the
 buffer-copying procedures above. Two distinct things can be symbolic — the
 format-string *address* and the format-string *bytes* — and the family
 handles them differently:
 
-* **Symbolic format-string address.** All five extract the format pointer
-  with ``extract_concrete_arg(&args[0], "format")``; a symbolic address
-  short-circuits to ``ProcedureError::SymbolicArgument`` and Python takes
-  over. There is no fast path for a symbolic format pointer.
+* **Symbolic format-string address.** Every member extracts the format
+  pointer with ``extract_concrete_arg(&args[N], "format")``; a symbolic
+  address short-circuits to ``ProcedureError::SymbolicArgument`` and Python
+  takes over. There is no fast path for a symbolic format pointer. ``N``
+  varies with the signature — 0 for ``printf``/``scanf``, 1 for
+  ``sprintf``/``fprintf``/``fscanf`` (after the dest/stream argument), 2 for
+  ``snprintf`` (after dest and size).
 
 * **Symbolic format-string bytes.** Here the family is deliberately
   *asymmetric*:
 
-  - ``scanf``/``sscanf`` (``read_format_string``) and
-    ``sprintf``/``snprintf`` (``read_string``) call
+  - ``scanf``/``fscanf`` and ``sprintf``/``snprintf`` (all four via the one
+    shared ``format_common::read_format_string``) call
     ``extract_concrete_arg(&bv, ...)`` on *every* byte they read. The first
     symbolic byte raises ``SymbolicArgument`` and the whole call falls back
     to Python — these procedures must parse the specifiers
     (``%d``/``%s``/``%x``/…) to mint output BVs or consume variadic args,
     and a symbolic specifier byte makes that parse undefined.
-  - ``printf`` (``NativePrintf::call``) does **not** fall back on a symbolic
-    byte. It only copies the raw format string to the stdout buffer (no
-    specifier substitution — sufficient for the common CTF predicate that
-    greps stdout for a fixed string), so on the first symbolic byte it
-    simply **stops reading, writes the concrete prefix, and returns success**
-    with the prefix length. This is intentional, but it is the one place in
-    the family where a symbolic format string does *not* hand off to Python:
-    callers that need the full (symbolic-tail) string materialized must not
-    rely on native ``printf``.
+  - ``printf``/``fprintf`` (``NativePrintf::call`` /
+    ``NativeFprintf::call``) do **not** fall back on a symbolic byte. They
+    only copy the raw format string to the output buffer (no specifier
+    substitution — sufficient for the common CTF predicate that greps stdout
+    for a fixed string), so via ``scan_concrete_lossy`` they simply **stop
+    reading, write the concrete prefix, and return success** with the prefix
+    length. This is intentional, but it is the one place in the family where
+    a symbolic format string does *not* hand off to Python: callers that
+    need the full (symbolic-tail) string materialized must not rely on
+    native ``printf``.
 
-* **No symbolic-format substitution path exists.** None of the five attempt
-  to enumerate or constrain a symbolic format string into concrete cases.
-  That is the documented boundary: a format string that is symbolic *in the
+* **No symbolic-format substitution path exists.** No member attempts to
+  enumerate or constrain a symbolic format string into concrete cases. That
+  is the documented boundary: a format string that is symbolic *in the
   specifiers* is out of scope for the native fast path. ``printf`` degrades
   to a concrete-prefix write; the rest hand off to Python.
+
+* **``sscanf`` is not in the family at all.** ``NativeSscanf::call`` ignores
+  both of its arguments and unconditionally returns
+  ``ProcedureError::Other`` — it never reads the format string, so none of
+  the concreteness rules above apply to it. The reason is the *source*, not
+  the format: ``sscanf`` parses a concrete in-memory buffer, and the parsed
+  values must be **constrained by what that buffer holds**
+  (``sscanf("42", "%d", &x)`` must bind ``x == 42``). ``do_scanf`` mints
+  fresh unconstrained BVs, which is faithful for a symbolic *stream*
+  (``scanf``/``fscanf``) but would make impossible paths feasible here.
+  Rather than reimplement scanf's matching engine natively, the whole call
+  defers to Python's ``format_parser.py``. See ``angr-8onrp`` and the
+  ``NativeSscanf`` doc comment.
 
 Things to take away from this example:
 
