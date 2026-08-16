@@ -17,11 +17,42 @@
 //! See `procedures/sprintf.rs::format_string` and
 //! `procedures/scanf.rs::parse_scanf_format` for the callers.
 
+use super::ProcedureError;
+use super::strings::scan_concrete_bounded;
+use crate::state::RustSimState;
+
 /// Shared upper bound on a concrete format-string scan for the printf/sprintf/
 /// scanf family. One home so a future reduction is applied everywhere at once
 /// rather than silently missing a consumer that kept its own local `4096`
 /// (angr-myzjx.7). The str-family shares [`super::strings::MAX_STRING_SCAN`].
 pub(crate) const MAX_FORMAT_LEN: usize = 4096;
+
+/// Read a concrete, null-terminated format string from guest memory, bounded
+/// by [`MAX_FORMAT_LEN`]. The null itself is not included in the result.
+///
+/// The single entry point for the family: `sprintf.rs`'s
+/// `NativeSprintf`/`NativeSnprintf`/`NativeVsnprintf`/`NativeVsprintf` and
+/// `scanf.rs::parse_scanf_format`'s caller all pull their format string
+/// through here (they used to hold one near-identical private wrapper each —
+/// `sprintf::read_string` and `scanf::read_format_string` — which is the
+/// duplication angr-0jh0j.44 folded away). A `%s` *conversion argument* is a
+/// plain C string with no length bound, so it scans against
+/// [`super::strings::MAX_STRING_SCAN`] instead; see the deciding test in bd
+/// memory `invariant-syscall-byte-cap-shared`.
+///
+/// Propagates memory-fault errors (Unmapped / Permission / OutOfBounds /
+/// SymbolicAddress) and symbolic bytes as `Err` rather than silently
+/// truncating, matching the rest of the string-scanning family via
+/// [`scan_concrete_bounded`]. A real fault must surface so the caller falls
+/// back to Python instead of committing to a corrupted (truncated) format
+/// string (angr-myzjx.1). Hitting `MAX_FORMAT_LEN` without a null is *not* an
+/// error — a plausibly long format string simply stops there.
+pub(crate) fn read_format_string(
+    state: &mut RustSimState,
+    addr: u64,
+) -> Result<Vec<u8>, ProcedureError> {
+    scan_concrete_bounded(state, addr, MAX_FORMAT_LEN, "format string byte").map(|(buf, _)| buf)
+}
 
 /// Parsed length modifier. Both printf-family and scanf-family parsers
 /// share these kinds; consumers map them onto their internal flags.

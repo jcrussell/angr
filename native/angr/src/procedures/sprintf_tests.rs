@@ -687,7 +687,7 @@ fn test_asprintf_percent_d() {
 
 #[test]
 fn test_asprintf_symbolic_format_falls_back() {
-    // A symbolic format string must defer to Python (read_string errors on a
+    // A symbolic format string must defer to Python (read_format_string errors on a
     // symbolic byte), matching sprintf's fallback semantics.
     let mut state = setup_state();
     state.map_memory_data(0x1000, b"\x00\x00\x00\x00", Permission::RWX);

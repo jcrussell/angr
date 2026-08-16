@@ -5,21 +5,13 @@
 //! Python for symbolic format strings or arguments.
 
 use super::arch_word;
-use super::format_common::{MAX_FORMAT_LEN, parse_length_modifier, parse_width_digits};
-use super::strings::{scan_concrete_bounded, write_cstr};
+use super::format_common::{parse_length_modifier, parse_width_digits, read_format_string};
+use super::strings::{MAX_STRING_SCAN, scan_concrete_bounded, write_cstr};
 use super::{NativeSimProcedure, ProcedureError, extract_concrete_arg};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
 const MAX_OUTPUT_LEN: usize = 4096;
-
-/// Read a null-terminated string from memory at `addr` (up to `MAX_FORMAT_LEN`
-/// bytes; exhausting the cap without a null is not an error). A symbolic byte
-/// or out-of-bounds read propagates as an `Err` and falls back to Python.
-fn read_string(state: &mut RustSimState, addr: u64) -> Result<Vec<u8>, ProcedureError> {
-    let (buf, _null_found) = scan_concrete_bounded(state, addr, MAX_FORMAT_LEN, "string")?;
-    Ok(buf)
-}
 
 /// Format arguments according to a printf-style format string.
 ///
@@ -313,7 +305,8 @@ fn format_string(
                 }
                 let str_addr = extract_concrete_arg(&args[arg_idx], &format!("arg{arg_idx}"))?;
                 arg_idx += 1;
-                let s = read_string(state, str_addr)?;
+                let (s, _null_found) =
+                    scan_concrete_bounded(state, str_addr, MAX_STRING_SCAN, "string")?;
                 let s = if let Some(prec) = precision {
                     if prec < s.len() { &s[..prec] } else { &s }
                 } else {
@@ -421,7 +414,7 @@ impl NativeSimProcedure for NativeSprintf {
         let dest = extract_concrete_arg(&args[0], "dest")?;
         let fmt_addr = extract_concrete_arg(&args[1], "format")?;
 
-        let fmt = read_string(state, fmt_addr)?;
+        let fmt = read_format_string(state, fmt_addr)?;
         let varargs = &args[2..];
         let output = format_string(state, &fmt, varargs)?;
 
@@ -462,7 +455,7 @@ impl NativeSimProcedure for NativeAsprintf {
         let strp = extract_concrete_arg(&args[0], "strp")?;
         let fmt_addr = extract_concrete_arg(&args[1], "format")?;
 
-        let fmt = read_string(state, fmt_addr)?;
+        let fmt = read_format_string(state, fmt_addr)?;
         let varargs = &args[2..];
         let output = format_string(state, &fmt, varargs)?;
 
@@ -502,7 +495,7 @@ impl NativeSimProcedure for NativeSnprintf {
         let size = extract_concrete_arg(&args[1], "size")? as usize;
         let fmt_addr = extract_concrete_arg(&args[2], "format")?;
 
-        let fmt = read_string(state, fmt_addr)?;
+        let fmt = read_format_string(state, fmt_addr)?;
         let varargs = &args[3..];
         let output = format_string(state, &fmt, varargs)?;
 
@@ -575,7 +568,8 @@ impl NativeSimProcedure for NativeVsnprintf {
 /// memory `avoid-vsnprintf-real-formatting`). Instead it copies the RAW format
 /// string into `str` (NUL-terminated) and returns its length — matching Python
 /// `vsprintf` (strcpy + strlen). Falls back to Python on a symbolic dest/format
-/// *address* or a symbolic format *byte* via `read_string`/`extract_concrete_arg`.
+/// *address* or a symbolic format *byte* via
+/// [`read_format_string`]/[`extract_concrete_arg`].
 pub(crate) struct NativeVsprintf;
 
 impl NativeSimProcedure for NativeVsprintf {
@@ -596,7 +590,7 @@ impl NativeSimProcedure for NativeVsprintf {
         let fmt_addr = extract_concrete_arg(&args[1], "format")?;
 
         // Raw format string, no %-substitution (va_list is unmodeled).
-        let fmt = read_string(state, fmt_addr)?;
+        let fmt = read_format_string(state, fmt_addr)?;
         write_cstr(state, dest, &fmt)?;
 
         Ok(Some(arch_word(state, fmt.len() as u64)))

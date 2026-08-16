@@ -1078,7 +1078,7 @@ fn test_scanf_long_family_store_width_follows_arch_on_ilp32() {
 /// A format string pointing at unmapped memory must propagate the memory-fault
 /// error (triggering the Python fallback) instead of silently truncating to an
 /// empty format and returning "0 conversions" (angr-myzjx.1). Regression for
-/// the swallowed `Err(_) => break` in `read_format_string`.
+/// the swallowed `Err(_) => break` in `format_common::read_format_string`.
 #[test]
 fn test_scanf_unmapped_format_propagates_error() {
     let mut state = setup_state();
