@@ -58,7 +58,13 @@ impl VEXOps {
         let half_count = count / 2;
         let base = if high { half_count } else { 0 };
 
-        if let (Some(l), Some(r)) = (left.as_u128(), right.as_u128()) {
+        // Concrete fast path (fits in u128 — total_width <= 128 covers all
+        // currently-mapped interleave shapes). `RustBV::Concrete` holds its
+        // value in a u128, so a wider declared width could not round-trip
+        // through `as_u128`; fall through to the symbolic path instead.
+        if total_width <= 128
+            && let (Some(l), Some(r)) = (left.as_u128(), right.as_u128())
+        {
             let mut result: u128 = 0;
             let elem_mask = Self::low_bit_mask_u128(elem_width);
 

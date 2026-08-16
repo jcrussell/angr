@@ -233,3 +233,61 @@ fn test_vec_interleave_8x8_concrete_is_64_bit() {
         8,
     );
 }
+
+// =========================================================================
+// 256-bit interleave — the total_width <= 128 guard (angr-0jh0j.65)
+// =========================================================================
+
+/// VPUNPCKLBW-style low interleave over 32x i8 lanes (256 bits).
+///
+/// A 256-bit vector can never be a `Concrete` RustBV — that variant stores its
+/// value in a `u128` — so it arrives as a `Concat` and must route through
+/// `vec_interleave`'s per-lane symbolic path. That is what the
+/// `total_width <= 128` guard there protects: `as_u128` on a wider operand
+/// cannot round-trip, and the concrete fold would shift a `u128` by up to 248
+/// while assembling the result (`invariant-concrete-bv-u128-16-byte-limit`).
+/// Same defense the sibling helpers carry — see
+/// `test_vec_cmp_avx2_256_bit_i32x8` (`tests_vec_int_lane.rs`).
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_vec_interleave_lo_8x32_256_bit() {
+    let ctx = SymContext::new_mock();
+
+    // Left bytes 0x00..0x1F, right bytes 0xE0..0xFF: disjoint ranges, so a
+    // lane swap or wrong-half read is immediately visible.
+    let l: [u128; 32] = core::array::from_fn(|i| i as u128);
+    let r: [u128; 32] = core::array::from_fn(|i| 0xE0 + i as u128);
+
+    let pack = |lanes: &[u128; 32]| {
+        let lo: [u128; 16] = core::array::from_fn(|i| lanes[i]);
+        let hi: [u128; 16] = core::array::from_fn(|i| lanes[i + 16]);
+        RustBV::concrete(pack_lanes_uint(&hi, 8), 128)
+            .concat_into(RustBV::concrete(pack_lanes_uint(&lo, 8), 128), &ctx)
+    };
+    let lv = pack(&l);
+    let rv = pack(&r);
+    assert_eq!(lv.width(), 256);
+
+    let result = VEXOps::binop(
+        IROp::VInterleaveLO {
+            elem: IRType::I8,
+            count: 32,
+        },
+        lv,
+        rv,
+        &ctx,
+    )
+    .unwrap();
+    assert_eq!(result.width(), 256, "InterleaveLO8x32 must stay 256 bits");
+
+    // InterleaveLO consumes the low 16 lanes of each operand: output lane
+    // `2i` = right[i], lane `2i+1` = left[i] for i in 0..16.
+    for i in 0..16usize {
+        for (off, exp) in [(0u32, r[i]), (1, l[i])] {
+            let low = (2 * i as u32 + off) * 8;
+            let extracted = result.extract(low + 7, low, &ctx);
+            let got = ctx.eval(&extracted).expect("eval(lane) returned None");
+            assert_eq!(got, exp, "output lane {}", 2 * i as u32 + off);
+        }
+    }
+}

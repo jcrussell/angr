@@ -32,9 +32,16 @@ impl VEXOps {
         debug_assert_eq!(left.width(), in_total);
         debug_assert_eq!(right.width(), in_total);
         let out_elem: u32 = if widen { 16 } else { 8 };
+        let out_total = out_elem * count as u32;
 
-        // Concrete fast path.
-        if let (Some(a_all), Some(b_all)) = (left.as_u128(), right.as_u128()) {
+        // Concrete fast path (fits in u128 — `out_total <= 128` covers all
+        // currently-mapped PolynomialMul shapes, and subsumes the input check
+        // since `out_elem >= 8` makes `out_total >= in_total`). `RustBV::Concrete`
+        // holds its value in a u128, so a wider declared width could not
+        // round-trip through `as_u128`; fall through to the symbolic path.
+        if out_total <= 128
+            && let (Some(a_all), Some(b_all)) = (left.as_u128(), right.as_u128())
+        {
             let mut result: u128 = 0;
             for i in 0..count as u32 {
                 let a = ((a_all >> (i * 8)) as u8) as u16;
@@ -53,7 +60,6 @@ impl VEXOps {
                 };
                 result |= lane_val << (i * out_elem);
             }
-            let out_total = out_elem * count as u32;
             return Ok(RustBV::concrete(result, out_total));
         }
 
