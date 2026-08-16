@@ -102,13 +102,16 @@ fn u128_to_be_bytes_width(value: u128, width: u32) -> Vec<u8> {
 /// angr-sqfj8.103). Shared by `lex_min_witness`,
 /// `eval_upto_ascending`, both arms of `min` and `max`, and `range_seeded`
 /// so a future width-boundary fix lands in one place (angr-9ke6b.141).
+///
+/// The computation itself lives in [`RustBV::all_ones_mask`] — a max value at
+/// `width` bits and that width's all-ones mask are the same number, and the
+/// engine had grown three independent copies of the saturating shift
+/// (angr-0jh0j.55). This stays a named wrapper because the solving path reads
+/// its result as a search bound, not as a mask; it carries no logic of its own.
 #[cfg(feature = "vex-engine-z3")]
+#[inline]
 fn max_val_for_width(width: u32) -> u128 {
-    if width >= 128 {
-        u128::MAX
-    } else {
-        (1u128 << width) - 1
-    }
+    RustBV::all_ones_mask(width)
 }
 
 /// Read every bv in `bvs` off a single Z3 model. All-or-nothing: `None` when

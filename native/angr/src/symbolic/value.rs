@@ -609,6 +609,15 @@ impl RustBV {
     }
 
     /// Return the all-ones mask for a given bit width.
+    ///
+    /// Single source of truth for the saturating `(1u128 << width) - 1` shift:
+    /// `solving_ops::max_val_for_width` (and through it `query_class`'s
+    /// unsigned-bound arms) delegate here, because a width's all-ones mask and
+    /// its largest unsigned value are the same number and had drifted into
+    /// three independent copies (angr-0jh0j.55). Widths `>= 128` saturate at
+    /// `u128::MAX` — shifting a `u128` by `>= 128` panics in debug and wraps
+    /// the shift amount in release, and the `Concrete` payload cannot represent
+    /// anything wider anyway.
     #[inline]
     pub(super) fn all_ones_mask(width: u32) -> u128 {
         if width >= 128 {

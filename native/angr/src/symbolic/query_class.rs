@@ -348,15 +348,6 @@ fn struct_eq(a: &RustBV, b: &RustBV, budget: &mut usize) -> bool {
     }
 }
 
-/// Largest unsigned value representable at `width` bits.
-fn umax(width: u32) -> u128 {
-    if width >= 128 {
-        u128::MAX
-    } else {
-        (1u128 << width) - 1
-    }
-}
-
 /// The syntactic-verdict tier's pattern set (angr-op0dn.9.1): does the
 /// *condition's own syntax* fix its truth value, even though free symbols
 /// remain? Returns the forced verdict, or `None` when Z3 is genuinely needed.
@@ -382,11 +373,16 @@ pub(crate) fn syntactic_decide(cond: &RustBV) -> Option<bool> {
         BVOp::Ne if reflexive => Some(false),
         BVOp::Ult | BVOp::Ugt | BVOp::Slt | BVOp::Sgt if reflexive => Some(false),
         BVOp::Ule | BVOp::Uge | BVOp::Sle | BVOp::Sge if reflexive => Some(true),
-        // Unsigned bounds: nothing is below 0, nothing is above UMAX.
-        BVOp::Ult if rc == Some(0) || lc == Some(umax(lw)) => Some(false),
-        BVOp::Ugt if lc == Some(0) || rc == Some(umax(rw)) => Some(false),
-        BVOp::Ule if lc == Some(0) || rc == Some(umax(rw)) => Some(true),
-        BVOp::Uge if rc == Some(0) || lc == Some(umax(lw)) => Some(true),
+        // Unsigned bounds: nothing is below 0, nothing is above UMAX. The
+        // width's all-ones mask *is* its largest unsigned value, so this reuses
+        // `RustBV::all_ones_mask` rather than repeating the saturating shift
+        // (angr-0jh0j.55) — the `width >= 128` saturation must agree with the
+        // solving path's `solving_ops::max_val_for_width`, or a classification
+        // here would contradict the extremum search there.
+        BVOp::Ult if rc == Some(0) || lc == Some(RustBV::all_ones_mask(lw)) => Some(false),
+        BVOp::Ugt if lc == Some(0) || rc == Some(RustBV::all_ones_mask(rw)) => Some(false),
+        BVOp::Ule if lc == Some(0) || rc == Some(RustBV::all_ones_mask(rw)) => Some(true),
+        BVOp::Uge if rc == Some(0) || lc == Some(RustBV::all_ones_mask(lw)) => Some(true),
         // Mask-bit contradiction: `And(x, m) == c` (either operand order) is
         // unsatisfiable when `c` sets a bit that `m` clears.
         BVOp::Eq | BVOp::Ne => {
