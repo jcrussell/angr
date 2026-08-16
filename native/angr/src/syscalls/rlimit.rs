@@ -30,7 +30,8 @@
 
 use super::require_syscall_args;
 use super::{
-    NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg, fresh_symbolic, stub_syscall,
+    NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg, fresh_symbolic,
+    stub_syscall, symbolic_outcome,
 };
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
@@ -78,15 +79,11 @@ impl NativeSyscall for NativeGetrlimitSyscall {
             return Ok(SyscallOutcome::Continue { ret: 0 });
         }
 
-        // Non-RLIMIT_STACK branch: Python returns a fresh symbolic. Use
-        // arch().bits() to fully populate the return register width;
-        // this matches every other stub-style native handler.
-        let bits = state.arch().bits();
-        let ret = {
-            let ctx = state.solver().borrow();
-            fresh_symbolic(&ctx, "rlimit", bits)
-        };
-        Ok(SyscallOutcome::ContinueSymbolic { ret })
+        // Non-RLIMIT_STACK branch: Python returns a fresh symbolic. Sharing
+        // `symbolic_outcome` is what keeps the width at `arch().bits()`, so
+        // the return register is fully populated like every other stub-style
+        // native handler.
+        Ok(symbolic_outcome(state, "rlimit"))
     }
 }
 

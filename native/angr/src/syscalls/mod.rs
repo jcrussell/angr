@@ -220,6 +220,27 @@ pub(crate) fn fresh_symbolic(
     RustBV::symbolic(ctx, format!("{prefix}_{id}"), width)
 }
 
+/// Build the "give up and return a fresh symbolic of register width" outcome
+/// that every stub-style handler produces.
+///
+/// The three steps — read `arch().bits()`, borrow the solver context just long
+/// enough to mint via [`fresh_symbolic`], wrap in
+/// [`SyscallOutcome::ContinueSymbolic`] — used to be spelled out at each site,
+/// so a change to how symbolic fallback returns are constructed had to be
+/// applied in four places (`stub_syscall!` plus three hand-written copies) and
+/// missing one would silently keep the old behaviour in just that handler.
+/// `stub_syscall!` expands to a call to this, as do the partial handlers that
+/// only fall back on their unhandled branches (`futex` wait, `getrlimit` for
+/// resources other than `RLIMIT_STACK`, `fcntl`/`ioctl` on an unknown `cmd`).
+pub(crate) fn symbolic_outcome(state: &RustSimState, prefix: &'static str) -> SyscallOutcome {
+    let bits = state.arch().bits();
+    let ret = {
+        let ctx = state.solver().borrow();
+        fresh_symbolic(&ctx, prefix, bits)
+    };
+    SyscallOutcome::ContinueSymbolic { ret }
+}
+
 /// Allocate the `<prefix>_<id>_<i>` names for a batch of `count` fresh
 /// symbolic bytes, bumping `counter` once for the whole batch.
 ///
@@ -354,12 +375,7 @@ macro_rules! stub_syscall {
                 state: &mut $crate::state::RustSimState,
                 _args: &[$crate::symbolic::RustBV],
             ) -> Result<$crate::syscalls::SyscallOutcome, $crate::syscalls::SyscallError> {
-                let bits = state.arch().bits();
-                let ret = {
-                    let ctx = state.solver().borrow();
-                    $crate::syscalls::fresh_symbolic(&ctx, $sym_name, bits)
-                };
-                Ok($crate::syscalls::SyscallOutcome::ContinueSymbolic { ret })
+                Ok($crate::syscalls::symbolic_outcome(state, $sym_name))
             }
         }
     };

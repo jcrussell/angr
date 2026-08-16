@@ -82,7 +82,8 @@
 //! (matches Python's 4096-fd ulimits ceiling).
 
 use super::{
-    NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg, fresh_symbolic, stub_syscall,
+    NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg, stub_syscall,
+    symbolic_outcome,
 };
 use crate::state::{MAX_FD, RustSimState};
 use crate::symbolic::RustBV;
@@ -155,18 +156,6 @@ fn tiocgwinsz_for_arch(arch_name: &str) -> Option<u64> {
     }
 }
 
-/// Build the fresh-symbolic fallback return used when fcntl / ioctl /
-/// pipe* hit a `cmd` we do not handle natively. Borrows the solver
-/// context once, mirroring the `stub_syscall!` macro expansion.
-fn symbolic_return(state: &RustSimState, name: &'static str) -> SyscallOutcome {
-    let bits = state.arch().bits();
-    let ret = {
-        let ctx = state.solver().borrow();
-        fresh_symbolic(&ctx, name, bits)
-    };
-    SyscallOutcome::ContinueSymbolic { ret }
-}
-
 /// Shared dispatch for `fcntl` / `fcntl64`. Both syscalls take
 /// `(fd, cmd, arg)` and differ only in the kernel-side handling of
 /// the LFS `arg` payload (locks); the four trivial getter / setter
@@ -192,7 +181,7 @@ fn fcntl_dispatch(
             Ok(SyscallOutcome::Continue { ret })
         }
         F_SETFL => Ok(SyscallOutcome::Continue { ret: 0 }),
-        _ => Ok(symbolic_return(state, stub_name)),
+        _ => Ok(symbolic_outcome(state, stub_name)),
     }
 }
 
@@ -267,7 +256,7 @@ impl NativeSyscall for NativeIoctlSyscall {
         if Some(cmd) == tiocgwinsz_for_arch(arch_name) {
             return Ok(SyscallOutcome::Continue { ret: NEG_ENOTTY });
         }
-        Ok(symbolic_return(state, "syscall_stub_ioctl"))
+        Ok(symbolic_outcome(state, "syscall_stub_ioctl"))
     }
 }
 

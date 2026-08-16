@@ -31,7 +31,8 @@
 
 use super::require_syscall_args;
 use super::{
-    NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg, fresh_symbolic, stub_syscall,
+    NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg, stub_syscall,
+    symbolic_outcome,
 };
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
@@ -65,12 +66,7 @@ impl NativeSyscall for NativeFutexSyscall {
         if op & 1 == 1 {
             return Ok(SyscallOutcome::Continue { ret: 0 });
         }
-        let bits = state.arch().bits();
-        let ret = {
-            let ctx = state.solver().borrow();
-            fresh_symbolic(&ctx, "futex", bits)
-        };
-        Ok(SyscallOutcome::ContinueSymbolic { ret })
+        Ok(symbolic_outcome(state, "futex"))
     }
 }
 
