@@ -248,6 +248,32 @@ impl VEXOps {
     /// Z3 `bvshl`/`bvlshr`/`bvashr` semantics handle out-of-range counts the
     /// same way the concrete fast path does (≥ lane width → 0 for shl/lshr,
     /// sign-fill for ashr).
+    ///
+    /// ## The shift amount is *unsigned* here, deliberately (angr-0jh0j.64)
+    ///
+    /// libVEX's own header carries a FIXME above the `Iop_Shl8x16`/`Iop_Sal…`
+    /// declarations: the ARM32 front/back ends read this operand as an **8-bit
+    /// signed** count — negative means "shift the other way" — while every
+    /// other target reads it as unsigned. That is not hypothetical; the ARM32
+    /// front end lifts `vshl.s8 d0, d1, d2` to `Sar8x8(d1, Sub8x8(0, d2))`,
+    /// which only makes sense if a negative count means "shift left". So a
+    /// positive ARM32 `vshl` amount reaches us as a count ≥ lane width and we
+    /// return sign-fill/zero where hardware would left-shift.
+    ///
+    /// We match Python anyway: `angr/engines/vex/claripy/irop.py`'s
+    /// `_op_vector_mapped` chops lanes and applies
+    /// `__lshift__`/`LShR`/`__rshift__` per lane with the same unsigned
+    /// reading, and the two engines interleave within a single exploration —
+    /// a Rust-only "fix" would make the answer depend on which engine ran the
+    /// block. Fixing it is an upstream angr change that has to land on both
+    /// sides at once. `vec_qshl_sat`'s signed amount is *not* a precedent for
+    /// changing this: the FIXME covers only this non-saturating family, and
+    /// the saturating `Iop_QShl`/`Iop_QSal` block is declared below it with no
+    /// such caveat.
+    ///
+    /// Pinned by `test_arm32_neon_vector_shift_matches_python_engine`
+    /// (`tests/engines/rust/test_multiarch.py`), which drives both engines
+    /// over the divergent lanes and records the hardware answer alongside.
     pub(super) fn vec_shift_vec(
         vec: RustBV,
         amts: RustBV,

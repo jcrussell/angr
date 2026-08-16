@@ -572,6 +572,91 @@ class TestMultiArchSupport:
         state.set_register("fpscr", 0x0A0B0C0D)
         assert state.get_register("fpscr") == 0x0A0B0C0D
 
+    @pytest.mark.parametrize(
+        ("name", "op_bytes", "amount_lane", "expected", "hardware"),
+        [
+            # vshl.s8 d0, d1, d2  ->  t = Sub8x8(0, d2); d0 = Sar8x8(d1, t).
+            # Amount +1 per lane, so the IR shift count is 0-1 = 0xff.
+            # Generic (unsigned) reading: ashr by 255 -> sign fill, and only
+            # lane 0 (0x80) is negative. ARM32 hardware: left shift by 1.
+            ("vshl.s8", "010402f2", 0x01, 0x0000_0000_0000_00FF, 0x0204_0810_2040_8000),
+            # vshl.u8 d0, d1, d2  ->  d0 = Shl8x8(d1, d2), no negation.
+            # Amount 0xff per lane. Generic (unsigned) reading: shl by 255 ->
+            # every lane 0. ARM32 hardware: 0xff is -1, so lshr by 1.
+            ("vshl.u8", "010402f3", 0xFF, 0x0000_0000_0000_0000, 0x0081_0204_0810_2040),
+        ],
+    )
+    def test_arm32_neon_vector_shift_matches_python_engine(self, name, op_bytes, amount_lane, expected, hardware):
+        """ARM32 NEON shift-by-vector keeps the *VEX-generic* unsigned
+        shift-amount convention, matching the Python engine lane for lane.
+
+        Characterization for angr-0jh0j.64. libVEX's own header carries a
+        FIXME above ``Iop_Shl8x16``/``Iop_Sal...`` saying the ARM32 front/back
+        ends read the second operand as an **8-bit signed** count (negative =
+        shift the other way) while every other target reads it as unsigned.
+        The ARM32 front end really does lift that way: ``vshl.s8`` emits
+        ``Sar8x8(val, Sub8x8(0, amt))``, which only makes sense if a negative
+        count means "shift left". Hence the ``hardware`` column — what a real
+        CPU would leave in d0, which neither angr engine produces.
+
+        Both engines evaluate these ops with the generic unsigned reading:
+        Python's ``_op_vector_mapped`` chops lanes and applies
+        ``__lshift__``/``LShR``/``__rshift__`` per lane, and Rust's
+        ``VEXOps::vec_shift_vec`` does the same. That is an *upstream* angr
+        semantic gap, not a Rust-engine one, and the two engines interleave
+        within a single exploration — so Rust deliberately matches Python here
+        rather than being unilaterally more correct. This test pins that
+        decision: it reds if either side changes convention alone.
+
+        The vectors travel through *memory* (``vldr``/``vstr``) rather than
+        ``state.regs.d1``: ARM's ``REGISTER_NAMES`` (``arch/arm.rs``) exports
+        no VFP register, so a preset d-register never reaches Rust and a
+        computed one never comes back (angr-l8kfw, found while confirming
+        this one).
+        """
+        # vldr d1, [r0] ; vldr d2, [r0, #8] ; <op> d0, d1, d2 ;
+        # vstr d0, [r0, #16] ; b .
+        shellcode = bytes.fromhex("001b90ed" + "022b90ed" + op_bytes + "040b80ed" + "feffffea")
+        proj = angr.load_shellcode(shellcode, arch="ARMEL", load_address=0x1000)
+
+        BUF = 0x4000
+        # Per-lane values that are all distinct and all but lane 0 (0x80)
+        # non-negative, so sign-fill vs zero-fill shows up in one lane.
+        VEC = 0x0102040810204080
+        AMTS = int.from_bytes(bytes([amount_lane]) * 8, "little")
+
+        def fresh_state():
+            st = proj.factory.blank_state(addr=0x1000)
+            st.regs.r0 = BUF
+            st.memory.store(BUF, VEC, size=8, endness="Iend_LE")
+            st.memory.store(BUF + 8, AMTS, size=8, endness="Iend_LE")
+            return st
+
+        def result_of(state):
+            return state.solver.eval(state.memory.load(BUF + 16, 8, endness="Iend_LE"))
+
+        py_simgr = proj.factory.simulation_manager(fresh_state())
+        py_simgr.step()
+        assert py_simgr.active, f"{name}: Python engine produced no successor"
+        py_out = result_of(py_simgr.active[0])
+
+        mgr = RustExplorationManager(proj, [fresh_state()])
+        mgr.run(max_steps=1)
+        states = list(mgr.active) + list(mgr.deadended) + list(mgr.errored)
+        assert states, f"{name}: expected at least one state after run"
+        rust_out = result_of(states[0])
+
+        assert rust_out == py_out, (
+            f"{name}: Rust d0=0x{rust_out:016x} but Python d0=0x{py_out:016x} "
+            f"— the engines disagree on the NEON shift-by-vector amount "
+            f"convention (angr-0jh0j.64)"
+        )
+        assert py_out == expected, (
+            f"{name}: d0=0x{py_out:016x}, expected 0x{expected:016x} under the "
+            f"VEX-generic unsigned reading (real ARM32 hardware would give "
+            f"0x{hardware:016x} — see the docstring)"
+        )
+
     def test_arm32_offsets_match_archinfo(self):
         """ARM32 register offsets are ground-truth-checked against archinfo,
         not just self-consistent round-trips.
