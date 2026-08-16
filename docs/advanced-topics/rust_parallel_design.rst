@@ -1,18 +1,39 @@
 Rust engine: parallel exploration threading model — design comparison
 =====================================================================
 
-This document is the design-phase deliverable for parallel exploration
-in the Rust engine, tracked by bead ``angr-59jk`` (deferred) and its
-child ``angr-59jk.1``. It does **not** describe shipped code — the Rust
-engine is single-threaded today. The empirical translate-cost numbers
+This document started as the design-phase deliverable for parallel
+exploration in the Rust engine, tracked by bead ``angr-59jk`` (deferred)
+and its child ``angr-59jk.1``. The empirical translate-cost numbers
 quoted below come from the companion spike ``angr-59jk.2`` (commit
 ``2a997ec89``, ``native/angr/tests/z3_translate_spike.rs``).
 
-Audience: contributors deciding whether to commit to parallel
-exploration and, if so, which threading model to build on.
+Audience: contributors working on the parallel stack, or judging how a
+change interacts with it. The Option A / Option B comparison is kept as
+**design rationale** — it records why the shipped architecture is shaped
+the way it is, not what a contributor should configure.
 
-Status: **proposed, not implemented**. The recommendation below feeds
-the GO/NOGO decision for the parent bead.
+Status: **recommendation shipped, opt-in.** Option A (shared-nothing
+states, no Z3 context crossing a thread boundary) was chosen and built.
+The work-stealing pool lives in ``exploration/scheduler.rs`` and its
+``scheduler_pool.rs`` / ``scheduler_worker.rs`` /
+``scheduler_transport.rs`` siblings; the driver loops in
+``exploration/run_loop_wave.rs``, ``run_loop_steady.rs`` and
+``run_loop_worker.rs``; the cross-worker transport in
+``state/migration.rs``. Both parallel modes are off by default: the wave
+loop is armed by the ``RustExplorationManager(parallel_workers=N)``
+kwarg or the ``RUST_PARALLEL_WORKERS`` environment variable (which
+overrides the kwarg), and the steady-state loop only by the separate
+``RUST_PARALLEL_STEADY`` env flag. Found-set invariance of the parallel
+path across worker counts is gated nightly by
+``tests/benchmarks/run_findall_gate.py``.
+
+For **user-facing** documentation of those flags, and of which
+SimOptions / exploration techniques are safe under them, read
+:doc:`rust_engine`; this file is the rationale, not the manual. The
+per-phase ``.. important::`` callouts under `Migration path`_ below
+record what each increment actually delivered and measured, and are the
+authoritative per-increment status — the Option A/B analysis above them
+predates all of it.
 
 
 Why this work
@@ -91,8 +112,17 @@ Full numbers and methodology: the ``z3_translate_spike`` test at
 ``native/angr/tests/z3_translate_spike.rs`` (bead ``angr-59jk``).
 
 
-Current Rust threading model
-----------------------------
+Threading model at design time (2026-06)
+----------------------------------------
+
+.. note::
+
+   This section describes the engine **as it was when the comparison
+   below was written**, and is what the two options were weighed
+   against. It is still the shape of the *default* configuration —
+   neither parallel mode arms itself — but the pieces listed here now
+   sit alongside the shipped parallel stack named in the Status block
+   above.
 
 Single-threaded. The relevant pieces:
 
@@ -335,6 +365,15 @@ Comparison
 
 Recommendation
 --------------
+
+.. important::
+
+   **Decided: GO on Option A.** This section is the recommendation as
+   written at decision time; it was accepted, and the coarse-boundary
+   migration constraint it makes contingent is enforced by the shipped
+   scheduler (``exploration/scheduler.rs`` — states move only at task
+   boundaries, never per-step). Read on for *why* Option A won; read
+   `Migration path`_ for what was then built.
 
 **Pursue Option A — shared-nothing with Z3_translate at task
 boundaries — when committing to parallel exploration**, contingent
