@@ -755,12 +755,23 @@ fn parse_vector(op_str: &str) -> Option<IROp> {
     // `vendor/pyvex_ffi.h` declares just `Iop_Avg8Ux8` / `Iop_Avg16Ux4` there —
     // no signed D-reg forms and no `Iop_Avg32{S,U}x2` at all (angr-0jh0j.62;
     // the signed arms contradicted this family's own "unsigned-only" note
-    // above). Q-reg (total=128) has both signednesses for 8/16/32-bit lanes.
+    // above). Q-reg (total=128) has both signednesses for 8/16/32-bit lanes,
+    // plus 64-bit lanes (`Iop_Avg64{S,U}x2`, no D-reg twin). The 256-bit tier
+    // is AVX2 `VPAVGB`/`VPAVGW`, hence unsigned-only and 8/16-bit-lane only.
+    //
+    // Widening this table to V256 is safe because `VEXOps::vec_rounding_avg`
+    // has no `total_width <= 128` concrete fast path to outgrow: it is written
+    // lane-at-a-time over `extract`/`extend_into`/`add_into`, and the only
+    // >128-bit value it builds comes from `concat_le_elements`, whose
+    // `concat_into` already keeps a symbolic `Concat` above 128 bits
+    // (bd `invariant-concrete-bv-u128-16-byte-limit`, hazard family 3).
     vec_signed_arms!(op_str; "Iop_Avg" => VAvg {
         "8Ux8"  => (I8, 8, false), "16Ux4" => (I16, 4, false),
         "8Sx16" => (I8, 16, true), "8Ux16" => (I8, 16, false),
         "16Sx8" => (I16, 8, true), "16Ux8" => (I16, 8, false),
         "32Sx4" => (I32, 4, true), "32Ux4" => (I32, 4, false),
+        "64Sx2" => (I64, 2, true), "64Ux2" => (I64, 2, false),
+        "8Ux32" => (I8, 32, false), "16Ux16" => (I16, 16, false),
     });
 
     // PPC bit-matrix transpose — `Iop_PwBitMtxXpose64x2` (unary, V128 only).

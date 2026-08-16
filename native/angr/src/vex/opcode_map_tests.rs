@@ -1251,16 +1251,10 @@ const KNOWN_UNMAPPED_GROUPS: &[(&[&str], &str)] = &[
         ],
         "NEON Q-reg count-leading/trailing-zeros at widths beyond what parse_vector's VClz table covers (64x2) plus the whole Ctz{8,16,32,64} vector family — not yet implemented.",
     ),
-    // AVG_WIDE
-    (
-        &[
-            "Iop_Avg16Ux16",
-            "Iop_Avg64Sx2",
-            "Iop_Avg64Ux2",
-            "Iop_Avg8Ux32",
-        ],
-        "NEON/AVX2 rounding halving-add (VAvg family) at widths beyond what parse_vector covers (64-bit lanes, AVX2 256-bit 16-lane) — not yet implemented.",
-    ),
+    // (The AVG_WIDE group that used to sit here — Iop_Avg64Sx2/64Ux2 and the
+    // AVX2 Iop_Avg8Ux32/16Ux16 — was dropped in angr-li4ox: vec_rounding_avg
+    // is lane-generic, so the widening was a parse-table entry only.
+    // test_parse_avg_routing pins all 12 shapes.)
     // PWADDL_WIDE
     (
         &["Iop_PwAddL64Ux2"],

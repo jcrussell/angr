@@ -696,6 +696,81 @@ fn test_vavg_16ux8_concrete() {
     assert_eq!(result.as_u128().unwrap(), e);
 }
 
+/// Iop_Avg64Sx2 — the Q-reg 64-bit-lane shape angr-li4ox mapped. The lane is
+/// as wide as the `u128` a concrete `RustBV` is backed by, so the `elem+1`
+/// widening `vec_rounding_avg` does lands at 65 bits: the case where a
+/// sloppier "widen to `2 * elem`" would have overflowed.
+#[test]
+fn test_vavg_64sx2_concrete() {
+    let ctx = SymContext::new_mock();
+    // lane 0: avg(i64::MIN, i64::MIN) = i64::MIN — the sign-extension fence.
+    // lane 1: avg(i64::MAX, 1) = (MAX + 1 + 1) >> 1 = 0x4000_0000_0000_0000.
+    let a_lanes: [i64; 2] = [i64::MIN, i64::MAX];
+    let b_lanes: [i64; 2] = [i64::MIN, 1];
+    let e_lanes: [i64; 2] = [i64::MIN, 0x4000_0000_0000_0000];
+    let pack = |lanes: &[i64; 2]| {
+        (lanes[0] as u64 as u128) | ((lanes[1] as u64 as u128) << 64)
+    };
+    let result = VEXOps::binop(
+        IROp::VAvg {
+            elem: IRType::I64,
+            count: 2,
+            signed: true,
+        },
+        RustBV::concrete(pack(&a_lanes), 128),
+        RustBV::concrete(pack(&b_lanes), 128),
+        &ctx,
+    )
+    .unwrap();
+    assert_eq!(result.width(), 128);
+    assert_eq!(result.as_u128().unwrap(), pack(&e_lanes));
+}
+
+/// Iop_Avg8Ux32 — the AVX2 `VPAVGB` shape angr-li4ox mapped. 256 bits is past
+/// the 16-byte concrete backing store, so the operands are built as a `Concat`
+/// of two 128-bit concretes and the result is checked one lane at a time
+/// (bd `invariant-concrete-bv-u128-16-byte-limit`, hazard family 3).
+#[test]
+fn test_vavg_8ux32_avx2_256_bit() {
+    let ctx = SymContext::new_mock();
+    // Low lane first; `i` doubles as one operand so every lane pair differs.
+    let a: [u8; 32] = std::array::from_fn(|i| (i as u8).wrapping_mul(7));
+    let b: [u8; 32] = std::array::from_fn(|i| 0xFFu8.wrapping_sub(i as u8));
+    let pack = |lanes: &[u8; 32]| {
+        let mut halves = [0u128; 2];
+        for (i, lane) in lanes.iter().enumerate() {
+            halves[i / 16] |= (*lane as u128) << ((i % 16) * 8);
+        }
+        RustBV::concrete(halves[1], 128).concat_into(RustBV::concrete(halves[0], 128), &ctx)
+    };
+    let result = VEXOps::binop(
+        IROp::VAvg {
+            elem: IRType::I8,
+            count: 32,
+            signed: false,
+        },
+        pack(&a),
+        pack(&b),
+        &ctx,
+    )
+    .unwrap();
+    assert_eq!(result.width(), 256);
+    for i in 0..32u32 {
+        let low = i * 8;
+        let extracted = result.extract(low + 7, low, &ctx);
+        let got = ctx.eval(&extracted).expect("eval(lane) returned None");
+        let idx = i as usize;
+        let expected = (u32::from(a[idx]) + u32::from(b[idx]) + 1) >> 1;
+        assert_eq!(
+            got,
+            u128::from(expected),
+            "lane {i}: avg({:#04x}, {:#04x})",
+            a[idx],
+            b[idx]
+        );
+    }
+}
+
 /// Iop_Avg8Sx8 — signed rounding-average. Validates that two -128 lanes
 /// give -128 (sign-extension fence) and mixed-sign lanes round correctly.
 #[test]
@@ -822,9 +897,9 @@ fn test_vavg_8sx8_symbolic_universal_signed() {
     ctx.pop();
 }
 
-/// Parse routing: all 12 Iop_Avg variants land on IROp::VAvg with the
-/// expected `(elem, count, signed)` decomposition. No Avg op should remain
-/// in NeonUnimplemented.
+/// Parse routing: all 12 Iop_Avg variants the vendored header declares land on
+/// IROp::VAvg with the expected `(elem, count, signed)` decomposition. No Avg
+/// op should remain in NeonUnimplemented.
 #[test]
 fn test_parse_avg_routing() {
     use crate::vex::opcode_map::parse_opcode;
@@ -840,6 +915,12 @@ fn test_parse_avg_routing() {
         ("Iop_Avg8Sx16", IRType::I8, 16, true),
         ("Iop_Avg16Sx8", IRType::I16, 8, true),
         ("Iop_Avg32Sx4", IRType::I32, 4, true),
+        // Q-reg 64-bit lanes have no D-reg twin; the AVX2 256-bit tier is
+        // VPAVGB/VPAVGW, so unsigned-and-8/16-bit-lane only (angr-li4ox).
+        ("Iop_Avg64Sx2", IRType::I64, 2, true),
+        ("Iop_Avg64Ux2", IRType::I64, 2, false),
+        ("Iop_Avg8Ux32", IRType::I8, 32, false),
+        ("Iop_Avg16Ux16", IRType::I16, 16, false),
     ];
     for (op, e, c, s) in cases {
         match parse_opcode(op) {
