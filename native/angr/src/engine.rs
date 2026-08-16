@@ -82,8 +82,19 @@ fn op_error_to_typed(err: OpError, arch: &str) -> RustExecError {
 ///
 /// `irsb_json` is a serialized pyvex IRSB, `arch_name` is e.g. `"amd64"`
 /// or `"arm64"` (case-insensitive, matches [`crate::arch::arch_from_name`]).
+///
+/// `little_endian` is the target's byte order. It defaults to true because
+/// every caller today is on a fixed-little-endian arch, but MIPS32/MIPS64/ARM
+/// are either-endian families and `arch_name` cannot answer for them; pass
+/// `False` for a big-endian target so a sub-register Get/Put picks the same
+/// half angr's Python engine does (see `VEXInterpreter::with_config_endian`).
 #[pyfunction]
-pub(crate) fn execute_irsb_for_test(irsb_json: &str, arch_name: &str) -> PyResult<()> {
+#[pyo3(signature = (irsb_json, arch_name, little_endian = true))]
+pub(crate) fn execute_irsb_for_test(
+    irsb_json: &str,
+    arch_name: &str,
+    little_endian: bool,
+) -> PyResult<()> {
     let arch = arch_from_name(arch_name)
         .ok_or_else(|| PyValueError::new_err(format!("unsupported architecture: {arch_name}")))?;
     let vex_arch = arch.vex_arch();
@@ -93,7 +104,12 @@ pub(crate) fn execute_irsb_for_test(irsb_json: &str, arch_name: &str) -> PyResul
 
     let ctx = SymContext::new_mock();
     let callbacks = PythonCallbacks::new();
-    let mut interp = crate::interpreter::VEXInterpreter::new(vex_arch, &ctx);
+    let mut interp = crate::interpreter::VEXInterpreter::with_config_endian(
+        vex_arch,
+        &ctx,
+        crate::callbacks::ExecutionConfig::default(),
+        little_endian,
+    );
 
     let addr = irsb.addr;
     match interp.execute_block(&callbacks, &irsb) {

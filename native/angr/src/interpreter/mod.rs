@@ -341,19 +341,51 @@ pub(crate) struct VEXInterpreter<'a> {
 // `PythonCallbacks` methods that actually fire.
 
 impl<'a> VEXInterpreter<'a> {
-    /// Create a new callback-aware interpreter.
+    /// Create a new little-endian callback-aware interpreter.
+    ///
+    /// Test-only: the two production entry points ([`crate::engine`]'s
+    /// single-block exec and `exploration/step_core.rs`) both know their
+    /// target's byte order and go through [`Self::with_config_endian`]
+    /// (angr-21cz6).
+    #[cfg(test)]
     pub(crate) fn new(arch: VexArch, ctx: &'a SymContext) -> Self {
         Self::with_config(arch, ctx, ExecutionConfig::default())
     }
 
     /// Create a new callback-aware interpreter with custom config.
+    ///
+    /// Little-endian by default; see [`Self::with_config_endian`] for why that
+    /// is a caller-supplied fact rather than one derivable from `arch`.
     pub(crate) fn with_config(arch: VexArch, ctx: &'a SymContext, config: ExecutionConfig) -> Self {
+        Self::with_config_endian(arch, ctx, config, true)
+    }
+
+    /// Create a new callback-aware interpreter for a target of known byte order.
+    ///
+    /// `is_le` is the *target's* endianness, not `Arch::is_little_endian` (which
+    /// is hardcoded true on every arch this crate models). MIPS32/MIPS64/ARM are
+    /// either-endian families, so only the caller knows: the exploration path
+    /// gets it from the state (`RustSimState::with_solver_endian`, whose
+    /// register file `exploration/step_core.rs` forks straight over this one),
+    /// and `engine::execute_irsb_for_test` takes it as a parameter.
+    ///
+    /// It reaches exactly one thing: the register file's `mirror_offset`
+    /// adapter, which is what makes a VEX Get/Put *narrower* than its containing
+    /// register pick the same half angr's Python engine does on a big-endian
+    /// target (angr-fuhmm). Storage stays little-endian either way — see
+    /// `RegisterFile::mirror_offset`.
+    pub(crate) fn with_config_endian(
+        arch: VexArch,
+        ctx: &'a SymContext,
+        config: ExecutionConfig,
+        is_le: bool,
+    ) -> Self {
         let arch_box = arch_from_vex(arch);
         let arch_name = arch_box.name();
         let cc = default_cc_for_arch(arch_name);
 
         VEXInterpreter {
-            registers: RegisterFile::new(arch_box),
+            registers: RegisterFile::new_with_endian(arch_box, is_le),
             temps: Vec::with_capacity(64), // Pre-allocate for typical block size
             ctx,
             symbol_table: None, // Set via set_symbol_table() when using handles

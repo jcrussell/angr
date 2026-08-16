@@ -505,11 +505,12 @@ fn build_containment(arch: &dyn Arch) -> Arc<Vec<(u32, u32)>> {
 impl RegisterFile {
     /// Create a new little-endian register file for the given architecture.
     ///
-    /// Equivalent to [`Self::new_with_endian`] with `is_le = true`. Every
-    /// architecture this crate models has `Arch::is_little_endian() == true`
-    /// hardcoded (the real answer is per-state, see that method's docs), so
-    /// this is the right default for the standalone `VEXInterpreter` and for
-    /// tests; state construction goes through [`Self::new_with_endian`].
+    /// Equivalent to [`Self::new_with_endian`] with `is_le = true`, and a
+    /// test-only convenience: every production caller — state construction and
+    /// `VEXInterpreter::with_config_endian` — has a target endianness to supply
+    /// and must go through [`Self::new_with_endian`] so a big-endian target
+    /// gets its containment table (angr-21cz6).
+    #[cfg(test)]
     pub(crate) fn new(arch: Box<dyn Arch>) -> Self {
         Self::new_with_endian(arch, true)
     }
