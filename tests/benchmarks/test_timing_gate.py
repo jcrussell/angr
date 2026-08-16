@@ -268,3 +268,17 @@ def test_cmu_pin_clears_the_in_gate_tail_that_reddened_iter16():
         assert run_regression.timing_regression_pct(pin, read, 0.15, FLOOR) is None, read
     # ...and the pin still reds on a real regression: the p50 (1.05) plus ~38%.
     assert run_regression.timing_regression_pct(pin, 1.45, 0.15, FLOOR) is not None
+
+
+def test_ais3_pin_clears_the_in_gate_tail_that_reddened_iter81():
+    # angr-pj6bt. The three reads of the iter81 gate failure (initial in-suite
+    # 1.00, then both retry attempts) plus the p95/p99 of the last 300 ralph
+    # gate runs. Against the 0.812 the bulk refresh captured, 10 of those 300
+    # were over the 15% bar; with the pin none of these is. Note the absolute
+    # floor cannot help here — 15% of 0.812 is 122ms, well over it.
+    in_gate_reads = [1.00, 1.07, 1.01, 0.92]
+    pin = run_regression.PINNED_RUST_TIMES["ais3_crackme"]
+    for read in in_gate_reads:
+        assert run_regression.timing_regression_pct(pin, read, 0.15, FLOOR) is None, read
+    # ...and the pin still reds on a real regression: the p50 (0.83) plus ~45%.
+    assert run_regression.timing_regression_pct(pin, 1.20, 0.15, FLOOR) is not None

@@ -433,6 +433,24 @@ PINNED_RUST_TIMES = {
     # and its callback/state/step counts are stable, so only the timing bar
     # needs widening.
     "cmu_binary_bomb_partial": 1.15,
+    # angr-pj6bt. Third instance of the same load-sensitive shape. Over the last
+    # 300 ralph gate runs the in-gate `Rust:` timing reads p50 0.83, p90 0.88,
+    # p95 0.92, p99 1.01, max 1.29, so the 0.812 the bulk refresh captured is a
+    # quiet-host low sitting *below* the bench's own median. Its 15% bar of
+    # 0.9338 was exceeded by 10 of those 300 runs (3.3%) — a false red roughly
+    # every 30 iterations, which is how the iter81 gate reddened on a
+    # log-macro-only commit (in-suite 1.00s, retries 1.07/1.01, all three over
+    # the bar). Neither existing mitigation reaches it: the 50ms absolute floor
+    # is irrelevant at a 0.81s baseline (15% = 122ms), and host-median
+    # normalization only scaled the bar by the suite's 1.057x. 0.94 gives a
+    # 1.081 bar that clears all three reads of that incident and 299 of the 300
+    # samples, and still reds on anything moving the p50 past +30% — the same
+    # detection power the cmu pin above settled on. The lone survivor (1.29) is
+    # a single outlier the gate's own --retry-failures pass covers.
+    # Not a BIMODAL_BENCHMARKS member: standalone re-runs at HEAD read
+    # 0.81-0.92 as a continuum, and the step/state counts are stable, so only
+    # the timing bar needs widening.
+    "ais3_crackme": 0.94,
 }
 
 
