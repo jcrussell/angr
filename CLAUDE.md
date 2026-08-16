@@ -293,7 +293,7 @@ for the full list. Most-used targets:
 | `make rebuild-cargo` | Cargo-direct rebuild (broken-venv fallback). |
 | `make rebuild-fast` | Inner-loop rebuild via `[profile.release-fast]` (~3s warm vs ~36s). NOT for bench gates. |
 | `make check` | `cargo check --release` — fast type/borrow check. Default features only, so it does **not** cover `fuzzer`/`fuzzing`/`libvex-ffi` code; it is not the CI gate. Reproduce that with `cargo clippy --manifest-path native/angr/Cargo.toml --all-targets --all-features -- -D warnings`. |
-| `make check-no-z3` | `cargo check -D warnings --all-targets` over the four `--no-default-features` combos CI's `rust_feature_flags` gates. Neither `make check` nor clippy `--all-features` compiles the `#[cfg(not(feature = "vex-engine-z3"))]` arms — this is the only local way to type-check them, and (since angr-sqfj8.139) the only gate holding them to the zero-warning bar. `--all-targets` since angr-c7xno.99: without it only the *lib* is compiled, and the no-z3 test/bench targets had rotted to 41 errors unseen. |
+| `make check-no-z3` | `cargo check -D warnings --all-targets` over the four `--no-default-features` combos CI's `rust_feature_flags` gates. Neither `make check` nor clippy `--all-features` compiles the `#[cfg(not(feature = "vex-engine-z3"))]` arms — this is the only local way to type-check them, and (since angr-sqfj8.139) the only gate holding them to the zero-warning bar. Since angr-nk8p0 the ralph gate runs it as check 1 of 3, so a commit that breaks a combo is caught in the loop instead of by whoever next runs the target by hand. `--all-targets` since angr-c7xno.99: without it only the *lib* is compiled, and the no-z3 test/bench targets had rotted to 41 errors unseen. |
 | `make test` (`test-quick`) | Run `tests/engines/rust/` (~1-2 min). |
 | `make test-libvex` | libVEX-FFI unit + corpus parity tests (`--features libvex-ffi`, default-off in cargo). |
 | `make test-fuzzer` | icicle/libafl fuzzer unit tests (`--features fuzzer`, default-off in cargo; nightly lane `fuzzer_feature_tests`). |
@@ -687,13 +687,20 @@ lives in `.ralph/`:
   key-files map.
 - `.ralph/hooks/states/{clean,dirty}/gate` — thin wrappers around
   `tools/ralph-gate.sh`, the shared gate body. Fires only on iterations that
-  produced commits. Two checks, fail-fast in order:
-  1. `cargo test --release` — the Rust unit + integration suite. These encode
+  produced commits. Three checks, fail-fast in order:
+  1. `make check-no-z3` — the four `--no-default-features` combos (bd
+     `angr-nk8p0`). This is the **only** local coverage of the
+     `#[cfg(not(feature = "vex-engine-z3"))]` arms: check 2 is
+     default-features-only and the Stop hook's clippy is `--all-features`, so
+     before this landed those arms rotted four separate times and each red sat
+     in the branch until an iteration happened to run the target by hand.
+     0.7s when nothing changed, ~13s after a source change.
+  2. `cargo test --release` — the Rust unit + integration suite. These encode
      contracts the Python suite never exercises; a real regression once survived
      a full iteration because the gate skipped them (bd `angr-8kk32`, memory
      `cargo-test-not-in-ralph-gate`). ~15s warm, ~2m when an iteration touched
      `native/` and the test binaries must rebuild.
-  2. `tests/benchmarks/run_regression.py --rust-only --skip-bimodal
+  3. `tests/benchmarks/run_regression.py --rust-only --skip-bimodal
      --threshold 0.15 --retry-failures 2` — matches the CI benchmark gate.
 - `.ralph/state/` — runtime state (FSM, logs, session.md handoff). Gitignored
   by ralph init.
