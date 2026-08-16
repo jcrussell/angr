@@ -36,8 +36,8 @@
 //! renumber only if every one of those is swept in the same commit.
 //!
 //! - **C1. EXPRESSION_ID sentinel boundary.** The `SymbolicIdentityRegistry`
-//!   leaf-AST keys are real leaf-symbol ids allocated by
-//!   `SymbolicIdentityRegistry::allocate_id`; compound `RustBV::Expression`
+//!   leaf-AST keys are real leaf-symbol ids allocated by `SymContext::next_id`
+//!   (the registry itself mints nothing); compound `RustBV::Expression`
 //!   nodes carry `id == RustBV::EXPRESSION_ID` (the `u64::MAX` sentinel) and
 //!   route through `EXPRESSION_BY_OPERANDS_PTR`
 //!   instead. Crossing this boundary corrupts `RustBV::Expression { id: u64 }`

@@ -35,7 +35,7 @@ use pyo3::prelude::*;
 use registry_lock::{RegistryMap, write_ordered};
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[path = "registry_lock.rs"]
 mod registry_lock;
@@ -175,6 +175,19 @@ pub struct SymbolInfo {
 ///
 /// This registry is designed to be shared across the exploration manager
 /// and all state instances, ensuring consistent symbol identity.
+///
+/// It **does not mint symbol ids**. Every `rust_id` reaching [`Self::register`]
+/// / [`Self::register_by_id`] is allocated externally by the `NEXT_SYMBOL_ID`
+/// static in `bv_id_ops.rs`, reached via [`SymContext::next_id`][sc] —
+/// process-global on purpose, for the aliasing-safety reason documented on that
+/// static. A second counter living here would issue ids that are unique
+/// within the registry yet collide with live `NEXT_SYMBOL_ID` ids, silently
+/// aliasing two unrelated symbols onto one Z3 constant; a vestigial
+/// `allocate_id`/`ensure_id_at_least` pair that invited exactly that mistake was
+/// removed in angr-0jh0j.56. New symbol-import code must call
+/// `SymContext::next_id`, never allocate here.
+///
+/// [sc]: crate::symbolic::SymContext::next_id
 pub struct SymbolicIdentityRegistry {
     /// Map from Python AST hash to Rust symbol ID.
     /// Using hash instead of object ID because Python may reuse addresses.
@@ -200,9 +213,6 @@ pub struct SymbolicIdentityRegistry {
     /// silently stops binding (angr-izov2). Importers use this map to recover
     /// the canonical Rust name whenever they resolve a symbol by id.
     rust_id_to_name: RwLock<HashMap<u64, String>>,
-
-    /// Next available ID for new symbols.
-    next_id: AtomicU64,
 
     /// Index of the next unfired entry in [`GROWTH_WARN_THRESHOLDS`].
     ///
@@ -239,7 +249,6 @@ impl SymbolicIdentityRegistry {
             rust_id_to_py: RwLock::new(HashMap::new()),
             name_to_info: RwLock::new(HashMap::new()),
             rust_id_to_name: RwLock::new(HashMap::new()),
-            next_id: AtomicU64::new(0),
             growth_warn_idx: AtomicUsize::new(0),
             stats: RwLock::new(RegistryStats::default()),
         }
@@ -417,29 +426,6 @@ impl SymbolicIdentityRegistry {
     /// * `rust_id` - The existing Rust symbol ID
     pub fn update_hash_mapping(&self, py_hash: i64, rust_id: u64) {
         write_ordered(&self.py_hash_to_rust_id, RegistryMap::HashToId).insert(py_hash, rust_id);
-    }
-
-    /// Allocate a new unique symbol ID.
-    ///
-    /// This is used when creating a symbol that doesn't have a Python origin.
-    pub fn allocate_id(&self) -> u64 {
-        self.next_id.fetch_add(1, Ordering::SeqCst)
-    }
-
-    /// Set the next ID to at least the given value.
-    ///
-    /// Used when importing symbols with existing IDs.
-    pub fn ensure_id_at_least(&self, id: u64) {
-        let mut current = self.next_id.load(Ordering::SeqCst);
-        while current <= id {
-            match self
-                .next_id
-                .compare_exchange(current, id + 1, Ordering::SeqCst, Ordering::SeqCst)
-            {
-                Ok(_) => break,
-                Err(actual) => current = actual,
-            }
-        }
     }
 
     /// Get registry statistics.

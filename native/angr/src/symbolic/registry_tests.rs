@@ -132,28 +132,6 @@ fn test_registry_retain_prunes_all_four_maps_in_one_pass() {
     });
 }
 
-#[test]
-fn test_registry_allocate_id() {
-    let registry = SymbolicIdentityRegistry::new();
-
-    let id1 = registry.allocate_id();
-    let id2 = registry.allocate_id();
-    let id3 = registry.allocate_id();
-
-    assert!(id1 < id2);
-    assert!(id2 < id3);
-}
-
-#[test]
-fn test_registry_ensure_id_at_least() {
-    let registry = SymbolicIdentityRegistry::new();
-
-    registry.ensure_id_at_least(100);
-
-    let next = registry.allocate_id();
-    assert!(next >= 101);
-}
-
 // --- unbounded-growth warning policy (angr-9ke6b.40) ---
 //
 // The registry has no GC caller, so growth over a long run is surfaced by a

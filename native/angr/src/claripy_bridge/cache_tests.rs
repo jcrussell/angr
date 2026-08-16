@@ -17,8 +17,8 @@ use super::*;
 // clear, then assert the global identity still resolves.
 #[test]
 fn test_worker_local_clear_preserves_global_registry() {
-    // Distinctive id unlikely to collide with allocate_id()-minted ids in
-    // sibling tests sharing the process-global registry.
+    // Distinctive id unlikely to collide with `SymContext::next_id`-minted ids
+    // in sibling tests sharing the process-global registry.
     const SYMBOL_ID: u64 = 0x1A2B_3C4D_5E6F;
 
     Python::initialize();
