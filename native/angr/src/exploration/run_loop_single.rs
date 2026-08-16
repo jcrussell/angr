@@ -182,7 +182,7 @@ impl RustExplorationManager {
 
         // Record run loop timing and active state count
         if let Some(start) = run_loop_start {
-            self.profiling.accumulated_stats.run_loop_time_ns += start.elapsed().as_nanos() as u64;
+            self.profiling.accumulated_stats.run_loop_time_ns += crate::elapsed_ns(start);
             self.profiling.accumulated_stats.active_states_count = self.active_count() as u64;
         }
 

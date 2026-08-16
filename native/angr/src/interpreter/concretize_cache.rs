@@ -90,7 +90,7 @@ impl<'a> VEXInterpreter<'a> {
         let conc_elapsed = conc_start.elapsed();
         if self.profiling_enabled {
             self.stats.concretize_count += 1;
-            self.stats.concretize_time_ns += conc_elapsed.as_nanos() as u64;
+            self.stats.concretize_time_ns += crate::duration_ns(conc_elapsed);
         }
         self.concretize_cache.insert(cache_key, Arc::clone(&result));
         result
@@ -134,7 +134,7 @@ impl<'a> VEXInterpreter<'a> {
         let conc_elapsed = conc_start.elapsed();
         if self.profiling_enabled {
             self.stats.concretize_count += 1;
-            self.stats.concretize_time_ns += conc_elapsed.as_nanos() as u64;
+            self.stats.concretize_time_ns += crate::duration_ns(conc_elapsed);
         }
         self.concretize_cache.insert(cache_key, Arc::clone(&result));
         result
@@ -178,7 +178,7 @@ impl<'a> VEXInterpreter<'a> {
         let conc_elapsed = conc_start.elapsed();
         if self.profiling_enabled {
             self.stats.concretize_count += 1;
-            self.stats.concretize_time_ns += conc_elapsed.as_nanos() as u64;
+            self.stats.concretize_time_ns += crate::duration_ns(conc_elapsed);
         }
         self.concretize_cache.insert(cache_key, Arc::clone(&result));
         result

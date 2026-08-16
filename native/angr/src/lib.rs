@@ -246,6 +246,35 @@ macro_rules! silent_default {
 
 test_submod!("silent_default_tests.rs" => silent_default_tests);
 
+/// Nanoseconds in `d`, saturating at `u64::MAX` instead of wrapping.
+///
+/// Every timing counter in this crate is a `u64` (they accumulate in
+/// `AtomicU64`/`u64` fields and are exported to Python through `stats()`), but
+/// `Duration::as_nanos` returns `u128`. The obvious `as u64` narrowing is
+/// silent even under `[profile.release-checked]` — `as` never panics — so a
+/// span past `u64::MAX` ns would report a near-zero duration rather than a huge
+/// one. Saturating keeps the impossible case implausible-looking instead of
+/// wrong, and gives the narrowing one documented home rather than one
+/// undocumented cast per timer (angr-0jh0j.80). Per CLAUDE.md's "Integer
+/// overflow / wraparound" rules a *size*-like quantity must refuse rather than
+/// saturate; a monotonic timer has no such identity to corrupt, and a pinned
+/// `u64::MAX` is the loudest thing a counter can say.
+///
+/// The bound is ~584 years, so no real process reaches it; this is
+/// defensiveness and documentation, not a live bug fix.
+pub(crate) fn duration_ns(d: std::time::Duration) -> u64 {
+    u64::try_from(d.as_nanos()).unwrap_or(u64::MAX)
+}
+
+/// Nanoseconds elapsed since `start`, saturating at `u64::MAX`.
+///
+/// The `Instant` spelling of [`duration_ns`], which carries the rationale.
+/// Timing sites should call this rather than narrowing `as_nanos()`'s `u128`
+/// with a bare `as u64`.
+pub(crate) fn elapsed_ns(start: std::time::Instant) -> u64 {
+    duration_ns(start.elapsed())
+}
+
 // Dev-only public surface for the cargo-fuzz targets under `fuzz/`
 // (angr-qwyti.9). Re-exports the pure hostile-input parsers so a fuzz binary
 // can reach them without depending on `pub(super)` internals. Gated behind

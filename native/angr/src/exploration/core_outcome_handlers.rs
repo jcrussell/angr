@@ -106,10 +106,7 @@ pub(super) fn materialize_deferred_forks_core(
                 forked.set_force_eager_forks(true);
             }
             if let Some(start) = fork_start {
-                ParallelProfiling::add(
-                    &prof.solver_fork_time_ns,
-                    start.elapsed().as_nanos() as u64,
-                );
+                ParallelProfiling::add(&prof.solver_fork_time_ns, crate::elapsed_ns(start));
                 ParallelProfiling::add(&prof.solver_fork_count, 1);
             }
             // set_root + dispatch_fork_inspect deferred to the coordinator.
@@ -122,19 +119,13 @@ pub(super) fn materialize_deferred_forks_core(
             };
             if forked.survives_sat_prune(ctx.lazy_solves) {
                 if let Some(start) = sat_start {
-                    ParallelProfiling::add(
-                        &prof.solver_sat_time_ns,
-                        start.elapsed().as_nanos() as u64,
-                    );
+                    ParallelProfiling::add(&prof.solver_sat_time_ns, crate::elapsed_ns(start));
                     ParallelProfiling::add(&prof.solver_sat_count, 1);
                 }
                 forks_out.push((forked, RoutingTag::fork(root_hint)));
             } else {
                 if let Some(start) = sat_start {
-                    ParallelProfiling::add(
-                        &prof.solver_sat_time_ns,
-                        start.elapsed().as_nanos() as u64,
-                    );
+                    ParallelProfiling::add(&prof.solver_sat_time_ns, crate::elapsed_ns(start));
                     ParallelProfiling::add(&prof.solver_sat_count, 1);
                 }
                 log::debug!(
@@ -169,10 +160,7 @@ pub(super) fn materialize_deferred_forks_core(
         }
     }
     if let Some(start) = deferred_fork_start {
-        ParallelProfiling::add(
-            &prof.deferred_fork_time_ns,
-            start.elapsed().as_nanos() as u64,
-        );
+        ParallelProfiling::add(&prof.deferred_fork_time_ns, crate::elapsed_ns(start));
         ParallelProfiling::add(&prof.deferred_fork_count, deferred_fork_total);
     }
 }

@@ -652,7 +652,7 @@ impl RustExplorationManager {
                 if let Some(start) = hook_fork_start {
                     let fork_count = u64::from(pre_callback_snapshot.is_some());
                     self.profiling.accumulated_stats.solver_fork_time_ns +=
-                        start.elapsed().as_nanos() as u64;
+                        crate::elapsed_ns(start);
                     self.profiling.accumulated_stats.solver_fork_count += fork_count;
                 }
                 Err(StepError::NeedCallback(PendingCallback::with_context(

@@ -104,7 +104,7 @@ macro_rules! profile_start {
 macro_rules! profile_add {
     ($start:expr, $field:expr) => {
         if let Some(__profile_start) = $start {
-            $field += __profile_start.elapsed().as_nanos() as u64;
+            $field += crate::elapsed_ns(__profile_start);
         }
     };
 }

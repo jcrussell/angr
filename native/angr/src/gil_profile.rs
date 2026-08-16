@@ -280,7 +280,7 @@ pub(crate) fn park_start(enabled: bool) {
 #[inline]
 pub(crate) fn park_end() {
     if let Some(start) = PARK_START.with(std::cell::Cell::take) {
-        let elapsed = start.elapsed().as_nanos() as u64;
+        let elapsed = crate::elapsed_ns(start);
         GIL_ACCUM_NS.with(|a| a.set(a.get() + elapsed));
         CLASS_ACCUM_NS.with(|c| {
             let mut split = c.get();
@@ -380,7 +380,7 @@ impl Drop for GilWorkGuard {
         if now == 0
             && let Some(start) = REGION_START.with(std::cell::Cell::take)
         {
-            let elapsed = start.elapsed().as_nanos() as u64;
+            let elapsed = crate::elapsed_ns(start);
             GIL_ACCUM_NS.with(|a| a.set(a.get() + elapsed));
             let class = REGION_CLASS.with(std::cell::Cell::get);
             CLASS_ACCUM_NS.with(|c| {
@@ -432,7 +432,7 @@ impl Drop for RunLoopWallGuard {
     #[inline]
     fn drop(&mut self) {
         if let Some(start) = self.start {
-            let elapsed = start.elapsed().as_nanos() as u64;
+            let elapsed = crate::elapsed_ns(start);
             WALL_ACCUM_NS.with(|w| w.set(w.get() + elapsed));
             ACTIVE.with(|a| a.set(self.prev_active));
         }
@@ -448,7 +448,7 @@ mod tests {
         // sees a non-zero region without relying on sleep (which the harness
         // forbids in some contexts).
         let start = Instant::now();
-        while (start.elapsed().as_nanos() as u64) < min_ns {
+        while crate::elapsed_ns(start) < min_ns {
             std::hint::spin_loop();
         }
     }
@@ -632,7 +632,7 @@ mod tests {
                 busy_ns(100_000);
             }
         }
-        let outer_span = outer_start.elapsed().as_nanos() as u64;
+        let outer_span = crate::elapsed_ns(outer_start);
         let banked = gil_work_ns();
         // Lower bound: the ~200us of busy work must actually be counted.
         assert!(banked >= 150_000, "region undercounted: {banked} ns");

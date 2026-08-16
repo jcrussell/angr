@@ -312,7 +312,7 @@ pub(crate) fn run_interpreter_step_core(
 
     // Record setup time before execution
     if let Some(start) = setup_start {
-        interp.stats_mut().step_setup_time_ns += start.elapsed().as_nanos() as u64;
+        interp.stats_mut().step_setup_time_ns += crate::elapsed_ns(start);
     }
 
     // Run until event.

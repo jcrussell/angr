@@ -690,7 +690,7 @@ impl SymContext {
 
             *guard = Some(new_solver);
             Z3_MATERIALIZE_COUNT.fetch_add(1, Ordering::Relaxed);
-            Z3_MATERIALIZE_TIME_NS.fetch_add(start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            Z3_MATERIALIZE_TIME_NS.fetch_add(crate::elapsed_ns(start), Ordering::Relaxed);
         }
         parking_lot::MutexGuard::map(guard, |opt| {
             opt.as_mut()

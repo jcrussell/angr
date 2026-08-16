@@ -750,6 +750,12 @@ pub fn process_token() -> u64 {
         // pre-epoch run could alias ours and suppress the `SymbolIdRebase` in
         // `StashManager::load_snapshot`). Lossy only in sign: two clocks
         // equidistant either side of the epoch hash alike (angr-sqfj8.137).
+        //
+        // These two `as u64` narrowings are deliberately NOT `crate::duration_ns`
+        // (angr-0jh0j.80): the value feeds a hash, not a duration anyone reads
+        // back, so truncating the `u128` keeps the low-order entropy while
+        // saturating would collapse every post-2554 clock to the same
+        // `u64::MAX`. Wrapping is the correct narrowing for an identity mixer.
         let nanos = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
             Ok(d) => d.as_nanos() as u64,
             Err(e) => {

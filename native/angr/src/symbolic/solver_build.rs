@@ -81,7 +81,7 @@ pub(crate) fn sample_simplify_skip(constraint: &z3::ast::Bool) {
 pub(crate) fn timed_check(solver: &z3::Solver, site: CheckSite) -> z3::SatResult {
     let start = std::time::Instant::now();
     let result = solver.check();
-    let elapsed_ns = start.elapsed().as_nanos() as u64;
+    let elapsed_ns = crate::elapsed_ns(start);
     Z3_CHECK_COUNT.fetch_add(1, Ordering::Relaxed);
     Z3_CHECK_TIME_NS.fetch_add(elapsed_ns, Ordering::Relaxed);
     let idx = site as usize;

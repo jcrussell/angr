@@ -280,7 +280,7 @@ pub(crate) fn materialize_deferred_forks(
             let forked = build_unexplored_fork(fork_base, &fork, cond, snapshots, &prior_guards);
             prior_guards.record(cond.clone(), fork.path_taken);
             if let (Some(s), Some(start)) = (stats.as_deref_mut(), fork_start) {
-                s.solver_fork_time_ns += start.elapsed().as_nanos() as u64;
+                s.solver_fork_time_ns += crate::elapsed_ns(start);
                 s.solver_fork_count += 1;
             }
             if reconstructed.is_some() {
@@ -292,7 +292,7 @@ pub(crate) fn materialize_deferred_forks(
             let sat_start = stats.is_some().then(std::time::Instant::now);
             let sat = forked.survives_sat_prune(lazy_solves);
             if let (Some(s), Some(start)) = (stats.as_deref_mut(), sat_start) {
-                s.solver_sat_time_ns += start.elapsed().as_nanos() as u64;
+                s.solver_sat_time_ns += crate::elapsed_ns(start);
                 s.solver_sat_count += 1;
             }
             if sat {
@@ -330,7 +330,7 @@ pub(crate) fn materialize_deferred_forks(
     }
 
     if let (Some(s), Some(start)) = (stats, batch_start) {
-        s.deferred_fork_time_ns += start.elapsed().as_nanos() as u64;
+        s.deferred_fork_time_ns += crate::elapsed_ns(start);
         s.deferred_fork_count += total;
     }
     out

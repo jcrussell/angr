@@ -116,7 +116,7 @@ fn time_phase_armed<R>(armed: bool, counter: &AtomicU64, f: impl FnOnce() -> R) 
     if armed {
         let t0 = std::time::Instant::now();
         let r = f();
-        counter.fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        counter.fetch_add(crate::elapsed_ns(t0), Ordering::Relaxed);
         r
     } else {
         f()
@@ -163,7 +163,7 @@ fn time_roundtrip_half_armed<R>(armed: bool, f: impl FnOnce() -> R) -> R {
     if armed {
         let t0 = std::time::Instant::now();
         let r = f();
-        MIGRATE_ROUNDTRIP_NS.fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        MIGRATE_ROUNDTRIP_NS.fetch_add(crate::elapsed_ns(t0), Ordering::Relaxed);
         r
     } else {
         f()
@@ -201,7 +201,7 @@ mod tests {
     fn busy_ns(min_ns: u64) {
         let t0 = std::time::Instant::now();
         let mut spins: u64 = 0;
-        while (t0.elapsed().as_nanos() as u64) < min_ns {
+        while crate::elapsed_ns(t0) < min_ns {
             spins = spins.wrapping_add(1);
             std::hint::black_box(spins);
         }

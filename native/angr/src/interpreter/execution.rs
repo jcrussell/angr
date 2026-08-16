@@ -708,7 +708,7 @@ impl<'a> VEXInterpreter<'a> {
             match self.execute_stmt_with_callbacks(callbacks, stmt, irsb)? {
                 StmtResult::Continue => {
                     if let Some(start) = stmt_start {
-                        let elapsed = start.elapsed().as_nanos() as u64;
+                        let elapsed = crate::elapsed_ns(start);
                         stmt_total_ns += elapsed;
                         #[cfg(debug_assertions)]
                         if elapsed > 50_000_000 {

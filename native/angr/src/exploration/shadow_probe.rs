@@ -72,7 +72,7 @@ impl RustExplorationManager {
         let mut probe_state = state.fork();
         let t0 = Instant::now();
         let bytes = probe_state.to_serialized();
-        let ser_ns = t0.elapsed().as_nanos() as u64;
+        let ser_ns = crate::elapsed_ns(t0);
         let nbytes = bytes.len() as u64;
 
         let (tx, rx) = self
@@ -136,7 +136,7 @@ fn spawn_shadow_probe_thread() -> ShadowProbeChan {
             let outcome = match RustSimState::from_serialized(&bytes) {
                 Ok(s) => {
                     drop(s);
-                    Ok(t0.elapsed().as_nanos() as u64)
+                    Ok(crate::elapsed_ns(t0))
                 }
                 Err(e) => Err(format!("{e:?}")),
             };

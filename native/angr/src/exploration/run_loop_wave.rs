@@ -179,8 +179,7 @@ impl RustExplorationManager {
             if drained.is_empty() {
                 // I8 termination path (b): active exhausted.
                 if let Some(start) = run_loop_start {
-                    self.profiling.accumulated_stats.run_loop_time_ns +=
-                        start.elapsed().as_nanos() as u64;
+                    self.profiling.accumulated_stats.run_loop_time_ns += crate::elapsed_ns(start);
                     self.profiling.accumulated_stats.active_states_count =
                         self.active_count() as u64;
                 }
@@ -353,8 +352,7 @@ impl RustExplorationManager {
 
             if dispatched_total >= max_steps {
                 if let Some(start) = run_loop_start {
-                    self.profiling.accumulated_stats.run_loop_time_ns +=
-                        start.elapsed().as_nanos() as u64;
+                    self.profiling.accumulated_stats.run_loop_time_ns += crate::elapsed_ns(start);
                     self.profiling.accumulated_stats.active_states_count =
                         self.active_count() as u64;
                 }

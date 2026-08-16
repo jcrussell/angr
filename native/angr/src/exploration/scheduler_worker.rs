@@ -101,7 +101,7 @@ pub(super) fn worker_loop(
         let outcome = (job.process)(state, &t.cancel, block_cache);
         t.counters
             .step_ns
-            .fetch_add(step_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            .fetch_add(crate::elapsed_ns(step_start), Ordering::Relaxed);
 
         // Post-find speculative-waste accounting (angr-1ilq.8); see the twin in
         // `worker_session_loop`. The step's products are drained back on the next
@@ -230,7 +230,7 @@ pub(super) fn worker_session_loop(
         let outcome = (session.process)(state, &t.cancel, block_cache);
         t.counters
             .step_ns
-            .fetch_add(step_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            .fetch_add(crate::elapsed_ns(step_start), Ordering::Relaxed);
 
         // Post-find speculative-waste accounting (angr-1ilq.8): the top-of-loop
         // guard means we only reach here with `cancel` unset at dispatch time,
@@ -380,10 +380,9 @@ pub(super) fn dispatch_next(
                         // the other half of the migration `detach_timed` opened.
                         let reattach_start = Instant::now();
                         let reattached = payload.reattach(ctx);
-                        t.counters.serde_ns.fetch_add(
-                            reattach_start.elapsed().as_nanos() as u64,
-                            Ordering::Relaxed,
-                        );
+                        t.counters
+                            .serde_ns
+                            .fetch_add(crate::elapsed_ns(reattach_start), Ordering::Relaxed);
                         match reattached {
                             Ok(state) => {
                                 // Observability only (angr-vh834 Phase 1): count every
@@ -614,7 +613,7 @@ pub(super) fn detach_timed(
     let payload = state.detach_for_migration();
     counters
         .serde_ns
-        .fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        .fetch_add(crate::elapsed_ns(t0), Ordering::Relaxed);
     payload
 }
 
