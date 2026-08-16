@@ -342,8 +342,11 @@ arch-agnostic; the per-arch table maps Linux ABI numbers from
 Coverage shorthand:
 
 * ✓ — registered on this arch.
-* — — Linux ABI omits the syscall on this arch (asm-generic dropped
-  legacy variants on AArch64; ``arch_prctl`` is amd64-only; etc.).
+* — — the syscall has no ``(arch, num)`` entry to register: either the
+  Linux ABI omits it on this arch (asm-generic dropped legacy variants
+  on AArch64; ``arch_prctl`` is amd64-only), or angr's own per-arch
+  table in ``angr/procedures/definitions/linux_kernel.py`` carries no
+  number for it (``getrandom`` outside AMD64 / X86).
 * ✗ — the ABI *does* have the syscall, but it is deliberately left
   unregistered so it falls through to Python (registering it would only
   add a dispatch hop before the same fallback).
@@ -370,6 +373,27 @@ Per-arch matrix
      - ✓
      - ✓
      - ✓
+     - ✓
+   * - ``readv`` / ``writev``
+     - ✓
+     - ✓
+     - ✓
+     - ✓
+     - ✓
+     - ✓
+   * - ``pread64`` / ``pwrite64``
+     - ✓
+     - ✓
+     - ✓
+     - ✓
+     - ✓
+     - ✓
+   * - ``lseek``
+     - ✓
+     - ✓ (no ``_llseek`` 140)
+     - ✓ (no ``_llseek`` 140)
+     - ✓
+     - ✓ (no ``_llseek`` 4140)
      - ✓
    * - ``open`` / ``close``
      - ✓
@@ -597,6 +621,27 @@ Per-arch matrix
        ``epoll_pwait`` (22) covers both)
      - ✓
      - ✓
+   * - ``uname``
+     - ✓
+     - ✓
+     - ✓
+     - ✓
+     - ✓
+     - ✓
+   * - ``set_tid_address`` / ``set_robust_list``
+     - ✓
+     - ✓
+     - ✓
+     - ✓
+     - ✓
+     - ✓
+   * - ``getrandom``
+     - ✓
+     - ✓
+     - — (no ARM entry in angr's table)
+     - — (no AArch64 entry)
+     - — (no MIPS-O32 entry)
+     - — (no MIPS-N64 entry)
    * - ``arch_prctl``
      - ✓
      - — (amd64 only)
@@ -635,6 +680,19 @@ Stubbed / incomplete
 * **``mremap``** — number registered on every arch but the handler
   models only the simplest case (no full page-table coordination
   beyond stub parity). Tracked as ``angr-uahs``.
+* **``set_tid_address`` / ``set_robust_list``** — registered everywhere
+  but deliberately threadless (``syscalls/startup.rs``):
+  ``set_tid_address`` returns tid 1 and ignores ``tidptr`` (no
+  clear-child-tid futex is maintained, matching
+  ``linux_kernel/set_tid_address.py``), and ``set_robust_list`` is a
+  no-op returning 0. Both are correct for the single-threaded model the
+  engine executes; neither has state a multi-threaded model could read
+  back.
+* **``_llseek``** — the 32-bit LFS variant (140 on X86 / ARM, 4140 on
+  MIPS32) is *not* registered even though ``lseek`` is: its 64-bit
+  offset arrives split across two registers and is returned through a
+  ``loff_t *result`` out-param, so it needs a distinct handler rather
+  than a ``NativeLseekSyscall`` alias.
 * **Symbolic-rax dispatch** — when ``rax`` is symbolic the dispatcher
   records the fallback under ``syscall_python_fallback_by_num`` key
   ``-1`` and hands the state to Python. The counter is at zero on the
