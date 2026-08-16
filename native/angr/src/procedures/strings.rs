@@ -35,7 +35,9 @@ use crate::symbolic::{RustBV, SymContext};
 /// One home so a future security-driven reduction is applied everywhere at
 /// once rather than silently missing a copy that kept its own local `4096`
 /// (angr-myzjx.7, continued for the getopt/perror/getenv trio in
-/// angr-03vl4.45 and for strchr/strlen in angr-03vl4.49). Importers alias it
+/// angr-03vl4.45, for strchr/strlen in angr-03vl4.49, and for the
+/// `puts`/`fputs` pair — neither takes a length argument, so both are string
+/// scans rather than payload-size caps — in angr-0jh0j.45). Importers alias it
 /// locally (`MAX_STRING_SCAN as MAX_SCAN`) where the file already had its own
 /// vocabulary. `strcmp`/`memcmp` share their own equivalent
 /// (`strcmp::MAX_STRCMP_LEN`); the printf/scanf family share

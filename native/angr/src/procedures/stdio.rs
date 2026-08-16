@@ -11,8 +11,7 @@ use super::fileops::{read_fileno, resolve_stream_fd_or_demote_all};
 use super::{NativeSimProcedure, ProcedureError, extract_concrete_arg};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
-
-const MAX_FWRITE_SIZE: u64 = 4096;
+use crate::syscalls::MAX_IO_SIZE as MAX_FWRITE_SIZE;
 
 /// Native fwrite implementation.
 ///
@@ -299,9 +298,13 @@ impl NativeSimProcedure for NativeFerror {
     }
 }
 
-/// Maximum string length scanned by fputs. Matches MAX_FWRITE_SIZE so the two
-/// stdio write paths have the same upper bound on payload size.
-const MAX_FPUTS_LEN: u64 = 4096;
+/// Maximum string length scanned by fputs. `fputs` takes no length argument, so
+/// this is a C-string scan bound rather than a payload-size one: it derives from
+/// the shared [`super::strings::MAX_STRING_SCAN`] home every other NUL-scanning
+/// procedure uses, widened to `u64` for the byte-offset loop below. Both shared
+/// caps are 4096 today, so the two stdio write paths still agree on their upper
+/// bound on payload size.
+const MAX_FPUTS_LEN: u64 = super::strings::MAX_STRING_SCAN as u64;
 
 /// Native fputs implementation.
 ///

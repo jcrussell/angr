@@ -41,8 +41,7 @@ use super::strings::{write_bv_bytes, write_concrete_bytes};
 use super::{ProcedureError, arch_word};
 use crate::procedures::fileops::read_fileno;
 use crate::state::MAX_SYMFILE_SERVE_SIZE;
-
-const MAX_FREAD_SIZE: u64 = 4096;
+use crate::syscalls::MAX_IO_SIZE as MAX_FREAD_SIZE;
 
 crate::declare_proc! {
     /// fread: serve concrete FS content or synthesize symbolic bytes for a

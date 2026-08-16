@@ -11,9 +11,8 @@
 //! - Returns length + 1 (for the appended newline)
 //! - Falls back to Python if address is symbolic
 
+use crate::procedures::strings::MAX_STRING_SCAN as MAX_PUTS_LEN;
 use crate::symbolic::RustBV;
-
-const MAX_PUTS_LEN: usize = 4096;
 
 crate::declare_proc! {
     /// Native puts implementation.

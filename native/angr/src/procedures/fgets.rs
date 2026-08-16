@@ -39,8 +39,7 @@ use crate::memory::MemoryError;
 use crate::procedures::fileops::read_fileno;
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
-
-const MAX_FGETS_SIZE: u64 = 4096;
+use crate::syscalls::MAX_IO_SIZE as MAX_FGETS_SIZE;
 
 /// Default `SimStateLibc.max_gets_size` (angr/state_plugins/libc.py). `gets` has
 /// no size argument, so it reads at most `MAX_GETS_SIZE - 1` bytes. The Python

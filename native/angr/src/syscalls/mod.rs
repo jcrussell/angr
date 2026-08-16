@@ -94,7 +94,9 @@ use crate::symbolic::RustBV;
 /// (getrandom); `fd_io` (readv/writev) applies it per segment. The libc-hook
 /// twins in `procedures` — [`crate::procedures::read`] and
 /// [`crate::procedures::write`] — share it too, since they cap the same
-/// request the syscall handlers do (angr-03vl4.49). Kept as a single source of
+/// request the syscall handlers do (angr-03vl4.49), as do the stdio
+/// request-size caps `fread`/`fwrite`/`fgets`, which had each kept their own
+/// local `4096` (angr-0jh0j.45). Kept as a single source of
 /// truth so the handlers can't desync (angr-myzjx.18, angr-9ke6b.157)
 /// — importers alias it locally (`MAX_IO_SIZE as MAX_READ_SIZE`) so each call
 /// site still reads in its own vocabulary.
