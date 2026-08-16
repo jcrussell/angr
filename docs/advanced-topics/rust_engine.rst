@@ -366,6 +366,124 @@ cooperate through PyO3:
 * **Feature flag:** ``use_rust_engine=True`` on
   ``proj.factory.simulation_manager()``.
 
+State merge policy (the ``MergePolicy`` derive)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Merging N states into one is a **per-field** decision, and
+``RustSimState`` has more than forty fields. The merge body itself is
+hand-written in ``state/fork.rs::RustSimState::merge``, but *which*
+treatment a field gets is declared at the field, next to its
+definition, with a ``#[merge_policy = "..."]`` attribute that
+``#[derive(angr_macros::MergePolicy)]`` validates at compile time:
+
+.. code-block:: rust
+
+   #[derive(angr_macros::MergePolicy)]
+   pub struct RustSimState {
+       #[merge_policy = "self_wins"]
+       arch: Box<dyn Arch>,
+       #[merge_policy = "delegate"]
+       memory: SymbolicMemory,
+       #[merge_policy = "max"]
+       heap_brk: u64,
+       // ...
+   }
+
+Adding a field without a policy — or with a mistyped one — is a
+``compile_error!``, so "the struct literal in ``merge`` silently reused
+``self.x.clone()`` and nobody decided that was correct" cannot hide
+among the other forty labels.
+
+The vocabulary (see ``VALID_MERGE_POLICIES`` in
+``native/angr-macros/src/lib.rs`` for the authoritative list):
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 15 65
+
+   * - Policy
+     - Generated?
+     - Meaning
+   * - ``self_wins``
+     - yes
+     - Carried from ``self`` unchanged; the field is not expected to
+       diverge across branches (``arch``, ``pc``).
+   * - ``in_place_self``
+     - no
+     - ``self_wins`` for a merge that mutates ``self`` instead of
+       building a fresh struct (``SymbolicMemory::merge``), so "self
+       wins" means "never assigned" and there is no line to generate.
+   * - ``union``
+     - yes
+     - Set-like union across every branch; for the ``bool`` SimOption
+       mirrors, a logical OR.
+   * - ``max`` / ``min``
+     - yes
+     - Numeric extremum across branches (``heap_brk``, ``mmap_base``,
+       ``tsc_counter``).
+   * - ``warn_on_diverge``
+     - yes
+     - Kept from ``self``, but ``warn_config_divergence`` runs first so
+       divergence is loud rather than silent (``getopt_optind``,
+       ``ctype_loc``).
+   * - ``computed``
+     - no
+     - Freshly computed for the merged state, not derived from any
+       branch's prior value (``state_id``, ``parent_id``).
+   * - ``delegate``
+     - no
+     - Handed to the field type's own ``merge`` / ``union_from``
+       (``registers``, ``memory``, ``solver``, ``heap_metadata``).
+   * - ``joint``
+     - no
+     - Computed jointly with sibling fields, or by scanning every
+       branch at once, so no single-field strategy applies (``fs``'s
+       longest-stdout scan; ``hooks``, which has to read its
+       ``removed_hooks`` sibling).
+
+For the five *generated* policies the derive emits a private
+``fn merge_field_<name>(&self, others: &[&Self]) -> FieldTy`` whose
+body **is** the policy, and ``merge`` must call it: an uncalled private
+method is ``dead_code``, which CI's ``-D warnings`` turns into a build
+failure. That is what stops a field labelled ``max`` from being merged
+self-wins. A field whose type does not fit the generated shape (a
+``union`` over a name-keyed ``Vec`` rather than a ``bool`` OR, a
+``warn_on_diverge`` whose divergence test is not ``!=``) opts out
+with ``#[merge_manual = "<why the generated body cannot work>"]`` — a
+non-empty rationale is required, and the attribute is rejected as
+redundant on a non-mechanical policy.
+
+For the other four the derive is validation-only: the label proves a
+conscious choice was made, and the merge line stays hand-written
+because a per-field derive cannot express it safely.
+
+A ``delegate`` label ends the guarantee at that field's type, so the
+derive is applied at three levels, each with a behavioural test:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 30 40
+
+   * - Struct
+     - Defined in
+     - Behavioural half
+   * - ``RustSimState``
+     - ``state/mod.rs``
+     - ``state/tests/merge_property.rs``
+   * - ``SymbolicMemory`` (the ``memory`` field)
+     - ``memory/mod.rs``
+     - ``memory/tests/merge_sidecars.rs``
+   * - ``HeapMetadata`` (the ``heap_metadata`` field)
+     - ``state/types.rs``
+     - ``state/tests/merge_property.rs``
+
+The lower two exist because the bug family recurred one level below the
+top-level derive: ``SymbolicMemory::merge`` adopted an other-only
+page's ``multi_bitmap`` but never copied the matching ``multi_objects``
+payloads, because that sidecar is a flat map on ``SymbolicMemory``
+rather than nested in ``MemoryPage``. Any new address-keyed sidecar map
+now fails to compile until it declares how ``merge`` treats it.
+
 Architecture support matrix
 ---------------------------
 
