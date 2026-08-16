@@ -203,6 +203,24 @@ pub(super) fn arm64g_calculate_flags_nzcv(cc_op: u64, d1: u64, d2: u64, d3: u64)
     )
 }
 
+/// Symbolic counterpart of `arm64g_calculate_flags_nzcv`: computes the four
+/// NZCV bits with `arm64_sym_flag_*` and packs them via the shared
+/// `sym_pack_nzcv` (arm32 module — same bit positions).
+pub(super) fn arm64_sym_flags_nzcv(
+    cc_op: u64,
+    d1: &RustBV,
+    d2: &RustBV,
+    d3: &RustBV,
+    ret_bits: u32,
+    ctx: &SymContext,
+) -> Option<RustBV> {
+    let n = arm64_sym_flag_n(cc_op, d1, d2, d3, ctx)?;
+    let z = arm64_sym_flag_z(cc_op, d1, d2, d3, ctx)?;
+    let c = arm64_sym_flag_c(cc_op, d1, d2, d3, ctx)?;
+    let v = arm64_sym_flag_v(cc_op, d1, d2, d3, ctx)?;
+    sym_pack_nzcv(&n, &z, &c, &v, ret_bits, ctx)
+}
+
 /// Symbolic arm64 arithmetic result. `d1`/`d2`/`d3` must already be `nb`-wide.
 pub(super) fn arm64_sym_res(
     op: Arm64Op,

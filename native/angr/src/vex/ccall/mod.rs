@@ -821,6 +821,16 @@ pub fn handle_ccall_with_ctx(
             return Some(RustBV::concrete(result as u128, ret_bits));
         }
 
+        // Symbolic path: concrete cc_op with (possibly) symbolic deps. The
+        // packed-NZCV analogue of the armg_calculate_flag_* arm below
+        // (angr-zgd3r).
+        if let (Some(cc_op), Some(sym_ctx)) = (args[0].as_u64(), ctx)
+            && let Some(packed) =
+                arm_sym_flags_nzcv(cc_op, &args[1], &args[2], &args[3], ret_bits, sym_ctx)
+        {
+            return Some(packed);
+        }
+
         return None;
     }
 
@@ -924,6 +934,17 @@ pub fn handle_ccall_with_ctx(
             let result = arm64g_calculate_flags_nzcv(cc_op, d1, d2, d3)?;
             return Some(RustBV::concrete(result as u128, ret_bits));
         }
+
+        // Symbolic path, mirroring the armg_calculate_flags_nzcv arm above —
+        // the arch-sibling parity rule from
+        // invariant-ccall-arch-sibling-symbolic-parity (angr-zgd3r).
+        if let (Some(cc_op), Some(sym_ctx)) = (args[0].as_u64(), ctx)
+            && let Some(packed) =
+                arm64_sym_flags_nzcv(cc_op, &args[1], &args[2], &args[3], ret_bits, sym_ctx)
+        {
+            return Some(packed);
+        }
+
         return None;
     }
 

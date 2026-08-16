@@ -1464,3 +1464,100 @@ fn test_use_seg_selector_gdt_empty_wraps_mod_2_32() {
     // Exact-wrap-to-zero boundary: 0xFFFF0000 + 0x00010000 == 2^32.
     assert_eq!(seg_selector_call(0, 0, 0xFFFF, 0x0001_0000), Some(0));
 }
+
+/// `armg_calculate_flags_nzcv` / `arm64g_calculate_flags_nzcv` must resolve
+/// natively for every cc_op when a dep is symbolic — the packed-NZCV analogue
+/// of `arm32_flag_ccalls_symbolic_cover_every_cc_op` (angr-zgd3r).
+#[test]
+fn arm_flags_nzcv_ccalls_symbolic_cover_every_cc_op() {
+    let ctx = crate::symbolic::SymContext::new_mock();
+    // COPY..MULL is the whole ARMG_CC_OP_* space (libvex_guest_arm.h).
+    for cc_op in arm_cc_op::ARMG_CC_OP_COPY..=arm_cc_op::ARMG_CC_OP_MULL {
+        let args = vec![
+            RustBV::concrete(u128::from(cc_op), 32),
+            RustBV::symbolic(&ctx, format!("arm32_nzcv_d1_{cc_op}"), 32),
+            RustBV::concrete(0x5a, 32),
+            RustBV::concrete(1, 32),
+        ];
+        assert!(
+            handle_ccall_with_ctx("armg_calculate_flags_nzcv", &args, 32, Some(&ctx)).is_some(),
+            "armg_calculate_flags_nzcv cc_op={cc_op} fell back to Python"
+        );
+    }
+    for cc_op in arm64_cc_op::ARM64G_CC_OP_COPY..=arm64_cc_op::ARM64G_CC_OP_LOGIC64 {
+        let args = vec![
+            RustBV::concrete(u128::from(cc_op), 64),
+            RustBV::symbolic(&ctx, format!("arm64_nzcv_d1_{cc_op}"), 64),
+            RustBV::concrete(0x5a, 64),
+            RustBV::concrete(1, 64),
+        ];
+        assert!(
+            handle_ccall_with_ctx("arm64g_calculate_flags_nzcv", &args, 64, Some(&ctx)).is_some(),
+            "arm64g_calculate_flags_nzcv cc_op={cc_op} fell back to Python"
+        );
+    }
+}
+
+/// Value half of `arm_flags_nzcv_ccalls_symbolic_cover_every_cc_op`: the
+/// packed symbolic word must equal the concrete `*_calculate_flags_nzcv`
+/// reference, not merely be non-`None`.
+// Symbolic solving: `add_bv_constraint` / `eval` only exist with the Z3-backed
+// engine (angr-9ke6b.236, see bd memory `vex-engine-z3-test-gate-invariant`).
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn diff_fuzz_arm_flags_nzcv_symbolic_matches_concrete() {
+    let mut rng = Lcg::new(0x0a11_4200);
+    for cc_op in arm_cc_op::ARMG_CC_OP_COPY..=arm_cc_op::ARMG_CC_OP_MULL {
+        for _ in 0..2 {
+            let d1 = rng.next() & 0xFFFF_FFFF;
+            let d2 = rng.next() & 0xFFFF_FFFF;
+            // ADC/SBB read cc_ndep as the incoming carry; MUL/MULL read it as
+            // oldC:oldV. Keeping it in {0..3} is valid for both.
+            let nd = rng.next() & 3;
+            // Fresh context per case: the constraint pins the symbol to d1.
+            let ctx = crate::symbolic::SymContext::new_mock();
+            let sym_d1 = RustBV::symbolic(&ctx, "arm32_nzcv_d1", 32);
+            ctx.add_bv_constraint(&sym_d1, u128::from(d1));
+            let args = vec![
+                RustBV::concrete(u128::from(cc_op), 32),
+                sym_d1,
+                RustBV::concrete(u128::from(d2), 32),
+                RustBV::concrete(u128::from(nd), 32),
+            ];
+            let got = handle_ccall_with_ctx("armg_calculate_flags_nzcv", &args, 32, Some(&ctx))
+                .expect("every ARM cc_op must resolve natively");
+            let want = armg_calculate_flags_nzcv(cc_op, d1, d2, nd)
+                .expect("concrete reference must also decode");
+            assert_eq!(
+                ctx.eval(&got),
+                Some(u128::from(want)),
+                "armg nzcv cc_op={cc_op} d1={d1:x} d2={d2:x} nd={nd:x}"
+            );
+        }
+    }
+    for cc_op in arm64_cc_op::ARM64G_CC_OP_COPY..=arm64_cc_op::ARM64G_CC_OP_LOGIC64 {
+        for _ in 0..2 {
+            let d1 = rng.next();
+            let d2 = rng.next();
+            let d3 = rng.next() & 1;
+            let ctx = crate::symbolic::SymContext::new_mock();
+            let sym_d1 = RustBV::symbolic(&ctx, "arm64_nzcv_d1", 64);
+            ctx.add_bv_constraint(&sym_d1, u128::from(d1));
+            let args = vec![
+                RustBV::concrete(u128::from(cc_op), 64),
+                sym_d1,
+                RustBV::concrete(u128::from(d2), 64),
+                RustBV::concrete(u128::from(d3), 64),
+            ];
+            let got = handle_ccall_with_ctx("arm64g_calculate_flags_nzcv", &args, 64, Some(&ctx))
+                .expect("every arm64 cc_op must resolve natively");
+            let want = arm64g_calculate_flags_nzcv(cc_op, d1, d2, d3)
+                .expect("concrete reference must also decode");
+            assert_eq!(
+                ctx.eval(&got),
+                Some(u128::from(want)),
+                "arm64g nzcv cc_op={cc_op} d1={d1:x} d2={d2:x} d3={d3:x}"
+            );
+        }
+    }
+}

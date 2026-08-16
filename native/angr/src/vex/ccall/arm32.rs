@@ -478,3 +478,51 @@ pub(super) fn armg_calculate_flags_nzcv(
             | ((v & 1) << arm_flag_shift::SHIFT_V),
     )
 }
+
+/// Pack four symbolic 1-bit NZCV flags into a `ret_bits`-wide word at
+/// `arm_flag_shift::SHIFT_*`. Shared by the ARM32 and AArch64 symbolic
+/// `*_calculate_flags_nzcv` paths — both pack at the same bit positions
+/// (`armg_calculate_flags_nzcv` / `arm64g_calculate_flags_nzcv`).
+///
+/// Returns `None` when `ret_bits` cannot hold bit `SHIFT_N`: the shift
+/// amounts are built at `ret_bits` and would wrap, silently yielding a wrong
+/// word rather than deferring to the Python ccall.
+pub(super) fn sym_pack_nzcv(
+    n: &RustBV,
+    z: &RustBV,
+    c: &RustBV,
+    v: &RustBV,
+    ret_bits: u32,
+    ctx: &SymContext,
+) -> Option<RustBV> {
+    if ret_bits <= arm_flag_shift::SHIFT_N {
+        return None;
+    }
+    let shifted = |bit: &RustBV, shift: u32| {
+        bit.zero_extend(ret_bits, ctx)
+            .shl(&RustBV::concrete(u128::from(shift), ret_bits), ctx)
+    };
+    Some(
+        shifted(n, arm_flag_shift::SHIFT_N)
+            .or(&shifted(z, arm_flag_shift::SHIFT_Z), ctx)
+            .or(&shifted(c, arm_flag_shift::SHIFT_C), ctx)
+            .or(&shifted(v, arm_flag_shift::SHIFT_V), ctx),
+    )
+}
+
+/// Symbolic counterpart of `armg_calculate_flags_nzcv`: computes the four
+/// NZCV bits with `arm_sym_flag_*` and packs them via `sym_pack_nzcv`.
+pub(super) fn arm_sym_flags_nzcv(
+    cc_op: u64,
+    dep1: &RustBV,
+    dep2: &RustBV,
+    ndep: &RustBV,
+    ret_bits: u32,
+    ctx: &SymContext,
+) -> Option<RustBV> {
+    let n = arm_sym_flag_n(cc_op, dep1, dep2, ndep, ctx)?;
+    let z = arm_sym_flag_z(cc_op, dep1, dep2, ndep, ctx)?;
+    let c = arm_sym_flag_c(cc_op, dep1, dep2, ndep, ctx)?;
+    let v = arm_sym_flag_v(cc_op, dep1, dep2, ndep, ctx)?;
+    sym_pack_nzcv(&n, &z, &c, &v, ret_bits, ctx)
+}
