@@ -118,14 +118,16 @@ fn merge_point_defers_then_fires_on_counter() {
     assert_eq!(active_ids.len(), 2, "live state + merged product");
 }
 
-/// Records every `state_id` passed to `on_state_removed`; forwards the deque
-/// operations to `Lifo` so nothing else changes. Local copy of the same spy
-/// `state_lifecycle_tests.rs` and `scheduler_worker_tests.rs` use — each
-/// `test_submod!` module is private to its parent, so the shape cannot be
-/// shared without widening a test-only surface across modules.
+/// Records every `state_id` passed to `on_state_removed` (and, for
+/// angr-0jh0j.19, to `on_fork`); forwards the deque operations to `Lifo` so
+/// nothing else changes. Local copy of the same spy `state_lifecycle_tests.rs`
+/// and `scheduler_worker_tests.rs` use — each `test_submod!` module is private
+/// to its parent, so the shape cannot be shared without widening a test-only
+/// surface across modules.
 #[derive(Default)]
 struct SpyPolicy {
     removed: std::sync::Mutex<Vec<u64>>,
+    forked: std::sync::Mutex<Vec<u64>>,
 }
 
 impl selection_policy::SelectionPolicy for SpyPolicy {
@@ -134,6 +136,7 @@ impl selection_policy::SelectionPolicy for SpyPolicy {
     }
 
     fn on_fork(&self, active: &mut VecDeque<RustSimState>, state: RustSimState) {
+        self.forked.lock().expect("spy poisoned").push(state.state_id());
         selection_policy::Lifo.on_fork(active, state);
     }
 
@@ -175,6 +178,47 @@ fn merge_point_parking_notifies_policy_of_removed_states() {
     assert_eq!(
         notified, expected,
         "exactly the parked states are announced; the still-active {live:#x} is not",
+    );
+}
+
+/// Every state a MergePoint puts back into STASH_ACTIVE — the lone-callstack
+/// release (`move_state_by_id`) and the merge product (`_merge_states`) — must
+/// enter through `policy.on_fork`, the insertion chokepoint the
+/// `selection_policy` module doc declares (angr-0jh0j.19). Both used to be raw
+/// `ensure_stash().push_back`, which is invisible while every built-in
+/// `on_fork` is a plain append but silently skips a stateful policy's
+/// bookkeeping. Asserting on the spy's `forked` log is the only way to see the
+/// difference: stash contents are identical either way.
+#[test]
+fn merge_point_release_and_merge_go_through_on_fork() {
+    Python::initialize();
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    let spy = std::sync::Arc::new(SpyPolicy::default());
+    mgr.policy = spy.clone();
+    // Callstack 0xA1: two waiters -> merged into one new state.
+    // Callstack 0xA2: a lone waiter -> released unmerged.
+    let merged_a = push_active_at(&mut mgr, 0x8000, 0xA1);
+    let merged_b = push_active_at(&mut mgr, 0x8000, 0xA1);
+    let lone = push_active_at(&mut mgr, 0x8000, 0xA2);
+    mgr.register_merge_point(0x8000, 10);
+
+    mgr.apply_native_techniques();
+
+    let active_ids = mgr.sm.state_ids(STASH_ACTIVE);
+    assert_eq!(active_ids.len(), 2, "merge product + released lone waiter");
+    let merge_product = *active_ids
+        .iter()
+        .find(|id| ![merged_a, merged_b, lone].contains(id))
+        .expect("a freshly-minted merged state is active");
+
+    let mut forked = spy.forked.lock().expect("spy poisoned").clone();
+    forked.sort_unstable();
+    let mut expected = vec![lone, merge_product];
+    expected.sort_unstable();
+    assert_eq!(
+        forked, expected,
+        "on_fork must see the released waiter {lone} and the merge product \
+         {merge_product}; the parked/consumed sources must not reappear",
     );
 }
 

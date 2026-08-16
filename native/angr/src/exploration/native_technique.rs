@@ -389,6 +389,10 @@ impl RustExplorationManager {
     }
 
     /// Move a single state (by id) from `from` to `to`, updating the index.
+    ///
+    /// Routes through `push_to_stash`, so a move into the active stash keeps
+    /// `SelectionPolicy::on_fork` as the single insertion chokepoint
+    /// (angr-0jh0j.19).
     fn move_state_by_id(&mut self, from: &str, to: &str, sid: u64) {
         let state = {
             let stash = match self.sm.get_mut(from) {
@@ -401,8 +405,7 @@ impl RustExplorationManager {
             }
         };
         if let Some(state) = state {
-            self.sm.ensure_stash(to).push_back(state);
-            self.sm.index(sid, to);
+            self.push_to_stash(to, state);
         }
     }
 

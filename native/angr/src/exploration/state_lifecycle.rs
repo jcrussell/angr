@@ -229,10 +229,11 @@ impl RustExplorationManager {
             "merge() must mint a fresh state_id, got duplicate {merged_id}",
         );
 
-        // Track state root
+        // Track state root. `push_to_stash`, not a raw `ensure_stash().push_back`:
+        // a merged state landing in active is a fork-insertion and must go
+        // through `policy.on_fork` like every other one (angr-0jh0j.19).
         self.sm.set_root(merged_id, merged_id);
-        self.index_state(merged_id, dest_stash);
-        self.sm.ensure_stash(dest_stash).push_back(merged);
+        self.push_to_stash(dest_stash, merged);
 
         // M3-4 (angr-op0dn.11.4): count the states this native merge consumed,
         // so the Python fast path's `states_merged_native` stat reflects how

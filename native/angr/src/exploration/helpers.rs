@@ -309,6 +309,30 @@ impl RustExplorationManager {
         true
     }
 
+    /// Push a state into an arbitrary destination stash, keeping the
+    /// active-stash insertion chokepoint intact (angr-0jh0j.19).
+    ///
+    /// A destination of `STASH_ACTIVE` goes through
+    /// [`StashManager::push_active`](crate::stash::StashManager::push_active)
+    /// so `SelectionPolicy::on_fork` sees it — the `selection_policy` module
+    /// doc promises `on_fork` is the *only* way a state enters active, and the
+    /// MergePoint waiter-release paths used to bypass it with a raw
+    /// `push_back`. Behaviourally identical for every built-in policy (all
+    /// append), but a stateful `on_fork` would otherwise silently skip its
+    /// bookkeeping for exactly those states. Any other destination is a plain
+    /// indexed push.
+    ///
+    /// Not for terminal stashes — those want `push_or_drop_terminal`, which
+    /// honors `drop_terminal_states` and bumps the per-stash counters.
+    #[inline]
+    pub(crate) fn push_to_stash(&mut self, stash: &str, state: RustSimState) {
+        if stash == STASH_ACTIVE {
+            self.sm.push_active(&*self.policy, state);
+        } else {
+            self.sm.push(stash, state);
+        }
+    }
+
     /// Route a successor state to the found/avoid/active stash by its PC.
     ///
     /// Centralizes the find_addrs/avoid_addrs/active triage that the
