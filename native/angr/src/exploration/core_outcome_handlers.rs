@@ -884,7 +884,7 @@ pub(super) fn handle_syscall_core(
                 counters.syscall_python_fallback_count += 1;
                 *counters
                     .syscall_python_fallback_by_num
-                    .entry(num.map(|n| n as i64).unwrap_or(-1))
+                    .entry(num.map(|n| n as i128).unwrap_or(-1))
                     .or_insert(0) += 1;
                 return bounce(
                     BounceKind::SyscallPython { num },
@@ -900,7 +900,7 @@ pub(super) fn handle_syscall_core(
             counters.syscall_native_count += 1;
             *counters
                 .syscall_native_by_num
-                .entry(num.map(|n| n as i64).unwrap_or(-1))
+                .entry(num.map(|n| n as i128).unwrap_or(-1))
                 .or_insert(0) += 1;
         }
         match outcome {
@@ -959,7 +959,7 @@ pub(super) fn handle_syscall_core(
     counters.syscall_python_fallback_count += 1;
     *counters
         .syscall_python_fallback_by_num
-        .entry(num.map(|n| n as i64).unwrap_or(-1))
+        .entry(num.map(|n| n as i128).unwrap_or(-1))
         .or_insert(0) += 1;
     bounce(
         BounceKind::SyscallPython { num },

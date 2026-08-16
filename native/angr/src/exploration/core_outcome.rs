@@ -221,9 +221,15 @@ pub(crate) struct CoreCounters {
     pub(crate) not_implemented_fallbacks_by_name: HashMap<String, u64>,
     pub(crate) other_fallbacks_by_name: HashMap<String, u64>,
     pub(crate) syscall_native_count: u64,
-    pub(crate) syscall_native_by_num: HashMap<i64, u64>,
+    /// Keyed by `num as i128`, not `as i64`: every real `u64` syscall number
+    /// then lands in the non-negative half, keeping the `-1` "syscall register
+    /// was symbolic" sentinel unreachable. See the field of the same name on
+    /// [`RustExplorationManager`](crate::exploration::RustExplorationManager).
+    pub(crate) syscall_native_by_num: HashMap<i128, u64>,
     pub(crate) syscall_python_fallback_count: u64,
-    pub(crate) syscall_python_fallback_by_num: HashMap<i64, u64>,
+    /// Keyed by `num as i128` for the same sentinel-disjointness reason as
+    /// `syscall_native_by_num` above.
+    pub(crate) syscall_python_fallback_by_num: HashMap<i128, u64>,
     pub(crate) simprocedure_python_fallback_count: u64,
     pub(crate) simprocedure_fallback_by_name: HashMap<String, u64>,
     pub(crate) deferred_forks_dropped: u64,

@@ -273,7 +273,13 @@ pub struct RustExplorationManager {
     /// syscall register was symbolic at dispatch time (the native registry is
     /// skipped without consulting any concrete number). Used by `stats()` to
     /// surface which native handlers would close the next gap.
-    pub(crate) syscall_python_fallback_by_num: HashMap<i64, u64>,
+    ///
+    /// The key is `i128` rather than `i64` so the sentinel stays disjoint from
+    /// every representable syscall number: `u64::MAX as i64` is also `-1`, so a
+    /// guest-controlled register concretized to `0xFFFF_FFFF_FFFF_FFFF` used to
+    /// have its count misattributed to the symbolic-register bucket
+    /// (angr-0jh0j.18). Widening puts all `u64` values in the non-negative half.
+    pub(crate) syscall_python_fallback_by_num: HashMap<i128, u64>,
     /// Total count of syscalls handled by a native `NativeSyscall` handler
     /// (the fast path that never round-trips to Python). Incremented only when
     /// `handler.call` returns `Ok` — a native handler that returns `Err` falls
@@ -282,8 +288,10 @@ pub struct RustExplorationManager {
     pub(crate) syscall_native_count: u64,
     /// Per-syscall-number breakdown of `syscall_native_count`. Key is the
     /// syscall number (architecture- or DECREE/CGC-specific). Lets `stats()`
-    /// confirm which native handlers actually fired on a workload.
-    pub(crate) syscall_native_by_num: HashMap<i64, u64>,
+    /// confirm which native handlers actually fired on a workload. `i128` for
+    /// the same sentinel-disjointness reason as
+    /// `syscall_python_fallback_by_num` above.
+    pub(crate) syscall_native_by_num: HashMap<i128, u64>,
     /// State IDs that have already produced a DCAS warning. We log the first
     /// DCAS hit per state to avoid spamming the log on tight DCAS loops.
     pub(crate) dcas_warned_states: HashSet<u64>,

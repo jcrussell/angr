@@ -810,7 +810,7 @@ fn syscall_native_continue_writes_return_register_and_counts() {
 
         assert_eq!(outcome.counters.syscall_native_count, 1);
         assert_eq!(
-            outcome.counters.syscall_native_by_num[&(STUB_SYSCALL_NUM as i64)],
+            outcome.counters.syscall_native_by_num[&(STUB_SYSCALL_NUM as i128)],
             1
         );
         assert_eq!(outcome.counters.syscall_python_fallback_count, 0);
@@ -897,7 +897,7 @@ fn syscall_native_decline_bounces_to_python() {
         assert_eq!(outcome.counters.syscall_native_count, 0);
         assert_eq!(outcome.counters.syscall_python_fallback_count, 1);
         assert_eq!(
-            outcome.counters.syscall_python_fallback_by_num[&(STUB_SYSCALL_NUM as i64)],
+            outcome.counters.syscall_python_fallback_by_num[&(STUB_SYSCALL_NUM as i128)],
             1
         );
         match outcome.ret {
@@ -965,6 +965,30 @@ fn syscall_without_native_handler_bounces_to_python() {
                 ..
             })
         ));
+    });
+}
+
+/// angr-0jh0j.18: a concrete syscall number of `u64::MAX` must keep its own
+/// bucket. Under the old `n as i64` key it also produced `-1` and silently
+/// merged into the "syscall register was symbolic" bucket asserted above.
+#[test]
+fn syscall_num_u64_max_does_not_collide_with_unknown_sentinel() {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|_py| {
+        let (outcome, _) = dispatch_syscall(Some(u64::MAX), None);
+        assert_eq!(outcome.counters.syscall_python_fallback_count, 1);
+        assert_eq!(
+            outcome.counters.syscall_python_fallback_by_num[&(u64::MAX as i128)],
+            1,
+            "u64::MAX must be bucketed under its own key"
+        );
+        assert!(
+            !outcome
+                .counters
+                .syscall_python_fallback_by_num
+                .contains_key(&-1),
+            "u64::MAX must not land in the unknown-syscall bucket"
+        );
     });
 }
 
