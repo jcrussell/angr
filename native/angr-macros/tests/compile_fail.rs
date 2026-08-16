@@ -7,6 +7,14 @@
 //! intentional wording change with `TRYBUILD=overwrite cargo test -p
 //! angr-macros --test compile_fail`.
 //!
+//! Coverage is meant to be *total*: every diagnostic any of the three macro
+//! bodies can emit — `steady_guarded_impl`, `steady_guard_checked_impl`,
+//! `derive_merge_policy_impl` — has a case here, including the ones whose
+//! `compile_error!` is forwarded from a `syn::parse2` failure. A new
+//! diagnostic without a `tests/ui/` case is proven only by an in-process
+//! `to_string().contains(...)` unit test, which cannot see what rustc renders
+//! or whether a second error drowns it out (angr-0jh0j.76).
+//!
 //! The snapshots carry rustc's own rendering of the span, so they are
 //! toolchain-sensitive; that is safe here because `rust-toolchain.toml` pins
 //! the compiler. A snapshot diff immediately after a toolchain bump means

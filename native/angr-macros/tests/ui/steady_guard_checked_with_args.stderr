@@ -1,0 +1,5 @@
+error: #[steady_guard_checked] takes no arguments
+  --> tests/ui/steady_guard_checked_with_args.rs:10:37
+   |
+10 | #[angr_macros::steady_guard_checked(skip = "set_x")]
+   |                                     ^^^^

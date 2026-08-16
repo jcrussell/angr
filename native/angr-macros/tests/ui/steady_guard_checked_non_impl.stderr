@@ -1,0 +1,5 @@
+error: expected `impl`
+ --> tests/ui/steady_guard_checked_non_impl.rs:5:1
+  |
+5 | struct NotAnImpl;
+  | ^^^^^^

@@ -1,0 +1,11 @@
+error: expected #[angr_macros::steady_guard_exempt(reason = "<why this mutator doesn't need steady_config_guard>")] (non-empty string literal)
+  --> tests/ui/steady_guard_checked_bad_reason.rs:12:5
+   |
+12 |     #[angr_macros::steady_guard_exempt(reason = "  ")]
+   |     ^
+
+error: expected #[angr_macros::steady_guard_exempt(reason = "<why this mutator doesn't need steady_config_guard>")] (non-empty string literal)
+  --> tests/ui/steady_guard_checked_bad_reason.rs:15:5
+   |
+15 |     #[angr_macros::steady_guard_exempt(because = "guard runs in the caller")]
+   |     ^

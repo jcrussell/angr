@@ -1,0 +1,5 @@
+error: field `arch` has more than one #[merge_policy] attribute
+ --> tests/ui/merge_policy_duplicate.rs:6:5
+  |
+6 |     #[merge_policy = "self_wins"]
+  |     ^

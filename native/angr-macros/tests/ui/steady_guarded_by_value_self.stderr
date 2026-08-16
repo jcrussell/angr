@@ -1,0 +1,5 @@
+error: #[steady_guarded] requires a `&mut self` receiver — it injects `self.steady_config_guard();`, which takes `&mut self`
+ --> tests/ui/steady_guarded_by_value_self.rs:9:5
+  |
+9 |     fn set_x(self) {}
+  |     ^^

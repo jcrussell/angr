@@ -1,0 +1,5 @@
+error: MergePolicy requires named fields
+ --> tests/ui/merge_policy_on_tuple_struct.rs:4:1
+  |
+4 | struct State(u8, u64);
+  | ^^^^^^

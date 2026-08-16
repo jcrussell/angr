@@ -1,0 +1,5 @@
+error: expected #[merge_policy = "..."] (string literal)
+ --> tests/ui/merge_policy_non_string.rs:6:5
+  |
+6 |     #[merge_policy = 7]
+  |     ^

@@ -1,0 +1,5 @@
+error: field `arch` has more than one #[merge_manual] attribute
+ --> tests/ui/merge_manual_duplicate.rs:5:5
+  |
+5 |     #[merge_policy = "self_wins"]
+  |     ^

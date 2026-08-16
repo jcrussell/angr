@@ -1,0 +1,11 @@
+error: expected #[merge_manual = "<why the generated body cannot express this policy>"] (non-empty string literal)
+ --> tests/ui/merge_manual_missing_reason.rs:6:5
+  |
+6 |     #[merge_manual]
+  |     ^
+
+error: expected #[merge_manual = "<why the generated body cannot express this policy>"] (non-empty string literal)
+  --> tests/ui/merge_manual_missing_reason.rs:10:5
+   |
+10 |     #[merge_manual = "   "]
+   |     ^

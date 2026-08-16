@@ -1,0 +1,5 @@
+error: MergePolicy can only be derived for structs
+ --> tests/ui/merge_policy_on_enum.rs:4:1
+  |
+4 | enum State {
+  | ^^^^

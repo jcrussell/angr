@@ -1,0 +1,5 @@
+error: expected `fn`
+ --> tests/ui/steady_guarded_non_function.rs:5:1
+  |
+5 | struct NotAFunction;
+  | ^^^^^^
