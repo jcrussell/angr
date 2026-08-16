@@ -252,7 +252,14 @@ impl PyRustSimState {
     /// dropping the write. Do NOT "fix" by extending `arch/amd64.rs`
     /// unless the interpreter actually consumes the new register. See
     /// module-level invariant I5 in this file.
+    ///
+    /// **Atomic on failure (angr-0jh0j.49):** every entry is validated and
+    /// staged before *any* write lands, so a bad name in the middle of the
+    /// dict raises with `self.inner` untouched rather than leaving it a
+    /// hybrid of old and new register values — the clean exception a caller
+    /// sees really does mean "nothing happened".
     pub fn set_registers_bulk(&mut self, registers: &Bound<'_, PyDict>) -> PyResult<()> {
+        let mut staged: Vec<(String, RustBV)> = Vec::with_capacity(registers.len());
         for (key, val) in registers.iter() {
             let name: String = key.extract()?;
             let value: u128 = val.extract()?;
@@ -266,23 +273,37 @@ impl PyRustSimState {
             // intent and would catch a regression where arch lookup and
             // RegisterFile membership drift apart. Kept `debug_assert!`
             // (angr-9ke6b.220): a zero size is not silent — it produces a
-            // zero-width RustBV that the `set_register` false branch below
-            // turns into a loud `PyValueError`.
+            // zero-width RustBV that the offset check below, and ultimately
+            // `RegisterFile::put_reg`, turn into a loud error.
             debug_assert!(
                 size > 0,
                 "I5: register {name} has zero size — arch table is malformed"
             );
-            let bv = RustBV::concrete(value, size * 8);
-            // Propagate a slotless-register failure the same way scalar
-            // set_register does. register_size returning Some does not
-            // guarantee a RegisterFile slot (the I5 size-known-but-slotless
-            // drift case the debug_assert worries about), so a false return
-            // here is a silent dropped write unless we surface it.
-            if !self.inner.set_register(&name, bv) {
+            // The other half of what `RegisterFile::put_reg` checks, hoisted
+            // into the validation pass: `register_size` returning `Some` does
+            // not guarantee a slot (the I5 size-known-but-slotless drift case
+            // above). Detecting it here — rather than from `set_register`'s
+            // `false` return mid-apply — is what keeps the failure atomic.
+            if self.inner.arch().register_offset(&name).is_none() {
                 return Err(PyValueError::new_err(format!(
                     "failed to set register: {name}"
                 )));
             }
+            staged.push((name, RustBV::concrete(value, size * 8)));
+        }
+        for (name, bv) in staged {
+            let applied = self.inner.set_register(&name, bv);
+            // Unreachable by construction: validation proved every condition
+            // `RegisterFile::put_reg` tests — both `register_offset` and
+            // `register_size` resolve, and the staged BV was built at exactly
+            // `size * 8` bits. Assert rather than `return Err`: a mid-apply
+            // return is precisely the partial mutation this two-pass shape
+            // exists to prevent, so a violation here is a bug in this method,
+            // not a caller error to report.
+            assert!(
+                applied,
+                "set_registers_bulk: staged write for {name} rejected after validation"
+            );
         }
         Ok(())
     }

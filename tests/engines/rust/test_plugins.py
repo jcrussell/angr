@@ -416,6 +416,33 @@ class TestAdversarial:
         with pytest.raises((ValueError, RuntimeError)):
             state.get_register("nonexistent_register_xyz")
 
+    def test_set_registers_bulk_is_atomic_on_unknown_name(self):
+        """A bad name mid-dict must leave every register untouched.
+
+        Regression for angr-0jh0j.49: ``set_registers_bulk`` used to apply
+        each entry as it walked the dict, so the entries *before* the failing
+        one stayed written while the caller saw a clean exception.
+        """
+        state = RustSimState("amd64")
+        state.set_register("rax", 1)
+        state.set_register("rbx", 2)
+        state.set_register("rcx", 3)
+        # dicts preserve insertion order, so the bad name is reached only
+        # after three writes would already have landed under the old code.
+        with pytest.raises(ValueError, match="unknown register"):
+            state.set_registers_bulk({"rax": 0x11, "rbx": 0x22, "rcx": 0x33, "nonexistent_register_xyz": 0x44})
+        assert state.get_register("rax") == 1
+        assert state.get_register("rbx") == 2
+        assert state.get_register("rcx") == 3
+
+    def test_set_registers_bulk_applies_all_on_success(self):
+        """The happy path still writes every entry."""
+        state = RustSimState("amd64")
+        state.set_registers_bulk({"rax": 0x11, "rbx": 0x22, "rcx": 0x33})
+        assert state.get_register("rax") == 0x11
+        assert state.get_register("rbx") == 0x22
+        assert state.get_register("rcx") == 0x33
+
     def test_state_register_zero_value(self):
         """Zero is a valid register value."""
         state = RustSimState("amd64")
