@@ -479,6 +479,13 @@ NEON op families
      - ~13
      - Implemented
      - ``IROp::VCnt`` / ``VClz`` / ``VCls`` (angr-tukg.6)
+   * - High half of the widening multiply
+       (``Iop_MulHi{8,16,32}{U,S}x{4,8,16}``)
+     - 10
+     - Implemented
+     - ``IROp::VMulHi`` (angr-0jh0j.61). The ARM doubling variants
+       ``Iop_QDMulHi*`` / ``Iop_QRDMulHi*`` share the infix but are a
+       different op and remain ``Unmapped``
    * - Vector shift by vector (``Iop_Shl/Shr/Sar/Sal{N}x{M}``)
      - ~16
      - Implemented

@@ -119,6 +119,7 @@ pub fn iropclass(op: &IROp) -> VexOpFamily {
         | IROp::VAdd { .. }
         | IROp::VSub { .. }
         | IROp::VMul { .. }
+        | IROp::VMulHi { .. }
         | IROp::VMull { .. }
         | IROp::VQDMull { .. }
         | IROp::VAnd(_)

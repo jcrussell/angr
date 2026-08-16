@@ -263,7 +263,8 @@ fn parse_arithmetic(op_str: &str) -> Option<IROp> {
         "Iop_DivModS128to64" => Some(IROp::DivModS128to64),
 
         // No scalar high-half-multiply arm: real VEX has no Iop_MulHi{32,64}
-        // (the header only defines the vector Iop_MulHi<w>{U,S}x<n> family).
+        // (the header only defines the vector Iop_MulHi<w>{U,S}x<n> family,
+        // which parse_vector maps to IROp::VMulHi).
         // x86 IMUL/MUL lift to Iop_MullS32/Iop_MullU32 followed by
         // Iop_64HIto32, both of which are mapped above / in parse_conversion.
         _ => None,
@@ -819,6 +820,21 @@ fn parse_vector(op_str: &str) -> Option<IROp> {
         "8x8" => (I8, 8), "8x16" => (I8, 16),
         "16x4" => (I16, 4), "16x8" => (I16, 8),
         "32x2" => (I32, 2), "32x4" => (I32, 4),
+    });
+    // High half of the widening vector multiply — Iop_MulHi{N}{U,S}x{M}
+    // (SSE PMULHW/PMULHUW, NEON VMULH, AVX2 256-bit forms). Width-preserving:
+    // total = elem * count, so the D-reg (64), Q-reg/SSE (128) and AVX2 (256)
+    // tiers are all reachable. libVEX puts S/U AFTER the lane size, so the
+    // leftover after stripping "Iop_Mul" ("Hi16Ux4") matches no VMul suffix
+    // above and the two invocations are order-independent. The ARM doubling
+    // variants (Iop_QDMulHi*, Iop_QRDMulHi*) are a different op and stay
+    // unmapped — see the NEON_MULHI entry in opcode_map_tests.rs.
+    vec_signed_arms!(op_str; "Iop_MulHi" => VMulHi {
+        "8Ux16" => (I8, 16, false), "8Sx16" => (I8, 16, true),
+        "16Ux4" => (I16, 4, false), "16Sx4" => (I16, 4, true),
+        "16Ux8" => (I16, 8, false), "16Sx8" => (I16, 8, true),
+        "16Ux16" => (I16, 16, false), "16Sx16" => (I16, 16, true),
+        "32Ux4" => (I32, 4, false), "32Sx4" => (I32, 4, true),
     });
     // Widening vector multiply (angr-ph300.78). Two families, both -> V128:
     //   Iop_Mull{N}{S,U}x{M}      full-lane, (I64,I64)->V128, NEON VMULL

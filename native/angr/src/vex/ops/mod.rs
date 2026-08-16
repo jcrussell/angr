@@ -378,6 +378,7 @@ impl VEXOps {
             | IROp::VAdd { .. }
             | IROp::VSub { .. }
             | IROp::VMul { .. }
+            | IROp::VMulHi { .. }
             | IROp::VMull { .. }
             | IROp::VQDMull { .. }
             | IROp::VQAdd { .. }
@@ -609,6 +610,11 @@ impl VEXOps {
             IROp::VMul { elem, count } => {
                 Self::vec_int_lane_op(&[left, right], elem, count, &IMul, ctx)
             }
+            IROp::VMulHi {
+                elem,
+                count,
+                signed,
+            } => Self::vec_mulhi(left, right, elem, count, signed, ctx),
             IROp::VMull {
                 elem,
                 count,

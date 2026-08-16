@@ -9,7 +9,8 @@
 //!
 //! Covers the ARM REV*/RBIT sub-unit reversal family
 //! (Iop_Reverse{n}sIn{m}_x{k}), the PPC vgbbd bit-matrix transpose
-//! (Iop_PwBitMtxXpose64x2), and the widening multiplies (Iop_Mull*/QDMull*).
+//! (Iop_PwBitMtxXpose64x2), and the widening multiplies (Iop_Mull*/QDMull*,
+//! plus the high-half-only Iop_MulHi*).
 
 use super::{OpError, VEXOps};
 use crate::symbolic::{RustBV, SymContext};
@@ -191,6 +192,70 @@ impl VEXOps {
                 .extract(hi, lo, ctx)
                 .extend_into(out_width, signed, ctx);
             elements.push(la.mul(&ra, ctx));
+        }
+        Ok(Self::concat_le_elements(elements, ctx))
+    }
+
+    /// High half of the widening vector multiply (`Iop_MulHi{N}{U,S}x{M}` —
+    /// SSE PMULHW/PMULHUW, NEON VMULH, AVX2 256-bit forms).
+    ///
+    /// Each lane pair is sign- or zero-extended from `elem.bits()` to
+    /// `2*elem.bits()` and multiplied, exactly as in `vec_mull`; the difference
+    /// is which half of the product survives. `vec_mull` keeps the low
+    /// `2*elem.bits()` bits as a double-width output lane, this keeps the
+    /// **high** `elem.bits()` bits as a same-width output lane, so the result
+    /// is as wide as the inputs. Output lanes are packed low-to-high.
+    pub(super) fn vec_mulhi(
+        left: RustBV,
+        right: RustBV,
+        elem: IRType,
+        count: u8,
+        signed: bool,
+        ctx: &SymContext,
+    ) -> Result<RustBV, OpError> {
+        let width = elem.bits();
+        let prod_width = width * 2;
+        let lanes = count as u32;
+        let total = width * lanes;
+
+        // Concrete fast path: sign/zero-extend within i128, multiply, take the
+        // high half. Only reachable when both operands fit in u128, so the
+        // 256-bit AVX2 forms fall through to the symbolic path below.
+        if let (Some(l), Some(r)) = (left.as_u128(), right.as_u128()) {
+            let in_mask = Self::low_bit_mask_u128(width);
+            let prod_mask = Self::low_bit_mask_u128(prod_width);
+            let sign_bit: u128 = 1u128 << (width - 1);
+            let widen = |lane: u128| -> i128 {
+                if signed && (lane & sign_bit != 0) {
+                    // Two's-complement fill of the upper bits, reinterpreted.
+                    (lane | !in_mask) as i128
+                } else {
+                    lane as i128
+                }
+            };
+            let mut result: u128 = 0;
+            for j in 0..lanes {
+                let lo = j * width;
+                let la = widen((l >> lo) & in_mask);
+                let ra = widen((r >> lo) & in_mask);
+                let prod = (la.wrapping_mul(ra) as u128) & prod_mask;
+                result |= ((prod >> width) & in_mask) << lo;
+            }
+            return Ok(RustBV::concrete(result, total));
+        }
+
+        // Symbolic: extract each lane, extend, multiply, slice the high half.
+        let mut elements: Vec<RustBV> = Vec::with_capacity(lanes as usize);
+        for j in 0..lanes {
+            let lo = j * width;
+            let hi = lo + width - 1;
+            let la = left
+                .extract(hi, lo, ctx)
+                .extend_into(prod_width, signed, ctx);
+            let ra = right
+                .extract(hi, lo, ctx)
+                .extend_into(prod_width, signed, ctx);
+            elements.push(la.mul(&ra, ctx).extract(prod_width - 1, width, ctx));
         }
         Ok(Self::concat_le_elements(elements, ctx))
     }

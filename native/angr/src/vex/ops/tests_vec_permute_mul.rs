@@ -485,6 +485,139 @@ fn test_vec_mull_even_32sx4_symbolic_matches_reference() {
 }
 
 // =========================================================================
+// VMulHi — high half of the widening vector multiply (angr-0jh0j.61).
+//   Iop_MulHi{N}{U,S}x{M} — SSE PMULHW/PMULHUW, NEON VMULH, AVX2 256-bit.
+// Width-preserving: result_lane = (widen(la) * widen(ra)) >> N, N bits.
+// =========================================================================
+
+/// Iop_MulHi16Ux8 — SSE PMULHUW: 8 unsigned u16 lanes, high half of each
+/// 32-bit product. Covers the 0xFFFF*0xFFFF corner (whose high half 0xFFFE
+/// only appears if the operands were zero-extended, not sign-extended) and a
+/// product whose high half is 0 (the mul-lo-only case).
+#[test]
+fn test_vec_mulhi_16ux8_concrete() {
+    let ctx = SymContext::new_mock();
+    let l: [u128; 8] = [0x0002, 0xFFFF, 0x8000, 0x1234, 0x0000, 0x00FF, 0xABCD, 1];
+    let r: [u128; 8] = [0x0003, 0xFFFF, 0x8000, 0x1000, 0x5678, 0x0100, 0x0002, 0xFFFF];
+    // (l*r) >> 16, zero-extended operands.
+    let exp: [u128; 8] = [0, 0xFFFE, 0x4000, 0x0123, 0, 0, 1, 0];
+    let result = VEXOps::binop(
+        IROp::VMulHi {
+            elem: IRType::I16,
+            count: 8,
+            signed: false,
+        },
+        RustBV::concrete(pack_lanes_uint(&l, 16), 128),
+        RustBV::concrete(pack_lanes_uint(&r, 16), 128),
+        &ctx,
+    )
+    .unwrap();
+    assert_eq!(result.width(), 128);
+    assert_int_lanes_eq(result.as_u128().unwrap(), &exp, 16);
+}
+
+/// Iop_MulHi16Sx8 — SSE PMULHW: 8 signed i16 lanes. The distinguishing cases
+/// versus the unsigned form above are the negative products, whose high half
+/// is all-ones sign fill (-2*3, -1*1) rather than 0, and -32768*32767 whose
+/// high half 0xC000 is negative.
+#[test]
+fn test_vec_mulhi_16sx8_concrete() {
+    let ctx = SymContext::new_mock();
+    let l: [i16; 8] = [-2, -32768, 32767, -1, 100, -1, 16384, -32768];
+    let r: [i16; 8] = [3, -32768, 32767, -1, 200, 1, 16384, 32767];
+    // ((sext(l) * sext(r)) >> 16) & 0xFFFF.
+    let exp: [u128; 8] = [0xFFFF, 0x4000, 0x3FFF, 0, 0, 0xFFFF, 0x1000, 0xC000];
+    let result = VEXOps::binop(
+        IROp::VMulHi {
+            elem: IRType::I16,
+            count: 8,
+            signed: true,
+        },
+        RustBV::concrete(pack_lanes_uint(&l.map(|x| x as u16 as u128), 16), 128),
+        RustBV::concrete(pack_lanes_uint(&r.map(|x| x as u16 as u128), 16), 128),
+        &ctx,
+    )
+    .unwrap();
+    assert_eq!(result.width(), 128);
+    assert_int_lanes_eq(result.as_u128().unwrap(), &exp, 16);
+}
+
+/// Symbolic parity via an *independently implemented* identity rather than an
+/// inlined copy of `vec_mulhi`'s own lane arithmetic: for every lane, the
+/// double-width product `VMull` computes must be exactly
+/// `concat(VMulHi_lane, VMul_lane)` — the high half from the op under test and
+/// the low half from the already-covered width-preserving `VMul`. Both
+/// reference ops predate this one and derive their lanes separately, so a
+/// wrong shift amount, a flipped extension, or a reversed lane order in
+/// `vec_mulhi` breaks the identity. Checked for unsatisfiability of the
+/// negation, i.e. over all inputs.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_vec_mulhi_symbolic_matches_mull_split() {
+    // (elem, count, signed, operand width) — signed 16Sx4 on a D-reg pair and
+    // unsigned 8Ux16 on a Q-reg pair, so both extension paths and both vector
+    // widths are proved.
+    let cases: [(IRType, u8, bool, u32); 2] =
+        [(IRType::I16, 4, true, 64), (IRType::I8, 16, false, 128)];
+    for (elem, count, signed, width) in cases {
+        let ctx = SymContext::new_mock();
+        let left = RustBV::symbolic(&ctx, "mulhi_l", width);
+        let right = RustBV::symbolic(&ctx, "mulhi_r", width);
+        let hi = VEXOps::binop(
+            IROp::VMulHi {
+                elem,
+                count,
+                signed,
+            },
+            left.clone(),
+            right.clone(),
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(hi.width(), width);
+        let lo = VEXOps::binop(
+            IROp::VMul { elem, count },
+            left.clone(),
+            right.clone(),
+            &ctx,
+        )
+        .unwrap();
+        let full = VEXOps::binop(
+            IROp::VMull {
+                elem,
+                count,
+                signed,
+                even: false,
+            },
+            left.clone(),
+            right.clone(),
+            &ctx,
+        )
+        .unwrap();
+
+        // Interleave the two half-width lane vectors back into the
+        // double-width lanes VMull produced: [lo_0, hi_0, lo_1, hi_1, ...]
+        // low-to-high.
+        let bits = elem.bits();
+        let mut lanes = Vec::with_capacity(2 * count as usize);
+        for j in 0..count as u32 {
+            let (l, h) = (j * bits, j * bits + bits - 1);
+            lanes.push(lo.extract(h, l, &ctx));
+            lanes.push(hi.extract(h, l, &ctx));
+        }
+        let rebuilt = VEXOps::concat_le_elements(lanes, &ctx);
+
+        ctx.push();
+        ctx.add_constraint(full.to_z3_ast().eq(rebuilt.to_z3_ast()).not());
+        assert!(
+            !ctx.is_sat(),
+            "VMulHi {elem:?}x{count} (signed={signed}) must be the high half of the VMull product"
+        );
+        ctx.pop();
+    }
+}
+
+// =========================================================================
 // VQDMull — signed doubling saturating widening multiply (angr-1yge9.5).
 //   Iop_QDMull{N}Sx{M}  (I64,I64)->V128, NEON VQDMULL. Always signed,
 //   full-lane. result_lane = SignedSat(2 * sext(la) * sext(ra), 2N bits).

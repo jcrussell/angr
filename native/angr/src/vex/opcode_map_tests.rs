@@ -286,6 +286,46 @@ fn test_unmapped_opcode() {
     assert!(std::ptr::eq(a, b), "interner must dedupe by string");
 }
 
+/// angr-0jh0j.61: the plain high-half multiply family maps to IROp::VMulHi
+/// (implemented in ops::vec_permute_mul::vec_mulhi). Width-preserving, so the
+/// result type follows elem*count across all three vector tiers; the ARM
+/// doubling variants share the "MulHi" infix but are a different op and must
+/// stay Unmapped rather than be mis-routed here.
+#[test]
+fn test_high_half_vector_multiply_routing() {
+    for (op, elem, count, signed, ty) in [
+        ("Iop_MulHi8Ux16", IRType::I8, 16u8, false, IRType::V128),
+        ("Iop_MulHi8Sx16", IRType::I8, 16, true, IRType::V128),
+        ("Iop_MulHi16Ux4", IRType::I16, 4, false, IRType::I64),
+        ("Iop_MulHi16Sx4", IRType::I16, 4, true, IRType::I64),
+        ("Iop_MulHi16Ux8", IRType::I16, 8, false, IRType::V128),
+        ("Iop_MulHi16Sx8", IRType::I16, 8, true, IRType::V128),
+        ("Iop_MulHi16Ux16", IRType::I16, 16, false, IRType::V256),
+        ("Iop_MulHi16Sx16", IRType::I16, 16, true, IRType::V256),
+        ("Iop_MulHi32Ux4", IRType::I32, 4, false, IRType::V128),
+        ("Iop_MulHi32Sx4", IRType::I32, 4, true, IRType::V128),
+    ] {
+        let parsed = parse_opcode(op);
+        assert_eq!(
+            parsed,
+            IROp::VMulHi {
+                elem,
+                count,
+                signed
+            },
+            "{op}"
+        );
+        assert_eq!(parsed.result_type(), Some(ty), "{op} result type");
+    }
+    // The doubling/rounding-doubling variants are NOT this op.
+    for op in ["Iop_QDMulHi16Sx4", "Iop_QRDMulHi32Sx4"] {
+        match parse_opcode(op) {
+            IROp::Unmapped(name) => assert_eq!(name, op),
+            other => panic!("{op} expected Unmapped, got {other:?}"),
+        }
+    }
+}
+
 #[test]
 fn test_widening_vector_multiply_routing() {
     // angr-ph300.78: the widening vector-multiply families now map to
@@ -1111,19 +1151,10 @@ const KNOWN_UNMAPPED_GROUPS: &[(&[&str], &str)] = &[
         ],
         "ARM NEON fixed-point <-> float conversion family (VCVT with an embedded fractional-bits immediate, plus the plain float<->int Fx2/Fx4 D/Q-reg forms) — not yet implemented.",
     ),
-    // NEON_MULHI
+    // NEON_MULHI — the plain Iop_MulHi{N}{U,S}x{M} family is mapped to
+    // IROp::VMulHi (angr-0jh0j.61); only the ARM doubling variants remain.
     (
         &[
-            "Iop_MulHi16Sx16",
-            "Iop_MulHi16Sx4",
-            "Iop_MulHi16Sx8",
-            "Iop_MulHi16Ux16",
-            "Iop_MulHi16Ux4",
-            "Iop_MulHi16Ux8",
-            "Iop_MulHi32Sx4",
-            "Iop_MulHi32Ux4",
-            "Iop_MulHi8Sx16",
-            "Iop_MulHi8Ux16",
             "Iop_QDMulHi16Sx4",
             "Iop_QDMulHi16Sx8",
             "Iop_QDMulHi32Sx2",
@@ -1133,7 +1164,7 @@ const KNOWN_UNMAPPED_GROUPS: &[(&[&str], &str)] = &[
             "Iop_QRDMulHi32Sx2",
             "Iop_QRDMulHi32Sx4",
         ],
-        "NEON/AVX2 \"high half of widening multiply\" (MulHi) and the ARM doubling variants (QDMulHi/QRDMulHi) — not yet implemented.",
+        "ARM doubling variants of the high-half widening multiply (VQDMULH/VQRDMULH: product doubled, then saturated, with the rounding form adding a half-ULP first) — the plain MulHi family is mapped, these are not yet implemented.",
     ),
     // AVX2_MUL
     (

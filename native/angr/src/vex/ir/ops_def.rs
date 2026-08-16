@@ -225,6 +225,17 @@ pub enum IROp {
         elem: IRType,
         count: u8,
     },
+    /// High half of the widening vector multiply — `Iop_MulHi{N}{U,S}x{M}`
+    /// (SSE PMULHW/PMULHUW, NEON VMULH, AVX2 256-bit forms). Each `elem`-wide
+    /// lane pair is sign/zero-extended to `2*elem` bits and multiplied; the
+    /// **high** `elem` bits of that product form the output lane, so the result
+    /// is the same width as the inputs (unlike `VMull`, which keeps the full
+    /// `2*elem`-bit product and doubles the total width).
+    VMulHi {
+        elem: IRType,
+        count: u8,
+        signed: bool,
+    },
     /// Widening vector multiply — each contributing `elem`-wide input lane is
     /// sign/zero-extended to `2*elem` bits, multiplied with the matching lane
     /// of the other operand, and truncated to `2*elem` bits to form one output
@@ -964,6 +975,7 @@ impl IROp {
             IROp::VAdd { elem, count }
             | IROp::VSub { elem, count }
             | IROp::VMul { elem, count }
+            | IROp::VMulHi { elem, count, .. }
             | IROp::VShlN { elem, count }
             | IROp::VShrN { elem, count }
             | IROp::VSarN { elem, count }
