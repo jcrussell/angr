@@ -365,10 +365,16 @@ impl SymbolicMemory {
         ctx: &SymContext,
     ) -> RustBV {
         if is_multi {
-            multi_objects
-                .get(&addr)
-                .map(|p| p.collapse(concrete_byte, ctx))
-                .unwrap_or_else(|| RustBV::concrete(u128::from(concrete_byte), 8))
+            silent_default!(
+                cat_c,
+                multi_objects
+                    .get(&addr)
+                    .map(|p| p.collapse(concrete_byte, ctx)),
+                RustBV::concrete(u128::from(concrete_byte), 8),
+                "merge: byte {addr:?} is marked Multi by the page bitmap but multi_objects \
+                 holds no payload for it; merging the concrete placeholder {concrete_byte:#04x} \
+                 instead"
+            )
         } else if is_sym {
             silent_default!(
                 cat_c,
