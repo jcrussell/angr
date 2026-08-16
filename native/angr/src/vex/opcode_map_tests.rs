@@ -1239,26 +1239,27 @@ const KNOWN_UNMAPPED_GROUPS: &[(&[&str], &str)] = &[
         ],
         "Odd/even-lane deinterleave (CatOddLanes/CatEvenLanes) and interleave (InterleaveOddLanes/InterleaveEvenLanes) vector shuffles — siblings of the already-mapped InterleaveHI/InterleaveLO family; not yet implemented.",
     ),
-    // CLZ_CTZ_WIDE
+    // CTZ
+    // (Iop_Clz64x2 used to sit in this group — dropped in angr-li4ox.2:
+    // vec_lane_count is lane-generic, so the widening was a parse-table entry
+    // only. test_parse_cnt_clz_cls_pmul_routing pins the 64x2 shape.)
     (
         &[
-            "Iop_Clz64x2",
             "Iop_Ctz16x8",
             "Iop_Ctz32x4",
             "Iop_Ctz64x2",
             "Iop_Ctz8x16",
         ],
-        "NEON Q-reg count-leading/trailing-zeros at widths beyond what parse_vector's VClz table covers (64x2) plus the whole Ctz{8,16,32,64} vector family — not yet implemented.",
+        "NEON Q-reg per-lane count-trailing-zeros — the whole Ctz{8,16,32,64} vector family has no IROp variant; not yet implemented.",
     ),
     // (The AVG_WIDE group that used to sit here — Iop_Avg64Sx2/64Ux2 and the
     // AVX2 Iop_Avg8Ux32/16Ux16 — was dropped in angr-li4ox: vec_rounding_avg
     // is lane-generic, so the widening was a parse-table entry only.
     // test_parse_avg_routing pins all 12 shapes.)
-    // PWADDL_WIDE
-    (
-        &["Iop_PwAddL64Ux2"],
-        "NEON pairwise widening add (VPwAddL family) — the 64-bit-lane Q-reg width is the one shape parse_vector's table does not cover; not yet implemented.",
-    ),
+    // (The PWADDL_WIDE group that used to sit here — the sole Iop_PwAddL64Ux2
+    // shape — was dropped in angr-li4ox.2: vec_pairwise_add_long is
+    // lane-generic and its 128-bit output lane stays inside the u128 concrete
+    // limit. test_parse_pairwise_routing pins the shape.)
     // (The QADD_QSUB_AVX2 group that used to sit here — the eight
     // Iop_{QAdd,QSub}{8S,8U}x32 / {16S,16U}x16 shapes — was dropped in
     // angr-li4ox.1: vec_int_saturating already gates its concrete fast path on

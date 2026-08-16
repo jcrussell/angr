@@ -743,6 +743,9 @@ fn parse_vector(op_str: &str) -> Option<IROp> {
         "8Sx16" => (I8, 16, true), "8Ux16" => (I8, 16, false),
         "16Sx8" => (I16, 8, true), "16Ux8" => (I16, 8, false),
         "32Sx4" => (I32, 4, true), "32Ux4" => (I32, 4, false),
+        // 64-bit lanes exist only unsigned (libVEX emits Iop_PwAddL64Ux2 with
+        // no signed twin); the pair widens to one 128-bit output lane.
+        "64Ux2" => (I64, 2, false),
     });
 
     // NEON pairwise integer min/max — `Iop_PwMin{N}{S/U}x{M}` /
@@ -813,10 +816,13 @@ fn parse_vector(op_str: &str) -> Option<IROp> {
 
     // NEON per-lane count leading zeros — `Iop_Clz{N}x{M}` (unary). ARM CLZ
     // (DDI 0487 C7.2.57). D-reg (total=64) and Q-reg (total=128) shapes for
-    // 8/16/32-bit lanes.
+    // 8/16/32-bit lanes, plus the Q-reg-only 64-bit lane shape (libVEX emits
+    // Iop_Clz64x2 but no Cls64x2 twin, hence the asymmetry with the Cls table
+    // below).
     vec_arms!(op_str; "Iop_Clz" => VClz {
         "8x8" => (I8, 8), "16x4" => (I16, 4), "32x2" => (I32, 2),
         "8x16" => (I8, 16), "16x8" => (I16, 8), "32x4" => (I32, 4),
+        "64x2" => (I64, 2),
     });
 
     // NEON per-lane count leading sign bits — `Iop_Cls{N}x{M}` (unary). ARM

@@ -155,6 +155,79 @@ fn test_vclz_32x4_concrete() {
     assert_eq!(result.as_u128().unwrap(), e);
 }
 
+/// Iop_Clz64x2 — Q-reg 64-bit lane clz (angr-li4ox.2). The widest lane the
+/// family has, so it is the one that exercises `vec_lane_count`'s concrete
+/// path at `elem_width == 64`: the `128 - elem_width` correction and the
+/// `res_lane << (i * elem_width)` repack both hit their maxima here.
+#[test]
+fn test_vclz_64x2_concrete() {
+    let ctx = SymContext::new_mock();
+    let cases: [([u64; 2], [u64; 2]); 3] = [
+        // all-zero → 64 (the saturating case), MSB set → 0.
+        ([0x0000_0000_0000_0000, 0x8000_0000_0000_0000], [64, 0]),
+        // bit 16 set → 47 leading zeros; all-ones → 0.
+        ([0x0000_0000_0001_0000, 0xFFFF_FFFF_FFFF_FFFF], [47, 0]),
+        // bit 0 set → 63; bit 62 set → 1.
+        ([0x0000_0000_0000_0001, 0x4000_0000_0000_0000], [63, 1]),
+    ];
+    for (lanes, expected) in cases {
+        let mut a: u128 = 0;
+        let mut e: u128 = 0;
+        for i in 0..2 {
+            a |= (lanes[i] as u128) << (i * 64);
+            e |= (expected[i] as u128) << (i * 64);
+        }
+        let result = VEXOps::unop(
+            IROp::VClz {
+                elem: IRType::I64,
+                count: 2,
+            },
+            RustBV::concrete(a, 128),
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(result.width(), 128);
+        assert_eq!(result.as_u128().unwrap(), e, "lanes {lanes:x?}");
+    }
+}
+
+/// Iop_Clz64x2 on the symbolic path: `clz_chain` must build a 64-deep chain
+/// that agrees with the concrete answers above. Drives the ITE builder (not
+/// the `as_u128()` fast path) by constraining a symbolic input rather than
+/// handing in a concrete one.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_vclz_64x2_symbolic_matches_concrete() {
+    let ctx = SymContext::new_mock();
+    let a = RustBV::symbolic(&ctx, "vclz64_a", 128);
+    let got = VEXOps::unop(
+        IROp::VClz {
+            elem: IRType::I64,
+            count: 2,
+        },
+        a.clone(),
+        &ctx,
+    )
+    .unwrap();
+    assert_eq!(got.width(), 128);
+
+    // lane0 = 1 << 16 → 47; lane1 = 0 → 64 (all-zero lane saturates at N).
+    let input: u128 = 0x0001_0000;
+    let expected: u128 = 47 | (64u128 << 64);
+    ctx.push();
+    ctx.add_constraint(a.to_z3_ast().eq(RustBV::concrete(input, 128).to_z3_ast()));
+    ctx.add_constraint(
+        got.to_z3_ast()
+            .eq(RustBV::concrete(expected, 128).to_z3_ast())
+            .not(),
+    );
+    assert!(
+        !ctx.is_sat(),
+        "VClz 64x2 symbolic chain must agree with the concrete semantics"
+    );
+    ctx.pop();
+}
+
 /// Iop_Cls8x8 — per-byte count leading sign bits (excluding MSB).
 /// All-same → N-1; first mismatch determines result.
 #[test]
@@ -448,6 +521,10 @@ fn test_parse_cnt_clz_cls_pmul_routing() {
         ("Iop_Clz8x16", IRType::I8, 16),
         ("Iop_Clz16x8", IRType::I16, 8),
         ("Iop_Clz32x4", IRType::I32, 4),
+        // 64-bit lanes are Q-reg-only and Clz-only — libVEX emits
+        // Iop_Clz64x2 but no Iop_Cls64x2 (angr-li4ox.2), so the asymmetry
+        // with `cls_cases` below is the pin, not an omission.
+        ("Iop_Clz64x2", IRType::I64, 2),
     ];
     for (op, e, c) in clz_cases {
         match parse_opcode(op) {

@@ -102,7 +102,10 @@ impl VEXOps {
         let total = elem_width * count as u32;
         debug_assert_eq!(arg.width(), total);
 
-        // Concrete fast path (lanes ≤ 32 bits — width fits in u32).
+        // Concrete fast path. Lane-generic up to `elem_width == 64` (the
+        // widest shape libVEX emits, Iop_Clz64x2): every correction below is
+        // written against `elem_width`, and `as_u128()` covers the whole
+        // vector because total width stays ≤ 128.
         if let Some(v) = arg.as_u128() {
             let mask: u128 = Self::low_bit_mask_u128(elem_width);
             let mut result: u128 = 0;

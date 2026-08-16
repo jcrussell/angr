@@ -279,6 +279,76 @@ fn test_vpwaddl_8ux16_concrete() {
     assert_eq!(result.as_u128().unwrap(), e);
 }
 
+/// Iop_PwAddL64Ux2 — the family's widest shape (angr-li4ox.2): two 64-bit
+/// lanes widen into a *single* 128-bit output lane. That output lane is
+/// exactly the u128 concrete limit, so the sum of two all-ones lanes (which
+/// needs bit 64) is the case that would expose a 64-bit-wide intermediate.
+#[test]
+fn test_vpwaddl_64ux2_concrete() {
+    let ctx = SymContext::new_mock();
+    let cases: [([u64; 2], u128); 3] = [
+        // 0xFFFF... + 2 → carries into bit 64.
+        (
+            [0xFFFF_FFFF_FFFF_FFFF, 0x0000_0000_0000_0002],
+            0x1_0000_0000_0000_0001,
+        ),
+        // Both lanes all-ones → the maximum, 2^65 - 2.
+        (
+            [0xFFFF_FFFF_FFFF_FFFF, 0xFFFF_FFFF_FFFF_FFFF],
+            0x1_FFFF_FFFF_FFFF_FFFE,
+        ),
+        // No carry: stays inside 64 bits (zero-extend, never sign-extend).
+        ([0x8000_0000_0000_0000, 0x0000_0000_0000_0000], 0x8000_0000_0000_0000),
+    ];
+    for (lanes, expected) in cases {
+        let a = (lanes[0] as u128) | ((lanes[1] as u128) << 64);
+        let result = VEXOps::unop(
+            IROp::VPwAddL {
+                elem: IRType::I64,
+                count: 2,
+                signed: false,
+            },
+            RustBV::concrete(a, 128),
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(result.width(), 128);
+        assert_eq!(result.as_u128().unwrap(), expected, "lanes {lanes:x?}");
+    }
+}
+
+/// Symbolic universality (spec-replay): Iop_PwAddL64Ux2 must equal the
+/// zero-extended sum of its two lanes in 128 bits.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_vpwaddl_64ux2_symbolic_universal() {
+    let ctx = SymContext::new_mock();
+    let a = RustBV::symbolic(&ctx, "vpwaddl64_a", 128);
+    let got = VEXOps::unop(
+        IROp::VPwAddL {
+            elem: IRType::I64,
+            count: 2,
+            signed: false,
+        },
+        a.clone(),
+        &ctx,
+    )
+    .unwrap();
+    assert_eq!(got.width(), 128);
+
+    let lo = a.extract(63, 0, &ctx).zero_extend_into(128, &ctx);
+    let hi = a.extract(127, 64, &ctx).zero_extend_into(128, &ctx);
+    let reference = lo.add_into(hi, &ctx);
+
+    ctx.push();
+    ctx.add_constraint(got.to_z3_ast().eq(reference.to_z3_ast()).not());
+    assert!(
+        !ctx.is_sat(),
+        "VPwAddL 64Ux2 must match the zero-extended 128-bit sum"
+    );
+    ctx.pop();
+}
+
 /// Iop_PwMin16Sx4 — pairwise signed min. Exercises mixed-sign pairs and
 /// confirms output[2..4] comes from `b`.
 #[test]
@@ -507,6 +577,10 @@ fn test_parse_pairwise_routing() {
         ("Iop_PwAddL16Ux8", IRType::I16, 8, false),
         ("Iop_PwAddL32Sx4", IRType::I32, 4, true),
         ("Iop_PwAddL32Ux4", IRType::I32, 4, false),
+        // 64-bit lanes: unsigned only — libVEX emits no Iop_PwAddL64Sx2
+        // (angr-li4ox.2), so the absence below is the pin on what must not
+        // grow, not an omission.
+        ("Iop_PwAddL64Ux2", IRType::I64, 2, false),
     ];
     for (op, e, c, s) in pwaddl_cases {
         match parse_opcode(op) {
