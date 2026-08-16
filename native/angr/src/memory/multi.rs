@@ -411,10 +411,19 @@ impl SymbolicMemory {
             // order across consecutive byte addresses. Bytes whose conds
             // differ (e.g. installed by a separate store, or merged with
             // an extra alternative) terminate the run.
+            //
+            // Adjacency is spelled with `checked_add` rather than
+            // `Address`'s `Add<u64>` (which is `wrapping_add`): a run must
+            // never straddle the top of the address space, joining a cell at
+            // `u64::MAX` to an unrelated one at `0` into one wider object
+            // (angr-0jh0j.36). Ascending `sort_by_key` over unique keys
+            // already makes `u64::MAX` the last entry — so this cannot fire
+            // today — but that is an invariant of the sort two statements
+            // up, not of the check itself.
             let mut j = i + 1;
             while j < entries.len()
                 && j - i < COALESCE_MAX_RUN
-                && entries[j].0 == entries[j - 1].0 + 1
+                && entries[j - 1].0.raw().checked_add(1) == Some(entries[j].0.raw())
                 && payload_cond_fingerprint(&entries[j].1) == start_fp
             {
                 j += 1;

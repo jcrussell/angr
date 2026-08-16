@@ -1525,6 +1525,53 @@ fn test_phase42_flush_singleton_no_coalesce() {
     assert_eq!(sym_b.width(), 8);
 }
 
+/// Address-space wrap guard (angr-0jh0j.36): a Multi cell at the last byte
+/// of the address space and one at byte 0 are logically unrelated, even when
+/// they share a cond. Coalescing them would mint a single width-16 object
+/// spanning both ends of the 64-bit space. Both payloads carry the *same*
+/// `MultiAlternative` clone, so the cond fingerprints match and the adjacency
+/// test is the only thing that can terminate the run.
+///
+/// Honest scope: this passes under the pre-fix wrapping adjacency spelling
+/// too, because the ascending sort in `flush_multi_cells` puts `u64::MAX`
+/// last and there is no `entries[j]` after it. It pins the *outcome* at the
+/// boundary — so a future reordering of that scan (or a switch to an
+/// unsorted iteration order) reds here instead of silently fusing the two
+/// ends of the address space.
+#[test]
+fn test_phase42_flush_no_coalesce_across_address_space_wrap() {
+    let ctx = SymContext::new_mock();
+    let mut mem = SymbolicMemory::new(Endness::Little);
+
+    let addr_var = RustBV::symbolic(&ctx, "p42_wrap_addr", 64);
+    let alt = make_alt(&ctx, &addr_var, 0x1000, 0xAB);
+    mem.set_multi_alternatives(u64::MAX, MultiPayload::from_alternatives(vec![alt.clone()]));
+    mem.set_multi_alternatives(0u64, MultiPayload::from_alternatives(vec![alt]));
+    assert_eq!(mem.multi_cell_count(), 2);
+
+    mem.flush_multi_cells(&ctx);
+
+    assert_eq!(
+        mem.symbolic_object_count(),
+        2,
+        "wrapped neighbours must flush as two per-byte entries"
+    );
+    assert_eq!(
+        mem.get_symbolic_object(u64::MAX)
+            .expect("entry at the last byte")
+            .width(),
+        8,
+        "top-of-space byte must stay width 8"
+    );
+    assert_eq!(
+        mem.get_symbolic_object(0u64)
+            .expect("entry at byte 0")
+            .width(),
+        8,
+        "byte 0 must stay width 8"
+    );
+}
+
 /// Bytes whose Multi payloads carry mismatched cond fingerprints (e.g.
 /// one byte has an extra alternative from a later store) must terminate
 /// the coalesce run. Adjacent bytes either side are still coalesced
