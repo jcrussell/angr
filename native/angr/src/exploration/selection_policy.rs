@@ -137,11 +137,15 @@ pub trait SelectionPolicy: Send + Sync {
     ///
     /// The default pops the **back**, which is the coldest end for every
     /// built-in but [`Lifo`]: `Fifo` selects the front outright, and the
-    /// ranking policies (`CoverageGuided`, `FindDirected`,
-    /// `LoopHeadRoundRobin`, `DirectedCfgDistance`, and the front-biased
-    /// `min_by_key` in `RandomSelection`'s tie order) all break ties toward the
-    /// front per this module's order-determinism contract. `Lifo` overrides.
-    /// A future policy whose hot end is the tail must override too.
+    /// ranking policies all break ties toward the front per this module's
+    /// order-determinism contract — `CoverageGuided` and `LoopHeadRoundRobin`
+    /// by front-scanning (`position` / a strict-`<` loop), `FindDirected` and
+    /// `DirectedCfgDistance` via a `min_by_key` whose key *ends* in the front
+    /// index. `RandomSelection` is the one built-in with no hot end at all —
+    /// `select` draws a uniform index, so the back is as good an offload pick
+    /// as any and it keeps the default for lack of a better one, not because
+    /// the tail is cold. `Lifo` overrides. A future policy whose hot end is the
+    /// tail must override too.
     fn select_for_offload(&self, local: &mut VecDeque<RustSimState>) -> Option<RustSimState> {
         local.pop_back()
     }
