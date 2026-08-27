@@ -67,19 +67,21 @@ pub(crate) fn try_extract_bvv(ast: &Bound<'_, PyAny>) -> Option<(u128, u32)> {
     Some((value, width))
 }
 
-/// Width of an extension whose result width is *derived* from its operand.
+/// Width of an op whose result width is *derived* from its operands.
 ///
 /// The `"ZeroExt"` / `"SignExt"` arms of [`claripy_to_rustbv_depth`] compute
-/// `source_width + extend_bits` from a caller-chosen `extend_bits`. Both halves
-/// of that need guarding at this trust boundary: the sum wraps in the shipped
-/// `release` profile (no overflow checks), which would make `new_width` come out
-/// *smaller* than the source and silently violate the narrowing precondition
-/// `value_ops::zero_extend_into` only `debug_assert!`s; and an unwrapped sum can
-/// still be an absurd width Z3 would allocate a multi-gigabit sort for. So:
-/// `checked_add` to refuse rather than saturate (an identity, not a size — see
-/// bd memory `invariant-overflow-fix-refuse-not-saturate-identities`), then
+/// `source_width + extend_bits` from a caller-chosen `extend_bits`, and the
+/// `"Concat"` arm accumulates `result.width() + next.width()` across its
+/// operand list. Both halves of that need guarding at this trust boundary: the
+/// sum wraps in the shipped `release` profile (no overflow checks), which would
+/// make `new_width` come out *smaller* than the source and silently violate the
+/// narrowing precondition `value_ops::zero_extend_into` only `debug_assert!`s;
+/// and an unwrapped sum can still be an absurd width Z3 would allocate a
+/// multi-gigabit sort for. So: `checked_add` to refuse rather than saturate (an
+/// identity, not a size — see bd memory
+/// `invariant-overflow-fix-refuse-not-saturate-identities`), then
 /// [`check_bv_width`] on the sum. Mirrors `solver::handle_api`'s
-/// `reject_concat_overflow`, the same guard for the other derived-width op at
+/// `reject_concat_overflow`, the same guard for the same derived-width ops at
 /// the other trust boundary.
 fn extended_width(op: &str, source_width: u32, extend_bits: u32) -> Result<u32, BridgeError> {
     let new_width = source_width.checked_add(extend_bits).ok_or_else(|| {
@@ -379,6 +381,13 @@ fn claripy_to_rustbv_depth(
             let mut result = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
             for arg in &args_list[1..] {
                 let next = claripy_to_rustbv_depth(py, arg, ctx, depth + 1)?;
+                // Guard the accumulator at *every* step rather than once at the
+                // end: `value_ops::concat_owned` adds the two operand widths
+                // with a plain unchecked `u32` add, so an intermediate wrap
+                // would leave a `RustBV` whose stored width is small and wrong
+                // while its Z3 sort is enormous — and `width()` is what every
+                // later extract-bounds / eval / export check trusts.
+                extended_width("Concat", result.width(), next.width())?;
                 result = result.concat(&next, ctx);
             }
             Ok(result)

@@ -136,3 +136,63 @@ fn test_extended_width_refuses_overflow_and_absurd_widths() {
     assert_eq!(extended_width("ZeroExt", 8, MAX_BV_WIDTH - 8).unwrap(), MAX_BV_WIDTH);
     assert_eq!(extended_width("SignExt", 32, 32).unwrap(), 64);
 }
+
+/// angr-5mnx3.9: `Concat` derives its result width from the operand list, so —
+/// like `ZeroExt`/`SignExt` — the derivation is the guard site, and the guard
+/// has to run on the *accumulator* at every step. Two operands that are each
+/// individually under `MAX_BV_WIDTH` can sum past it; without the guard
+/// `value_ops::concat_owned`'s unchecked `u32` add would hand back a `RustBV`
+/// whose stored `width()` every later extract-bounds/eval/export check trusts.
+#[test]
+fn test_concat_arm_refuses_oversized_derived_width() {
+    use crate::symbolic::MAX_BV_WIDTH;
+
+    // Each half is a legal BVV width; their sum is not.
+    let half = MAX_BV_WIDTH / 2 + 1;
+
+    Python::initialize();
+    Python::attach(|py| {
+        let ctx = SymContext::new_mock();
+        let module = pyo3::types::PyModule::from_code(
+            py,
+            &std::ffi::CString::new(
+                "class Fake:\n\
+                 \x20   def __init__(self, op, args, length):\n\
+                 \x20       self.op = op\n\
+                 \x20       self.args = args\n\
+                 \x20       self.length = length\n\
+                 \x20   def __hash__(self):\n\
+                 \x20       return id(self)\n\
+                 \n\
+                 def concat(half):\n\
+                 \x20   leaf = lambda: Fake('BVV', (0, half), half)\n\
+                 \x20   return Fake('Concat', (leaf(), leaf()), 2 * half)\n",
+            )
+            .expect("cstring"),
+            &std::ffi::CString::new("fake_ast.py").expect("cstring"),
+            &std::ffi::CString::new("fake_ast").expect("cstring"),
+        )
+        .expect("module");
+        let ast = module
+            .getattr("concat")
+            .expect("concat")
+            .call1((half,))
+            .expect("build fake Concat AST");
+
+        let err = claripy_to_rustbv(py, &ast, &ctx)
+            .expect_err("a Concat past MAX_BV_WIDTH must be refused, not silently built");
+        let msg = err.to_string();
+        assert!(msg.contains("Concat"), "{msg}");
+        assert!(msg.contains(&MAX_BV_WIDTH.to_string()), "{msg}");
+
+        // Control: the same shape inside the cap still converts, so the
+        // assertion above cannot pass just because the fake AST is unusable.
+        let ok_ast = module
+            .getattr("concat")
+            .expect("concat")
+            .call1((8u32,))
+            .expect("build fake Concat AST");
+        let bv = claripy_to_rustbv(py, &ok_ast, &ctx).expect("a 16-bit Concat is legal");
+        assert_eq!(bv.width(), 16);
+    });
+}
