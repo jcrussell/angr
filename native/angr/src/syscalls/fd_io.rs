@@ -45,7 +45,10 @@
 use std::sync::atomic::AtomicU64;
 
 use super::require_syscall_args;
-use super::{MAX_IO_SIZE, NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg};
+use super::{
+    MAX_IO_SIZE, NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg,
+    gather_concrete_bytes, gather_concrete_bytes_into,
+};
 use crate::procedures::strings::write_bv_bytes;
 use crate::state::MAX_SYMFILE_SERVE_SIZE;
 use crate::state::RustSimState;
@@ -196,17 +199,7 @@ impl NativeSyscall for NativeWritevSyscall {
                     "writev iov_len {len} exceeds limit"
                 )));
             }
-            for i in 0..len {
-                let bv = state.memory_load(base.wrapping_add(i), 1)?;
-                match bv.as_u64() {
-                    Some(v) => bytes.push(v as u8),
-                    None => {
-                        return Err(SyscallError::SymbolicArgument(format!(
-                            "symbolic byte in iov[{idx}]+{i}"
-                        )));
-                    }
-                }
-            }
+            gather_concrete_bytes_into(state, base, len, &format!("iov[{idx}]"), &mut bytes)?;
         }
 
         let total = bytes.len() as u64;
@@ -520,18 +513,7 @@ impl NativeSyscall for NativePwrite64Syscall {
         // Gather every concrete byte BEFORE mutating the fd — a symbolic byte
         // must leave the fd untouched so the Python fallback produces the
         // single authoritative write (same discipline as writev).
-        let mut bytes: Vec<u8> = Vec::with_capacity(nbyte as usize);
-        for i in 0..nbyte {
-            let bv = state.memory_load(buf.wrapping_add(i), 1)?;
-            match bv.as_u64() {
-                Some(v) => bytes.push(v as u8),
-                None => {
-                    return Err(SyscallError::SymbolicArgument(format!(
-                        "symbolic byte in pwrite64 buf+{i}"
-                    )));
-                }
-            }
-        }
+        let bytes = gather_concrete_bytes(state, buf, nbyte, "pwrite64 buf")?;
 
         let total = bytes.len() as u64;
         // Unreachable after the gate above; choke-point insurance (see

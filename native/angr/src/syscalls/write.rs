@@ -17,7 +17,7 @@
 use super::require_syscall_args;
 use super::{
     MAX_IO_SIZE as MAX_WRITE_SIZE, NativeSyscall, SyscallError, SyscallOutcome,
-    extract_concrete_arg,
+    extract_concrete_arg, gather_concrete_bytes,
 };
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
@@ -83,22 +83,7 @@ impl NativeSyscall for NativeWriteSyscall {
             )));
         }
 
-        let mut bytes = Vec::with_capacity(count as usize);
-        for i in 0..count {
-            match state.memory_load(buf.wrapping_add(i), 1) {
-                Ok(bv) => match bv.as_u64() {
-                    Some(val) => bytes.push(val as u8),
-                    None => {
-                        return Err(SyscallError::SymbolicArgument(format!(
-                            "symbolic byte at buf+{i}"
-                        )));
-                    }
-                },
-                Err(e) => {
-                    return Err(e.into());
-                }
-            }
-        }
+        let bytes = gather_concrete_bytes(state, buf, count, "write buf")?;
 
         // Unreachable after the gate above; choke-point insurance (see
         // FileSystem::write).

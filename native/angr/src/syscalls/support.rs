@@ -313,3 +313,60 @@ macro_rules! require_syscall_args {
     };
 }
 pub(crate) use require_syscall_args;
+
+/// Load `len` bytes from `[base, base + len)` and append them to `out`,
+/// aborting with [`SyscallError::SymbolicArgument`] on the first byte that is
+/// not fully concrete.
+///
+/// The read-and-concretize counterpart to
+/// [`crate::procedures::strings::write_bv_bytes`]: the "gather every concrete
+/// byte BEFORE mutating the fd, so a symbolic byte leaves the fd untouched and
+/// the Python fallback produces the single authoritative write" loop shared by
+/// `write`, `writev`, `pwrite64` and CGC `transmit` (angr-5mnx3.54). Keeping it
+/// in one place is what stops the four copies from drifting apart again — they
+/// had already split over `Vec::new()` vs `Vec::with_capacity(..)` and over
+/// four different spellings of the same error message.
+///
+/// `label` names the buffer in that message (`"write buf"`, `"iov[2]"`), which
+/// is diagnostic only: every caller falls back to Python on `Err`, so no test
+/// or dispatch decision keys on the text.
+///
+/// Appends rather than returns so `writev` can accumulate across iovec
+/// segments; single-buffer callers want [`gather_concrete_bytes`].
+pub(crate) fn gather_concrete_bytes_into(
+    state: &mut RustSimState,
+    base: u64,
+    len: u64,
+    label: &str,
+    out: &mut Vec<u8>,
+) -> Result<(), SyscallError> {
+    for i in 0..len {
+        let bv = state.memory_load(base.wrapping_add(i), 1)?;
+        match bv.as_u64() {
+            Some(v) => out.push(v as u8),
+            None => {
+                return Err(SyscallError::SymbolicArgument(format!(
+                    "symbolic byte at {label}+{i}"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// [`gather_concrete_bytes_into`] over a fresh `Vec` — the single-buffer form.
+///
+/// The reservation is clamped to [`MAX_IO_SIZE`] because `len` reaches here
+/// straight from a guest register: every current caller bounds it first, but a
+/// future one that forgets would otherwise turn a bogus `count` into a
+/// gigabyte-scale allocation before the first `memory_load` could fail.
+pub(crate) fn gather_concrete_bytes(
+    state: &mut RustSimState,
+    base: u64,
+    len: u64,
+    label: &str,
+) -> Result<Vec<u8>, SyscallError> {
+    let mut out = Vec::with_capacity(len.min(MAX_IO_SIZE) as usize);
+    gather_concrete_bytes_into(state, base, len, label, &mut out)?;
+    Ok(out)
+}

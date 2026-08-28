@@ -51,7 +51,7 @@ use std::sync::atomic::AtomicU64;
 use super::require_syscall_args;
 use super::{
     MAX_IO_SIZE as MAX_CGC_BYTES, NativeSyscall, SyscallError, SyscallOutcome, exit,
-    extract_concrete_arg, fresh_byte_names, mint_symbolic_bytes,
+    extract_concrete_arg, fresh_byte_names, gather_concrete_bytes, mint_symbolic_bytes,
 };
 use crate::memory::Permission;
 use crate::procedures::stdin_common::mint_stdin_bytes;
@@ -161,18 +161,7 @@ impl NativeSyscall for NativeTransmitSyscall {
 
         // Read the bytes — symbolic bytes fall back to Python where the
         // proper claripy data is written through simfd.write_data.
-        let mut bytes = Vec::with_capacity(count as usize);
-        for i in 0..count {
-            let bv = state.memory_load(buf.wrapping_add(i), 1)?;
-            match bv.as_u64() {
-                Some(v) => bytes.push(v as u8),
-                None => {
-                    return Err(SyscallError::SymbolicArgument(format!(
-                        "transmit symbolic byte at buf+{i}"
-                    )));
-                }
-            }
-        }
+        let bytes = gather_concrete_bytes(state, buf, count, "transmit buf")?;
 
         // A refusal means the fd carried bounded symbolic content (now
         // demoted) — bounce to Python (angr-0xyq2 Phase 2 choke point; see

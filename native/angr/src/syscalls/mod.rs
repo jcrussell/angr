@@ -104,7 +104,8 @@ use std::sync::Arc;
 pub(crate) use support::{
     BoundedArg, MAX_IO_SIZE, MAX_MAP_SIZE, NativeSyscall, SyscallError, SyscallOutcome,
     bounded_value, extract_bounded_concrete_arg, extract_concrete_arg, fresh_byte_names,
-    fresh_symbolic, mint_symbolic_bytes, require_syscall_args, stub_syscall, symbolic_outcome,
+    fresh_symbolic, gather_concrete_bytes, gather_concrete_bytes_into, mint_symbolic_bytes,
+    require_syscall_args, stub_syscall, symbolic_outcome,
 };
 
 /// Registry of native syscall handlers, keyed by arch name then syscall num.
