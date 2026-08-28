@@ -1,3 +1,6 @@
+//! Unit tests for [`super`] (arch/x86.rs).
+//! Split out of x86.rs per `rust-mod-tests-sibling-extraction` (cfg(test)-only reorg).
+
 use super::*;
 
 #[test]

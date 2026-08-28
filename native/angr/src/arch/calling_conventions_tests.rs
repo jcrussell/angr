@@ -36,8 +36,15 @@ fn test_systemv_amd64_syscall_args_use_r10_not_rcx() {
 #[test]
 fn test_default_syscall_args_match_arg_registers() {
     // CCs that don't override syscall_arg_registers should fall back to
-    // the C ABI registers. AArch64 and MipsO32 don't override (their
-    // C ABI register windows X0-X7 / $a0-$a3 cover the syscall ABI).
+    // the C ABI registers. AArch64 and MipsO32 don't override, for two
+    // different reasons:
+    //   - AArch64: the C ABI window X0-X7 is a strict *superset* of the
+    //     Linux syscall window X0-X5 (X8 carries the syscall number). No
+    //     Linux syscall takes more than 6 args, so the extra X6/X7 slots
+    //     are never read and the superset is harmless.
+    //   - MipsO32: the syscall ABI passes args in $a0-$a3 exactly like the
+    //     C ABI ($v0 carries the number, args 5+ spill to the stack in
+    //     both), so the fallback is an exact match, not a superset.
     // Cdecl/SystemV_AMD64/ARMEABI all override, so don't use them here.
     let cc = AArch64CC;
     assert_eq!(cc.syscall_arg_registers(), cc.arg_registers());
