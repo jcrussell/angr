@@ -4,7 +4,7 @@
 A single concrete path that issues many stdio writes (fputs / fputc /
 fwrite) against the cle-loaded ``stdout`` / ``stderr`` FILE* externs. Under
 the Rust engine the native write-side SimProcedures (puts.rs::fputs,
-stdio.rs::fputc/fwrite) call ``read_fileno_for_stream``, which hits an
+puts.rs::fputc, fwrite.rs::fwrite) call ``read_fileno_for_stream``, which hits an
 unmapped lazy page for the cle stdout/stderr FILE* and returns
 ``ProcedureError::Memory`` — the dispatcher then falls back to Python.
 The fallback is CORRECT (Python resolves the right fd); this bench

@@ -110,6 +110,7 @@ pub(crate) mod fortify_mem;
 pub(crate) mod fortify_printf;
 pub(crate) mod fortify_str;
 pub(crate) mod fread;
+pub(crate) mod fwrite;
 pub(crate) mod getenv;
 pub(crate) mod getid;
 pub(crate) mod getopt;
@@ -633,10 +634,12 @@ impl NativeProcedureRegistry {
                 // that hung asisctffinals2015_license on its symbolic file size.
                 fread::NativeFread,
                 fread::NativeFreadUnlocked,
-                // stdio shims (angr-70no): fwrite resolves FILE._fileno → fd buffer;
-                // fflush / setvbuf are no-ops returning 0 (match Python procs).
+                // fwrite/fwrite_unlocked (angr-70no): resolve FILE._fileno → append
+                // the payload to that fd's buffer.
+                fwrite::NativeFwrite,
+                // stdio shims (angr-70no): fflush / setvbuf are no-ops returning 0
+                // (match Python procs).
                 // setbuf (angr-ae54t.19) is a void no-op returning nothing.
-                stdio::NativeFwrite,
                 stdio::NativeFflush,
                 stdio::NativeSetvbuf,
                 stdio::NativeSetbuf,

@@ -1137,7 +1137,8 @@ same impl — see ``NativeProcedureRegistry::register``).
        (alias ``fseeko``), ``rewind``, ``setvbuf``, ``setbuf``
      - 14 / 14
      - angr-f16h.1 / angr-karp / angr-70no / angr-m674p —
-       ``stdio.rs``, ``fileops.rs``, ``fread.rs``. ``fopen``/``fdopen``
+       ``stdio.rs``, ``fileops.rs``, ``fread.rs``, ``fwrite.rs``.
+       ``fopen``/``fdopen``
        heap-allocate an ``_IO_FILE``; the rest dispatch off
        ``FILE._fileno``.
    * - Low-level file ops
