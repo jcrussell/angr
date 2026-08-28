@@ -12,14 +12,19 @@ use super::ir::{
 use super::opcode_map::{parse_endness, parse_jumpkind, parse_opcode, parse_type_or_log};
 
 /// Error type for IRSB deserialization.
+///
+/// Every variant here is reachable, and the split follows who does the
+/// checking. `JsonError` covers every shape/field failure, because the
+/// `PyVexIRSB` / `PyVexStmt` / `PyVexExpr` tree is decoded by
+/// `#[derive(Deserialize)]` rather than a hand-rolled walker — a missing field
+/// or a wrong JSON type is serde's error, not one we construct, so no
+/// hand-rolled missing-field/invalid-type variant belongs here. `InvalidArch`
+/// is raised by `parse_arch`, validation that happens after serde has handed
+/// back a plain `String`.
 #[derive(Debug, thiserror::Error)]
 pub enum DeserializeError {
     #[error("JSON error: {0}")]
     JsonError(#[from] serde_json::Error),
-    #[error("Missing field: {0}")]
-    MissingField(String),
-    #[error("Invalid type: {0}")]
-    InvalidType(String),
     #[error("Invalid architecture: {0}")]
     InvalidArch(String),
 }
