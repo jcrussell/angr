@@ -30,7 +30,6 @@
 //! | [`SymbolicMemory::store`] | symbolic (`ctx.eval` + pin fallback) | W | `Unmapped` | no | clear |
 //! | [`SymbolicMemory::store_concrete`] | concrete | W | `Unmapped` | no | clear |
 //! | [`SymbolicMemory::store_concrete_lazy`] | concrete | W | `UnmappedPageInRegion` | no | clear |
-//! | [`SymbolicMemory::store_concrete_automap`] | concrete | W | `UnmappedPageInRegion` | **no** (name is historical) | clear |
 //! | [`SymbolicMemory::store_concrete_automap_internal`] | concrete | W | `Unmapped` (non-lazy only) | **yes**, zero RW in lazy regions | clear |
 //! | [`SymbolicMemory::store_concrete_le_bytes_automap_internal`] | concrete | W | `Unmapped` (non-lazy only) | **yes**, per chunk | clear |
 //! | [`SymbolicMemory::store_symbolic`] | symbolic (concretizer) | W | `UnmappedPageInRegion` | no | clear (eager ITE per candidate) |
@@ -43,13 +42,15 @@
 //!
 //! * Only `store_concrete` bumps the `mem_store` volume counter (mirror of the
 //!   load-side `invariant-mem-counter-two-paths` rule).
-//! * `store_concrete_lazy` and `store_concrete_automap` currently have
-//!   *identical* bodies (`check_pages_mapped_lazy` then `store_concrete`); the
-//!   names record intended caller class, not differing behavior.
+//! * There used to be a `store_concrete_automap` that notably did *not*
+//!   auto-map — the name was historical; angr-5mnx3.27 removed it as a
+//!   body-identical duplicate of `store_concrete_lazy`, mirroring what
+//!   angr-sqfj8.75 did to the load-side `load_concrete_automap`.
 //! * `store_concrete` uses an **inclusive** end-page range
-//!   (`end_page_inclusive`); the two lazy wrappers use an exclusive ceil-div
-//!   range (`end_page_exclusive`) via `check_pages_mapped_lazy`. Both cover
-//!   the accessed bytes.
+//!   (`end_page_inclusive`); `store_concrete_lazy` (via
+//!   `check_pages_mapped_lazy`) and `store_concrete_automap_internal` (via its
+//!   own auto-map loop) use an exclusive ceil-div range
+//!   (`end_page_exclusive`). Both cover the accessed bytes.
 //! * The bare vs. `_safe` Multi installer is the whole auto-map distinction:
 //!   `install_multi_for_candidates` maps every candidate page RW, while
 //!   `install_multi_for_candidates_safe` returns `UnmappedPageInRegion` for a
@@ -516,7 +517,7 @@ impl SymbolicMemory {
     ) -> Result<Option<ConcretizationResult>, MemoryError> {
         // Fast path: concrete address
         if let Some(concrete_addr) = addr.as_u64() {
-            self.store_concrete_automap(concrete_addr, value)?;
+            self.store_concrete_lazy(concrete_addr, value)?;
             return Ok(Some(ConcretizationResult::Single(concrete_addr)));
         }
         // Past the fast path the address is genuinely symbolic (angr-9ke6b.229).
@@ -535,7 +536,7 @@ impl SymbolicMemory {
         let result = concretizer.concretize_write(&addr, ctx);
         match &result {
             ConcretizationResult::Single(concrete_addr) => {
-                self.store_concrete_automap(*concrete_addr, value)?;
+                self.store_concrete_lazy(*concrete_addr, value)?;
                 Ok(Some(result))
             }
             ConcretizationResult::Multiple(addrs) => {
@@ -585,7 +586,7 @@ impl SymbolicMemory {
         }
         match conc_result {
             ConcretizationResult::Single(concrete_addr) => {
-                self.store_concrete_automap(*concrete_addr, value)
+                self.store_concrete_lazy(*concrete_addr, value)
             }
             ConcretizationResult::Multiple(addrs) => {
                 let addrs_v: Vec<u64> = addrs.clone();
@@ -883,7 +884,7 @@ impl SymbolicMemory {
     ) -> Result<Option<ConcretizationResult>, MemoryError> {
         // Fast path: concrete address — eager store, no Multi cells needed.
         if let Some(concrete_addr) = addr.as_u64() {
-            self.store_concrete_automap(concrete_addr, value)?;
+            self.store_concrete_lazy(concrete_addr, value)?;
             return Ok(Some(ConcretizationResult::Single(concrete_addr)));
         }
         // Past the fast path the address is genuinely symbolic (angr-9ke6b.229).
@@ -905,7 +906,7 @@ impl SymbolicMemory {
         let result = concretizer.concretize_write_multiwrite(&addr, ctx);
         match &result {
             ConcretizationResult::Single(concrete_addr) => {
-                self.store_concrete_automap(*concrete_addr, value)?;
+                self.store_concrete_lazy(*concrete_addr, value)?;
                 Ok(Some(result))
             }
             ConcretizationResult::Multiple(addrs) => {
@@ -931,7 +932,14 @@ impl SymbolicMemory {
         }
     }
 
-    /// Store to a concrete address, returning UnmappedPageInRegion for lazy regions.
+    /// Store to a concrete address, returning `UnmappedPageInRegion` for lazy
+    /// regions.
+    ///
+    /// This path deliberately does **not** auto-map missing pages: a
+    /// speculative zero page diverges from Python's actual backer data, so the
+    /// error is propagated instead and the caller falls back to a Python
+    /// callback that stores correctly. For internal Rust operations that touch
+    /// no Python state, use `store_concrete_automap_internal`.
     pub fn store_concrete_lazy(
         &mut self,
         addr: impl Into<Address>,
@@ -953,8 +961,8 @@ impl SymbolicMemory {
     /// Verify every page in `[start_page, end_page)` is mapped, classifying
     /// the first unmapped page as `UnmappedPageInRegion` (in a lazy region,
     /// fetchable on-demand) or `Unmapped` (angr-24pv4.3). Shared by the
-    /// lazy-aware store wrappers `store_concrete_lazy` and
-    /// `store_concrete_automap`. NOT used by `store_concrete` (no lazy
+    /// lazy-aware store wrapper `store_concrete_lazy`. NOT used by
+    /// `store_concrete` (no lazy
     /// detection, inclusive range) or `store_concrete_automap_internal`
     /// (auto-maps lazy pages instead of erroring) — their semantics differ.
     ///
@@ -979,38 +987,10 @@ impl SymbolicMemory {
         Ok(())
     }
 
-    /// Store to a concrete address with lazy region support.
-    ///
-    /// # Deprecation Warning
-    ///
-    /// This function previously auto-mapped zero pages for unmapped regions,
-    /// but that behavior caused state divergence with Python's actual backer
-    /// data. Now it returns UnmappedPageInRegion error so callers can fall
-    /// back to Python callbacks to handle the store correctly.
-    ///
-    /// If you need auto-mapping behavior for internal Rust operations that
-    /// don't involve Python state, use `store_concrete_automap_internal`.
-    pub fn store_concrete_automap(
-        &mut self,
-        addr: impl Into<Address>,
-        value: RustBV,
-    ) -> Result<(), MemoryError> {
-        let addr = addr.into();
-        let size = value.width() / 8;
-        let start_page = addr.page_num();
-        let end_page = end_page_exclusive(addr.raw(), size as u64)?;
-
-        // Check all pages are mapped - do NOT auto-map
-        self.check_pages_mapped_lazy(start_page, end_page)?;
-
-        // All pages mapped, proceed with store
-        self.store_concrete(addr, value)
-    }
-
     /// Store to a concrete address with internal auto-mapping.
     ///
     /// This is for internal Rust operations that don't involve Python state.
-    /// For interpreter callbacks, use `store_concrete_automap` which propagates
+    /// For interpreter callbacks, use `store_concrete_lazy` which propagates
     /// errors so Python can handle the store correctly.
     pub fn store_concrete_automap_internal(
         &mut self,

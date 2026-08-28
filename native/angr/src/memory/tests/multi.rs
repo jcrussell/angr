@@ -712,7 +712,7 @@ fn test_store_symbolic_unified_multi_multiple_round_trip() {
 }
 
 /// `store_symbolic_unified_multi` with a fully-concrete address must
-/// short-circuit to the eager `store_concrete_automap` path (no Multi
+/// short-circuit to the eager `store_concrete_lazy` path (no Multi
 /// cells installed). Counter the lazy-vs-eager distinction at the entry.
 #[test]
 fn test_store_symbolic_unified_multi_concrete_addr_no_multi() {

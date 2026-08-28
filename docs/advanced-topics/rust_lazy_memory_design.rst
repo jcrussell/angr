@@ -109,7 +109,7 @@ Relevant code:
 Store path (eager):
 
 1. ``store_symbolic_unified`` calls ``concretize_write``.
-2. ``Single`` → ``store_concrete_automap`` writes the BV at that
+2. ``Single`` → ``store_concrete_lazy`` writes the BV at that
    page byte; if the value is symbolic the page byte is marked
    symbolic and the BV stashed in ``symbolic_objects[addr]``.
 3. ``Multiple(addrs)`` or ``Strided`` → ``store_conditional_multiple``

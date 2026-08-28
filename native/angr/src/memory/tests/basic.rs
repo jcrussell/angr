@@ -287,7 +287,7 @@ fn test_wraparound_access_is_rejected_not_silently_redirected() {
         Err(MemoryError::OutOfBounds { .. })
     ));
 
-    // Store side: the eager path (`end_page_inclusive`) and all three lazy
+    // Store side: the eager path (`end_page_inclusive`) and both lazy
     // wrappers (`end_page_exclusive` via `check_pages_mapped_lazy` /
     // the automap loop).
     let poison = RustBV::concrete(0xdead_beef, 32);
@@ -297,10 +297,6 @@ fn test_wraparound_access_is_rejected_not_silently_redirected() {
     ));
     assert!(matches!(
         mem.store_concrete_lazy(wrapping, poison.clone()),
-        Err(MemoryError::OutOfBounds { .. })
-    ));
-    assert!(matches!(
-        mem.store_concrete_automap(wrapping, poison.clone()),
         Err(MemoryError::OutOfBounds { .. })
     ));
     assert!(matches!(

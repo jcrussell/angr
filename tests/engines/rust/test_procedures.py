@@ -2394,7 +2394,7 @@ class TestNativeReadCacheSync:
         sid = active_ids[0]
 
         # Store a multi-byte symbolic object at a known address on SYM_PAGE.
-        # store_concrete_automap registers it in memory.symbolic_objects (the
+        # store_concrete_lazy registers it in memory.symbolic_objects (the
         # source symbolic_objects_iter walks).
         sym_mem = claripy.BVS("sym_mem", 64)
         ok = mgr.state_memory_store_symbolic_multi(sid, claripy.BVV(SYM_ADDR, 64), sym_mem)
