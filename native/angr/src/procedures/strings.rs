@@ -26,7 +26,7 @@ use crate::state::RustSimState;
 use crate::symbolic::{RustBV, SymContext};
 
 /// Shared upper bound on a concrete null-terminated string scan for the
-/// str-family procedures (strcpy/strncpy/strcat/strncat, strstr, strset,
+/// str-family procedures (strcpy/strncpy/strcat/strncat, strstr, strpbrk,
 /// memset-of-string, strchr/memchr, strlen/strnlen, …) and for the other
 /// procedures that scan a C string argument: `getopt` (optstring and argv
 /// elements), `perror`, and `getenv`/`setenv`/`putenv`. Hitting this without a

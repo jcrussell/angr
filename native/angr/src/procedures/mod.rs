@@ -101,6 +101,7 @@ mod macros;
 
 pub(crate) mod access;
 pub(crate) mod byteorder;
+pub(crate) mod byteset;
 pub(crate) mod ctype;
 pub(crate) mod exit;
 pub(crate) mod fgets;
@@ -138,7 +139,6 @@ pub(crate) mod strcmp;
 pub(crate) mod strcpy;
 pub(crate) mod strings;
 pub(crate) mod strlen;
-pub(crate) mod strset;
 pub(crate) mod strstr;
 pub(crate) mod strtod;
 pub(crate) mod strtol;
@@ -529,9 +529,9 @@ impl NativeProcedureRegistry {
                 strchr::NativeStrrchr,
                 strchr::NativeMemrchr,
                 // Byte-set search (angr-f16h.5)
-                strset::NativeStrpbrk,
-                strset::NativeStrspn,
-                strset::NativeStrcspn,
+                byteset::NativeStrpbrk,
+                byteset::NativeStrspn,
+                byteset::NativeStrcspn,
                 // String-to-integer conversion
                 strtol::NativeStrtol,
                 strtol::NativeStrtoul,

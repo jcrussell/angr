@@ -1062,7 +1062,7 @@ same impl — see ``NativeProcedureRegistry::register``).
        ``rawmemchr``, ``memrchr``, ``strstr``, ``strpbrk``,
        ``strspn``, ``strcspn``, ``strtok`` ✗
      - 10 / 11
-     - ``strchr.rs``, ``strstr.rs``, ``strset.rs`` (angr-f16h.5).
+     - ``strchr.rs``, ``strstr.rs``, ``byteset.rs`` (angr-f16h.5).
        ``strtok`` intentionally left on the Python fallback path
        (angr-4c65 wontfix): a 14-bench fallback profile shows zero
        ``strtok`` appearances, so the stateful ``state.globals`` save

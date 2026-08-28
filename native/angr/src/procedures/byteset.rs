@@ -125,4 +125,4 @@ crate::declare_proc! {
     }
 }
 
-test_submod!("strset_tests.rs" => strset_tests);
+test_submod!("byteset_tests.rs" => byteset_tests);

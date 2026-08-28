@@ -1,4 +1,4 @@
-//! Tests for the strset SimProcedure (extracted from strset.rs).
+//! Tests for the byte-set search SimProcedures (extracted from `byteset.rs`).
 use super::*;
 use crate::memory::Permission;
 use crate::procedures::NativeSimProcedure;

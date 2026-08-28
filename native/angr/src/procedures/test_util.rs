@@ -3,7 +3,7 @@
 //! Only helpers that are genuinely identical across families live here — the
 //! state-construction core, plus the stdio-family FILE/symbolic-file builders
 //! shared by `stdio_tests` and `fwrite_tests`. Per-family helpers with custom
-//! signatures (e.g. `strset`'s `(s, set)` setup, or `fread_tests`'s
+//! signatures (e.g. `byteset_tests`'s `(s, set)` setup, or `fread_tests`'s
 //! deliberately amd64-hardcoded `write_file_struct`) stay local to their
 //! module.
 
