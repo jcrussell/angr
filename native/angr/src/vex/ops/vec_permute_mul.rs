@@ -151,6 +151,14 @@ impl VEXOps {
     ) -> Result<RustBV, OpError> {
         let in_width = elem.bits();
         let out_width = in_width * 2;
+        // Both operands must carry all `count` lanes: the lane offsets below are
+        // derived from `elem`/`count` alone and applied to both, so a caller
+        // whose operands are narrower than that would silently read overlapping
+        // or out-of-operand lanes rather than trip anything. Matches the
+        // operand-width checks in `vec_reverse` / `vec_polynomial_mul`
+        // (angr-5mnx3.66).
+        debug_assert_eq!(left.width(), in_width * count as u32);
+        debug_assert_eq!(right.width(), in_width * count as u32);
         // Contributing input lanes step by 2 for even-lane, else 1.
         let step: u32 = if even { 2 } else { 1 };
         let out_lanes = count as u32 / step;
@@ -217,6 +225,9 @@ impl VEXOps {
         let prod_width = width * 2;
         let lanes = count as u32;
         let total = width * lanes;
+        // Same operand-shape requirement as `vec_mull` (angr-5mnx3.66).
+        debug_assert_eq!(left.width(), total);
+        debug_assert_eq!(right.width(), total);
 
         // Concrete fast path: sign/zero-extend within i128, multiply, take the
         // high half. Only reachable when both operands fit in u128, so the
@@ -276,6 +287,9 @@ impl VEXOps {
         let in_width = elem.bits();
         let out_width = in_width * 2;
         let out_total = out_width * count as u32;
+        // Same operand-shape requirement as `vec_mull` (angr-5mnx3.66).
+        debug_assert_eq!(left.width(), in_width * count as u32);
+        debug_assert_eq!(right.width(), in_width * count as u32);
 
         // Concrete fast path: sign-extend within i128, multiply, double, clamp.
         // in_width <= 32 (only 16Sx4 / 32Sx2 exist) so `2 * la * ra` cannot
