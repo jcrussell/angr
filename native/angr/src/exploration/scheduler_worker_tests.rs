@@ -11,6 +11,7 @@
 
 use super::*;
 use crate::exploration::selection_policy::{Fifo, default_policy};
+use std::sync::Barrier;
 
 /// A minimal migratable state. `offload_surplus` only detaches and counts, so
 /// no registers or constraints are needed.
@@ -439,6 +440,63 @@ fn test_absorb_continues_saturated_frontier_still_advances() {
 
     assert_eq!(local.len(), 1, "one child replaces the retiring parent");
     assert_eq!(t.counters.summarized_pruned.load(Ordering::SeqCst), 3);
+}
+
+// angr-5mnx3.18: the cap is a CAS *reservation*, not a load-decide-add, so W
+// workers forking concurrently cannot each spend the same stale budget. Every
+// successful reservation leaves `pending <= limit + 1` (the reserving worker's
+// own in-flight parent discount), independent of the worker count.
+//
+// The `Barrier` is what makes this a regression test rather than a coin flip:
+// without it `std::thread::scope` spawns the workers slowly enough that each
+// finishes before the next starts, and the pre-fix check-then-act sequence
+// passes every time. Released together, the pre-fix code has all four workers
+// read the same `pending == 4` snapshot and admit `limit - 3` children apiece,
+// landing `pending` at 16 for a limit of 6 (measured: fails within the first
+// few rounds). The post-fix CAS makes the bound unconditional, so the rounds
+// only exist to give the old shape a chance to lose.
+#[test]
+fn test_absorb_continues_cap_holds_under_concurrent_workers() {
+    const WORKERS: usize = 4;
+    const FORKS: usize = 8;
+    const LIMIT: usize = 6;
+    const ROUNDS: usize = 32;
+
+    for _ in 0..ROUNDS {
+        let mut t = lifo_transport();
+        t.max_active_states = Some(LIMIT);
+        // One in-flight parent per worker, all about to fork at once.
+        t.pending.store(WORKERS, Ordering::SeqCst);
+        let gate = Barrier::new(WORKERS);
+
+        std::thread::scope(|scope| {
+            for _ in 0..WORKERS {
+                let (t, gate) = (&t, &gate);
+                scope.spawn(move || {
+                    // States are built inside the worker thread — each owns its
+                    // own Z3 context, exactly as a real scheduler worker does —
+                    // and before the gate, so the construction cost does not
+                    // smear the release.
+                    let mut local: VecDeque<RustSimState> = VecDeque::new();
+                    let children: Vec<RustSimState> = (0..FORKS).map(|_| plain_state()).collect();
+                    gate.wait();
+                    absorb_continues(t, &mut local, children);
+                });
+            }
+        });
+
+        let pending = t.pending.load(Ordering::SeqCst);
+        assert!(
+            pending <= LIMIT + 1,
+            "concurrent reservations must not overshoot the cap by more than \
+             the one-parent discount: pending={pending}, limit={LIMIT}",
+        );
+        assert_eq!(
+            t.counters.summarized_pruned.load(Ordering::SeqCst),
+            WORKERS * FORKS - (pending - WORKERS),
+            "every fork is either admitted or recorded as Pruned — none vanish",
+        );
+    }
 }
 
 // No cap configured (the default for every Rust-side / test construction) must

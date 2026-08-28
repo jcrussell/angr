@@ -208,8 +208,12 @@ fn test_scheduler_fork_tree_quiesces() {
 // `test_scheduler_fork_tree_quiesces` — which grows to 128 live leaves with no
 // cap — run on 4 workers with a cap of 8. `max_width` is the peak `pending`
 // (queued + in-flight) sampled at dispatch, so it is the direct measurement of
-// the resident frontier; it must stay inside the soft bound `cap + workers - 1`
-// (each peer's in-flight parent is discounted only by its own worker). The
+// the resident frontier; it must stay inside the soft bound `cap + 1` (the
+// forking worker's own in-flight parent is discounted from its budget). That
+// bound used to be `cap + workers - 1`: `absorb_continues` decided its budget
+// from a plain load and only counted the children IN afterwards, so every
+// worker could spend the same stale snapshot. It reserves with a CAS since
+// angr-5mnx3.18, which makes the overshoot independent of the worker count. The
 // pruned-summary count proves the cap actually fired rather than the workload
 // simply never reaching it (the `max-active-states-test-pattern` trap: a
 // width-only assertion passes vacuously on a workload that never forks wide).
@@ -276,8 +280,8 @@ fn test_wave_frontier_respects_max_active_states() {
 
     let (capped, capped_leaves) = run_fork_tree_capped(Some(CAP));
     assert!(
-        capped.max_width < CAP + TREE_WORKERS,
-        "resident frontier must stay inside the cap's soft bound (cap + workers - 1): \
+        capped.max_width <= CAP + 1,
+        "resident frontier must stay inside the cap's soft bound (cap + 1): \
          max_width={} cap={CAP} workers={TREE_WORKERS}",
         capped.max_width,
     );

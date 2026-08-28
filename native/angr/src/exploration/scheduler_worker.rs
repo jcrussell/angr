@@ -432,10 +432,15 @@ pub(super) fn dispatch_next(
 /// `pending` (queued + in-flight) is the parallel analogue of `active_count()`,
 /// minus one for the parent task still counted in it — the parent is counted
 /// OUT by the caller immediately after, exactly as the serial loop's
-/// currently-stepping state is already popped out of `STASH_ACTIVE`. With `W`
-/// workers the bound is soft by up to `W - 1` (each peer's in-flight parent is
-/// still counted), which is the point: it is a runaway-growth backstop, not an
-/// exact quota.
+/// currently-stepping state is already popped out of `STASH_ACTIVE`. The
+/// admission is *reserved* with a CAS ([`reserve_admission`]) rather than
+/// decided from a plain load and added afterwards, so `W` workers forking
+/// concurrently cannot each spend the same stale budget: every successful
+/// reservation leaves `pending <= limit + 1` (the `+ 1` is the reserving
+/// worker's own in-flight parent discount). It stays a runaway-growth backstop
+/// rather than an exact quota — the wave's seed count is stored into `pending`
+/// directly and is not capped here — but the overshoot no longer scales with
+/// the worker count.
 ///
 /// Pruned forks become `Pruned` [`TerminalSummary`] counter entries and are
 /// dropped in-context — the same treatment every other worker-side dead path
@@ -447,28 +452,73 @@ pub(super) fn absorb_continues(
     local: &mut VecDeque<RustSimState>,
     mut continue_states: Vec<RustSimState>,
 ) {
-    if let Some(limit) = t.max_active_states {
-        let live = t.pending.load(Ordering::SeqCst).saturating_sub(1);
-        let budget = limit.saturating_sub(live);
-        if budget < continue_states.len() {
-            let pruned: Vec<TerminalSummary> = continue_states[budget..]
-                .iter()
-                .map(|s| TerminalSummary::of(s, TerminalDisposition::Pruned))
-                .collect();
-            continue_states.truncate(budget);
-            t.counters.record_summaries(&pruned);
-        }
+    if continue_states.is_empty() {
+        // Nothing to count IN — leave `pending` untouched so a dead-ended task
+        // does not inflate the quiescence count.
+        return;
     }
 
-    let spawned = continue_states.len();
+    let admitted = match t.max_active_states {
+        Some(limit) => reserve_admission(t, limit, continue_states.len()),
+        None => {
+            t.pending.fetch_add(continue_states.len(), Ordering::SeqCst);
+            continue_states.len()
+        }
+    };
+
+    if admitted < continue_states.len() {
+        let pruned: Vec<TerminalSummary> = continue_states[admitted..]
+            .iter()
+            .map(|s| TerminalSummary::of(s, TerminalDisposition::Pruned))
+            .collect();
+        continue_states.truncate(admitted);
+        t.counters.record_summaries(&pruned);
+    }
+
     for child in continue_states {
         // Fork insertion goes through the selection policy (angr-1ilq.9); both
         // built-ins append at the tail (`push_back`), so the default is
         // identical to the pre-seam open-coded push.
         t.policy.on_fork(local, child);
     }
-    if spawned > 0 {
-        t.pending.fetch_add(spawned, Ordering::SeqCst);
+}
+
+/// Reserve up to `want` frontier slots against `limit`, atomically counting the
+/// reserved children IN. Returns how many may be queued; the rest are the
+/// caller's to prune.
+///
+/// The CAS loop is the whole point (angr-5mnx3.18). Reading `pending`, deciding
+/// a budget from it, and only then `fetch_add`-ing the spawn count is a
+/// check-then-act race: `W` workers forking at once each computed a budget off
+/// the same stale snapshot and each admitted a full `limit`-worth of children,
+/// so `max_active_states` — an OOM safety valve whose pruned states are not
+/// recoverable — could be overshot by a multiple of the worker count rather
+/// than the documented slack. Reserving with `compare_exchange` re-reads the
+/// value every contended round, so a losing worker sees its peer's admission
+/// and shrinks (or zeroes) its own budget.
+fn reserve_admission(t: &WorkTransport, limit: usize, want: usize) -> usize {
+    let mut cur = t.pending.load(Ordering::SeqCst);
+    loop {
+        // Discount the parent task still counted in `pending`; the caller counts
+        // it OUT immediately after we return.
+        let live = cur.saturating_sub(1);
+        let budget = limit.saturating_sub(live).min(want);
+        if budget == 0 {
+            return 0;
+        }
+        // `saturating_add` rather than `+`: `budget <= limit`, so a wrap needs a
+        // `pending` within `usize` of 2^64 — but a wrapped `pending` reads as
+        // quiescence and would end the wave with live states queued, so a count
+        // saturates here rather than wrapping.
+        match t.pending.compare_exchange_weak(
+            cur,
+            cur.saturating_add(budget),
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        ) {
+            Ok(_) => return budget,
+            Err(actual) => cur = actual,
+        }
     }
 }
 

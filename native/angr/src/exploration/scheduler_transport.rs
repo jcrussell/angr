@@ -75,7 +75,9 @@ pub(crate) struct WorkTransport {
     /// `RustExplorationManager::push_to_active_or_drop`, but an in-wave /
     /// in-session frontier never round-trips through that stash, so the same
     /// cap is applied by [`worker::absorb_continues`] against `pending`
-    /// (queued + in-flight = the resident frontier). `None` = unbounded, which
+    /// (queued + in-flight = the resident frontier), which reserves each
+    /// worker's admission with a CAS so concurrent forks cannot each spend the
+    /// same stale budget (angr-5mnx3.18). `None` = unbounded, which
     /// is what every Rust-side / test construction gets by default; the two
     /// production sites in `run_loop_wave.rs` / `run_loop_steady.rs` thread the manager's value in.
     pub(super) max_active_states: Option<usize>,
@@ -89,9 +91,13 @@ pub(crate) struct WorkTransport {
     /// frontier comes back untagged and lands in `STASH_ACTIVE`, exactly as the
     /// single-threaded loop leaves it when it runs out of budget).
     ///
-    /// Soft by up to `workers - 1`, same as `max_active_states`: `W` workers can
-    /// each observe `limit - 1` simultaneously and dispatch, so the bound is
-    /// `limit + W - 1` dispatches. `None` = unbounded (every Rust-side/test
+    /// Soft by up to `workers - 1`: `W` workers can each observe `limit - 1`
+    /// simultaneously and dispatch, so the bound is `limit + W - 1` dispatches.
+    /// (`max_active_states` used to carry the same slack; since angr-5mnx3.18 it
+    /// reserves its admissions with a CAS and is soft by exactly one. A
+    /// dispatch budget overshooting by `W - 1` steps costs `W - 1` steps; a
+    /// frontier cap overshooting is the OOM valve failing, hence the
+    /// difference.) `None` = unbounded (every Rust-side/test
     /// construction default); the wave loop threads its remaining budget in.
     pub(super) max_dispatches: Option<u64>,
 }
