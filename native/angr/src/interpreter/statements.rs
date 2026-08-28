@@ -12,9 +12,10 @@
 //! `Dirty`) classify their guard with; see its own docs for why `Exit` uses
 //! the two decision rules but not the `classify_guard` wrapper.
 
-use super::bv_utils::{bv_to_bytes, bytes_to_bv, reject_symbolic_byte_store};
+use super::bv_utils::bytes_to_bv;
 use super::expressions::fabricate_unsupported_irop;
 use super::statements_cas::CasArgs;
+use super::statements_store::GuardedStoreAddr;
 use super::*;
 
 /// The `IRStmt::LoadG` operands, bundled so the handler takes one borrow of the
@@ -589,66 +590,38 @@ impl<'a> VEXInterpreter<'a> {
                 let data_size = data_val.width().div_ceil(8) as usize;
 
                 if let Some(addr_concrete) = addr_val.as_u64() {
-                    // Load current value at address
-                    let current = self.load_from_callback(callbacks, addr_concrete, data_size)?;
-                    // Create ITE: if guard then new_data else current
-                    let ite_result = guard_val.ite(&data_val, &current, self.ctx);
-                    // The ITE captured `current` above; now that we're about to
-                    // overwrite this range, invalidate stale cached code and evict
-                    // overlapping symbolic shadows (angr-myzjx.26).
-                    self.invalidate_and_evict_concrete_store(addr_concrete, data_size);
-                    // ITE result is symbolic if guard or either operand is symbolic
-                    if ite_result.is_symbolic() && callbacks.has_memory_store_symbolic_value() {
-                        self.flush_stores(callbacks)?;
-                        self.store_symbolic_value_buffered(callbacks, addr_concrete, &ite_result)?;
-                    } else {
-                        reject_symbolic_byte_store(&ite_result, addr_concrete, "StoreG")?;
-                        let ite_bytes = bv_to_bytes(&ite_result);
-                        self.pending_stores.push(addr_concrete, ite_bytes);
-                        if self.pending_stores.len() >= self.max_pending_stores {
-                            self.flush_stores(callbacks)?;
-                        }
-                    }
+                    self.store_guarded_ite(
+                        callbacks,
+                        addr_concrete,
+                        &guard_val,
+                        &data_val,
+                        data_size,
+                        GuardedStoreAddr::Literal,
+                    )?;
                 } else {
                     // Symbolic address with symbolic guard - concretize for write.
-                    // Invalidate cached code at the concretized target(s) before
-                    // dispatching (self-modifying-code support), mirroring
-                    // handle_symbolic_store (angr-myzjx.26).
                     let concret_result = self.concretize_cached_write(&addr_val);
-                    self.invalidate_code_on_store(&concret_result, data_size);
                     match &*concret_result {
                         ConcretizationResult::Single(addr_concrete) => {
-                            let addr_concrete = *addr_concrete;
-                            // Load current value and use ITE
-                            let current =
-                                self.load_from_callback(callbacks, addr_concrete, data_size)?;
-                            let ite_result = guard_val.ite(&data_val, &current, self.ctx);
-                            // ITE captured `current`; evict stale overlapping
-                            // symbolic shadows before storing the new value.
-                            self.evict_overlapping_symbolic_stores(addr_concrete, data_size);
-                            self.flush_stores(callbacks)?;
-                            // ITE result is symbolic - use symbolic store callback
-                            if ite_result.is_symbolic()
-                                && callbacks.has_memory_store_symbolic_value()
-                            {
-                                self.store_symbolic_value_buffered(
-                                    callbacks,
-                                    addr_concrete,
-                                    &ite_result,
-                                )?;
-                            } else {
-                                reject_symbolic_byte_store(
-                                    &ite_result,
-                                    addr_concrete,
-                                    "StoreG (concretized addr)",
-                                )?;
-                                let ite_bytes = bv_to_bytes(&ite_result);
-                                callbacks
-                                    .call_memory_store(addr_concrete, &ite_bytes)
-                                    .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
-                            }
+                            // Code-cache invalidation for this arm happens inside
+                            // `store_guarded_ite` (via
+                            // `invalidate_and_evict_concrete_store`), which does
+                            // exactly what `invalidate_code_on_store` does for a
+                            // `Single` result.
+                            self.store_guarded_ite(
+                                callbacks,
+                                *addr_concrete,
+                                &guard_val,
+                                &data_val,
+                                data_size,
+                                GuardedStoreAddr::Concretized,
+                            )?;
                         }
-                        _ => {
+                        other => {
+                            // Invalidate cached code at the concretized target(s)
+                            // before dispatching (self-modifying-code support),
+                            // mirroring handle_symbolic_store (angr-myzjx.26).
+                            self.invalidate_code_for_concretization(other, data_size);
                             // Symbolic guard + non-Single address solutions
                             // (Multiple/Strided/TooLarge/Failed). Combining the
                             // guard-ITE with per-address ITEs requires a per-

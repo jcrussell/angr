@@ -14,6 +14,31 @@ use super::bv_utils::{bv_to_bytes, reject_symbolic_byte_store};
 use super::*;
 use crate::symbolic::{MAX_CONCRETE_CHUNK, u128_to_le_bytes};
 
+/// How a guarded store's concrete target address was obtained. Selects the
+/// flush/write lane in `VEXInterpreter::store_guarded_ite` — the only thing
+/// that still differs between `handle_storeg`'s two symbolic-guard branches.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum GuardedStoreAddr {
+    /// The `addr` expression evaluated to a literal, so a concrete ITE result
+    /// can join the buffered `pending_stores` fast path.
+    Literal,
+    /// The `addr` expression was symbolic and `concretize_cached_write`
+    /// returned a single solution. The buffer is drained unconditionally and a
+    /// concrete ITE result goes straight to the Python store callback rather
+    /// than being buffered behind it.
+    Concretized,
+}
+
+impl GuardedStoreAddr {
+    /// Context label for `reject_symbolic_byte_store`'s error message.
+    fn reject_label(self) -> &'static str {
+        match self {
+            Self::Literal => "StoreG",
+            Self::Concretized => "StoreG (concretized addr)",
+        }
+    }
+}
+
 impl<'a> VEXInterpreter<'a> {
     /// Attempt to store via Rust-native memory. Returns Ok(true) if the store
     /// was handled, Ok(false) if the caller should fall back to the Python path.
@@ -261,6 +286,56 @@ impl<'a> VEXInterpreter<'a> {
         }
         record_mem_store(data_size as u64);
         self.fallback_to_python_store(callbacks, addr_val, data_val, data_size)
+    }
+
+    /// Conditional-store body shared by both of `handle_storeg`'s
+    /// symbolic-guard branches (angr-5mnx3.24): load the current bytes at
+    /// `addr_concrete`, build `ITE(guard, data, current)`, invalidate the code
+    /// cache and evict overlapping symbolic shadows the write now
+    /// contradicts, then dispatch the ITE result. `kind` carries the only
+    /// remaining divergence — see [`GuardedStoreAddr`]. Both branches used to
+    /// spell this sequence out independently, so a fix to one silently missed
+    /// the other.
+    pub(super) fn store_guarded_ite(
+        &mut self,
+        callbacks: &PythonCallbacks,
+        addr_concrete: u64,
+        guard_val: &RustBV,
+        data_val: &RustBV,
+        data_size: usize,
+        kind: GuardedStoreAddr,
+    ) -> Result<(), CbExecutionError> {
+        let current = self.load_from_callback(callbacks, addr_concrete, data_size)?;
+        let ite_result = guard_val.ite(data_val, &current, self.ctx);
+        // The ITE captured `current`; now that we're about to overwrite this
+        // range, invalidate stale cached code and evict overlapping symbolic
+        // shadows (angr-myzjx.26).
+        self.invalidate_and_evict_concrete_store(addr_concrete, data_size);
+
+        // A symbolic dispatch needs the pending buffer drained so Python cannot
+        // observe a write ordered after this one; the concretized lane drains it
+        // unconditionally because its concrete write also bypasses the buffer.
+        let use_sym_cb = ite_result.is_symbolic() && callbacks.has_memory_store_symbolic_value();
+        if use_sym_cb || kind == GuardedStoreAddr::Concretized {
+            self.flush_stores(callbacks)?;
+        }
+        if use_sym_cb {
+            return self.store_symbolic_value_buffered(callbacks, addr_concrete, &ite_result);
+        }
+        reject_symbolic_byte_store(&ite_result, addr_concrete, kind.reject_label())?;
+        let ite_bytes = bv_to_bytes(&ite_result);
+        match kind {
+            GuardedStoreAddr::Literal => {
+                self.pending_stores.push(addr_concrete, ite_bytes);
+                if self.pending_stores.len() >= self.max_pending_stores {
+                    self.flush_stores(callbacks)?;
+                }
+                Ok(())
+            }
+            GuardedStoreAddr::Concretized => callbacks
+                .call_memory_store(addr_concrete, &ite_bytes)
+                .map_err(|e| CbExecutionError::Callback(e.to_string())),
+        }
     }
 
     /// Concrete-address store path: chooses between the
