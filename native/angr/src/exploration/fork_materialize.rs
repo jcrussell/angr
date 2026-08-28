@@ -90,7 +90,8 @@ pub(crate) fn reconstruct_deferred_fork_condition(
 
 /// Build the unexplored-path fork for one deferred branch.
 ///
-/// Every deferred-fork materialization site (the two `stepping.rs` helpers,
+/// Every deferred-fork materialization site (`process_deferred_forks_into` in
+/// `stepping_forks.rs`,
 /// [`materialize_deferred_forks`], and the parallel mirror in
 /// `core_outcome_handlers.rs`) constructs the opposite-path state with the same
 /// byte-identical 3-way branch: prefer a pre-branch solver `snapshot` (and
@@ -142,7 +143,7 @@ pub(crate) fn build_unexplored_fork(
 ///
 /// A fork built for branch *i* must inherit the decisions of branches
 /// `0..i` — they are on its path by construction. Callers that apply each
-/// guard to the continuing state as they iterate (`stepping.rs`,
+/// guard to the continuing state as they iterate (`stepping_forks.rs`,
 /// `core_outcome_handlers.rs`) fork off a base that already has them and set
 /// `base_carries: true`; [`materialize_deferred_forks`] forks off a fixed
 /// guard-free base and sets `false`. The snapshot path replays them

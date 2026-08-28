@@ -820,7 +820,8 @@ pub(crate) fn extract_args_with_abi(
 /// not a fork) so the callback evaluates against the live constraints.
 ///
 /// Returns `(pre_callback_snapshot, shared_ctx)` ready to hand to
-/// `PendingCallback::with_context`. The Hook arm in `stepping.rs` keeps its own
+/// `PendingCallback::with_context`. `dispatch_bounce`'s Hook arm
+/// (`stepping_bounce.rs`) keeps its own
 /// inline copy because it interleaves fork-timing profiling around the snapshot;
 /// the symbolic-branch / VEX-fallback exits pass `(None, None)` by design and
 /// do not use this.

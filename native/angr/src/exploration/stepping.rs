@@ -8,16 +8,25 @@
 //! either returns successors, terminates the state via [`StepError`], or
 //! forwards a `NeedsPython` outcome to `dispatch_bounce`.
 //!
-//! `dispatch_bounce` is the Python-bouncing arm: it turns a [`PendingBounce`]
-//! into the exact [`PendingCallback`] the caller must service (SimProcedure,
-//! hook, syscall, symbolic branch, error), with `handle_unmodeled_call` /
-//! `unmodeled_call_generic_skip` covering the unresolved-call path. The
-//! matching re-entry points live in `resume.rs`.
+//! `dispatch_bounce` — the Python-bouncing arm, in `stepping_bounce.rs` —
+//! turns a [`PendingBounce`](super::core_outcome::PendingBounce) into the exact
+//! [`PendingCallback`] the caller must
+//! service. The matching re-entry points live in `resume.rs`.
 //!
-//! Also here: the native sub-call ABI setup shared with the parallel path
-//! ([`SubcallAbi`] / [`setup_native_subcall_with_abi`]), deferred-fork
-//! materialization into a successor list (`process_deferred_forks_into`), core
-//! counter folding (`fold_core_counters`), and the out-of-band
+//! Three sibling `#[path]` submodules hold the concerns that used to share
+//! this file (angr-5mnx3.71), each reached only through `RustExplorationManager`
+//! methods so no import path outside `stepping.rs` changed:
+//!
+//! - `stepping_subcall.rs` — the native sub-call ABI setup shared with the
+//!   parallel path ([`SubcallAbi`] / [`setup_native_subcall_with_abi`], both
+//!   re-exported here for `core_outcome.rs`).
+//! - `stepping_bounce.rs` — `dispatch_bounce` and the unmodeled-call arm.
+//! - `stepping_forks.rs` — `process_deferred_forks_into` /
+//!   `dispatch_fork_inspect`.
+//!
+//! What stays: [`StepError`], [`InterpreterStepResult`] and
+//! `apply_interpreter_step_result`, the `step_state_*` / `apply_core_outcome`
+//! spine, core counter folding (`fold_core_counters`), and the out-of-band
 //! `_step_state` pymethod body.
 //!
 //! The parallel drivers do not call into this module: they run the same core
@@ -30,18 +39,18 @@
 //! `dispatch_bounce`, `handle_unmodeled_call`) needs a lifted `IRSB` and a
 //! live Python callback to reach, so a Rust unit test would be a mock of the
 //! thing under test; that surface is covered end-to-end by the Python suite in
-//! `tests/engines/rust/`. The two `#[path]` submodules cover the slices that
-//! *are* reachable without a lift and are named for what they test rather than
-//! for this file: `sizes_tests.rs` (the `StepError` / `PendingCallback` size
-//! probe backing the `result_large_err` suppression) and `subcall_tests.rs`
-//! (`setup_native_subcall` / `handle_native_resume_core`, which stand in for
-//! the guest `ret` instead of lifting one). The lift-free routing prefix of
-//! the *caller* — `step_one`'s find/avoid and SimProcedure-fallback arms — is
+//! `tests/engines/rust/`. The two test submodules cover the slices that *are*
+//! reachable without a lift and are named for what they test rather than for
+//! the file they hang off: `sizes_tests.rs` here (the `StepError` /
+//! `PendingCallback` size probe backing the `result_large_err` suppression) and
+//! `subcall_tests.rs` under `stepping_subcall.rs` (`setup_native_subcall` /
+//! `handle_native_resume_core`, which stand in for the guest `ret` instead of
+//! lifting one). The lift-free routing prefix of the *caller* — `step_one`'s find/avoid and SimProcedure-fallback arms — is
 //! covered in `run_loop_single_tests.rs`.
 
 use super::core_outcome::{
-    BounceKind, CoreCounters, CoreCtx, CoreOutcome, CoreReturn, NativeSubcall, ParallelProfiling,
-    PendingBounce, PostStepInputs, run_post_step_core,
+    CoreCounters, CoreCtx, CoreOutcome, CoreReturn, ParallelProfiling, PostStepInputs,
+    run_post_step_core,
 };
 use super::*;
 use crate::arch::RegisterFile;
@@ -53,6 +62,16 @@ use crate::vex::IRSB;
 use crate::vex::ir::JumpKind;
 use lru::LruCache;
 use pyo3::exceptions::PyNotImplementedError;
+
+#[path = "stepping_subcall.rs"]
+mod subcall;
+pub(crate) use subcall::{SubcallAbi, SubcallSetupError, setup_native_subcall_with_abi};
+
+#[path = "stepping_bounce.rs"]
+mod bounce;
+
+#[path = "stepping_forks.rs"]
+mod forks;
 
 /// Error during state stepping.
 ///
@@ -79,120 +98,6 @@ pub(crate) enum StepError {
     /// can still reach a target that lies behind the loop exit. Empty in the
     /// common case (no deferred forks pending, or deferred forks disabled).
     Unconstrained(RustSimState, Vec<RustSimState>),
-}
-
-/// Why a native sub-call could not be set up; the dispatcher falls back to the
-/// Python SimProcedure path on any of these. Fields are carried for the
-/// `Debug` diagnostic in the fallback log line (dead-code analysis ignores
-/// `Debug`-only reads, hence the allow).
-#[derive(Debug)]
-#[allow(dead_code)]
-pub(crate) enum SubcallSetupError {
-    /// More guest arguments than the ABI exposes in registers. Stack-spilled
-    /// guest args are not yet supported (S2 scope; defers to Python).
-    TooManyArgs { requested: usize, available: usize },
-    /// Stack pointer is symbolic — cannot place the sentinel return slot.
-    SpSymbolic,
-    /// Writing the sentinel return slot to the stack failed (unmapped / perms).
-    Memory(crate::memory::MemoryError),
-    /// Link-register ABI with no `link_register()` wired up — cannot redirect
-    /// the guest routine's return to the sentinel.
-    UnsupportedAbi,
-}
-
-/// The ABI facts [`setup_native_subcall_with_abi`] needs, decoupled from where
-/// they came from.
-///
-/// The single-threaded path reads them off the manager's
-/// `Box<dyn CallingConvention>`; the parallel post-step path reads them off the
-/// scalar `CcSnapshot` (the trait object is not `Clone`). Both funnel through
-/// this borrow so the dispatch logic exists once (angr-sqfj8.41).
-pub(crate) struct SubcallAbi<'a> {
-    pub(crate) arg_registers: &'a [u32],
-    pub(crate) pointer_size: u32,
-    pub(crate) pops_return_addr: bool,
-    pub(crate) link_register: Option<u32>,
-}
-
-/// Set up a native sub-call (`ProcOutcome::CallAndResume`): make the guest
-/// routine `sub.target` run with `sub.sub_args`, then return to the resume
-/// sentinel so the proc's continuation re-enters via `handle_native_resume`.
-///
-/// All feasibility checks happen before any state mutation, so on `Err` the
-/// caller can cleanly fall back to the Python SimProcedure path. `S2`,
-/// bead angr-5gf0s. See `tools/decisions/native_subcall_dispatcher_design.md`.
-///
-/// Stack-return ABI (x86/amd64): at proc entry `[sp]` holds the caller's
-/// return address; we overwrite it with the sentinel so the guest `ret`
-/// lands on the sentinel (SP unchanged here — the guest's own `ret` advances
-/// it). The original caller address rides in the frame's
-/// `caller_return_addr`, not the stack. Link-register ABI: write the
-/// sentinel into the link register (requires `SubcallAbi::link_register`).
-pub(crate) fn setup_native_subcall_with_abi(
-    abi: &SubcallAbi<'_>,
-    state: &mut RustSimState,
-    sub: NativeSubcall,
-) -> Result<(), SubcallSetupError> {
-    let NativeSubcall {
-        proc_name,
-        saved_args,
-        caller_return_addr,
-        target,
-        sub_args,
-        resume_tag,
-    } = sub;
-    let arg_regs = abi.arg_registers;
-    if sub_args.len() > arg_regs.len() {
-        return Err(SubcallSetupError::TooManyArgs {
-            requested: sub_args.len(),
-            available: arg_regs.len(),
-        });
-    }
-    let ptr_bits = abi.pointer_size * 8;
-    let sentinel = crate::procedures::native_resume_sentinel(abi.pointer_size);
-
-    // --- feasibility checks (no mutation yet) ---
-    let lr_offset = if abi.pops_return_addr {
-        None
-    } else {
-        Some(abi.link_register.ok_or(SubcallSetupError::UnsupportedAbi)?)
-    };
-    let sp_val = if abi.pops_return_addr {
-        Some(
-            state
-                .get_sp()
-                .as_u64()
-                .ok_or(SubcallSetupError::SpSymbolic)?,
-        )
-    } else {
-        None
-    };
-
-    // --- mutation: redirect the guest routine's return to the sentinel ---
-    if let Some(sp) = sp_val {
-        // Overwrite the caller return slot at [sp] with the sentinel. This
-        // is the only fallible mutation; do it first so an unmapped stack
-        // leaves the state untouched for the Python fallback.
-        state
-            .memory_mut()
-            .store_concrete(sp, RustBV::concrete(sentinel as u128, ptr_bits))
-            .map_err(SubcallSetupError::Memory)?;
-    } else if let Some(lr) = lr_offset {
-        state.set_register_by_offset(lr, RustBV::concrete(sentinel as u128, ptr_bits));
-    }
-
-    // --- record the continuation and enter the guest routine ---
-    state.push_native_resume_frame(crate::state::NativeResumeFrame {
-        proc_name,
-        resume_tag,
-        saved_args,
-        caller_return_addr,
-    });
-    for (reg, val) in arg_regs.iter().zip(sub_args.into_iter()) {
-        state.set_register_by_offset(*reg, val);
-    }
-    state.set_pc(target);
-    Ok(())
 }
 
 /// Output of one interpreter run, packaged for the post-execution phase.
@@ -614,493 +519,6 @@ impl RustExplorationManager {
         }
         self.deferred_forks_dropped += counters.deferred_forks_dropped;
     }
-
-    /// Run the legacy Python-bouncing arm for a `NeedsPython` core outcome. The
-    /// core already did any native dispatch and recorded its counters; these
-    /// tails build the exact `PendingCallback` (and, for `UnmodeledCall`, run the
-    /// `&mut self` resolve path) the single-threaded engine produced inline.
-    pub(crate) fn dispatch_bounce(
-        &mut self,
-        callbacks: &PythonCallbacks,
-        bounce: PendingBounce,
-    ) -> Result<Vec<RustSimState>, StepError> {
-        let PendingBounce {
-            kind,
-            mut state,
-            deferred_forks,
-            stored_conditions,
-            fork_snapshots,
-        } = bounce;
-
-        match kind {
-            BounceKind::Hook { addr } => {
-                state.set_pc(addr);
-                // History BEFORE callback so Python can read recent_bbl_addrs[-1].
-                state.add_to_history(addr);
-                let hook_fork_start = if self.profiling.profiling_enabled {
-                    Some(std::time::Instant::now())
-                } else {
-                    None
-                };
-                let pre_callback_snapshot = if !deferred_forks.is_empty() {
-                    Some(state.fork())
-                } else {
-                    None
-                };
-                let solver_ref = state.solver();
-                let shared_ctx = RustSolverContext::from_shared_sym_context(solver_ref.clone());
-                if let Some(start) = hook_fork_start {
-                    let fork_count = u64::from(pre_callback_snapshot.is_some());
-                    self.profiling.accumulated_stats.solver_fork_time_ns +=
-                        crate::elapsed_ns(start);
-                    self.profiling.accumulated_stats.solver_fork_count += fork_count;
-                }
-                Err(StepError::NeedCallback(PendingCallback::with_context(
-                    state,
-                    pre_callback_snapshot,
-                    CallbackReason::SimProcedure {
-                        addr,
-                        name: "unknown".to_string(),
-                        num_args: 0,
-                        return_addr: 0,
-                    },
-                    JumpKind::Boring.ijk_name(),
-                    Some(shared_ctx),
-                    ForkBundle {
-                        deferred_forks,
-                        stored_conditions,
-                        fork_snapshots,
-                    },
-                )))
-            }
-            BounceKind::SimProcedurePython {
-                addr,
-                name,
-                num_args,
-                return_addr,
-            } => {
-                state.set_pc(addr);
-                state.add_to_history(addr);
-                let (pre_callback_snapshot, shared_ctx) =
-                    super::helpers::prepare_shared_callback_solver(&state, &deferred_forks);
-                Err(StepError::NeedCallback(PendingCallback::with_context(
-                    state,
-                    pre_callback_snapshot,
-                    CallbackReason::SimProcedure {
-                        addr,
-                        name,
-                        num_args,
-                        return_addr,
-                    },
-                    "Ijk_Call",
-                    Some(shared_ctx),
-                    ForkBundle {
-                        deferred_forks,
-                        stored_conditions,
-                        fork_snapshots,
-                    },
-                )))
-            }
-            BounceKind::SyscallPython { num } => {
-                let (pre_callback_snapshot, shared_ctx) =
-                    super::helpers::prepare_shared_callback_solver(&state, &deferred_forks);
-                Err(StepError::NeedCallback(PendingCallback::with_context(
-                    state,
-                    pre_callback_snapshot,
-                    CallbackReason::Syscall { num },
-                    "Ijk_Sys_syscall",
-                    Some(shared_ctx),
-                    ForkBundle {
-                        deferred_forks,
-                        stored_conditions,
-                        fork_snapshots,
-                    },
-                )))
-            }
-            BounceKind::UnmodeledCall {
-                addr,
-                return_addr,
-                symbol_name,
-            } => self.handle_unmodeled_call(
-                callbacks,
-                state,
-                addr,
-                return_addr,
-                symbol_name,
-                ForkBundle {
-                    deferred_forks,
-                    stored_conditions,
-                    fork_snapshots,
-                },
-            ),
-            BounceKind::PythonVEXFallback { addr, reason } => {
-                // state.set_pc(addr) was applied by the core before bouncing.
-                Err(StepError::NeedCallback(PendingCallback::with_context(
-                    state,
-                    None,
-                    CallbackReason::PythonVEXFallback { addr, reason },
-                    JumpKind::Boring.ijk_name(),
-                    None,
-                    ForkBundle {
-                        deferred_forks,
-                        stored_conditions,
-                        fork_snapshots,
-                    },
-                )))
-            }
-        }
-    }
-
-    /// Set up a native sub-call (`ProcOutcome::CallAndResume`) from the
-    /// manager's live calling convention.
-    ///
-    /// Thin adapter over [`setup_native_subcall_with_abi`], which holds the
-    /// dispatch logic and documents the per-ABI behavior; the parallel path's
-    /// `CcSnapshot::setup_native_subcall` adapts the same helper from its
-    /// scalar snapshot.
-    pub(crate) fn setup_native_subcall(
-        &self,
-        state: &mut RustSimState,
-        sub: NativeSubcall,
-    ) -> Result<(), SubcallSetupError> {
-        let cc = &self.environment.calling_convention;
-        let abi = SubcallAbi {
-            arg_registers: cc.arg_registers(),
-            pointer_size: cc.pointer_size(),
-            pops_return_addr: cc.pops_return_addr(),
-            link_register: cc.link_register(),
-        };
-        setup_native_subcall_with_abi(&abi, state, sub)
-    }
-
-    /// Re-enter a native proc's continuation after a `CallAndResume` sub-call
-    /// returns to the resume sentinel. Pops the top resume frame, calls the
-    /// proc's [`crate::procedures::NativeSimProcedure::resume`], and applies the
-    /// resulting [`ProcOutcome`]. `S2`, bead angr-5gf0s.
-    ///
-    /// Retained as a focused direct-call test harness (`subcall_tests.rs`); the
-    /// production single-threaded path now resumes via
-    /// `core_outcome::handle_native_resume_core` (angr-vh834). Gated to test
-    /// builds — its only caller is the `#[cfg(test)]` `subcall_tests` module —
-    /// so it carries no `dead_code` allow (angr-0mqkc.2). The production twin
-    /// has its own direct coverage in `core_outcome_tests/`
-    /// (`native_resume_core_*`, angr-c7xno.32), so the two can no longer drift
-    /// unobserved.
-    #[cfg(test)]
-    fn handle_native_resume(
-        &mut self,
-        mut state: RustSimState,
-        deferred_forks: Vec<DeferredFork>,
-        stored_conditions: FxHashMap<u64, RustBV>,
-        fork_snapshots: FxHashMap<u64, BranchSnapshot>,
-    ) -> Result<Vec<RustSimState>, StepError> {
-        let frame = match state.pop_native_resume_frame() {
-            Some(f) => f,
-            None => {
-                // Sentinel reached with no pending frame: a corrupt state we
-                // cannot resume. Deadend defensively rather than guess a PC.
-                log::error!("native resume sentinel hit with empty resume stack; deadending");
-                return Err(StepError::Deadended(state));
-            }
-        };
-
-        // Run the continuation. The `self.native_procedures` borrow is released
-        // once `outcome` is bound, freeing `&mut self` for the sub-call setup.
-        let outcome = match self.native_procedures.get(&frame.proc_name) {
-            Some(proc) => proc.resume(&mut state, frame.resume_tag, &frame.saved_args),
-            None => {
-                log::error!(
-                    "native resume: proc {} not in registry; deadending",
-                    frame.proc_name
-                );
-                return Err(StepError::Deadended(state));
-            }
-        };
-
-        match outcome {
-            Ok(ProcOutcome::Return(ret_val)) => {
-                if let Some(rv) = ret_val {
-                    let ret_reg = self.environment.calling_convention.return_register();
-                    state.set_register_by_offset(ret_reg, rv);
-                }
-                // Resume the original caller. The guest routine's `ret` already
-                // consumed the sentinel return slot (stack-return ABI advances
-                // SP), so unlike the fresh-entry return path we do NOT adjust SP.
-                state.set_pc(frame.caller_return_addr);
-            }
-            Ok(ProcOutcome::CallAndResume {
-                target,
-                args: sub_args,
-                resume_tag,
-            }) => {
-                // Nested sub-call: the original caller and saved args carry
-                // forward so the final return still lands at `caller_return_addr`.
-                if let Err(e) = self.setup_native_subcall(
-                    &mut state,
-                    NativeSubcall {
-                        proc_name: frame.proc_name.clone(),
-                        saved_args: frame.saved_args.clone(),
-                        caller_return_addr: frame.caller_return_addr,
-                        target,
-                        sub_args,
-                        resume_tag,
-                    },
-                ) {
-                    log::error!("native resume nested sub-call setup failed ({e:?}); deadending");
-                    return Err(StepError::Deadended(state));
-                }
-            }
-            Err(e) => {
-                // resume() should never fail when reached via the sentinel (the
-                // proc opted into sub-calls). Deadend defensively.
-                log::error!(
-                    "native resume: {} resume() failed: {:?}; deadending",
-                    frame.proc_name,
-                    e
-                );
-                return Err(StepError::Deadended(state));
-            }
-        }
-
-        // Deferred-fork handling identical to the native return path.
-        let mut successors = vec![state];
-        self.process_deferred_forks_into(
-            &mut successors,
-            deferred_forks,
-            &stored_conditions,
-            fork_snapshots,
-        );
-        Ok(successors)
-    }
-
-    /// Handle UnmodeledCall: try to resolve via Python callback. Resolved
-    /// functions are registered as SimProcedures and dispatched via callback;
-    /// unresolved calls use P21 generic skip (set return register to 0,
-    /// continue at return address) instead of deadending.
-    fn handle_unmodeled_call(
-        &mut self,
-        callbacks: &PythonCallbacks,
-        mut state: RustSimState,
-        addr: u64,
-        return_addr: u64,
-        symbol_name: Option<String>,
-        forks: ForkBundle,
-    ) -> Result<Vec<RustSimState>, StepError> {
-        let ForkBundle {
-            deferred_forks,
-            stored_conditions,
-            fork_snapshots,
-        } = forks;
-
-        // Unhooked CALL target - try to resolve via Python callback
-        state.set_pc(addr);
-        // Add to history BEFORE callback so Python can access recent_bbl_addrs[-1]
-        state.add_to_history(addr);
-
-        // Try to resolve the function via callback
-        if callbacks.has_resolve_function() {
-            match callbacks.call_resolve_function(addr, symbol_name.as_deref()) {
-                Ok(Some((name, num_args, no_return))) => {
-                    // Function resolved! Register it and return to Python for execution
-                    log::debug!(
-                        "Resolved unmodeled call at 0x{addr:x} -> {name} (args={num_args}, no_return={no_return})"
-                    );
-
-                    // Register the procedure so future calls are hooked
-                    self.hooks.insert(addr);
-                    self.simprocedures
-                        .insert(addr, (name.clone(), num_args, no_return));
-
-                    let (pre_callback_snapshot, shared_ctx) =
-                        super::helpers::prepare_shared_callback_solver(&state, &deferred_forks);
-
-                    // Return to Python for SimProcedure execution
-                    Err(StepError::NeedCallback(PendingCallback::with_context(
-                        state,
-                        pre_callback_snapshot,
-                        CallbackReason::SimProcedure {
-                            addr,
-                            name,
-                            num_args,
-                            return_addr,
-                        },
-                        "Ijk_Call",
-                        Some(shared_ctx),
-                        ForkBundle {
-                            deferred_forks,
-                            stored_conditions,
-                            fork_snapshots,
-                        },
-                    )))
-                }
-                Ok(None) => {
-                    // P21: Function could not be resolved - use generic skip instead of deadending
-                    self.unmodeled_call_generic_skip(
-                        state,
-                        addr,
-                        return_addr,
-                        deferred_forks,
-                        stored_conditions,
-                        fork_snapshots,
-                    )
-                }
-                Err(e) => {
-                    // Callback error - treat as execution error
-                    log::warn!("resolve_function callback error at 0x{addr:x}: {e}");
-                    Err(StepError::Error(
-                        state,
-                        format!("resolve_function error: {e}"),
-                    ))
-                }
-            }
-        } else {
-            // P21: No resolve_function callback - use generic skip instead of deadending
-            self.unmodeled_call_generic_skip(
-                state,
-                addr,
-                return_addr,
-                deferred_forks,
-                stored_conditions,
-                fork_snapshots,
-            )
-        }
-    }
-
-    /// P21 generic skip for unmodeled calls: set return register to 0,
-    /// continue at return_addr, and process any deferred forks. Used both
-    /// when resolve_function returns None and when no callback is registered.
-    fn unmodeled_call_generic_skip(
-        &mut self,
-        mut state: RustSimState,
-        addr: u64,
-        return_addr: u64,
-        deferred_forks: Vec<DeferredFork>,
-        stored_conditions: FxHashMap<u64, RustBV>,
-        fork_snapshots: FxHashMap<u64, BranchSnapshot>,
-    ) -> Result<Vec<RustSimState>, StepError> {
-        log::debug!(
-            "P21: Unmodeled call at 0x{addr:x} - generic skip (ret=0) to return_addr=0x{return_addr:x}"
-        );
-
-        // Set return register to 0 (symbolic unconstrained would be better but
-        // concrete 0 is simpler and often sufficient)
-        let ret_reg_offset = self.environment.calling_convention.return_register();
-        let ptr_size = self.environment.calling_convention.pointer_size();
-        let zero_val = RustBV::zero(ptr_size * 8);
-        state.set_register_by_offset(ret_reg_offset, zero_val);
-
-        // Continue at return address
-        state.set_pc(return_addr);
-
-        // Process any deferred forks from the interpreter step
-        let mut successors = vec![state];
-        self.process_deferred_forks_into(
-            &mut successors,
-            deferred_forks,
-            &stored_conditions,
-            fork_snapshots,
-        );
-        Ok(successors)
-    }
-
-    /// Process deferred forks and add the resulting forked states to the successor list.
-    /// This is used by code paths (like P21 generic skip) that don't go through
-    /// the main MaxBlocks/BlockEnd deferred fork processing.
-    pub(crate) fn process_deferred_forks_into(
-        &mut self,
-        successors: &mut Vec<RustSimState>,
-        deferred_forks: Vec<DeferredFork>,
-        stored_conditions: &FxHashMap<u64, RustBV>,
-        mut fork_snapshots: FxHashMap<u64, crate::interpreter::BranchSnapshot>,
-    ) {
-        if deferred_forks.is_empty() {
-            return;
-        }
-
-        let root_state_id = self.sm.root_or_self(successors[0].state_id());
-        // Guards of the forks already materialized. `successors[0]` accumulates
-        // them below, but a fork built from a pre-branch *snapshot* does not —
-        // see `PriorGuards` (angr-62ar5).
-        let mut prior_guards = super::fork_materialize::PriorGuards::new(true);
-
-        for fork in &deferred_forks {
-            if let Some(condition) = stored_conditions.get(&fork.condition_id) {
-                // Add the taken-path constraint to the main state (fires the
-                // constraints inspect BP around the add — angr-op0dn.14.4.1).
-                super::fork_materialize::add_fork_guard_constraint(
-                    self.callbacks.as_ref(),
-                    &successors[0],
-                    condition,
-                    fork.path_taken,
-                );
-
-                // Create forked state for the unexplored path
-                let forked = super::fork_materialize::build_unexplored_fork(
-                    &successors[0],
-                    fork,
-                    condition,
-                    &mut fork_snapshots,
-                    &prior_guards,
-                );
-                prior_guards.record(condition.clone(), fork.path_taken);
-
-                self.sm.set_root(forked.state_id(), root_state_id);
-
-                // state.inspect fork BP — see `dispatch_fork_inspect` for rationale.
-                self.dispatch_fork_inspect(forked.state_id());
-
-                if forked.survives_sat_prune(self.constraint_solver.lazy_solves) {
-                    successors.push(forked);
-                } else {
-                    self.push_or_drop_terminal(STASH_PRUNED, forked);
-                }
-            } else {
-                // Conservative fork without condition
-                let mut forked = successors[0].fork();
-                forked.set_pc(fork.unexplored_target);
-                self.sm.set_root(forked.state_id(), root_state_id);
-
-                self.dispatch_fork_inspect(forked.state_id());
-
-                if forked.survives_sat_prune(self.constraint_solver.lazy_solves) {
-                    successors.push(forked);
-                } else {
-                    self.push_or_drop_terminal(STASH_PRUNED, forked);
-                }
-            }
-        }
-
-        self.profiling.accumulated_stats.deferred_fork_count += deferred_forks.len() as u64;
-    }
-
-    /// Fire a `state.inspect.fork` BP for the given forked state id.
-    /// Bit-gated on `InspectEvent::Fork` (bit 4) — single atomic load in
-    /// the common no-BP case. Dispatches `when='after'` with no attrs,
-    /// matching Python `SimSuccessors._preprocess_successor`
-    /// (`angr/engines/successors.py`), where the BP fires
-    /// on the newly-added successor after constraints + ip are applied
-    /// but before satisfiability is checked downstream. Errors from the
-    /// user's BP action are swallowed (logged at debug) — same MVP
-    /// pattern as the other Rust-side inspect dispatchers.
-    #[inline]
-    pub(crate) fn dispatch_fork_inspect(&self, forked_state_id: u64) {
-        let cb = match self.callbacks.as_ref() {
-            Some(c) => c,
-            None => return,
-        };
-        // Fork = bit 4 (reserved slot mirrored in
-        // `_INSPECT_EVENT_SPECS["fork"]`).
-        if !cb.inspect_event_enabled(crate::callbacks::InspectBit::Fork) {
-            return;
-        }
-        // call_inspect_fork self-attaches the GIL (angr-vh834 Phase 4), so no
-        // explicit Python::attach wrapper is needed here.
-        if let Err(e) = cb.call_inspect_fork(forked_state_id as i64, "after") {
-            log::debug!("fork inspect dispatch raised (state {forked_state_id}): {e}");
-        }
-    }
 }
 
 test_submod!("sizes_tests.rs" => sizes);
-
-test_submod!("subcall_tests.rs" => subcall_tests);

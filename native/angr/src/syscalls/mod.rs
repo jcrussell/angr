@@ -933,7 +933,7 @@ impl NativeSyscallRegistry {
         //
         // CGC binaries run on x86 but use a custom syscall ABI whose
         // numbers collide with Linux i386 (1=exit/_terminate,
-        // 2=fork/transmit, ...). The dispatcher in `stepping.rs` selects
+        // 2=fork/transmit, ...). `dispatch_bounce` (`stepping_bounce.rs`) selects
         // this table by checking `ExecutionEnvironment::os_name == "cgc"`
         // and using "CGC" as the registry key instead of the arch name.
         // All seven CGC syscalls land natively in `syscalls/cgc.rs`;

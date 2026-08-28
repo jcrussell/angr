@@ -3007,8 +3007,9 @@ Decision history
   (angr-inh0) write-back is wired; see *BP attribute write-back* above.
 * ``angr-ysml`` (2026-06-03): wired ``fork`` dispatch at the
   previously-reserved bit 4. The dispatch fires from
-  ``exploration/stepping.rs`` for each forked state created by the
-  deferred-fork processing (``apply_core_outcome`` and
+  ``exploration/stepping_forks.rs``'s ``dispatch_fork_inspect`` for each
+  forked state created by the deferred-fork processing
+  (``stepping.rs``'s ``apply_core_outcome`` and the same file's
   ``process_deferred_forks_into`` — covers ``fork_from_snapshot``,
   ``fork_true``/``fork_false``, and the P15 conservative
   ``fork()`` fallback path). Mirrors Python

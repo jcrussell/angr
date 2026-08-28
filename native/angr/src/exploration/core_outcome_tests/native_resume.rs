@@ -1,7 +1,8 @@
 //! angr-c7xno.32: the *production* native-resume path.
 //!
 //! `handle_native_resume_core` is what both engines actually run when the guest
-//! returns to the resume sentinel; `stepping.rs`'s `handle_native_resume` is a
+//! returns to the resume sentinel; `stepping_subcall.rs`'s `handle_native_resume`
+//! is a
 //! `#[cfg(test)]`-only twin. These drive the core through `run_post_step_core`
 //! so the two cannot silently drift.
 
