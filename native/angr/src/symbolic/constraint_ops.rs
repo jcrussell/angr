@@ -135,15 +135,19 @@ impl SymContext {
         dup
     }
 
-    /// angr-gmad2 diagnostic (Debug-gated): verify a dedup HIT's Z3_ast ptr is
-    /// backed by a live structurally-equal Bool in `z3_assertions_shared` or
-    /// `local.z3_assertions`. Emits `debug!` when backed (sound true-positive)
-    /// and `warn!` when unbacked (stale-ptr false positive — a dropped
-    /// constraint). O(N) scan, so only invoked under Debug logging.
+    /// The backing lookup behind [`Self::debug_verify_dedup_backing`]: does
+    /// `ptr` name a live Bool in `local.z3_assertions` / `z3_assertions_shared`?
+    ///
+    /// Returns `(in_local, in_shared)`; `(false, false)` is the STALE-PTR
+    /// condition — a dedup HIT on a ptr no live assertion holds, i.e. an
+    /// intended constraint about to be dropped. Split out from the `log!`
+    /// wrapper so the detector's decision is testable without installing a
+    /// competing process-global `log` subscriber (`log::set_logger` is a
+    /// one-shot singleton already claimed elsewhere in this test binary — see
+    /// `constraint_ops_tests::test_dedup_backing_of_ptr_flags_stale_ptr_hit`).
     #[cfg(feature = "vex-engine-z3")]
-    fn debug_verify_dedup_backing(&self, local: &LocalConstraints, constraint: &z3::ast::Bool) {
+    fn dedup_backing_of_ptr(&self, local: &LocalConstraints, ptr: usize) -> (bool, bool) {
         use z3::ast::Ast;
-        let ptr = constraint.get_z3_ast().as_ptr() as usize;
         let in_local = local
             .z3_assertions
             .iter()
@@ -154,6 +158,19 @@ impl SymContext {
                 .iter()
                 .any(|c| c.get_z3_ast().as_ptr() as usize == ptr)
         };
+        (in_local, in_shared)
+    }
+
+    /// angr-gmad2 diagnostic (Debug-gated): verify a dedup HIT's Z3_ast ptr is
+    /// backed by a live structurally-equal Bool in `z3_assertions_shared` or
+    /// `local.z3_assertions`. Emits `debug!` when backed (sound true-positive)
+    /// and `warn!` when unbacked (stale-ptr false positive — a dropped
+    /// constraint). O(N) scan, so only invoked under Debug logging.
+    #[cfg(feature = "vex-engine-z3")]
+    fn debug_verify_dedup_backing(&self, local: &LocalConstraints, constraint: &z3::ast::Bool) {
+        use z3::ast::Ast;
+        let ptr = constraint.get_z3_ast().as_ptr() as usize;
+        let (in_local, in_shared) = self.dedup_backing_of_ptr(local, ptr);
         if in_local || in_shared {
             log::debug!(
                 target: "rustylib::symbolic",
@@ -743,3 +760,5 @@ impl SymContext {
         self.add_constraint(constraint);
     }
 }
+
+test_submod!("constraint_ops_tests.rs" => constraint_ops_tests);
