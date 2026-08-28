@@ -10,6 +10,8 @@
 //! - `basics`: construction, fork identity/lineage, and the per-state config
 //!   knobs' defaults + fork isolation.
 //! - `history`: `set_detailed_history` / `set_max_history` cap behaviour.
+//! - `registers`: the register-access family, centred on `set_register`'s
+//!   IP-detection branch (angr-4rq7) that must keep the cached `pc` in sync.
 //! - `memory`: state-level load/store, CoW fork isolation, unflushed Multi
 //!   cells, and `apply_changes` write chunking.
 //! - `filesystem_state`: the filesystem behaviour that needs a whole
@@ -72,5 +74,6 @@ mod merge_property_mechanical;
 mod merge_scalars;
 mod migration_snapshot;
 mod migration_translate;
+mod registers;
 mod snapshot;
 mod solver_gate;
