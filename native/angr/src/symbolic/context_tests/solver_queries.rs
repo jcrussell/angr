@@ -1,3 +1,12 @@
+//! `SymContext` solver-query tests: `eval` / `eval_many` / `eval_upto` (plain
+//! and deterministic), `min` / `max` (signed and unsigned, cached-model and
+//! not), `range` / `range_seeded`, `add_constraints_raw_batch`, the
+//! instrumentation counters, and the forced-`Unknown` / rlimit-timeout rig
+//! that pins how each of those aborts rather than guessing.
+//!
+//! Named `solver_queries.rs`, not `solver.rs`, so no basename search collides
+//! it with the crate-root `solver.rs` (the PyO3 `RustSolverContext`) —
+//! angr-5mnx3.50.
 #![allow(clippy::arc_with_non_send_sync)]
 use super::*;
 // The instrumentation-counter tests below (`test_record_*_counters`) call

@@ -930,4 +930,4 @@ test_submod!("context_tests/lineage.rs" => context_tests_lineage);
 test_submod!("context_tests/merge_prefix.rs" => context_tests_merge_prefix);
 test_submod!("context_tests/merge_shape_spike.rs" => context_tests_merge_shape_spike);
 test_submod!("context_tests/smtlib2_snapshot.rs" => context_tests_smtlib2_snapshot);
-test_submod!("context_tests/solver.rs" => context_tests_solver);
+test_submod!("context_tests/solver_queries.rs" => context_tests_solver_queries);

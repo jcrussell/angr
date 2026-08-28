@@ -9,7 +9,7 @@
 use super::super::*;
 
 /// Pin the solver's `rlimit` (resource budget) so a check aborts to Unknown
-/// deterministically. Mirrors `pin_rlimit` in `symbolic/context_tests/solver.rs`
+/// deterministically. Mirrors `pin_rlimit` in `symbolic/context_tests/solver_queries.rs`
 /// — see `test_pin_rlimit_reaches_the_solver` there for why an rlimit beats a
 /// wall-clock timeout in a test.
 #[cfg(feature = "vex-engine-z3")]

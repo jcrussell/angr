@@ -3,7 +3,7 @@
 //! Basic-block visit history (plain and detailed), plus the call-stack
 //! push/pop/replace accessors used on `Ijk_Call` / `Ijk_Ret`. Both honor
 //! `max_history` FIFO eviction. Split out of `mod.rs` per the god-object
-//! decomposition (angr-0mqkc.5); mirrors the `registers.rs` / `solver.rs` /
+//! decomposition (angr-0mqkc.5); mirrors the `registers.rs` / `solver_access.rs` /
 //! `options.rs` extension-impl pattern.
 
 use super::*;

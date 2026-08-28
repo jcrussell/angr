@@ -186,7 +186,7 @@ mod process;
 mod pymethods;
 mod registers;
 mod snapshot;
-mod solver;
+mod solver_access;
 mod types;
 
 pub use export::*;

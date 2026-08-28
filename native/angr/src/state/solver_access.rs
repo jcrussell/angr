@@ -6,6 +6,10 @@
 //! queries (`eval` / `min` / `max`). Split out of `mod.rs` per the god-object
 //! decomposition (angr-0mqkc.5); mirrors the `construction.rs` / `options.rs`
 //! / `registers.rs` / `memory.rs` extension-impl pattern.
+//!
+//! Named `solver_access.rs`, not `solver.rs`, so no basename search collides
+//! it with the crate-root `solver.rs` (the PyO3 `RustSolverContext`) —
+//! angr-5mnx3.50.
 
 use super::*;
 use std::sync::atomic::{AtomicU64, Ordering};
