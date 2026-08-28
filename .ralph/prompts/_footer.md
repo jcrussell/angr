@@ -10,8 +10,10 @@ Otherwise, for each task follow this loop:
  2. `bd show <id>` — read the description carefully
  3. `bd memories` — check for relevant invariants/pitfalls before coding
  4. Implement the change (edit Rust and/or Python files as described)
- 5. Build + lint: `cargo clippy --manifest-path native/angr/Cargo.toml --all-targets --all-features -- -D warnings`
-    (clippy compiles, so this IS the type-check; `--all-features` is what makes
+ 5. Build + lint: `cargo clippy --all-targets --all-features -- -D warnings`
+    (run from the repo root — no `--manifest-path`, so `--all-targets` reaches
+    `native/angr-macros`'s test targets too, matching CI (angr-h3tx0). clippy
+    compiles, so this IS the type-check; `--all-features` is what makes
     it match CI's `rust_check` gate and the Stop hook byte-for-byte. Dropping
     `--all-features` skips the `fuzzer`/`fuzzing`/`libvex-ffi` feature-gated
     code, so a red introduced under `src/fuzzer/` is invisible locally —

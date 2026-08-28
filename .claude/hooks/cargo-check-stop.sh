@@ -20,6 +20,15 @@
 # `native/angr-macros` entirely, and two `private_intra_doc_links` errors sat
 # red there unseen from the day the `MergePolicy` derive was written.
 #
+# Both invocations are deliberately workspace-wide, and clippy's is now
+# byte-identical in scope to CI's (angr-h3tx0). Pinned at
+# `--manifest-path native/angr/Cargo.toml`, clippy still linted
+# `angr-macros`'s *lib* (a workspace path dependency is not `--cap-lints`ed),
+# but `--all-targets` selected only `native/angr`'s targets — so a warning in
+# angr-macros' `#[cfg(test)] mod`s, `tests/compile_fail.rs` or the trybuild ui
+# harness scored 0 errors here and 2 in CI. Keep it unpinned. Cost is nil: the
+# workspace run is ~0.3s fully warm.
+#
 # On failure: exit 2 — this blocks the stop and feeds the trimmed tool output
 # back to Claude as a reason to keep working, surfacing type/lint/doc-link
 # errors before the turn ends. On success or when there's nothing to check:
@@ -42,7 +51,7 @@ cd "$repo" 2>/dev/null || exit 0
 git status --porcelain -- '*.rs' 2>/dev/null | grep -q . || exit 0
 
 export PATH="$HOME/.cargo/bin:$PATH"
-if ! out=$(cargo clippy --manifest-path native/angr/Cargo.toml --all-targets --all-features -- -D warnings 2>&1); then
+if ! out=$(cargo clippy --all-targets --all-features -- -D warnings 2>&1); then
   {
     echo "cargo clippy failed — fix the Rust errors/warnings before finishing:"
     printf '%s\n' "$out" | tail -40
