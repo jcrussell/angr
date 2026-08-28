@@ -672,7 +672,7 @@ impl CallingConvention for MipsN64 {
 
 /// Get the default calling convention for an architecture.
 ///
-/// Driven by [`crate::arch::ALL_ARCHES`] — adding a new alias only requires
+/// Driven by [`crate::arch::registry::ALL_ARCHES`] — adding a new alias only requires
 /// adding it to that table's row. Unknown arch names cause a panic so that
 /// mis-routed argument extraction (silently reading AMD64 RDI/RSI for a
 /// foreign arch) fails loudly instead of producing wrong-but-plausible
@@ -682,7 +682,7 @@ pub(crate) fn default_cc_for_arch(arch_name: &str) -> Box<dyn CallingConvention>
     cc_for_arch(arch_name).unwrap_or_else(|| {
         panic!(
             "default_cc_for_arch: no calling convention registered for arch {arch_name:?}. \
-             Register it in ALL_ARCHES (arch/mod.rs), or add a new CallingConvention impl. \
+             Register it in ALL_ARCHES (arch/registry.rs), or add a new CallingConvention impl. \
              Silent fallback to SystemV_AMD64 would mis-route argument extraction."
         )
     })

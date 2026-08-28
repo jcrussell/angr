@@ -610,7 +610,7 @@ contract for them is *loud failure, then fall back to Python*:
   the boundary: ``arch_from_name`` returns ``None`` → the manager raises
   rather than guessing a layout.
 * The downstream ``VexArch``-keyed paths (``arch_from_vex`` and
-  ``Clone for Box<dyn Arch>`` in ``arch/mod.rs``) **panic** with a
+  ``Clone for Box<dyn Arch>`` in ``arch/registry.rs``) **panic** with a
   message naming the arch and the six supported ones, instead of
   silently substituting AMD64 register offsets / word size. These paths
   are only reachable after the manager has already accepted the arch, so

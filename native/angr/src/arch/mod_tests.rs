@@ -1,6 +1,7 @@
 //! Unit tests for [`super`] (arch/mod.rs).
 //! Split out of mod.rs per `rust-mod-tests-sibling-extraction` (cfg(test)-only reorg).
 
+use super::registry::ALL_ARCHES;
 use super::*;
 use crate::symbolic::SymContext;
 

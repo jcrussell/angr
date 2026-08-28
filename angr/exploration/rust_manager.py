@@ -586,7 +586,8 @@ def rust_supports_arch(arch_name) -> bool:
     """True when the Rust engine implements *arch_name*.
 
     Delegates to the native ``arch_supported`` (backed by ``arch_from_name``,
-    ``native/angr/src/arch/mod.rs``) so the Python answer cannot drift from the
+    ``native/angr/src/arch/registry.rs``) so the Python answer cannot drift from
+    the
     arches the interpreter actually has. Six today: X86 / AMD64 / ARM / ARM64 /
     MIPS32 / MIPS64. False (→ Python engine) for PPC32/PPC64/S390X and when the
     extension is not built.

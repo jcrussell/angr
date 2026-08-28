@@ -3,7 +3,8 @@
 //! Extracted from `calling_conventions.rs` (see bd `rust-mod-tests-sibling-extraction`).
 
 use super::*;
-use crate::arch::{ALL_ARCHES, Arch, MIPS32, MIPS64};
+use crate::arch::registry::{ALL_ARCHES, ArchDesc};
+use crate::arch::{Arch, MIPS32, MIPS64};
 use crate::symbolic::RustBV;
 
 #[test]
@@ -255,7 +256,7 @@ fn test_arch_aliases_disjoint() {
     // No spelling may belong to more than one ALL_ARCHES row, otherwise
     // `arch_desc_from_name` (and through it `default_cc_for_arch`) becomes
     // order-dependent.
-    let spellings = |d: &'static crate::arch::ArchDesc| -> Vec<&'static str> {
+    let spellings = |d: &'static ArchDesc| -> Vec<&'static str> {
         std::iter::once(d.name)
             .chain(d.aliases.iter().copied())
             .collect()
