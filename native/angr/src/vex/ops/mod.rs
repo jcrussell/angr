@@ -1266,8 +1266,11 @@ mod vec_saturate;
 /// descendant rule.
 mod vec_count;
 
-/// NEON/SSE packed-integer arithmetic ops (Iop_Min/Max{U,S}, Iop_PolynomialMul,
-/// Iop_Abs/PABS), split out of this file (angr-cudgw.18). Declared as a child
+/// NEON/SSE packed-integer arithmetic ops — now just the GF(2) carry-less
+/// polynomial multiply family (Iop_PolynomialMul/Mull8x{8,16}); the per-lane
+/// min/max and packed-absolute-value families it also held at extraction time
+/// have since moved to the generic `vec_int_lane_op` driver (`IMinMax`/`IAbs`
+/// in this file). Split out of this file (angr-cudgw.18). Declared as a child
 /// module so its `pub(super)` methods remain callable from the unop/binop
 /// dispatch above, and the shared sibling they reference
 /// (`Self::concat_le_elements`, which stays in this file) stays visible via the
@@ -1284,18 +1287,23 @@ mod vec_int_arith;
 /// sibling) stay visible via the descendant rule.
 mod vec_float_scalar;
 
-/// Vector element-wise comparison and low/high interleave ops, split out of
-/// this file (angr-cudgw.18). Declared as a child module so its `pub(super)`
+/// Vector low/high interleave (unpack) ops (Iop_Interleave{LO,HI}{N}x{M}); the
+/// element-wise compare family it is named for has since moved to the generic
+/// `vec_int_lane_op` driver (`ICmpEq`/`ICmpGt` in this file). Split out of this
+/// file (angr-cudgw.18). Declared as a child module so its `pub(super)`
 /// methods remain callable from the binop dispatch above, and the shared
 /// sibling they reference (`Self::concat_le_elements`, which stays in this
 /// file) stays visible via the descendant rule.
 mod vec_compare;
 
-/// Vector sub-unit reversal (Iop_Reverse*) ops, split out of this file
-/// (angr-cudgw.18). Declared as a child module so its `pub(super)` methods
-/// remain callable from the unop/binop dispatch above, and the shared siblings
-/// they reference (`Self::concat_le_elements`, which stays in this file) stay
-/// visible via the descendant rule.
+/// Vector sub-unit reversal (Iop_Reverse*), the PPC vgbbd bit-matrix transpose
+/// (Iop_PwBitMtxXpose64x2) and the widening/high-half multiplies
+/// (Iop_Mull*/QDMull*/MulHi*), split out of this file (angr-cudgw.18). The
+/// module name predates the last two families and there is no lane-shuffle-by-
+/// index permute op in it. Declared as a child module so its `pub(super)`
+/// methods remain callable from the unop/binop dispatch above, and the shared
+/// siblings they reference (`Self::concat_le_elements`, which stays in this
+/// file) stay visible via the descendant rule.
 mod vec_permute_mul;
 
 /// V128 low-lane insertion ops (SetV128lo32 / SetV128lo64), extracted from

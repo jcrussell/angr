@@ -1,4 +1,6 @@
-//! Vector sub-unit reversal VEX op helpers.
+//! Vector sub-unit reversal, bit-matrix transpose and widening-multiply VEX
+//! op helpers. (The module name predates the latter two families; nothing here
+//! is a lane-shuffle-by-index permute.)
 //!
 //! Extracted from the parent `ops` module (angr-cudgw.18) to shrink the
 //! VEXOps god-file. Declared as a child module of `ops` (via a plain `mod` decl in
