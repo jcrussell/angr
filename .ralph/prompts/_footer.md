@@ -24,8 +24,10 @@ Otherwise, for each task follow this loop:
     `ruff check --fix <file> && ruff format <file>` before commit is the
     belt-and-suspenders. Since angr-z3672 the Stop hook runs a second Rust
     check after clippy — CI's rustdoc lane,
-    `RUSTDOCFLAGS='-D warnings' cargo doc --manifest-path native/angr/Cargo.toml
-    --no-deps --all-features --document-private-items` (~4s warm) — so an
+    `RUSTDOCFLAGS='-D warnings' cargo doc --workspace
+    --no-deps --all-features --document-private-items` (~4s warm; `--workspace`
+    rather than `--manifest-path native/angr/Cargo.toml` since angr-pr0tj, so
+    `native/angr-macros` is covered too) — so an
     iteration that edits doc comments no longer has to remember to run it by
     hand. See bd memory `invariant-rustdoc-intra-doc-links` for the three
     link-authoring rules it enforces.)

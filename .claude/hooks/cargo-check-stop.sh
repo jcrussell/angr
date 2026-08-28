@@ -15,7 +15,10 @@
 # profile target dir clippy just warmed is shared), ~0.3s when nothing did.
 # `--document-private-items` is load-bearing (angr-sqfj8.144) — nearly every
 # item here is `pub(crate)`/private, so without it rustdoc never visits their
-# docs. Do not drop it.
+# docs. Do not drop it. So is `--workspace` (angr-pr0tj): pinned at
+# `--manifest-path native/angr/Cargo.toml`, this check skipped
+# `native/angr-macros` entirely, and two `private_intra_doc_links` errors sat
+# red there unseen from the day the `MergePolicy` derive was written.
 #
 # On failure: exit 2 — this blocks the stop and feeds the trimmed tool output
 # back to Claude as a reason to keep working, surfacing type/lint/doc-link
@@ -47,7 +50,7 @@ if ! out=$(cargo clippy --manifest-path native/angr/Cargo.toml --all-targets --a
   exit 2
 fi
 
-if ! out=$(RUSTDOCFLAGS='-D warnings' cargo doc --manifest-path native/angr/Cargo.toml \
+if ! out=$(RUSTDOCFLAGS='-D warnings' cargo doc --workspace \
     --no-deps --all-features --document-private-items 2>&1); then
   {
     echo "rustdoc link check failed — fix the broken intra-doc links before finishing."

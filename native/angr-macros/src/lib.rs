@@ -257,9 +257,12 @@ const VALID_MERGE_POLICIES: &[&str] = &[
 const MECHANICAL_MERGE_POLICIES: &[&str] = &["self_wins", "union", "max", "min", "warn_on_diverge"];
 
 /// Proves every field of the annotated struct carries a
-/// `#[merge_policy = "..."]` attribute naming one of [`VALID_MERGE_POLICIES`],
-/// and *generates* the merge expression for the mechanical ones (see
-/// [`MECHANICAL_MERGE_POLICIES`]).
+/// `#[merge_policy = "..."]` attribute naming one of the crate-private
+/// `VALID_MERGE_POLICIES` list, and *generates* the merge expression for the
+/// mechanical ones (the `MECHANICAL_MERGE_POLICIES` subset). Both consts are
+/// private, so they are named here rather than linked — a rustdoc intra-doc
+/// link from this public item would resolve only under
+/// `--document-private-items` and is denied by the workspace rustdoc gate.
 ///
 /// Adding a field to `RustSimState` without a `#[merge_policy]` (or with a
 /// mistyped one) is a compile error, so "silently reuses the struct-literal's

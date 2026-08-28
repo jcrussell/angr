@@ -52,8 +52,14 @@ jobs:
       # every item in this crate is `pub(crate)`/private, so without it rustdoc
       # never visits their docs and the lane passed while 83 broken links sat in
       # the tree. Do not drop it.
+      #
+      # `--workspace` is load-bearing too (angr-pr0tj): pinned at
+      # `--manifest-path native/angr/Cargo.toml`, this lane never documented
+      # `native/angr-macros`, and two `private_intra_doc_links` errors sat red
+      # there from the day the `MergePolicy` derive was written. Keep it
+      # workspace-wide so a new member crate is covered on arrival.
       - name: Rustdoc link check
-        run: cargo doc --manifest-path native/angr/Cargo.toml --no-deps --all-features --document-private-items
+        run: cargo doc --workspace --no-deps --all-features --document-private-items
         env:
           RUSTDOCFLAGS: -D warnings
       - name: Silent-fallback tagging audit
