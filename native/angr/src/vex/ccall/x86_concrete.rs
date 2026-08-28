@@ -7,6 +7,7 @@ use super::*;
 pub(super) struct Flags {
     pub(super) cf: u8, // Carry flag
     pub(super) pf: u8, // Parity flag
+    pub(super) af: u8, // Auxiliary carry flag (carry/borrow out of bit 3)
     pub(super) zf: u8, // Zero flag
     pub(super) sf: u8, // Sign flag
     pub(super) of: u8, // Overflow flag
@@ -17,6 +18,19 @@ pub(super) fn calc_parity(val: u64) -> u8 {
     let byte = val as u8;
     // Count 1 bits in the byte, return 1 if even (even parity)
     u8::from(byte.count_ones().is_multiple_of(2))
+}
+
+/// Calculate the auxiliary-carry (half-carry) bit for an add/sub-shaped op.
+///
+/// AF is the carry out of bit 3, which for any two's-complement add or
+/// subtract is exactly bit `G_CC_SHIFT_A` of `res ^ arg_l ^ arg_r` — the
+/// textbook formula the Python reference (`pc_actions_ADD`/`SUB`/`ADC`/`SBB`/
+/// `INC`/`DEC` in `angr/engines/vex/claripy/ccall.py`) uses. Operand width is
+/// irrelevant: bit 4 of the XOR is unaffected by any masking above it, since
+/// every x86 operand is at least 8 bits wide. The symbolic twin is
+/// `sym_calc_af`.
+pub(super) fn calc_af(res: u64, arg_l: u64, arg_r: u64) -> u8 {
+    ((res ^ arg_l ^ arg_r) >> flag_shift::G_CC_SHIFT_A) as u8 & 1
 }
 
 /// Get bitmask for an n-bit value (e.g., nbits=32 -> 0xFFFFFFFF).
@@ -86,7 +100,17 @@ pub(super) fn calc_flags_sub(nbits: u32, arg_l: u64, arg_r: u64) -> Flags {
     // PF: parity of low 8 bits
     let pf = calc_parity(res);
 
-    Flags { cf, pf, zf, sf, of }
+    // AF: carry out of bit 3
+    let af = calc_af(res, arg_l, arg_r);
+
+    Flags {
+        cf,
+        pf,
+        af,
+        zf,
+        sf,
+        of,
+    }
 }
 
 /// Calculate flags for ADD operation
@@ -119,7 +143,17 @@ pub(super) fn calc_flags_add(nbits: u32, arg_l: u64, arg_r: u64) -> Flags {
     // PF: parity of low 8 bits
     let pf = calc_parity(res);
 
-    Flags { cf, pf, zf, sf, of }
+    // AF: carry out of bit 3
+    let af = calc_af(res, arg_l, arg_r);
+
+    Flags {
+        cf,
+        pf,
+        af,
+        zf,
+        sf,
+        of,
+    }
 }
 
 /// Calculate flags for LOGIC operation (AND, OR, XOR, TEST)
@@ -128,9 +162,10 @@ pub(super) fn calc_flags_logic(nbits: u32, result: u64) -> Flags {
     let sign_bit = get_sign_bit(nbits);
     let res = result & mask;
 
-    // CF and OF are always 0 for logic ops
+    // CF, OF and AF are always 0 for logic ops
     let cf = 0;
     let of = 0;
+    let af = 0;
 
     // ZF: set if result is zero
     let zf = u8::from(res == 0);
@@ -141,7 +176,14 @@ pub(super) fn calc_flags_logic(nbits: u32, result: u64) -> Flags {
     // PF: parity of low 8 bits
     let pf = calc_parity(res);
 
-    Flags { cf, pf, zf, sf, of }
+    Flags {
+        cf,
+        pf,
+        af,
+        zf,
+        sf,
+        of,
+    }
 }
 
 /// Calculate flags for INC operation
@@ -165,7 +207,17 @@ pub(super) fn calc_flags_inc(nbits: u32, res: u64, cc_ndep: u64) -> Flags {
     // PF: parity of low 8 bits
     let pf = calc_parity(res);
 
-    Flags { cf, pf, zf, sf, of }
+    // AF: carry out of bit 3 of `(res - 1) + 1`
+    let af = calc_af(res, res.wrapping_sub(1), 1);
+
+    Flags {
+        cf,
+        pf,
+        af,
+        zf,
+        sf,
+        of,
+    }
 }
 
 /// Calculate flags for DEC operation
@@ -189,7 +241,17 @@ pub(super) fn calc_flags_dec(nbits: u32, res: u64, cc_ndep: u64) -> Flags {
     // PF: parity of low 8 bits
     let pf = calc_parity(res);
 
-    Flags { cf, pf, zf, sf, of }
+    // AF: borrow out of bit 3 of `(res + 1) - 1`
+    let af = calc_af(res, res.wrapping_add(1), 1);
+
+    Flags {
+        cf,
+        pf,
+        af,
+        zf,
+        sf,
+        of,
+    }
 }
 
 /// Calculate flags for SHL (shift left) operation
@@ -214,7 +276,17 @@ pub(super) fn calc_flags_shl(nbits: u32, remaining: u64, shifted: u64) -> Flags 
     // PF: parity of low 8 bits
     let pf = calc_parity(remaining);
 
-    Flags { cf, pf, zf, sf, of }
+    // AF is architecturally undefined after a shift; VEX reports 0.
+    let af = 0;
+
+    Flags {
+        cf,
+        pf,
+        af,
+        zf,
+        sf,
+        of,
+    }
 }
 
 /// Calculate flags for SHR (shift right) operation
@@ -239,7 +311,17 @@ pub(super) fn calc_flags_shr(nbits: u32, remaining: u64, shifted: u64) -> Flags 
     // PF: parity of low 8 bits
     let pf = calc_parity(remaining);
 
-    Flags { cf, pf, zf, sf, of }
+    // AF is architecturally undefined after a shift; VEX reports 0.
+    let af = 0;
+
+    Flags {
+        cf,
+        pf,
+        af,
+        zf,
+        sf,
+        of,
+    }
 }
 
 /// Calculate flags for ROL (rotate left) operation
@@ -250,15 +332,23 @@ pub(super) fn calc_flags_rol(nbits: u32, res: u64, cc_ndep: u64) -> Flags {
     // CF: LSB of result
     let cf = (res & 1) as u8;
 
-    // PF, ZF, SF are preserved from cc_ndep
+    // PF, AF, ZF, SF are preserved from cc_ndep
     let pf = ((cc_ndep >> flag_shift::G_CC_SHIFT_P) & 1) as u8;
+    let af = ((cc_ndep >> flag_shift::G_CC_SHIFT_A) & 1) as u8;
     let zf = ((cc_ndep >> flag_shift::G_CC_SHIFT_Z) & 1) as u8;
     let sf = ((cc_ndep >> flag_shift::G_CC_SHIFT_S) & 1) as u8;
 
     // OF: MSB XOR LSB of result
     let of = (((res >> (nbits - 1)) ^ res) & 1) as u8;
 
-    Flags { cf, pf, zf, sf, of }
+    Flags {
+        cf,
+        pf,
+        af,
+        zf,
+        sf,
+        of,
+    }
 }
 
 /// Calculate flags for ROR (rotate right) operation
@@ -269,15 +359,23 @@ pub(super) fn calc_flags_ror(nbits: u32, res: u64, cc_ndep: u64) -> Flags {
     // CF: MSB of result
     let cf = ((res >> (nbits - 1)) & 1) as u8;
 
-    // PF, ZF, SF are preserved from cc_ndep
+    // PF, AF, ZF, SF are preserved from cc_ndep
     let pf = ((cc_ndep >> flag_shift::G_CC_SHIFT_P) & 1) as u8;
+    let af = ((cc_ndep >> flag_shift::G_CC_SHIFT_A) & 1) as u8;
     let zf = ((cc_ndep >> flag_shift::G_CC_SHIFT_Z) & 1) as u8;
     let sf = ((cc_ndep >> flag_shift::G_CC_SHIFT_S) & 1) as u8;
 
     // OF: XOR of two MSBs of result
     let of = (((res >> (nbits - 1)) ^ (res >> (nbits - 2))) & 1) as u8;
 
-    Flags { cf, pf, zf, sf, of }
+    Flags {
+        cf,
+        pf,
+        af,
+        zf,
+        sf,
+        of,
+    }
 }
 
 /// Calculate flags for ADC (add with carry) operation
@@ -309,7 +407,17 @@ pub(super) fn calc_flags_adc(nbits: u32, cc_dep1: u64, cc_dep2: u64, cc_ndep: u6
     // PF: parity of low 8 bits
     let pf = calc_parity(res);
 
-    Flags { cf, pf, zf, sf, of }
+    // AF: carry out of bit 3
+    let af = calc_af(res, arg_l, arg_r);
+
+    Flags {
+        cf,
+        pf,
+        af,
+        zf,
+        sf,
+        of,
+    }
 }
 
 /// Calculate flags for SBB (subtract with borrow) operation
@@ -341,7 +449,17 @@ pub(super) fn calc_flags_sbb(nbits: u32, cc_dep1: u64, cc_dep2: u64, cc_ndep: u6
     // PF: parity of low 8 bits
     let pf = calc_parity(res);
 
-    Flags { cf, pf, zf, sf, of }
+    // AF: borrow out of bit 3
+    let af = calc_af(res, arg_l, arg_r);
+
+    Flags {
+        cf,
+        pf,
+        af,
+        zf,
+        sf,
+        of,
+    }
 }
 
 /// Calculate flags for UMUL (unsigned multiply) operation
@@ -370,12 +488,21 @@ pub(super) fn calc_flags_umul(nbits: u32, cc_dep1: u64, cc_dep2: u64) -> Flags {
     let cf = u8::from(hi != 0);
     let of = cf;
 
-    // ZF, SF, PF are undefined but we compute them anyway
+    // ZF, SF, PF are undefined but we compute them anyway; AF is undefined
+    // after a multiply and VEX reports 0.
     let zf = u8::from(lo == 0);
     let sf = ((lo >> (nbits - 1)) & 1) as u8;
     let pf = calc_parity(lo);
+    let af = 0;
 
-    Flags { cf, pf, zf, sf, of }
+    Flags {
+        cf,
+        pf,
+        af,
+        zf,
+        sf,
+        of,
+    }
 }
 
 /// Calculate flags for SMUL (signed multiply) operation
@@ -404,10 +531,18 @@ pub(super) fn calc_flags_smul(nbits: u32, cc_dep1: u64, cc_dep2: u64) -> Flags {
     let cf = u8::from(hi != lo_sign_ext);
     let of = cf;
 
-    // ZF, SF, PF
+    // ZF, SF, PF; AF is undefined after a multiply and VEX reports 0.
     let zf = u8::from(lo == 0);
     let sf = ((lo >> (nbits - 1)) & 1) as u8;
     let pf = calc_parity(lo);
+    let af = 0;
 
-    Flags { cf, pf, zf, sf, of }
+    Flags {
+        cf,
+        pf,
+        af,
+        zf,
+        sf,
+        of,
+    }
 }

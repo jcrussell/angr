@@ -411,9 +411,13 @@ impl Lcg {
     }
 }
 
-/// Reference: pack `Flags` into the (cf, pf, zf, sf, of) tuple as u8.
-fn flags_to_tuple(f: Flags) -> (u8, u8, u8, u8, u8) {
-    (f.cf, f.pf, f.zf, f.sf, f.of)
+/// Reference: pack `Flags` into the (cf, pf, af, zf, sf, of) tuple as u8.
+///
+/// AF is in the tuple deliberately: while it was missing, every
+/// `diff_fuzz_sym_flags_*` test below was structurally incapable of noticing
+/// that neither path computed it at all (angr-5mnx3.59).
+fn flags_to_tuple(f: Flags) -> (u8, u8, u8, u8, u8, u8) {
+    (f.cf, f.pf, f.af, f.zf, f.sf, f.of)
 }
 
 /// Build SymFlags by category and read back as concrete bits.
@@ -423,7 +427,7 @@ fn sym_flags_to_tuple(
     d1: u64,
     d2: u64,
     nd: u64,
-) -> (u8, u8, u8, u8, u8) {
+) -> (u8, u8, u8, u8, u8, u8) {
     let ctx = crate::symbolic::SymContext::new_mock();
     let bv1 = RustBV::concrete(d1 as u128, 64);
     let bv2 = RustBV::concrete(d2 as u128, 64);
@@ -431,7 +435,14 @@ fn sym_flags_to_tuple(
     let f = sym_flags_for_category(category, nbits, &bv1, &bv2, &bvn, &ctx)
         .expect("category should be supported");
     let bit = |bv: &RustBV| bv.as_u64().expect("must be concrete") as u8;
-    (bit(&f.cf), bit(&f.pf), bit(&f.zf), bit(&f.sf), bit(&f.of))
+    (
+        bit(&f.cf),
+        bit(&f.pf),
+        bit(&f.af),
+        bit(&f.zf),
+        bit(&f.sf),
+        bit(&f.of),
+    )
 }
 
 #[test]
@@ -887,6 +898,7 @@ fn unknown_cond_defers_to_python() {
     let f = Flags {
         cf: 1,
         pf: 1,
+        af: 1,
         zf: 1,
         sf: 1,
         of: 1,
@@ -895,6 +907,7 @@ fn unknown_cond_defers_to_python() {
     let sym_f = SymFlags {
         cf: RustBV::concrete(1, 1),
         pf: RustBV::concrete(1, 1),
+        af: RustBV::concrete(1, 1),
         zf: RustBV::concrete(1, 1),
         sf: RustBV::concrete(1, 1),
         of: RustBV::concrete(1, 1),
@@ -951,10 +964,12 @@ fn diff_fuzz_eval_sym_condition() {
         let zf = (rng.next() & 1) as u8;
         let sf = (rng.next() & 1) as u8;
         let of = (rng.next() & 1) as u8;
-        let f = Flags { cf, pf, zf, sf, of };
+        let af = (rng.next() & 1) as u8;
+        let f = Flags { cf, pf, af, zf, sf, of };
         let sym_f = SymFlags {
             cf: RustBV::concrete(cf as u128, 1),
             pf: RustBV::concrete(pf as u128, 1),
+            af: RustBV::concrete(af as u128, 1),
             zf: RustBV::concrete(zf as u128, 1),
             sf: RustBV::concrete(sf as u128, 1),
             of: RustBV::concrete(of as u128, 1),
@@ -1557,6 +1572,64 @@ fn diff_fuzz_arm_flags_nzcv_symbolic_matches_concrete() {
                 ctx.eval(&got),
                 Some(u128::from(want)),
                 "arm64g nzcv cc_op={cc_op} d1={d1:x} d2={d2:x} d3={d3:x}"
+            );
+        }
+    }
+}
+
+/// AF (bit 4) must be computed and packed for every arithmetic category, with
+/// the true half-carry value — not the structural 0 it was before
+/// angr-5mnx3.59.
+///
+/// The `diff_fuzz_sym_flags_*` and `diff_fuzz_eflags_all_symbolic_*` tests
+/// compare the two Rust paths against each other, so they pin AF's
+/// *consistency* but never its *value*; this test is the oracle, hand-derived
+/// from the Python reference's `af = (res ^ arg_l ^ arg_r)[G_CC_SHIFT_A]`.
+#[test]
+fn eflags_all_packs_true_auxiliary_carry() {
+    // (cc_op, dep1, dep2, ndep, expected AF), all 8-bit operands.
+    let cases: &[(u64, u64, u64, u64, u64)] = &[
+        // ADD: 0x0F + 0x01 carries out of bit 3; 0x01 + 0x01 does not.
+        (amd64_cc_op::G_CC_OP_ADDB, 0x0F, 0x01, 0, 1),
+        (amd64_cc_op::G_CC_OP_ADDB, 0x01, 0x01, 0, 0),
+        // SUB: 0x10 - 0x01 borrows into bit 3; 0x12 - 0x01 does not.
+        (amd64_cc_op::G_CC_OP_SUBB, 0x10, 0x01, 0, 1),
+        (amd64_cc_op::G_CC_OP_SUBB, 0x12, 0x01, 0, 0),
+        // INC/DEC take the result in dep1: 0x0F+1 == 0x10 carries, 0x10-1 borrows.
+        (amd64_cc_op::G_CC_OP_INCB, 0x10, 0, 0, 1),
+        (amd64_cc_op::G_CC_OP_INCB, 0x02, 0, 0, 0),
+        (amd64_cc_op::G_CC_OP_DECB, 0x0F, 0, 0, 1),
+        (amd64_cc_op::G_CC_OP_DECB, 0x01, 0, 0, 0),
+        // ADC/SBB with an incoming carry: VEX encodes argR as dep2 ^ oldC, so
+        // dep2=1 with oldC=1 means the addend is 0 and only the carry is added.
+        // 0x0F + 0 + 1 == 0x10 carries out of bit 3; 0x0E + 0 + 1 == 0x0F does not.
+        (amd64_cc_op::G_CC_OP_ADCB, 0x0F, 0x01, flag_mask::G_CC_MASK_C, 1),
+        (amd64_cc_op::G_CC_OP_ADCB, 0x0E, 0x01, flag_mask::G_CC_MASK_C, 0),
+        (amd64_cc_op::G_CC_OP_SBBB, 0x10, 0x01, flag_mask::G_CC_MASK_C, 1),
+        // LOGIC/shift/multiply leave AF architecturally undefined; VEX reports 0.
+        (amd64_cc_op::G_CC_OP_LOGICB, 0xFF, 0, 0, 0),
+        (amd64_cc_op::G_CC_OP_SHLB, 0x1E, 0x0F, 0, 0),
+        (amd64_cc_op::G_CC_OP_UMULB, 0x0F, 0x0F, 0, 0),
+    ];
+    for &(cc_op, d1, d2, nd, want_af) in cases {
+        let packed =
+            calculate_eflags_all_amd64(cc_op, d1, d2, nd).expect("cc_op must be supported");
+        let got_af = (packed >> flag_shift::G_CC_SHIFT_A) & 1;
+        assert_eq!(
+            got_af, want_af,
+            "cc_op={cc_op} d1={d1:#x} d2={d2:#x} nd={nd:#x} packed={packed:#x}"
+        );
+    }
+
+    // ROL/ROR preserve AF from the saved EFLAGS in cc_ndep, like PF/ZF/SF.
+    for cc_op in [amd64_cc_op::G_CC_OP_ROLB, amd64_cc_op::G_CC_OP_RORB] {
+        for ndep_af in [0, flag_mask::G_CC_MASK_A] {
+            let packed = calculate_eflags_all_amd64(cc_op, 0x81, 0, ndep_af)
+                .expect("cc_op must be supported");
+            assert_eq!(
+                packed & flag_mask::G_CC_MASK_A,
+                ndep_af,
+                "cc_op={cc_op} ndep_af={ndep_af:#x}"
             );
         }
     }

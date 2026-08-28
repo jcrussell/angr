@@ -346,8 +346,16 @@ fn eval_condition_from_copy(cond: u64, cc_dep1: u64) -> Option<u64> {
     let zf = ((cc_dep1 >> flag_shift::G_CC_SHIFT_Z) & 1) as u8;
     let sf = ((cc_dep1 >> flag_shift::G_CC_SHIFT_S) & 1) as u8;
     let of = ((cc_dep1 >> flag_shift::G_CC_SHIFT_O) & 1) as u8;
+    let af = ((cc_dep1 >> flag_shift::G_CC_SHIFT_A) & 1) as u8;
 
-    let flags = Flags { cf, pf, zf, sf, of };
+    let flags = Flags {
+        cf,
+        pf,
+        af,
+        zf,
+        sf,
+        of,
+    };
     eval_condition(cond, &flags)
 }
 
@@ -421,10 +429,16 @@ fn calculate_eflags_c(
 }
 
 /// Pack flags into the standard EFLAGS format.
+///
+/// Must cover every flag the `OpCategory::Copy` branch of
+/// [`calculate_eflags_all`] passes through (O, S, Z, A, P, C) — a flag
+/// computed but not packed here is structurally always 0 in the result, which
+/// is how AF stayed absent from every computed category (angr-5mnx3.59).
 fn pack_eflags(flags: &Flags) -> u64 {
     ((flags.of as u64) << flag_shift::G_CC_SHIFT_O)
         | ((flags.sf as u64) << flag_shift::G_CC_SHIFT_S)
         | ((flags.zf as u64) << flag_shift::G_CC_SHIFT_Z)
+        | ((flags.af as u64) << flag_shift::G_CC_SHIFT_A)
         | ((flags.pf as u64) << flag_shift::G_CC_SHIFT_P)
         | ((flags.cf as u64) << flag_shift::G_CC_SHIFT_C)
 }

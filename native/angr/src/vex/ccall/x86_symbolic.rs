@@ -6,6 +6,7 @@ use super::*;
 pub(super) struct SymFlags {
     pub(super) cf: RustBV,
     pub(super) pf: RustBV,
+    pub(super) af: RustBV,
     pub(super) zf: RustBV,
     pub(super) sf: RustBV,
     pub(super) of: RustBV,
@@ -49,34 +50,22 @@ pub(super) fn symbolic_parity(result: &RustBV, ctx: &SymContext) -> RustBV {
     xor_all.not(ctx)
 }
 
-/// Pack individual 1-bit flags into EFLAGS format bitvector.
-/// Bit positions: OF@11, SF@7, ZF@6, PF@2, CF@0
-pub(super) fn symbolic_pack_eflags(
-    of: &RustBV,
-    sf: &RustBV,
-    zf: &RustBV,
-    pf: &RustBV,
-    cf: &RustBV,
-    ret_bits: u32,
+/// Symbolic twin of `calc_af`: AF = bit `G_CC_SHIFT_A` of
+/// `res ^ arg_l ^ arg_r`, the carry out of bit 3.
+///
+/// All three operands must already be `nbits` wide (`nbits >= 8`, so bit 4
+/// always exists).
+pub(super) fn sym_calc_af(
+    res: &RustBV,
+    arg_l: &RustBV,
+    arg_r: &RustBV,
     ctx: &SymContext,
 ) -> RustBV {
-    let of_ext = of.zero_extend(ret_bits, ctx);
-    let sf_ext = sf.zero_extend(ret_bits, ctx);
-    let zf_ext = zf.zero_extend(ret_bits, ctx);
-    let pf_ext = pf.zero_extend(ret_bits, ctx);
-    let cf_ext = cf.zero_extend(ret_bits, ctx);
-
-    let shift_11 = RustBV::concrete(11, ret_bits);
-    let shift_7 = RustBV::concrete(7, ret_bits);
-    let shift_6 = RustBV::concrete(6, ret_bits);
-    let shift_2 = RustBV::concrete(2, ret_bits);
-
-    of_ext
-        .shl(&shift_11, ctx)
-        .or(&sf_ext.shl(&shift_7, ctx), ctx)
-        .or(&zf_ext.shl(&shift_6, ctx), ctx)
-        .or(&pf_ext.shl(&shift_2, ctx), ctx)
-        .or(&cf_ext, ctx)
+    res.xor(arg_l, ctx).xor(arg_r, ctx).extract(
+        flag_shift::G_CC_SHIFT_A,
+        flag_shift::G_CC_SHIFT_A,
+        ctx,
+    )
 }
 
 /// SUB / CMP: symbolic flags from dep1 - dep2 at the given width.
@@ -101,7 +90,16 @@ pub(super) fn sym_flags_sub(
         .and(&d1.xor(&result, ctx), ctx)
         .extract(nbits - 1, nbits - 1, ctx);
     let pf = symbolic_parity(&result, ctx);
-    SymFlags { cf, pf, zf, sf, of }
+    // AF = (result ^ dep1 ^ dep2)[4]
+    let af = sym_calc_af(&result, &d1, &d2, ctx);
+    SymFlags {
+        cf,
+        pf,
+        af,
+        zf,
+        sf,
+        of,
+    }
 }
 
 /// ADD: symbolic flags from dep1 + dep2 at the given width.
@@ -127,7 +125,16 @@ pub(super) fn sym_flags_add(
         .and(&d1.xor(&result, ctx), ctx)
         .extract(nbits - 1, nbits - 1, ctx);
     let pf = symbolic_parity(&result, ctx);
-    SymFlags { cf, pf, zf, sf, of }
+    // AF = (result ^ dep1 ^ dep2)[4]
+    let af = sym_calc_af(&result, &d1, &d2, ctx);
+    SymFlags {
+        cf,
+        pf,
+        af,
+        zf,
+        sf,
+        of,
+    }
 }
 
 /// ADC: symbolic flags for `dep1 + (dep2 ^ oldC) + oldC` at the given width.
@@ -162,7 +169,16 @@ pub(super) fn sym_flags_adc(
         .and(&arg_l.xor(&result, ctx), ctx)
         .extract(nbits - 1, nbits - 1, ctx);
     let pf = symbolic_parity(&result, ctx);
-    SymFlags { cf, pf, zf, sf, of }
+    // AF = (result ^ argL ^ argR)[4]
+    let af = sym_calc_af(&result, &arg_l, &arg_r, ctx);
+    SymFlags {
+        cf,
+        pf,
+        af,
+        zf,
+        sf,
+        of,
+    }
 }
 
 /// SBB: symbolic flags for `dep1 - (dep2 ^ oldC) - oldC` at the given width.
@@ -194,7 +210,16 @@ pub(super) fn sym_flags_sbb(
         .and(&arg_l.xor(&result, ctx), ctx)
         .extract(nbits - 1, nbits - 1, ctx);
     let pf = symbolic_parity(&result, ctx);
-    SymFlags { cf, pf, zf, sf, of }
+    // AF = (result ^ argL ^ argR)[4]
+    let af = sym_calc_af(&result, &arg_l, &arg_r, ctx);
+    SymFlags {
+        cf,
+        pf,
+        af,
+        zf,
+        sf,
+        of,
+    }
 }
 
 /// LOGIC (AND/OR/XOR/TEST): result is in dep1; CF=0, OF=0.
@@ -206,8 +231,16 @@ pub(super) fn sym_flags_logic(nbits: u32, dep1: &RustBV, ctx: &SymContext) -> Sy
     let sf = result.extract(nbits - 1, nbits - 1, ctx);
     let cf = RustBV::concrete(0, 1);
     let of = RustBV::concrete(0, 1);
+    let af = RustBV::concrete(0, 1);
     let pf = symbolic_parity(&result, ctx);
-    SymFlags { cf, pf, zf, sf, of }
+    SymFlags {
+        cf,
+        pf,
+        af,
+        zf,
+        sf,
+        of,
+    }
 }
 
 /// INC: dep1 = result; CF preserved from ndep; OF = (result == sign_bit).
@@ -228,7 +261,17 @@ pub(super) fn sym_flags_inc(
     // OF = (result == 0x80...0) — overflow on INC happens when 0x7F..F was incremented.
     let of = result.eq(&sign_bit_val, ctx);
     let pf = symbolic_parity(&result, ctx);
-    SymFlags { cf, pf, zf, sf, of }
+    // AF = (result ^ (result - 1) ^ 1)[4]
+    let one_n = RustBV::concrete(1, nbits);
+    let af = sym_calc_af(&result, &result.sub(&one_n, ctx), &one_n, ctx);
+    SymFlags {
+        cf,
+        pf,
+        af,
+        zf,
+        sf,
+        of,
+    }
 }
 
 /// DEC: dep1 = result; CF preserved from ndep; OF = (result == sign_bit - 1).
@@ -248,7 +291,17 @@ pub(super) fn sym_flags_dec(
     let cf = sym_extract_flag(ndep, flag_shift::G_CC_SHIFT_C, ctx);
     let of = result.eq(&max_signed, ctx);
     let pf = symbolic_parity(&result, ctx);
-    SymFlags { cf, pf, zf, sf, of }
+    // AF = (result ^ (result + 1) ^ 1)[4]
+    let one_n = RustBV::concrete(1, nbits);
+    let af = sym_calc_af(&result, &result.add(&one_n, ctx), &one_n, ctx);
+    SymFlags {
+        cf,
+        pf,
+        af,
+        zf,
+        sf,
+        of,
+    }
 }
 
 /// SHL: `dep1` is the post-shift result, `dep2` the pre-shift value rotated so
@@ -272,7 +325,16 @@ pub(super) fn sym_flags_shl(
     let sf = remaining.extract(nbits - 1, nbits - 1, ctx);
     let of = cf.xor(&sf, ctx);
     let pf = symbolic_parity(&remaining, ctx);
-    SymFlags { cf, pf, zf, sf, of }
+    // AF is architecturally undefined after a shift; VEX reports 0.
+    let af = RustBV::concrete(0, 1);
+    SymFlags {
+        cf,
+        pf,
+        af,
+        zf,
+        sf,
+        of,
+    }
 }
 
 /// SHR / SAR: `dep1` is the post-shift result, `dep2` the pre-shift value
@@ -295,7 +357,16 @@ pub(super) fn sym_flags_shr(
     let sf = remaining.extract(nbits - 1, nbits - 1, ctx);
     let of = shifted.extract(nbits - 1, nbits - 1, ctx).xor(&sf, ctx);
     let pf = symbolic_parity(&remaining, ctx);
-    SymFlags { cf, pf, zf, sf, of }
+    // AF is architecturally undefined after a shift; VEX reports 0.
+    let af = RustBV::concrete(0, 1);
+    SymFlags {
+        cf,
+        pf,
+        af,
+        zf,
+        sf,
+        of,
+    }
 }
 
 /// ROL: `dep1` is the rotate result; PF/ZF/SF are *preserved* from `ndep`.
@@ -314,11 +385,19 @@ pub(super) fn sym_flags_rol(
     // CF = LSB of the result (the bit rotated around from the top).
     let cf = res.extract(0, 0, ctx);
     let pf = sym_extract_flag(ndep, flag_shift::G_CC_SHIFT_P, ctx);
+    let af = sym_extract_flag(ndep, flag_shift::G_CC_SHIFT_A, ctx);
     let zf = sym_extract_flag(ndep, flag_shift::G_CC_SHIFT_Z, ctx);
     let sf = sym_extract_flag(ndep, flag_shift::G_CC_SHIFT_S, ctx);
     // OF = MSB ^ LSB of the result.
     let of = res.extract(nbits - 1, nbits - 1, ctx).xor(&cf, ctx);
-    SymFlags { cf, pf, zf, sf, of }
+    SymFlags {
+        cf,
+        pf,
+        af,
+        zf,
+        sf,
+        of,
+    }
 }
 
 /// ROR: `dep1` is the rotate result; PF/ZF/SF are *preserved* from `ndep`.
@@ -335,11 +414,19 @@ pub(super) fn sym_flags_ror(
     // CF = MSB of the result (the bit rotated around from the bottom).
     let cf = res.extract(nbits - 1, nbits - 1, ctx);
     let pf = sym_extract_flag(ndep, flag_shift::G_CC_SHIFT_P, ctx);
+    let af = sym_extract_flag(ndep, flag_shift::G_CC_SHIFT_A, ctx);
     let zf = sym_extract_flag(ndep, flag_shift::G_CC_SHIFT_Z, ctx);
     let sf = sym_extract_flag(ndep, flag_shift::G_CC_SHIFT_S, ctx);
     // OF = XOR of the two top bits of the result.
     let of = cf.xor(&res.extract(nbits - 2, nbits - 2, ctx), ctx);
-    SymFlags { cf, pf, zf, sf, of }
+    SymFlags {
+        cf,
+        pf,
+        af,
+        zf,
+        sf,
+        of,
+    }
 }
 
 /// UMUL: unsigned `dep1 * dep2`; CF = OF = "the product does not fit in nbits".
@@ -365,11 +452,20 @@ pub(super) fn sym_flags_umul(
     let cf = hi.ne(&zero, ctx);
     let of = cf.clone();
     // ZF/SF/PF are architecturally undefined after MUL; VEX computes them
-    // anyway, so mirror that rather than inventing a different answer.
+    // anyway, so mirror that rather than inventing a different answer. AF is
+    // undefined too and VEX reports 0.
     let zf = lo.eq(&zero, ctx);
     let sf = lo.extract(nbits - 1, nbits - 1, ctx);
     let pf = symbolic_parity(&lo, ctx);
-    SymFlags { cf, pf, zf, sf, of }
+    let af = RustBV::concrete(0, 1);
+    SymFlags {
+        cf,
+        pf,
+        af,
+        zf,
+        sf,
+        of,
+    }
 }
 
 /// SMUL: signed `dep1 * dep2`; CF = OF = "the high half is not the sign
@@ -397,7 +493,16 @@ pub(super) fn sym_flags_smul(
     let of = cf.clone();
     let zf = lo.eq(&zero, ctx);
     let pf = symbolic_parity(&lo, ctx);
-    SymFlags { cf, pf, zf, sf, of }
+    // AF is undefined after a multiply; VEX reports 0.
+    let af = RustBV::concrete(0, 1);
+    SymFlags {
+        cf,
+        pf,
+        af,
+        zf,
+        sf,
+        of,
+    }
 }
 
 /// Extract a single flag bit at the given shift from a packed-EFLAGS BV.
@@ -458,6 +563,7 @@ pub(super) fn sym_flags_from_copy(dep1: &RustBV, ctx: &SymContext) -> SymFlags {
     SymFlags {
         cf: sym_extract_flag(dep1, flag_shift::G_CC_SHIFT_C, ctx),
         pf: sym_extract_flag(dep1, flag_shift::G_CC_SHIFT_P, ctx),
+        af: sym_extract_flag(dep1, flag_shift::G_CC_SHIFT_A, ctx),
         zf: sym_extract_flag(dep1, flag_shift::G_CC_SHIFT_Z, ctx),
         sf: sym_extract_flag(dep1, flag_shift::G_CC_SHIFT_S, ctx),
         of: sym_extract_flag(dep1, flag_shift::G_CC_SHIFT_O, ctx),
@@ -485,8 +591,27 @@ pub(super) fn eval_sym_condition(cond: u64, flags: &SymFlags, ctx: &SymContext) 
 }
 
 /// Pack symbolic flags into the standard EFLAGS layout at `ret_bits` width.
+///
+/// Bit positions come from the same `flag_shift` constants the concrete
+/// `pack_eflags` uses rather than hand-written literals, per bd memory
+/// `invariant-ccall-flag-mask-named-constants`: OF@11, SF@7, ZF@6, AF@4,
+/// PF@2, CF@0. Both packers must cover every flag the Copy path passes
+/// through, or the omitted bit is structurally always 0 for every computed
+/// category (angr-5mnx3.59).
 pub(super) fn sym_pack_eflags(flags: &SymFlags, ret_bits: u32, ctx: &SymContext) -> RustBV {
-    symbolic_pack_eflags(
-        &flags.of, &flags.sf, &flags.zf, &flags.pf, &flags.cf, ret_bits, ctx,
-    )
+    let shifted = |bit: &RustBV, shift: u32| {
+        let ext = bit.zero_extend(ret_bits, ctx);
+        if shift == 0 {
+            ext
+        } else {
+            ext.shl(&RustBV::concrete(u128::from(shift), ret_bits), ctx)
+        }
+    };
+
+    shifted(&flags.of, flag_shift::G_CC_SHIFT_O)
+        .or(&shifted(&flags.sf, flag_shift::G_CC_SHIFT_S), ctx)
+        .or(&shifted(&flags.zf, flag_shift::G_CC_SHIFT_Z), ctx)
+        .or(&shifted(&flags.af, flag_shift::G_CC_SHIFT_A), ctx)
+        .or(&shifted(&flags.pf, flag_shift::G_CC_SHIFT_P), ctx)
+        .or(&shifted(&flags.cf, flag_shift::G_CC_SHIFT_C), ctx)
 }
