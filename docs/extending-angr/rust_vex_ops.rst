@@ -45,11 +45,15 @@ head as you read the worked examples below:
    * - ``native/angr/src/vex/ops/mod.rs``
      - Implements the op. ``VEXOps::unop`` / ``binop`` / ``qop`` and the
        rounding-mode-aware ``VEXOps::unop_with_rm`` / ``binop_with_rm``
-       dispatch on the ``IROp`` variant and produce a ``RustBV``. There
-       is no ``triop`` entry point: an IR Triop is ``(rm, a, b)``, so
-       ``eval_triop`` routes it through ``binop_with_rm``, which honors
-       the rounding mode and otherwise delegates to ``binop``. Concrete
-       fast paths live next to their Z3 symbolic fallbacks.
+       / ``qop_with_rm`` dispatch on the ``IROp`` variant and produce a
+       ``RustBV``. There is no ``triop`` entry point: an IR Triop is
+       ``(rm, a, b)``, so ``eval_triop`` routes it through
+       ``binop_with_rm``, which honors the rounding mode and otherwise
+       delegates to ``binop``. A Qop is ``(rm, a, b, c)`` and gets the
+       same treatment: ``eval_qop`` routes through ``qop_with_rm``,
+       which delegates to ``qop`` only for a concrete
+       round-to-nearest-ties-to-even rm. Concrete fast paths live next
+       to their Z3 symbolic fallbacks.
    * - ``native/angr/src/interpreter/expressions.rs``
      - The interpreter site that calls ``VEXOps::*``. You only edit
        this file for *non-op* IR features (``IRExpr::Load``,
@@ -360,11 +364,15 @@ doesn't know it yet. The end-to-end recipe:
 
 5. **Implement.** Add the dispatch arm to ``VEXOps::unop`` /
    ``binop`` / ``qop`` in ``ops/mod.rs`` — or to
-   ``unop_with_rm`` / ``binop_with_rm`` when the op consumes a VEX
-   rounding mode (every IR Triop does; see the *Pipeline overview*
-   note above). Prefer the
-   ``width_unop!`` / ``width_binop!`` macros for shapes where the op
-   is a one-liner on ``RustBV``; promote to a named helper when the
+   ``unop_with_rm`` / ``binop_with_rm`` / ``qop_with_rm`` when the op
+   consumes a VEX rounding mode (every IR Triop does, and so does an
+   FMA-shaped Qop; see the *Pipeline overview* note above). Wiring a
+   new rm-consuming Qop into ``qop`` alone silently computes
+   round-to-nearest-ties-to-even for every guest rounding mode — the
+   exact regression ``qop_with_rm`` was added to fix (angr-03vl4.30),
+   and what ``vex/ops/tests_rounding_mode_sweep.rs`` exists to catch.
+   Prefer the ``width_unop!`` / ``width_binop!`` macros for shapes where
+   the op is a one-liner on ``RustBV``; promote to a named helper when the
    logic doesn't fit on a single line. If both a concrete and a
    symbolic path are needed, follow the ``FloatLaneOp`` trait pattern
    so the compiler enforces parity.
@@ -829,8 +837,10 @@ on a new workload:
 
 .. note::
 
-   *Last verified against commit* ``8afc79315`` *on 2026-08-09*
-   (angr-c7xno.86 — corrected the dispatch entry points; there is no
+   *Last verified against commit* ``f2587c065`` *on 2026-08-28*
+   (angr-5mnx3.64 — documented the sixth dispatch entry point,
+   ``VEXOps::qop_with_rm``, absent from this guide since
+   angr-03vl4.30 introduced it; there is still no
    ``VEXOps::triop``/``ternop``). When you touch
    ``native/angr/src/vex/opcode_map.rs`` or
    ``native/angr/src/vex/ops/mod.rs``, re-read the *Pipeline overview*,

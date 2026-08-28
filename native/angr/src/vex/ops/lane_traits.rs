@@ -1,13 +1,15 @@
 //! Per-lane vector op traits and the shared float-expression builders.
 //!
 //! Extracted from `ops/mod.rs` (angr-9ke6b.170) to shrink the dispatch file
-//! down to the five `VEXOps` entry points. Holds the `FloatLaneOp` /
-//! `IntLaneOp` contracts, their marker types and impl-generating macros, and
-//! the `float_prec_of` / `build_float_expr` free fns the scalar-FP siblings
-//! share. Declared as a child module of `ops` (plain `mod` decl in
-//! `ops/mod.rs`), which re-exports every item below so the existing
-//! `use super::{FloatLaneOp, build_float_expr, ...}` imports in the sibling
-//! modules keep resolving unchanged.
+//! down to the `VEXOps` entry points themselves — `unop` / `binop` / `qop`
+//! plus their rm-aware counterparts `unop_with_rm` / `binop_with_rm` /
+//! `qop_with_rm` (six of them, the last added by angr-03vl4.30). Holds the
+//! `FloatLaneOp` / `IntLaneOp` contracts, their marker types and
+//! impl-generating macros, and the `float_prec_of` / `build_float_expr` free
+//! fns the scalar-FP siblings share. Declared as a child module of `ops`
+//! (plain `mod` decl in `ops/mod.rs`), which re-exports every item below so
+//! the existing `use super::{FloatLaneOp, build_float_expr, ...}` imports in
+//! the sibling modules keep resolving unchanged.
 
 // `Neg` is imported so `impl_float_lane_unop!(FNeg, neg, ...)` can reuse the
 // method-call macro shape: unary minus on f32/f64 is `std::ops::Neg::neg`,
