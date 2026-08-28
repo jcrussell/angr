@@ -39,9 +39,13 @@
 //!   is zero, and (c) the runtime thrash detector
 //!   ([`super::lineage::is_lineage_dismantled`]) has not fired. When (c) is
 //!   true `child_lineage` is set to `None` rather than `Arc::clone`'d —
-//!   `Arc::clone` would give the child a stale base. Regression guard:
-//!   `tests/engines/rust/ :: test_lineage_minted_only_when_opted_in`
-//!   and `test_lineage_not_minted_under_bare_push`.
+//!   `Arc::clone` would give the child a stale base. Regression guards, one
+//!   per gate: `context_tests::smtlib2_snapshot::test_fork_skips_mint_when_flag_off`
+//!   (a), `::test_fork_skips_mint_when_bare_push_outstanding` (b), and
+//!   `super::lineage_tests::test_fork_drops_lineage_when_dismantled` (c) —
+//!   the last lives beside the sampler tests because it mutates the global
+//!   dismantle flag and must hold their serializing lock. The passing case is
+//!   `context_tests::smtlib2_snapshot::test_fork_mints_lineage_when_gate_passes`.
 //! - **fork-freeze under push** (angr-c7xno.75):
 //!   [`fork`](SymContext::fork) only drains local→shared in place when NO
 //!   bare push scope is open (`bare_local_savepoints` is empty). Inside an

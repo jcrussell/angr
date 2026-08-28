@@ -631,3 +631,69 @@ fn test_switch_fast_path_does_not_collide_on_different_tails() {
     );
     assert_eq!(lin.loaded_depth(), 2);
 }
+
+/// Gate (c) of `SymContext::fork`'s three-gate materialization
+/// contract (`invariant-v5ht-dismantle-child-none`): once the runtime
+/// thrash detector has dismantled lineage minting, the child gets
+/// `None` — NOT an `Arc::clone` of the parent's lineage. The Arc-clone
+/// would hand the child a base frozen at some ancestor's mint time,
+/// missing every constraint the parent added since, which leaks
+/// unconstrained SAT solutions (the baby-re `chr()` repro in angr-v5ht).
+///
+/// This is the arm gates (a) and (b) have no coverage for: their guards
+/// are pinned by `context_tests::smtlib2_snapshot::test_fork_skips_mint_when_flag_off`
+/// and `::test_fork_skips_mint_when_bare_push_outstanding`, both of which
+/// start from a parent whose own lineage is already `None`, so they
+/// cannot tell "refused to mint" apart from "cloned a None".
+///
+/// Lives here rather than beside its two siblings because it mutates the
+/// process-global `LINEAGE_DISMANTLED` flag and so must hold
+/// `SAMPLER_TEST_LOCK`.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_fork_drops_lineage_when_dismantled() {
+    use crate::symbolic::SymContext;
+    use parking_lot::Mutex;
+    use std::sync::Arc;
+
+    let _g = SAMPLER_TEST_LOCK.lock().unwrap();
+    reset_dismantle_state_for_test();
+
+    // A parent that is opted in AND already holds a lineage: the only
+    // configuration where the dismantled and non-dismantled arms differ
+    // observably (None vs a non-None Arc).
+    let parent = SymContext::new();
+    parent.set_use_shared_lineage_solver(true);
+    let parent_lin = crate::arc_shared(Mutex::new(SharedLineageSolver::new(make_solver())));
+    parent.set_lineage_for_testing(Arc::clone(&parent_lin));
+    assert_eq!(parent.bare_z3_push_depth(), 0);
+
+    // Gates (a) and (b) pass and (c) has not fired → fresh mint, which
+    // is neither None nor the parent's Arc.
+    let child_live = parent.fork();
+    let live_arc = child_live
+        .lineage_arc()
+        .expect("undismantled fork with (a)+(b) satisfied must mint");
+    assert!(
+        !Arc::ptr_eq(&live_arc, &parent_lin),
+        "mint must allocate a fresh SharedLineageSolver, not reuse the parent's"
+    );
+
+    // Fire the detector; the same fork must now hand the child None.
+    set_lineage_dismantled(true);
+    let child_dead = parent.fork();
+    assert!(
+        child_dead.lineage_arc().is_none(),
+        "dismantled fork must drop the lineage, not Arc::clone the parent's stale base"
+    );
+    // The parent keeps its own lineage either way — the gate only
+    // decides what the child gets.
+    assert!(
+        parent
+            .lineage_arc()
+            .is_some_and(|a| Arc::ptr_eq(&a, &parent_lin)),
+        "fork must not disturb the parent's lineage"
+    );
+
+    reset_dismantle_state_for_test();
+}
