@@ -562,25 +562,20 @@ impl RustExplorationManager {
         // stashes we iterate below, so without the guard a mid-session flip
         // would leave those states minting non-canonical witnesses.
         self.constraint_solver.deterministic = v;
-        for states in self.sm.stashes_mut().values_mut() {
-            for state in states.iter() {
-                constraints::apply_state_deterministic(state, v);
-            }
-        }
-        // A state parked in `pending_callbacks` is in no stash, so the loop
-        // above misses it: it — and every deferred fork later materialized from
-        // its snapshots — would resume on the old mode (angr-sqfj8.32). The
-        // steady guard above does not cover this; it only drains the parallel
-        // session's resident frontier.
-        for pending in self.pending_callbacks.values() {
-            constraints::apply_pending_deterministic(pending, v);
-        }
-        // The third bucket of live states outside every stash: a wave/session
-        // pass that surfaced one callback parks the REST of its bounce queue,
-        // and the steady guard does not drain that (angr-03vl4.10). See
-        // `parked_bounce_states`.
-        for state in self.parked_bounce_states() {
+        // All three buckets in one walk — the stashes plus the states parked in
+        // `pending_callbacks` (angr-sqfj8.32) and `pending_parallel_bounces`
+        // (angr-03vl4.10), neither of which is in any stash and neither of
+        // which the steady guard above drains (it only reaches the parallel
+        // session's resident frontier). See `all_live_states`.
+        for state in self.all_live_states() {
             constraints::apply_state_deterministic(state, v);
+        }
+        // `fork_snapshots` carries a raw solver rather than a `RustSimState`,
+        // so it is outside `all_live_states`' reach — without this every
+        // deferred fork later materialized from a parked callback's snapshots
+        // would resume on the old mode (angr-sqfj8.32).
+        for pending in self.pending_callbacks.values() {
+            constraints::apply_fork_snapshots_deterministic(pending, v);
         }
         log::debug!("Strict-deterministic witness selection set to {v}");
     }
@@ -789,21 +784,12 @@ impl RustExplorationManager {
     #[angr_macros::steady_guarded]
     pub fn set_max_history(&mut self, max: usize) {
         self.environment.max_history = max;
-        for stash in self.sm.stashes_mut().values_mut() {
-            for state in stash.iter_mut() {
-                state.set_max_history(max);
-            }
-        }
-        // Parked states and the pre-branch snapshots their deferred forks are
-        // materialized from, mirroring `set_deterministic`. `fork_snapshots`
-        // needs nothing: a `BranchSnapshot` carries solver/registers/memory
-        // only — no history buffers.
-        for state in self.pending_callback_states_mut() {
-            state.set_max_history(max);
-        }
-        // Parked parallel bounces are a third bucket living in no stash
-        // (angr-03vl4.10); see `parked_bounce_states`.
-        for state in self.parked_bounce_states_mut() {
+        // All three buckets, mirroring `set_deterministic`: the stashes plus
+        // the parked states and the pre-branch snapshots their deferred forks
+        // are materialized from. `fork_snapshots` needs nothing here — a
+        // `BranchSnapshot` carries solver/registers/memory only, no history
+        // buffers — so `all_live_states_mut` is exact coverage.
+        for state in self.all_live_states_mut() {
             state.set_max_history(max);
         }
     }

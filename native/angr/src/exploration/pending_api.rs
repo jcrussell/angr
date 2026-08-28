@@ -79,26 +79,25 @@ impl RustExplorationManager {
                 state.map_memory_data(addr, data, permissions);
             }
         }
-        for state in self.pending_callback_states_mut() {
+        // Both buckets of states that can still execute and live in no stash:
+        // the ones parked behind a callback and the parked parallel bounce
+        // queue (angr-03vl4.10). Either re-enters `STASH_ACTIVE` — on callback
+        // return or on the next flush — and would then fault `Unmapped` on a
+        // region every sibling can read. `non_stash_live_states_mut` rather
+        // than `all_live_states_mut` because only `STASH_ACTIVE` is mapped
+        // above; see that helper's doc comment.
+        for state in self.non_stash_live_states_mut() {
             state.map_memory_data(addr, data, permissions);
         }
         // fork_snapshots carries a raw memory sidecar, not a RustSimState, so
-        // it's outside pending_callback_states_mut's reach -- see that
-        // function's doc comment.
+        // it's outside non_stash_live_states_mut's reach -- see
+        // `all_live_states`' doc comment.
         for pending in self.pending_callbacks.values_mut() {
             for snapshot in pending.fork_snapshots.values_mut() {
                 if let Some(memory) = snapshot.memory.as_mut() {
                     memory.map_data(addr, data, permissions);
                 }
             }
-        }
-        // Third bucket of states that can still execute and live in no stash:
-        // the parked parallel bounce queue (angr-03vl4.10). Same reasoning as
-        // the pending loop above — a parked bounce re-enters `STASH_ACTIVE` on
-        // the next flush, and would fault `Unmapped` on a region every sibling
-        // can read. See `parked_bounce_states`.
-        for state in self.parked_bounce_states_mut() {
-            state.map_memory_data(addr, data, permissions);
         }
     }
 

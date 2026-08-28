@@ -58,26 +58,21 @@ impl RustExplorationManager {
     ///   - `states_analyzed`  — how many states contributed constraints.
     ///   - `constraints_analyzed` — total `(RustBV, bool)` pairs folded in.
     ///
-    /// Walks ALL stashes (so it's deterministic across exploration
-    /// outcomes — no `find`/`avoid` bias), plus the two buckets of live
-    /// states that live in NO stash: the ones parked in `pending_callbacks`
-    /// and in `pending_parallel_bounces` (angr-0jh0j.15, same third-bucket
-    /// gap `set_max_history` was swept for in angr-03vl4.10). A parked state
-    /// is a real state whose constraints a later step can observe, so
-    /// omitting it undercounted the census by however many states a
-    /// mid-exploration callback or bounce happened to be holding.
+    /// Walks every live state via
+    /// [`all_live_states`](Self::all_live_states): ALL stashes (so it's
+    /// deterministic across exploration outcomes — no `find`/`avoid` bias),
+    /// plus the two buckets of live states that live in NO stash, the ones
+    /// parked in `pending_callbacks` and in `pending_parallel_bounces`
+    /// (angr-0jh0j.15, same third-bucket gap `set_max_history` was swept for
+    /// in angr-03vl4.10). A parked state is a real state whose constraints a
+    /// later step can observe, so omitting it undercounted the census by
+    /// however many states a mid-exploration callback or bounce happened to be
+    /// holding.
     pub fn analyze_constraint_sharing(&self) -> std::collections::HashMap<String, u64> {
         let mut walk = crate::symbolic::ConstraintSharingWalk::new();
         let mut states_analyzed: u64 = 0;
         let mut constraints_analyzed: u64 = 0;
-        let every_live_state = self
-            .sm
-            .stashes()
-            .values()
-            .flat_map(|stash| stash.iter())
-            .chain(self.pending_callback_states())
-            .chain(self.parked_bounce_states());
-        for state in every_live_state {
+        for state in self.all_live_states() {
             let ctx = state.solver().borrow();
             let n_constraints = ctx.assumed_constraint_count();
             if n_constraints == 0 {

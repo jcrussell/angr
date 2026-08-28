@@ -154,8 +154,8 @@ impl StashManager {
     /// parked in `pending_callbacks` or `pending_parallel_bounces` lives in
     /// no stash and is invisible here. A manager-wide broadcast (e.g.
     /// `set_deterministic`, `set_max_history`, `_active_states_map_memory`)
-    /// must also reach `RustExplorationManager::pending_callback_states_mut`
-    /// and `parked_bounce_states_mut` (both in `exploration/run_loop.rs`) —
+    /// must also reach `RustExplorationManager::all_live_states_mut`
+    /// (`exploration/run_loop.rs`), which adds the two non-stash buckets —
     /// see those three functions for the canonical shape, and the
     /// `invariant-*-covers-pending` bd memories for why this keeps
     /// recurring. Single-state lookups don't have this problem:

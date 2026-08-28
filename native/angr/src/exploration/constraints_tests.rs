@@ -20,7 +20,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyList, PyListMethods};
 
 // ---------------------------------------------------------------------------
-// apply_state_deterministic / apply_pending_deterministic
+// apply_state_deterministic / apply_fork_snapshots_deterministic
 // ---------------------------------------------------------------------------
 
 /// The single seam for the `deterministic` flag round-trips in both
@@ -46,9 +46,10 @@ fn apply_state_deterministic_round_trips_both_directions() {
 }
 
 /// Build a `PendingCallback` carrying all three solver contexts
-/// `apply_pending_deterministic` has to reach: the parked state, the
-/// pre-callback snapshot (the deferred forks' `fork_base`), and one pre-branch
-/// fork snapshot.
+/// `set_deterministic` has to reach: the parked state, the pre-callback
+/// snapshot (the deferred forks' `fork_base`), and one pre-branch fork
+/// snapshot. The first two are `RustSimState`s that `all_live_states` yields;
+/// only the third needs `apply_fork_snapshots_deterministic`.
 #[cfg(feature = "vex-engine-z3")]
 fn pending_with_all_contexts() -> PendingCallback {
     use rustc_hash::FxHashMap;
@@ -76,63 +77,58 @@ fn pending_with_all_contexts() -> PendingCallback {
     }
 }
 
-/// Direct coverage of the angr-sqfj8.32 contract: all *three* contexts a
-/// parked callback owns follow the flag, in both directions. The sibling test
-/// in `manager_methods_tests.rs` reaches this through `set_deterministic`; this
-/// one calls the seam itself, so a future caller that stops going through the
-/// manager still has the property pinned.
+/// Direct coverage of the angr-0jh0j.82 split: this seam owns exactly the one
+/// context of the three that is NOT a `RustSimState` — the pre-branch fork
+/// snapshot — and leaves the other two to `set_deterministic`'s
+/// `all_live_states` walk. Asserting the two *untouched* contexts is the point:
+/// re-widening this function would silently duplicate that walk's work, and
+/// narrowing it further would drop the angr-sqfj8.32 lineage entirely.
 #[cfg(feature = "vex-engine-z3")]
 #[test]
-fn apply_pending_deterministic_reaches_all_three_contexts() {
+fn apply_fork_snapshots_deterministic_reaches_only_the_branch_snapshots() {
     let pending = pending_with_all_contexts();
 
     for v in [true, false, true] {
-        apply_pending_deterministic(&pending, v);
+        apply_fork_snapshots_deterministic(&pending, v);
         assert_eq!(
-            state_is_deterministic(&pending.state),
+            pending.fork_snapshots[&7].solver.is_deterministic(),
             v,
-            "parked state follows apply_pending_deterministic({v})"
+            "pre-branch fork snapshot follows apply_fork_snapshots_deterministic({v})"
         );
-        assert_eq!(
-            state_is_deterministic(
+        assert!(
+            !state_is_deterministic(&pending.state),
+            "the parked state is a RustSimState `all_live_states` yields — this \
+             seam must not touch it"
+        );
+        assert!(
+            !state_is_deterministic(
                 pending
                     .pre_callback_snapshot
                     .as_ref()
                     .expect("pre-callback snapshot"),
             ),
-            v,
-            "pre-callback snapshot (the deferred forks' fork_base) follows \
-             apply_pending_deterministic({v})"
-        );
-        assert_eq!(
-            pending.fork_snapshots[&7].solver.is_deterministic(),
-            v,
-            "pre-branch fork snapshot follows apply_pending_deterministic({v})"
+            "so is the pre-callback snapshot (the deferred forks' fork_base)"
         );
     }
 }
 
 /// A lightweight callback owns only its state: no `pre_callback_snapshot` and
-/// no `fork_snapshots`. The seam must still flip the state it *does* own
-/// rather than short-circuiting on the absent ones.
+/// no `fork_snapshots`. The seam must be a no-op on it rather than panicking
+/// on the absent map.
 #[cfg(feature = "vex-engine-z3")]
 #[test]
-fn apply_pending_deterministic_handles_absent_snapshots() {
+fn apply_fork_snapshots_deterministic_handles_absent_snapshots() {
     let state = RustSimState::new("amd64").expect("state");
     let pending = PendingCallback::lightweight(
         state,
         CallbackReason::FindPredicate { addr: 0x400000 },
     );
 
-    apply_pending_deterministic(&pending, true);
-    assert!(
-        state_is_deterministic(&pending.state),
-        "a lightweight callback's own state must still follow the flag"
-    );
-    apply_pending_deterministic(&pending, false);
+    apply_fork_snapshots_deterministic(&pending, true);
     assert!(
         !state_is_deterministic(&pending.state),
-        "and back again"
+        "a lightweight callback has no fork snapshots, and its own state is \
+         covered by `all_live_states` rather than by this seam"
     );
 }
 

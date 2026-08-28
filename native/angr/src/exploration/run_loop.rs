@@ -439,8 +439,11 @@ impl RustExplorationManager {
             .count()
     }
 
-    /// The states parked in `pending_parallel_bounces`, for a manager-level
-    /// BROADCAST that must reach every live state (angr-03vl4.10).
+    /// The states parked in `pending_parallel_bounces` on their own — for the
+    /// bounce-queue-specific reads (`flush_parked_bounces_to_active`'s
+    /// residency filter, the test helpers) that want this bucket and not the
+    /// other two. A manager-level BROADCAST wants
+    /// [`all_live_states`](Self::all_live_states) instead (angr-0jh0j.82).
     ///
     /// `pending_parallel_bounces` is the third bucket of live `RustSimState`s —
     /// alongside the stashes and `pending_callbacks` — and like the second it
@@ -461,55 +464,128 @@ impl RustExplorationManager {
     /// dropped only at flush time — until then it is a real state a later step
     /// could observe.
     pub(crate) fn parked_bounce_states(&self) -> impl Iterator<Item = &RustSimState> {
-        self.pending_parallel_bounces
-            .iter()
-            .map(|(state, _, _)| state)
+        parked_states(&self.pending_parallel_bounces)
     }
 
-    /// `&mut` half of [`parked_bounce_states`](Self::parked_bounce_states), for
-    /// broadcasts that mutate the
-    /// state in place (`set_max_history`, `_active_states_map_memory`) rather
-    /// than reaching through it to a shared solver.
-    pub(crate) fn parked_bounce_states_mut(&mut self) -> impl Iterator<Item = &mut RustSimState> {
-        self.pending_parallel_bounces
-            .iter_mut()
-            .map(|(state, _, _)| state)
+    /// The two buckets of live `RustSimState`s that live in NO stash, chained:
+    /// [`pending_states_mut`] (the parked callback's live continuation plus the
+    /// pre-branch snapshot its deferred forks are materialized from,
+    /// angr-sqfj8.32) and [`parked_states_mut`] (the parked parallel bounce
+    /// queue).
+    ///
+    /// For a broadcast that deliberately covers only *some* stashes and so
+    /// cannot use [`all_live_states_mut`](Self::all_live_states_mut) —
+    /// `_active_states_map_memory` maps into `STASH_ACTIVE` only, because a
+    /// deadended/errored state will never fault on the new region. Same
+    /// `fork_snapshots` caveat as
+    /// [`all_live_states`](Self::all_live_states).
+    pub(crate) fn non_stash_live_states_mut(&mut self) -> impl Iterator<Item = &mut RustSimState> {
+        let Self {
+            pending_callbacks,
+            pending_parallel_bounces,
+            ..
+        } = self;
+        non_stash_states_mut(pending_callbacks, pending_parallel_bounces)
     }
 
-    /// Every `RustSimState` a pending callback carries that must track
-    /// manager-wide per-state config in lockstep with `.state` itself: the
-    /// live continuation plus (if present) the pre-branch snapshot deferred
-    /// forks are materialized from (angr-sqfj8.32) — the second bucket of
-    /// live states outside every stash (see
-    /// [`parked_bounce_states`](Self::parked_bounce_states) for the third).
-    /// Named to match that sibling so a broadcast author reaching for "every
-    /// live state" finds both together.
+    /// EVERY `RustSimState` this manager can still execute: all three buckets —
+    /// all stashes, [`pending_states`], [`parked_states`] — in one iterator.
+    ///
+    /// This is the helper a manager-wide *read-only* walk should reach for
+    /// (`analyze_constraint_sharing` folds each state's solver into a sharing
+    /// census; `set_deterministic` reaches through each state to its shared
+    /// solver). Hand-rolling the `.chain().chain()` instead is how the
+    /// undercount bugs of angr-sqfj8.32 / angr-03vl4.10 / angr-0jh0j.15 each
+    /// reappeared in a new call site: the three bucket lines differ only by
+    /// method name, so a copy that drops one still compiles (angr-0jh0j.82).
+    ///
+    /// Walks ALL stashes, not just `STASH_ACTIVE`, so a census built on it is
+    /// deterministic across exploration outcomes (no `find`/`avoid` bias).
     ///
     /// Does NOT cover `pending.fork_snapshots` — those carry a raw
-    /// `SymContext`/solver, not a `RustSimState` (`set_deterministic` and
-    /// `_active_states_map_memory` reach `fork_snapshots` directly for that
-    /// reason). Use this for the common case of a per-state broadcast; fall
-    /// back to hand-rolling `pending_callbacks.values_mut()` when
-    /// `fork_snapshots` also needs to be reached.
-    pub(crate) fn pending_callback_states_mut(
-        &mut self,
-    ) -> impl Iterator<Item = &mut RustSimState> {
-        self.pending_callbacks.values_mut().flat_map(|pending| {
-            std::iter::once(&mut pending.state).chain(pending.pre_callback_snapshot.as_mut())
-        })
+    /// `SymContext`/solver and memory sidecar, not a `RustSimState`. A caller
+    /// that must reach them (`set_deterministic`,
+    /// `_active_states_map_memory`) chains its own `pending_callbacks` loop on
+    /// top; see [`pending_states`].
+    pub(crate) fn all_live_states(&self) -> impl Iterator<Item = &RustSimState> {
+        self.sm
+            .stashes()
+            .values()
+            .flat_map(|stash| stash.iter())
+            .chain(pending_states(&self.pending_callbacks))
+            .chain(parked_states(&self.pending_parallel_bounces))
     }
 
-    /// `&self` half of
-    /// [`pending_callback_states_mut`](Self::pending_callback_states_mut), for
-    /// a read-only manager-wide walk that only reaches *through* the state
-    /// (`analyze_constraint_sharing` folds each one's solver into a sharing
-    /// census). Same coverage and same `fork_snapshots` caveat as the `&mut`
-    /// half.
-    pub(crate) fn pending_callback_states(&self) -> impl Iterator<Item = &RustSimState> {
-        self.pending_callbacks.values().flat_map(|pending| {
-            std::iter::once(&pending.state).chain(pending.pre_callback_snapshot.as_ref())
-        })
+    /// `&mut` half of [`all_live_states`](Self::all_live_states), for a
+    /// broadcast that mutates each state in place (`set_max_history`) rather
+    /// than reaching through it to a shared solver. Same coverage and same
+    /// `fork_snapshots` caveat.
+    pub(crate) fn all_live_states_mut(&mut self) -> impl Iterator<Item = &mut RustSimState> {
+        let Self {
+            sm,
+            pending_callbacks,
+            pending_parallel_bounces,
+            ..
+        } = self;
+        sm.stashes_mut()
+            .values_mut()
+            .flat_map(|stash| stash.iter_mut())
+            .chain(non_stash_states_mut(
+                pending_callbacks,
+                pending_parallel_bounces,
+            ))
     }
+}
+
+/// Bucket-2 body, as a free function over the field rather than a `&self`
+/// method, so [`RustExplorationManager::all_live_states_mut`] can reach it
+/// while separately holding a `&mut` borrow of `sm` (two `&mut self` method
+/// calls could not coexist). The `&self`/`&mut self` accessors above delegate
+/// here so the "live continuation plus pre-branch snapshot" definition of the
+/// bucket lives in exactly one place per mutability.
+pub(super) fn pending_states(
+    pending_callbacks: &FxHashMap<StateId, PendingCallback>,
+) -> impl Iterator<Item = &RustSimState> {
+    pending_callbacks.values().flat_map(|pending| {
+        std::iter::once(&pending.state).chain(pending.pre_callback_snapshot.as_ref())
+    })
+}
+
+/// `&mut` half of [`pending_states`].
+pub(super) fn pending_states_mut(
+    pending_callbacks: &mut FxHashMap<StateId, PendingCallback>,
+) -> impl Iterator<Item = &mut RustSimState> {
+    pending_callbacks.values_mut().flat_map(|pending| {
+        std::iter::once(&mut pending.state).chain(pending.pre_callback_snapshot.as_mut())
+    })
+}
+
+/// Bucket-3 body; free-function counterpart of [`pending_states`], same
+/// borrow-splitting reason.
+pub(super) fn parked_states(
+    pending_parallel_bounces: &[(RustSimState, BounceKind, u64)],
+) -> impl Iterator<Item = &RustSimState> {
+    pending_parallel_bounces.iter().map(|(state, _, _)| state)
+}
+
+/// `&mut` half of [`parked_states`].
+pub(super) fn parked_states_mut(
+    pending_parallel_bounces: &mut [(RustSimState, BounceKind, u64)],
+) -> impl Iterator<Item = &mut RustSimState> {
+    pending_parallel_bounces
+        .iter_mut()
+        .map(|(state, _, _)| state)
+}
+
+/// Buckets 2 and 3 chained, shared by
+/// [`RustExplorationManager::non_stash_live_states_mut`] and
+/// [`RustExplorationManager::all_live_states_mut`] so the pair of `.chain()`
+/// lines this bead exists to de-duplicate is written once.
+pub(super) fn non_stash_states_mut<'a>(
+    pending_callbacks: &'a mut FxHashMap<StateId, PendingCallback>,
+    pending_parallel_bounces: &'a mut [(RustSimState, BounceKind, u64)],
+) -> impl Iterator<Item = &'a mut RustSimState> {
+    pending_states_mut(pending_callbacks).chain(parked_states_mut(pending_parallel_bounces))
 }
 
 test_submod!(z3 "run_loop_tests.rs" => tests);

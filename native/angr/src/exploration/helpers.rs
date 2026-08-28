@@ -492,12 +492,10 @@ impl RustExplorationManager {
         if self.pending_parallel_bounces.is_empty() {
             return None;
         }
-        // Field access rather than `parked_bounce_states_mut`, whose `&mut
-        // self` receiver would conflict with the `pending_callbacks` borrow
-        // the early return above holds for the whole function.
-        self.pending_parallel_bounces
-            .iter_mut()
-            .map(|(state, _, _)| state)
+        // The free-function form of the bucket walk rather than a `&mut self`
+        // method, whose receiver would conflict with the `pending_callbacks`
+        // borrow the early return above holds for the whole function.
+        super::run_loop::parked_states_mut(&mut self.pending_parallel_bounces)
             .find(|state| state.state_id() == sid.raw())
     }
 
