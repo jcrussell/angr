@@ -759,7 +759,9 @@ The returned dict includes:
   ``assume_true``/``assume_false`` fast-path counters.
 * ``z3_branch_check``, ``z3_branch_concrete``, ``z3_branch_model_hit``,
   ``z3_branch_model_miss`` — branch-evaluation outcomes.
-* ``z3_ast_build`` — AST construction count.
+* ``z3_ast_build`` — top-level ``to_z3_ast()`` / ``to_z3_bool()``
+  call count (entry calls, not Z3 nodes built; see
+  :doc:`rust_z3_sharing`).
 * ``z3_site_<name>_count`` / ``z3_site_<name>_time_ns`` — per-call-site
   breakdown. Sites include ``satisfiable``, ``branch_true``,
   ``branch_false``, ``eval``, ``eval_upto``, ``min_init``,
