@@ -106,6 +106,10 @@
 //!   normally keeps the engine from reaching an `inspect` slot at all.
 //! - [`inspect_test_entries`] — Python-visible test entry points onto that
 //!   dispatch family; no engine path reaches them.
+//! - `test_support` (`#[cfg(test)]`) — the shared `defs`/`obj`/`recorder`
+//!   plumbing both `dispatch_tests` and `inspect_tests` build their Python
+//!   snippets with. Not linked: a cfg(test) module does not exist in a
+//!   `cargo doc` build.
 //!
 //! This file keeps the [`PythonCallbacks`] struct itself: the slot list
 //! (`with_callback_fields!`), the generated setters, the GC
@@ -134,6 +138,11 @@ mod events;
 mod inspect;
 mod inspect_bits;
 mod inspect_test_entries;
+
+// Shared `defs`/`obj`/`recorder` plumbing for the `callbacks/` test modules
+// (angr-5mnx3.7). Lives here, one level above `dispatch_tests` /
+// `inspect_tests`, because those two sit under different parents.
+test_submod!(test_support);
 
 pub(crate) use config::{DeferredFork, ExecutionConfig};
 pub(crate) use events::{ErrorRoute, RunErrorKind, RunResult};

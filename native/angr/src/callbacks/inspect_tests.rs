@@ -26,35 +26,7 @@
 //! `call_inspect_constraints`; nothing here needs the real package.
 
 use super::*;
-use pyo3::types::{PyDict, PyList};
-
-/// Execute `src` in a fresh globals dict and hand it back so tests can read
-/// the recorder lists the snippet defines.
-fn defs<'py>(py: Python<'py>, src: &std::ffi::CStr) -> pyo3::Bound<'py, PyDict> {
-    let globals = PyDict::new(py);
-    py.run(src, Some(&globals), None)
-        .expect("define test callbacks");
-    globals
-}
-
-/// Pull a named object out of a `defs()` globals dict as an owned `Py<PyAny>`.
-fn obj(globals: &pyo3::Bound<'_, PyDict>, name: &str) -> Py<PyAny> {
-    globals
-        .get_item(name)
-        .unwrap()
-        .unwrap_or_else(|| panic!("{name} not defined"))
-        .unbind()
-}
-
-/// Read a recorder list defined by a `defs()` snippet.
-fn recorder<'py>(globals: &pyo3::Bound<'py, PyDict>, name: &str) -> pyo3::Bound<'py, PyList> {
-    globals
-        .get_item(name)
-        .unwrap()
-        .unwrap_or_else(|| panic!("{name} not defined"))
-        .cast_into::<PyList>()
-        .expect("recorder must be a list")
-}
+use crate::callbacks::test_support::{defs, obj, recorder};
 
 /// The enabled-mask is the O(1) gate in front of every inspect crossing; an
 /// off-by-one in the shift silently disables (or worse, spuriously enables) a
