@@ -24,7 +24,11 @@ use crate::state::RustSimState;
 /// Shared upper bound on a concrete format-string scan for the printf/sprintf/
 /// scanf family. One home so a future reduction is applied everywhere at once
 /// rather than silently missing a consumer that kept its own local `4096`
-/// (angr-myzjx.7). The str-family shares [`super::strings::MAX_STRING_SCAN`].
+/// (angr-myzjx.7). The str-family shares [`super::strings::MAX_STRING_SCAN`] —
+/// and so, deliberately, does `sprintf.rs::format_string`'s own `%s`
+/// *conversion argument*, which is a plain C string rather than a format
+/// string; the two constants are independent and are not expected to move
+/// together.
 pub(crate) const MAX_FORMAT_LEN: usize = 4096;
 
 /// Read a concrete, null-terminated format string from guest memory, bounded

@@ -932,3 +932,44 @@ fn test_sprintf_long_long_stays_64_bits_on_ilp32() {
         b"4294967295"
     );
 }
+
+/// A `%s` conversion argument is scanned against `strings::MAX_STRING_SCAN`,
+/// not the format string's own `format_common::MAX_FORMAT_LEN` — the two are
+/// independently defined and only coincidentally equal, so this pins which one
+/// the `%s` arm actually consults (angr-0jh0j.87). Also pins the truncation
+/// behaviour on cap exhaustion: an unterminated argument stops at the cap
+/// rather than erroring out to Python.
+#[test]
+fn test_sprintf_percent_s_scan_bounded_by_max_string_scan() {
+    let mut state = crate::procedures::test_util::amd64_state_with_regions(&[(0x2000, 0x8000)]);
+    state.map_memory_data(0x1000, b"%s\x00", Permission::RWX);
+    // Unterminated source: MAX_STRING_SCAN + 8 non-NUL bytes, so the bounded
+    // scan never sees a terminator inside the cap.
+    let src = vec![b'A'; MAX_STRING_SCAN + 8];
+    state.map_memory_data(0x10000, &src, Permission::RWX);
+
+    let result = NativeSprintf
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x2000, 64),  // dest
+                RustBV::concrete(0x1000, 64),  // format
+                RustBV::concrete(0x10000, 64), // %s argument
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+            ],
+        )
+        .unwrap();
+
+    assert_eq!(result.unwrap().as_u64(), Some(MAX_STRING_SCAN as u64));
+    // Truncated exactly at the cap: last copied byte is 'A', then the NUL.
+    let last = state
+        .memory_load(0x2000 + MAX_STRING_SCAN as u64 - 1, 1)
+        .unwrap();
+    assert_eq!(last.as_u64().unwrap() as u8, b'A');
+    let nul = state.memory_load(0x2000 + MAX_STRING_SCAN as u64, 1).unwrap();
+    assert_eq!(nul.as_u64().unwrap() as u8, 0);
+}

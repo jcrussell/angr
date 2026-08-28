@@ -305,6 +305,16 @@ fn format_string(
                 }
                 let str_addr = extract_concrete_arg(&args[arg_idx], &format!("arg{arg_idx}"))?;
                 arg_idx += 1;
+                // Deliberately `MAX_STRING_SCAN`, not the enclosing format
+                // string's `format_common::MAX_FORMAT_LEN`: a `%s` conversion
+                // *argument* is a plain C string with no length bound, so it
+                // belongs to the str-family cap per the deciding test in bd
+                // memory `invariant-syscall-byte-cap-shared`. The two constants
+                // are independently defined and only happen to be equal today —
+                // a future security-driven reduction of one is expected to move
+                // this scan without moving the format-string scan, and vice
+                // versa. Pinned behaviourally by
+                // `sprintf_tests::test_sprintf_percent_s_scan_bounded_by_max_string_scan`.
                 let (s, _null_found) =
                     scan_concrete_bounded(state, str_addr, MAX_STRING_SCAN, "string")?;
                 let s = if let Some(prec) = precision {
