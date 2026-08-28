@@ -103,15 +103,7 @@ pub(super) fn worker_loop(
             .step_ns
             .fetch_add(crate::elapsed_ns(step_start), Ordering::Relaxed);
 
-        // Post-find speculative-waste accounting (angr-1ilq.8); see the twin in
-        // `worker_session_loop`. The step's products are drained back on the next
-        // iteration's cancel check, but the step itself was still speculative.
-        // A budget stop (angr-9ke6b.52) is NOT speculative waste — the step was
-        // charged to `run(n)` and its products are kept — so it is excluded via
-        // `preempts_in_flight`.
-        if t.cancel.preempts_in_flight() && !outcome.request_cancel {
-            t.counters.post_cancel_steps.fetch_add(1, Ordering::SeqCst);
-        }
+        record_post_cancel_step(t, &outcome);
 
         // Continue-states stay LIVE and LOCAL — no serde on the fast path.
         absorb_continues(t, local, outcome.continue_states);
@@ -232,25 +224,7 @@ pub(super) fn worker_session_loop(
             .step_ns
             .fetch_add(crate::elapsed_ns(step_start), Ordering::Relaxed);
 
-        // Post-find speculative-waste accounting (angr-1ilq.8): the top-of-loop
-        // guard means we only reach here with `cancel` unset at dispatch time,
-        // so a cancel visible NOW that this step did not itself raise was
-        // requested by a peer/coordinator while this step was in flight — the
-        // work is speculative (its products are drained back on the next
-        // iteration's cancel check).
-        //
-        // Uses `preempts_in_flight`, not `is_cancelled`, for the same reason as
-        // the twin in `worker_loop`: a budget stop charges the step to `run(n)`
-        // and keeps its products, so it is not waste. Today that is a no-op
-        // here — `set_max_dispatches` lives on `WaveJob` only, so a session
-        // transport keeps `max_dispatches == None`, nothing calls
-        // `cancel_for_budget`, and a session `CancelToken` never reaches
-        // `BUDGET_CANCELLED`. Keeping the two predicates identical means adding
-        // budget cancellation to the steady path later cannot silently
-        // misclassify charged steps as speculative (angr-sqfj8.47).
-        if t.cancel.preempts_in_flight() && !outcome.request_cancel {
-            t.counters.post_cancel_steps.fetch_add(1, Ordering::SeqCst);
-        }
+        record_post_cancel_step(t, &outcome);
 
         absorb_continues(t, local, outcome.continue_states);
 
@@ -412,6 +386,36 @@ pub(super) fn dispatch_next(
                 }
             }
         }
+    }
+}
+
+/// Charge one step to post-find speculative waste, if that is what it was
+/// (angr-1ilq.8).
+///
+/// Both worker loops call this immediately after `(process)(state, ..)`
+/// returns, and neither open-codes the rule: a per-site copy only has to be
+/// forgotten in one loop for wave and steady stats to silently disagree
+/// (angr-5mnx3.20).
+///
+/// Both loops re-check `cancel` at the top of the iteration, so control only
+/// reaches a step with `cancel` unset at dispatch time. A cancel visible NOW
+/// that this step did not itself raise (`!outcome.request_cancel`) was
+/// therefore requested by a peer or the coordinator while this step was in
+/// flight — the work is speculative, and its products are drained back on the
+/// next iteration's cancel check.
+///
+/// The predicate is [`CancelToken::preempts_in_flight`], not `is_cancelled`,
+/// because a budget stop (angr-9ke6b.52) is *not* speculative waste: the step
+/// was charged to `run(n)` and its products are kept. Today that distinction
+/// only bites in wave mode — `set_max_dispatches` lives on `WaveJob` only, so a
+/// session transport keeps `max_dispatches == None`, nothing calls
+/// `cancel_for_budget`, and a session `CancelToken` never reaches
+/// `BUDGET_CANCELLED`. Sharing one predicate across both loops means adding
+/// budget cancellation to the steady path later cannot silently misclassify
+/// charged steps as speculative (angr-sqfj8.47).
+fn record_post_cancel_step(t: &WorkTransport, outcome: &TaskOutcome) {
+    if t.cancel.preempts_in_flight() && !outcome.request_cancel {
+        t.counters.post_cancel_steps.fetch_add(1, Ordering::SeqCst);
     }
 }
 
