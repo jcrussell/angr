@@ -448,6 +448,24 @@ impl NativeSimProcedure for NativeSscanf {
 /// [`NativeSscanf`].) A closed/negative fd
 /// returns -1, matching Python `fscanf` (`simfd is None`). Symbols are recorded
 /// for `posix.dumps(0)` only when the FILE wraps fd 0 (e.g. `fscanf(stdin,...)`).
+///
+/// **Tracked-fd gate (angr-5mnx3.31).** An fd that Rust's `FileSystem` has open
+/// — the mainline `fopen(...); fscanf(f, ...)` shape, since `NativeFopen`
+/// registers the fd plus its concrete or bounded-symbolic content — carries
+/// *real* content, and minting fresh unconstrained BVs over it is exactly the
+/// wrong-answer risk [`NativeSscanf`] refuses: it makes impossible paths
+/// feasible and never advances `FileDescriptor::position`, so a later native
+/// `read`/`fread` on the same fd re-reads the bytes fscanf conceptually
+/// consumed. Those calls defer to Python, which parses the content faithfully
+/// (`rust_callback_dispatch::_inject_rust_fds` hydrates the callback state's
+/// `posix.fd` from the Rust descriptor — name, content and position — so the
+/// bounced proc sees the same stream). This deliberately DIVERGES from the
+/// `read.rs`/`fread.rs` gate, which bounces on the *un*tracked fd: those two
+/// serve content natively and so must yield the fd they cannot model, whereas
+/// fscanf never serves content and so must yield the fd it *could* have
+/// mis-modelled. An untracked fd keeps the native mint — nothing on either
+/// side knows its bytes, so fresh symbolic values are the same approximation
+/// `scanf` makes for unseeded stdin.
 fn do_fscanf(
     state: &mut RustSimState,
     file_ptr: u64,
@@ -461,6 +479,11 @@ fn do_fscanf(
     let (source, record_stdin) = if fd == 0 {
         ("stdin", true)
     } else {
+        if state.file_system_ref().is_open(fd as u32) {
+            return Err(ProcedureError::Other(format!(
+                "fscanf from fd={fd} (open in Rust FileSystem) falls back to Python"
+            )));
+        }
         ("file", false)
     };
     do_scanf(state, fmt_addr, ptr_args, source, record_stdin)

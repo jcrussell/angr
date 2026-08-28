@@ -3,6 +3,7 @@
 use super::*;
 use crate::memory::Permission;
 use crate::procedures::NativeProcedureRegistry;
+use crate::state::FdFlags;
 
 fn setup_state() -> RustSimState {
     crate::procedures::test_util::amd64_state_with_regions(&[(0x2000, 0x1000)])
@@ -497,6 +498,9 @@ fn test_fscanf_basic() {
     let mut state = setup_state();
     state.map_memory_data(0x1000, b"%d\x00", Permission::RWX);
     let file_ptr = 0x10000u64;
+    // fd 3 is deliberately NOT open in the Rust FileSystem — the native mint
+    // is only correct for a stream nothing on either side models. The tracked
+    // counterpart is test_fscanf_open_fd_falls_back.
     setup_file_struct(&mut state, file_ptr, 3);
 
     let result = NativeFscanf
@@ -526,6 +530,79 @@ fn test_fscanf_basic() {
         state.stdin_symbols().is_empty(),
         "fscanf on fd 3 must not record stdin symbols"
     );
+}
+
+/// An fd Rust's FileSystem has *open* carries real content, so fscanf must
+/// bounce rather than mint fresh unconstrained values over it (angr-5mnx3.31).
+#[test]
+fn test_fscanf_open_fd_falls_back() {
+    let mut state = setup_state();
+    state.map_memory_data(0x1000, b"%d\x00", Permission::RWX);
+    let fd = state
+        .file_system()
+        .open_with_content("data.txt".to_string(), FdFlags::ReadOnly, b"42\n".to_vec())
+        .expect("fd space is not exhausted in tests");
+    let file_ptr = 0x10000u64;
+    setup_file_struct(&mut state, file_ptr, fd as i32);
+
+    let result = NativeFscanf.call(
+        &mut state,
+        &[
+            RustBV::concrete(file_ptr as u128, 64),
+            RustBV::concrete(0x1000, 64),
+            RustBV::concrete(0x2000, 64),
+            RustBV::concrete(0, 64),
+            RustBV::concrete(0, 64),
+            RustBV::concrete(0, 64),
+            RustBV::concrete(0, 64),
+            RustBV::concrete(0, 64),
+        ],
+    );
+
+    assert!(
+        matches!(result, Err(ProcedureError::Other(_))),
+        "fscanf on a tracked open fd must fall back to Python"
+    );
+    // The bounce happens before any store, so Python sees a pristine state.
+    assert_eq!(
+        state.memory_load(0x2000, 4).unwrap().as_u64(),
+        Some(0),
+        "fscanf must not write the destination before bouncing"
+    );
+}
+
+/// The gate keys on `is_open`, not merely "the FileSystem has heard of this
+/// fd": a closed fd has no live content or cursor to corrupt, so it keeps the
+/// native mint like any untracked fd (angr-5mnx3.31).
+#[test]
+fn test_fscanf_closed_fd_stays_native() {
+    let mut state = setup_state();
+    state.map_memory_data(0x1000, b"%d\x00", Permission::RWX);
+    let fd = state
+        .file_system()
+        .open_with_content("data.txt".to_string(), FdFlags::ReadOnly, b"42\n".to_vec())
+        .expect("fd space is not exhausted in tests");
+    assert!(state.file_system().close(fd));
+    let file_ptr = 0x10000u64;
+    setup_file_struct(&mut state, file_ptr, fd as i32);
+
+    let result = NativeFscanf
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(file_ptr as u128, 64),
+                RustBV::concrete(0x1000, 64),
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+            ],
+        )
+        .unwrap();
+
+    assert_eq!(result.unwrap().as_u64(), Some(1));
 }
 
 #[test]
