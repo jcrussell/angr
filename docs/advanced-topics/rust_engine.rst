@@ -493,6 +493,34 @@ derived: ``SymContext`` sits behind an ``Rc<RefCell<...>>`` and is a
 single shared context both merge arms already point at, so
 ``RustSimState::merge`` reuses it rather than combining it per-field.
 
+Memory stores under the callback-memory proxy
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+When Rust owns memory, the callback state's ``state.memory`` is a
+``RustMemoryProxy`` wrapping the very memory the interpreter is writing
+to. Re-entering it from a memory callback would double-borrow, so
+``rust_manager.py``'s ``_cb_memory_store`` /
+``_cb_memory_store_symbolic_value`` are deliberate **no-ops** in that
+configuration; Rust announces it by setting
+``PythonCallbacks::memory_is_rust_proxy`` (on by default).
+
+The consequence for interpreter code: a store dispatched *only* to
+``call_memory_store_symbolic_value`` is absorbed by nobody — not the
+Python shadow (the callback returned without storing) and not Rust's own
+``pending_stores`` / ``pending_symbolic_stores`` buffers. It is lost
+outright, and the state reads back the page-fill value instead. This is
+how flareon2015_5's base64 encoder came to read its own output as
+concrete zeros.
+
+Every such dispatch therefore goes through
+``statements_store.rs::VEXInterpreter::store_symbolic_value_buffered``,
+which pairs ``buffer_store_for_rust_memory`` (gated on
+``use_rust_memory && memory_is_rust_proxy``, so the ungated
+Python-shadow configuration pays nothing) with the callback call. New
+store paths must reuse that helper rather than calling the callback
+directly — the guarded-store, CAS-writeback and multi-address ITE paths
+each independently grew a raw dispatch before the helper existed.
+
 Architecture support matrix
 ---------------------------
 

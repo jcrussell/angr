@@ -303,7 +303,7 @@ fn build_ite_store_invokes_per_addr_ite_callbacks() {
     use pyo3::types::{PyDict, PyList};
 
     let ctx = SymContext::new_mock();
-    let interp = new_interp(&ctx);
+    let mut interp = new_interp(&ctx);
     // Site is below the use_rust_memory gate's fallback; the test default is
     // already callback-mode, but assert it to document the precondition.
     assert!(!interp.use_rust_memory);
@@ -1056,5 +1056,157 @@ fn dirty_call_result_tmp_missing_from_tyenv_is_invalid_ir() {
             interp.stats.vex_bypass_fabricate_count, 0,
             "the tyenv lookup must fail before any fabricate/fallback path"
         );
+    });
+}
+
+// ---------------------------------------------------------------------------
+// angr-5mnx3.23: every `memory_store_symbolic_value` dispatch must buffer.
+// ---------------------------------------------------------------------------
+
+/// Callbacks in the production callback-memory-proxy configuration: the
+/// `memory_store_symbolic_value` slot is wired to a Python function that does
+/// nothing — exactly what `rust_manager.py::_cb_memory_store_symbolic_value`
+/// is once `memory_is_rust_proxy` is on (`state.memory` *is* Rust memory, so
+/// the callback deliberately declines to re-enter it) — and the proxy flag is
+/// set. A dispatch that reaches this callback without first calling
+/// `buffer_store_for_rust_memory` therefore lands nowhere at all.
+///
+/// Marshalling a `RustBV` to the callback needs claripy; skip when it is not
+/// importable, mirroring `build_ite_store_invokes_per_addr_ite_callbacks`.
+fn with_proxy_callbacks<F: FnOnce(&PythonCallbacks)>(f: F) {
+    use pyo3::types::PyDict;
+
+    Python::initialize();
+    Python::attach(|py| {
+        if py.import("claripy").is_err() {
+            return;
+        }
+        let globals = PyDict::new(py);
+        py.run(
+            c"def proxy_noop_store(addr, ast):
+    pass
+def load_batch(loads):
+    return [(bytes(sz), False, None) for (_a, sz) in loads]
+def load_cb(addr, size):
+    return (bytes(size), False, None)
+",
+            Some(&globals),
+            None,
+        )
+        .expect("define proxy no-op callbacks");
+        let store_cb = globals.get_item("proxy_noop_store").unwrap().unwrap();
+        let load_batch = globals.get_item("load_batch").unwrap().unwrap();
+
+        let mut cb = PythonCallbacks::new();
+        cb.set_memory_store_symbolic_value(store_cb.unbind());
+        cb.set_memory_load_batch(load_batch.unbind());
+        cb.set_memory_load(globals.get_item("load_cb").unwrap().unwrap().unbind());
+        cb.py_set_memory_is_rust_proxy(true);
+        assert!(cb.has_memory_store_symbolic_value());
+        assert!(cb.memory_is_rust_proxy());
+        f(&cb);
+    });
+}
+
+/// Build an interpreter that owns its memory (the production configuration —
+/// `exploration/step_core.rs` installs the state's memory), so
+/// `buffer_store_for_rust_memory`'s `use_rust_memory` half of the gate holds.
+fn new_interp_rust_memory(ctx: &SymContext) -> VEXInterpreter<'_> {
+    let mut interp = new_interp(ctx);
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    mem.map_page(0x4000u64, vec![0u8; PAGE_SIZE as usize], Permission::RW);
+    interp.set_rust_memory(mem);
+    interp
+}
+
+/// angr-5mnx3.23: a `StoreG` with a *symbolic* guard at a concrete address
+/// builds `ITE(guard, new, current)` and hands it to
+/// `memory_store_symbolic_value`. Under the proxy gate that callback absorbs
+/// nothing, so the ITE must also be buffered in `pending_symbolic_stores` —
+/// otherwise the predicated store (ARM conditional stores, masked SIMD) is
+/// silently dropped.
+// Needs a real solver: `classify_guard` must return `Symbolic`, which requires
+// `check_branch_feasibility` to find both branches satisfiable
+// (bd memory `vex-engine-z3-test-gate-invariant`).
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn storeg_symbolic_guard_buffers_for_rust_memory() {
+    let ctx = SymContext::new_mock();
+    let mut interp = new_interp_rust_memory(&ctx);
+
+    let irsb = make_irsb_with_temps(0x1000, &[IRType::I1]);
+    interp.temps.resize(1, None);
+    interp.temps[0] = Some(RustBV::symbolic(&ctx, "storeg_guard", 1));
+
+    let storeg = IRStmt::StoreG {
+        addr: Box::new(IRExpr::Const(IRConst::U64(0x4010))),
+        data: Box::new(IRExpr::Const(IRConst::U32(0xdead_beef))),
+        guard: Box::new(IRExpr::RdTmp(0)),
+        endness: Endness::Little,
+    };
+
+    with_proxy_callbacks(|cb| {
+        interp
+            .execute_stmt_with_callbacks(cb, &storeg, &irsb)
+            .expect("guarded store with symbolic guard");
+
+        let buffered = interp
+            .pending_symbolic_stores
+            .get(&0x4010)
+            .expect("symbolic-guard StoreG must be buffered for rust_memory");
+        assert_eq!(buffered.width(), 32, "buffered ITE keeps the store width");
+        assert!(buffered.is_symbolic(), "the buffered value is the guard ITE");
+    });
+}
+
+/// angr-5mnx3.23, CAS variant: `cas_store_symbolic_data` writes back a computed
+/// `RustBV` (the success/failure ITE) that cannot be re-expressed as an
+/// `IRExpr`, so it dispatches the symbolic-value callback directly. Same proxy
+/// gate, same requirement to buffer.
+#[test]
+fn cas_symbolic_writeback_buffers_for_rust_memory() {
+    let ctx = SymContext::new_mock();
+    let mut interp = new_interp_rust_memory(&ctx);
+    let irsb = make_irsb_with_temps(0x1000, &[]);
+
+    let data_bv = RustBV::symbolic(&ctx, "cas_writeback", 32);
+    let addr_expr = IRExpr::Const(IRConst::U64(0x4020));
+
+    with_proxy_callbacks(|cb| {
+        interp
+            .cas_store_symbolic_data(cb, &addr_expr, &data_bv, &irsb)
+            .expect("CAS symbolic writeback");
+
+        assert!(
+            interp.pending_symbolic_stores.contains_key(&0x4020),
+            "CAS symbolic writeback must be buffered for rust_memory"
+        );
+    });
+}
+
+/// angr-5mnx3.23, multi-address variant: a symbolic-address store that
+/// concretizes to several candidates within `MAX_ITE_ADDRS` emits one
+/// `ITE(addr == a_i, data, mem[a_i])` per candidate through the same callback.
+/// Each of those must be buffered too.
+#[test]
+fn ite_store_buffers_every_candidate_for_rust_memory() {
+    let ctx = SymContext::new_mock();
+    let mut interp = new_interp_rust_memory(&ctx);
+
+    let addr_expr = RustBV::symbolic(&ctx, "ite_store_addr", 64);
+    let data_val = RustBV::symbolic(&ctx, "ite_store_data", 32);
+    let addrs = [0x4010u64, 0x4020u64];
+
+    with_proxy_callbacks(|cb| {
+        interp
+            .build_ite_store_from_callbacks(cb, &addrs, &addr_expr, &data_val)
+            .expect("per-candidate ITE store");
+
+        for addr in addrs {
+            assert!(
+                interp.pending_symbolic_stores.contains_key(&addr),
+                "candidate {addr:#x} must be buffered for rust_memory"
+            );
+        }
     });
 }

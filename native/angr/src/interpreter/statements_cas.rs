@@ -322,9 +322,7 @@ impl<'a> VEXInterpreter<'a> {
             self.invalidate_code_at_store(addr_concrete, data_size);
             if callbacks.has_memory_store_symbolic_value() {
                 self.flush_stores(callbacks)?;
-                callbacks
-                    .call_memory_store_symbolic_value(addr_concrete, data_bv)
-                    .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+                self.store_symbolic_value_buffered(callbacks, addr_concrete, data_bv)?;
             } else {
                 reject_symbolic_byte_store(data_bv, addr_concrete, "CAS store")?;
                 self.evict_overlapping_symbolic_stores(addr_concrete, data_size);

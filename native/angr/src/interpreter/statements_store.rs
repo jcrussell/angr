@@ -288,12 +288,9 @@ impl<'a> VEXInterpreter<'a> {
 
         if data_val.is_symbolic() && callbacks.has_memory_store_symbolic_value() && use_sym_store {
             // Try symbolic store callback (preserves expression tree)
-            self.buffer_store_for_rust_memory(callbacks, addr_concrete, &data_val);
             let sym_ok = (|| -> Result<(), CbExecutionError> {
                 self.flush_stores(callbacks)?;
-                callbacks
-                    .call_memory_store_symbolic_value(addr_concrete, &data_val)
-                    .map_err(|e| CbExecutionError::Callback(e.to_string()))
+                self.store_symbolic_value_buffered(callbacks, addr_concrete, &data_val)
             })();
             if let Err(sym_err) = sym_ok {
                 // Symbolic store callback failed — evaluate to concrete and
@@ -407,6 +404,37 @@ impl<'a> VEXInterpreter<'a> {
         }
     }
 
+    /// Buffer-then-dispatch a symbolic value to
+    /// `PythonCallbacks::call_memory_store_symbolic_value`.
+    ///
+    /// **Every** call site of that callback must go through this helper.
+    /// Under the callback-memory-proxy gate the callback is a documented
+    /// no-op, so a raw dispatch that skips `buffer_store_for_rust_memory`
+    /// lands in neither Rust's pending-store buffers nor Python's shadow
+    /// memory and is lost outright (angr-5rjbq fixed the two
+    /// `statements_store.rs` paths; angr-5mnx3.23 found four more siblings —
+    /// `handle_storeg`'s two symbolic-guard branches,
+    /// `cas_store_symbolic_data`, and `build_ite_store_from_callbacks` —
+    /// that had repeated the raw form). Bundling the pair here is what stops
+    /// a seventh site from repeating it.
+    ///
+    /// Callers that need the pending buffer drained first (so Python cannot
+    /// observe a write ordered after this one) still call `flush_stores`
+    /// themselves *before* this helper — buffering after the flush keeps the
+    /// value live in `pending_symbolic_stores` for load forwarding until the
+    /// next flush.
+    pub(super) fn store_symbolic_value_buffered(
+        &mut self,
+        callbacks: &PythonCallbacks,
+        addr: u64,
+        data_val: &RustBV,
+    ) -> Result<(), CbExecutionError> {
+        self.buffer_store_for_rust_memory(callbacks, addr, data_val);
+        callbacks
+            .call_memory_store_symbolic_value(addr, data_val)
+            .map_err(|e| CbExecutionError::Callback(e.to_string()))
+    }
+
     /// Remove symbolic store entries (pending and flushed) whose byte range
     /// overlaps `[addr, addr + size)`. A concrete store overwriting (part of) a
     /// prior symbolic store must drop the symbolic shadow, otherwise a later
@@ -465,12 +493,10 @@ impl<'a> VEXInterpreter<'a> {
         match &*concret_result {
             ConcretizationResult::Single(addr_concrete) => {
                 let addr_concrete = *addr_concrete;
-                self.buffer_store_for_rust_memory(callbacks, addr_concrete, data_val);
                 if data_val.is_symbolic() && callbacks.has_memory_store_symbolic_value() {
-                    callbacks
-                        .call_memory_store_symbolic_value(addr_concrete, data_val)
-                        .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+                    self.store_symbolic_value_buffered(callbacks, addr_concrete, data_val)?;
                 } else {
+                    self.buffer_store_for_rust_memory(callbacks, addr_concrete, data_val);
                     reject_symbolic_byte_store(
                         data_val,
                         addr_concrete,
@@ -530,7 +556,7 @@ impl<'a> VEXInterpreter<'a> {
     /// the symbolic-value callback is available, otherwise hand the full address
     /// list to Python. The load-side counterpart is `dispatch_multi_load`.
     pub(super) fn dispatch_multi_store(
-        &self,
+        &mut self,
         callbacks: &PythonCallbacks,
         addrs: &[u64],
         addr_val: &RustBV,

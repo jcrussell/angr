@@ -1000,7 +1000,7 @@ impl<'a> VEXInterpreter<'a> {
     /// This keeps the ITE construction in Rust's Z3 context, avoiding FFI round-trips
     /// for the ITE chain building that Python would otherwise do.
     pub(super) fn build_ite_store_from_callbacks(
-        &self,
+        &mut self,
         callbacks: &PythonCallbacks,
         addrs: &[u64],
         addr_expr: &RustBV,
@@ -1029,9 +1029,7 @@ impl<'a> VEXInterpreter<'a> {
 
             let ite_value = cond.ite(data_val, &current, self.ctx);
 
-            callbacks
-                .call_memory_store_symbolic_value(addr, &ite_value)
-                .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+            self.store_symbolic_value_buffered(callbacks, addr, &ite_value)?;
         }
 
         Ok(())

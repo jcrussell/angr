@@ -600,9 +600,7 @@ impl<'a> VEXInterpreter<'a> {
                     // ITE result is symbolic if guard or either operand is symbolic
                     if ite_result.is_symbolic() && callbacks.has_memory_store_symbolic_value() {
                         self.flush_stores(callbacks)?;
-                        callbacks
-                            .call_memory_store_symbolic_value(addr_concrete, &ite_result)
-                            .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+                        self.store_symbolic_value_buffered(callbacks, addr_concrete, &ite_result)?;
                     } else {
                         reject_symbolic_byte_store(&ite_result, addr_concrete, "StoreG")?;
                         let ite_bytes = bv_to_bytes(&ite_result);
@@ -633,9 +631,11 @@ impl<'a> VEXInterpreter<'a> {
                             if ite_result.is_symbolic()
                                 && callbacks.has_memory_store_symbolic_value()
                             {
-                                callbacks
-                                    .call_memory_store_symbolic_value(addr_concrete, &ite_result)
-                                    .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
+                                self.store_symbolic_value_buffered(
+                                    callbacks,
+                                    addr_concrete,
+                                    &ite_result,
+                                )?;
                             } else {
                                 reject_symbolic_byte_store(
                                     &ite_result,
