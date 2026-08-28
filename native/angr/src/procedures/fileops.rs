@@ -167,6 +167,10 @@ pub(crate) fn read_fileno(state: &RustSimState, file_ptr: u64) -> Result<i32, Pr
 /// Every native write-family proc that dispatches off a `FILE *` funnels
 /// through this (or [`resolve_stream_fd_or_demote_all`]) rather than calling
 /// [`read_fileno`] directly, so the demotion protocol cannot diverge per proc.
+///
+/// Read-family procs do **not** use this: they have no symbolic content to
+/// demote, and instead carve out stdin via
+/// `fgets.rs::read_fileno_or_stdin`.
 pub(crate) fn read_fileno_or_demote_all(
     state: &mut RustSimState,
     file_ptr: u64,
@@ -184,6 +188,11 @@ pub(crate) fn read_fileno_or_demote_all(
 /// [`RustBV`]: a *symbolic* stream pointer is just as unresolvable as a
 /// symbolic `_fileno`, so it demotes on the same terms rather than bailing out
 /// of the write path with the demotion skipped.
+///
+/// The `resolve_stream_fd` prefix marks the `&RustBV` entry point; the
+/// `read_fileno` prefix marks the already-concretized `u64` one. Both are
+/// write-side — the read-side sibling is
+/// `fgets.rs::read_fileno_or_stdin`.
 pub(crate) fn resolve_stream_fd_or_demote_all(
     state: &mut RustSimState,
     stream: &RustBV,

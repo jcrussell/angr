@@ -621,7 +621,7 @@ fn test_fgets_permission_error_does_not_masquerade_as_stdin() {
     assert_eq!(state.memory_load(0x2000, 1).unwrap().as_u64(), Some(0));
 }
 
-/// The same narrowing on the fgetc side, which shares `resolve_stream_fd`.
+/// The same narrowing on the fgetc side, which shares `read_fileno_or_stdin`.
 #[test]
 fn test_fgetc_permission_error_does_not_masquerade_as_stdin() {
     let mut state = RustSimState::new("amd64").unwrap();

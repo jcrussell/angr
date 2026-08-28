@@ -127,8 +127,22 @@ pub(crate) fn store_symbolic_line(
     Ok(real_size)
 }
 
-/// Resolve a `FILE *stream` argument to its backing fd for a read-side stdio
-/// procedure (`fgets`/`fgetc`).
+/// [`read_fileno`] for a **read** path: on an unmapped FILE struct, answer
+/// stdin (fd 0) instead of propagating the error.
+///
+/// The `_or_<fallback>` suffix names what happens when [`read_fileno`] fails,
+/// the same way the write-side
+/// [`read_fileno_or_demote_all`](super::fileops::read_fileno_or_demote_all)
+/// does — but the two are not interchangeable. This one answers a *different
+/// fd* and takes `&state`; the write-side one still propagates the error, and
+/// takes `&mut state` so it can demote bounded symbolic content first.
+/// `fileops` also exposes
+/// [`resolve_stream_fd_or_demote_all`](super::fileops::resolve_stream_fd_or_demote_all),
+/// whose distinct `resolve_stream_fd` prefix marks the `stream: &RustBV`
+/// (not-yet-concretized `FILE *`) entry point into that same write-side
+/// protocol. This module's procs declare `args = [stream: concrete]`, so the
+/// `FILE *` is already a `u64` by the time they call in and they enter at the
+/// [`read_fileno`] level instead.
 ///
 /// Mirrors Python's `stream->_fileno` resolution with one pragmatic carve-out:
 /// the cle-provided standard streams (`stdin`/`stdout`/`stderr`) live in the
@@ -166,8 +180,8 @@ pub(crate) fn store_symbolic_line(
 /// wraps past the top of the address space — and answering "stdin" for those
 /// would invent an fd out of an unrelated failure, so they propagate and let
 /// Python decide (angr-03vl4.43).
-fn resolve_stream_fd(state: &RustSimState, stream: u64) -> Result<i32, ProcedureError> {
-    match read_fileno(state, stream) {
+fn read_fileno_or_stdin(state: &RustSimState, file_ptr: u64) -> Result<i32, ProcedureError> {
+    match read_fileno(state, file_ptr) {
         Ok(fd) => Ok(fd),
         // FILE struct not in Rust memory => cle standard stream => stdin.
         Err(ProcedureError::Memory(
@@ -187,7 +201,7 @@ crate::declare_proc! {
     /// Creates (size-1) symbolic bytes and a NUL terminator at the buffer.
     /// Returns the buffer address on success.
     ///
-    /// Resolves the backing fd via [`resolve_stream_fd`]: only stdin (fd 0) uses
+    /// Resolves the backing fd via [`read_fileno_or_stdin`]: only stdin (fd 0) uses
     /// this native symbolic-stdin path. A non-stdin file stream falls back to
     /// Python, an invalid fd returns -1, and a symbolic FILE*/`_fileno` falls
     /// back to Python.
@@ -208,7 +222,7 @@ crate::declare_proc! {
         }
 
         // Resolve the backing fd. Only stdin (fd 0) is served natively.
-        let fd = resolve_stream_fd(state, stream)?;
+        let fd = read_fileno_or_stdin(state, stream)?;
         if fd < 0 {
             // Invalid stream: Python fgets returns -1 (missing SimFileDescriptor).
             return Ok(Some(arch_word(state, -1i64 as u64)));
@@ -340,7 +354,7 @@ crate::declare_proc! {
     /// with `getchar`. Default (SHORT_READS off) never returns the EOF sentinel
     /// from the symbolic-stdin path.
     ///
-    /// Resolves the backing fd via [`resolve_stream_fd`]: only stdin (fd 0) is
+    /// Resolves the backing fd via [`read_fileno_or_stdin`]: only stdin (fd 0) is
     /// served natively. A non-stdin stream falls back to Python, an invalid fd
     /// returns -1 (EOF sentinel, matching Python `fgetc`), and a symbolic
     /// FILE*/`_fileno` falls back to Python.
@@ -349,7 +363,7 @@ crate::declare_proc! {
     args = [stream: concrete],
     aliases = ["fgetc_unlocked"],
     call |state| {
-        let fd = resolve_stream_fd(state, stream)?;
+        let fd = read_fileno_or_stdin(state, stream)?;
         if fd < 0 {
             // Invalid stream: Python fgetc returns -1 (missing descriptor).
             return Ok(Some(RustBV::concrete((-1i64 as u64) as u128, 32)));
