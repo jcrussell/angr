@@ -3,144 +3,40 @@
 //! `rustbv_to_claripy` / `rustbv_to_claripy_memo` reconstruct a claripy AST
 //! from a `RustBV`, returning the original imported AST verbatim on a cache
 //! hit (preserving annotations) and rebuilding from `BVOp + operands`
-//! otherwise. `ensure_claripy_ast` and `build_sound_bitcount` are helpers.
+//! otherwise.
+//!
+//! What lives where (angr-5mnx3.11 split):
+//!
+//! - here: the recursive `BVOp`-dispatch walk itself
+//!   ([`rustbv_to_claripy`] / [`rustbv_to_claripy_memo`]), its depth guard and
+//!   [`assumed_guard_to_claripy`];
+//! - [`ast_helpers`]: the leaf helpers that build or repair a single claripy
+//!   object (`ensure_claripy_ast`, `bool_to_bv1`, `concrete_value_to_bvv`,
+//!   `build_sound_bitcount`) — everything that needs a live interpreter;
+//! - [`width_decisions`]: the pure width/coercion decision seams
+//!   ([`width_decisions::ConcreteBvvEncoding`],
+//!   [`width_decisions::WidthFixup`]), unit-testable without claripy.
+
+mod ast_helpers;
+mod width_decisions;
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyInt};
 
 use crate::symbolic::{RustBV, SymbolKind};
+
+use ast_helpers::{
+    bool_to_bv1, build_sound_bitcount, coerce_bool_to_bv1, concrete_value_to_bvv,
+    ensure_claripy_ast,
+};
+use width_decisions::{BoolCoercion, WidthFixup};
 
 use super::cache::{
     evict_claripy_ast, get_claripy_ast, get_expression_ast_by_operands,
     store_claripy_ast_with_info, store_expression_ast_by_operands,
 };
-
-/// Name of `obj`'s Python type, or `"unknown"` if the interpreter refuses to
-/// answer.
-///
-/// The type name drives control flow in [`ensure_claripy_ast`] (`"bool"` /
-/// `"int"`) and [`coerce_bool_to_bv1`] (`"Bool"`), so the failure fallback has
-/// to be a string that matches none of those arms — `"unknown"` is that
-/// sentinel, and the callers treat it as "not one of the shapes I handle".
-fn py_type_name(obj: &Bound<'_, PyAny>) -> String {
-    obj.get_type()
-        .name()
-        .map_or_else(|_| "unknown".to_string(), |n| n.to_string())
-}
-
-/// Ensure a `Py<PyAny>` is a claripy AST, wrapping ints/bools if needed.
-///
-/// This is a defensive function to handle cases where a Python int or bool
-/// might be returned from cache or operations instead of a proper claripy AST.
-/// Operations like Extract require claripy ASTs and will fail with
-/// "'int' object has no attribute 'length'" if passed an int.
-fn ensure_claripy_ast(
-    py: Python<'_>,
-    obj: &Py<PyAny>,
-    claripy_mod: &Bound<'_, PyAny>,
-    width_hint: Option<u32>,
-) -> PyResult<Py<PyAny>> {
-    let bound = obj.bind(py);
-
-    // Check if it's already a claripy AST by checking for 'op' attribute
-    let missing_op_attr = match bound.hasattr("op") {
-        Ok(true) => {
-            return Ok(obj.clone_ref(py));
-        }
-        Ok(false) => true,
-        // SILENT(cat-a): a `hasattr` that itself errors (a `__getattr__` that
-        // raises) answers `false` here, but this flag only gates the debug log
-        // below — it changes no control flow, and claiming "missing 'op' attr"
-        // for an object we could not interrogate would be the misleading half.
-        // The object still falls through to the type dispatch and, being
-        // neither `bool` nor `int`, lands on the tagged unknown-type fallback
-        // at the end of this function, which warns on its own (angr-sqfj8.23).
-        Err(e) => {
-            log::warn!("ensure_claripy_ast: hasattr('op') failed: {e}");
-            false
-        }
-    };
-
-    // Check the actual Python type to distinguish bool from int.
-    // IMPORTANT: `bool` is a subclass of `int` in Python, and `extract::<bool>()`
-    // happily succeeds for a plain `int`, so a bare extract cannot tell the two
-    // apart. The discrimination is therefore done on the *type name* below —
-    // each branch gates on `type_name == "bool"` / `== "int"` first and only
-    // then extracts, so the extract is a value unpack, never the type test.
-    // The name comparison is exact, so an `int` subclass (name != "int") falls
-    // through to the tagged unknown-type fallback at the end rather than being
-    // silently wrapped as a BVV.
-    let type_name = py_type_name(bound);
-    if missing_op_attr {
-        log::debug!("ensure_claripy_ast: object {type_name} missing 'op' attr, wrapping");
-    }
-
-    // Check if it's exactly a Python bool (not an int that happens to be 0 or 1)
-    if type_name == "bool"
-        && let Ok(bool_val) = bound.extract::<bool>()
-    {
-        // If width hint is provided, wrap as BVV (for use in BV operations)
-        // Otherwise wrap as BoolV (for use in Bool operations)
-        if let Some(w) = width_hint {
-            let val: i64 = i64::from(bool_val);
-            return claripy_mod
-                .call_method1("BVV", (val, w))
-                .map(std::convert::Into::into);
-        }
-        return claripy_mod
-            .call_method1("BoolV", (bool_val,))
-            .map(std::convert::Into::into);
-    }
-
-    // If it's an int, wrap in BVV with the provided width hint
-    // Try i128 first for larger values, then fall back to i64
-    if type_name == "int" {
-        // SILENT(cat-b): a bare Python int carries no width, so an absent
-        // `width_hint` is defaulted to 64 rather than refused. Both call sites
-        // (`rustbv_to_claripy_memo`'s symbolic-cache-hit arm and its
-        // `RustBV::Expression` operand loop) always pass a `Some` derived from
-        // the corresponding `RustBV::width()`, so the default is currently
-        // unreachable; if a future caller omits the hint, a narrower operand
-        // widens to 64 bits instead of erroring (angr-sqfj8.23).
-        let width = width_hint.unwrap_or(64);
-        // Try to extract as i128 for larger values
-        if let Ok(int_val) = bound.extract::<i128>() {
-            log::debug!("ensure_claripy_ast: wrapping int {int_val} in BVV with width {width}");
-            // For values that fit in i64, use that (more compatible)
-            if int_val >= i64::MIN as i128 && int_val <= i64::MAX as i128 {
-                return claripy_mod
-                    .call_method1("BVV", (int_val as i64, width))
-                    .map(std::convert::Into::into);
-            } else {
-                // For larger values, pass as Python int directly
-                return claripy_mod
-                    .call_method1("BVV", (&bound, width))
-                    .map(std::convert::Into::into);
-            }
-        }
-        // Fallback: pass the Python object directly and let claripy handle it
-        log::debug!("ensure_claripy_ast: wrapping large int in BVV with width {width}");
-        return claripy_mod
-            .call_method1("BVV", (&bound, width))
-            .map(std::convert::Into::into);
-    }
-
-    // SILENT(cat-c): anything that is neither an AST (no `op` attr) nor a
-    // `bool`/`int` we know how to wrap is handed back untouched. Both callers
-    // feed the result straight into claripy op construction, so a genuinely
-    // wrong object (a `str`, a `float`, `None`) becomes either a `TypeError`
-    // or the `NotImplemented` singleton one frame later rather than a raised
-    // error here — the wrong-answer-risk class. Not upgraded to an `Err`
-    // because the reachable case is the opposite one: an object whose
-    // `hasattr('op')` raised above is very likely a real AST, and returning it
-    // unchanged is correct. Warns unconditionally so the two are
-    // distinguishable in a log (angr-sqfj8.23).
-    log::warn!("ensure_claripy_ast: unknown type {type_name}, returning as-is");
-    Ok(obj.clone_ref(py))
-}
 
 /// Materialize one `(guard, is_assumed_true)` entry from a `SymContext`'s
 /// assumed log as a claripy **boolean** constraint (angr-op0dn.14.4.1).
@@ -244,235 +140,6 @@ pub(crate) fn rustbv_to_claripy(
 /// bushy DAG described above collapses to ~25 shared subtrees via the
 /// per-call `memo` + the cross-call `EXPRESSION_BY_OPERANDS_PTR` cache.
 const MAX_EXPORT_RECURSION_DEPTH: u32 = 4096;
-
-/// angr-acoq: build a sound claripy encoding for a symbolic clz/ctz/popcount
-/// whose single operand has already been converted to `operand` (a claripy BV
-/// of the same `width`). The result width equals `width`, matching the
-/// concrete fast path (`BVV(result, width)`). Only valid for `width <= 64`.
-///
-/// Encodings (all tied to `operand`, so Python-side eval stays consistent with
-/// the Rust engine's value):
-///   - clz: nested `If(bit[w-1-i]==1, i, ...)` from LSB to MSB so the MSB test
-///     is outermost; default `w` when no bit is set.
-///   - ctz: nested `If(bit[i]==1, i, ...)` from MSB to LSB so the LSB test is
-///     outermost; default `w` when no bit is set.
-///   - popcount: sum of `ZeroExt(w-1, bit[i])` over all `i`.
-fn build_sound_bitcount(
-    _py: Python<'_>,
-    claripy_mod: &Bound<'_, PyAny>,
-    op: &crate::symbolic::BVOp,
-    operand: &Bound<'_, PyAny>,
-    width: u32,
-) -> PyResult<Py<PyAny>> {
-    use crate::symbolic::BVOp;
-
-    let extract_bit = |pos: u32| -> PyResult<Bound<'_, PyAny>> {
-        claripy_mod.call_method1("Extract", (pos, pos, operand))
-    };
-
-    match op {
-        BVOp::Popcount => {
-            // sum of zero-extended individual bits; result fits in `width`.
-            let mut acc: Bound<'_, PyAny> = if width > 1 {
-                claripy_mod.call_method1("ZeroExt", (width - 1, extract_bit(0)?))?
-            } else {
-                extract_bit(0)?
-            };
-            for pos in 1..width {
-                let ext = claripy_mod.call_method1("ZeroExt", (width - 1, extract_bit(pos)?))?;
-                acc = acc.call_method1("__add__", (ext,))?;
-            }
-            Ok(acc.into())
-        }
-        BVOp::Clz | BVOp::Ctz => {
-            let one = claripy_mod.call_method1("BVV", (1i64, 1u32))?;
-            let mut result = claripy_mod.call_method1("BVV", (width as i64, width))?;
-            // For clz, iterate positions LSB->MSB so the MSB test is outermost.
-            // For ctz, iterate MSB->LSB so the LSB test is outermost.
-            let positions: Vec<u32> = match op {
-                BVOp::Clz => (0..width).collect(),
-                _ => (0..width).rev().collect(),
-            };
-            for pos in positions {
-                let cond = extract_bit(pos)?.call_method1("__eq__", (&one,))?;
-                let leading_count = match op {
-                    BVOp::Clz => width - 1 - pos,
-                    _ => pos, // ctz: trailing zeros == bit index of lowest set bit
-                };
-                let val = claripy_mod.call_method1("BVV", (leading_count as i64, width))?;
-                result = claripy_mod.call_method1("If", (cond, val, result))?;
-            }
-            Ok(result.into())
-        }
-        _ => unreachable!("build_sound_bitcount only handles clz/ctz/popcount"),
-    }
-}
-
-/// Export a concrete `u128` value of the given bit `width` as a `claripy.BVV`.
-///
-/// Shared by the `Concrete` and `Constrained` arms of [`rustbv_to_claripy_memo`]
-/// so the two stay in lockstep — they drifted once (angr-ph300.52): the
-/// `Constrained` arm was missing the `width / 8 <= 16` clause, so a byte-aligned
-/// width > 128 (e.g. 192) built a 16-byte `PyBytes` and handed it to
-/// `BVV(bytes, 192)`, which raises `ClaripyValueError` for the string/size
-/// mismatch, while the `Concrete` twin succeeded.
-///
-/// - `width <= 64`: pass the value as an `i64`.
-/// - byte-aligned and `width / 8 <= 16` (fits in the u128's 16 bytes): pass the
-///   exact big-endian bytes.
-/// - otherwise (non-byte-aligned OR width > 128): pass a Python int, which
-///   `BVV(int, width)` zero-pads correctly for any width.
-fn concrete_value_to_bvv(
-    py: Python<'_>,
-    claripy_mod: &Bound<'_, PyAny>,
-    value: u128,
-    width: u32,
-) -> PyResult<Py<PyAny>> {
-    match ConcreteBvvEncoding::for_width(width) {
-        ConcreteBvvEncoding::Int64 => claripy_mod
-            .call_method1("BVV", (value as i64, width))
-            .map(std::convert::Into::into),
-        ConcreteBvvEncoding::Bytes(byte_count) => {
-            let bytes = value.to_be_bytes();
-            let start = bytes.len().saturating_sub(byte_count);
-            let py_bytes = PyBytes::new(py, &bytes[start..]);
-            claripy_mod
-                .call_method1("BVV", (py_bytes, width))
-                .map(std::convert::Into::into)
-        }
-        ConcreteBvvEncoding::PyIntWide => {
-            let py_int = PyInt::new(py, value);
-            claripy_mod
-                .call_method1("BVV", (py_int, width))
-                .map(std::convert::Into::into)
-        }
-    }
-}
-
-/// Which `claripy.BVV` argument encoding a concrete value of a given bit width
-/// takes. Pure decision seam, unit-tested in `export_tests.rs` without a Python
-/// interpreter — the width-guard branch that regressed in the `Constrained`
-/// arm (angr-ph300.52) is exactly this decision.
-#[derive(Debug, PartialEq, Eq)]
-enum ConcreteBvvEncoding {
-    /// `width <= 64`: pass as `i64`.
-    Int64,
-    /// Byte-aligned and fits in the u128's 16 bytes: pass the big-endian bytes.
-    Bytes(usize),
-    /// Non-byte-aligned OR width > 128: pass a Python int (zero-padded).
-    PyIntWide,
-}
-
-impl ConcreteBvvEncoding {
-    fn for_width(width: u32) -> Self {
-        if width <= 64 {
-            Self::Int64
-        } else if width.is_multiple_of(8) && width as usize / 8 <= 16 {
-            Self::Bytes(width as usize / 8)
-        } else {
-            Self::PyIntWide
-        }
-    }
-}
-
-/// Which operands of a two-operand `BVOp` were `Bool`s coerced to `BV(1)`
-/// before the width-reconciliation step in `rustbv_to_claripy_memo`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BoolCoercion {
-    /// Both operands arrived as real BVs; no coercion happened.
-    Neither,
-    /// Operand 0 was a `Bool`, now a `BV(1)`.
-    Arg0,
-    /// Operand 1 was a `Bool`, now a `BV(1)`.
-    Arg1,
-    /// Both operands were `Bool`s, now `BV(1)`s.
-    Both,
-}
-
-impl BoolCoercion {
-    /// Whether operand `idx` is a coerced `Bool` (so its value is 0 or 1).
-    fn covers(self, idx: usize) -> bool {
-        matches!(
-            (self, idx),
-            (Self::Both, _) | (Self::Arg0, 0) | (Self::Arg1, 1)
-        )
-    }
-}
-
-/// How `rustbv_to_claripy_memo` reconciles a two-operand `BVOp` whose claripy
-/// operands ended up with different widths. Pure decision seam, unit-tested in
-/// `export_tests.rs` without a Python interpreter.
-///
-/// The only legitimate width mismatch is the [`BoolCoercion`] one: a `Bool`
-/// operand became a `BV(1)` holding 0 or 1, so widening it with `ZeroExt` is
-/// unambiguously value-preserving. Two *real* BVs of different widths cannot
-/// happen — every `RustBV` binary-op constructor in `symbolic::value_ops`
-/// checks operand widths before building the node — so reaching that case means
-/// an upstream invariant was violated (a `debug_assert_eq!` compiled out in
-/// release, or a hand-built/deserialized `Expression`). Zero-extending there
-/// would silently mint a semantically wrong AST — sign-flipped for a signed op
-/// like `Slt`/`SDiv` — so this module's "fail loud rather than hand back a
-/// plausible-looking wrong answer" rule applies and the case is rejected
-/// (angr-c7xno.14).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum WidthFixup {
-    /// Widths already agree; pass the operands through untouched.
-    Agree,
-    /// `ZeroExt` operand 0 (a coerced `Bool`) up to operand 1's width.
-    ZeroExtendArg0,
-    /// `ZeroExt` operand 1 (a coerced `Bool`) up to operand 0's width.
-    ZeroExtendArg1,
-    /// Mismatched widths that no `Bool` coercion explains — fail loud.
-    Reject,
-}
-
-impl WidthFixup {
-    fn decide(w0: u32, w1: u32, coercion: BoolCoercion) -> Self {
-        // The narrower operand is the one that would be widened; it is only
-        // safe to widen when it is a coerced Bool.
-        let (narrower, fixup) = if w0 == w1 {
-            return Self::Agree;
-        } else if w0 < w1 {
-            (0usize, Self::ZeroExtendArg0)
-        } else {
-            (1usize, Self::ZeroExtendArg1)
-        };
-        if coercion.covers(narrower) {
-            fixup
-        } else {
-            Self::Reject
-        }
-    }
-}
-
-/// Convert a claripy `Bool` AST to a 1-bit BV via `If(cond, BVV(1,1), BVV(0,1))`.
-///
-/// claripy's `ZeroExt`/`SignExt`/`Extract` and the width-matching binary-op
-/// path all require a BV operand, not a Bool. This is the single canonical
-/// coercion (previously re-implemented inline four times — angr-c3rd,
-/// angr-n0irt.11).
-fn bool_to_bv1<'py>(
-    claripy_mod: &Bound<'py, PyAny>,
-    arg: &Bound<'py, PyAny>,
-) -> PyResult<Bound<'py, PyAny>> {
-    let one = claripy_mod.call_method1("BVV", (1i64, 1u32))?;
-    let zero = claripy_mod.call_method1("BVV", (0i64, 1u32))?;
-    claripy_mod.call_method1("If", (arg, one, zero))
-}
-
-/// If `arg` is a claripy `Bool`, coerce it to a 1-bit BV; otherwise return it
-/// unchanged. Used by the `ZeroExt`/`SignExt`/`Extract` arms, which reject a
-/// Bool operand.
-fn coerce_bool_to_bv1<'py>(
-    claripy_mod: &Bound<'py, PyAny>,
-    arg: &Bound<'py, PyAny>,
-) -> PyResult<Bound<'py, PyAny>> {
-    if py_type_name(arg) == "Bool" {
-        bool_to_bv1(claripy_mod, arg)
-    } else {
-        Ok(arg.clone())
-    }
-}
 
 /// Depth-guarded recursive AST-tree walk (angr-2a3i9). `depth` starts at 0
 /// from [`rustbv_to_claripy`] and increments once per `Expression` operand

@@ -670,7 +670,9 @@ Caveats:
   which owns the refcounted `Z3AstPtr` type itself (angr-03vl4.75),
   `solver/handle_api.rs` the handle-based claripy-bypass `op_*` API —
   angr-9ke6b.205)
-- **Claripy bridge**: `native/angr/src/claripy_bridge/` (entry point `mod.rs` + cache.rs, import.rs, export.rs submodules)
+- **Claripy bridge**: `native/angr/src/claripy_bridge/` (entry point `mod.rs` + cache.rs, import.rs, export.rs submodules;
+  the angr-5mnx3.11 split put export.rs's leaf Python helpers in `export/ast_helpers.rs` and its pure
+  width/coercion decision seams — `ConcreteBvvEncoding`, `BoolCoercion`, `WidthFixup` — in `export/width_decisions.rs`)
 - **VEX interpreter**: `native/angr/src/interpreter/` (mod.rs, execution.rs, expressions.rs, statements.rs, exits.rs, bv_utils.rs, pending_store.rs, prefetch.rs), `native/angr/src/vex/` — contributor guide for adding a new VEX op in [`docs/extending-angr/rust_vex_ops.rst`](docs/extending-angr/rust_vex_ops.rst)
 - **Native SimProcedures**: `native/angr/src/procedures/` (strlen, memcpy, strcmp, malloc, free, etc.) — contributor guide in [`docs/extending-angr/simprocedures.rst`](docs/extending-angr/simprocedures.rst) ("Native (Rust) SimProcedures" section)
 - **State proxy**: `angr/exploration/rust_state_proxy.py`
