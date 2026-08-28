@@ -458,16 +458,25 @@ impl FileSystem {
     ///
     /// O(k) hash lookups for k = the returned fd, and k is bounded by the
     /// number of open fds, so the scan always terminates.
-    fn lowest_free_fd(&self) -> u32 {
+    ///
+    /// Returns `None` when every fd from 0 to `u32::MAX` is open, for the same
+    /// reason [`alloc_fd`](Self::alloc_fd) refuses rather than saturates: a
+    /// wrapped or clamped scan cursor would hand back an fd that is still
+    /// open, and an fd is an *identity*, not a size. See
+    /// `invariant-overflow-fix-refuse-not-saturate-identities`. (Only
+    /// reachable with ~4 billion live descriptors, so this is consistency
+    /// with the rest of the file's fd arithmetic, not a practical hazard.)
+    fn lowest_free_fd(&self) -> Option<u32> {
         let mut fd = 0u32;
         while self.fds.get(&fd).is_some_and(|d| d.is_open) {
-            fd += 1;
+            fd = fd.checked_add(1)?;
         }
-        fd
+        Some(fd)
     }
 
     /// Duplicate an open file descriptor, allocating the lowest unused fd.
-    /// Returns the new fd, or None if `oldfd` is not open.
+    /// Returns the new fd, or None if `oldfd` is not open or the fd space is
+    /// exhausted (see `lowest_free_fd`).
     ///
     /// Like POSIX `dup(2)`: the new fd is the lowest number not currently
     /// open (see `lowest_free_fd`), and it refers to
@@ -486,7 +495,7 @@ impl FileSystem {
             return None;
         }
         let cloned = self.fds.get(&oldfd).cloned()?;
-        let newfd = self.lowest_free_fd();
+        let newfd = self.lowest_free_fd()?;
         self.next_fd = self.next_fd.max(newfd.saturating_add(1));
         Arc::make_mut(&mut self.fds).insert(newfd, cloned);
         Some(newfd)
