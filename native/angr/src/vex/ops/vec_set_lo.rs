@@ -29,7 +29,7 @@ impl VEXOps {
     /// preserving the upper `128 - val.width()` bits. Backs Iop_SetV128lo32
     /// (`val` 32-bit) and Iop_SetV128lo64 (`val` 64-bit).
     fn set_v128_lo(vec: RustBV, val: RustBV, ctx: &SymContext) -> Result<RustBV, OpError> {
-        debug_assert_eq!(vec.width(), 128);
+        Self::require_operand_width("set_v128_lo vec", vec.width(), 128)?;
         let k = val.width();
 
         if let (Some(v), Some(lo)) = (vec.as_u128(), val.as_u128()) {
@@ -47,7 +47,7 @@ impl VEXOps {
         val: RustBV,
         ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
-        debug_assert_eq!(val.width(), 32);
+        Self::require_operand_width("set_v128_lo32 val", val.width(), 32)?;
         Self::set_v128_lo(vec, val, ctx)
     }
 
@@ -57,7 +57,7 @@ impl VEXOps {
         val: RustBV,
         ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
-        debug_assert_eq!(val.width(), 64);
+        Self::require_operand_width("set_v128_lo64 val", val.width(), 64)?;
         Self::set_v128_lo(vec, val, ctx)
     }
 }

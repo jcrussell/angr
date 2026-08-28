@@ -22,7 +22,7 @@ impl VEXOps {
     /// bit of the lane is zero-extended to 8 bits and summed.
     pub(super) fn vec_cnt(arg: RustBV, count: u8, ctx: &SymContext) -> Result<RustBV, OpError> {
         let total = 8u32 * count as u32;
-        debug_assert_eq!(arg.width(), total);
+        Self::require_operand_width("vec_cnt arg", arg.width(), total)?;
 
         // Concrete fast path: iterate bytes, count_ones each.
         if let Some(v) = arg.as_u128() {
@@ -60,7 +60,7 @@ impl VEXOps {
         ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         let total = 8u32 * count as u32;
-        debug_assert_eq!(arg.width(), total);
+        Self::require_operand_width("vec_get_msbs arg", arg.width(), total)?;
 
         // Concrete fast path: gather bit 7 of each byte into the result.
         if let Some(v) = arg.as_u128() {
@@ -100,7 +100,7 @@ impl VEXOps {
     ) -> Result<RustBV, OpError> {
         let elem_width = elem.bits();
         let total = elem_width * count as u32;
-        debug_assert_eq!(arg.width(), total);
+        Self::require_operand_width("vec_lane_count arg", arg.width(), total)?;
 
         // Concrete fast path. Lane-generic up to `elem_width == 64` (the
         // widest shape libVEX emits, Iop_Clz64x2): every correction below is

@@ -41,7 +41,7 @@ impl VEXOps {
         let elem_width = elem.bits();
         let sub_width_u32 = sub_width as u32;
         let total = elem_width * count as u32;
-        debug_assert_eq!(arg.width(), total);
+        Self::require_operand_width("vec_reverse arg", arg.width(), total)?;
         debug_assert!(sub_width_u32 > 0 && sub_width_u32 <= elem_width);
         debug_assert_eq!(elem_width % sub_width_u32, 0);
         let sub_per_elem = elem_width / sub_width_u32;
@@ -98,7 +98,7 @@ impl VEXOps {
     /// transpose fixed). angr's Python VEX engine has no handler for this op
     /// at all, so this is new capability rather than a parity port.
     pub(super) fn vec_bit_mtx_xpose(arg: RustBV, ctx: &SymContext) -> Result<RustBV, OpError> {
-        debug_assert_eq!(arg.width(), 128);
+        Self::require_operand_width("vec_bit_mtx_xpose arg", arg.width(), 128)?;
 
         // Concrete fast path: move one bit at a time within each half.
         if let Some(v) = arg.as_u128() {
@@ -157,8 +157,8 @@ impl VEXOps {
         // or out-of-operand lanes rather than trip anything. Matches the
         // operand-width checks in `vec_reverse` / `vec_polynomial_mul`
         // (angr-5mnx3.66).
-        debug_assert_eq!(left.width(), in_width * count as u32);
-        debug_assert_eq!(right.width(), in_width * count as u32);
+        Self::require_operand_width("vec_mull left", left.width(), in_width * count as u32)?;
+        Self::require_operand_width("vec_mull right", right.width(), in_width * count as u32)?;
         // Contributing input lanes step by 2 for even-lane, else 1.
         let step: u32 = if even { 2 } else { 1 };
         let out_lanes = count as u32 / step;
@@ -226,8 +226,8 @@ impl VEXOps {
         let lanes = count as u32;
         let total = width * lanes;
         // Same operand-shape requirement as `vec_mull` (angr-5mnx3.66).
-        debug_assert_eq!(left.width(), total);
-        debug_assert_eq!(right.width(), total);
+        Self::require_operand_width("vec_mulhi left", left.width(), total)?;
+        Self::require_operand_width("vec_mulhi right", right.width(), total)?;
 
         // Concrete fast path: sign/zero-extend within i128, multiply, take the
         // high half. Only reachable when both operands fit in u128, so the
@@ -288,8 +288,8 @@ impl VEXOps {
         let out_width = in_width * 2;
         let out_total = out_width * count as u32;
         // Same operand-shape requirement as `vec_mull` (angr-5mnx3.66).
-        debug_assert_eq!(left.width(), in_width * count as u32);
-        debug_assert_eq!(right.width(), in_width * count as u32);
+        Self::require_operand_width("vec_qdmull left", left.width(), in_width * count as u32)?;
+        Self::require_operand_width("vec_qdmull right", right.width(), in_width * count as u32)?;
 
         // Concrete fast path: sign-extend within i128, multiply, double, clamp.
         // in_width <= 32 (only 16Sx4 / 32Sx2 exist) so `2 * la * ra` cannot

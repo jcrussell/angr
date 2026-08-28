@@ -29,7 +29,7 @@ impl VEXOps {
         let elem_width = elem.bits();
         let total_width = elem_width * count as u32;
         for a in args {
-            debug_assert_eq!(a.width(), total_width);
+            Self::require_operand_width("vec_int_lane_op a", a.width(), total_width)?;
         }
 
         // Concrete fast path: every operand must fit in u128.

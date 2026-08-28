@@ -62,7 +62,7 @@ impl VEXOps {
     ) -> Result<RustBV, OpError> {
         let from_width = from.bits();
         let to_width = from_width / 2;
-        debug_assert_eq!(arg.width(), from_width * count as u32);
+        Self::require_operand_width("vec_qnarrow_un arg", arg.width(), from_width * count as u32)?;
         Ok(Self::narrow_lanes(
             &[&arg],
             from_width,
@@ -115,8 +115,12 @@ impl VEXOps {
         let from_width = from.bits();
         let to_width = from_width / 2;
         let per_input = (count / 2) as u32;
-        debug_assert_eq!(left.width(), from_width * per_input);
-        debug_assert_eq!(right.width(), from_width * per_input);
+        Self::require_operand_width("vec_qnarrow_bin left", left.width(), from_width * per_input)?;
+        Self::require_operand_width(
+            "vec_qnarrow_bin right",
+            right.width(),
+            from_width * per_input,
+        )?;
         Ok(Self::narrow_lanes(
             &[&left, &right],
             from_width,
@@ -149,6 +153,11 @@ impl VEXOps {
         dst_signed: bool,
         ctx: &SymContext,
     ) -> RustBV {
+        // Kept `debug_assert!` where the rest of this family was hardened into
+        // `Self::require_operand_width` (angr-3fb7p): this helper returns a bare
+        // `RustBV`, so it has no error channel to report a mismatch through, and
+        // every caller (`vec_int_saturating`, `vec_qdmull`) already validated the
+        // operand width it slices `lane` out of.
         debug_assert_eq!(lane.width(), from_width);
 
         // Build the saturation range constants in `from_width` bits so the
@@ -230,8 +239,8 @@ impl VEXOps {
     ) -> Result<RustBV, OpError> {
         let elem_width = elem.bits();
         let total_width = elem_width * count as u32;
-        debug_assert_eq!(left.width(), total_width);
-        debug_assert_eq!(right.width(), total_width);
+        Self::require_operand_width("vec_int_saturating left", left.width(), total_width)?;
+        Self::require_operand_width("vec_int_saturating right", right.width(), total_width)?;
 
         // Concrete fast path (fits in u128 — total_width <= 128 covers all
         // currently-mapped NEON shapes).
@@ -363,8 +372,8 @@ impl VEXOps {
     ) -> Result<RustBV, OpError> {
         let elem_width = elem.bits();
         let total_width = elem_width * count as u32;
-        debug_assert_eq!(vec.width(), total_width);
-        debug_assert_eq!(amts.width(), total_width);
+        Self::require_operand_width("vec_qshl_sat vec", vec.width(), total_width)?;
+        Self::require_operand_width("vec_qshl_sat amts", amts.width(), total_width)?;
 
         // Concrete fast path: both operands fit in u128 (covers every NEON
         // shape we route here — 64- and 128-bit vectors).

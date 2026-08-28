@@ -29,8 +29,8 @@ impl VEXOps {
         ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         let in_total = 8u32 * count as u32;
-        debug_assert_eq!(left.width(), in_total);
-        debug_assert_eq!(right.width(), in_total);
+        Self::require_operand_width("vec_polynomial_mul left", left.width(), in_total)?;
+        Self::require_operand_width("vec_polynomial_mul right", right.width(), in_total)?;
         let out_elem: u32 = if widen { 16 } else { 8 };
         let out_total = out_elem * count as u32;
 

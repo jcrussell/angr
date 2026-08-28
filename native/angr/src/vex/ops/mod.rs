@@ -9,7 +9,11 @@
 //! and the arity/type `debug_assert!`s on both packed-vector dispatchers have
 //! been hardened into typed errors for exactly that reason
 //! (`VEXOps::vec_float_lane_op` by angr-j60q0.2, `VEXOps::vec_int_lane_op`
-//! by angr-5mnx3.67). The two
+//! by angr-5mnx3.67). The same reasoning was swept across the whole `vec_*`
+//! family by angr-3fb7p: every operand-*width* precondition there now goes
+//! through `VEXOps::require_operand_width` (see its rustdoc for why a
+//! `debug_assert!` was the wrong tool), while the shape/arity ones stay
+//! `debug_assert!`. The two
 //! remaining `expect` shapes are operand-*count* invariants fixed by the
 //! dispatch table, not by guest data:
 //!
@@ -112,6 +116,45 @@ mod classify;
 pub use classify::iropclass;
 
 impl VEXOps {
+    /// Reject an operand whose width disagrees with the lane geometry the
+    /// dispatch table handed the op.
+    ///
+    /// The packed-vector helpers in the `vec_*` sibling modules derive every
+    /// lane offset from `elem.bits()` and `count` — both opcode-table
+    /// constants — and then apply those offsets to operands whose widths come
+    /// from guest data. A mismatch makes each of them fold a *wrong concrete
+    /// answer* on the `as_u128` fast path, which reaches neither the Python
+    /// boundary nor Z3, so nothing downstream can catch it (angr-3fb7p; see
+    /// the `debug-assert-triage-policy` bd memory for why class (1)'s
+    /// "already rejected at the Python boundary" rationale does not cover
+    /// this family). Every one of those helpers already returns
+    /// [`OpError`], so the check is cheap to report through in *every*
+    /// profile rather than panicking in dev and silently miscomputing in
+    /// release — the `NativeMprotectSyscall` shape, not `assert!`.
+    ///
+    /// `what` names the caller and operand (`"vec_mull left"`) so the
+    /// stringified error identifies the site. Reported as
+    /// [`OpError::UnsupportedVectorOp`], mirroring
+    /// `VEXOps::vec_int_lane_op`'s over-arity guard, so the interpreter
+    /// degrades the block to the Python VEX engine instead of aborting.
+    ///
+    /// Shape/arity preconditions on the *same* helpers (`count` even,
+    /// `args.len() == op.arity()`, `elem_width % sub_width == 0`) stay
+    /// `debug_assert!`: those operands are opcode-table constants or
+    /// fixed-size array literals at the call site, never guest data.
+    pub(super) fn require_operand_width(
+        what: &'static str,
+        actual: u32,
+        expected: u32,
+    ) -> Result<(), OpError> {
+        if actual == expected {
+            return Ok(());
+        }
+        Err(OpError::UnsupportedVectorOp(format!(
+            "{what}: operand width {actual} does not match expected {expected}"
+        )))
+    }
+
     // =========================================================================
     // Unary Operations
     // =========================================================================
@@ -1327,5 +1370,7 @@ test_submod!(tests_vec_int_lane);
 test_submod!(tests_vec_compare);
 
 test_submod!(tests_vec_dispatch);
+
+test_submod!(tests_vec_operand_width);
 
 test_submod!(property_tests);

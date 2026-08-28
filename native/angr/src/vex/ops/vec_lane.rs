@@ -36,8 +36,8 @@ impl VEXOps {
     ) -> Result<RustBV, OpError> {
         let elem_width = elem.bits();
         let total_width = elem_width * count as u32;
-        debug_assert_eq!(vec.width(), total_width);
-        debug_assert_eq!(idx.width(), 8);
+        Self::require_operand_width("vec_get_elem vec", vec.width(), total_width)?;
+        Self::require_operand_width("vec_get_elem idx", idx.width(), 8)?;
 
         // Concrete fast path
         if let (Some(v), Some(i)) = (vec.as_u128(), idx.as_u128()) {
@@ -85,9 +85,9 @@ impl VEXOps {
     ) -> Result<RustBV, OpError> {
         let elem_width = elem.bits();
         let total_width = elem_width * count as u32;
-        debug_assert_eq!(vec.width(), total_width);
-        debug_assert_eq!(idx.width(), 8);
-        debug_assert_eq!(val.width(), elem_width);
+        Self::require_operand_width("vec_set_elem vec", vec.width(), total_width)?;
+        Self::require_operand_width("vec_set_elem idx", idx.width(), 8)?;
+        Self::require_operand_width("vec_set_elem val", val.width(), elem_width)?;
 
         // Concrete vec + val + idx: bit-twiddle.
         if let (Some(v), Some(i), Some(x)) = (vec.as_u128(), idx.as_u128(), val.as_u128()) {
@@ -141,7 +141,7 @@ impl VEXOps {
     ) -> Result<RustBV, OpError> {
         let elem_width = elem.bits();
         let total_width = elem_width * count as u32;
-        debug_assert_eq!(arg.width(), elem_width);
+        Self::require_operand_width("vec_dup arg", arg.width(), elem_width)?;
 
         // Concrete fast path.
         if total_width <= 128
@@ -177,7 +177,7 @@ impl VEXOps {
         let from_width = from.bits();
         let to_width = from_width * 2;
         let in_total = from_width * count as u32;
-        debug_assert_eq!(arg.width(), in_total);
+        Self::require_operand_width("vec_widen arg", arg.width(), in_total)?;
 
         // Concrete fast path.
         if in_total <= 128
@@ -283,7 +283,7 @@ impl VEXOps {
     ) -> Result<RustBV, OpError> {
         let from_width = from.bits();
         let to_width = from_width / 2;
-        debug_assert_eq!(arg.width(), from_width * count as u32);
+        Self::require_operand_width("vec_narrow_un arg", arg.width(), from_width * count as u32)?;
         let to_mask = Self::low_bit_mask_u128(to_width);
         Ok(Self::narrow_lanes(
             &[&arg],
@@ -309,8 +309,12 @@ impl VEXOps {
         let from_width = from.bits();
         let to_width = from_width / 2;
         let per_input = (count / 2) as u32;
-        debug_assert_eq!(left.width(), from_width * per_input);
-        debug_assert_eq!(right.width(), from_width * per_input);
+        Self::require_operand_width("vec_narrow_bin left", left.width(), from_width * per_input)?;
+        Self::require_operand_width(
+            "vec_narrow_bin right",
+            right.width(),
+            from_width * per_input,
+        )?;
         let to_mask = Self::low_bit_mask_u128(to_width);
         Ok(Self::narrow_lanes(
             &[&left, &right],

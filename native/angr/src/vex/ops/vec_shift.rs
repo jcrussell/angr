@@ -37,7 +37,7 @@ impl VEXOps {
         let elem_width = elem.bits();
         let total_width = elem_width * count as u32;
 
-        debug_assert_eq!(vec.width(), total_width);
+        Self::require_operand_width("vec_shl_n vec", vec.width(), total_width)?;
 
         // Concrete shift amount: keep the existing fast paths.
         if total_width <= 128
@@ -133,7 +133,7 @@ impl VEXOps {
         let elem_width = elem.bits();
         let total_width = elem_width * count as u32;
 
-        debug_assert_eq!(vec.width(), total_width);
+        Self::require_operand_width("vec_shr_n vec", vec.width(), total_width)?;
 
         if total_width <= 128
             && let Some(s) = shift_amt.as_u128()
@@ -182,7 +182,7 @@ impl VEXOps {
         let elem_width = elem.bits();
         let total_width = elem_width * count as u32;
 
-        debug_assert_eq!(vec.width(), total_width);
+        Self::require_operand_width("vec_sar_n vec", vec.width(), total_width)?;
 
         if total_width <= 128
             && let Some(s) = shift_amt.as_u128()
@@ -284,8 +284,8 @@ impl VEXOps {
     ) -> Result<RustBV, OpError> {
         let elem_width = elem.bits();
         let total_width = elem_width * count as u32;
-        debug_assert_eq!(vec.width(), total_width);
-        debug_assert_eq!(amts.width(), total_width);
+        Self::require_operand_width("vec_shift_vec vec", vec.width(), total_width)?;
+        Self::require_operand_width("vec_shift_vec amts", amts.width(), total_width)?;
 
         // Concrete fast path: both operands fit in u128 (covers every NEON
         // shape we route here — 64- and 128-bit vectors).

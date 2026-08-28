@@ -54,7 +54,7 @@ impl VEXOps {
         // Both operands must be the same shape: the extract offsets below are
         // derived from `left`'s width but applied to `right` as well. Matches
         // the operand-width checks in `vec_pairwise_binop` / `vec_int_saturating`.
-        debug_assert_eq!(right.width(), total_width);
+        Self::require_operand_width("vec_interleave right", right.width(), total_width)?;
         let half_count = count / 2;
         let base = if high { half_count } else { 0 };
 

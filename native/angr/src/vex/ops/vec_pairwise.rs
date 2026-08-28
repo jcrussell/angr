@@ -32,7 +32,7 @@ impl VEXOps {
     ) -> Result<RustBV, OpError> {
         let elem_width = elem.bits();
         let total_width = elem_width * count as u32;
-        debug_assert_eq!(arg.width(), total_width);
+        Self::require_operand_width("vec_pairwise_add_long arg", arg.width(), total_width)?;
         debug_assert!(count >= 2 && count.is_multiple_of(2));
         let out_pairs = count / 2;
         let out_elem_width = elem_width * 2;
@@ -67,8 +67,8 @@ impl VEXOps {
     ) -> Result<RustBV, OpError> {
         let elem_width = elem.bits();
         let total_width = elem_width * count as u32;
-        debug_assert_eq!(left.width(), total_width);
-        debug_assert_eq!(right.width(), total_width);
+        Self::require_operand_width("vec_pairwise_binop left", left.width(), total_width)?;
+        Self::require_operand_width("vec_pairwise_binop right", right.width(), total_width)?;
         debug_assert!(count >= 2 && count.is_multiple_of(2));
         let half = count / 2;
 
@@ -132,8 +132,8 @@ impl VEXOps {
         debug_assert_eq!(op.arity(), 2);
         let elem_width = elem.bits();
         let total_width = elem_width * count as u32;
-        debug_assert_eq!(left.width(), total_width);
-        debug_assert_eq!(right.width(), total_width);
+        Self::require_operand_width("vec_float_pairwise_op left", left.width(), total_width)?;
+        Self::require_operand_width("vec_float_pairwise_op right", right.width(), total_width)?;
         debug_assert!(count >= 2 && count.is_multiple_of(2));
         let half = count / 2;
 
@@ -172,8 +172,8 @@ impl VEXOps {
     ) -> Result<RustBV, OpError> {
         let elem_width = elem.bits();
         let total_width = elem_width * count as u32;
-        debug_assert_eq!(left.width(), total_width);
-        debug_assert_eq!(right.width(), total_width);
+        Self::require_operand_width("vec_rounding_avg left", left.width(), total_width)?;
+        Self::require_operand_width("vec_rounding_avg right", right.width(), total_width)?;
         let wide = elem_width + 1;
         let one_wide = RustBV::concrete(1, wide);
 

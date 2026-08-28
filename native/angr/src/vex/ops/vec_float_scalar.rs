@@ -30,8 +30,8 @@ impl VEXOps {
         kind: FloatOpKind,
         ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
-        debug_assert_eq!(left.width(), 128);
-        debug_assert_eq!(right.width(), 128);
+        Self::require_operand_width("vec_float_scalar_op left", left.width(), 128)?;
+        Self::require_operand_width("vec_float_scalar_op right", right.width(), 128)?;
         debug_assert!(
             matches!(
                 kind,
@@ -95,7 +95,7 @@ impl VEXOps {
         elem: IRType,
         ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
-        debug_assert_eq!(arg.width(), 128);
+        Self::require_operand_width("vec_float_scalar_sqrt arg", arg.width(), 128)?;
 
         if let Some(v) = arg.as_u128() {
             let result = match elem {
@@ -132,7 +132,7 @@ impl VEXOps {
         name: &str,
         ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
-        debug_assert_eq!(arg.width(), 128);
+        Self::require_operand_width("vec_float_scalar_fresh arg", arg.width(), 128)?;
         let prec = float_prec_of(elem).ok_or(OpError::InvalidFloatType(elem))?;
         let lane_bits = prec.bits();
         let upper = arg.extract(127, lane_bits, ctx);
@@ -191,8 +191,8 @@ impl VEXOps {
         is_max: bool,
         ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
-        debug_assert_eq!(left.width(), 128);
-        debug_assert_eq!(right.width(), 128);
+        Self::require_operand_width("vec_float_scalar_minmax left", left.width(), 128)?;
+        Self::require_operand_width("vec_float_scalar_minmax right", right.width(), 128)?;
 
         if let (Some(l), Some(r)) = (left.as_u128(), right.as_u128()) {
             let result = match elem {
