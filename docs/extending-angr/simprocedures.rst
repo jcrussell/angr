@@ -1247,7 +1247,7 @@ still fall through ``stepping.rs::RunResult::Syscall`` to Python's
        ``readlink``, ``openat``, ``newfstatat``, ``readlinkat``,
        ``faccessat``
      - 11 / 11
-     - angr-0hif.1 — ``file_path.rs`` (AMD64 numbers 2/3/4/5/6/21/89/
+     - angr-0hif.1 — ``file_path/`` (AMD64 numbers 2/3/4/5/6/21/89/
        257/262/267/269; re-registered under per-arch numbers for
        i386 / ARM / ARM64 / MIPS32)
    * - Directory (angr-0hif.2)

@@ -740,7 +740,7 @@ fn file_path_stubs_registered_on_all_arches() {
     //   * readlink / readlinkat (angr-wv38) — always -1
     //     (no-symlink FileSystem).
     // Per-handler semantics are pinned by dedicated tests in
-    // syscalls/file_path.rs; this test still asserts name + arity.
+    // syscalls/file_path/; this test still asserts name + arity.
     //
     // Per-arch availability:
     //   * AArch64 asm-generic ABI dropped legacy `lstat` and `readlink`

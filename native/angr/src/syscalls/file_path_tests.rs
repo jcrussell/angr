@@ -7,7 +7,7 @@
 use super::*;
 use super::file_path_tests_support::*;
 use crate::memory::Permission;
-use crate::state::RustSimState;
+use crate::state::{FdFlags, RustSimState};
 use crate::symbolic::{RustBV, SymContext};
 use crate::syscalls::{NativeSyscall, SyscallOutcome};
 

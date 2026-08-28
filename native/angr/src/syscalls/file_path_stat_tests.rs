@@ -1,9 +1,10 @@
 //! `stat` tests — path-keyed lookup, per-arch statbuf layout, fallbacks.
 
 use super::*;
+use super::stat_layouts::{S_IFREG_0755, ST_BLKSIZE};
 use super::file_path_tests_support::*;
 use crate::memory::Permission;
-use crate::state::RustSimState;
+use crate::state::{FdFlags, RustSimState};
 use crate::symbolic::RustBV;
 use crate::syscalls::NativeSyscall;
 

@@ -700,7 +700,7 @@ Stubbed / incomplete
 * **``lstat`` / ``newfstatat`` / ``faccessat`` flag args** — the
   ``angr-6009`` audit landed: all five names it covered (``readlink``,
   ``readlinkat``, ``lstat``, ``newfstatat``, ``faccessat``) are real
-  native handlers in ``syscalls/file_path.rs``, registered per the
+  native handlers in ``syscalls/file_path/``, registered per the
   matrix above, and no longer route through the stub-symbolic Python
   handler. Two deliberate gaps remain. ``newfstatat`` ignores its
   ``flag`` argument — ``AT_EMPTY_PATH`` (0x1000) would have to

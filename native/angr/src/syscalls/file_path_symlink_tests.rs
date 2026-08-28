@@ -13,9 +13,11 @@
 //! lowers to `fstatat(AT_FDCWD, path, buf, AT_SYMLINK_NOFOLLOW)`.
 
 use super::*;
+use super::stat::AT_SYMLINK_NOFOLLOW;
+use super::stat_layouts::{S_IFLNK_0777, S_IFREG_0755};
 use super::file_path_tests_support::*;
 use crate::memory::Permission;
-use crate::state::RustSimState;
+use crate::state::{FdFlags, RustSimState};
 use crate::symbolic::RustBV;
 use crate::syscalls::NativeSyscall;
 

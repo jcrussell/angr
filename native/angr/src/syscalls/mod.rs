@@ -216,7 +216,7 @@ impl NativeSyscallRegistry {
         //   -1 with the buffer untouched. The table is empty by default,
         //   so an unconfigured state sees -1 for every path. readlinkat
         //   reads the dirfd and applies the openat policy. See
-        //   file_path.rs module doc.
+        //   the `file_path::readlink` module doc.
         // faccessat (269): native FileSystem::is_path_known query
         //   (angr-6009). Clone of NativeAccessSyscall with dirfd
         //   handling. Absolute paths and AT_FDCWD return 0/-1 from
@@ -224,7 +224,7 @@ impl NativeSyscallRegistry {
         //   return -1 (we do not model directory fds — matches
         //   NativeOpenatSyscall's policy).
         // lstat (6), newfstatat (262): stat()-shaped clones promoted
-        //   from stubs in angr-poao. See file_path.rs module doc.
+        //   from stubs in angr-poao. See the `file_path::stat` module doc.
         // open (2), openat (257), close (3): FD-allocating syscalls
         //   (angr-k3ol.1). Mutate `RustSimState::file_system()` directly,
         //   mirroring the existing `procedures/fileops::NativeOpen` /
@@ -841,7 +841,7 @@ impl NativeSyscallRegistry {
         // distinct `fcntl64` since it is already 64-bit (`fcntl` 5070
         // covers it). The whole stat family (`stat` 5004, `fstat` 5005,
         // `lstat` 5006, `newfstatat` 5252) is deliberately unregistered:
-        // `write_stat_for_arch` (file_path.rs) has no MIPS64 `struct stat`
+        // `write_stat_for_arch` (file_path/stat_layouts.rs) has no MIPS64 `struct stat`
         // writer, so registering them would only add a native dispatch hop
         // before the same fall-through to Python (angr-9ke6b.154).
         register_syscalls!(

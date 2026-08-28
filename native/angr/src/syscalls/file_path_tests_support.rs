@@ -8,6 +8,7 @@ use super::*;
 use crate::memory::Permission;
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
+use crate::syscalls::SyscallOutcome;
 
 
 /// Map an RW page at 0x2000 and stage a NUL-terminated path byte-by-byte.

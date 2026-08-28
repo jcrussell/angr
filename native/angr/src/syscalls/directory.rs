@@ -64,7 +64,7 @@ const PATH_MAX: usize = 4096;
 ///
 /// NOTE: on hitting `max_len` without a NUL this *truncates* (returns
 /// the full slice, matching Linux's PATH_MAX truncation), unlike its
-/// sibling `file_path.rs::read_path`, which *errors* at its smaller
+/// sibling `file_path::read_path`, which *errors* at its smaller
 /// (256) cap. That is deliberate — see `read_path`'s doc for the
 /// rationale. Keep the asymmetry in mind when adding a new path syscall.
 fn read_concrete_cstring(
