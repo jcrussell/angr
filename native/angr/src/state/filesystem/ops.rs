@@ -103,7 +103,7 @@ impl FileSystem {
     /// `known_paths` is its own `Arc`, so the peek pays off even for callers
     /// like [`install_fd`](Self::install_fd) that go on to mutate `fds`
     /// unconditionally: re-opening a path this state already knows leaves the
-    /// set shared. Covered by `filesystem_tests.rs`'s `*_skips_cow_clone`
+    /// set shared. Covered by `filesystem/tests.rs`'s `*_skips_cow_clone`
     /// tests, which assert `Arc::ptr_eq` against a fork (contents alone
     /// cannot distinguish a skipped clone from an equal one).
     pub(super) fn note_known_path(&mut self, norm: String) {

@@ -15,7 +15,7 @@
 //! - `filesystem_state`: the filesystem behaviour that needs a whole
 //!   `RustSimState` — fork isolation and the `write_stdout`/`fd_buffer`
 //!   wrappers. The bare-`FileSystem` CRUD/fd-table surface is
-//!   `state/filesystem_tests.rs`'s, not this module's (angr-03vl4.56).
+//!   `state/filesystem/tests.rs`'s, not this module's (angr-03vl4.56).
 //! - `filesystem_symbolic`: `register_file_content` and the `content_sym`
 //!   sharing / serde / length / `read_sym*` contracts.
 //! - `filesystem_demote`: demotion of symbolic content to concrete and the

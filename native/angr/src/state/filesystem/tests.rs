@@ -1,4 +1,5 @@
-//! Tests for [`super::filesystem`] — the POSIX-fd FileSystem model.
+//! Tests for the parent [`FileSystem`](super::FileSystem) module — the
+//! POSIX-fd file model.
 //!
 //! Concrete-only surface (no Z3 context needed): fd allocation, read/write
 //! position semantics, seek/pread/pwrite, dup/dup2/pipe, path normalization,
@@ -6,13 +7,17 @@
 //! (`content_sym` / `RustBV`) are exercised by the Python-level rust suite;
 //! these stay Z3-free so they run under a plain `cargo test --lib`.
 //!
-//! This file owns the whole *concrete, Z3-free* `FileSystem` surface. Its
-//! three siblings under `state/tests/` are split off for a reason, not by
-//! accident: `filesystem_symbolic` and `filesystem_demote` need a live
-//! `SymContext` for `content_sym`, and `filesystem_state` needs a whole
-//! [`RustSimState`](super::RustSimState) around the fs (fork isolation, the
-//! `write_stdout`/`fd_buffer` convenience wrappers). Anything reachable from a
-//! bare `FileSystem::default()` belongs here — angr-c7xno.69's mechanical
+//! This file owns the whole *concrete, Z3-free* `FileSystem` surface, and
+//! lives inside `state/filesystem/` for that reason: it is this module's own
+//! unit-test submodule, not a `RustSimState`-level one. The three
+//! filesystem-named files under `state/tests/` are split off deliberately,
+//! not by accident — the shared `filesystem` prefix used to be the only cue
+//! telling them apart (angr-5mnx3.41): `filesystem_symbolic` and
+//! `filesystem_demote` need a live `SymContext` for `content_sym`, and
+//! `filesystem_state` needs a whole
+//! [`RustSimState`](crate::state::RustSimState) around the fs (fork
+//! isolation, the `write_stdout`/`fd_buffer` convenience wrappers). Anything
+//! reachable from a bare `FileSystem::default()` belongs here — angr-c7xno.69's mechanical
 //! carve-out of `state_tests.rs` had re-tested this file's CRUD/fd-table
 //! surface under a second set of idioms, and angr-03vl4.56 folded those
 //! duplicates back in.

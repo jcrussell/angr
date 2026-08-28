@@ -1,7 +1,7 @@
 //! FileSystem subsystem (POSIX fd model) for `RustSimState`.
 //!
-//! Split across five submodules (angr-nbim4.4), all operating on the one
-//! [`FileSystem`] struct defined here:
+//! Split across five production submodules (angr-nbim4.4), all operating on
+//! the one [`FileSystem`] struct defined here:
 //!
 //! - [`fd`] — [`FdFlags`] / [`FileDescriptor`] and the symbolic-serve cap.
 //! - [`ops`] — the mutating POSIX surface (open family, close, read/write,
@@ -12,6 +12,12 @@
 //!   registry, the `read_sym` serve paths, and write-demotion.
 //! - [`persist`] — the serde shadow form plus the cross-Z3-context
 //!   `translate_into`.
+//!
+//! The concrete, Z3-free unit tests for all of the above live in this
+//! directory too, as the `tests` submodule (`state/filesystem/tests.rs`) —
+//! moved here from `state/filesystem_tests.rs` in angr-5mnx3.41 so its name no
+//! longer collides with the `RustSimState`-level `state/tests/filesystem_*.rs`
+//! trio.
 
 use super::*;
 
@@ -112,4 +118,4 @@ impl Default for FileSystem {
     }
 }
 
-test_submod!("../filesystem_tests.rs" => filesystem_tests);
+test_submod!(tests);
