@@ -4,7 +4,10 @@
 //! boundary (2) "BV expression construction". These are the small, low-coupling
 //! symbol-allocation helpers: the unique-id counter (`next_id`), the constraint
 //! count accessor (`num_constraints`), and the symbolic-bitvector factory pair
-//! (`new_bv` / `unique_name`).
+//! (`new_bv` / `unique_name`). It also owns the free functions over that
+//! counter — [`reserve_symbol_id`] / [`symbol_id_watermark`] — and the
+//! thread-local [`SymbolIdRebase`] guard snapshot restore uses to shift a
+//! foreign process's id space above our watermark.
 //!
 //! Coupling is minimal: the only `SymContext` field these touch is the
 //! `constraint_count` atomic — promoted to `pub(super)` so this sibling module
@@ -41,9 +44,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// Mirrors the `state-id-never-reused` contract on `state::NEXT_STATE_ID`.
 static NEXT_SYMBOL_ID: AtomicU64 = AtomicU64::new(0);
 
-/// Raise the global symbol-id counter so the next minted id is strictly greater
-/// than `id`. Used by snapshot restore, whose deserialized leaves carry ids
-/// minted by a *different* process (see
+/// Raise the global symbol-id counter to `id`, an **exclusive** bound: every id
+/// minted afterwards is `>= id`, so nothing strictly below it is handed out
+/// twice. A `fetch_max`, so a lower `id` (a legacy snapshot's 0) is a no-op
+/// rather than a counter reset. Used by snapshot restore, whose deserialized
+/// leaves carry ids minted by a *different* process (see
 /// [`SymContext::restore_from_snapshot`](crate::symbolic::SymContext::restore_from_snapshot)).
 pub fn reserve_symbol_id(id: u64) {
     NEXT_SYMBOL_ID.fetch_max(id, Ordering::SeqCst);
@@ -85,6 +90,19 @@ pub fn symbol_id_rebase_offset() -> u64 {
 ///
 /// The offset is thread-local and defaults to 0, so worker-migration payloads
 /// (same process, ids already unique) deserialize unchanged.
+///
+/// # Nesting
+///
+/// `activate` saves the previously-live offset in `prev` and `Drop` restores
+/// *that*, not the identity — so guards nest, and an inner guard's drop hands
+/// the thread back to the outer guard's offset rather than un-rebasing the
+/// remainder of the outer restore. This makes the pair a LIFO stack held in a
+/// single cell, which is only correct while guards are dropped in reverse
+/// activation order: keep every `SymbolIdRebase` in a plain lexical scope (as
+/// the sole production call site in `stash.rs` does) and never park one in a
+/// collection or hand it across scopes. See
+/// `nested_rebase_guards_restore_in_lifo_order` and
+/// `out_of_order_drop_leaves_the_survivors_prev` in `bv_id_ops_tests.rs`.
 pub struct SymbolIdRebase {
     prev: u64,
 }
@@ -148,3 +166,5 @@ impl SymContext {
         format!("{base}_{id}")
     }
 }
+
+test_submod!("bv_id_ops_tests.rs" => bv_id_ops_tests);
