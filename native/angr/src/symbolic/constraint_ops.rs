@@ -282,13 +282,14 @@ impl SymContext {
 
     #[cfg(feature = "vex-engine-z3")]
     fn add_constraint_raw_inner(&self, ast: super::Z3AstPtr, log_residual: bool) {
-        let ctx = z3::Context::thread_local();
         // SAFETY: `ast` is a live `Z3_ast` (the `Z3AstPtr` holds an active
-        // ref via `Z3_inc_ref`). The pointer denotes a Bool by the
+        // ref via `Z3_inc_ref`) belonging to `ast.context()`, the context
+        // that ref was taken under. The pointer denotes a Bool by the
         // documented caller contract. `Ast::wrap` performs its own
         // `Z3_inc_ref` so the wrapped `Bool` is independent of `ast`'s
         // ref, which drops at end of function.
-        let constraint: z3::ast::Bool = unsafe { z3::ast::Ast::wrap(&ctx, ast.as_z3_ast()) };
+        let constraint: z3::ast::Bool =
+            unsafe { z3::ast::Ast::wrap(ast.context(), ast.as_z3_ast()) };
         ADD_CONSTRAINT_RAW_TOTAL_COUNT.fetch_add(1, Ordering::Relaxed);
         sample_simplify_skip(&constraint);
         // angr-sfp9: ptr-keyed dedup against the side-table. Z3 hash-cons
@@ -422,16 +423,17 @@ impl SymContext {
         if entries.is_empty() {
             return;
         }
-        let z3_ctx = z3::Context::thread_local();
         let mut constraints: Vec<z3::ast::Bool> = Vec::with_capacity(entries.len());
         let mut assumed: Vec<(RustBV, bool)> = Vec::with_capacity(entries.len());
         for (ast, bv, is_true) in entries {
             // SAFETY: `ast` is a live `Z3_ast` (the `Z3AstPtr` holds an
-            // active ref via `Z3_inc_ref`). The pointer denotes a Bool by
+            // active ref via `Z3_inc_ref`) belonging to `ast.context()`, the
+            // context that ref was taken under. The pointer denotes a Bool by
             // the documented caller contract. `Ast::wrap` performs its
             // own `Z3_inc_ref` so the wrapped `Bool` is independent of
             // `ast`'s ref, which drops at end of this iteration.
-            let constraint: z3::ast::Bool = unsafe { z3::ast::Ast::wrap(&z3_ctx, ast.as_z3_ast()) };
+            let constraint: z3::ast::Bool =
+                unsafe { z3::ast::Ast::wrap(ast.context(), ast.as_z3_ast()) };
             constraints.push(constraint);
             assumed.push((bv, is_true));
         }

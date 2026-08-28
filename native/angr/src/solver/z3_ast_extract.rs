@@ -110,9 +110,12 @@ pub(super) fn z3_ast_to_eval_bv(z3_ast: &Z3AstPtr) -> Option<RustBV> {
     // checks the sort before wrapping the node as that sort. `Bool::wrap` /
     // `BV::wrap` take their own refs.
     unsafe {
-        let z3_ctx = z3::Context::thread_local();
+        // Wrap under the handle's own bound context rather than re-deriving
+        // the thread-local: `Z3AstPtr` carries the `Context` its ref was taken
+        // under, so this cannot disagree with the AST's actual context.
+        let z3_ctx = z3_ast.context();
         let (ast, width) = if z3_ast.is_bool() {
-            let z3_bool = z3::ast::Bool::wrap(&z3_ctx, z3_ast.as_z3_ast());
+            let z3_bool = z3::ast::Bool::wrap(z3_ctx, z3_ast.as_z3_ast());
             let as_bv = z3_bool.ite(&z3::ast::BV::from_u64(1, 1), &z3::ast::BV::from_u64(0, 1));
             (as_bv, 1)
         } else {
@@ -121,7 +124,7 @@ pub(super) fn z3_ast_to_eval_bv(z3_ast: &Z3AstPtr) -> Option<RustBV> {
             // `Some` is exactly the precondition that makes the wrap sound
             // (angr-9ke6b.202).
             let width = z3_ast.bv_width()?;
-            (z3::ast::BV::wrap(&z3_ctx, z3_ast.as_z3_ast()), width)
+            (z3::ast::BV::wrap(z3_ctx, z3_ast.as_z3_ast()), width)
         };
         Some(RustBV::Symbolic {
             id: 0,
@@ -153,10 +156,10 @@ pub(super) fn z3_ast_to_bool(z3_ast: &Z3AstPtr) -> Option<z3::ast::Bool> {
     if !z3_ast.is_bool() {
         return None;
     }
-    let z3_ctx = z3::Context::thread_local();
     // SAFETY: `z3_ast` holds an active ref to a live `Z3_ast`, checked
-    // Bool-sorted just above; `Bool::wrap` takes its own ref.
-    Some(unsafe { z3::ast::Bool::wrap(&z3_ctx, z3_ast.as_z3_ast()) })
+    // Bool-sorted just above, and `z3_ast.context()` is the context that ref
+    // was taken under; `Bool::wrap` takes its own ref.
+    Some(unsafe { z3::ast::Bool::wrap(z3_ast.context(), z3_ast.as_z3_ast()) })
 }
 
 impl RustSolverContext {

@@ -68,13 +68,19 @@ impl Z3AstPtr {
         self.ptr
     }
 
-    /// Get the raw pointer as `usize` (interop with diagnostic counters /
-    /// HashSet keys that still operate on raw addresses).
-    pub fn as_usize(&self) -> usize {
-        self.ptr.as_ptr() as usize
-    }
-
     /// Get the bound [`Context`] for this AST.
+    ///
+    /// The wrap sites (`solver::z3_ast_extract::z3_ast_to_bool`,
+    /// `z3_ast_to_eval_bv`, and `SymContext::add_constraint_raw_inner`) use
+    /// this instead of re-deriving `Context::thread_local()`: the handle
+    /// records the context its `Z3_inc_ref` was taken under, so a wrap keyed
+    /// off it cannot disagree with the AST's actual context.
+    ///
+    /// There is deliberately no `as_usize()` (angr-5mnx3.52): no production
+    /// code wants the handle's raw address, and the ptr-keyed dedup set in
+    /// `symbolic::constraint_ops` keys off the *wrapped* `z3::ast::Bool`
+    /// (`get_z3_ast().as_ptr()`), not off this handle. A caller that really
+    /// needs the address can spell it `as_z3_ast().as_ptr() as usize`.
     pub fn context(&self) -> &Context {
         &self.ctx
     }
