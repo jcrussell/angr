@@ -20,6 +20,21 @@ fn eq_bv_const(bv: &z3::ast::BV, value: u64) -> Bool {
     bv.eq(z3::ast::BV::from_u64(value, bv.get_size()))
 }
 
+/// Look up one counter by name in a `lineage_stats()` / `dismantle_stats()`
+/// snapshot. The two return fixed-size arrays of *different* lengths, so this
+/// takes a slice and every call site passes `&snapshot`.
+///
+/// A missing name yields 0, which is what every assertion in this file wants:
+/// these counters are global and other tests in the module bump them in
+/// parallel, so the checks are all deltas or lower bounds rather than
+/// equalities.
+fn find_counter(name: &str, snapshot: &[(&'static str, u64)]) -> u64 {
+    snapshot
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map_or(0, |(_, v)| *v)
+}
+
 /// Frame ids are unique within a single run.
 #[test]
 fn test_frame_ids_unique() {
@@ -99,11 +114,8 @@ fn test_counters_increment() {
     lin.switch_to(&ScopePath::new());
 
     let post = lineage_stats();
-    let delta = |name: &str| {
-        let pre_v = pre.iter().find(|(n, _)| *n == name).map_or(0, |(_, v)| *v);
-        let post_v = post.iter().find(|(n, _)| *n == name).map_or(0, |(_, v)| *v);
-        post_v.saturating_sub(pre_v)
-    };
+    let delta =
+        |name: &str| find_counter(name, &post).saturating_sub(find_counter(name, &pre));
     // Lower bounds: other parallel tests can only ADD to these
     // counters, never subtract — but we must contribute at least
     // this many ourselves.
@@ -260,15 +272,8 @@ fn test_switch_three_deep_siblings() {
 /// check because other parallel tests in the module also bump it.
 #[test]
 fn test_switch_fast_path_counter_only_fires_on_same_path() {
-    let read = |name: &str, snapshot: &[(&'static str, u64)]| {
-        snapshot
-            .iter()
-            .find(|(n, _)| *n == name)
-            .map_or(0, |(_, v)| *v)
-    };
-
     let pre = lineage_stats();
-    let fp_pre = read("lineage_switch_fast_path_count", &pre);
+    let fp_pre = find_counter("lineage_switch_fast_path_count", &pre);
 
     let mut lin = SharedLineageSolver::new(make_solver());
     let x = bvconst("test_switch_fast_path_counter_x", 8);
@@ -295,7 +300,7 @@ fn test_switch_fast_path_counter_only_fires_on_same_path() {
     // by us (the second switch). Other parallel tests can only ADD
     // to the global counter, never subtract.
     let post = lineage_stats();
-    let fp_post = read("lineage_switch_fast_path_count", &post);
+    let fp_post = find_counter("lineage_switch_fast_path_count", &post);
     assert!(
         fp_post.saturating_sub(fp_pre) >= 1,
         "at least 1 fast-path hit expected (got {})",
@@ -325,18 +330,9 @@ fn test_switch_fast_path_deep_path_repeated_reentry() {
     // re-entry must hit the O(1) cache (same path, same tail id,
     // same depth) — no Z3 push/pop should fire.
     let before = lineage_stats();
-    let fp_before = before
-        .iter()
-        .find(|(n, _)| *n == "lineage_switch_fast_path_count")
-        .map_or(0, |(_, v)| *v);
-    let push_before = before
-        .iter()
-        .find(|(n, _)| *n == "lineage_push_count")
-        .map_or(0, |(_, v)| *v);
-    let pop_before = before
-        .iter()
-        .find(|(n, _)| *n == "lineage_pop_count")
-        .map_or(0, |(_, v)| *v);
+    let fp_before = find_counter("lineage_switch_fast_path_count", &before);
+    let push_before = find_counter("lineage_push_count", &before);
+    let pop_before = find_counter("lineage_pop_count", &before);
 
     let mut local_push = 0u64;
     let mut local_pop = 0u64;
@@ -356,10 +352,7 @@ fn test_switch_fast_path_deep_path_repeated_reentry() {
     assert_eq!(local_pop, 0);
 
     let after = lineage_stats();
-    let fp_after = after
-        .iter()
-        .find(|(n, _)| *n == "lineage_switch_fast_path_count")
-        .map_or(0, |(_, v)| *v);
+    let fp_after = find_counter("lineage_switch_fast_path_count", &after);
     // Counter check: at least 100 fast-path hits contributed by us.
     // Lower-bound rather than equality because other parallel tests
     // in this module also share the global counter.
@@ -438,14 +431,8 @@ fn test_sample_for_thrash_cold_workload_triggers() {
     assert!(is_lineage_dismantled());
 
     let stats = dismantle_stats();
-    let dismantled = stats
-        .iter()
-        .find(|(n, _)| *n == "lineage_dismantled")
-        .map_or(0, |(_, v)| *v);
-    let count = stats
-        .iter()
-        .find(|(n, _)| *n == "lineage_dismantle_count")
-        .map_or(0, |(_, v)| *v);
+    let dismantled = find_counter("lineage_dismantled", &stats);
+    let count = find_counter("lineage_dismantle_count", &stats);
     assert_eq!(dismantled, 1);
     // dismantle_count is RESET to 0 by reset_dismantle_state_for_test()
     // and the SAMPLER_TEST_LOCK serializes against other tests that
@@ -484,10 +471,7 @@ fn test_sample_for_thrash_is_idempotent_once_dismantled() {
         assert!(!fired, "already dismantled — must not re-fire");
     }
     let stats = dismantle_stats();
-    let count = stats
-        .iter()
-        .find(|(n, _)| *n == "lineage_dismantle_count")
-        .map_or(0, |(_, v)| *v);
+    let count = find_counter("lineage_dismantle_count", &stats);
     assert_eq!(
         count, 0,
         "dismantle_count must not increment on no-op calls"
@@ -503,10 +487,7 @@ fn test_reset_dismantle_state_for_test_is_narrow() {
     let _g = SAMPLER_TEST_LOCK.lock().unwrap();
     // Capture counters before reset.
     let pre = lineage_stats();
-    let switch_pre = pre
-        .iter()
-        .find(|(n, _)| *n == "lineage_switch_count")
-        .map_or(0, |(_, v)| *v);
+    let switch_pre = find_counter("lineage_switch_count", &pre);
 
     set_lineage_dismantled(true);
     assert!(is_lineage_dismantled());
@@ -517,20 +498,14 @@ fn test_reset_dismantle_state_for_test_is_narrow() {
     // depend on it being monotonically nondecreasing). It can only
     // have grown via parallel test contributions.
     let post = lineage_stats();
-    let switch_post = post
-        .iter()
-        .find(|(n, _)| *n == "lineage_switch_count")
-        .map_or(0, |(_, v)| *v);
+    let switch_post = find_counter("lineage_switch_count", &post);
     assert!(
         switch_post >= switch_pre,
         "narrow reset must not touch LINEAGE_SWITCH_COUNT"
     );
 
     let stats = dismantle_stats();
-    let count = stats
-        .iter()
-        .find(|(n, _)| *n == "lineage_dismantle_count")
-        .map_or(0, |(_, v)| *v);
+    let count = find_counter("lineage_dismantle_count", &stats);
     assert_eq!(count, 0);
 }
 
