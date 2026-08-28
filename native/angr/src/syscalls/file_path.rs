@@ -1102,4 +1102,11 @@ impl NativeSyscall for NativeNewfstatatSyscall {
     }
 }
 
+test_submod!("file_path_tests_support.rs" => file_path_tests_support);
 test_submod!("file_path_tests.rs" => file_path_tests);
+test_submod!("file_path_readlink_tests.rs" => file_path_readlink_tests);
+test_submod!("file_path_fstat_tests.rs" => file_path_fstat_tests);
+test_submod!("file_path_stat_tests.rs" => file_path_stat_tests);
+test_submod!("file_path_lstat_tests.rs" => file_path_lstat_tests);
+test_submod!("file_path_newfstatat_tests.rs" => file_path_newfstatat_tests);
+test_submod!("file_path_symlink_tests.rs" => file_path_symlink_tests);

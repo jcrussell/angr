@@ -69,7 +69,10 @@ def is_test_file(path: Path | str) -> bool:
     rel = p.as_posix()
     name = p.name
     return (
-        name.endswith("_tests.rs")
+        # `*_tests_support.rs` is the shared-fixture module a >2000-line test
+        # file splits into (see bd memory `invariant-file-size-split-convention`)
+        # — same test-only status as the `*_tests.rs` siblings that consume it.
+        name.endswith(("_tests.rs", "_tests_support.rs"))
         or name.startswith("tests_")
         or name in ("test_helpers.rs", "property_tests.rs")
         or "/tests/" in rel

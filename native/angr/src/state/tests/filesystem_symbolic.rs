@@ -122,7 +122,7 @@ fn test_effective_len_concrete_write_past_symbolic_end() {
 
 /// Fix 1 (angr-0xyq2 review): `content_size_for_path` must consult the
 /// registry, so a registered-but-never-opened path reports its content
-/// length (unit leg; the stat syscall leg lives in file_path_tests.rs).
+/// length (unit leg; the stat syscall leg lives in file_path_stat_tests.rs).
 #[test]
 fn test_content_size_for_path_registry_without_fd() {
     let mut fs = FileSystem::default();
