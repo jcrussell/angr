@@ -1,9 +1,9 @@
 //! Clean call (CCall) implementations for VEX IR.
 //!
-//! This module implements the x86/AMD64 helper functions that VEX IR uses for
-//! condition code calculations. The production entry point is
-//! `handle_ccall_with_ctx`, which dispatches to the appropriate helper based on
-//! the callee name; the interpreter calls it directly with `Some(ctx)` so
+//! This module implements the guest helper functions that VEX IR uses for
+//! condition-code calculation — x86/AMD64 eflags, ARM32 and AArch64 NZCV. The
+//! production entry point is `handle_ccall_with_ctx`, which does nothing but
+//! dispatch on the callee name to a per-family `handle_*` helper; the interpreter calls it directly with `Some(ctx)` so
 //! symbolic condition codes resolve against the live solver context.
 //! `handle_ccall` is a thin ctx-less convenience wrapper (used only by tests).
 
@@ -493,528 +493,579 @@ pub(super) fn handle_ccall(name: &str, args: &[RustBV], ret_bits: u32) -> Option
 }
 
 /// Handle a CCall with optional symbolic context for symbolic condition codes.
+///
+/// Pure dispatch: every arm forwards the whole `(args, ret_bits, ctx)` triple
+/// to the `handle_*` helper for that callee-name family, each of which tries
+/// the concrete path first and then the symbolic one. Families that span
+/// several names (the eflags/rflags spelling split, the per-flag `_n`/`_z`/
+/// `_c`/`_v` quartets) are also handed `name` so they can re-derive which arch
+/// or which flag was asked for.
 pub fn handle_ccall_with_ctx(
     name: &str,
     args: &[RustBV],
     ret_bits: u32,
     ctx: Option<&crate::symbolic::SymContext>,
 ) -> Option<RustBV> {
-    // Check for x86g_calculate_condition or amd64g_calculate_condition
-    if name == "amd64g_calculate_condition" || name == "x86g_calculate_condition" {
-        // Args: cond, cc_op, cc_dep1, cc_dep2, cc_ndep
-        if args.len() < 5 {
-            return None;
+    match name {
+        "amd64g_calculate_condition" | "x86g_calculate_condition" => {
+            handle_x86_calculate_condition(name, args, ret_bits, ctx)
         }
+        "amd64g_calculate_eflags_c"
+        | "amd64g_calculate_rflags_c"
+        | "x86g_calculate_eflags_c"
+        | "x86g_calculate_rflags_c" => handle_x86_eflags_c(name, args, ret_bits, ctx),
+        "amd64g_calculate_eflags_all"
+        | "amd64g_calculate_rflags_all"
+        | "x86g_calculate_eflags_all"
+        | "x86g_calculate_rflags_all" => handle_x86_eflags_all(name, args, ret_bits, ctx),
+        "x86g_use_seg_selector" => handle_x86_use_seg_selector(args, ret_bits),
+        "armg_calculate_condition" => handle_arm32_condition(args, ret_bits, ctx),
+        "armg_calculate_flags_nzcv" => handle_arm32_flags_nzcv(args, ret_bits, ctx),
+        "armg_calculate_flag_n"
+        | "armg_calculate_flag_z"
+        | "armg_calculate_flag_c"
+        | "armg_calculate_flag_v" => handle_arm32_flag_single(name, args, ret_bits, ctx),
+        "arm64g_calculate_condition" => handle_arm64_condition(args, ret_bits, ctx),
+        "arm64g_calculate_flags_nzcv" => handle_arm64_flags_nzcv(args, ret_bits, ctx),
+        "arm64g_calculate_flag_n"
+        | "arm64g_calculate_flag_z"
+        | "arm64g_calculate_flag_c"
+        | "arm64g_calculate_flag_v" => handle_arm64_flag_single(name, args, ret_bits, ctx),
+        // Not a supported CCall
+        _ => None,
+    }
+}
 
-        // Try concrete path first
-        if let (Some(cond), Some(cc_op), Some(cc_dep1), Some(cc_dep2), Some(cc_ndep)) = (
-            args[0].as_u64(),
-            args[1].as_u64(),
-            args[2].as_u64(),
-            args[3].as_u64(),
-            args[4].as_u64(),
-        ) {
-            let result = if name == "amd64g_calculate_condition" {
-                amd64g_calculate_condition(cond, cc_op, cc_dep1, cc_dep2, cc_ndep)?
-            } else {
-                x86g_calculate_condition(cond, cc_op, cc_dep1, cc_dep2, cc_ndep)?
-            };
-            return Some(RustBV::concrete(result as u128, ret_bits));
-        }
-
-        // Symbolic path: build SymFlags for the cc_op category, then evaluate
-        // the condition. Covers SUB/ADD/LOGIC/INC/DEC and all standard
-        // condition codes (O/B/Z/BE/S/P/L/LE plus inverses).
-        if let (Some(cond), Some(cc_op), Some(sym_ctx)) = (args[0].as_u64(), args[1].as_u64(), ctx)
-        {
-            let arch = CcArch::from_ccall_name(name);
-            if let Some(info) = cc_op_info(arch, cc_op) {
-                let flags = if info.category == OpCategory::Copy {
-                    sym_flags_from_copy(&args[2], sym_ctx)
-                } else {
-                    match sym_flags_for_category(
-                        info.category,
-                        info.nbits,
-                        &args[2],
-                        &args[3],
-                        &args[4],
-                        sym_ctx,
-                    ) {
-                        Ok(f) => f,
-                        // Unreachable: the surrounding `if` handles Copy first.
-                        Err(SymFlagsError::CopyHandledByCaller) => return None,
-                    }
-                };
-                if let Some(bit) = eval_sym_condition(cond, &flags, sym_ctx) {
-                    return Some(bit.zero_extend(ret_bits, sym_ctx));
-                }
-            }
-        }
-
+/// `amd64g_calculate_condition` / `x86g_calculate_condition`: evaluate one
+/// x86/amd64 condition code from the `(cond, cc_op, dep1, dep2, ndep)` thunk.
+/// `name` picks the arch — the two use different `cc_op` numberings, see
+/// [`CcArch::from_ccall_name`].
+fn handle_x86_calculate_condition(
+    name: &str,
+    args: &[RustBV],
+    ret_bits: u32,
+    ctx: Option<&crate::symbolic::SymContext>,
+) -> Option<RustBV> {
+    // Args: cond, cc_op, cc_dep1, cc_dep2, cc_ndep
+    if args.len() < 5 {
         return None;
     }
 
-    // Check for eflags_c / rflags_c CCall.
-    // Handle both "eflags" and "rflags" naming variants.
-    if name == "amd64g_calculate_eflags_c"
-        || name == "amd64g_calculate_rflags_c"
-        || name == "x86g_calculate_eflags_c"
-        || name == "x86g_calculate_rflags_c"
-    {
-        // Args: cc_op, cc_dep1, cc_dep2, cc_ndep
-        if args.len() < 4 {
-            return None;
-        }
-
-        // Try concrete path first
-        if let (Some(cc_op), Some(cc_dep1), Some(cc_dep2), Some(cc_ndep)) = (
-            args[0].as_u64(),
-            args[1].as_u64(),
-            args[2].as_u64(),
-            args[3].as_u64(),
-        ) {
-            let is_amd64 = name.starts_with("amd64g");
-            let result = if is_amd64 {
-                calculate_eflags_c_amd64(cc_op, cc_dep1, cc_dep2, cc_ndep)?
-            } else {
-                calculate_eflags_c_x86(cc_op, cc_dep1, cc_dep2, cc_ndep)?
-            };
-            return Some(RustBV::concrete(result as u128, ret_bits));
-        }
-
-        // Symbolic path for carry flag
-        if let (Some(cc_op), Some(sym_ctx)) = (args[0].as_u64(), ctx) {
-            let arch = CcArch::from_ccall_name(name);
-            if let Some(info) = cc_op_info(arch, cc_op) {
-                let nb = info.nbits;
-                let cf = match info.category {
-                    OpCategory::Copy => {
-                        // CF = bit G_CC_SHIFT_C of dep1. `extract(shift, shift)`
-                        // is exactly `(dep1 >> shift) & 1` as a 1-bit BV — reuse
-                        // the shared helper (as the Inc/Dec arm below does)
-                        // instead of hand-building the lshr/and/extract chain,
-                        // so the flag-extraction idiom has one source of truth.
-                        Some(sym_extract_flag(
-                            &args[1],
-                            flag_shift::G_CC_SHIFT_C,
-                            sym_ctx,
-                        ))
-                    }
-                    OpCategory::Sub => {
-                        let d1 = extract_to_nbits(&args[1], nb, sym_ctx);
-                        let d2 = extract_to_nbits(&args[2], nb, sym_ctx);
-                        Some(d1.ult(&d2, sym_ctx))
-                    }
-                    OpCategory::Add => {
-                        let d1 = extract_to_nbits(&args[1], nb, sym_ctx);
-                        let d2 = extract_to_nbits(&args[2], nb, sym_ctx);
-                        let result = d1.add(&d2, sym_ctx);
-                        Some(result.ult(&d1, sym_ctx))
-                    }
-                    OpCategory::Logic => Some(RustBV::concrete(0, 1)),
-                    // INC/DEC do not modify CF; VEX preserves it in cc_ndep
-                    // (args[3]). CF = (cc_ndep >> SHIFT_C) & 1 — matches the
-                    // concrete calc_flags_inc/calc_flags_dec path. Without this,
-                    // a symbolic cc_ndep (e.g. blank_state's uninitialized
-                    // flags before any flag-setting op) forced the whole ccall
-                    // to fall back to a fresh unconstrained symbolic carry,
-                    // poisoning later branch guards (angr-g6dg).
-                    OpCategory::Inc | OpCategory::Dec => Some(sym_extract_flag(
-                        &args[3],
-                        flag_shift::G_CC_SHIFT_C,
-                        sym_ctx,
-                    )),
-                    // Everything else: reuse the shared `SymFlags` builder and
-                    // take its CF rather than re-deriving each formula here.
-                    // ADC/SBB carry is oldC-dependent (angr-9ke6b.88); the
-                    // shift/rotate/multiply carries read cc_dep2 / cc_ndep in
-                    // ways that are equally easy to get subtly wrong
-                    // (angr-9ke6b.219). Listed exhaustively so a new
-                    // `OpCategory` fails to compile instead of falling back to
-                    // Python (30x wall-clock, measured on angr-9ke6b.88).
-                    OpCategory::Adc
-                    | OpCategory::Sbb
-                    | OpCategory::Shl
-                    | OpCategory::Shr
-                    | OpCategory::Rol
-                    | OpCategory::Ror
-                    | OpCategory::Umul
-                    | OpCategory::Smul => sym_flags_for_category(
-                        info.category,
-                        nb,
-                        &args[1],
-                        &args[2],
-                        &args[3],
-                        sym_ctx,
-                    )
-                    .ok()
-                    .map(|f| f.cf),
-                };
-                if let Some(c) = cf {
-                    return Some(c.zero_extend(ret_bits, sym_ctx));
-                }
-            }
-        }
-
-        return None;
+    // Try concrete path first
+    if let (Some(cond), Some(cc_op), Some(cc_dep1), Some(cc_dep2), Some(cc_ndep)) = (
+        args[0].as_u64(),
+        args[1].as_u64(),
+        args[2].as_u64(),
+        args[3].as_u64(),
+        args[4].as_u64(),
+    ) {
+        let result = if name == "amd64g_calculate_condition" {
+            amd64g_calculate_condition(cond, cc_op, cc_dep1, cc_dep2, cc_ndep)?
+        } else {
+            x86g_calculate_condition(cond, cc_op, cc_dep1, cc_dep2, cc_ndep)?
+        };
+        return Some(RustBV::concrete(result as u128, ret_bits));
     }
 
-    // Check for eflags_all / rflags_all CCall.
-    // VEX emits both "amd64g_calculate_rflags_all" and "amd64g_calculate_eflags_all"
-    // depending on the context. We need to handle both names.
-    if name == "amd64g_calculate_eflags_all"
-        || name == "amd64g_calculate_rflags_all"
-        || name == "x86g_calculate_eflags_all"
-        || name == "x86g_calculate_rflags_all"
-    {
-        // Args: cc_op, cc_dep1, cc_dep2, cc_ndep
-        if args.len() < 4 {
-            return None;
-        }
-
-        // Try concrete path first
-        if let (Some(cc_op), Some(cc_dep1), Some(cc_dep2), Some(cc_ndep)) = (
-            args[0].as_u64(),
-            args[1].as_u64(),
-            args[2].as_u64(),
-            args[3].as_u64(),
-        ) {
-            let is_amd64 = name.starts_with("amd64g");
-            let result = if is_amd64 {
-                calculate_eflags_all_amd64(cc_op, cc_dep1, cc_dep2, cc_ndep)?
+    // Symbolic path: build SymFlags for the cc_op category, then evaluate
+    // the condition. Covers SUB/ADD/LOGIC/INC/DEC and all standard
+    // condition codes (O/B/Z/BE/S/P/L/LE plus inverses).
+    if let (Some(cond), Some(cc_op), Some(sym_ctx)) = (args[0].as_u64(), args[1].as_u64(), ctx) {
+        let arch = CcArch::from_ccall_name(name);
+        if let Some(info) = cc_op_info(arch, cc_op) {
+            let flags = if info.category == OpCategory::Copy {
+                sym_flags_from_copy(&args[2], sym_ctx)
             } else {
-                calculate_eflags_all_x86(cc_op, cc_dep1, cc_dep2, cc_ndep)?
-            };
-            return Some(RustBV::concrete(result as u128, ret_bits));
-        }
-
-        // Symbolic path: handle various cc_ops with symbolic deps
-        if let (Some(cc_op), Some(sym_ctx)) = (args[0].as_u64(), ctx) {
-            if cc_op == 0 {
-                // CC_OP_COPY: result = cc_dep1 & flags_mask
-                // Mirror the concrete calculate_eflags_all COPY path: mask in
-                // O|S|Z|P|C|A via the same named constants (hand-deriving the
-                // literal twice is how 0xD5 drifted, dropping the O bit — see
-                // angr-36vvn.1).
-                let flags_mask: u128 = (flag_mask::G_CC_MASK_O
-                    | flag_mask::G_CC_MASK_S
-                    | flag_mask::G_CC_MASK_Z
-                    | flag_mask::G_CC_MASK_P
-                    | flag_mask::G_CC_MASK_C
-                    | flag_mask::G_CC_MASK_A) as u128;
-                let mask = RustBV::concrete(flags_mask, args[1].width());
-                let result = args[1].and(&mask, sym_ctx);
-                if result.width() < ret_bits {
-                    return Some(result.zero_extend(ret_bits, sym_ctx));
-                } else if result.width() > ret_bits {
-                    return Some(result.extract(ret_bits - 1, 0, sym_ctx));
-                }
-                return Some(result);
-            }
-
-            // Symbolic eflags computation. Route every non-Copy category
-            // through the shared `SymFlags` builder rather than enumerating a
-            // handful here — same reuse as the eflags_c branch above. Before
-            // angr-0jh0j.71 this covered only Sub/Add/Logic, so a PUSHF/LAHF
-            // after a symbolic ADC/SBB/shift/rotate/multiply fell back to the
-            // Python ccall (30x wall-clock, measured on angr-9ke6b.88) even
-            // though `sym_flags_for_category` already handled the category.
-            // Copy is unreachable here: the only cc_op mapping to it is 0,
-            // returned above.
-            let arch = CcArch::from_ccall_name(name);
-            if let Some(info) = cc_op_info(arch, cc_op)
-                && let Ok(flags) = sym_flags_for_category(
+                match sym_flags_for_category(
                     info.category,
                     info.nbits,
-                    &args[1],
                     &args[2],
                     &args[3],
+                    &args[4],
                     sym_ctx,
-                )
-            {
-                return Some(sym_pack_eflags(&flags, ret_bits, sym_ctx));
-            }
-        }
-
-        // Unsupported symbolic cc_ops: return None (falls through to fallback)
-        return None;
-    }
-
-    // x86g_use_seg_selector: linearize a segmented address.
-    // Args: [ldt, gdt, seg_selector, virtual_addr]
-    // Returns 64-bit value: lower 32 bits = linear address, upper 32 bits = error flag.
-    // Fast path: when the relevant descriptor table (LDT or GDT, chosen by tiBit) is concretely
-    // zero, treat as flat addressing — this is the common Linux-glibc-TLS case
-    // (e.g. mov %gs:0x14, %eax for stack canary reads).
-    if name == "x86g_use_seg_selector" {
-        if args.len() < 4 {
-            return None;
-        }
-        if let (Some(ldt_val), Some(gdt_val), Some(ss_val), Some(va_val)) = (
-            args[0].as_u64(),
-            args[1].as_u64(),
-            args[2].as_u64(),
-            args[3].as_u64(),
-        ) {
-            // Bad selector: high bits set above 16. Match Python's bad() return.
-            if ss_val & !0xFFFFu64 != 0 {
-                return Some(RustBV::concrete(1u128 << 32, ret_bits));
-            }
-            // Pick the descriptor table (tiBit = bit 2 of seg_selector).
-            let ti_bit = (ss_val >> 2) & 1;
-            let table_empty = if ti_bit == 0 {
-                gdt_val == 0
-            } else {
-                ldt_val == 0
+                ) {
+                    Ok(f) => f,
+                    // Unreachable: the surrounding `if` handles Copy first.
+                    Err(SymFlagsError::CopyHandledByCaller) => return None,
+                }
             };
-            if table_empty {
-                // The flat-addressing sum is 32-bit in Python's
-                // `x86g_use_seg_selector` (`(seg_selector << 16) + virtual_addr`
-                // over 32-bit BVs, then `.zero_extend(32)`), so it wraps mod
-                // 2^32. Masking here is load-bearing, not cosmetic: without it a
-                // carry out of bit 31 lands on bit 32, which this ccall's ABI
-                // reserves for the error flag. Reachable with any negative
-                // displacement off a segment register (`mov %gs:-0x4, %eax` →
-                // va = 0xFFFFFFFC), which would otherwise report a bogus
-                // bad-selector error. See test_use_seg_selector_gdt_empty_wraps_mod_2_32.
-                let linear = ((ss_val & 0xFFFF) << 16).wrapping_add(va_val & 0xFFFFFFFF);
-                return Some(RustBV::concrete((linear & 0xFFFF_FFFF) as u128, ret_bits));
-            }
-        }
-        return None;
-    }
-
-    // ARM: armg_calculate_condition
-    // Args: cond_n_op, cc_dep1, cc_dep2, cc_ndep (cc_dep3 in Python naming)
-    if name == "armg_calculate_condition" {
-        if args.len() < 4 {
-            return None;
-        }
-
-        // Concrete path
-        if let (Some(cond_n_op), Some(dep1), Some(dep2), Some(ndep)) = (
-            args[0].as_u64(),
-            args[1].as_u64(),
-            args[2].as_u64(),
-            args[3].as_u64(),
-        ) {
-            let result = armg_calculate_condition(cond_n_op, dep1, dep2, ndep)?;
-            return Some(RustBV::concrete(result as u128, ret_bits));
-        }
-
-        // Symbolic path: concrete cond_n_op with (possibly) symbolic deps.
-        // Routes through arm_sym_calculate_condition which covers all 8
-        // cc_ops (COPY/ADD/SUB/ADC/SBB/LOGIC/MUL/MULL) and the standard
-        // condition codes (EQ/HS/MI/VS/HI/GE/GT plus inverses, AL, NV).
-        if let (Some(cond_n_op), Some(sym_ctx)) = (args[0].as_u64(), ctx) {
-            let cond = (cond_n_op >> 4) & 0xF;
-            let cc_op = cond_n_op & 0xF;
-            if let Some(bit) =
-                arm_sym_calculate_condition(cond, cc_op, &args[1], &args[2], &args[3], sym_ctx)
-            {
+            if let Some(bit) = eval_sym_condition(cond, &flags, sym_ctx) {
                 return Some(bit.zero_extend(ret_bits, sym_ctx));
             }
         }
+    }
 
+    None
+}
+
+/// `{amd64g,x86g}_calculate_{e,r}flags_c`: the carry flag alone. VEX emits
+/// both the "eflags" and "rflags" spelling depending on context, so each arch
+/// arrives under either name; `name` picks the arch.
+fn handle_x86_eflags_c(
+    name: &str,
+    args: &[RustBV],
+    ret_bits: u32,
+    ctx: Option<&crate::symbolic::SymContext>,
+) -> Option<RustBV> {
+    // Args: cc_op, cc_dep1, cc_dep2, cc_ndep
+    if args.len() < 4 {
         return None;
     }
 
-    // ARM: armg_calculate_flags_nzcv
-    if name == "armg_calculate_flags_nzcv" {
-        if args.len() < 4 {
-            return None;
+    // Try concrete path first
+    if let (Some(cc_op), Some(cc_dep1), Some(cc_dep2), Some(cc_ndep)) = (
+        args[0].as_u64(),
+        args[1].as_u64(),
+        args[2].as_u64(),
+        args[3].as_u64(),
+    ) {
+        let is_amd64 = name.starts_with("amd64g");
+        let result = if is_amd64 {
+            calculate_eflags_c_amd64(cc_op, cc_dep1, cc_dep2, cc_ndep)?
+        } else {
+            calculate_eflags_c_x86(cc_op, cc_dep1, cc_dep2, cc_ndep)?
+        };
+        return Some(RustBV::concrete(result as u128, ret_bits));
+    }
+
+    // Symbolic path for carry flag
+    if let (Some(cc_op), Some(sym_ctx)) = (args[0].as_u64(), ctx) {
+        let arch = CcArch::from_ccall_name(name);
+        if let Some(info) = cc_op_info(arch, cc_op) {
+            let nb = info.nbits;
+            let cf = match info.category {
+                OpCategory::Copy => {
+                    // CF = bit G_CC_SHIFT_C of dep1. `extract(shift, shift)`
+                    // is exactly `(dep1 >> shift) & 1` as a 1-bit BV — reuse
+                    // the shared helper (as the Inc/Dec arm below does)
+                    // instead of hand-building the lshr/and/extract chain,
+                    // so the flag-extraction idiom has one source of truth.
+                    Some(sym_extract_flag(
+                        &args[1],
+                        flag_shift::G_CC_SHIFT_C,
+                        sym_ctx,
+                    ))
+                }
+                OpCategory::Sub => {
+                    let d1 = extract_to_nbits(&args[1], nb, sym_ctx);
+                    let d2 = extract_to_nbits(&args[2], nb, sym_ctx);
+                    Some(d1.ult(&d2, sym_ctx))
+                }
+                OpCategory::Add => {
+                    let d1 = extract_to_nbits(&args[1], nb, sym_ctx);
+                    let d2 = extract_to_nbits(&args[2], nb, sym_ctx);
+                    let result = d1.add(&d2, sym_ctx);
+                    Some(result.ult(&d1, sym_ctx))
+                }
+                OpCategory::Logic => Some(RustBV::concrete(0, 1)),
+                // INC/DEC do not modify CF; VEX preserves it in cc_ndep
+                // (args[3]). CF = (cc_ndep >> SHIFT_C) & 1 — matches the
+                // concrete calc_flags_inc/calc_flags_dec path. Without this,
+                // a symbolic cc_ndep (e.g. blank_state's uninitialized
+                // flags before any flag-setting op) forced the whole ccall
+                // to fall back to a fresh unconstrained symbolic carry,
+                // poisoning later branch guards (angr-g6dg).
+                OpCategory::Inc | OpCategory::Dec => Some(sym_extract_flag(
+                    &args[3],
+                    flag_shift::G_CC_SHIFT_C,
+                    sym_ctx,
+                )),
+                // Everything else: reuse the shared `SymFlags` builder and
+                // take its CF rather than re-deriving each formula here.
+                // ADC/SBB carry is oldC-dependent (angr-9ke6b.88); the
+                // shift/rotate/multiply carries read cc_dep2 / cc_ndep in
+                // ways that are equally easy to get subtly wrong
+                // (angr-9ke6b.219). Listed exhaustively so a new
+                // `OpCategory` fails to compile instead of falling back to
+                // Python (30x wall-clock, measured on angr-9ke6b.88).
+                OpCategory::Adc
+                | OpCategory::Sbb
+                | OpCategory::Shl
+                | OpCategory::Shr
+                | OpCategory::Rol
+                | OpCategory::Ror
+                | OpCategory::Umul
+                | OpCategory::Smul => {
+                    sym_flags_for_category(info.category, nb, &args[1], &args[2], &args[3], sym_ctx)
+                        .ok()
+                        .map(|f| f.cf)
+                }
+            };
+            if let Some(c) = cf {
+                return Some(c.zero_extend(ret_bits, sym_ctx));
+            }
+        }
+    }
+
+    None
+}
+
+/// `{amd64g,x86g}_calculate_{e,r}flags_all`: the whole packed flags word.
+/// Same "eflags"/"rflags" spelling split as [`handle_x86_eflags_c`]; `name`
+/// picks the arch.
+fn handle_x86_eflags_all(
+    name: &str,
+    args: &[RustBV],
+    ret_bits: u32,
+    ctx: Option<&crate::symbolic::SymContext>,
+) -> Option<RustBV> {
+    // Args: cc_op, cc_dep1, cc_dep2, cc_ndep
+    if args.len() < 4 {
+        return None;
+    }
+
+    // Try concrete path first
+    if let (Some(cc_op), Some(cc_dep1), Some(cc_dep2), Some(cc_ndep)) = (
+        args[0].as_u64(),
+        args[1].as_u64(),
+        args[2].as_u64(),
+        args[3].as_u64(),
+    ) {
+        let is_amd64 = name.starts_with("amd64g");
+        let result = if is_amd64 {
+            calculate_eflags_all_amd64(cc_op, cc_dep1, cc_dep2, cc_ndep)?
+        } else {
+            calculate_eflags_all_x86(cc_op, cc_dep1, cc_dep2, cc_ndep)?
+        };
+        return Some(RustBV::concrete(result as u128, ret_bits));
+    }
+
+    // Symbolic path: handle various cc_ops with symbolic deps
+    if let (Some(cc_op), Some(sym_ctx)) = (args[0].as_u64(), ctx) {
+        if cc_op == 0 {
+            // CC_OP_COPY: result = cc_dep1 & flags_mask
+            // Mirror the concrete calculate_eflags_all COPY path: mask in
+            // O|S|Z|P|C|A via the same named constants (hand-deriving the
+            // literal twice is how 0xD5 drifted, dropping the O bit — see
+            // angr-36vvn.1).
+            let flags_mask: u128 = (flag_mask::G_CC_MASK_O
+                | flag_mask::G_CC_MASK_S
+                | flag_mask::G_CC_MASK_Z
+                | flag_mask::G_CC_MASK_P
+                | flag_mask::G_CC_MASK_C
+                | flag_mask::G_CC_MASK_A) as u128;
+            let mask = RustBV::concrete(flags_mask, args[1].width());
+            let result = args[1].and(&mask, sym_ctx);
+            if result.width() < ret_bits {
+                return Some(result.zero_extend(ret_bits, sym_ctx));
+            } else if result.width() > ret_bits {
+                return Some(result.extract(ret_bits - 1, 0, sym_ctx));
+            }
+            return Some(result);
         }
 
-        if let (Some(cc_op), Some(dep1), Some(dep2), Some(ndep)) = (
-            args[0].as_u64(),
-            args[1].as_u64(),
-            args[2].as_u64(),
-            args[3].as_u64(),
-        ) {
-            let result = armg_calculate_flags_nzcv(cc_op, dep1, dep2, ndep)?;
-            return Some(RustBV::concrete(result as u128, ret_bits));
-        }
-
-        // Symbolic path: concrete cc_op with (possibly) symbolic deps. The
-        // packed-NZCV analogue of the armg_calculate_flag_* arm below
-        // (angr-zgd3r).
-        if let (Some(cc_op), Some(sym_ctx)) = (args[0].as_u64(), ctx)
-            && let Some(packed) =
-                arm_sym_flags_nzcv(cc_op, &args[1], &args[2], &args[3], ret_bits, sym_ctx)
+        // Symbolic eflags computation. Route every non-Copy category
+        // through the shared `SymFlags` builder rather than enumerating a
+        // handful here — same reuse as the eflags_c branch above. Before
+        // angr-0jh0j.71 this covered only Sub/Add/Logic, so a PUSHF/LAHF
+        // after a symbolic ADC/SBB/shift/rotate/multiply fell back to the
+        // Python ccall (30x wall-clock, measured on angr-9ke6b.88) even
+        // though `sym_flags_for_category` already handled the category.
+        // Copy is unreachable here: the only cc_op mapping to it is 0,
+        // returned above.
+        let arch = CcArch::from_ccall_name(name);
+        if let Some(info) = cc_op_info(arch, cc_op)
+            && let Ok(flags) = sym_flags_for_category(
+                info.category,
+                info.nbits,
+                &args[1],
+                &args[2],
+                &args[3],
+                sym_ctx,
+            )
         {
-            return Some(packed);
+            return Some(sym_pack_eflags(&flags, ret_bits, sym_ctx));
         }
+    }
 
+    // Unsupported symbolic cc_ops: return None (falls through to fallback)
+    None
+}
+
+/// `x86g_use_seg_selector`: linearize a segmented address.
+///
+/// Args: [ldt, gdt, seg_selector, virtual_addr]
+/// Returns 64-bit value: lower 32 bits = linear address, upper 32 bits = error flag.
+/// Fast path: when the relevant descriptor table (LDT or GDT, chosen by tiBit) is concretely
+/// zero, treat as flat addressing — this is the common Linux-glibc-TLS case
+/// (e.g. mov %gs:0x14, %eax for stack canary reads).
+fn handle_x86_use_seg_selector(args: &[RustBV], ret_bits: u32) -> Option<RustBV> {
+    if args.len() < 4 {
+        return None;
+    }
+    if let (Some(ldt_val), Some(gdt_val), Some(ss_val), Some(va_val)) = (
+        args[0].as_u64(),
+        args[1].as_u64(),
+        args[2].as_u64(),
+        args[3].as_u64(),
+    ) {
+        // Bad selector: high bits set above 16. Match Python's bad() return.
+        if ss_val & !0xFFFFu64 != 0 {
+            return Some(RustBV::concrete(1u128 << 32, ret_bits));
+        }
+        // Pick the descriptor table (tiBit = bit 2 of seg_selector).
+        let ti_bit = (ss_val >> 2) & 1;
+        let table_empty = if ti_bit == 0 {
+            gdt_val == 0
+        } else {
+            ldt_val == 0
+        };
+        if table_empty {
+            // The flat-addressing sum is 32-bit in Python's
+            // `x86g_use_seg_selector` (`(seg_selector << 16) + virtual_addr`
+            // over 32-bit BVs, then `.zero_extend(32)`), so it wraps mod
+            // 2^32. Masking here is load-bearing, not cosmetic: without it a
+            // carry out of bit 31 lands on bit 32, which this ccall's ABI
+            // reserves for the error flag. Reachable with any negative
+            // displacement off a segment register (`mov %gs:-0x4, %eax` →
+            // va = 0xFFFFFFFC), which would otherwise report a bogus
+            // bad-selector error. See test_use_seg_selector_gdt_empty_wraps_mod_2_32.
+            let linear = ((ss_val & 0xFFFF) << 16).wrapping_add(va_val & 0xFFFFFFFF);
+            return Some(RustBV::concrete((linear & 0xFFFF_FFFF) as u128, ret_bits));
+        }
+    }
+    None
+}
+
+/// `armg_calculate_condition`: evaluate one ARM32 condition code.
+///
+/// Args: cond_n_op, cc_dep1, cc_dep2, cc_ndep (cc_dep3 in Python naming)
+fn handle_arm32_condition(
+    args: &[RustBV],
+    ret_bits: u32,
+    ctx: Option<&crate::symbolic::SymContext>,
+) -> Option<RustBV> {
+    if args.len() < 4 {
         return None;
     }
 
-    // ARM: individual flag calculations
-    if name == "armg_calculate_flag_n"
-        || name == "armg_calculate_flag_z"
-        || name == "armg_calculate_flag_c"
-        || name == "armg_calculate_flag_v"
-    {
-        if args.len() < 4 {
-            return None;
-        }
-
-        if let (Some(cc_op), Some(dep1), Some(dep2), Some(ndep)) = (
-            args[0].as_u64(),
-            args[1].as_u64(),
-            args[2].as_u64(),
-            args[3].as_u64(),
-        ) {
-            let result = match name {
-                "armg_calculate_flag_n" => armg_calc_flag_n(cc_op, dep1, dep2, ndep)?,
-                "armg_calculate_flag_z" => armg_calc_flag_z(cc_op, dep1, dep2, ndep)?,
-                "armg_calculate_flag_c" => armg_calc_flag_c(cc_op, dep1, dep2, ndep)?,
-                "armg_calculate_flag_v" => armg_calc_flag_v(cc_op, dep1, dep2, ndep)?,
-                _ => return None,
-            };
-            return Some(RustBV::concrete(result as u128, ret_bits));
-        }
-
-        // Symbolic path: concrete cc_op with (possibly) symbolic deps. Mirrors
-        // the arm64g_calculate_flag_* arm below; the arm_sym_flag_* helpers
-        // cover all 8 ARM cc_ops and are already used by
-        // arm_sym_calculate_condition (angr-0jh0j.70).
-        if let (Some(cc_op), Some(sym_ctx)) = (args[0].as_u64(), ctx) {
-            let bit = match name {
-                "armg_calculate_flag_n" => {
-                    arm_sym_flag_n(cc_op, &args[1], &args[2], &args[3], sym_ctx)
-                }
-                "armg_calculate_flag_z" => {
-                    arm_sym_flag_z(cc_op, &args[1], &args[2], &args[3], sym_ctx)
-                }
-                "armg_calculate_flag_c" => {
-                    arm_sym_flag_c(cc_op, &args[1], &args[2], &args[3], sym_ctx)
-                }
-                "armg_calculate_flag_v" => {
-                    arm_sym_flag_v(cc_op, &args[1], &args[2], &args[3], sym_ctx)
-                }
-                _ => None,
-            };
-            if let Some(bit) = bit {
-                return Some(bit.zero_extend(ret_bits, sym_ctx));
-            }
-        }
-
-        return None;
+    // Concrete path
+    if let (Some(cond_n_op), Some(dep1), Some(dep2), Some(ndep)) = (
+        args[0].as_u64(),
+        args[1].as_u64(),
+        args[2].as_u64(),
+        args[3].as_u64(),
+    ) {
+        let result = armg_calculate_condition(cond_n_op, dep1, dep2, ndep)?;
+        return Some(RustBV::concrete(result as u128, ret_bits));
     }
 
-    // AArch64: arm64g_calculate_condition
-    // Args: cond_n_op, cc_dep1, cc_dep2, cc_dep3
-    if name == "arm64g_calculate_condition" {
-        if args.len() < 4 {
-            return None;
-        }
-
-        // Concrete path
-        if let (Some(cond_n_op), Some(d1), Some(d2), Some(d3)) = (
-            args[0].as_u64(),
-            args[1].as_u64(),
-            args[2].as_u64(),
-            args[3].as_u64(),
-        ) {
-            let result = arm64g_calculate_condition(cond_n_op, d1, d2, d3)?;
-            return Some(RustBV::concrete(result as u128, ret_bits));
-        }
-
-        // Symbolic path: concrete cond_n_op with (possibly) symbolic deps.
-        if let (Some(cond_n_op), Some(sym_ctx)) = (args[0].as_u64(), ctx) {
-            let cond = (cond_n_op >> 4) & 0xF;
-            let cc_op = cond_n_op & 0xF;
-            if let Some(bit) =
-                arm64_sym_calculate_condition(cond, cc_op, &args[1], &args[2], &args[3], sym_ctx)
-            {
-                return Some(bit.zero_extend(ret_bits, sym_ctx));
-            }
-        }
-
-        return None;
-    }
-
-    // AArch64: arm64g_calculate_flags_nzcv
-    if name == "arm64g_calculate_flags_nzcv" {
-        if args.len() < 4 {
-            return None;
-        }
-        if let (Some(cc_op), Some(d1), Some(d2), Some(d3)) = (
-            args[0].as_u64(),
-            args[1].as_u64(),
-            args[2].as_u64(),
-            args[3].as_u64(),
-        ) {
-            let result = arm64g_calculate_flags_nzcv(cc_op, d1, d2, d3)?;
-            return Some(RustBV::concrete(result as u128, ret_bits));
-        }
-
-        // Symbolic path, mirroring the armg_calculate_flags_nzcv arm above —
-        // the arch-sibling parity rule from
-        // invariant-ccall-arch-sibling-symbolic-parity (angr-zgd3r).
-        if let (Some(cc_op), Some(sym_ctx)) = (args[0].as_u64(), ctx)
-            && let Some(packed) =
-                arm64_sym_flags_nzcv(cc_op, &args[1], &args[2], &args[3], ret_bits, sym_ctx)
+    // Symbolic path: concrete cond_n_op with (possibly) symbolic deps.
+    // Routes through arm_sym_calculate_condition which covers all 8
+    // cc_ops (COPY/ADD/SUB/ADC/SBB/LOGIC/MUL/MULL) and the standard
+    // condition codes (EQ/HS/MI/VS/HI/GE/GT plus inverses, AL, NV).
+    if let (Some(cond_n_op), Some(sym_ctx)) = (args[0].as_u64(), ctx) {
+        let cond = (cond_n_op >> 4) & 0xF;
+        let cc_op = cond_n_op & 0xF;
+        if let Some(bit) =
+            arm_sym_calculate_condition(cond, cc_op, &args[1], &args[2], &args[3], sym_ctx)
         {
-            return Some(packed);
+            return Some(bit.zero_extend(ret_bits, sym_ctx));
         }
+    }
 
+    None
+}
+
+/// `armg_calculate_flags_nzcv`: the packed ARM32 NZCV word.
+fn handle_arm32_flags_nzcv(
+    args: &[RustBV],
+    ret_bits: u32,
+    ctx: Option<&crate::symbolic::SymContext>,
+) -> Option<RustBV> {
+    if args.len() < 4 {
         return None;
     }
 
-    // AArch64: individual flag calculations
-    if name == "arm64g_calculate_flag_n"
-        || name == "arm64g_calculate_flag_z"
-        || name == "arm64g_calculate_flag_c"
-        || name == "arm64g_calculate_flag_v"
+    if let (Some(cc_op), Some(dep1), Some(dep2), Some(ndep)) = (
+        args[0].as_u64(),
+        args[1].as_u64(),
+        args[2].as_u64(),
+        args[3].as_u64(),
+    ) {
+        let result = armg_calculate_flags_nzcv(cc_op, dep1, dep2, ndep)?;
+        return Some(RustBV::concrete(result as u128, ret_bits));
+    }
+
+    // Symbolic path: concrete cc_op with (possibly) symbolic deps. The
+    // packed-NZCV analogue of the armg_calculate_flag_* arm below
+    // (angr-zgd3r).
+    if let (Some(cc_op), Some(sym_ctx)) = (args[0].as_u64(), ctx)
+        && let Some(packed) =
+            arm_sym_flags_nzcv(cc_op, &args[1], &args[2], &args[3], ret_bits, sym_ctx)
     {
-        if args.len() < 4 {
-            return None;
-        }
+        return Some(packed);
+    }
 
-        // Concrete path
-        if let (Some(cc_op), Some(d1), Some(d2), Some(d3)) = (
-            args[0].as_u64(),
-            args[1].as_u64(),
-            args[2].as_u64(),
-            args[3].as_u64(),
-        ) {
-            let result = match name {
-                "arm64g_calculate_flag_n" => arm64g_calc_flag_n(cc_op, d1, d2, d3)?,
-                "arm64g_calculate_flag_z" => arm64g_calc_flag_z(cc_op, d1, d2, d3)?,
-                "arm64g_calculate_flag_c" => arm64g_calc_flag_c(cc_op, d1, d2, d3)?,
-                "arm64g_calculate_flag_v" => arm64g_calc_flag_v(cc_op, d1, d2, d3)?,
-                _ => return None,
-            };
-            return Some(RustBV::concrete(result as u128, ret_bits));
-        }
+    None
+}
 
-        // Symbolic path: concrete cc_op with (possibly) symbolic deps.
-        if let (Some(cc_op), Some(sym_ctx)) = (args[0].as_u64(), ctx) {
-            let bit = match name {
-                "arm64g_calculate_flag_n" => {
-                    arm64_sym_flag_n(cc_op, &args[1], &args[2], &args[3], sym_ctx)
-                }
-                "arm64g_calculate_flag_z" => {
-                    arm64_sym_flag_z(cc_op, &args[1], &args[2], &args[3], sym_ctx)
-                }
-                "arm64g_calculate_flag_c" => {
-                    arm64_sym_flag_c(cc_op, &args[1], &args[2], &args[3], sym_ctx)
-                }
-                "arm64g_calculate_flag_v" => {
-                    arm64_sym_flag_v(cc_op, &args[1], &args[2], &args[3], sym_ctx)
-                }
-                _ => None,
-            };
-            if let Some(bit) = bit {
-                return Some(bit.zero_extend(ret_bits, sym_ctx));
-            }
-        }
-
+/// `armg_calculate_flag_{n,z,c,v}`: one ARM32 flag bit; `name` picks which.
+fn handle_arm32_flag_single(
+    name: &str,
+    args: &[RustBV],
+    ret_bits: u32,
+    ctx: Option<&crate::symbolic::SymContext>,
+) -> Option<RustBV> {
+    if args.len() < 4 {
         return None;
     }
 
-    // Not a supported CCall
+    if let (Some(cc_op), Some(dep1), Some(dep2), Some(ndep)) = (
+        args[0].as_u64(),
+        args[1].as_u64(),
+        args[2].as_u64(),
+        args[3].as_u64(),
+    ) {
+        let result = match name {
+            "armg_calculate_flag_n" => armg_calc_flag_n(cc_op, dep1, dep2, ndep)?,
+            "armg_calculate_flag_z" => armg_calc_flag_z(cc_op, dep1, dep2, ndep)?,
+            "armg_calculate_flag_c" => armg_calc_flag_c(cc_op, dep1, dep2, ndep)?,
+            "armg_calculate_flag_v" => armg_calc_flag_v(cc_op, dep1, dep2, ndep)?,
+            _ => return None,
+        };
+        return Some(RustBV::concrete(result as u128, ret_bits));
+    }
+
+    // Symbolic path: concrete cc_op with (possibly) symbolic deps. Mirrors
+    // the arm64g_calculate_flag_* arm below; the arm_sym_flag_* helpers
+    // cover all 8 ARM cc_ops and are already used by
+    // arm_sym_calculate_condition (angr-0jh0j.70).
+    if let (Some(cc_op), Some(sym_ctx)) = (args[0].as_u64(), ctx) {
+        let bit = match name {
+            "armg_calculate_flag_n" => arm_sym_flag_n(cc_op, &args[1], &args[2], &args[3], sym_ctx),
+            "armg_calculate_flag_z" => arm_sym_flag_z(cc_op, &args[1], &args[2], &args[3], sym_ctx),
+            "armg_calculate_flag_c" => arm_sym_flag_c(cc_op, &args[1], &args[2], &args[3], sym_ctx),
+            "armg_calculate_flag_v" => arm_sym_flag_v(cc_op, &args[1], &args[2], &args[3], sym_ctx),
+            _ => None,
+        };
+        if let Some(bit) = bit {
+            return Some(bit.zero_extend(ret_bits, sym_ctx));
+        }
+    }
+
+    None
+}
+
+/// `arm64g_calculate_condition`: evaluate one AArch64 condition code.
+///
+/// Args: cond_n_op, cc_dep1, cc_dep2, cc_dep3
+fn handle_arm64_condition(
+    args: &[RustBV],
+    ret_bits: u32,
+    ctx: Option<&crate::symbolic::SymContext>,
+) -> Option<RustBV> {
+    if args.len() < 4 {
+        return None;
+    }
+
+    // Concrete path
+    if let (Some(cond_n_op), Some(d1), Some(d2), Some(d3)) = (
+        args[0].as_u64(),
+        args[1].as_u64(),
+        args[2].as_u64(),
+        args[3].as_u64(),
+    ) {
+        let result = arm64g_calculate_condition(cond_n_op, d1, d2, d3)?;
+        return Some(RustBV::concrete(result as u128, ret_bits));
+    }
+
+    // Symbolic path: concrete cond_n_op with (possibly) symbolic deps.
+    if let (Some(cond_n_op), Some(sym_ctx)) = (args[0].as_u64(), ctx) {
+        let cond = (cond_n_op >> 4) & 0xF;
+        let cc_op = cond_n_op & 0xF;
+        if let Some(bit) =
+            arm64_sym_calculate_condition(cond, cc_op, &args[1], &args[2], &args[3], sym_ctx)
+        {
+            return Some(bit.zero_extend(ret_bits, sym_ctx));
+        }
+    }
+
+    None
+}
+
+/// `arm64g_calculate_flags_nzcv`: the packed AArch64 NZCV word.
+fn handle_arm64_flags_nzcv(
+    args: &[RustBV],
+    ret_bits: u32,
+    ctx: Option<&crate::symbolic::SymContext>,
+) -> Option<RustBV> {
+    if args.len() < 4 {
+        return None;
+    }
+    if let (Some(cc_op), Some(d1), Some(d2), Some(d3)) = (
+        args[0].as_u64(),
+        args[1].as_u64(),
+        args[2].as_u64(),
+        args[3].as_u64(),
+    ) {
+        let result = arm64g_calculate_flags_nzcv(cc_op, d1, d2, d3)?;
+        return Some(RustBV::concrete(result as u128, ret_bits));
+    }
+
+    // Symbolic path, mirroring the armg_calculate_flags_nzcv arm above —
+    // the arch-sibling parity rule from
+    // invariant-ccall-arch-sibling-symbolic-parity (angr-zgd3r).
+    if let (Some(cc_op), Some(sym_ctx)) = (args[0].as_u64(), ctx)
+        && let Some(packed) =
+            arm64_sym_flags_nzcv(cc_op, &args[1], &args[2], &args[3], ret_bits, sym_ctx)
+    {
+        return Some(packed);
+    }
+
+    None
+}
+
+/// `arm64g_calculate_flag_{n,z,c,v}`: one AArch64 flag bit; `name` picks which.
+fn handle_arm64_flag_single(
+    name: &str,
+    args: &[RustBV],
+    ret_bits: u32,
+    ctx: Option<&crate::symbolic::SymContext>,
+) -> Option<RustBV> {
+    if args.len() < 4 {
+        return None;
+    }
+
+    // Concrete path
+    if let (Some(cc_op), Some(d1), Some(d2), Some(d3)) = (
+        args[0].as_u64(),
+        args[1].as_u64(),
+        args[2].as_u64(),
+        args[3].as_u64(),
+    ) {
+        let result = match name {
+            "arm64g_calculate_flag_n" => arm64g_calc_flag_n(cc_op, d1, d2, d3)?,
+            "arm64g_calculate_flag_z" => arm64g_calc_flag_z(cc_op, d1, d2, d3)?,
+            "arm64g_calculate_flag_c" => arm64g_calc_flag_c(cc_op, d1, d2, d3)?,
+            "arm64g_calculate_flag_v" => arm64g_calc_flag_v(cc_op, d1, d2, d3)?,
+            _ => return None,
+        };
+        return Some(RustBV::concrete(result as u128, ret_bits));
+    }
+
+    // Symbolic path: concrete cc_op with (possibly) symbolic deps.
+    if let (Some(cc_op), Some(sym_ctx)) = (args[0].as_u64(), ctx) {
+        let bit = match name {
+            "arm64g_calculate_flag_n" => {
+                arm64_sym_flag_n(cc_op, &args[1], &args[2], &args[3], sym_ctx)
+            }
+            "arm64g_calculate_flag_z" => {
+                arm64_sym_flag_z(cc_op, &args[1], &args[2], &args[3], sym_ctx)
+            }
+            "arm64g_calculate_flag_c" => {
+                arm64_sym_flag_c(cc_op, &args[1], &args[2], &args[3], sym_ctx)
+            }
+            "arm64g_calculate_flag_v" => {
+                arm64_sym_flag_v(cc_op, &args[1], &args[2], &args[3], sym_ctx)
+            }
+            _ => None,
+        };
+        if let Some(bit) = bit {
+            return Some(bit.zero_extend(ret_bits, sym_ctx));
+        }
+    }
+
     None
 }
 
