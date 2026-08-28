@@ -44,6 +44,7 @@
 
 use std::sync::atomic::AtomicU64;
 
+use super::errno::NEG_ONE;
 use super::require_syscall_args;
 use super::{
     MAX_IO_SIZE, NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg,
@@ -98,9 +99,7 @@ impl NativeSyscall for NativeLseekSyscall {
         {
             Some(new_pos) => Ok(SyscallOutcome::Continue { ret: new_pos }),
             // Bad whence — mirror NativeLseek returning -1.
-            None => Ok(SyscallOutcome::Continue {
-                ret: (-1i64) as u64,
-            }),
+            None => Ok(SyscallOutcome::Continue { ret: NEG_ONE }),
         }
     }
 }

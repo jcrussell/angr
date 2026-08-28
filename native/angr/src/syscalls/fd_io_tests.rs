@@ -76,7 +76,7 @@ fn lseek_bad_whence_returns_neg1() {
         )
         .expect("ok");
     match out {
-        SyscallOutcome::Continue { ret } => assert_eq!(ret, (-1i64) as u64),
+        SyscallOutcome::Continue { ret } => assert_eq!(ret, NEG_ONE),
         _ => panic!("expected Continue"),
     }
 }
