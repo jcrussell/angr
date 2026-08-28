@@ -2,7 +2,9 @@
 //!
 //! `sym_file_bytes` builds a symbolic file payload for the two `filesystem_*`
 //! modules; `build_populated_state` builds the fully-populated state that the
-//! `snapshot` round-trip and the `export` full-dump assertions both start from.
+//! `snapshot` round-trip and the `export` full-dump assertions both start
+//! from; `base_pair`/`conds` build the forked state pair and merge conditions
+//! the two `merge_property_*` census modules share.
 //!
 //! Carved out of the former monolithic `state_tests.rs` (angr-c7xno.69).
 
@@ -87,4 +89,30 @@ pub(super) fn build_populated_state() -> RustSimState {
     s.solver().borrow().assume_true(&cmp);
 
     s
+}
+
+// =========================================================================
+// Merge-census fixtures (angr-5mnx3.40)
+// =========================================================================
+
+/// Fork a common ancestor into two independent states so per-branch mutation
+/// diverges cleanly from a shared starting point — the same shape every
+/// sibling `merge_*.rs` test in this directory uses, and the one
+/// `removed_hooks`/`removed_sim_options`/`removed_env_keys` (fork-point-
+/// relative tombstones) depend on for correct semantics.
+pub(super) fn base_pair(arch: &str) -> (RustSimState, RustSimState) {
+    Python::initialize();
+    let ancestor = RustSimState::new(arch).unwrap();
+    (ancestor.fork(), ancestor.fork())
+}
+
+/// `[cond_self, cond_other]` — a fresh pair of 1-bit symbolic merge
+/// conditions rooted in `a`'s solver, exactly as every `a.merge(&[&b], ...)`
+/// call in the two `merge_property_*` modules builds them.
+pub(super) fn conds(a: &RustSimState, tag: &str) -> [RustBV; 2] {
+    let s = a.solver().borrow();
+    [
+        RustBV::symbolic(&s, format!("{tag}_m0"), 1),
+        RustBV::symbolic(&s, format!("{tag}_m1"), 1),
+    ]
 }

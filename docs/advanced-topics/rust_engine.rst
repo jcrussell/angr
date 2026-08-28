@@ -470,7 +470,8 @@ own hand-written merge:
      - Behavioural half
    * - ``RustSimState``
      - ``state/mod.rs``
-     - ``state/tests/merge_property.rs``
+     - ``state/tests/merge_property_mechanical.rs`` +
+       ``state/tests/merge_property_manual.rs``
    * - ``SymbolicMemory`` (the ``memory`` field)
      - ``memory/mod.rs``
      - ``memory/tests/merge_sidecars.rs``
@@ -479,7 +480,8 @@ own hand-written merge:
      - ``arch/mod_tests.rs``
    * - ``HeapMetadata`` (the ``heap_metadata`` field)
      - ``state/types.rs``
-     - ``state/tests/merge_property.rs``
+     - ``state/tests/merge_property_manual.rs`` (a ``delegate`` field, so
+       it lands in the hand-written half)
 
 The lower three exist because the bug family recurred one level below
 the top-level derive: ``SymbolicMemory::merge`` adopted an other-only

@@ -33,12 +33,17 @@
 //! - `merge_multi_state`: merges decided by comparing more than two branches.
 //! - `merge_config`: merge rules for the config-like maps/sets and their
 //!   removal tombstones.
-//! - `merge_property`: census property test over every `RustSimState` field
-//!   carrying `#[merge_policy = "..."]` — the mechanical-policy fields
-//!   against their generated `merge_field_<name>` method, the hand-written
-//!   ones against a specific expected value reasoned from
-//!   `fork.rs::RustSimState::merge`. Additive to (not a replacement for) the
-//!   deeper per-family coverage the other `merge_*` modules provide.
+//! - `merge_property_mechanical`: the half of the census property test over
+//!   every `RustSimState` field carrying `#[merge_policy = "..."]` that
+//!   covers the 22 mechanical-policy fields, checked against their generated
+//!   `merge_field_<name>` method. Carries the rationale both census halves
+//!   share.
+//! - `merge_property_manual`: the other half — the 21 fields with no
+//!   generated method (`delegate`/`computed`/`joint`, plus the four
+//!   mechanical-policy fields that opt out via `#[merge_manual]`), checked
+//!   against a specific expected value reasoned from
+//!   `fork.rs::RustSimState::merge`. Both are additive to (not a replacement
+//!   for) the deeper per-family coverage the other `merge_*` modules provide.
 //! - `cow_peek`: the `arc-make-mut-cow` peek-before-clone half — no-op
 //!   `add_hook`/`remove_hook`/`set_option`/`setenv`/`unsetenv` calls must keep
 //!   sharing their `Arc` with a forked sibling.
@@ -62,7 +67,8 @@ mod memory;
 mod merge_config;
 mod merge_heap;
 mod merge_multi_state;
-mod merge_property;
+mod merge_property_manual;
+mod merge_property_mechanical;
 mod merge_scalars;
 mod migration_snapshot;
 mod migration_translate;
