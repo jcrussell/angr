@@ -529,8 +529,8 @@ class TestStashProxyAccessors:
 class TestRustExecutionErrorHierarchy:
     """Typed exception classes surfaced by the Rust engine (angr-tkbr.3).
 
-    The Rust engine previously string-coerced internal errors into
-    ``ExecutionEvent.error`` so Python could only ``re.search`` the
+    The Rust engine previously string-coerced internal errors into a
+    bare error-message string so Python could only ``re.search`` the
     message to discriminate. tkbr.3 adds a typed ``RustExecutionError``
     base + five sibling subclasses so user code can ``pytest.raises``
     against a specific failure mode. Acceptance criteria checked by

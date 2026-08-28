@@ -5548,7 +5548,6 @@ are:
 - ``ProcedureError`` (``native/angr/src/procedures/mod.rs``)
 - ``MemoryError`` (``native/angr/src/memory/mod.rs``)
 - ``CallbackReason`` (``native/angr/src/exploration/callback_types.rs``)
-- ``ExecutionEvent`` (``native/angr/src/state/types.rs``)
 - ``ExplorationEvent`` pyclass struct
   (``native/angr/src/exploration/event.rs``) — the Python-visible event
   envelope, expected to grow ``#[pyo3(get)]`` fields as new
