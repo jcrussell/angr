@@ -15,6 +15,12 @@
 //! (it owns a Z3 refcount and cannot be reconstructed from a Python value), so
 //! these are internal helpers the claripy-AST API in the parent module calls.
 
+// The parent `solver` module denies `unsafe_code` so the "all the `unsafe` is
+// in one file" invariant is the compiler's to keep rather than a doc comment's
+// (angr-5mnx3.10). This module is the sanctioned exception; every block below
+// carries its own `SAFETY:` rationale.
+#![allow(unsafe_code)]
+
 // Both are consumed only by the `Z3AstPtr` paths below, which are themselves
 // `vex-engine-z3`-gated — importing them unconditionally warns in the no-z3
 // combos `make check-no-z3` gates (angr-sqfj8.139).
@@ -125,6 +131,34 @@ pub(super) fn z3_ast_to_eval_bv(z3_ast: &Z3AstPtr) -> Option<RustBV> {
         })
     }
 }
+
+/// Wrap a Bool-sorted live Z3 AST as a `z3::ast::Bool` for assertion.
+///
+/// Returns `None` for any other sort, so the sort check and the `wrap` it
+/// licenses cannot drift apart at a call site. `add_constraint_tracked_ast`
+/// used to do the check and the `unsafe` wrap itself, which was the one
+/// `unsafe` block left outside this module after the angr-9ke6b.205 split —
+/// contradicting both this module's doc and `solver.rs`'s own header
+/// (angr-5mnx3.10).
+///
+/// Wrapping a non-Bool node as `Bool` and asserting it trips Z3's
+/// `CHECK_FORMULA` sort-mismatch guard, which — because our context installs
+/// a no-op error handler — fails *silently*: the constraint is never asserted
+/// while the caller still sees success (angr-d01qu). Callers that need the
+/// non-Bool case handled must fall back to a `claripy_to_rustbv` lowering
+/// rather than wrap anyway.
+#[cfg(feature = "vex-engine-z3")]
+pub(super) fn z3_ast_to_bool(z3_ast: &Z3AstPtr) -> Option<z3::ast::Bool> {
+    use z3::ast::Ast;
+    if !z3_ast.is_bool() {
+        return None;
+    }
+    let z3_ctx = z3::Context::thread_local();
+    // SAFETY: `z3_ast` holds an active ref to a live `Z3_ast`, checked
+    // Bool-sorted just above; `Bool::wrap` takes its own ref.
+    Some(unsafe { z3::ast::Bool::wrap(&z3_ctx, z3_ast.as_z3_ast()) })
+}
+
 impl RustSolverContext {
     /// Lower a claripy AST to a `RustBV` usable for evaluation, mirroring the
     /// conversion order in [`RustSolverContext::eval`]: the standard

@@ -11,8 +11,11 @@
 //! - here: the Python-boundary error mapping, the [`RustSolverContext`]
 //!   pyclass itself, and the "normal" claripy-AST solver API
 //!   (`add_constraint*` / `eval*` / `min` / `max` / `push` / `pop` / `fork`);
-//! - [`z3_ast_extract`]: raw `Z3_ast`-pointer extraction and evaluation, i.e. every
-//!   `unsafe` in the solver surface;
+//! - [`z3_ast_extract`]: raw `Z3_ast`-pointer extraction, sort-checked
+//!   wrapping (`z3_ast_to_bool` / `z3_ast_to_eval_bv`) and evaluation, i.e.
+//!   every `unsafe` in the solver surface. This module holds none: a wrap
+//!   needed here goes *there*, behind a sort check, rather than inline
+//!   (angr-5mnx3.10);
 //! - [`handle_api`]: the handle-based claripy-bypass API (symbol-table
 //!   lifecycle plus the 33 `op_*` arithmetic wrappers — 25 of which route
 //!   through its shared `binop` helper, the rest through `opt_op`).
@@ -25,6 +28,14 @@
 //! reasoned `#[allow]` (angr-qwyti.11 enforcement layer). The `deny` covers
 //! the submodules below too, since lint levels propagate into nested modules.
 #![deny(clippy::unwrap_used, clippy::expect_used)]
+// The "every `unsafe` in the solver surface lives in `z3_ast_extract`" claim
+// above was, until angr-5mnx3.10, only a doc comment — and
+// `add_constraint_tracked_ast` had quietly contradicted it since the
+// angr-9ke6b.205 split. Lint levels propagate into nested modules, so denying
+// here covers this file plus `handle_api`; `z3_ast_extract` re-allows it at
+// its own module top, which is what makes that opt-in the single greppable
+// exception rather than a promise a reviewer has to re-verify.
+#![deny(unsafe_code)]
 
 mod handle_api;
 mod z3_ast_extract;
@@ -40,7 +51,7 @@ use crate::claripy_bridge::{BridgeError, claripy_to_rustbv, try_extract_bvv};
 use crate::symbolic::{BinaryOpError, RustBV, RustSymbolTable, SymContext};
 
 #[cfg(feature = "vex-engine-z3")]
-use self::z3_ast_extract::{extract_z3_ast_ptr, z3_ast_to_eval_bv};
+use self::z3_ast_extract::{extract_z3_ast_ptr, z3_ast_to_bool, z3_ast_to_eval_bv};
 #[cfg(feature = "vex-engine-z3")]
 use crate::symbolic::Z3AstPtr;
 
@@ -371,22 +382,19 @@ impl RustSolverContext {
             // ever touching the context (angr-sqfj8.139).
             let ctx = self.i().ctx();
             // angr-d01qu: mirror add_constraint_ast's is_bool() gate. A
-            // non-Bool AST wrapped as z3::ast::Bool via Ast::wrap would trip
-            // Z3's CHECK_FORMULA sort-mismatch guard inside
+            // non-Bool AST wrapped as z3::ast::Bool would trip Z3's
+            // CHECK_FORMULA sort-mismatch guard inside
             // Z3_solver_assert_and_track, which -- since our context installs
             // a no-op error handler -- fails *silently*: no panic, no abort,
             // just a constraint that never actually gets asserted while this
-            // function still returns Ok(idx) as if tracking succeeded. Only
-            // take the raw fast path for Bool-sorted ASTs; fall through to
-            // the slow path below for anything else.
+            // function still returns Ok(idx) as if tracking succeeded.
+            // `z3_ast_to_bool` fuses that sort check with the wrap it
+            // licenses and keeps the `unsafe` in `z3_ast_extract` where this
+            // module's header doc says it lives (angr-5mnx3.10); a non-Bool
+            // AST yields `None` and falls through to the slow path below.
             if let Ok(z3_ast) = extract_z3_ast_ptr(py, ast)
-                && z3_ast.is_bool()
+                && let Some(constraint) = z3_ast_to_bool(&z3_ast)
             {
-                let z3_ctx = z3::Context::thread_local();
-                // SAFETY: `z3_ast` is a live Bool-sorted `Z3_ast` (holds its
-                // own ref via Z3AstPtr); `Ast::wrap` takes its own ref.
-                let constraint: z3::ast::Bool =
-                    unsafe { z3::ast::Ast::wrap(&z3_ctx, z3_ast.as_z3_ast()) };
                 // Cloned (a `Z3_inc_ref`) so the residual branch below still
                 // has the Bool `add_constraint_tracked_indexed` consumes.
                 let idx = ctx.add_constraint_tracked_indexed(constraint.clone());
