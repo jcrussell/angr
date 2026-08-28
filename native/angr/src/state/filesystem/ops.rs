@@ -36,8 +36,7 @@ impl FileSystem {
     /// see `alloc_fd` for why that is not unreachable.
     pub fn open(&mut self, name: String, flags: FdFlags) -> Option<u32> {
         let fd = self.alloc_fd()?;
-        // known_paths keys on normalized paths; normalizing at insertion
-        // freezes cwd-at-open, which is POSIX-correct for relative paths.
+        // Normalized before install (freezes cwd-at-open) — see `install_fd`.
         let norm = self.normalize_path(&name);
         let content_sym = self.file_contents.get(&norm).cloned();
         let mut desc = FileDescriptor::new(name, flags);
@@ -48,9 +47,7 @@ impl FileSystem {
             desc.registry_key = Some(norm.clone());
         }
         desc.content_sym = content_sym;
-        desc.norm_name = Some(norm.clone());
-        Arc::make_mut(&mut self.known_paths).insert(norm);
-        Arc::make_mut(&mut self.fds).insert(fd, desc);
+        self.install_fd(fd, norm, desc);
         Some(fd)
     }
 
@@ -73,6 +70,32 @@ impl FileSystem {
         Some(fd)
     }
 
+    /// Shared tail of the `open` family ([`open`](Self::open),
+    /// [`open_with_content`](Self::open_with_content),
+    /// [`register_fd_at`](Self::register_fd_at),
+    /// [`open_symbolic`](Self::open_symbolic)): freeze the already-normalized
+    /// path on the descriptor, register it as an existing path, and install
+    /// the descriptor under `fd`.
+    ///
+    /// `norm` must be `self.normalize_path(name)` computed by the caller
+    /// *before* any cwd change — normalizing at insertion is what freezes
+    /// cwd-at-open, which is POSIX-correct for relative paths. Callers
+    /// normalize rather than passing the raw name because two of them
+    /// ([`open`](Self::open) via `file_contents` / `registry_key`, and
+    /// [`open_symbolic`](Self::open_symbolic)'s siblings) need the normalized
+    /// key while building the descriptor; doing it here as well would
+    /// normalize twice on the hot `open` path.
+    ///
+    /// Registering the path mirrors Python `procedures/posix/open.py` dropping
+    /// a fresh `SimFile` into `state.fs`: any successfully-opened path is
+    /// "existing" from that point on, so a later `NativeAccessSyscall` on it
+    /// returns 0.
+    fn install_fd(&mut self, fd: u32, norm: String, mut desc: FileDescriptor) {
+        desc.norm_name = Some(norm.clone());
+        Arc::make_mut(&mut self.known_paths).insert(norm);
+        Arc::make_mut(&mut self.fds).insert(fd, desc);
+    }
+
     /// Open a file descriptor with pre-loaded content (for file-backed
     /// SimFiles). Intentionally bypasses the `file_contents` registry — the
     /// caller supplies explicit concrete content (test-seeding API).
@@ -85,12 +108,10 @@ impl FileSystem {
         content: Vec<u8>,
     ) -> Option<u32> {
         let fd = self.alloc_fd()?;
-        // Normalized at insertion (freezes cwd-at-open) — see `open`.
+        // Normalized before install (freezes cwd-at-open) — see `install_fd`.
         let norm = self.normalize_path(&name);
-        let mut desc = FileDescriptor::with_content(name, flags, content);
-        desc.norm_name = Some(norm.clone());
-        Arc::make_mut(&mut self.known_paths).insert(norm);
-        Arc::make_mut(&mut self.fds).insert(fd, desc);
+        let desc = FileDescriptor::with_content(name, flags, content);
+        self.install_fd(fd, norm, desc);
         Some(fd)
     }
 
@@ -121,13 +142,11 @@ impl FileSystem {
         if self.fds.contains_key(&fd) {
             return false;
         }
-        // Normalized at insertion (freezes cwd-at-open) — see `open`.
+        // Normalized before install (freezes cwd-at-open) — see `install_fd`.
         let norm = self.normalize_path(&name);
         let mut desc = FileDescriptor::with_content(name, flags, content);
         desc.position = position;
-        desc.norm_name = Some(norm.clone());
-        Arc::make_mut(&mut self.known_paths).insert(norm);
-        Arc::make_mut(&mut self.fds).insert(fd, desc);
+        self.install_fd(fd, norm, desc);
         self.next_fd = self.next_fd.max(fd.saturating_add(1));
         true
     }
@@ -151,12 +170,10 @@ impl FileSystem {
     /// Returns `None` when the fd space is exhausted — see `alloc_fd`.
     pub fn open_symbolic(&mut self, name: String, flags: FdFlags) -> Option<u32> {
         let fd = self.alloc_fd()?;
-        // Normalized at insertion (freezes cwd-at-open) — see `open`.
+        // Normalized before install (freezes cwd-at-open) — see `install_fd`.
         let norm = self.normalize_path(&name);
-        let mut desc = FileDescriptor::new_symbolic(name, flags);
-        desc.norm_name = Some(norm.clone());
-        Arc::make_mut(&mut self.known_paths).insert(norm);
-        Arc::make_mut(&mut self.fds).insert(fd, desc);
+        let desc = FileDescriptor::new_symbolic(name, flags);
+        self.install_fd(fd, norm, desc);
         Some(fd)
     }
 
@@ -164,7 +181,8 @@ impl FileSystem {
     /// the Python state-export path to seed `state.fs._files` entries
     /// (`register_known_path` PyO3 setter) and by tests.
     pub fn register_known_path(&mut self, name: String) {
-        // Normalized at insertion (freezes cwd-at-registration) — see `open`.
+        // Normalized at insertion (freezes cwd-at-registration) — see
+        // `install_fd`, which does the same for the fd-allocating openers.
         let norm = self.normalize_path(&name);
         Arc::make_mut(&mut self.known_paths).insert(norm);
     }
