@@ -15,7 +15,7 @@
 //! lifter is behind the non-default `libvex-ffi` feature). A test asserting one
 //! of those arms would therefore assert a *different* thing depending on the
 //! feature set, so they stay out. Their post-step classification is unit-tested
-//! directly on [`run_post_step_core`] in `core_outcome_tests.rs`, and the
+//! directly on [`run_post_step_core`] in `core_outcome_tests/`, and the
 //! worker's own routing of them is covered end-to-end by the parallel tests in
 //! `tests/engines/rust/`. The bounce arm below IS reachable here because a
 //! hooked initial pc short-circuits before any lift.

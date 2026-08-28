@@ -644,4 +644,4 @@ pub(crate) fn run_post_step_core(
     }
 }
 
-test_submod!("core_outcome_tests.rs" => tests);
+test_submod!("core_outcome_tests/mod.rs" => tests);

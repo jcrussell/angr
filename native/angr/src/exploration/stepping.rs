@@ -783,7 +783,7 @@ impl RustExplorationManager {
     /// `core_outcome::handle_native_resume_core` (angr-vh834). Gated to test
     /// builds — its only caller is the `#[cfg(test)]` `subcall_tests` module —
     /// so it carries no `dead_code` allow (angr-0mqkc.2). The production twin
-    /// has its own direct coverage in `core_outcome_tests.rs`
+    /// has its own direct coverage in `core_outcome_tests/`
     /// (`native_resume_core_*`, angr-c7xno.32), so the two can no longer drift
     /// unobserved.
     #[cfg(test)]
