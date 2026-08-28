@@ -38,7 +38,11 @@ const DEFAULT_PID: u64 = 1337;
 const DEFAULT_PPID: u64 = 1336;
 /// Angr's default `getuid` / `getgid` / `geteuid` / `getegid` return value
 /// (see `procedures/linux_kernel/getuid.py` etc.).
-const DEFAULT_UID_GID: u64 = 1000;
+///
+/// `pub(crate)` because the same constant backs the PLT-libc-call side of
+/// these four getters: `procedures/getid.rs` imports it rather than keeping a
+/// second copy in sync (angr-5mnx3.35).
+pub(crate) const DEFAULT_UID_GID: u64 = 1000;
 
 /// Macro to declare a zero-arg constant-return syscall handler.
 ///

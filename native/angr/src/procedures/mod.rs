@@ -578,8 +578,9 @@ impl NativeProcedureRegistry {
                 getenv::NativeUnsetenv,
                 getenv::NativeClearenv,
                 // POSIX identity getters (angr-ae54t.9): getuid/geteuid/getgid/getegid
-                // each return the constant 1000 (mirror procedures/posix/getuid.py and
-                // syscalls/identity.rs DEFAULT_UID_GID). Without these, a PLT libc call
+                // each return the constant 1000 (mirror procedures/posix/getuid.py;
+                // getid.rs imports syscalls::identity::DEFAULT_UID_GID, so the
+                // procedure and syscall paths share one value). Without these, a PLT libc call
                 // to getuid round-trips to Python — the syscall handler doesn't cover it.
                 getid::NativeGetuid,
                 getid::NativeGeteuid,
