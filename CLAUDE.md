@@ -52,6 +52,13 @@ way comments do (angr-sqfj8.126 found `rust_engine.rst`'s typed-exception
 table 60-95 lines off with no gate signal), so the symbol-anchor convention
 applies when writing docs too.
 
+A related, ungated form of the same rot: never describe a set by its
+**cardinality**. `vex/ops/lane_traits.rs`'s header said `ops/mod.rs` was shrunk
+"down to the five `VEXOps` entry points" — true when written, silently false
+once `qop_with_rm` made it six eight days later (angr-5mnx3.64). Enumerate the
+members instead, so adding one leaves a comment that is visibly incomplete
+rather than quietly wrong.
+
 **Provenance-tag convention:** a comment that records *why* a change was made
 cites the bd bead id (`angr-xxxxx`, optionally `angr-xxxxx Phase N` for a
 multi-phase bead) and nothing else. The pre-bd review-round labels (`P5 fix`,
