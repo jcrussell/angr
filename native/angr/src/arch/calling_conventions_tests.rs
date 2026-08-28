@@ -46,7 +46,7 @@ fn test_default_syscall_args_match_arg_registers() {
     //     C ABI ($v0 carries the number, args 5+ spill to the stack in
     //     both), so the fallback is an exact match, not a superset.
     // Cdecl/SystemV_AMD64/ARMEABI all override, so don't use them here.
-    let cc = AArch64CC;
+    let cc = AArch64;
     assert_eq!(cc.syscall_arg_registers(), cc.arg_registers());
     let cc = MipsO32;
     assert_eq!(cc.syscall_arg_registers(), cc.arg_registers());
@@ -113,7 +113,7 @@ fn test_return_register_offsets_per_arch() {
     // ARM r0 = offset 8 (R0 in ARM VEX guest state).
     assert_eq!(ARMEABI.return_register(), 8);
     // AArch64 X0 = offset 16 (X0 in ARM64 VEX guest state).
-    assert_eq!(AArch64CC.return_register(), 16);
+    assert_eq!(AArch64.return_register(), 16);
     // MIPS32 $v0 (R2) = offset 16 (R2 in MIPS32 VEX guest state).
     assert_eq!(MipsO32.return_register(), 16);
     // MIPS64 $v0 (R2) = offset 32 (R2 in MIPS64 VEX guest state).
@@ -129,7 +129,7 @@ fn test_pops_return_addr_per_arch() {
     // Register-based ABIs (ARM/ARM64/MIPS): return addr lives in
     // LR/X30/$ra, and SP must be left untouched.
     assert!(!ARMEABI.pops_return_addr());
-    assert!(!AArch64CC.pops_return_addr());
+    assert!(!AArch64.pops_return_addr());
     assert!(!MipsO32.pops_return_addr());
     assert!(!MipsN64.pops_return_addr());
 }
@@ -531,7 +531,7 @@ fn fp_arg_registers_arm_is_d0_through_d7() {
 
 #[test]
 fn fp_arg_registers_arm64_is_v0_through_v7() {
-    let cc = AArch64CC;
+    let cc = AArch64;
     assert_eq!(
         cc.fp_arg_registers(),
         &[
@@ -582,7 +582,7 @@ fn fp_arg_register_offsets_are_distinct_and_evenly_strided() {
         // the low half of YMMn.
         (&SystemVAMD64, "amd64", 32),
         (&ARMEABI, "arm", 8),
-        (&AArch64CC, "arm64", 16),
+        (&AArch64, "arm64", 16),
     ];
     for (cc, label, stride) in cases {
         let regs = cc.fp_arg_registers();

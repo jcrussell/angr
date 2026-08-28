@@ -461,9 +461,9 @@ impl CallingConvention for ARMEABI {
 /// Return value: X0 (with X1 for 128-bit)
 /// Return address: LR (X30) — ARM64 uses BL which stores return addr in X30.
 #[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct AArch64CC;
+pub(crate) struct AArch64;
 
-impl CallingConvention for AArch64CC {
+impl CallingConvention for AArch64 {
     fn name(&self) -> &'static str {
         "AArch64"
     }
