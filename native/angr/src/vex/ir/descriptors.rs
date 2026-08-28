@@ -1,3 +1,10 @@
+//! Side-table descriptors that `IRStmt` / `IRExpr` variants point at rather
+//! than inline: `IRLoadGOp` (guarded-load widening op), `IRRegArray` (the
+//! rotating register window a `GetI` / `PutI` indexes), `IRCallee` and
+//! `IRDirty` (clean- and dirty-helper call info), and `DirtyFx` (a dirty
+//! call's declared memory effect). Kept out of `ast` so the statement and
+//! expression enums stay readable.
+
 use super::*;
 
 /// Guarded load operation.

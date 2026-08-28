@@ -1,3 +1,11 @@
+//! The operation vocabulary: `IROp`, the width-parameterized opcode enum the
+//! interpreter dispatches on, and `FCmpKind`, the FP-compare predicate its
+//! compare arms carry. `IROp::result_type` maps an op back to the `IRType` it
+//! produces. This is the largest file in the module by a wide margin because
+//! `IROp` enumerates every arithmetic, logical, FP and SIMD family the engine
+//! lifts; the semantics that *execute* these opcodes live in `vex::ops`, not
+//! here.
+
 use super::*;
 
 /// Kind of FP compare used by SSE scalar-lane and packed-vector compares.

@@ -1,3 +1,10 @@
+//! The IR syntax tree proper: `IRStmt` (the statement forms a block executes
+//! in order) and `IRExpr` (the pure expression forms they evaluate), plus
+//! `IRExpr::get_type`, which resolves an expression's `IRType` against the
+//! block's `TypeEnv`. The leaf payloads these two refer to live in sibling
+//! files: constants and types in `types`, operations in `ops_def`, and the
+//! `IRDirty` / `IRRegArray` / `IRLoadGOp` descriptors in `descriptors`.
+
 use super::*;
 
 /// IR statement types.

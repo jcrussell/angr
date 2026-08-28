@@ -1,3 +1,11 @@
+//! Architecture-level IR enums: `VexArch` (the lifted guest ISA, with its
+//! `pointer_size` / `endness` accessors), `Endness`, `JumpKind` (how a block
+//! leaves, plus the `is_syscall` / `is_trap` / `is_call` / `is_ret`
+//! classifiers and `ijk_name` for the libVEX `Ijk_*` spelling), and
+//! `MBusEvent`. These describe the block's *context* and exit, as opposed to
+//! its contents (`ast`), its operand types (`types`) or its operations
+//! (`ops_def`).
+
 /// VEX architectures.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum VexArch {

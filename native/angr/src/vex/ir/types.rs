@@ -1,3 +1,10 @@
+//! The IR type and constant lattice: `IRType` (every operand width the engine
+//! understands, from `I1` through `V256`, with its `bits` / `bytes`
+//! accessors) and `IRConst` (a literal of one of those types, with
+//! `IRConst::get_type`). Every other file in this module is parameterized by
+//! `IRType`, so this one has no `use super::*;` — it depends on nothing else
+//! in `ir`.
+
 /// IR constant values.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum IRConst {
