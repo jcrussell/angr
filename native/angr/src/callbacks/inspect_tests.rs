@@ -439,3 +439,227 @@ fn constraints_export_failure_drops_the_event() {
         );
     });
 }
+
+/// One row of the [`INSPECT_DISPATCH_CASES`] pairing table: an inspect event,
+/// the setter for its callback slot, and a call of its dispatch method.
+struct InspectDispatchCase {
+    /// The `state.inspect` event name — the shared suffix of the
+    /// `inspect_<event>` slot and the `call_inspect_<event>` method.
+    event: &'static str,
+    /// Wire the `inspect_<event>` slot (the generated `set_inspect_<event>`).
+    set: fn(&mut PythonCallbacks, Py<PyAny>),
+    /// Call `call_inspect_<event>` with placeholder arguments, discarding any
+    /// value-injection return — the test only observes *whether* it fired.
+    invoke: fn(&PythonCallbacks) -> PyResult<()>,
+    /// `call_inspect_constraints` imports claripy *after* its slot check, and
+    /// the cargo-test interpreter has no claripy (see the module doc), so a
+    /// wired constraints slot is observable as an `Err` rather than as a BP
+    /// fire. `true` makes an error count as "this slot was read".
+    may_err_when_wired: bool,
+}
+
+/// Every Rust-dispatched `state.inspect` event, paired with the slot its
+/// dispatch method is supposed to read.
+///
+/// A transposition *inside this table* cannot make the pairing test pass
+/// vacuously: `each_call_inspect_dispatches_only_its_own_slot` requires the
+/// diagonal to fire, so a row whose `set` and `invoke` name different events
+/// fails at `i == j` rather than sliding through.
+const INSPECT_DISPATCH_CASES: &[InspectDispatchCase] = &[
+    InspectDispatchCase {
+        event: "mem_read",
+        set: PythonCallbacks::set_inspect_mem_read,
+        invoke: |cb| {
+            cb.call_inspect_mem_read(1, "before", 0x1000, 4, None, "Iend_LE")
+                .map(drop)
+        },
+        may_err_when_wired: false,
+    },
+    InspectDispatchCase {
+        event: "mem_write",
+        set: PythonCallbacks::set_inspect_mem_write,
+        invoke: |cb| {
+            cb.call_inspect_mem_write(1, "before", 0x1000, 4, None, "Iend_LE")
+                .map(drop)
+        },
+        may_err_when_wired: false,
+    },
+    InspectDispatchCase {
+        event: "reg_read",
+        set: PythonCallbacks::set_inspect_reg_read,
+        invoke: |cb| cb.call_inspect_reg_read(1, "before", 16, 8, None),
+        may_err_when_wired: false,
+    },
+    InspectDispatchCase {
+        event: "reg_write",
+        set: PythonCallbacks::set_inspect_reg_write,
+        invoke: |cb| cb.call_inspect_reg_write(1, "before", 16, 8, None),
+        may_err_when_wired: false,
+    },
+    InspectDispatchCase {
+        event: "fork",
+        set: PythonCallbacks::set_inspect_fork,
+        invoke: |cb| cb.call_inspect_fork(1, "after"),
+        may_err_when_wired: false,
+    },
+    InspectDispatchCase {
+        event: "exit",
+        set: PythonCallbacks::set_inspect_exit,
+        invoke: |cb| cb.call_inspect_exit(1, "before", 0x1000, "Ijk_Boring", None),
+        may_err_when_wired: false,
+    },
+    InspectDispatchCase {
+        event: "instruction",
+        set: PythonCallbacks::set_inspect_instruction,
+        invoke: |cb| cb.call_inspect_instruction(1, "before", 0x1000),
+        may_err_when_wired: false,
+    },
+    InspectDispatchCase {
+        event: "irsb",
+        set: PythonCallbacks::set_inspect_irsb,
+        invoke: |cb| cb.call_inspect_irsb(1, "before", 0x1000),
+        may_err_when_wired: false,
+    },
+    InspectDispatchCase {
+        event: "call",
+        set: PythonCallbacks::set_inspect_call,
+        invoke: |cb| cb.call_inspect_call(1, "before", 0x1000),
+        may_err_when_wired: false,
+    },
+    InspectDispatchCase {
+        event: "return",
+        set: PythonCallbacks::set_inspect_return,
+        invoke: |cb| cb.call_inspect_return(1, "after", 0x1000),
+        may_err_when_wired: false,
+    },
+    InspectDispatchCase {
+        event: "tmp_read",
+        set: PythonCallbacks::set_inspect_tmp_read,
+        invoke: |cb| cb.call_inspect_tmp_read(1, "after", 3, None),
+        may_err_when_wired: false,
+    },
+    InspectDispatchCase {
+        event: "tmp_write",
+        set: PythonCallbacks::set_inspect_tmp_write,
+        invoke: |cb| cb.call_inspect_tmp_write(1, "after", 3, None),
+        may_err_when_wired: false,
+    },
+    InspectDispatchCase {
+        event: "statement",
+        set: PythonCallbacks::set_inspect_statement,
+        invoke: |cb| cb.call_inspect_statement(1, "before", 0),
+        may_err_when_wired: false,
+    },
+    InspectDispatchCase {
+        event: "expr",
+        set: PythonCallbacks::set_inspect_expr,
+        invoke: |cb| cb.call_inspect_expr(1, "after", None),
+        may_err_when_wired: false,
+    },
+    InspectDispatchCase {
+        event: "address_concretization",
+        set: PythonCallbacks::set_inspect_address_concretization,
+        invoke: |cb| {
+            Python::attach(|py| {
+                let addr = py.None();
+                cb.call_inspect_address_concretization(1, "after", "load", &addr, Some(vec![0x1000]))
+            })
+        },
+        may_err_when_wired: false,
+    },
+    InspectDispatchCase {
+        event: "symbolic_variable",
+        set: PythonCallbacks::set_inspect_symbolic_variable,
+        invoke: |cb| {
+            Python::attach(|py| {
+                let expr = py.None();
+                cb.call_inspect_symbolic_variable(1, "after", "mem_1000", 64, &expr)
+            })
+        },
+        may_err_when_wired: false,
+    },
+    InspectDispatchCase {
+        event: "constraints",
+        set: PythonCallbacks::set_inspect_constraints,
+        invoke: |cb| {
+            let guard = crate::symbolic::RustBV::concrete(1, 1);
+            cb.call_inspect_constraints(1, "before", &guard, true)
+        },
+        may_err_when_wired: true,
+    },
+    InspectDispatchCase {
+        event: "vex_lift",
+        set: PythonCallbacks::set_inspect_vex_lift,
+        invoke: |cb| cb.call_inspect_vex_lift(-1, "before", 0x1000, None, Some(&[0x90])),
+        may_err_when_wired: false,
+    },
+];
+
+/// The `call_inspect_*` methods hand-copy the slot they read
+/// (`self.inspect_<event>.as_ref()`), one layer below where
+/// `inspect_test_entries!` made the *entry-point* naming compiler-enforced
+/// (angr-0jh0j.6). Leaving `self.inspect_reg_read.as_ref()` in a body
+/// copy-pasted into `call_inspect_reg_write` compiles cleanly and silently
+/// routes every reg_write breakpoint to the reg_read callback — the failure
+/// only ever surfaces as a user-reported misrouted breakpoint, because
+/// `unset_inspect_callbacks_are_ok` exercises the all-`None` case only.
+///
+/// This is the N x N pairing check: wire exactly one slot, call all 18
+/// dispatch methods, and require that precisely the matching one observes the
+/// callback (angr-0jh0j.81).
+#[test]
+fn each_call_inspect_dispatches_only_its_own_slot() {
+    Python::initialize();
+    Python::attach(|py| {
+        let globals = defs(py, c"fired = []\ndef rec(*a):\n    fired.append(a)\n");
+        let rec = obj(&globals, "rec");
+        let fired = recorder(&globals, "fired");
+
+        for wired in INSPECT_DISPATCH_CASES {
+            let mut cb = PythonCallbacks::new();
+            (wired.set)(&mut cb, rec.clone_ref(py));
+
+            for called in INSPECT_DISPATCH_CASES {
+                let before = fired.len();
+                let res = (called.invoke)(&cb);
+                let observed =
+                    fired.len() > before || (called.may_err_when_wired && res.is_err());
+                assert_eq!(
+                    observed,
+                    wired.event == called.event,
+                    "wired inspect_{} but call_inspect_{} {} the slot",
+                    wired.event,
+                    called.event,
+                    if observed { "read" } else { "did not read" },
+                );
+            }
+        }
+    });
+}
+
+/// Keeps [`INSPECT_DISPATCH_CASES`] from silently missing a dispatch method:
+/// a new `call_inspect_<event>` needs a new [`InspectBit`] row anyway (the
+/// enabled-mask gate), so cross-checking the table against `InspectBit::ALL`
+/// turns "forgot to extend the pairing test" into a failing test.
+#[test]
+fn dispatch_pairing_table_covers_every_rust_dispatched_event() {
+    // Dispatched from Python, so they have no `call_inspect_*` method — see
+    // the `InspectBit::SimProcedure` doc comment.
+    const PYTHON_DISPATCHED: &[&str] = &["simprocedure", "syscall", "dirty"];
+
+    for event in InspectBit::ALL {
+        let name = event.event_name();
+        if PYTHON_DISPATCHED.contains(&name) {
+            continue;
+        }
+        assert!(
+            INSPECT_DISPATCH_CASES.iter().any(|c| c.event == name),
+            "inspect event '{name}' has no INSPECT_DISPATCH_CASES row",
+        );
+    }
+    assert_eq!(
+        INSPECT_DISPATCH_CASES.len(),
+        InspectBit::ALL.len() - PYTHON_DISPATCHED.len(),
+        "INSPECT_DISPATCH_CASES has a row with no matching InspectBit",
+    );
+}
