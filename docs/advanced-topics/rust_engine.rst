@@ -5543,7 +5543,7 @@ are:
 - ``RustExecError`` (``native/angr/src/errors.rs``) — the canonical
   Rust→Python error enum.
 - ``BridgeError`` (``native/angr/src/claripy_bridge/mod.rs``)
-- ``SyscallError`` (``native/angr/src/syscalls/mod.rs``)
+- ``SyscallError`` (``native/angr/src/syscalls/support.rs``)
 - ``OpError`` (``native/angr/src/vex/ops/error.rs``)
 - ``ProcedureError`` (``native/angr/src/procedures/mod.rs``)
 - ``MemoryError`` (``native/angr/src/memory/mod.rs``)

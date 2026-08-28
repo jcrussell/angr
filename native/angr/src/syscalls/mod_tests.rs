@@ -4,6 +4,7 @@
 // of `syscalls` so `use super::*` reaches the module's private items.
 
 use super::*;
+use crate::symbolic::RustBV;
 
 #[test]
 fn default_registry_has_amd64_exit_handlers() {

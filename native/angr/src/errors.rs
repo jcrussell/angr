@@ -59,7 +59,7 @@
 //!    `CbExecutionError` (`interpreter/execution_error.rs`), `StepError` /
 //!    `SubcallSetupError` (`exploration/stepping.rs`), `MemoryError`
 //!    (`memory/mod.rs`), `OpError` (`vex/ops/error.rs`), `ProcedureError`
-//!    (`procedures/mod.rs`), `SyscallError` (`syscalls/mod.rs`),
+//!    (`procedures/mod.rs`), `SyscallError` (`syscalls/support.rs`),
 //!    `BridgeError` (`claripy_bridge/mod.rs`), `LiftError`
 //!    (`vex/lifter.rs`), and friends. Prefer growing/reusing one of these
 //!    over inventing an ad-hoc type.
