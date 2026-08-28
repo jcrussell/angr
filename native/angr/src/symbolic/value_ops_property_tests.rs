@@ -7,7 +7,7 @@
 //! it constant-folds to a `Concrete` node whose value `as_u128()` reads back —
 //! the property then checks the folded result against a plain-`u128` reference
 //! computation. This covers the wide op surface (arithmetic / bitwise / shifts
-//! / structural) with random inputs the hand-written `value_tests.rs` examples
+//! / structural) with random inputs the hand-written `value_*_tests.rs` examples
 //! cannot.
 //!
 //! Declared as a child of `value_ops` so `use super::*` reaches the module's
@@ -146,7 +146,7 @@ fn prop_neg_add_is_zero(a: u128, ws: u8) -> bool {
 /// equals Z3's evaluation of the same op with a symbolic dividend pinned to
 /// `a` (divisor stays concrete). Returns `true` on agreement. `name` is only
 /// used to label a Z3-eval failure. Mirrors the pinning pattern in
-/// `value_tests::test_sdiv_by_zero_concrete_matches_z3`.
+/// `value_concrete_arm_tests::test_sdiv_by_zero_concrete_matches_z3`.
 #[cfg(feature = "vex-engine-z3")]
 fn div_rem_matches_z3(
     a: u128,

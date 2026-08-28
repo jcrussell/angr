@@ -882,4 +882,13 @@ impl PartialEq for RustBV {
 // exist in a no-z3 build. The no-default-features / vex-engine (no-z3) nightly
 // combos build the lib test harness, so an ungated decl breaks `cargo test`
 // there (bd angr-cagbn). Default (z3-on) build still compiles and runs them.
+// angr-5mnx3.49: split again at 2062 lines, back over the <2000-line
+// threshold, into one topical module per former section banner plus a shared
+// `value_tests_support` for the two helpers more than one of them uses.
+test_submod!(z3 "value_tests_support.rs" => value_tests_support);
 test_submod!(z3 "value_tests.rs" => value_tests);
+test_submod!(z3 "value_simplify_tests.rs" => value_simplify_tests);
+test_submod!(z3 "value_zext_cmp_tests.rs" => value_zext_cmp_tests);
+test_submod!(z3 "value_serde_tests.rs" => value_serde_tests);
+test_submod!(z3 "value_concrete_arm_tests.rs" => value_concrete_arm_tests);
+test_submod!(z3 "value_eq_debug_tests.rs" => value_eq_debug_tests);
