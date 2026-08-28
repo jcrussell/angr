@@ -655,11 +655,13 @@ Caveats:
   whose `delegate` label at the `RustSimState` level used to end the
   guarantee one level above where the bug family kept recurring; its
   behavioural half is `memory/tests/merge_sidecars.rs`. Two function-like
-  macros cover `callbacks/mod.rs` (angr-0jh0j.6): `callback_setters!` generates
-  every `set_<slot>` PyO3 setter from the one `with_callback_fields!` list, and
-  `inspect_test_entries!` derives each `call_inspect_*` test entry point's Rust
-  name, Python name and dispatch target from a single event ident (bodies are
-  written against a `self.forward(..)` placeholder) — both close the
+  macros cover `callbacks/` (angr-0jh0j.6): `callback_setters!` generates
+  every `set_<slot>` PyO3 setter from the one `with_callback_fields!` list in
+  `callbacks/mod.rs`, and `inspect_test_entries!` derives each
+  `call_inspect_*` test entry point's Rust name, Python name and dispatch
+  target from a single event ident (bodies are written against a
+  `self.forward(..)` placeholder; the invocation lives in
+  `callbacks/inspect_test_entries.rs` since angr-5mnx3.8) — both close the
   "copy-pasted wrapper names the sibling slot and still compiles" shape. See bd
   memory `angr-macros-call-site-invariants`.
 - **Rust exploration**: `angr/exploration/rust_manager.py`, `native/angr/src/exploration/` (entry point `mod.rs` — struct def + module wiring only; the `#[pymethods] impl RustExplorationManager` surface lives in sibling `manager_methods.rs` plus its `manager_methods_{hooks,state,constraints,procedures,techniques,export,run,diagnostics,snapshot}.rs` blocks — one file per former section banner, enabled by PyO3's `multiple-pymethods` feature, angr-nbim4.1 / angr-9ke6b.50 — `manager_methods_stats.rs` was itself later split by contents into `manager_methods_diagnostics.rs` (solver-stats introspection) and `manager_methods_snapshot.rs` (dump/load snapshot bytes), angr-03vl4.25 — plus run_loop.rs, stepping.rs, resume.rs, helpers.rs, state_api.rs, stats_api.rs, pending_api.rs, constraints.rs, execution_env.rs, memory_config.rs, profiling.rs, state_lifecycle.rs, state_id.rs, scheduler.rs (work-stealing parallel pool, angr-1ilq.3 — root keeps `CancelToken` / `TaskOutcome` / `TerminalSummary`; the angr-9ke6b.59 split put metrics in `scheduler_stats.rs`, wave-mode `WorkTransport`/`WaveJob` in `scheduler_transport.rs`, the session protocol + `PersistentPool`/`worker_thread` in `scheduler_pool.rs`, and the per-worker loop in `scheduler_worker.rs`), step_core.rs (Send+Sync StepContext + run_interpreter_step_core, angr-1ilq.3 increment 2b-i), and the angr-zel8z.3 data-model split: event.rs (ExplorationEvent pyclass), callback_types.rs (CallbackReason + PendingCallback), native_technique.rs (NativeTechnique enum))
