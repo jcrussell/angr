@@ -1202,51 +1202,6 @@ impl SymbolicMemory {
         }
     }
 
-    /// Get unmapped pages around a trigger page (for locality-based prefetch).
-    ///
-    /// # Arguments
-    /// * `trigger_page_addr` - Page address that triggered the fetch
-    /// * `count_before` - Number of pages to check before the trigger
-    /// * `count_after` - Number of pages to check after the trigger
-    ///
-    /// # Returns
-    /// List of unmapped page addresses in the region around the trigger.
-    pub fn get_nearby_prefetch_list(
-        &self,
-        trigger_page_addr: impl Into<Address>,
-        count_before: u64,
-        count_after: u64,
-    ) -> Vec<u64> {
-        let trigger_page_addr = trigger_page_addr.into();
-        let trigger_page_num = trigger_page_addr.page_num();
-        let mut pages_to_fetch = Vec::new();
-
-        // Check pages before the trigger
-        for i in 1..=count_before {
-            if let Some(page_num) = trigger_page_num.checked_sub(i)
-                && self.is_in_lazy_region(page_num)
-                && !self.pages.contains_key(&page_num)
-            {
-                pages_to_fetch.push(page_num << 12);
-            }
-        }
-
-        // Add the trigger page itself if not mapped
-        if !self.pages.contains_key(&trigger_page_num) {
-            pages_to_fetch.push(trigger_page_addr.raw());
-        }
-
-        // Check pages after the trigger
-        for i in 1..=count_after {
-            let page_num = trigger_page_num + i;
-            if self.is_in_lazy_region(page_num) && !self.pages.contains_key(&page_num) {
-                pages_to_fetch.push(page_num << 12);
-            }
-        }
-
-        pages_to_fetch
-    }
-
     /// Map a page with data directly (used for on-demand page fetching).
     ///
     /// This is a convenience method for the interpreter to add fetched pages.
