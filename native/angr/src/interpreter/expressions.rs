@@ -1220,6 +1220,26 @@ impl<'a> VEXInterpreter<'a> {
                 // multi-byte load, or imports didn't cover all bytes at the addr.
                 Ok(None)
             }
+            // SILENT(cat-b): angr-0jh0j.83 — `check_access_size`'s own doc
+            // ("refuse instead and let the caller bounce to Python") makes this
+            // a fallback, not a terminal fault: the load never touched memory,
+            // so Python's model can answer it (or raise) exactly as it does for
+            // the unmapped/symbolic-address refusals above. Warn rather than
+            // debug — unlike those, an oversized `size` cannot come from guest
+            // state, only from a caller that computed a bogus width.
+            Err(MemoryError::SizeTooLarge { addr, size }) => {
+                log::warn!(
+                    "Oversized memory load at 0x{addr:x} (size={size}), falling back to Python"
+                );
+                Ok(None)
+            }
+            // Every remaining variant is a genuine fault (permission violation,
+            // out-of-bounds, zero/unaligned width, unexpected symbolic) that
+            // Python cannot answer any better than Rust did, plus the wildcard
+            // `MemoryError` is `#[non_exhaustive]` requires. A *new* variant
+            // landing here is terminal by default — check whether it deserves
+            // an `Ok(None)` arm above before leaving it, which is precisely how
+            // `SizeTooLarge` got mistriaged.
             Err(e) => Err(CbExecutionError::Memory(e)),
         }
     }

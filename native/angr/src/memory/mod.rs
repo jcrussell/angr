@@ -174,7 +174,11 @@ pub(super) const MAX_ACCESS_BYTES: u32 = u32::MAX / 8;
 /// `invariant-overflow-fix-refuse-not-saturate-identities` a size may
 /// generally saturate, but not here: clamping the *width* would hand back a
 /// BV that does not match the bytes requested, so refuse instead and let the
-/// caller bounce to Python.
+/// caller bounce to Python. The interpreter arm that performs that bounce is
+/// the `MemoryError::SizeTooLarge` case in
+/// `VEXInterpreter::try_rust_memory_load` (angr-0jh0j.83) — it degrades to
+/// `Ok(None)` like the unmapped/symbolic-address refusals rather than failing
+/// the step.
 ///
 /// The store side needs no equivalent: every `store_*` entry point derives
 /// `size` as `value.width() / 8`, which is `<= u32::MAX / 8` by construction

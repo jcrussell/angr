@@ -656,3 +656,33 @@ fn fabricated_result_width_falls_back_to_the_widest_operand() {
     // Empty is unreachable from the dispatchers but must stay total.
     assert_eq!(fabricated_result_width(&unmapped, &[]), 64);
 }
+
+/// angr-0jh0j.83: an oversized `size` must bounce the load to Python, not
+/// hard-fail the step. `check_access_size` refuses before any page lookup, so
+/// pre-fix its `MemoryError::SizeTooLarge` fell into `try_rust_memory_load`'s
+/// terminal catch-all — the opposite of what that guard's own doc promises,
+/// and unlike every other refusal (`Unmapped`, `SymbolicAddress`) which
+/// degrades gracefully. A *small* size at this address takes the `Unmapped`
+/// arm, so only an oversized one distinguishes the two dispositions.
+#[test]
+fn oversized_load_falls_back_to_python_rather_than_erroring() {
+    use crate::callbacks::PythonCallbacks;
+    pyo3::Python::initialize();
+    let callbacks = PythonCallbacks::new();
+    let ctx = SymContext::new_mock();
+    let mut interp = new_interp(&ctx);
+    interp.set_rust_memory(SymbolicMemory::new(Endness::Little));
+    let addr = RustBV::concrete(0x1000, 64);
+
+    // One byte past MAX_ACCESS_BYTES (`u32::MAX / 8`), where `size * 8` wraps.
+    let oversized = (u32::MAX / 8) as usize + 1;
+    let res = interp.try_rust_memory_load(&callbacks, &addr, oversized, None);
+    assert!(
+        matches!(res, Ok(None)),
+        "oversized load must defer to Python, got {res:?}"
+    );
+
+    // Sanity: the in-range sibling still reaches memory and declines there.
+    let res = interp.try_rust_memory_load(&callbacks, &addr, 8, None);
+    assert!(matches!(res, Ok(None)), "unmapped load must defer to Python");
+}
