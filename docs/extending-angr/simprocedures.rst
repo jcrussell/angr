@@ -1079,9 +1079,13 @@ same impl — see ``NativeProcedureRegistry::register``).
        ``__fprintf_chk``, ``__vsnprintf_chk``
      - 14 / 14
      - ``fortify_mem.rs``, ``fortify_str.rs``, ``fortify_printf.rs``.
-       Each wrapper adds the destination-size bound check (or drops the
-       injected flag/slen args) and then **calls the base native
-       procedure** — it never reimplements the copy/format logic.
+       Each wrapper only drops the injected ``destlen``/``flag``/``slen``
+       args and then **calls the base native procedure** — it never
+       reimplements the copy/format logic. Note it deliberately does
+       **not** emulate glibc's destination-size bound check: matching
+       Python angr (whose ``__*_chk`` classes subclass the base and drop
+       the extra args), a check would prune paths angr otherwise
+       explores. See each file's module docs for the parity rationale.
    * - Character classification (ctype.h)
      - ``isdigit``, ``isalpha``, ``isspace``, ``isalnum``,
        ``isupper``, ``islower``, ``isxdigit``, ``isprint``,

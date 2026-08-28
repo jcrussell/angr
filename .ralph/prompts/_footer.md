@@ -112,9 +112,11 @@ See the **Key Files** section in `CLAUDE.md` (already in your context).
 
 - **DRY** — reuse existing native procs/helpers; never copy-paste a base
   implementation. Canonical example: a fortify `_chk` proc (`__memcpy_chk`,
-  `__sprintf_chk`, …) **calls the base native proc + adds the bound check** — it
-  does NOT reimplement the copy/format logic. Reuse `format_common` for any
-  format-string work and `mem_common` / `strings` helpers for buffer ops. If you
+  `__sprintf_chk`, …) **drops the injected `destlen`/`flag`/`slen` args and
+  calls the base native proc** — it does NOT reimplement the copy/format logic
+  (and, per Python-engine parity, does NOT emulate glibc's bound check). Reuse
+  `format_common` for any format-string work and `mem_common` / `strings`
+  helpers for buffer ops. If you
   catch yourself writing the same logic twice, extract or call the existing one.
 - **KISS** — make the smallest change that passes the gate + unit tests. No
   speculative abstraction, no new trait/layer/config knob unless a second caller
