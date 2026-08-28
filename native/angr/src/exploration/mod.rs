@@ -94,6 +94,11 @@ mod state_lifecycle;
 mod stats_api;
 mod step_core;
 mod stepping;
+// Shared `state_at`/`mgr_and_state`/`unsat_state_at` fixtures for the
+// `exploration/` test modules (angr-5mnx3.15). Lives here, one level above
+// them, because those sit under five different parents. Z3-gated like every
+// one of its consumers: `unsat_state_at` drives `add_constraint`.
+test_submod!(z3 test_support);
 
 use self::constraints::{ConstraintSolver, ConstraintTracker, import_python_constraints};
 use self::execution_env::ExecutionEnvironment;

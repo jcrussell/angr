@@ -6,16 +6,10 @@ use super::{
     CoverageGuided, DirectedCfgDistance, Fifo, FindDirected, Lifo, LoopHeadRoundRobin,
     RandomSelection, SelectionPolicy,
 };
+use crate::exploration::test_support::state_at;
 use crate::state::RustSimState;
 use std::collections::{HashMap, VecDeque};
 use z3::Context;
-
-/// Build a fresh amd64 state parked at `pc`.
-fn state_at(pc: u64) -> RustSimState {
-    let mut st = RustSimState::new("amd64").unwrap();
-    st.set_pc(pc);
-    st
-}
 
 /// Run a full drain under `RandomSelection(seed)` over `n` fresh states and
 /// return the dispatch order expressed as *insertion indices* (0..n). Two

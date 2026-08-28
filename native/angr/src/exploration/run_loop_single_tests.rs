@@ -17,40 +17,8 @@
 use super::*;
 
 use crate::callbacks::PythonCallbacks;
+use crate::exploration::test_support::{mgr_and_state, unsat_state_at};
 use crate::stash::{STASH_AVOID, STASH_FOUND, STASH_PRUNED};
-use crate::state::RustSimState;
-use crate::symbolic::RustBV;
-
-/// A fresh manager plus a SAT state parked at `pc`, registered in no stash —
-/// exactly what the driver hands `step_one` after popping it from ACTIVE.
-fn mgr_and_state(pc: u64) -> (RustExplorationManager, RustSimState, u64) {
-    let mgr = RustExplorationManager::new("amd64", None).unwrap();
-    let mut state = RustSimState::new("amd64").unwrap();
-    state.set_pc(pc);
-    let id = state.state_id();
-    (mgr, state, id)
-}
-
-/// Same, but the state carries two mutually exclusive constraints so
-/// `satisfiable()` is false — the fixture the find-address UNSAT prune needs.
-fn unsat_state_at(pc: u64) -> RustSimState {
-    let mut state = RustSimState::new("amd64").unwrap();
-    state.set_pc(pc);
-    let x = {
-        let s = state.solver().borrow();
-        RustBV::symbolic(&s, "single_unsat_x", 64)
-    };
-    state.set_register("rax", x.clone());
-    for witness in [1u128, 2u128] {
-        let c = {
-            let s = state.solver().borrow();
-            x.eq(&RustBV::concrete(witness, 64), &s)
-        };
-        state.add_constraint(c);
-    }
-    assert!(!state.satisfiable(), "fixture must be UNSAT");
-    state
-}
 
 /// `StepOutcome` carries a `RustSimState` / `PendingCallback` and so is not
 /// `Debug`; name the variant by hand for assertion messages.

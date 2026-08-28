@@ -14,20 +14,9 @@
 use super::*;
 
 use crate::exploration::core_outcome::{BounceKind, CoreCounters};
+use crate::exploration::test_support::{mgr_and_state, unsat_state_at};
 use crate::stash::{STASH_ACTIVE, STASH_AVOID, STASH_FOUND, STASH_PRUNED, STASH_UNCONSTRAINED};
 use crate::state::RustSimState;
-use crate::symbolic::RustBV;
-
-/// A fresh manager plus a state parked at `pc`. The state is registered in no
-/// stash yet — exactly the precondition `route_materialized_terminal` assumes
-/// (the worker owns it; the coordinator is about to place it).
-fn mgr_and_state(pc: u64) -> (RustExplorationManager, RustSimState, u64) {
-    let mgr = RustExplorationManager::new("amd64", None).unwrap();
-    let mut state = RustSimState::new("amd64").unwrap();
-    state.set_pc(pc);
-    let id = state.state_id();
-    (mgr, state, id)
-}
 
 #[test]
 fn found_kind_routes_to_found_stash_and_sets_root() {
@@ -177,25 +166,6 @@ fn untagged_residual_at_find_pc_routes_to_found() {
 }
 
 /// Pin `rax` to two different values so the state's path constraints are UNSAT.
-fn unsat_state(pc: u64) -> RustSimState {
-    let mut state = RustSimState::new("amd64").unwrap();
-    state.set_pc(pc);
-    let x = {
-        let s = state.solver().borrow();
-        RustBV::symbolic(&s, "unsat_x", 64)
-    };
-    state.set_register("rax", x.clone());
-    for witness in [1u128, 2u128] {
-        let c = {
-            let s = state.solver().borrow();
-            x.eq(&RustBV::concrete(witness, 64), &s)
-        };
-        state.add_constraint(c);
-    }
-    assert!(!state.satisfiable(), "fixture must be UNSAT");
-    state
-}
-
 #[test]
 fn unsat_successor_at_find_pc_routes_to_pruned() {
     Python::initialize();
@@ -209,7 +179,7 @@ fn unsat_successor_at_find_pc_routes_to_pruned() {
         let (mut mgr, _sat, _id) = mgr_and_state(find);
         mgr.set_find_addrs(vec![find]);
 
-        mgr.route_successor(unsat_state(find), true);
+        mgr.route_successor(unsat_state_at(find), true);
 
         assert_eq!(mgr.stash_count(STASH_FOUND), 0, "UNSAT is not a find");
         assert_eq!(mgr.stash_count(STASH_PRUNED), 1, "tracked, not dropped");
@@ -244,7 +214,7 @@ fn untagged_unsat_residual_at_find_pc_routes_to_pruned() {
         let find = 0x40_b000;
         let (mut mgr, _sat, _id) = mgr_and_state(find);
         mgr.set_find_addrs(vec![find]);
-        let state = unsat_state(find);
+        let state = unsat_state_at(find);
         let id = state.state_id();
         let mut bounce_queue = Vec::new();
 

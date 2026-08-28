@@ -24,10 +24,10 @@ use super::*;
 
 use crate::exploration::RustExplorationManager;
 use crate::exploration::core_outcome::ParallelProfiling;
+use crate::exploration::test_support::{state_at, unsat_state_at};
 use crate::exploration::step_core::StepContext;
 use crate::procedures::NativeProcedureRegistry;
 use crate::state::RustSimState;
-use crate::symbolic::RustBV;
 use crate::syscalls::NativeSyscallRegistry;
 use pyo3::Python;
 
@@ -77,31 +77,6 @@ impl Harness {
             shared,
         )
     }
-}
-
-fn state_at(pc: u64) -> RustSimState {
-    let mut state = RustSimState::new("amd64").unwrap();
-    state.set_pc(pc);
-    state
-}
-
-/// An UNSAT state parked at `pc` (same fixture shape as `run_loop_wave_tests`).
-fn unsat_state_at(pc: u64) -> RustSimState {
-    let mut state = state_at(pc);
-    let x = {
-        let s = state.solver().borrow();
-        RustBV::symbolic(&s, "worker_unsat_x", 64)
-    };
-    state.set_register("rax", x.clone());
-    for witness in [1u128, 2u128] {
-        let c = {
-            let s = state.solver().borrow();
-            x.eq(&RustBV::concrete(witness, 64), &s)
-        };
-        state.add_constraint(c);
-    }
-    assert!(!state.satisfiable(), "fixture must be UNSAT");
-    state
 }
 
 fn kind_of(shared: &ParallelShared, id: u64) -> Option<MatKind> {

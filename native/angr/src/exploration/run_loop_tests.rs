@@ -6,19 +6,9 @@
 use super::*;
 
 use crate::exploration::core_outcome::BounceKind;
+use crate::exploration::test_support::mgr_and_state;
 use crate::stash::STASH_ACTIVE;
 use crate::state::RustSimState;
-
-/// A fresh manager plus a state parked at `pc`. The state is registered in no
-/// stash yet — exactly the precondition `route_materialized_terminal` assumes
-/// (the worker owns it; the coordinator is about to place it).
-fn mgr_and_state(pc: u64) -> (RustExplorationManager, RustSimState, u64) {
-    let mgr = RustExplorationManager::new("amd64", None).unwrap();
-    let mut state = RustSimState::new("amd64").unwrap();
-    state.set_pc(pc);
-    let id = state.state_id();
-    (mgr, state, id)
-}
 
 /// The other half of the same contract: `flush_parked_bounces_to_active` is NOT
 /// terminal — it hands the state back to STASH_ACTIVE, where the next step
