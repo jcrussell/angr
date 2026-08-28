@@ -6,8 +6,10 @@
 //!
 //! **Panic policy (angr-9ke6b.212):** operand *values* are guest data and are
 //! never unwrapped — an operand this module cannot handle returns [`OpError`],
-//! and angr-j60q0.2 already hardened the arity/type `debug_assert!`s on the
-//! packed-vector paths into typed errors for exactly that reason. The two
+//! and the arity/type `debug_assert!`s on both packed-vector dispatchers have
+//! been hardened into typed errors for exactly that reason
+//! (`VEXOps::vec_float_lane_op` by angr-j60q0.2, `VEXOps::vec_int_lane_op`
+//! by angr-5mnx3.67). The two
 //! remaining `expect` shapes are operand-*count* invariants fixed by the
 //! dispatch table, not by guest data:
 //!

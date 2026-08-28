@@ -452,3 +452,50 @@ fn test_vec_mul_16x16_avx2_256_bit() {
         );
     }
 }
+
+// =========================================================================
+// Over-arity hardening (angr-5mnx3.67)
+// =========================================================================
+
+/// An `IntLaneOp` whose `arity()` exceeds `INT_LANE_OP_MAX_ARITY`. No such op
+/// exists in the dispatch table today; this stands in for a future one added
+/// without widening the const, which is exactly the case the fixed-size `buf`
+/// in `VEXOps::vec_int_lane_op` cannot index.
+struct OverArityLaneOp;
+
+impl IntLaneOp for OverArityLaneOp {
+    fn arity(&self) -> usize {
+        INT_LANE_OP_MAX_ARITY + 1
+    }
+    fn concrete_lane(&self, lanes: &[u128], _elem_width: u32) -> u128 {
+        lanes[0]
+    }
+    fn symbolic_lane(&self, lanes: &[RustBV], _elem_width: u32, _ctx: &SymContext) -> RustBV {
+        lanes[0].clone()
+    }
+}
+
+/// The concrete fast path must return a typed error rather than index `buf`
+/// out of bounds. Before angr-5mnx3.67 this was only a `debug_assert!`, so a
+/// release build (which is what ships) reached `buf[idx]` and aborted the
+/// process. Mirrors the float-side hardening from angr-j60q0.2.
+#[test]
+fn test_vec_int_lane_over_arity_returns_error() {
+    let ctx = SymContext::new_mock();
+    let args = [
+        RustBV::concrete(0x1111_1111, 32),
+        RustBV::concrete(0x2222_2222, 32),
+        RustBV::concrete(0x3333_3333, 32),
+    ];
+    let err = VEXOps::vec_int_lane_op(&args, IRType::I8, 4, &OverArityLaneOp, &ctx)
+        .expect_err("over-arity op must not be dispatched");
+    match err {
+        OpError::UnsupportedVectorOp(msg) => {
+            assert!(
+                msg.contains("vec_int_lane_op arity 3 exceeds max 2"),
+                "unexpected message: {msg}"
+            );
+        }
+        other => panic!("expected UnsupportedVectorOp, got {other:?}"),
+    }
+}

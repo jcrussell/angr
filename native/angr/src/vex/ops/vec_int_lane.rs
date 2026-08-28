@@ -38,7 +38,17 @@ impl VEXOps {
                 args.iter().map(crate::symbolic::RustBV::as_u128).collect();
             if let Some(concrete) = concrete {
                 let arity = concrete.len();
-                debug_assert!(arity <= INT_LANE_OP_MAX_ARITY);
+                // Hardened from a `debug_assert!` (angr-5mnx3.67), mirroring
+                // `VEXOps::vec_float_lane_op`'s angr-j60q0.2 fix: `buf` is a
+                // fixed `INT_LANE_OP_MAX_ARITY`-wide array indexed `[idx]` for
+                // `idx in 0..arity` below, so an over-arity caller would be an
+                // index-panic process abort in release. Return a typed error
+                // instead.
+                if arity > INT_LANE_OP_MAX_ARITY {
+                    return Err(OpError::UnsupportedVectorOp(format!(
+                        "vec_int_lane_op arity {arity} exceeds max {INT_LANE_OP_MAX_ARITY}"
+                    )));
+                }
                 let elem_mask = Self::low_bit_mask_u128(elem_width);
                 let mut buf = [0u128; INT_LANE_OP_MAX_ARITY];
                 let mut result: u128 = 0;
