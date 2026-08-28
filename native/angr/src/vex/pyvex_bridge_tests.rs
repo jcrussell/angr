@@ -610,3 +610,193 @@ fn test_store_with_unknown_endness_falls_back_to_little() {
         other => panic!("Expected Store statement, got {other:?}"),
     }
 }
+
+/// Lift a single expression through the JSON boundary by wrapping it in the
+/// simplest statement that carries one, mirroring `stmt_from_json` a level
+/// down. Used by the per-variant `convert_expr` tests below (angr-5mnx3.62):
+/// eight of `IRExpr`'s thirteen variants had no fixture here, so a
+/// `#[serde(rename)]` typo or a field reorder on any of them was only
+/// reachable from out-of-tree Python integration tests.
+fn expr_from_json(expr_json: &str) -> IRExpr {
+    let stmt = format!(r#"{{"tag": "Ist_WrTmp", "tmp": 0, "data": {expr_json}}}"#);
+    match stmt_from_json(&stmt) {
+        IRStmt::WrTmp { data, .. } => data,
+        other => panic!("Expected WrTmp statement, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_expr_geti() {
+    match expr_from_json(
+        r#"{"tag": "Iex_GetI",
+            "descr": {"base": 776, "elemTy": "Ity_F64", "nElems": 8},
+            "ix": {"tag": "Iex_RdTmp", "tmp": 5},
+            "bias": 3}"#,
+    ) {
+        IRExpr::GetI { descr, ix, bias } => {
+            assert_eq!(descr.base, 776);
+            assert_eq!(descr.elemTy, IRType::F64);
+            assert_eq!(descr.nElems, 8);
+            assert!(matches!(*ix, IRExpr::RdTmp(5)));
+            assert_eq!(bias, 3);
+        }
+        other => panic!("Expected GetI expression, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_expr_load_threads_type_and_endness() {
+    for (end, expected) in [("Iend_LE", Endness::Little), ("Iend_BE", Endness::Big)] {
+        let json = format!(
+            r#"{{"tag": "Iex_Load", "ty": "Ity_I32", "end": "{end}",
+                 "addr": {{"tag": "Iex_RdTmp", "tmp": 2}}}}"#
+        );
+        match expr_from_json(&json) {
+            IRExpr::Load { addr, ty, endness } => {
+                assert!(matches!(*addr, IRExpr::RdTmp(2)));
+                assert_eq!(ty, IRType::I32);
+                assert_eq!(endness, expected, "endness for {end}");
+            }
+            other => panic!("Expected Load expression, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn test_expr_unop() {
+    match expr_from_json(
+        r#"{"tag": "Iex_Unop", "op": "Iop_Not64",
+            "arg": {"tag": "Iex_RdTmp", "tmp": 7}}"#,
+    ) {
+        IRExpr::Unop { op, arg } => {
+            assert_eq!(op, IROp::Not(IRType::I64));
+            assert!(matches!(*arg, IRExpr::RdTmp(7)));
+        }
+        other => panic!("Expected Unop expression, got {other:?}"),
+    }
+}
+
+/// Argument *order* is the thing worth pinning: pyvex hands triops a
+/// `(rm, arg1, arg2)` tuple, and `convert_expr` unpacks it positionally.
+#[test]
+fn test_expr_triop_preserves_argument_order() {
+    match expr_from_json(
+        r#"{"tag": "Iex_Triop", "op": "Iop_AddF64",
+            "args": [{"tag": "Iex_RdTmp", "tmp": 1},
+                     {"tag": "Iex_RdTmp", "tmp": 2},
+                     {"tag": "Iex_RdTmp", "tmp": 3}]}"#,
+    ) {
+        IRExpr::Triop {
+            op,
+            arg1,
+            arg2,
+            arg3,
+        } => {
+            assert_eq!(op, IROp::FAdd(IRType::F64));
+            assert!(matches!(*arg1, IRExpr::RdTmp(1)));
+            assert!(matches!(*arg2, IRExpr::RdTmp(2)));
+            assert!(matches!(*arg3, IRExpr::RdTmp(3)));
+        }
+        other => panic!("Expected Triop expression, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_expr_qop_preserves_argument_order() {
+    match expr_from_json(
+        r#"{"tag": "Iex_Qop", "op": "Iop_MAddF64",
+            "args": [{"tag": "Iex_RdTmp", "tmp": 1},
+                     {"tag": "Iex_RdTmp", "tmp": 2},
+                     {"tag": "Iex_RdTmp", "tmp": 3},
+                     {"tag": "Iex_RdTmp", "tmp": 4}]}"#,
+    ) {
+        IRExpr::Qop {
+            op,
+            arg1,
+            arg2,
+            arg3,
+            arg4,
+        } => {
+            assert_eq!(op, IROp::FMAdd(IRType::F64));
+            assert!(matches!(*arg1, IRExpr::RdTmp(1)));
+            assert!(matches!(*arg2, IRExpr::RdTmp(2)));
+            assert!(matches!(*arg3, IRExpr::RdTmp(3)));
+            assert!(matches!(*arg4, IRExpr::RdTmp(4)));
+        }
+        other => panic!("Expected Qop expression, got {other:?}"),
+    }
+}
+
+/// `iftrue`/`iffalse` are distinct JSON keys rather than a tuple, so a rename
+/// typo would swap the two arms silently — assert them apart.
+#[test]
+fn test_expr_ite_does_not_swap_arms() {
+    match expr_from_json(
+        r#"{"tag": "Iex_ITE",
+            "cond": {"tag": "Iex_RdTmp", "tmp": 9},
+            "iftrue": {"tag": "Iex_Const", "con": {"tag": "Ico_U32", "value": 11}},
+            "iffalse": {"tag": "Iex_Const", "con": {"tag": "Ico_U32", "value": 22}}}"#,
+    ) {
+        IRExpr::ITE {
+            cond,
+            iftrue,
+            iffalse,
+        } => {
+            assert!(matches!(*cond, IRExpr::RdTmp(9)));
+            assert!(matches!(*iftrue, IRExpr::Const(IRConst::U32(11))));
+            assert!(matches!(*iffalse, IRExpr::Const(IRConst::U32(22))));
+        }
+        other => panic!("Expected ITE expression, got {other:?}"),
+    }
+}
+
+/// `Iex_CCall` as an expression — distinct from `Ist_Dirty`'s `cee` field,
+/// which the dirty-statement tests above already cover.
+#[test]
+fn test_expr_ccall() {
+    match expr_from_json(
+        r#"{"tag": "Iex_CCall",
+            "cee": {"name": "amd64g_calculate_condition", "addr": 4096, "mcx_mask": 13},
+            "retty": "Ity_I64",
+            "args": [{"tag": "Iex_Const", "con": {"tag": "Ico_U64", "value": 4}},
+                     {"tag": "Iex_RdTmp", "tmp": 6}]}"#,
+    ) {
+        IRExpr::CCall { cee, retty, args } => {
+            assert_eq!(cee.name, "amd64g_calculate_condition");
+            assert_eq!(cee.addr, 4096);
+            assert_eq!(cee.mcx_mask, 13);
+            assert_eq!(retty, IRType::I64);
+            assert_eq!(args.len(), 2);
+            assert!(matches!(args[0], IRExpr::Const(IRConst::U64(4))));
+            assert!(matches!(args[1], IRExpr::RdTmp(6)));
+        }
+        other => panic!("Expected CCall expression, got {other:?}"),
+    }
+}
+
+/// `Iex_VECRET` is a payload-free marker that only ever appears in an
+/// `Ist_Dirty` argument list, so drive it the way VEX emits it — alongside the
+/// already-covered `Iex_GSPTR`, to pin that the two unit variants do not
+/// collapse into each other.
+#[test]
+fn test_expr_vecret_and_gsptr_are_distinct_markers() {
+    let stmt = stmt_from_json(
+        r#"{"tag": "Ist_Dirty",
+            "cee": {"name": "amd64g_dirtyhelper_XSAVE", "addr": 8192, "mcx_mask": 0},
+            "guard": null,
+            "tmp": null,
+            "mFx": "Ifx_Write",
+            "mAddr": {"tag": "Iex_RdTmp", "tmp": 1},
+            "mSize": 64,
+            "nFxState": 0,
+            "args": [{"tag": "Iex_VECRET"}, {"tag": "Iex_GSPTR"}]}"#,
+    );
+    match stmt {
+        IRStmt::Dirty(d) => {
+            assert_eq!(d.args.len(), 2);
+            assert!(matches!(d.args[0], IRExpr::VECRET));
+            assert!(matches!(d.args[1], IRExpr::GSPTR));
+        }
+        other => panic!("Expected Dirty statement, got {other:?}"),
+    }
+}
