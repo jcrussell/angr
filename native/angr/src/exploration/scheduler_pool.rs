@@ -370,6 +370,27 @@ impl PersistentPool {
 impl Drop for PersistentPool {
     /// Broadcast `Shutdown` to every worker, then join. Each worker's Z3 context
     /// drops on its own thread — never freed cross-thread.
+    ///
+    /// # Preconditions (angr-nkoct)
+    ///
+    /// The join below blocks until every worker reaches its control channel, so
+    /// a caller dropping a pool with a **live** [`RunSession`] must first:
+    ///
+    /// 1. cancel that session and wake its parked workers (see
+    ///    [`SteadySession::cancel_and_wake`](crate::exploration::run_loop_steady::SteadySession::cancel_and_wake)),
+    ///    so a worker mid-dispatch actually reaches a cancel check instead of
+    ///    running to natural quiescence; and
+    /// 2. **release the GIL** across the drop. A session worker can be blocked
+    ///    in `Python::attach` for a cold VEX lift; holding the GIL across the
+    ///    join then deadlocks — and pyclass dealloc, the path that reaches this
+    ///    impl in production, runs GIL-held.
+    ///
+    /// [`RustExplorationManager`](crate::exploration::RustExplorationManager)'s
+    /// `Drop` is the only production call site that drops a live pool and is
+    /// engineered for exactly this (`cancel_and_wake`, then
+    /// `Python::attach(|py| py.detach(..))`); see the Steady-state Drop safety
+    /// note on that impl. Wave-mode workers are always parked between waves, so
+    /// a pool that never started a session needs neither step.
     fn drop(&mut self) {
         for tx in &self.job_txs {
             // SILENT(cat-a): a worker that already exited has dropped its
