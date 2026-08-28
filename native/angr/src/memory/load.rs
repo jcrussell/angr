@@ -660,7 +660,9 @@ impl SymbolicMemory {
         // angr-0jh0j.35: same up-front width bound as
         // `SymbolicMemory::load_symbolic` — the AVOID_MULTIVALUED_READS
         // short-circuit and the all-unmapped `mem_all_unmapped_*` fabricate
-        // below both compute `size * 8` off any page path.
+        // below both mint a width off `size` with no page path to refuse on.
+        // Both now clamp via `fabricate_width_bits` as well (angr-0jh0j.84),
+        // so this check is the primary refusal and the clamp the backstop.
         check_access_size(addr.as_u64().unwrap_or(0), size)?;
 
         // Fast path: concrete address
@@ -685,10 +687,16 @@ impl SymbolicMemory {
                 let ready_addrs = self.prepare_addresses_for_ite(&addrs, size);
 
                 if ready_addrs.is_empty() {
+                    // angr-0jh0j.84: third infallible fabricate site — no error
+                    // channel here either, so the width goes through
+                    // `fabricate_width_bits` like both siblings rather than a
+                    // bare `size * 8`. `check_access_size` above already
+                    // refuses oversize `size`, so the clamp is defense against
+                    // a future edit that bypasses or hoists that check.
                     return Ok(RustBV::symbolic(
                         ctx,
                         format!("mem_all_unmapped_{size}"),
-                        size * 8,
+                        fabricate_width_bits(size),
                     ));
                 }
 

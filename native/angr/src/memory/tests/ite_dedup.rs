@@ -299,3 +299,51 @@ fn test_assert_address_disjunction_multiple_load_hoists() {
         "expected concretize_disjunction_count to increment (pre={pre_count}, post={post_count})"
     );
 }
+
+/// angr-0jh0j.84: the all-unmapped fabricate arm of `load_symbolic_unified`
+/// — reached when every concretized candidate lives on an unmapped page, so
+/// `prepare_addresses_for_ite` filters the set empty and there is nothing to
+/// ITE over. The arm has no error channel, so its width now routes through
+/// `fabricate_width_bits` like both sibling infallible-fabricate sites; this
+/// pins the ordinary-size result (name stem *and* width) so a clamp that
+/// silently truncated a legal load would red.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_load_symbolic_unified_all_unmapped_fabricate_width() {
+    use crate::concretize::AddressConcretizer;
+
+    let ctx = SymContext::new_mock();
+    let concretizer = AddressConcretizer::new();
+
+    // Map one page far away so the memory is not degenerate, then constrain
+    // the address to four candidates on a page nobody mapped.
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    mem.map(0x1000, 0x1000, Permission::RWX);
+
+    // Deliberately *irregular* offsets: an arithmetic progression is
+    // recognised as `ConcretizationResult::Strided` and takes the strided
+    // arm instead of the Multiple one this test is aiming at.
+    let addr = RustBV::symbolic(&ctx, "unmapped_addr", 64);
+    let mut clause = addr.eq(&RustBV::concrete(0x9000, 64), &ctx);
+    for off in [0x13u64, 0x47, 0xa1] {
+        let eq = addr.eq(&RustBV::concrete(u128::from(0x9000u64 + off), 64), &ctx);
+        clause = clause.or(&eq, &ctx);
+    }
+    ctx.assume_true(&clause);
+    assert!(ctx.is_sat(), "four-solution constraint must be SAT");
+
+    let loaded = mem
+        .load_symbolic_unified(addr, 4, &ctx, &concretizer)
+        .expect("all-unmapped load fabricates rather than failing");
+
+    match &loaded {
+        RustBV::Symbolic { name, width, .. } => {
+            assert!(
+                name.starts_with("mem_all_unmapped_"),
+                "expected the all-unmapped fabricate stem, got {name}"
+            );
+            assert_eq!(*width, 32, "4-byte load must fabricate a 32-bit value");
+        }
+        other => panic!("expected a fabricated Symbolic leaf, got {other:?}"),
+    }
+}

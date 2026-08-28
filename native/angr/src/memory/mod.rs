@@ -191,11 +191,13 @@ pub(super) fn check_access_size(addr: u64, size: u32) -> Result<(), MemoryError>
 }
 
 /// Bit width for the *infallible* fabricate paths —
-/// `SymbolicMemory::unconstrained_read_value` and
-/// `SymbolicMemory::load_concrete_or_unconstrained`'s error fallback — which
-/// mint a BV of `size * 8` bits with no error channel to refuse on.
+/// `SymbolicMemory::unconstrained_read_value`,
+/// `SymbolicMemory::load_concrete_or_unconstrained`'s error fallback, and
+/// `SymbolicMemory::load_symbolic_unified`'s all-unmapped `mem_all_unmapped_*`
+/// arm — which mint a BV of `size * 8` bits with no error channel to refuse
+/// on.
 ///
-/// Every route into those two runs `check_access_size` first (the load entry
+/// Every route into those three runs `check_access_size` first (the load entry
 /// points) or derives `size` from a VEX type width (the interpreter's
 /// AVOID_MULTIVALUED_READS hooks), so the clamp is unreachable
 /// defense-in-depth. It exists because the alternative at an unreachable site
