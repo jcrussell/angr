@@ -185,6 +185,81 @@ fn must_run_serial_true_when_skip_hook_pending() {
     });
 }
 
+/// angr-5mnx3.14: `set_parallel_workers(N)` used to be silently inert once a
+/// pool existed — both creation sites are guarded on `parallel_pool.is_none()`
+/// and `PersistentPool` has no resize path, so the first parallel run pinned
+/// the worker count for the manager's life. `retire_parallel_pool_for_resize`
+/// drops the mismatched pool so the next run rebuilds it at the new size.
+///
+/// Uses the real setter (not the helper directly) so the wiring, not just the
+/// helper, is pinned.
+#[test]
+fn set_parallel_workers_retires_a_pool_of_the_wrong_size() {
+    Python::initialize();
+    Python::attach(|_py| {
+        let mut mgr = RustExplorationManager::new("amd64", None).unwrap();
+        mgr.set_parallel_workers(2);
+        // Stand in for the lazy creation in `run_loop_parallel` /
+        // `ensure_steady_session`, which both build at `workers.max(2)`.
+        mgr.parallel_pool = Some(crate::exploration::scheduler::PersistentPool::new(2));
+
+        mgr.set_parallel_workers(4);
+        assert!(
+            mgr.parallel_pool.is_none(),
+            "a worker-count change must retire the stale pool so the next \
+             parallel run rebuilds it at the new size"
+        );
+        assert_eq!(mgr.parallel_real_workers, 4);
+    });
+}
+
+/// Same setter, same count: the pool is already right, so it must survive —
+/// otherwise `_engage_parallel_workers` (which calls the setter on every
+/// `explore()`) would pay a thread-spawn + Z3-context rebuild per explore.
+#[test]
+fn set_parallel_workers_keeps_a_pool_of_the_right_size() {
+    Python::initialize();
+    Python::attach(|_py| {
+        let mut mgr = RustExplorationManager::new("amd64", None).unwrap();
+        mgr.set_parallel_workers(3);
+        mgr.parallel_pool = Some(crate::exploration::scheduler::PersistentPool::new(3));
+
+        mgr.set_parallel_workers(3);
+        assert!(
+            mgr.parallel_pool.as_ref().is_some_and(|p| p.num_workers() == 3),
+            "an unchanged worker count must not churn the pool"
+        );
+    });
+}
+
+/// The downgrade/restore cycle `rust_manager.py::_engage_parallel_workers`
+/// drives across eligible vs ineligible explores (angr-ph300.77): a downgrade
+/// to serial KEEPS the pool (`must_run_serial` never reaches it, so idle
+/// threads are cheaper than a rebuild), and the restore to the same count finds
+/// it intact.
+#[test]
+fn set_parallel_workers_downgrade_to_serial_keeps_the_pool() {
+    Python::initialize();
+    Python::attach(|_py| {
+        let mut mgr = RustExplorationManager::new("amd64", None).unwrap();
+        mgr.set_parallel_workers(2);
+        mgr.parallel_pool = Some(crate::exploration::scheduler::PersistentPool::new(2));
+
+        mgr.set_parallel_workers(1);
+        assert!(mgr.must_run_serial(), "workers=1 routes to the serial loop");
+        assert!(
+            mgr.parallel_pool.is_some(),
+            "a downgrade to serial leaves the pool parked for the restore"
+        );
+
+        mgr.set_parallel_workers(2);
+        assert!(
+            mgr.parallel_pool.as_ref().is_some_and(|p| p.num_workers() == 2),
+            "restoring the original count reuses the parked pool"
+        );
+    });
+}
+
 #[test]
 fn must_run_serial_true_when_timeout_registered() {
     Python::initialize();

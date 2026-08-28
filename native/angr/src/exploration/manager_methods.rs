@@ -415,9 +415,17 @@ impl RustExplorationManager {
     /// wins: `_engage_parallel_workers` on the Python side skips this call so
     /// benches keep their env override. Honors `steady_config_guard` like every
     /// other exploration-config mutation.
+    ///
+    /// A count change also retires an already-created worker pool
+    /// (`retire_parallel_pool_for_resize`): the pool is created lazily and has
+    /// no resize path, so without that the FIRST parallel run would pin the
+    /// worker count for the manager's whole life and every later call here
+    /// would be silently inert (angr-5mnx3.14).
     #[angr_macros::steady_guarded]
     pub fn set_parallel_workers(&mut self, n: usize) {
         self.parallel_real_workers = n.max(1);
+        #[cfg(feature = "vex-engine-z3")]
+        self.retire_parallel_pool_for_resize();
     }
 
     /// Set maximum steps per run iteration.

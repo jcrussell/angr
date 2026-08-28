@@ -224,6 +224,63 @@ impl RustExplorationManager {
             || !self.skip_hook_stack.is_empty()
     }
 
+    /// Retire a persistent worker pool whose size no longer matches what the
+    /// next parallel run would ask for, so the lazy
+    /// `if self.parallel_pool.is_none()` creation in `run_loop_parallel` /
+    /// `ensure_steady_session` rebuilds it at the new count.
+    ///
+    /// Without this, `set_parallel_workers(N)` was silently inert once a pool
+    /// existed (angr-5mnx3.14): both creation sites are guarded on `is_none()`
+    /// and `PersistentPool` has no resize path, so the first parallel run's
+    /// worker count was pinned for the manager's whole life. That is reachable
+    /// in practice — `rust_manager.py::_engage_parallel_workers` calls the
+    /// setter on *every* `explore()` to downgrade/restore parallelism across
+    /// eligible vs ineligible explores (angr-ph300.77).
+    ///
+    /// A request of `n <= 1` deliberately KEEPS the pool: `must_run_serial`
+    /// routes that count to the single-threaded loop, so the parked threads are
+    /// idle rather than wrong, and tearing them down would make the
+    /// downgrade/restore cycle above pay a full thread-spawn + Z3-context
+    /// rebuild on every ineligible explore.
+    ///
+    /// Called from `set_parallel_workers` *after* the `#[steady_guarded]`
+    /// injection, so any live session has already been finalized; the workers
+    /// are therefore parked on their ctl channel and the join is prompt. The
+    /// GIL is released across it anyway, for the same reason
+    /// `RustExplorationManager::drop` does: a worker that is somehow still
+    /// mid-dispatch blocks in `Python::attach`, which would deadlock a
+    /// GIL-holding join.
+    pub(crate) fn retire_parallel_pool_for_resize(&mut self) {
+        if self.parallel_real_workers <= 1 {
+            return;
+        }
+        let wanted = self.parallel_real_workers.max(2);
+        if self
+            .parallel_pool
+            .as_ref()
+            .is_none_or(|p| p.num_workers() == wanted)
+        {
+            return;
+        }
+        if self.parallel_session.is_some() {
+            // SILENT(cat-c): the `#[steady_guarded]` guard finalizes the session
+            // before this runs, so a survivor means the drain timed out (it
+            // warns separately). Dropping the pool would join workers that are
+            // still dispatching — deadlock instead of a wrong worker count — so
+            // keep the stale pool and say so.
+            log::warn!(
+                "set_parallel_workers({wanted}) could not resize the worker pool: a steady                  session survived the config guard, so the existing pool keeps its worker count"
+            );
+            return;
+        }
+        let Some(pool) = self.parallel_pool.take() else {
+            return;
+        };
+        // A pymethod always holds the GIL but need not have a token in hand
+        // (same reasoning as `steady_config_guard`), so reacquire to release.
+        Python::attach(|py| py.detach(move || drop(pool)));
+    }
+
     /// Whether the steady-state loop (angr-nkoct) engages for this `run()`.
     /// ALL must hold: opt-in env flag; the Python driver's frontier-residency
     /// promise (address-based explore, no `until`, no techniques — nothing
