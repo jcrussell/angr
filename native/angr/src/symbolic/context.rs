@@ -321,6 +321,14 @@ impl LocalConstraints {
 
     /// Insert a Z3 Bool into `z3_assertions` and, when the dedup set is
     /// already seeded, record its ptr too.
+    ///
+    /// Callers must already know `b` is not present: this records the ptr
+    /// but never *consults* the set. There is deliberately no bulk sibling —
+    /// the one that existed (`extend_assertions`) was the whole of
+    /// angr-5mnx3.43, letting `add_constraints_raw_batch` re-push and
+    /// re-assert already-asserted constraints. A bulk caller wanting dedup
+    /// should loop over [`SymContext::seed_and_check_z3_dedup`], which
+    /// pushes on a miss, exactly as `add_constraints_raw_batch` now does.
     #[cfg(feature = "vex-engine-z3")]
     pub(super) fn push_assertion(&mut self, b: z3::ast::Bool) {
         if self.dedup_set_seeded {
@@ -329,24 +337,6 @@ impl LocalConstraints {
             self.dedup_set.insert(ptr);
         }
         self.z3_assertions.push(b);
-    }
-
-    /// Bulk variant of [`Self::push_assertion`].
-    ///
-    /// `pub(super)` for `add_constraints_raw_batch` in `constraint_ops.rs`
-    /// (slice 9, angr-a2br.2.7).
-    #[cfg(feature = "vex-engine-z3")]
-    pub(super) fn extend_assertions<I: IntoIterator<Item = z3::ast::Bool>>(&mut self, iter: I) {
-        if self.dedup_set_seeded {
-            use z3::ast::Ast;
-            for b in iter {
-                let ptr = b.get_z3_ast().as_ptr() as usize;
-                self.dedup_set.insert(ptr);
-                self.z3_assertions.push(b);
-            }
-        } else {
-            self.z3_assertions.extend(iter);
-        }
     }
 }
 

@@ -3,12 +3,17 @@ use super::*;
 #[cfg(feature = "vex-engine-z3")]
 use crate::symbolic::Z3AstPtr;
 
-/// Serializes the two tests that delta-assert the process-global
-/// `ADD_CONSTRAINT_RAW_DEDUP_HIT_COUNT`. Under the default parallel test
-/// runner their measurement windows can interleave and inflate the observed
-/// delta (a sibling test's dedup hit lands between `hits_before` and the
-/// assertion). Holding this lock across each window makes the deltas exact.
-/// Poison-tolerant: a panic in one test must not cascade into the other.
+/// Serializes every test that delta-asserts the process-global
+/// `ADD_CONSTRAINT_RAW_DEDUP_HIT_COUNT` — *and* every test that deliberately
+/// produces dedup hits of its own. Under the default parallel test runner the
+/// measurement windows can interleave and inflate the observed delta (a
+/// sibling test's dedup hit lands between `hits_before` and the assertion);
+/// a hit-producing test must therefore take the lock too even when it asserts
+/// nothing about the counter, which is how
+/// `test_add_constraints_raw_batch_all_dups_is_noop` first reddened
+/// `test_add_constraints_raw_batch_dedups_repeats` (4 hits observed, 3
+/// expected). Holding this lock across each window makes the deltas exact.
+/// Poison-tolerant: a panic in one test must not cascade into the others.
 #[cfg(feature = "vex-engine-z3")]
 static DEDUP_HIT_COUNTER_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -1065,4 +1070,102 @@ fn test_fork_under_bare_push_leaves_parent_poppable() {
     parent.pop();
     assert!(parent.solution(&x, 1));
     assert!(parent.solution(&x, 2));
+}
+
+/// angr-5mnx3.43: `add_constraints_raw_batch` predates the angr-sfp9
+/// ptr-dedup by a week and used to push/assert/count every entry
+/// unconditionally. It must now dedup exactly like `add_constraint_raw`,
+/// both against constraints added by an earlier call AND against repeats
+/// inside the same batch.
+///
+/// The three checks are independent failure modes of the old code:
+/// `z3_assertions` growth (constraint-export/serialization work),
+/// `num_constraints` inflation, and the dedup HIT telemetry the batch path
+/// never bumped at all.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_add_constraints_raw_batch_dedups_repeats() {
+    let ctx = SymContext::new();
+    let x = RustBV::symbolic(&ctx, "test_batch_dedup_x", 8);
+    let five = RustBV::concrete(5, 8);
+    let lt_ten = x.ult(&RustBV::concrete(10, 8), &ctx);
+    let eq_five = x.eq(&five, &ctx);
+
+    let _serial = DEDUP_HIT_COUNTER_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+    // Pre-seed the dedup set with `lt_ten` via the single-shot path.
+    ctx.add_constraint_raw(raw_entry(&lt_ten));
+    let after_first = ctx.num_constraints();
+    let hits_before = ADD_CONSTRAINT_RAW_DEDUP_HIT_COUNT.load(Ordering::Relaxed);
+
+    // Batch of four: `lt_ten` repeats the prior call, `eq_five` appears
+    // three times, so exactly one constraint is genuinely new.
+    let entries = vec![
+        (raw_entry(&lt_ten), lt_ten.clone(), true),
+        (raw_entry(&eq_five), eq_five.clone(), true),
+        (raw_entry(&eq_five), eq_five.clone(), true),
+        (raw_entry(&eq_five), eq_five.clone(), true),
+    ];
+    ctx.add_constraints_raw_batch(entries);
+
+    {
+        let local = ctx.local_constraints.lock();
+        assert_eq!(
+            local.z3_assertions.len(),
+            2,
+            "batch must push only the one novel constraint"
+        );
+        assert_eq!(local.dedup_set.len(), 2);
+        // `assumed` still grows per entry — duplicates there are
+        // Python-visible and deliberately preserved (see stats.rs's
+        // Z3_ASSUME_DEDUP_* group comment).
+        assert_eq!(local.assumed.len(), 4);
+        // No lineage attached, so no ScopeFrame should have been minted
+        // for the three dups (or for anything else on the None path).
+        assert!(ctx.scope_path.lock().is_empty());
+    }
+    assert_eq!(
+        ctx.num_constraints(),
+        after_first + 1,
+        "constraint_count must count only the novel constraint"
+    );
+    assert_eq!(
+        ADD_CONSTRAINT_RAW_DEDUP_HIT_COUNT.load(Ordering::Relaxed) - hits_before,
+        3,
+        "batch dedup hits must be reported to the shared counter"
+    );
+
+    // Semantics unchanged: both constraints still in force.
+    assert!(ctx.solution(&x, 5));
+    assert!(!ctx.solution(&x, 6));
+}
+
+/// angr-5mnx3.43 companion: an all-duplicate batch is a full no-op beyond
+/// the `assumed` log — it must not clear the sat cache or bump the count,
+/// mirroring `add_constraint_raw_inner`'s `was_dup` early return.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_add_constraints_raw_batch_all_dups_is_noop() {
+    let ctx = SymContext::new();
+    let x = RustBV::symbolic(&ctx, "test_batch_all_dup_x", 8);
+    let cond = x.ult(&RustBV::concrete(10, 8), &ctx);
+    // Produces a dedup hit, so it must serialize against the delta-asserting
+    // tests even though it checks no counter itself.
+    let _serial = DEDUP_HIT_COUNTER_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    ctx.add_constraint_raw(raw_entry(&cond));
+    let before = ctx.num_constraints();
+
+    ctx.add_constraints_raw_batch(vec![(raw_entry(&cond), cond.clone(), true)]);
+
+    assert_eq!(ctx.num_constraints(), before);
+    {
+        let local = ctx.local_constraints.lock();
+        assert_eq!(local.z3_assertions.len(), 1);
+    }
+    assert!(ctx.solution(&x, 5));
+    assert!(!ctx.solution(&x, 10));
 }

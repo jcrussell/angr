@@ -14,9 +14,9 @@
 //! the non-Z3 build). Lives as a second `impl SymContext` block in a child
 //! module of `symbolic`; the fields these mutate (`local_constraints`,
 //! `z3_assertions_shared`, `constraint_trackers`) plus the
-//! [`LocalConstraints`] struct and its fields/`extend_assertions` method are
-//! promoted to `pub(super)` (== `pub(in crate::symbolic)`) so this sibling
-//! module can reach them without a public API leak. The read-path caches
+//! [`LocalConstraints`] struct and its fields are promoted to `pub(super)`
+//! (== `pub(in crate::symbolic)`) so this sibling module can reach them
+//! without a public API leak. The read-path caches
 //! `sat_cache`/`model_cache` and the `constraint_count`/`lineage`/`scope_path`
 //! fields were already `pub(super)` from earlier slices. See bead angr-a2br.2.4
 //! for the slice plan.
@@ -378,6 +378,16 @@ impl SymContext {
     /// The constructor of `Z3AstPtr` is `unsafe` so this is checked at
     /// extraction time.
     ///
+    /// Entries are deduped exactly as [`Self::add_constraint_raw`] dedupes
+    /// its single constraint — via `seed_and_check_z3_dedup` (private, so no
+    /// intra-doc link from this public method), which
+    /// also covers duplicates *within* one batch since each miss inserts its
+    /// ptr before the next entry is checked. A dup contributes nothing but
+    /// its `assumed` pair: no `z3_assertions` push, no solver assert, no
+    /// `ScopeFrame`, no `constraint_count` bump. The three
+    /// `ADD_CONSTRAINT_RAW_*` counters are bumped in bulk so batch traffic
+    /// shows up in `get_solver_stats` alongside the single-shot path.
+    ///
     /// Dispatches on `self.lineage` (angr-v5a5 slice 4c.2c; mirrors the
     /// pattern landed in slice 4c.1 for [`Self::add_constraint`], slice 4c.2
     /// for [`Self::add_constraint_raw`], and slice 4c.2b for
@@ -425,11 +435,46 @@ impl SymContext {
             constraints.push(constraint);
             assumed.push((bv, is_true));
         }
+        // angr-sfp9's ptr-keyed dedup, retrofitted onto the batch path
+        // (angr-5mnx3.43): this API predates the dedup mechanism by a week
+        // and used to push/assert/count every entry unconditionally, so a
+        // constraint already asserted (a duplicate inside this very batch,
+        // or one added by an earlier `add_constraint_raw`) grew
+        // `z3_assertions`, inflated `constraint_count`, and — under shared
+        // lineage — minted a spurious `ScopeFrame`. Filter first, under the
+        // same single `local_constraints` lock, so the solver/lineage
+        // dispatch below only ever sees genuinely new constraints.
+        let total = constraints.len();
+        ADD_CONSTRAINT_RAW_TOTAL_COUNT.fetch_add(total as u64, Ordering::Relaxed);
+        ADD_CONSTRAINT_RAW_DEDUP_SCANNED_COUNT.fetch_add(total as u64, Ordering::Relaxed);
         // Single lock on local_constraints for both vectors.
-        {
+        let constraints: Vec<z3::ast::Bool> = {
             let mut local = self.local_constraints.lock();
-            local.extend_assertions(constraints.iter().cloned());
+            // `assumed` is grown for every entry, dup or not: it is the
+            // Python-visible constraint list where duplicates are meaningful.
+            // Same contract as the assume_* dedup — see the
+            // `Z3_ASSUME_DEDUP_*` group comment in `stats.rs`.
             local.assumed.extend(assumed);
+            // `seed_and_check_z3_dedup` pushes each non-dup onto
+            // `local.z3_assertions` itself, so no separate bulk push.
+            constraints
+                .into_iter()
+                .filter(|c| !self.seed_and_check_z3_dedup(&mut local, c))
+                .collect()
+        };
+        // overflow-ok: `constraints` was just rebound by a `filter` over the
+        // `total`-element vec, so its length can only have shrunk.
+        let dedup_hits = total - constraints.len();
+        if dedup_hits > 0 {
+            ADD_CONSTRAINT_RAW_DEDUP_HIT_COUNT.fetch_add(dedup_hits as u64, Ordering::Relaxed);
+        }
+        if constraints.is_empty() {
+            // Every entry was already asserted on the solver and tracked in
+            // `z3_assertions` — no solver work, no scope frames, no cache
+            // invalidation, no `constraint_count` bump (each was counted on
+            // its initial add). Mirrors `add_constraint_raw_inner`'s
+            // `was_dup` early return.
+            return;
         }
         let lineage = self.lineage.lock().as_ref().map(Arc::clone);
         match lineage {
