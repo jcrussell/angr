@@ -1076,6 +1076,8 @@ impl SymbolicMemory {
                 // overflow-ok: `Address` arithmetic is wrapping; `off < total`
                 // and `cs = (total - off).min(16)`, so `total - off - cs >= 0`.
                 Endness::Little => addr + off as u64,
+                // overflow-ok: same bound as the Little arm above — the
+                // scan reads only the two lines above the flagged one.
                 Endness::Big => addr + (total - off - cs) as u64,
             };
             self.store_concrete_automap_internal(

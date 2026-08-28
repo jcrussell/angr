@@ -113,7 +113,14 @@ _IDENT = r"[A-Za-z_][A-Za-z0-9_]*"
 _TOKEN = rf"(?:{_IDENT}\.)*{_IDENT}"
 # A numeric literal, e.g. `8`, `1u64`, `0x1000`.
 _NUM = r"\d[\w]*"
-_OPERAND = rf"(?:{_TOKEN}|{_NUM})"
+# One level of parenthesized subexpression, e.g. `(new_base & !PAGE_MASK)`.
+# The lookbehind keeps this from swallowing a call's argument list — `foo(x)`
+# is the call's *result*, whose shape the argument names do not describe,
+# while `(a & b)` is an operand whose names do. Nested parens are deliberately
+# out of scope: `[^()]` keeps the alternation linear, and the recurring
+# real-world shape is one level (angr-5mnx3.53).
+_PAREN = r"(?<![A-Za-z0-9_])\([^()\n]*\)"
+_OPERAND = rf"(?:{_PAREN}|{_TOKEN}|{_NUM})"
 
 # A bare `+`/`-` between two operands. The lookahead after the operator
 # excludes `+=`/`-=`/`->`; there is no lhs-adjacency requirement for unary
@@ -134,6 +141,14 @@ def _core_name(operand: str) -> str | None:
 
 
 def _is_addr_shaped(operand: str) -> bool:
+    if operand.startswith("("):
+        # A parenthesized operand is address-shaped when *any* identifier
+        # inside it is: `(new_base & !PAGE_MASK) + PAGE_SIZE` aligns an
+        # address up, and the `+` wraps exactly as a bare `new_base + ...`
+        # would. Before this the whole expression was invisible to the scan —
+        # `BINOP_RE` cannot start an operand at `)` — which is how the
+        # `do_mmap` addr=0 align-up overflow evaded the gate (angr-5mnx3.53).
+        return any(_is_addr_shaped(tok) for tok in re.findall(_TOKEN, operand))
     name = _core_name(operand)
     if name is None:
         return False
@@ -172,8 +187,10 @@ def scan() -> list[tuple[str, int, str, str, bool]]:
 
 # Synthetic source for --self-test: a wrapping control, an unrelated-name
 # control (bare + but neither operand is address-shaped), a real gap, a
-# documented-exempt gap, and two must-NOT-fire compound-assignment/arrow
-# controls.
+# documented-exempt gap, a parenthesized-operand gap (the `do_mmap` align-up
+# shape of angr-5mnx3.53, invisible before `_PAREN` joined `_OPERAND`), and
+# three must-NOT-fire controls: compound assignment, `->`, and a call whose
+# *arguments* are address-shaped but whose result is not described by them.
 _SELF_TEST_SRC = """
 impl Thing {
     fn safe_wrapping(&self, addr: u64, offset: u64) -> u64 {
@@ -189,6 +206,12 @@ impl Thing {
         // overflow-ok: size is always >= 1 here, checked by caller.
         size - 1
     }
+    fn paren_align_up(&self, new_base: u64) -> u64 {
+        (new_base & !PAGE_MASK) + PAGE_SIZE
+    }
+    fn call_result_add(&self, addr: u64) -> u64 {
+        self.page_of(addr) + 1
+    }
     fn compound_assign(&mut self, addr: u64) {
         addr += 1;
     }
@@ -201,6 +224,7 @@ impl Thing {
 _SELF_TEST_EXPECTED = [
     ("raw_addr_add", "addr+offset", False),
     ("raw_size_sub", "size-1", True),
+    ("paren_align_up", "(new_base&!PAGE_MASK)+PAGE_SIZE", False),
 ]
 
 
@@ -221,7 +245,7 @@ def self_test() -> int:
         for row in got:
             print(f"    {row}")
         return 1
-    print(f"self-test OK: {len(got)} sites classified as expected (1 gap, 1 documented-exempt, 4 clean controls)")
+    print(f"self-test OK: {len(got)} sites classified as expected (2 gaps, 1 documented-exempt, 5 clean controls)")
     return 0
 
 

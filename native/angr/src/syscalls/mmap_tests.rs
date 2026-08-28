@@ -363,6 +363,120 @@ fn map_fixed_region_ending_exactly_at_top_of_address_space_still_maps() {
     );
 }
 
+#[test]
+fn addr_zero_unrepresentable_next_base_refuses_instead_of_wrapping_mmap_base() {
+    // angr-5mnx3.53: the addr=0 post-map bump aligned `candidate + length` up
+    // with a bare `+`. `mmap_base` is unclamped (`set_mmap_base` validates
+    // nothing), so a region ending inside the final page aligned up to 2^64
+    // and wrapped `mmap_base` to 0 — every later addr=0 allocation would then
+    // alias already-mapped low memory. Distinct path from the MAP_FIXED guard
+    // above: `range_collides`'s `length - 1` bound admits this region.
+    let h = NativeMmapSyscall;
+    let mut state = fresh_state();
+    let base = 0xFFFF_FFFF_FFFF_E000_u64;
+    state.set_mmap_base(base);
+
+    let err = h
+        .call(&mut state, &args(0, 0x1800, 0x3, ANON_PRIVATE, ANON_FD, 0))
+        .expect_err("an unrepresentable next mmap_base must fall back, not wrap");
+    assert!(
+        format!("{err:?}").contains("unrepresentable"),
+        "unexpected error: {err:?}"
+    );
+    // Refusal must be atomic: nothing mapped, cursor untouched, so Python's
+    // allocate_memory sees exactly the state it would have seen.
+    assert_eq!(state.mmap_base(), base, "mmap_base must not move on refusal");
+    assert_eq!(state.memory().page_permissions(base >> 12), None);
+    assert_eq!(state.memory().page_permissions(0), None);
+}
+
+#[test]
+fn addr_zero_region_ending_exactly_at_top_of_address_space_also_refuses() {
+    // Companion to the case above where the *end* is already unrepresentable:
+    // `candidate + length == 2^64`. The old code wrapped that to 0, took the
+    // page-aligned branch, and set `mmap_base = 0` — same corruption without
+    // ever touching the align-up term. The mapping itself is legal, but there
+    // is no next base to record, so the whole request goes to Python.
+    let h = NativeMmapSyscall;
+    let mut state = fresh_state();
+    let base = 0xFFFF_FFFF_FFFF_F000_u64;
+    state.set_mmap_base(base);
+
+    let err = h
+        .call(&mut state, &args(0, 0x1000, 0x3, ANON_PRIVATE, ANON_FD, 0))
+        .expect_err("a next base at exactly 2^64 must fall back, not wrap to 0");
+    assert!(
+        format!("{err:?}").contains("unrepresentable"),
+        "unexpected error: {err:?}"
+    );
+    assert_eq!(state.mmap_base(), base);
+    assert_eq!(state.memory().page_permissions(base >> 12), None);
+    assert_eq!(state.memory().page_permissions(0), None);
+}
+
+#[test]
+fn addr_zero_near_top_still_maps_when_next_base_is_representable() {
+    // Over-rejection guard: one page below the two refusals above, the next
+    // base *is* representable (it is exactly u64::MAX + 1 - 0x1000), so the
+    // allocation must still succeed natively and advance the cursor.
+    let h = NativeMmapSyscall;
+    let mut state = fresh_state();
+    let base = 0xFFFF_FFFF_FFFF_E000_u64;
+    state.set_mmap_base(base);
+
+    let outcome = h
+        .call(&mut state, &args(0, 0x1000, 0x3, ANON_PRIVATE, ANON_FD, 0))
+        .expect("a representable next base must still map natively");
+    match outcome {
+        SyscallOutcome::Continue { ret } => assert_eq!(ret, base),
+        other => panic!("expected Continue, got {other:?}"),
+    }
+    assert_eq!(state.mmap_base(), 0xFFFF_FFFF_FFFF_F000);
+    assert_eq!(
+        state.memory().page_permissions(base >> 12),
+        Some(Permission::RW),
+    );
+}
+
+/// addr=0 mirror of the MAP_FIXED boundary sweep below: over the shared
+/// `test_boundary_values` table used as `mmap_base`, the native path must
+/// refuse exactly when the aligned-up next base is unrepresentable, and must
+/// never leave `mmap_base` below where it started (the wraparound signature).
+#[test]
+fn addr_zero_boundary_sweep_refuses_exactly_the_unrepresentable_next_bases() {
+    let h = NativeMmapSyscall;
+    const LEN: u64 = 0x1800; // misaligned, so the align-up term is exercised
+    for &raw in &crate::test_boundary_values::boundary_addresses() {
+        let base = raw & !0xFFFu64; // page-align down
+        let mut state = fresh_state();
+        state.set_mmap_base(base);
+        let want_refusal = base
+            .checked_add(LEN)
+            .and_then(|end| (end & !0xFFFu64).checked_add(0x1000))
+            .is_none();
+
+        let result = h.call(&mut state, &args(0, LEN, 0x3, ANON_PRIVATE, ANON_FD, 0));
+        if want_refusal {
+            assert!(
+                result.is_err(),
+                "base={base:#x}: unrepresentable next base must fall back"
+            );
+            assert_eq!(
+                state.mmap_base(),
+                base,
+                "base={base:#x}: refusal must leave the cursor untouched"
+            );
+        } else {
+            result.expect("representable next base must map natively");
+            assert!(
+                state.mmap_base() > base,
+                "base={base:#x}: cursor went backwards to {:#x} — wraparound",
+                state.mmap_base()
+            );
+        }
+    }
+}
+
 /// Harness 6 boundary sweep for angr-03vl4.68: every page-aligned candidate
 /// in the shared `test_boundary_values` table — not just the two hand-picked
 /// targets above — must be rejected as `-1` (EINVAL) exactly when

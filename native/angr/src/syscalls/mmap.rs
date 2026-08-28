@@ -212,6 +212,44 @@ fn do_mmap(
         )));
     }
 
+    // Bump mmap_base on addr=0 (kernel chooses): align next base up
+    // to the next page if the chosen region didn't end on a page
+    // boundary. Mirrors mmap.allocate_memory in Python.
+    //
+    // Computed *before* the map so the refusal below leaves the state
+    // untouched. `candidate` is `mmap_base`, which nothing clamps
+    // (`RustSimState::set_mmap_base`, and every snapshot/fork/merge path that
+    // carries it), so the region can end inside — or exactly at the top of —
+    // the final page, and there is then no representable next base. The bare
+    // `+` this replaces wrapped `mmap_base` to near-zero under the shipped
+    // release profile, which aliases the next addr=0 allocation onto already
+    // mapped memory; an allocator cursor is an identity, so refuse rather
+    // than saturate (bd `invariant-overflow-fix-refuse-not-saturate-identities`)
+    // and let Python's `allocate_memory` own the exhausted-address-space case
+    // (angr-5mnx3.53). The `is_fixed` sibling guard above cannot cover this:
+    // it only runs on the MAP_FIXED branch, and its `length - 1` bound admits
+    // a region whose *end* is unrepresentable.
+    let next_mmap_base = if addr == 0 {
+        let aligned = candidate.checked_add(length).and_then(|end| {
+            if end & PAGE_MASK != 0 {
+                (end & !PAGE_MASK).checked_add(PAGE_SIZE)
+            } else {
+                Some(end)
+            }
+        });
+        match aligned {
+            Some(base) => Some(base),
+            None => {
+                return Err(SyscallError::Other(format!(
+                    "mmap: next mmap_base past {candidate:#x}+{length:#x} \
+                     is unrepresentable — fall back",
+                )));
+            }
+        }
+    } else {
+        None
+    };
+
     // MAP_FIXED with collision: atomically unmap the colliding range.
     // `unmap` is page-granular and tolerates unmapped pages within
     // the range (it just removes whatever is there), so it's safe to
@@ -223,17 +261,8 @@ fn do_mmap(
     }
     state.memory_mut().map(candidate, length, perm);
 
-    // Bump mmap_base on addr=0 (kernel chooses): align next base up
-    // to the next page if the chosen region didn't end on a page
-    // boundary. Mirrors mmap.allocate_memory in Python.
-    if addr == 0 {
-        let new_base = candidate.wrapping_add(length);
-        let aligned = if new_base & PAGE_MASK != 0 {
-            (new_base & !PAGE_MASK) + PAGE_SIZE
-        } else {
-            new_base
-        };
-        state.set_mmap_base(aligned);
+    if let Some(base) = next_mmap_base {
+        state.set_mmap_base(base);
     }
 
     Ok(SyscallOutcome::Continue { ret: candidate })

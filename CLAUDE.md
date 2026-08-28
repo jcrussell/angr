@@ -231,7 +231,11 @@ address/size/offset/count-shaped, in
 arithmetic family kept recurring, and the `AddrOrSymbolic` newtype only closed
 the `.unwrap_or(0)` half of it).
 Every safe spelling is a *method call*, so no exclusion list for already-fixed
-sites is needed — the operator scan simply never matches them. Exempt a site
+sites is needed — the operator scan simply never matches them. Its operand
+grammar sees through **one** level of parenthesization (`(base & !PAGE_MASK)
++ PAGE_SIZE`), but not a call's argument list — `do_mmap`'s addr=0 align-up
+overflow evaded the gate for a full round because the character before its
+`+` was a `)` (bd `angr-5mnx3.53`). Exempt a site
 that only looks address-shaped with an `overflow-ok: <why>` comment on the
 flagged line or **either of the two lines above** — note that for a multi-line
 expression the flagged line is the *continuation* carrying the operator, not

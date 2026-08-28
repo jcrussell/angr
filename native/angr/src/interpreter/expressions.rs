@@ -236,6 +236,8 @@ impl<'a> VEXInterpreter<'a> {
                 // overflow-ok: the `s_addr > addr` continue above proves
                 // `s_addr <= addr`, and `load_hi <= s_hi` bounds the extract.
                 let off_bits = (addr - s_addr) * 8;
+                // overflow-ok: `load_hi <= s_hi` bounds `off_bits + size * 8`
+                // by `bv.width()`, and `size >= 1` keeps the `- 1` in range.
                 let hi_bit = (off_bits + (size as u64) * 8 - 1) as u32;
                 return Some(bv.extract(hi_bit, off_bits as u32, self.ctx));
             }
