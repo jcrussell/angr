@@ -70,8 +70,9 @@ macro_rules! width_binop {
 /// This struct provides methods to execute VEX operations on `RustBV` values.
 pub struct VEXOps;
 
-/// Per-lane shift kind for `vec_shift_vec` (the shift-by-vector dispatch
-/// shared by `VShl`, `VShr`, and `VSar`).
+/// Per-lane shift kind, shared by both vector-shift dispatchers in
+/// `ops/vec_shift.rs`: `vec_shift_n` (by immediate — `VShlN`, `VShrN`,
+/// `VSarN`) and `vec_shift_vec` (by vector — `VShl`, `VShr`, `VSar`).
 #[derive(Copy, Clone, Debug)]
 enum VecShiftKind {
     /// Logical left shift (Z3 `bvshl`); `Iop_Shl` / `Iop_Sal`.
@@ -765,9 +766,15 @@ impl VEXOps {
             IROp::VInterleaveHI { elem, .. } => Self::vec_interleave_hi(left, right, elem, ctx),
 
             // Vector shifts by immediate.
-            IROp::VShlN { elem, count } => Self::vec_shl_n(left, right, elem, count, ctx),
-            IROp::VShrN { elem, count } => Self::vec_shr_n(left, right, elem, count, ctx),
-            IROp::VSarN { elem, count } => Self::vec_sar_n(left, right, elem, count, ctx),
+            IROp::VShlN { elem, count } => {
+                Self::vec_shift_n(left, right, elem, count, VecShiftKind::Shl, ctx)
+            }
+            IROp::VShrN { elem, count } => {
+                Self::vec_shift_n(left, right, elem, count, VecShiftKind::Shr, ctx)
+            }
+            IROp::VSarN { elem, count } => {
+                Self::vec_shift_n(left, right, elem, count, VecShiftKind::Sar, ctx)
+            }
 
             // Vector shifts by vector (per-lane shift count).
             IROp::VShl { elem, count } => {

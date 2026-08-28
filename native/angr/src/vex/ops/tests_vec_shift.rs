@@ -492,8 +492,9 @@ fn test_parse_vshift_routing() {
 
 // angr-qwyti.17 — sign-fill mask overflow guard for arithmetic vector shifts.
 //
-// `sar_fill_mask` feeds the negative-lane branch of the concrete `vec_sar_n`
-// and `vec_shift_vec` (`Sar`) fast paths. `elem_width - shift` reaches
+// `sar_fill_mask` feeds the negative-lane branch of `shift_lane_u128`, the
+// concrete per-lane core both `vec_shift_n` and `vec_shift_vec` shift through
+// under `VecShiftKind::Sar`. `elem_width - shift` reaches
 // `elem_width`, so a 128-bit lane with `shift == 0` would left-shift a u128 by
 // 128 — a panic under panic=abort. These tests pin the guard AND prove the
 // reachable `< 128` widths still match the naive formula (behavior-preserving).

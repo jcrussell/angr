@@ -13,7 +13,12 @@
 //! saturation helpers, and the scalar shift normaliser
 //! (`normalize_shift_amount`) stays with the scalar shift dispatch.
 //!
-//! The concrete fast paths in `vec_shl_n` / `vec_shr_n` / `vec_sar_n` are
+//! Both entry points — `vec_shift_n` (by immediate) and `vec_shift_vec` (by
+//! vector) — take the same `VecShiftKind` and share their per-lane cores,
+//! `shift_lane_u128` and `shift_lane_sym`; they differ only in where the count
+//! for a lane comes from.
+//!
+//! The concrete fast paths in `vec_shift_n` / `vec_shift_vec` are
 //! gated on `total_width <= 128`, matching `vec_int_lane_op`. A `RustBV`
 //! stores concrete values in a `u128` (see `RustBV::concrete`), so a wider
 //! vector can only arrive as an expression; folding one anyway would shift a
@@ -26,18 +31,30 @@ use crate::symbolic::{RustBV, SymContext};
 use crate::vex::ir::IRType;
 
 impl VEXOps {
-    /// Vector shift left by immediate.
-    pub(super) fn vec_shl_n(
+    /// Vector shift by *immediate*: every lane shifted by the same scalar
+    /// `shift_amt`, under `kind`. Maps to `Iop_ShlN{N}x{M}` (shl),
+    /// `Iop_ShrN{N}x{M}` (lshr) and `Iop_SarN{N}x{M}` (ashr).
+    ///
+    /// The shift-by-vector sibling is `vec_shift_vec`; the two share both
+    /// per-lane cores (`shift_lane_u128` concrete, `shift_lane_sym` symbolic)
+    /// and differ only in where the count comes from — one scalar broadcast
+    /// to every lane here, one count decoded per lane there. Broadcasting the
+    /// scalar and calling `vec_shift_vec` outright would cost the
+    /// `shift >= elem_width` whole-vector fold below, which needs no
+    /// concrete vector, plus a `count`-wide Concat of the amount on the
+    /// symbolic path.
+    pub(super) fn vec_shift_n(
         vec: RustBV,
         shift_amt: RustBV,
         elem: IRType,
         count: u8,
+        kind: VecShiftKind,
         ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         let elem_width = elem.bits();
         let total_width = elem_width * count as u32;
 
-        Self::require_operand_width("vec_shl_n vec", vec.width(), total_width)?;
+        Self::require_operand_width("vec_shift_n vec", vec.width(), total_width)?;
 
         // Concrete shift amount: keep the existing fast paths.
         if total_width <= 128
@@ -45,18 +62,30 @@ impl VEXOps {
         {
             let shift = s as u32;
 
-            if shift >= elem_width {
+            // An out-of-range count zeroes every lane of a shl/shr whatever
+            // the vector holds, so fold the whole vector without needing it
+            // concrete. `Sar` has no such shortcut: its out-of-range result
+            // is the per-lane sign fill.
+            if shift >= elem_width && !matches!(kind, VecShiftKind::Sar) {
                 return Ok(RustBV::concrete(0, total_width));
             }
 
             if let Some(v) = vec.as_u128() {
                 let mut result: u128 = 0;
                 let elem_mask = Self::low_bit_mask_u128(elem_width);
+                let sign_bit = 1u128 << (elem_width - 1);
 
                 for i in 0..count {
                     let lo = (i as u32) * elem_width;
                     let elem_val = (v >> lo) & elem_mask;
-                    let shifted = (elem_val << shift) & elem_mask;
+                    let shifted = Self::shift_lane_u128(
+                        elem_val,
+                        shift as u128,
+                        elem_mask,
+                        sign_bit,
+                        elem_width,
+                        kind,
+                    );
                     result |= shifted << lo;
                 }
 
@@ -65,19 +94,89 @@ impl VEXOps {
         }
 
         // Symbolic shift amount (or symbolic vector with concrete shift):
-        // resize the count to the lane width and apply per-lane.  Z3 bvshl
-        // returns 0 when the shift count is >= the operand width, matching
-        // the concrete semantics above.
+        // resize the count to the lane width and apply per-lane.  Z3
+        // bvshl/bvlshr/bvashr handle a count >= the operand width the same way
+        // the concrete semantics above do (0 for shl/shr, sign-fill for sar).
         let resized_shift = Self::resize_vec_shift_amount(shift_amt, elem_width, ctx)?;
         let mut elements: Vec<RustBV> = Vec::with_capacity(count as usize);
         for i in 0..count {
             let lo = (i as u32) * elem_width;
             let hi = lo + elem_width - 1;
             let elem_val = vec.extract(hi, lo, ctx);
-            let shifted = elem_val.shl_into(resized_shift.clone(), ctx);
-            elements.push(shifted);
+            elements.push(Self::shift_lane_sym(
+                elem_val,
+                resized_shift.clone(),
+                kind,
+                ctx,
+            ));
         }
         Ok(Self::concat_le_elements(elements, ctx))
+    }
+
+    /// One lane of a concrete vector shift: `a` (already masked to
+    /// `elem_mask`) shifted by `amt` under `kind`, returned masked to the
+    /// lane. `sign_bit` is `1 << (elem_width - 1)`.
+    ///
+    /// Shared by both concrete fast paths — `vec_shift_n` passes the one
+    /// broadcast count, `vec_shift_vec` the count it decoded for this lane —
+    /// so the out-of-range rules (0 for shl/shr, all-sign for sar) have a
+    /// single definition. `amt` stays a `u128` because `vec_shift_vec`'s
+    /// per-lane count is masked to a lane up to 128 bits wide; the
+    /// `amt as u32` narrowing for `sar_fill_mask` is guarded by the
+    /// `amt >= elem_width` arm above it.
+    #[inline]
+    fn shift_lane_u128(
+        a: u128,
+        amt: u128,
+        elem_mask: u128,
+        sign_bit: u128,
+        elem_width: u32,
+        kind: VecShiftKind,
+    ) -> u128 {
+        match kind {
+            VecShiftKind::Shl => {
+                if amt >= elem_width as u128 {
+                    0
+                } else {
+                    (a << amt) & elem_mask
+                }
+            }
+            VecShiftKind::Shr => {
+                if amt >= elem_width as u128 {
+                    0
+                } else {
+                    a >> amt
+                }
+            }
+            VecShiftKind::Sar => {
+                let neg = a & sign_bit != 0;
+                if amt >= elem_width as u128 {
+                    // Shift >= width: result is all sign bits.
+                    if neg { elem_mask } else { 0 }
+                } else if neg {
+                    // Negative: shift and fill with 1s.
+                    let shifted_val = a >> amt;
+                    let fill_mask = Self::sar_fill_mask(elem_mask, elem_width, amt as u32);
+                    (shifted_val | fill_mask) & elem_mask
+                } else {
+                    // Positive: simple logical shift.
+                    a >> amt
+                }
+            }
+        }
+    }
+
+    /// One lane of a symbolic vector shift: the Z3 counterpart of
+    /// `shift_lane_u128`, shared by both symbolic fallbacks. `amt` must
+    /// already be lane-width (`resize_vec_shift_amount` for the by-immediate
+    /// path, an `extract` for the by-vector one).
+    #[inline]
+    fn shift_lane_sym(a: RustBV, amt: RustBV, kind: VecShiftKind, ctx: &SymContext) -> RustBV {
+        match kind {
+            VecShiftKind::Shl => a.shl_into(amt, ctx),
+            VecShiftKind::Shr => a.lshr_into(amt, ctx),
+            VecShiftKind::Sar => a.ashr_into(amt, ctx),
+        }
     }
 
     /// Sign-fill mask for an arithmetic right shift of an `elem_width`-bit lane
@@ -120,125 +219,6 @@ impl VEXOps {
                 "vector shift amount wider than lane".to_string(),
             )),
         }
-    }
-
-    /// Vector shift right logical by immediate.
-    pub(super) fn vec_shr_n(
-        vec: RustBV,
-        shift_amt: RustBV,
-        elem: IRType,
-        count: u8,
-        ctx: &SymContext,
-    ) -> Result<RustBV, OpError> {
-        let elem_width = elem.bits();
-        let total_width = elem_width * count as u32;
-
-        Self::require_operand_width("vec_shr_n vec", vec.width(), total_width)?;
-
-        if total_width <= 128
-            && let Some(s) = shift_amt.as_u128()
-        {
-            let shift = s as u32;
-
-            if shift >= elem_width {
-                return Ok(RustBV::concrete(0, total_width));
-            }
-
-            if let Some(v) = vec.as_u128() {
-                let mut result: u128 = 0;
-                let elem_mask = Self::low_bit_mask_u128(elem_width);
-
-                for i in 0..count {
-                    let lo = (i as u32) * elem_width;
-                    let elem_val = (v >> lo) & elem_mask;
-                    let shifted = elem_val >> shift;
-                    result |= shifted << lo;
-                }
-
-                return Ok(RustBV::concrete(result, total_width));
-            }
-        }
-
-        let resized_shift = Self::resize_vec_shift_amount(shift_amt, elem_width, ctx)?;
-        let mut elements: Vec<RustBV> = Vec::with_capacity(count as usize);
-        for i in 0..count {
-            let lo = (i as u32) * elem_width;
-            let hi = lo + elem_width - 1;
-            let elem_val = vec.extract(hi, lo, ctx);
-            let shifted = elem_val.lshr_into(resized_shift.clone(), ctx);
-            elements.push(shifted);
-        }
-        Ok(Self::concat_le_elements(elements, ctx))
-    }
-
-    /// Vector shift right arithmetic by immediate.
-    pub(super) fn vec_sar_n(
-        vec: RustBV,
-        shift_amt: RustBV,
-        elem: IRType,
-        count: u8,
-        ctx: &SymContext,
-    ) -> Result<RustBV, OpError> {
-        let elem_width = elem.bits();
-        let total_width = elem_width * count as u32;
-
-        Self::require_operand_width("vec_sar_n vec", vec.width(), total_width)?;
-
-        if total_width <= 128
-            && let Some(s) = shift_amt.as_u128()
-        {
-            let shift = s as u32;
-
-            if let Some(v) = vec.as_u128() {
-                let mut result: u128 = 0;
-                let elem_mask = Self::low_bit_mask_u128(elem_width);
-                let sign_bit = 1u128 << (elem_width - 1);
-
-                for i in 0..count {
-                    let lo = (i as u32) * elem_width;
-                    let elem_val = (v >> lo) & elem_mask;
-
-                    // Arithmetic shift - preserve sign
-                    let shifted = if shift >= elem_width {
-                        // Shift >= width: result is all sign bits
-                        if elem_val & sign_bit != 0 {
-                            elem_mask // All 1s
-                        } else {
-                            0 // All 0s
-                        }
-                    } else {
-                        // Check if negative (sign bit set)
-                        if elem_val & sign_bit != 0 {
-                            // Negative: shift and fill with 1s
-                            let shifted_val = elem_val >> shift;
-                            let fill_mask = Self::sar_fill_mask(elem_mask, elem_width, shift);
-                            (shifted_val | fill_mask) & elem_mask
-                        } else {
-                            // Positive: simple logical shift
-                            elem_val >> shift
-                        }
-                    };
-
-                    result |= shifted << lo;
-                }
-
-                return Ok(RustBV::concrete(result, total_width));
-            }
-        }
-
-        // Symbolic shift amount (or symbolic vector with concrete shift):
-        // Z3 bvashr replicates the sign bit when the shift count is >= the
-        // operand width, matching the concrete sign-fill semantics above.
-        let resized_shift = Self::resize_vec_shift_amount(shift_amt, elem_width, ctx)?;
-        let mut elements: Vec<RustBV> = Vec::with_capacity(count as usize);
-        for i in 0..count {
-            let lo = (i as u32) * elem_width;
-            let hi = lo + elem_width - 1;
-            let elem_val = vec.extract(hi, lo, ctx);
-            let shifted = elem_val.ashr_into(resized_shift.clone(), ctx);
-            elements.push(shifted);
-        }
-        Ok(Self::concat_le_elements(elements, ctx))
     }
 
     /// NEON vector shift by *vector*: lane `i` of result = `lane_a[i] OP lane_b[i]`
@@ -304,36 +284,9 @@ impl VEXOps {
                 // operand width collapses to 0 or sign-fill).
                 let amt = (s >> lo) & elem_mask;
 
-                let shifted: u128 = match kind {
-                    VecShiftKind::Shl => {
-                        if amt >= elem_width as u128 {
-                            0
-                        } else {
-                            (a << amt) & elem_mask
-                        }
-                    }
-                    VecShiftKind::Shr => {
-                        if amt >= elem_width as u128 {
-                            0
-                        } else {
-                            a >> amt
-                        }
-                    }
-                    VecShiftKind::Sar => {
-                        let neg = a & sign_bit != 0;
-                        if amt >= elem_width as u128 {
-                            if neg { elem_mask } else { 0 }
-                        } else if neg {
-                            let shifted_val = a >> amt;
-                            let fill_mask = Self::sar_fill_mask(elem_mask, elem_width, amt as u32);
-                            (shifted_val | fill_mask) & elem_mask
-                        } else {
-                            a >> amt
-                        }
-                    }
-                };
+                let shifted = Self::shift_lane_u128(a, amt, elem_mask, sign_bit, elem_width, kind);
 
-                result |= (shifted & elem_mask) << lo;
+                result |= shifted << lo;
             }
             return Ok(RustBV::concrete(result, total_width));
         }
@@ -347,12 +300,7 @@ impl VEXOps {
             let hi = lo + elem_width - 1;
             let a = vec.extract(hi, lo, ctx);
             let b = amts.extract(hi, lo, ctx);
-            let shifted = match kind {
-                VecShiftKind::Shl => a.shl_into(b, ctx),
-                VecShiftKind::Shr => a.lshr_into(b, ctx),
-                VecShiftKind::Sar => a.ashr_into(b, ctx),
-            };
-            elements.push(shifted);
+            elements.push(Self::shift_lane_sym(a, b, kind, ctx));
         }
         Ok(Self::concat_le_elements(elements, ctx))
     }
