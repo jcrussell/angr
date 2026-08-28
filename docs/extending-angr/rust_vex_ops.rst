@@ -690,8 +690,9 @@ concrete ``IROp`` variant, so dispatch surfaces
 This subsection covers a categorically different and quieter gap —
 opcodes that **do** parse to a concrete ``IROp`` variant but have **no
 dispatch arm** in ``ops/mod.rs``. They fall through the per-family
-sub-router to its catch-all (``OpError::NotBinary`` /
-``NotUnary`` / ``NotTernary`` / ``NotQuaternary``), and
+sub-router to its catch-all (``OpError::NotUnary`` /
+``NotBinary`` / ``NotQuaternary`` — there is no ``NotTernary``,
+matching the absence of a ``triop`` entry point), and
 ``interpreter/expressions.rs`` (``eval_unop`` / ``eval_binop``) then
 splits on operand concreteness:
 
