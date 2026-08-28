@@ -1,6 +1,7 @@
 //! Tests for the memcmp SimProcedure (extracted from memcmp.rs).
 use super::*;
 use crate::memory::Permission;
+use crate::symbolic::RustBV;
 use crate::procedures::NativeSimProcedure;
 use crate::state::RustSimState;
 

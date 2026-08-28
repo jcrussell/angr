@@ -10,9 +10,7 @@
 //! - Symbolic bytes produce a 32-bit ITE chain via `compare_bytes` shared
 //!   with strcmp/strncmp (with stop_at_null=false).
 
-use super::check_max;
-use super::strcmp::{MAX_STRCMP_LEN, compare_bytes};
-use crate::symbolic::RustBV;
+use super::strcmp::compare_bytes;
 
 crate::declare_proc! {
     /// Native memcmp: `int memcmp(const void *s1, const void *s2, size_t n)`.
@@ -22,10 +20,7 @@ crate::declare_proc! {
     struct = NativeMemcmp,
     args = [s1: concrete, s2: concrete, n: concrete],
     call |state| {
-        if n == 0 {
-            return Ok(Some(RustBV::zero(32)));
-        }
-        check_max(n, MAX_STRCMP_LEN)?;
+        // n == 0 and the MAX_STRCMP_LEN cap are both handled by compare_bytes.
         compare_bytes(state, s1, s2, n,
                       /*stop_at_null=*/false, /*case_insensitive=*/false)
     }
