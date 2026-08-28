@@ -1018,6 +1018,71 @@ fn test_session_reinject_across_callback_gap() {
     assert_eq!(stats.resume_reinjects, 1, "exactly one resume re-inject");
 }
 
+// angr-5mnx3.22: `PersistentPool::wake_worker`'s out-of-range guard. A ping
+// addressed past the end of `job_txs` is a silent no-op — it neither panics
+// nor wakes anybody (a woken worker would re-park and emit a second
+// `Quiesced`), and the pool still delivers in-range pings afterwards.
+#[test]
+fn test_wake_worker_out_of_range_id_is_noop() {
+    const DEPTH: u64 = 3; // 8 leaves per tree
+    const WITNESS_A: u64 = 0xC0C0;
+    const WITNESS_B: u64 = 0xD0D0;
+    const WORKERS: usize = 2;
+    let main_ctx = Context::thread_local();
+
+    let pool = PersistentPool::new(WORKERS);
+    let (session, up_rx) = RunSession::new(Box::new(fork_tree_process(DEPTH)));
+
+    let mut root_a = pinned_state("oor_a", WITNESS_A);
+    root_a.set_register("rbx", RustBV::concrete(0, 64));
+    session.inject_seeds(vec![root_a.detach_for_migration()]);
+    pool.start_session(&session);
+
+    let (first, _, quiesced) = collect_until_parked(&up_rx, WORKERS);
+    assert_eq!(quiesced, WORKERS, "all workers park on quiescence");
+    assert_eq!(first.len(), 1usize << DEPTH);
+
+    // Every worker is parked and a payload is waiting. Ping one past the end,
+    // well past the end, and the saturated id: all three miss `job_txs.get`,
+    // so no `Run` is sent and the pool stays silent.
+    let mut root_b = pinned_state("oor_b", WITNESS_B);
+    root_b.set_register("rbx", RustBV::concrete(0, 64));
+    session.inject_resumed(vec![root_b.detach_for_migration()]);
+    for worker_id in [WORKERS, WORKERS + 7, usize::MAX] {
+        pool.wake_worker(worker_id, &session);
+    }
+    assert!(
+        up_rx.recv_timeout(Duration::from_millis(250)).is_err(),
+        "an out-of-range wake must not reach any worker",
+    );
+    assert_eq!(
+        session.pending(),
+        1,
+        "the re-injected payload is still waiting — nobody was woken to take it",
+    );
+
+    // Same session, same payload, in-range ids: work flows again, which proves
+    // the missed pings left the transport untouched.
+    for worker_id in 0..WORKERS {
+        pool.wake_worker(worker_id, &session);
+    }
+    let (second, _, quiesced2) = collect_until_parked(&up_rx, WORKERS);
+    assert_eq!(quiesced2, WORKERS, "workers re-park after the second tree");
+    assert_eq!(second.len(), 1usize << DEPTH, "second tree fully drained");
+    assert_eq!(session.pending(), 0);
+
+    let witnesses: BTreeSet<u128> = second
+        .into_iter()
+        .map(|p| {
+            let s = p.reattach(&main_ctx).expect("reattach");
+            let rax = s.get_register("rax").expect("rax");
+            s.solver().borrow().eval(&rax).expect("concretizable")
+        })
+        .collect();
+    assert_eq!(witnesses, BTreeSet::from([WITNESS_B as u128]));
+    assert_eq!(session.stats().resume_reinjects, 1);
+}
+
 // angr-nkoct Phase B: cancel/finalize drains the residual frontier instead
 // of dropping it (the steady-state fix for wave-mode Bug M1). A root fans
 // out WIDTH children; processing any child requests cancel, so whichever
