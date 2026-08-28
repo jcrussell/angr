@@ -42,7 +42,7 @@
 //! | `solving_ops.rs` | Slice 7: the read path — `is_sat`, branch feasibility, `eval*` / `eval_upto*`, extrema queries. |
 //! | `transaction_ops.rs` | Slice 10: solver scoping (`push` / `pop` / `try_pop`), timeout accessors, SAT-cache primer. |
 //! | `snapshot_fork_ops.rs` | Slice 11: lifecycle — `fork`, `merge`, `to_snapshot` / `restore_from_snapshot`. |
-//! | `lineage_ops.rs` | Slice 6: the accessors over the shared-lineage cells (`lineage`, `scope_path`, savepoints). |
+//! | `lineage_ops.rs` | Slice 6: the accessors over the shared-lineage cells (`lineage`, `scope_path`, savepoints). Not purely lineage-scoped: `fold_sharing_walk` reads the assumed-constraint log, and the savepoint push/pop pair records/truncates `local_constraints` — see the module doc. |
 //! | `solver_build.rs` | Slice 2: Z3 `Solver` construction and the per-check timing / sampling wrappers. Free functions, no `&self`. **(z3)** |
 //! | `parse.rs` | Slice 4: parsers turning Z3's hex / binary / decimal numeral strings into concrete values. **(z3)** |
 //! | `lineage.rs` | The shared-lineage solver itself (`SharedLineageSolver`) — one `z3::Solver` shared by a descendant set, with push/pop scope tracking. **(z3)** |

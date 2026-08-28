@@ -1,11 +1,25 @@
 //! Lineage / shared-solver `&self` methods for [`SymContext`].
 //!
-//! Slice 6 of the `symbolic/context.rs` split (angr-a2br.2.5). These are the
+//! Slice 6 of the `symbolic/context.rs` split (angr-a2br.2.5). These were the
 //! most field-isolated methods of the original monolithic `impl SymContext`
-//! block: they touch only the lineage cells (`lineage`, `scope_path`,
+//! block. The core of the slice is the lineage cells (`lineage`, `scope_path`,
 //! `scope_savepoints`, `use_shared_lineage_solver`, `bare_z3_push_depth`) —
 //! promoted to `pub(super)` so this sibling module can reach them — plus the
 //! `solver()` accessor (also `pub(super)`) on the savepoint push/pop path.
+//!
+//! Three methods reach **outside** those cells, into constraint-log state
+//! owned by `context.rs` / `constraint_ops.rs`. A change here can therefore
+//! break constraint bookkeeping, not just lineage bookkeeping:
+//!
+//! - [`SymContext::fold_sharing_walk`] calls `get_assumed_constraints()`
+//!   (`context.rs`), which reads `assumed_constraints_shared` and
+//!   `local_constraints`.
+//! - [`SymContext::scope_savepoint_push`] / [`SymContext::scope_savepoint_pop`]
+//!   record and replay `local_constraints` log lengths through
+//!   `bare_local_savepoints` (angr-ph300.41/.42), truncating
+//!   `local_constraints` on the pop side.
+//! - The test-only `local_z3_assertions_len` reads `local_constraints`.
+//!
 //! See bead angr-a2br.2.4 for the slice plan and
 //! `rust_z3_sharing.rst` for the fork/merge atomic-snapshot invariant that
 //! gates which methods stay in `context.rs`.
