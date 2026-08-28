@@ -1293,6 +1293,13 @@ mod inspect_test_entries_tests {
         inspect_test_entries_impl(item).to_string()
     }
 
+    /// How many `compile_error!` invocations the expansion carries — one per
+    /// diagnostic, so this distinguishes "both validations fired" from "one
+    /// fired and the other was swallowed".
+    fn count_compile_errors(out: &str) -> usize {
+        out.matches("compile_error").count()
+    }
+
     #[test]
     fn entry_name_drives_all_three_derived_names() {
         let out = expand(quote! {
@@ -1342,20 +1349,51 @@ mod inspect_test_entries_tests {
             fn fork(&self) -> PyResult<()> { Ok(()) }
         });
         assert!(out.contains("exactly once (found 0)"), "{out}");
+        assert_eq!(count_compile_errors(&out), 1, "{out}");
     }
 
     #[test]
     fn naming_a_dispatch_method_directly_is_rejected() {
         // The misroute the macro exists to prevent: `reg_read`'s entry calling
-        // the identically-typed `call_inspect_reg_write`.
+        // the identically-typed `call_inspect_reg_write`. The body still
+        // forwards exactly once, so `leaked` is the *only* validation that
+        // fires — the combined case is
+        // `both_diagnostics_fire_on_one_entry` below.
         let out = expand(quote! {
             Holder =>
-            fn reg_read(&self, w: &str) -> PyResult<()> { self.call_inspect_reg_write(w) }
+            fn reg_read(&self, w: &str) -> PyResult<()> {
+                self.call_inspect_reg_write(w)?;
+                self.forward(w)
+            }
         });
         assert!(
             out.contains("names a `call_inspect_*` method directly"),
             "{out}"
         );
+        assert_eq!(count_compile_errors(&out), 1, "{out}");
+    }
+
+    #[test]
+    fn both_diagnostics_fire_on_one_entry() {
+        // The two validations are independent and accumulated, not
+        // early-returned: a body that names a dispatch method directly *and*
+        // never forwards trips both. Collapsing them into one `return` would
+        // leave a contributor fixing one mistake, recompiling, and only then
+        // learning about the second — the regression
+        // `steady_guarded_both_misuses.rs` guards against for the sibling
+        // macro. `inspect_test_entries!` has no `tests/ui/` case of its own
+        // (its expansion needs `pyo3` in scope, which the macros crate does
+        // not depend on), so the count is asserted here instead.
+        let out = expand(quote! {
+            Holder =>
+            fn reg_read(&self, w: &str) -> PyResult<()> { self.call_inspect_reg_write(w) }
+        });
+        assert!(out.contains("exactly once (found 0)"), "{out}");
+        assert!(
+            out.contains("names a `call_inspect_*` method directly"),
+            "{out}"
+        );
+        assert_eq!(count_compile_errors(&out), 2, "{out}");
     }
 
     #[test]

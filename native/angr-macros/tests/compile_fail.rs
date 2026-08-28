@@ -21,6 +21,15 @@
 //! only rustc can confirm it renders both rather than truncating
 //! (angr-0jh0j.79).
 //!
+//! The two function-like macros -- `callback_setters_impl` and
+//! `inspect_test_entries_impl` -- are deliberately *not* covered here: their
+//! expansion emits a `#[::pyo3::pymethods]` block, so a `tests/ui/` case would
+//! need `pyo3` as a dev-dependency of this crate, built with features that do
+//! not unify with `rustylib`'s. Their diagnostics -- including
+//! `inspect_test_entries!`'s accumulate-don't-return pair -- are held by the
+//! `count_compile_errors` assertions in `inspect_test_entries_tests`
+//! (angr-0jh0j.85).
+//!
 //! The snapshots carry rustc's own rendering of the span, so they are
 //! toolchain-sensitive; that is safe here because `rust-toolchain.toml` pins
 //! the compiler. A snapshot diff immediately after a toolchain bump means
