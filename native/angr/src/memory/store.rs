@@ -847,7 +847,7 @@ impl SymbolicMemory {
     /// drive the Phase 1.2 load path.
     ///
     /// `#[cfg(test)] pub(crate)` (angr-c7xno.55): every call site lives in
-    /// `memory/tests/multi.rs`, and no pyo3/manager binding exposes it, so a
+    /// `memory/tests/multi/`, and no pyo3/manager binding exposes it, so a
     /// crate-external `pub` would overstate the supported API surface. The
     /// `cfg(test)` gate is what `pub(crate)` alone cannot express — the test
     /// submodules are themselves `cfg(test)` (see `test_submod!` in `lib.rs`),

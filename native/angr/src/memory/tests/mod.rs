@@ -18,8 +18,9 @@
 //!   `pending_writes` deferred-write lifecycle.
 //! - `symbolic_counters`: memory ITE depth, load/store volume,
 //!   concretization, lazy-page-fault and symbolic-address counters.
-//! - `multi`: `MultiPayload` data structure and Phase 1–4.2 multi-cell
-//!   collapse/coalesce behavior.
+//! - `multi`: `MultiPayload` data structure and the whole Phase 1–4.2
+//!   multi-cell install/collapse/cache/coalesce lifecycle, split further into
+//!   `payload`, `collapse`, `install`, `cache` and `coalesce` submodules.
 //! - `ite_dedup`: ITE deduplication on loads + address-disjunction hoisting.
 //! - `merge_cost_shape`: S5a measurement record for the merge cost-shape
 //!   question (spike; the optimization it recommended has since shipped).

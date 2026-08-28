@@ -530,7 +530,7 @@ impl SymbolicMemory {
 /// in count and per-position fingerprint originated from the same store path
 /// and can be safely coalesced into a single wider `symbolic_objects` entry.
 ///
-/// `pub(super)` only so `memory/tests/multi.rs`'s
+/// `pub(super)` only so `memory/tests/multi/coalesce.rs`'s
 /// `test_cond_fingerprint_distinguishes_op_on_shared_operands` can unit-test
 /// the op half of the key — no caller outside this module.
 pub(super) fn cond_fingerprint(bv: &RustBV) -> u64 {
