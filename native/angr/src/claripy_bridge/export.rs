@@ -34,7 +34,7 @@ use ast_helpers::{
 use width_decisions::{BoolCoercion, WidthFixup};
 
 use super::cache::{
-    evict_claripy_ast, get_claripy_ast, get_expression_ast_by_operands,
+    claripy_ast_guard_width, evict_claripy_ast, get_claripy_ast, get_expression_ast_by_operands,
     store_claripy_ast_with_info, store_expression_ast_by_operands,
 };
 
@@ -166,24 +166,15 @@ fn rustbv_to_claripy_memo(
     if let RustBV::Symbolic { id, width, .. } = bv
         && let Some(cached) = get_claripy_ast(*id)
     {
-        // C5 mirror (import.rs cache-hit guard): validate the cached AST's
-        // width matches the requested symbol width before returning it. An
-        // id-level aliasing bug (e.g. id:0 collisions, angr-owr37) could
-        // otherwise hand back a wrong-width AST silently. Bool ASTs have
-        // length=None and are represented as width-1, matching import.
-        //
-        // SILENT(cat-b): a `.length` read that *raises* is conflated with the
-        // legitimate `length is None` (Bool) case and also yields 1. The loss
-        // is bounded: a non-1 `*width` then takes the eviction path below and
-        // re-mints the symbol, dropping only the cached AST's identity and any
-        // annotations on it, never producing a wrong-width AST — which is the
-        // outcome this guard exists to prevent (angr-sqfj8.23).
-        let cached_width: u32 = cached
-            .bind(py)
-            .getattr("length")
-            .ok()
-            .and_then(|l| l.extract::<u32>().ok())
-            .unwrap_or(1);
+        // C5's registry-side analogue (see the invariant's text in `super`):
+        // validate the cached AST's width matches the requested symbol width
+        // before returning it. An id-level aliasing bug (e.g. id:0 collisions,
+        // angr-owr37) could otherwise hand back a wrong-width AST silently.
+        // `claripy_ast_guard_width` owns the Bool/unreadable-`length` fallback
+        // shared with the import-side guard; a mismatch takes the eviction
+        // path below and re-mints, dropping only the cached AST's identity and
+        // any annotations on it, never producing a wrong-width AST.
+        let cached_width: u32 = claripy_ast_guard_width(cached.bind(py));
         if cached_width == *width {
             // Validate cached value is a claripy AST, not an int
             let cached_valid = ensure_claripy_ast(py, &cached, claripy_mod, Some(*width))?;

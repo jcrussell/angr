@@ -214,6 +214,27 @@ pub(super) fn get_bv_by_ast_hash(ast_hash: i64) -> Option<RustBV> {
     tl_cache!(AST_CACHE, get(&ast_hash).cloned())
 }
 
+/// Width of a claripy AST as the cross-cache invariant C5 width guards read it.
+///
+/// Reads `ast.length`; a `Bool` AST has `length is None` and is reported as
+/// width 1, matching the RustBV bool representation. Shared by both C5 guards —
+/// the `AST_CACHE`-hit arm of `import::claripy_to_rustbv_depth` and the
+/// registry-hit arm of `export::rustbv_to_claripy_memo` — so the Bool-width
+/// convention has one definition to edit rather than two kept in lockstep
+/// (angr-5mnx3.12).
+///
+/// SILENT(cat-b): a `.length` read that *raises* is conflated with the
+/// legitimate `length is None` (Bool) case and also yields 1. The loss is
+/// bounded: a caller whose true width is not 1 then takes its own eviction
+/// path and reconverts (import) or re-mints (export), paying the cached
+/// conversion but never returning a wrong-width value (angr-sqfj8.23).
+pub(super) fn claripy_ast_guard_width(ast: &Bound<'_, PyAny>) -> u32 {
+    ast.getattr("length")
+        .ok()
+        .and_then(|l| l.extract::<u32>().ok())
+        .unwrap_or(1)
+}
+
 /// Drop a stale claripy-hash → `RustBV` entry, so the caller can reconvert and
 /// re-store. Used by the C5 width-mismatch guard on the import path.
 pub(super) fn evict_bv_by_ast_hash(ast_hash: i64) {

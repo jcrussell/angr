@@ -75,16 +75,27 @@
 //!   without that, allocator reuse of the raw pointer would produce a
 //!   wrong-AST return.
 //!
-//! - **C5. Width check is enforced ONLY on `AST_CACHE` hits.** Other
-//!   caches do not need it. `AST_CACHE` is keyed by claripy's
-//!   content-addressed `__hash__()`, which already encodes length, so
-//!   width-mismatched hits are extremely rare — but in the case of a
-//!   recycled hash slot a wrong-width return would silently corrupt
-//!   downstream VEX ops. The check at the use site
-//!   (`import::claripy_to_rustbv_depth`, the `AST_CACHE` hit arm) evicts
-//!   and reconverts on mismatch; Bool ASTs have `ast.length == None`
-//!   and are treated as width 1 (matches RustBV bool representation).
-//!   See `invariant-ast-cache-width-check`.
+//! - **C5. An `AST_CACHE` hit is width-checked before it is returned.**
+//!   `AST_CACHE` is keyed by claripy's content-addressed `__hash__()`,
+//!   which already encodes length, so width-mismatched hits are
+//!   extremely rare — but in the case of a recycled hash slot a
+//!   wrong-width return would silently corrupt downstream VEX ops. The
+//!   check at the use site (`import::claripy_to_rustbv_depth`, the
+//!   `AST_CACHE` hit arm) evicts and reconverts on mismatch; Bool ASTs
+//!   have `ast.length == None` and are treated as width 1 (matches
+//!   RustBV bool representation). See `invariant-ast-cache-width-check`.
+//!
+//!   `EXPRESSION_BY_OPERANDS_PTR` needs no such check: its key is an
+//!   operands `Arc` pointer whose `RustBV` value slot pins the `Arc`
+//!   alive (C4), so the key cannot be recycled under a live entry. The
+//!   `SymbolicIdentityRegistry` DOES need an analogous guard, for a
+//!   different reason — its `rust_id → AST` key can alias across symbols
+//!   (angr-owr37), not merely collide — so `export::rustbv_to_claripy_memo`
+//!   width-checks a registry hit against the requested symbol width and
+//!   evicts via `evict_claripy_ast` on mismatch. The two guards share the
+//!   Bool/unreadable-`length` fallback in `cache::claripy_ast_guard_width`;
+//!   they are deliberately separate call sites because their recovery
+//!   differs (reconvert vs re-mint).
 //!
 //! ## Python-side counterparts
 //!

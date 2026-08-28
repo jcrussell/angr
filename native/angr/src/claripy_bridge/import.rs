@@ -16,7 +16,7 @@ use crate::symbolic::{
 };
 
 use super::cache::{
-    evict_bv_by_ast_hash, get_bv_by_ast_hash, lookup_symbol_by_hash,
+    claripy_ast_guard_width, evict_bv_by_ast_hash, get_bv_by_ast_hash, lookup_symbol_by_hash,
     lookup_symbol_by_name_and_width, lookup_symbol_name_by_id, store_bv_by_ast_hash,
     store_claripy_ast_with_info, store_expression_ast_by_operands,
 };
@@ -216,19 +216,11 @@ fn claripy_to_rustbv_depth(
             // Defensive width check — claripy hashes are content-addressed and
             // already include length, so collisions are exceedingly rare, but
             // returning a wrong-width BV would silently corrupt downstream ops.
-            // Bool ASTs have length=None and we represent them as width-1 BVs.
-            //
-            // SILENT(cat-b): mirror of the export-side guard in
-            // `rustbv_to_claripy_memo` — a `.length` read that raises is
-            // conflated with the `length is None` (Bool) case and yields 1. A
-            // wider `cached_bv` then takes the eviction path below and is
-            // reconverted from scratch, costing the cached conversion but
-            // never returning a wrong-width BV (angr-sqfj8.23).
-            let expected_width: u32 = ast
-                .getattr("length")
-                .ok()
-                .and_then(|l| l.extract::<u32>().ok())
-                .unwrap_or(1);
+            // `claripy_ast_guard_width` owns the Bool/unreadable-`length`
+            // fallback shared with the export-side guard in
+            // `rustbv_to_claripy_memo`; a mismatch takes the eviction path
+            // below and is reconverted from scratch.
+            let expected_width: u32 = claripy_ast_guard_width(ast);
             if cached_bv.width() == expected_width {
                 crate::symbolic::record_claripy_ast_cache(true);
                 return Ok(cached_bv);
