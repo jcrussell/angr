@@ -51,7 +51,7 @@ impl FileSystem {
     )]
     pub fn register_file_content(&mut self, path: &str, bytes: Vec<RustBV>) {
         let norm = self.normalize_path(path);
-        Arc::make_mut(&mut self.known_paths).insert(norm.clone());
+        self.note_known_path(norm.clone());
         let stamp: Vec<u32> = self
             .fds
             .iter()
@@ -331,7 +331,12 @@ impl FileSystem {
     pub fn demote_path(&mut self, path: &str) -> bool {
         let norm = self.normalize_path(path);
         let changed = self.clear_key_state(&norm);
-        Arc::make_mut(&mut self.demoted_paths).insert(norm);
+        // Peek first (`arc-make-mut-cow`): re-demoting an already-demoted path
+        // is the documented re-add-correction case, and must leave the set
+        // shared with forked siblings rather than deep-clone it.
+        if !self.demoted_paths.contains(&norm) {
+            Arc::make_mut(&mut self.demoted_paths).insert(norm);
+        }
         changed
     }
 

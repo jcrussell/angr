@@ -92,8 +92,24 @@ impl FileSystem {
     /// returns 0.
     fn install_fd(&mut self, fd: u32, norm: String, mut desc: FileDescriptor) {
         desc.norm_name = Some(norm.clone());
-        Arc::make_mut(&mut self.known_paths).insert(norm);
+        self.note_known_path(norm);
         Arc::make_mut(&mut self.fds).insert(fd, desc);
+    }
+
+    /// Record `norm` (already normalized) in `known_paths`, peeking the read
+    /// path first so re-registering an already-known path is a no-op rather
+    /// than a deep clone of the set away from every forked sibling sharing it
+    /// — the `arc-make-mut-cow` invariant in the `state` module header.
+    /// `known_paths` is its own `Arc`, so the peek pays off even for callers
+    /// like [`install_fd`](Self::install_fd) that go on to mutate `fds`
+    /// unconditionally: re-opening a path this state already knows leaves the
+    /// set shared. Covered by `filesystem_tests.rs`'s `*_skips_cow_clone`
+    /// tests, which assert `Arc::ptr_eq` against a fork (contents alone
+    /// cannot distinguish a skipped clone from an equal one).
+    pub(super) fn note_known_path(&mut self, norm: String) {
+        if !self.known_paths.contains(&norm) {
+            Arc::make_mut(&mut self.known_paths).insert(norm);
+        }
     }
 
     /// Open a file descriptor with pre-loaded content (for file-backed
@@ -184,7 +200,7 @@ impl FileSystem {
         // Normalized at insertion (freezes cwd-at-registration) — see
         // `install_fd`, which does the same for the fd-allocating openers.
         let norm = self.normalize_path(&name);
-        Arc::make_mut(&mut self.known_paths).insert(norm);
+        self.note_known_path(norm);
     }
 
     /// Register a symlink: `link` resolves to `target` (raw bytes, as
@@ -194,6 +210,12 @@ impl FileSystem {
     /// symlinks are NOT auto-mirrored). Drives
     /// `NativeReadlinkSyscall` / `NativeReadlinkatSyscall`.
     pub fn add_symlink(&mut self, link: String, target: Vec<u8>) {
+        // Peek first (`arc-make-mut-cow`): re-adding an identical link must
+        // not deep-clone the map away from forked siblings. Overwriting with a
+        // *different* target is a real mutation and falls through.
+        if self.symlinks.get(&link).is_some_and(|t| *t == target) {
+            return;
+        }
         Arc::make_mut(&mut self.symlinks).insert(link, target);
     }
 

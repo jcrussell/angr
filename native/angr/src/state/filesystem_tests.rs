@@ -764,3 +764,119 @@ fn is_symbolic_only_for_symbolic_stream_open_fds() {
     assert!(!fs.is_symbolic(sym));
     assert!(!fs.is_symbolic(4242));
 }
+
+// ---------------------------------------------------------------------------
+// arc-make-mut-cow: peek-before-clone for the path-set collections
+// (angr-5mnx3.38). `Arc::ptr_eq` against a clone taken before the mutation is
+// the only observable that distinguishes "skipped the CoW clone" from "cloned
+// into an equal value" — asserting on the resulting contents would pass either
+// way, which is how these mutators drifted off the invariant unnoticed. See
+// `state/tests/cow_peek.rs` for the `RustSimState` half of the same rule.
+// ---------------------------------------------------------------------------
+
+/// Clone `fs` (the `FileSystem` half of a state fork), run `mutate`, and
+/// report whether the field selected by `field` still shares its allocation.
+fn shares_after<T: ?Sized>(
+    fs: &mut FileSystem,
+    field: impl Fn(&FileSystem) -> &Arc<T>,
+    mutate: impl FnOnce(&mut FileSystem),
+) -> bool {
+    let forked = fs.clone();
+    let before = Arc::clone(field(&forked));
+    mutate(fs);
+    Arc::ptr_eq(field(fs), &before)
+}
+
+#[test]
+fn register_known_path_noop_skips_cow_clone() {
+    let mut fs = FileSystem::default();
+    fs.register_known_path("/etc/passwd".to_string());
+
+    assert!(
+        shares_after(
+            &mut fs,
+            |f| &f.known_paths,
+            |f| f.register_known_path("/etc/passwd".to_string())
+        ),
+        "re-registering an already-known path must not deep-clone known_paths"
+    );
+    // A genuinely new path still mutates.
+    assert!(!shares_after(
+        &mut fs,
+        |f| &f.known_paths,
+        |f| f.register_known_path("/etc/shadow".to_string())
+    ));
+    assert!(fs.is_path_known("/etc/shadow"));
+}
+
+#[test]
+fn reopening_a_known_path_skips_known_paths_cow_clone() {
+    let mut fs = FileSystem::default();
+    let fd = fs
+        .open("/tmp/a".to_string(), FdFlags::ReadOnly)
+        .expect("fd space is not exhausted in tests");
+    fs.close(fd);
+
+    // `install_fd` always mutates `fds`, but `known_paths` is a separate Arc:
+    // re-opening a path this state already knows must leave the set shared.
+    assert!(
+        shares_after(&mut fs, |f| &f.known_paths, |f| {
+            f.open("/tmp/a".to_string(), FdFlags::ReadOnly)
+                .expect("fd space is not exhausted in tests");
+        }),
+        "re-opening an already-known path must not deep-clone known_paths"
+    );
+}
+
+#[test]
+fn add_symlink_noop_skips_cow_clone() {
+    let mut fs = FileSystem::default();
+    fs.add_symlink("/link".to_string(), b"/target".to_vec());
+
+    assert!(
+        shares_after(
+            &mut fs,
+            |f| &f.symlinks,
+            |f| f.add_symlink("/link".to_string(), b"/target".to_vec())
+        ),
+        "re-adding an identical symlink must not deep-clone the symlink map"
+    );
+    // Retargeting the same link is a real mutation.
+    assert!(!shares_after(
+        &mut fs,
+        |f| &f.symlinks,
+        |f| f.add_symlink("/link".to_string(), b"/other".to_vec())
+    ));
+    assert_eq!(fs.readlink_target("/link"), Some(&b"/other"[..]));
+}
+
+#[test]
+fn demote_path_noop_skips_cow_clone() {
+    let mut fs = FileSystem::default();
+    assert!(!fs.demote_path("/tmp/x"));
+
+    assert!(
+        shares_after(&mut fs, |f| &f.demoted_paths, |f| {
+            assert!(!f.demote_path("/tmp/x"));
+        }),
+        "re-demoting an already-demoted path must not deep-clone demoted_paths"
+    );
+    assert!(!shares_after(&mut fs, |f| &f.demoted_paths, |f| {
+        assert!(!f.demote_path("/tmp/y"));
+    }));
+}
+
+#[test]
+fn register_file_content_noop_skips_known_paths_cow_clone() {
+    let mut fs = FileSystem::default();
+    fs.register_file_content("/tmp/c", Vec::new());
+
+    // `file_contents` is re-inserted unconditionally (fresh bytes are a real
+    // mutation), but the `known_paths` half must stay shared on a re-register.
+    assert!(
+        shares_after(&mut fs, |f| &f.known_paths, |f| {
+            f.register_file_content("/tmp/c", Vec::new());
+        }),
+        "re-registering content for a known path must not deep-clone known_paths"
+    );
+}
