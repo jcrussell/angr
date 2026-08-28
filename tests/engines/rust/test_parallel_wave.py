@@ -1106,7 +1106,7 @@ def _run_pbounce_step_mode(project, workers, monkeypatch, steps=4096):
 class TestStepModeBudgetRoutesSerial:
     """angr-9ke6b.221: a ``run(n)`` budget below the worker count goes serial.
 
-    ``run_loop_parallel`` caps each wave at the call's remaining step budget
+    ``run_loop_parallel_wave`` caps each wave at the call's remaining step budget
     (angr-9ke6b.52). Under step mode that budget is 1, so a wave dispatched ~one
     state, tripped its ``CancelToken``, and drained the ENTIRE resident frontier
     back through serde to keep it resumable — ~one full-frontier detach+reattach

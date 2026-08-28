@@ -109,7 +109,7 @@ impl ParallelShared {
     /// The single construction site for a wave-scoped OR session-scoped
     /// `ParallelShared`: empty maps/counters, zeroed `stepped`, and the
     /// early-cancel hint seeded from the manager's current found count. Both
-    /// coordinators (`run_loop_parallel`'s per-wave rebuild and
+    /// coordinators (`run_loop_parallel_wave`'s per-wave rebuild and
     /// `ensure_steady_session`'s once-per-session build) go through here so a
     /// new field cannot be seeded in one and forgotten in the other
     /// (angr-ph300.12).

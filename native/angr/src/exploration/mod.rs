@@ -470,7 +470,7 @@ pub struct RustExplorationManager {
     /// `(bounce state, BounceKind, lineage root)`. Empty in single-threaded mode.
     pub(crate) pending_parallel_bounces: Vec<(RustSimState, self::core_outcome::BounceKind, u64)>,
     /// angr-vh834 Work Item 2: the persistent work-stealing worker pool. `None`
-    /// until the first parallel wave lazily spawns it (`run_loop_parallel`); the
+    /// until the first parallel wave lazily spawns it (`run_loop_parallel_wave`); the
     /// N long-lived worker threads each own a Z3 context for the pool's whole
     /// life, so subsequent waves pay no thread-spawn / context-creation tax. Only
     /// ever populated on the `parallel_real_workers >= 2` path; the pool's `Drop`

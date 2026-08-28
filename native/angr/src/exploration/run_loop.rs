@@ -168,7 +168,7 @@ impl RustExplorationManager {
                 if self.steady_state_eligible() {
                     return self.run_loop_parallel_steady(py, n);
                 }
-                return self.run_loop_parallel(py, n);
+                return self.run_loop_parallel_wave(py, n);
             }
         }
         #[cfg(not(feature = "vex-engine-z3"))]
@@ -226,7 +226,7 @@ impl RustExplorationManager {
 
     /// Retire a persistent worker pool whose size no longer matches what the
     /// next parallel run would ask for, so the lazy
-    /// `if self.parallel_pool.is_none()` creation in `run_loop_parallel` /
+    /// `if self.parallel_pool.is_none()` creation in `run_loop_parallel_wave` /
     /// `ensure_steady_session` rebuilds it at the new count.
     ///
     /// Without this, `set_parallel_workers(N)` was silently inert once a pool

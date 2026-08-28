@@ -199,7 +199,7 @@ fn set_parallel_workers_retires_a_pool_of_the_wrong_size() {
     Python::attach(|_py| {
         let mut mgr = RustExplorationManager::new("amd64", None).unwrap();
         mgr.set_parallel_workers(2);
-        // Stand in for the lazy creation in `run_loop_parallel` /
+        // Stand in for the lazy creation in `run_loop_parallel_wave` /
         // `ensure_steady_session`, which both build at `workers.max(2)`.
         mgr.parallel_pool = Some(crate::exploration::scheduler::PersistentPool::new(2));
 

@@ -637,7 +637,7 @@ If Option A is chosen, a staged rollout:
       post-step core (``run_post_step_core``/``CoreOutcome``), a GIL-free
       interpreter step (callbacks self-acquire via ``Python::attach``; the ``py``
       token removed from the step chain), and a live work-stealing wave loop
-      behind ``RUST_PARALLEL_WORKERS>=2`` (``run_loop_parallel``) that keeps
+      behind ``RUST_PARALLEL_WORKERS>=2`` (``run_loop_parallel_wave``) that keeps
       continue-states worker-local (f≈0), materializes only found terminals, and
       reports **real** ``SchedulerStats`` counters. ``workers<=1`` is byte-identical
       (untouched single-threaded path); ``workers=2`` reproduces the
@@ -709,7 +709,7 @@ If Option A is chosen, a staged rollout:
          workers=4 both timed out > 140s (>4x SLOWER). The warm cache was
          near-perfect (15 misses / 590k hits), so block-lifting is *not* the
          cost — the per-wave Z3-AST reattach of deep-constraint states is.
-         ``run_loop_parallel`` is still level-synchronous: every wave it drains
+         ``run_loop_parallel_wave`` is still level-synchronous: every wave it drains
          the entire ``STASH_ACTIVE`` into a shared ``Injector`` and workers
          ``reattach`` each state into their own context. The anti-migration
          scheduler (``angr-729vn``) keeps successors worker-local *within* a

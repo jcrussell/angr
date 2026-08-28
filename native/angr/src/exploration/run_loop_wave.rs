@@ -80,7 +80,7 @@ impl RustExplorationManager {
     // block comment below); clippy resolves `significant_drop_tightening` at
     // the item, so the allow lives here.
     #[allow(clippy::significant_drop_tightening)]
-    pub(crate) fn run_loop_parallel(
+    pub(crate) fn run_loop_parallel_wave(
         &mut self,
         py: Python<'_>,
         n: Option<u32>,
