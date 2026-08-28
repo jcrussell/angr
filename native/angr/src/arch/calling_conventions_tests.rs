@@ -127,6 +127,60 @@ fn test_pops_return_addr_per_arch() {
     assert!(!MipsN64.pops_return_addr());
 }
 
+/// The MIPS O32/N64 Linux syscall ABIs report failure in a *second* register
+/// (`$a3`) rather than encoding it in the return value, and
+/// `CcSnapshot::write_syscall_return` splits the two apart from this tuple.
+/// A drifted offset or threshold would silently mis-classify every MIPS
+/// syscall, so pin both halves — and pin that no other ABI claims one, since a
+/// spurious `Some` would rewrite successful returns as `-errno` on an arch
+/// whose kernel never sets a flag register.
+#[test]
+fn test_syscall_error_register_only_on_mips_and_names_a3() {
+    // Mirrors SimCC{O32,N64}LinuxSyscall.SYSCALL_ERRNO_START in
+    // angr/calling_conventions.py.
+    const MIPS_ERRNO_START: i64 = -1133;
+
+    assert_eq!(
+        MipsO32.syscall_error_register(),
+        Some((MIPS32.register_offset("a3").unwrap(), MIPS_ERRNO_START)),
+    );
+    assert_eq!(
+        MipsN64.syscall_error_register(),
+        Some((MIPS64.register_offset("a3").unwrap(), MIPS_ERRNO_START)),
+    );
+    // $a3 is R7 on both, but the MIPS64 register file has 8-byte slots, so the
+    // two offsets differ and neither tuple may be reused for the other arch.
+    assert_ne!(
+        MipsO32.syscall_error_register(),
+        MipsN64.syscall_error_register(),
+    );
+
+    for desc in ALL_ARCHES {
+        let arch = desc.name;
+        let cc = (desc.make_cc)();
+        let is_mips = arch == "MIPS32" || arch == "MIPS64";
+        match cc.syscall_error_register() {
+            None => assert!(
+                !is_mips,
+                "{arch}: the MIPS Linux syscall ABI must name its $a3 errno flag",
+            ),
+            Some((off, errno_start)) => {
+                assert!(
+                    is_mips,
+                    "{arch}: only MIPS splits the errno flag into a second register; \
+                     a spurious Some rewrites every large successful return as -errno",
+                );
+                assert_eq!(
+                    (desc.make_arch)().register_name(off),
+                    Some("a3"),
+                    "{arch}: syscall_error_register offset {off} must be $a3",
+                );
+                assert_eq!(errno_start, MIPS_ERRNO_START, "{arch}: errno threshold");
+            }
+        }
+    }
+}
+
 #[test]
 fn test_mips_n64_arg_registers() {
     // N64 widens the O32 four-register window to eight: $a0-$a7

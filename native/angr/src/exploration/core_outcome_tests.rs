@@ -1433,3 +1433,83 @@ fn segfault_message_mirrors_python_strict_page_access() {
         assert_eq!(segfault_message(&state, &err), None);
     }
 }
+
+/// MIPS O32/N64 report syscall failure in `$a3` rather than by returning a
+/// small negative value, so `CcSnapshot::write_syscall_return` must split a raw
+/// kernel return into a *positive* errno in `$v0` plus an all-ones flag in
+/// `$a3`, and must clear the flag on success. Nothing in the crate exercised
+/// the `syscall_error_register` tuple before this (angr-5mnx3.4); a drifted
+/// offset or threshold would have mis-classified every MIPS syscall silently.
+#[test]
+fn write_syscall_return_splits_errno_flag_into_a3_on_mips() {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|_py| {
+        for (arch, bits) in [("mips32", 32u32), ("mips64", 64u32)] {
+            let cc = RustExplorationManager::new(arch, None)
+                .unwrap()
+                .step_context()
+                .cc;
+            let (err_reg, errno_start) =
+                cc.syscall_error_register.expect("MIPS ABIs carry an $a3 flag");
+            let ret_reg = cc.return_register;
+            // get_register_by_offset's `size` is in bytes.
+            let bytes = bits / 8;
+            let all_ones = RustBV::ones(bits).as_u64();
+
+            let write = |ret: RustBV| {
+                let mut state = RustSimState::new(arch).unwrap();
+                cc.write_syscall_return(&mut state, ret_reg, ret);
+                (
+                    state.get_register_by_offset(ret_reg, bytes).as_u64(),
+                    state.get_register_by_offset(err_reg, bytes).as_u64(),
+                )
+            };
+
+            // Success: a small return is passed through and $a3 is cleared.
+            assert_eq!(
+                write(RustBV::concrete(5, bits)),
+                (Some(5), Some(0)),
+                "{arch}: successful return belongs in $v0 with $a3 clear",
+            );
+
+            // Failure: the kernel's -ENOENT surfaces as +2 with $a3 set.
+            assert_eq!(
+                write(RustBV::concrete(-2i64 as u128, bits)),
+                (Some(2), all_ones),
+                "{arch}: failure means +errno in $v0 and an all-ones $a3",
+            );
+
+            // `errno_start` itself is an error (the compare is `uge`)...
+            assert_eq!(
+                write(RustBV::concrete(errno_start as u128, bits)),
+                (Some(errno_start.unsigned_abs()), all_ones),
+                "{arch}: errno_start is inclusive",
+            );
+            // ...and one below it is not, so it stays a (large) success value.
+            let below = RustBV::concrete(errno_start as u128 - 1, bits);
+            assert_eq!(
+                write(below.clone()),
+                (below.as_u64(), Some(0)),
+                "{arch}: below the threshold is a success value, passed through",
+            );
+        }
+    });
+}
+
+/// The control for the test above: an ABI with no `syscall_error_register`
+/// must write the return register verbatim and touch nothing else — a kernel
+/// `-ENOENT` stays `0xffff_ffff_ffff_fffe` on amd64.
+#[test]
+fn write_syscall_return_passes_through_on_abis_without_an_error_register() {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|_py| {
+        let cc = fresh_ctx().cc;
+        assert!(cc.syscall_error_register.is_none(), "amd64 has no flag reg");
+        let mut state = RustSimState::new("amd64").unwrap();
+        cc.write_syscall_return(&mut state, cc.return_register, RustBV::concrete(-2i64 as u128, 64));
+        assert_eq!(
+            state.get_register_by_offset(cc.return_register, 8).as_u64(),
+            Some(-2i64 as u64),
+        );
+    });
+}

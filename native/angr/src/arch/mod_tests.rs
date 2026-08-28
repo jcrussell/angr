@@ -123,6 +123,12 @@ struct ArchExpect {
     /// The arch's own spelling of the instruction pointer, i.e. the name that
     /// must resolve to `ip_offset`.
     ip_name: &'static str,
+    /// `(name, offset)` for the register the Linux syscall number is read from
+    /// — `Arch::syscall_num_offset`, which `interpreter::exits` consults on
+    /// every `Ijk_Sys_syscall` exit. Pinned here because a shift would
+    /// otherwise only surface as a wrong syscall being dispatched, several
+    /// layers up in the Python integration tests.
+    syscall_num: (&'static str, u32),
 }
 
 const ARCH_EXPECTATIONS: &[ArchExpect] = &[
@@ -142,6 +148,7 @@ const ARCH_EXPECTATIONS: &[ArchExpect] = &[
             ("di", 36, 2),
         ],
         ip_name: "eip",
+        syscall_num: ("eax", 8),
     },
     ArchExpect {
         name: "AMD64",
@@ -159,6 +166,7 @@ const ARCH_EXPECTATIONS: &[ArchExpect] = &[
             ("si", 64, 2),
         ],
         ip_name: "rip",
+        syscall_num: ("rax", 16),
     },
     ArchExpect {
         name: "ARM",
@@ -169,6 +177,7 @@ const ARCH_EXPECTATIONS: &[ArchExpect] = &[
         bp_offset: Some(52), // R11/FP
         aliases: &[("sp", 60, 4), ("bp", 52, 4), ("lr", 64, 4), ("ip", 68, 4)],
         ip_name: "pc",
+        syscall_num: ("r7", 36),
     },
     ArchExpect {
         name: "ARM64",
@@ -179,6 +188,7 @@ const ARCH_EXPECTATIONS: &[ArchExpect] = &[
         bp_offset: Some(248), // X29/FP
         aliases: &[("sp", 264, 8), ("bp", 248, 8), ("lr", 256, 8), ("ip", 272, 8)],
         ip_name: "pc",
+        syscall_num: ("x8", 80),
     },
     ArchExpect {
         name: "MIPS32",
@@ -200,6 +210,7 @@ const ARCH_EXPECTATIONS: &[ArchExpect] = &[
             ("$30", 128, 4),
         ],
         ip_name: "pc",
+        syscall_num: ("v0", 16),
     },
     ArchExpect {
         name: "MIPS64",
@@ -218,6 +229,7 @@ const ARCH_EXPECTATIONS: &[ArchExpect] = &[
             ("$30", 256, 8),
         ],
         ip_name: "pc",
+        syscall_num: ("v0", 32),
     },
 ];
 
@@ -295,6 +307,39 @@ fn test_all_arches_report_expected_special_register_offsets() {
             arch.register_offset("sp"),
             Some(expect.sp_offset),
             "{name}: register_offset(\"sp\") disagrees with sp_offset",
+        );
+    }
+}
+
+/// Every supported arch has a Linux syscall convention, so `syscall_num_offset`
+/// must never fall through to the trait's `None` default — `exits.rs` reads it
+/// on every `Ijk_Sys_syscall`, and a `None` there turns a syscall into an
+/// unhandled exit. Pinning the offset against the arch's own spelling of the
+/// register also catches a per-arch table edit that moves one but not the other
+/// (angr-5mnx3.3).
+#[test]
+fn test_all_arches_pin_their_syscall_number_register() {
+    for desc in ALL_ARCHES {
+        let arch = (desc.make_arch)();
+        let expect = arch_expect(desc.name);
+        let name = expect.name;
+        let (reg, offset) = expect.syscall_num;
+        assert_eq!(
+            arch.syscall_num_offset(),
+            Some(offset),
+            "{name}: syscall_num_offset must be {reg} ({offset})",
+        );
+        assert_eq!(
+            arch.register_offset(reg),
+            Some(offset),
+            "{name}: register_offset({reg:?}) disagrees with syscall_num_offset",
+        );
+        // The syscall number is read at pointer width (documented on the trait
+        // method), so the register must actually be that wide.
+        assert_eq!(
+            arch.register_size(reg),
+            Some(expect.bits / 8),
+            "{name}: {reg} must be pointer-width to hold a syscall number",
         );
     }
 }
