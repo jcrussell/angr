@@ -20,8 +20,8 @@
 //! - Maximum concrete size is 1MB (configurable)
 
 use super::mem_common::{
-    MAX_SYMBOLIC_ADDR_STORES, bounded_symbolic_size, check_symbolic_addr_size,
-    enumerate_addr_candidates, symbolic_size_conditional_store,
+    bounded_symbolic_size, check_store_budget, check_symbolic_addr_size, enumerate_addr_candidates,
+    symbolic_size_conditional_store,
 };
 use super::{ProcedureError, extract_concrete_arg};
 use crate::symbolic::RustBV;
@@ -158,9 +158,7 @@ fn memset_symbolic_addr(
     // Enumerate candidate addresses under a cap (unbounded pointers bail).
     let candidates = enumerate_addr_candidates(state, dest_bv, "dest")?;
     // Bound total work: candidates * size conditional stores.
-    if candidates.len() as u64 * size > MAX_SYMBOLIC_ADDR_STORES {
-        return Err(ProcedureError::SymbolicArgument("dest".to_string()));
-    }
+    check_store_budget(candidates.len() as u64, size, "dest")?;
 
     let width = dest_bv.width();
     for a in candidates {

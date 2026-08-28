@@ -268,3 +268,31 @@ fn test_symbolic_size_conditional_store_writes_per_index_values() {
         assert_eq!(ctx.max(&b, false), Some(*want), "byte {i}");
     }
 }
+
+#[test]
+fn test_check_store_budget_accepts_at_cap_rejects_above() {
+    // Exactly MAX_SYMBOLIC_ADDR_STORES conditional stores is in budget.
+    assert!(check_store_budget(MAX_SYMBOLIC_ADDR_STORES, 1, "dest").is_ok());
+    assert!(check_store_budget(64, MAX_SYMBOLIC_ADDR_STORES / 64, "dest").is_ok());
+    // One store past it falls back to Python, tagged with the caller's arg name.
+    assert!(matches!(
+        check_store_budget(MAX_SYMBOLIC_ADDR_STORES + 1, 1, "dst"),
+        Err(ProcedureError::SymbolicArgument(ref a)) if a == "dst"
+    ));
+}
+
+#[test]
+fn test_check_store_budget_saturates_instead_of_wrapping() {
+    // u64::MAX * 2 wraps to u64::MAX - 1 under a bare `*` in a release build,
+    // which is astronomically over budget yet would compare as over anyway;
+    // the case that actually matters is a product that wraps *small*. 2^63 * 2
+    // wraps to 0 — in budget — so a bare multiply would accept an unbounded
+    // store loop. Saturation refuses it.
+    let half = 1u64 << 63;
+    assert_eq!(half.wrapping_mul(2), 0);
+    assert!(matches!(
+        check_store_budget(half, 2, "dest"),
+        Err(ProcedureError::SymbolicArgument(ref a)) if a == "dest"
+    ));
+    assert!(check_store_budget(u64::MAX, 0, "dest").is_ok());
+}

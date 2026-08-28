@@ -21,8 +21,8 @@
 //! - Maximum concrete copy size is 1MB (configurable)
 
 use super::mem_common::{
-    MAX_SYMBOLIC_ADDR_STORES, bounded_symbolic_size, check_symbolic_addr_size,
-    enumerate_addr_candidates, symbolic_size_conditional_store,
+    bounded_symbolic_size, check_store_budget, check_symbolic_addr_size, enumerate_addr_candidates,
+    symbolic_size_conditional_store,
 };
 use super::{ProcedureError, check_max, extract_concrete_arg};
 use crate::state::RustSimState;
@@ -81,10 +81,8 @@ fn copy_symbolic_addr(
     let dst_cands = enumerate_addr_candidates(state, dst_bv, "dst")?;
     let src_cands = enumerate_addr_candidates(state, src_bv, "src")?;
     // Bound total work: |dst| * |src| * size conditional stores.
-    let pairs = dst_cands.len() as u64 * src_cands.len() as u64;
-    if pairs.saturating_mul(size) > MAX_SYMBOLIC_ADDR_STORES {
-        return Err(ProcedureError::SymbolicArgument("dst".to_string()));
-    }
+    let pairs = (dst_cands.len() as u64).saturating_mul(src_cands.len() as u64);
+    check_store_budget(pairs, size, "dst")?;
 
     // Snapshot every source byte that could be read, BEFORE any store, so
     // overlapping src/dst regions copy pre-store values (memmove contract).

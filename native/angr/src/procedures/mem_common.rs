@@ -8,9 +8,11 @@
 //! memset"); centralizing them keeps the caps and rejection logic in one place
 //! so the two paths cannot silently drift.
 //!
-//! The per-pointer arity and the `candidates * size` (memset) vs
-//! `|dst| * |src| * size` (memcpy) store-budget guard stay caller-side because
-//! they genuinely differ between the two procedures.
+//! How the *unit count* is derived stays caller-side because it genuinely
+//! differs between the two procedures (`candidates` for memset,
+//! `|dst| * |src|` for memcpy), but both feed it to [`check_store_budget`] so
+//! the overflow-safe multiply and the `MAX_SYMBOLIC_ADDR_STORES` comparison
+//! live in one place.
 
 use super::ProcedureError;
 use crate::state::RustSimState;
@@ -27,8 +29,27 @@ pub(crate) const MAX_SYMBOLIC_ADDR_CANDIDATES: usize = 64;
 pub(crate) const MAX_SYMBOLIC_ADDR_SIZE: u64 = 256;
 
 /// Total conditional-store budget for the symbolic-address path. Exceeding it
-/// falls back to Python. The caller computes the candidate product.
+/// falls back to Python. The caller computes the unit count and passes it to
+/// [`check_store_budget`].
 pub(crate) const MAX_SYMBOLIC_ADDR_STORES: u64 = 4096;
+
+/// Reject a symbolic-address store whose `units * size` conditional-store count
+/// exceeds [`MAX_SYMBOLIC_ADDR_STORES`], so the caller falls back to Python.
+///
+/// `units` is the caller-computed candidate count (`|candidates|` for memset,
+/// `|dst| * |src|` for memcpy); `size` is the validated per-candidate byte
+/// count from [`check_symbolic_addr_size`]. The multiply saturates rather than
+/// wrapping: a product too large to represent is unambiguously over budget, so
+/// saturation refuses where a bare `*` would wrap to a small in-budget value
+/// (see the `invariant-rust-concrete-arith-must-wrap` bd memory for why a size
+/// must refuse rather than wrap). Both current callers are bounded well below
+/// `u64::MAX`, so this is a shape guard for the next one.
+pub(crate) fn check_store_budget(units: u64, size: u64, name: &str) -> Result<(), ProcedureError> {
+    if units.saturating_mul(size) > MAX_SYMBOLIC_ADDR_STORES {
+        return Err(ProcedureError::SymbolicArgument(name.to_string()));
+    }
+    Ok(())
+}
 
 /// Validate a (possibly symbolic) size for a symbolic-address store path.
 ///
