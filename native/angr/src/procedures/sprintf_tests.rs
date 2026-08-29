@@ -948,7 +948,7 @@ fn test_sprintf_percent_s_scan_bounded_by_max_string_scan() {
     let src = vec![b'A'; MAX_STRING_SCAN + 8];
     state.map_memory_data(0x10000, &src, Permission::RWX);
 
-    let result = NativeSprintf
+    let err = NativeSprintf
         .call(
             &mut state,
             &[
@@ -962,14 +962,17 @@ fn test_sprintf_percent_s_scan_bounded_by_max_string_scan() {
                 RustBV::concrete(0, 64),
             ],
         )
-        .unwrap();
+        .unwrap_err();
 
-    assert_eq!(result.unwrap().as_u64(), Some(MAX_STRING_SCAN as u64));
-    // Truncated exactly at the cap: last copied byte is 'A', then the NUL.
-    let last = state
-        .memory_load(0x2000 + MAX_STRING_SCAN as u64 - 1, 1)
-        .unwrap();
-    assert_eq!(last.as_u64().unwrap() as u8, b'A');
-    let nul = state.memory_load(0x2000 + MAX_STRING_SCAN as u64, 1).unwrap();
-    assert_eq!(nul.as_u64().unwrap() as u8, 0);
+    // Cap-without-null defers to Python rather than rendering a truncated
+    // 4096-byte prefix: Python's `format_parser.py` measures the argument with
+    // the `strlen` SimProcedure, which searches past 4096 and errors at 0x10000
+    // instead of truncating (angr-6fg46).
+    assert!(
+        matches!(err, ProcedureError::MaxIterations(n) if n == MAX_STRING_SCAN),
+        "expected MaxIterations({MAX_STRING_SCAN}), got {err:?}"
+    );
+    // Nothing was committed to dest.
+    let first = state.memory_load(0x2000, 1).unwrap();
+    assert_eq!(first.as_u64().unwrap() as u8, 0);
 }

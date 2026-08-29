@@ -29,8 +29,11 @@ use crate::symbolic::{RustBV, SymContext};
 /// str-family procedures (strcpy/strncpy/strcat/strncat, strstr, strpbrk,
 /// memset-of-string, strchr/memchr, strlen/strnlen, …) and for the other
 /// procedures that scan a C string argument: `getopt` (optstring and argv
-/// elements), `perror`, and `getenv`/`setenv`/`putenv`. Hitting this without a
-/// null terminator bails to Python via [`ProcedureError::MaxIterations`].
+/// elements), `perror`, `getenv`/`setenv`/`putenv`, and `sprintf.rs`'s `%s`
+/// conversion argument. Hitting this without a null terminator bails to Python
+/// via [`ProcedureError::MaxIterations`] — except in
+/// `getenv.rs::read_cstring_tolerant`, which documents at its own definition
+/// why it returns the truncated prefix instead.
 ///
 /// One home so a future security-driven reduction is applied everywhere at
 /// once rather than silently missing a copy that kept its own local `4096`

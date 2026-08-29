@@ -315,8 +315,23 @@ fn format_string(
                 // this scan without moving the format-string scan, and vice
                 // versa. Pinned behaviourally by
                 // `sprintf_tests::test_sprintf_percent_s_scan_bounded_by_max_string_scan`.
-                let (s, _null_found) =
+                let (s, null_found) =
                     scan_concrete_bounded(state, str_addr, MAX_STRING_SCAN, "string")?;
+                // Cap-without-null is an error here, unlike in
+                // `format_common::read_format_string` where it is explicitly
+                // tolerated for the format string itself. Python's
+                // `format_parser.py::FormatString._get_str_at` measures a `%s`
+                // argument with the `strlen` SimProcedure, which keeps doubling
+                // its search window past `libc.max_str_len` and raises
+                // `SimMemoryLimitError` at 0x10000 rather than truncating — so a
+                // 4096-byte prefix would be a silently wrong render both for an
+                // unterminated argument (Python errors) and for a merely long
+                // one whose terminator sits between 4096 and 0x10000 (Python
+                // renders it in full). Defer instead, as the sibling
+                // strcpy/strcat/getopt/perror scans do (angr-6fg46).
+                if !null_found {
+                    return Err(ProcedureError::MaxIterations(MAX_STRING_SCAN));
+                }
                 let s = if let Some(prec) = precision {
                     if prec < s.len() { &s[..prec] } else { &s }
                 } else {
