@@ -16,10 +16,15 @@
 //! or whether a second error drowns it out (angr-0jh0j.76).
 //!
 //! Where two of a macro's validations can fire on the *same* invocation, the
-//! combination gets its own case too (`steady_guarded_both_misuses.rs`): the
-//! bodies accumulate diagnostics instead of returning at the first one, and
-//! only rustc can confirm it renders both rather than truncating
-//! (angr-0jh0j.79).
+//! combination gets its own case too: the bodies accumulate diagnostics
+//! instead of returning at the first one, and only rustc can confirm it
+//! renders both rather than truncating (angr-0jh0j.79). Those cases are
+//! `steady_guarded_both_misuses.rs`, `merge_manual_duplicate_blank_reason.rs`
+//! (two faults within one attribute), and
+//! `merge_policy_and_manual_both_misused.rs` — the last crossing the two
+//! independently-validated attributes `derive_merge_policy_impl` reads, so an
+//! early return added to either branch drops the other's diagnostic
+//! (angr-0jh0j.86).
 //!
 //! The two function-like macros -- `callback_setters_impl` and
 //! `inspect_test_entries_impl` -- are deliberately *not* covered here: their

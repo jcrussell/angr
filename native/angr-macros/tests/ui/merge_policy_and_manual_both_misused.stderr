@@ -1,0 +1,11 @@
+error: field `arch`: unknown merge_policy "nonsense" — expected one of ["self_wins", "in_place_self", "computed", "delegate", "union", "max", "min", "warn_on_diverge", "joint"]
+ --> tests/ui/merge_policy_and_manual_both_misused.rs:9:5
+  |
+9 |     #[merge_policy = "nonsense"]
+  |     ^
+
+error: expected #[merge_manual = "<why the generated body cannot express this policy>"] (non-empty string literal)
+  --> tests/ui/merge_policy_and_manual_both_misused.rs:10:5
+   |
+10 |     #[merge_manual = "   "]
+   |     ^
