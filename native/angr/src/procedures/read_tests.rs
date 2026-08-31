@@ -302,6 +302,44 @@ fn test_read_closed_fd_falls_back() {
     assert!(result.is_err());
 }
 
+/// angr-qmrrp: fd 0 dup2'd from a tracked open fd carries real content, not
+/// pristine/harness-seeded stdin -- must fall back like any other tracked fd
+/// (`test_read_user_fd_with_content_serves_natively`'s fd 3 case would native-serve
+/// the same content if it *weren't* on fd 0, but the fd-0 fast path used to
+/// skip the tracked-fd check entirely).
+#[test]
+fn test_read_dup2d_stdin_falls_back() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    let fd = state
+        .file_system()
+        .open_with_content(
+            "in.bin".to_string(),
+            crate::state::FdFlags::ReadOnly,
+            b"abcdef".to_vec(),
+        )
+        .expect("fd space is not exhausted in tests");
+    crate::procedures::fileops::NativeDup2
+        .call(
+            &mut state,
+            &[RustBV::concrete(fd as u128, 64), RustBV::concrete(0, 64)],
+        )
+        .unwrap();
+    state.map_memory(0x2000, 0x1000, crate::memory::Permission::RWX);
+
+    let result = NativeRead.call(
+        &mut state,
+        &[
+            RustBV::concrete(0, 64),
+            RustBV::concrete(0x2000, 64),
+            RustBV::concrete(4, 64),
+        ],
+    );
+    assert!(
+        result.is_err(),
+        "read(0, ...) after dup2'ing a tracked file onto fd 0 must fall back to Python"
+    );
+}
+
 #[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_read_stdin_short_reads_returns_symbolic_size() {

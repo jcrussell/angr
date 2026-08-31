@@ -79,4 +79,18 @@ pub(crate) fn stdin_seed_unconsumed(state: &RustSimState) -> bool {
     (pos as usize) < content.len()
 }
 
+/// True when fd 0 no longer points at the pristine harness-seeded stdin
+/// placeholder — i.e. a guest `dup2(real_fd, 0)` rewired it onto a real,
+/// Rust-tracked file. Thin wrapper over
+/// [`FileSystem::fd0_is_dup2d`](crate::state::FileSystem::fd0_is_dup2d),
+/// which also backs the inbound callback fd-sync fast path
+/// (`_has_state_extra_fds` in `exploration/state_api.rs`).
+///
+/// Callers must bounce to Python rather than mint fresh symbolic bytes when
+/// this is true (angr-qmrrp): `is_open(0)` alone can't distinguish the two
+/// cases, since fd 0 is unconditionally open from process start.
+pub(crate) fn fd0_is_dup2d_tracked_file(state: &RustSimState) -> bool {
+    state.file_system_ref().fd0_is_dup2d()
+}
+
 test_submod!("stdin_common_tests.rs" => tests);

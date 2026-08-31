@@ -15,10 +15,14 @@
 //! (it owns a Z3 refcount and cannot be reconstructed from a Python value), so
 //! these are internal helpers the claripy-AST API in the parent module calls.
 
-// The parent `solver` module denies `unsafe_code` so the "all the `unsafe` is
-// in one file" invariant is the compiler's to keep rather than a doc comment's
-// (angr-5mnx3.10). This module is the sanctioned exception; every block below
-// carries its own `SAFETY:` rationale.
+// The sibling `solver` module forbids `unsafe_code` for itself so the "all
+// the `unsafe` is in one file" invariant is the compiler's to keep rather
+// than a doc comment's (angr-5mnx3.10). This module is declared independently
+// in `lib.rs`, outside `solver`'s module subtree, specifically so `forbid`
+// (which — unlike `deny` — cannot be overridden by any descendant) never
+// reaches it (angr-8ucb3): this `#![allow]` is therefore an ordinary, opt-in
+// lint level on an unrelated module, not an override. Every unsafe block
+// below carries its own `SAFETY:` rationale.
 #![allow(unsafe_code)]
 
 // Both are consumed only by the `Z3AstPtr` paths below, which are themselves
@@ -36,7 +40,7 @@ use crate::claripy_bridge::claripy_to_rustbv;
 use crate::symbolic::Z3AstPtr;
 use crate::symbolic::{RustBV, SymContext};
 
-use super::RustSolverContext;
+use crate::solver::RustSolverContext;
 
 /// Extract a typed [`Z3AstPtr`] from a claripy AST's z3 backend.
 ///
@@ -54,7 +58,7 @@ use super::RustSolverContext;
 /// live Z3 AST in the process-global Z3 context (which is also our
 /// thread-local context because z3-rs 0.19+ shares it).
 #[cfg(feature = "vex-engine-z3")]
-pub(super) fn extract_z3_ast_ptr(py: Python<'_>, ast: &Bound<'_, PyAny>) -> PyResult<Z3AstPtr> {
+pub(crate) fn extract_z3_ast_ptr(py: Python<'_>, ast: &Bound<'_, PyAny>) -> PyResult<Z3AstPtr> {
     let claripy = py.import("claripy")?;
     let z3_backend = claripy.getattr("backends")?.getattr("z3")?;
     let z3_obj = z3_backend.call_method1("convert", (ast,))?;
@@ -104,7 +108,7 @@ pub(super) fn extract_z3_ast_ptr(py: Python<'_>, ast: &Bound<'_, PyAny>) -> PyRe
 /// (angr-58ks). Returns `None` for any other sort; callers that want a hard
 /// error report [`Z3AstPtr::sort_kind`] themselves.
 #[cfg(feature = "vex-engine-z3")]
-pub(super) fn z3_ast_to_eval_bv(z3_ast: &Z3AstPtr) -> Option<RustBV> {
+pub(crate) fn z3_ast_to_eval_bv(z3_ast: &Z3AstPtr) -> Option<RustBV> {
     use z3::ast::Ast;
     // SAFETY: `z3_ast` holds an active ref to a live `Z3_ast`, and each branch
     // checks the sort before wrapping the node as that sort. `Bool::wrap` /
@@ -151,7 +155,7 @@ pub(super) fn z3_ast_to_eval_bv(z3_ast: &Z3AstPtr) -> Option<RustBV> {
 /// non-Bool case handled must fall back to a `claripy_to_rustbv` lowering
 /// rather than wrap anyway.
 #[cfg(feature = "vex-engine-z3")]
-pub(super) fn z3_ast_to_bool(z3_ast: &Z3AstPtr) -> Option<z3::ast::Bool> {
+pub(crate) fn z3_ast_to_bool(z3_ast: &Z3AstPtr) -> Option<z3::ast::Bool> {
     use z3::ast::Ast;
     if !z3_ast.is_bool() {
         return None;
@@ -168,7 +172,7 @@ impl RustSolverContext {
     /// claripy → RustBV import first, then the raw Z3 AST pointer (which
     /// preserves identity with constraints already asserted in the solver).
     /// Returns `None` when neither path applies. Used by `eval_batch`.
-    pub(super) fn ast_to_bv_for_eval(
+    pub(crate) fn ast_to_bv_for_eval(
         &self,
         py: Python<'_>,
         ast: &Bound<'_, PyAny>,
@@ -205,7 +209,7 @@ impl RustSolverContext {
     /// bridgeable type (it owns a Z3 refcount and cannot be reconstructed
     /// from a Python value).
     #[cfg(feature = "vex-engine-z3")]
-    pub(super) fn eval_z3_ast_ptr(
+    pub(crate) fn eval_z3_ast_ptr(
         &self,
         py: Python<'_>,
         z3_ast: Z3AstPtr,

@@ -261,6 +261,75 @@ fn test_fgets_symbolic_stream_falls_back() {
     assert!(matches!(result, Err(ProcedureError::SymbolicArgument(_))));
 }
 
+/// angr-qmrrp: fd 0 dup2'd from a tracked open fd carries real content, not
+/// pristine/harness-seeded stdin -- fgets/fgetc/getchar/gets must all fall
+/// back rather than mint fresh unconstrained bytes over it.
+fn dup2_tracked_file_onto_stdin(state: &mut RustSimState) {
+    let fd = state
+        .file_system()
+        .open_with_content(
+            "in.bin".to_string(),
+            crate::state::FdFlags::ReadOnly,
+            b"abcdef".to_vec(),
+        )
+        .expect("fd space is not exhausted in tests");
+    crate::procedures::fileops::NativeDup2
+        .call(
+            state,
+            &[RustBV::concrete(fd as u128, 64), RustBV::concrete(0, 64)],
+        )
+        .unwrap();
+}
+
+#[test]
+fn test_fgets_dup2d_stdin_falls_back() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory(0x2000, 0x1000, Permission::RWX);
+    dup2_tracked_file_onto_stdin(&mut state);
+    let file_ptr: u64 = 0x5000;
+    setup_file_struct(&mut state, file_ptr, 0);
+
+    let result = NativeFgets.call(
+        &mut state,
+        &[
+            RustBV::concrete(0x2000, 64),
+            RustBV::concrete(10, 64),
+            RustBV::concrete(file_ptr as u128, 64),
+        ],
+    );
+    assert!(matches!(result, Err(ProcedureError::Other(_))));
+}
+
+#[test]
+fn test_fgetc_dup2d_stdin_falls_back() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    dup2_tracked_file_onto_stdin(&mut state);
+    let file_ptr: u64 = 0x5000;
+    setup_file_struct(&mut state, file_ptr, 0);
+
+    let result = NativeFgetc.call(&mut state, &[RustBV::concrete(file_ptr as u128, 64)]);
+    assert!(matches!(result, Err(ProcedureError::Other(_))));
+}
+
+#[test]
+fn test_getchar_dup2d_stdin_falls_back() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    dup2_tracked_file_onto_stdin(&mut state);
+
+    let result = NativeGetchar.call(&mut state, &[]);
+    assert!(matches!(result, Err(ProcedureError::Other(_))));
+}
+
+#[test]
+fn test_gets_dup2d_stdin_falls_back() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory(0x2000, 0x1000, Permission::RWX);
+    dup2_tracked_file_onto_stdin(&mut state);
+
+    let result = NativeGets.call(&mut state, &[RustBV::concrete(0x2000, 64)]);
+    assert!(matches!(result, Err(ProcedureError::Other(_))));
+}
+
 #[test]
 fn test_fgetc_nonstdin_falls_back() {
     let mut state = RustSimState::new("amd64").unwrap();

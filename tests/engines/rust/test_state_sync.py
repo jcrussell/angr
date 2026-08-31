@@ -783,6 +783,43 @@ class TestCallbackFdInboundSync:
         mgr._rust_mgr = Tripwire()
         mgr._inject_rust_fds(proj.factory.entry_state(), 1)
 
+    def test_dup2d_stdin_overrides_default_fd0(self, mgr_and_sid):
+        """angr-qmrrp: a native ``dup2(real_fd, 0)`` must override
+        ``posix.fd[0]`` rather than be skipped by the ``fd <= 2`` /
+        fd-already-present guards that apply to every other fd — fd 0 always
+        pre-exists in ``posix.fd`` (the default tty stream), so without this
+        carve-out a bounced ``fscanf(stdin, ...)``-style fallback would
+        silently read Python's stale default stdin instead of the dup2'd
+        file's real content.
+
+        ``register_state_fd`` can't simulate this directly (it refuses to
+        re-register an already-present fd, and fd 0 always pre-exists), so
+        this stubs ``_rust_mgr`` the same way ``test_no_extra_fds_skips_the_ffi``
+        does, reporting fd 0 with a non-placeholder name as
+        ``get_state_open_fds`` would after a real dup2.
+        """
+        proj, mgr, sid = mgr_and_sid
+
+        class FakeRustMgr:
+            def has_state_extra_fds(self, _state_id):
+                return True
+
+            def get_state_open_fds(self, _state_id):
+                return [(0, "/tmp/dup2d-stdin.txt", 0, TestCallbackFdInboundSync.O_RDONLY, 6, True)]
+
+            def get_state_fd_content(self, _state_id, _fd):
+                return b"REALIN"
+
+        mgr._rust_mgr = FakeRustMgr()
+
+        state = proj.factory.entry_state()
+        assert type(state.posix.fd[0]).__name__ != "SimFileDescriptor", "test is vacuous"
+
+        mgr._inject_rust_fds(state, sid)
+
+        data, _ = state.posix.get_fd(0).read_data(6)
+        assert state.solver.eval(data, cast_to=bytes) == b"REALIN"
+
 
 class TestStateMetadataStorage:
     """Tests for per-state metadata moved from Python ``_state_metadata`` dict

@@ -659,6 +659,87 @@ fn test_fscanf_stdin_fd_records_symbols() {
     assert_eq!(state.stdin_symbols().len(), 1);
 }
 
+/// angr-qmrrp: fd 0 dup2'd from a tracked open fd carries real content, not
+/// pristine/harness-seeded stdin -- mirrors `test_fscanf_open_fd_falls_back`
+/// but for the fd==0 branch, which the tracked-fd gate used to skip entirely.
+#[test]
+fn test_fscanf_dup2d_stdin_falls_back() {
+    let mut state = setup_state();
+    state.map_memory_data(0x1000, b"%d\x00", Permission::RWX);
+    let fd = state
+        .file_system()
+        .open_with_content("data.txt".to_string(), FdFlags::ReadOnly, b"42\n".to_vec())
+        .expect("fd space is not exhausted in tests");
+    assert_eq!(
+        crate::procedures::fileops::NativeDup2
+            .call(
+                &mut state,
+                &[RustBV::concrete(fd as u128, 64), RustBV::concrete(0, 64)],
+            )
+            .unwrap()
+            .unwrap()
+            .as_u64(),
+        Some(0)
+    );
+
+    let file_ptr = 0x10000u64;
+    setup_file_struct(&mut state, file_ptr, 0); // fscanf(stdin, ...)
+
+    let result = NativeFscanf.call(
+        &mut state,
+        &[
+            RustBV::concrete(file_ptr as u128, 64),
+            RustBV::concrete(0x1000, 64),
+            RustBV::concrete(0x2000, 64),
+            RustBV::concrete(0, 64),
+            RustBV::concrete(0, 64),
+            RustBV::concrete(0, 64),
+            RustBV::concrete(0, 64),
+            RustBV::concrete(0, 64),
+        ],
+    );
+
+    assert!(
+        matches!(result, Err(ProcedureError::Other(_))),
+        "fscanf(stdin, ...) after dup2'ing a tracked file onto fd 0 must fall back to Python"
+    );
+}
+
+/// Same gate for plain `scanf()`, which always targets fd 0 implicitly.
+#[test]
+fn test_scanf_dup2d_stdin_falls_back() {
+    let mut state = setup_state();
+    state.map_memory_data(0x1000, b"%d\x00", Permission::RWX);
+    let fd = state
+        .file_system()
+        .open_with_content("data.txt".to_string(), FdFlags::ReadOnly, b"42\n".to_vec())
+        .expect("fd space is not exhausted in tests");
+    crate::procedures::fileops::NativeDup2
+        .call(
+            &mut state,
+            &[RustBV::concrete(fd as u128, 64), RustBV::concrete(0, 64)],
+        )
+        .unwrap();
+
+    let result = NativeScanf.call(
+        &mut state,
+        &[
+            RustBV::concrete(0x1000, 64), // format
+            RustBV::concrete(0x2000, 64), // &int_var
+            RustBV::concrete(0, 64),
+            RustBV::concrete(0, 64),
+            RustBV::concrete(0, 64),
+            RustBV::concrete(0, 64),
+            RustBV::concrete(0, 64),
+        ],
+    );
+
+    assert!(
+        matches!(result, Err(ProcedureError::Other(_))),
+        "scanf() after dup2'ing a tracked file onto fd 0 must fall back to Python"
+    );
+}
+
 #[test]
 fn test_isoc99_fscanf_basic() {
     let mut state = setup_state();

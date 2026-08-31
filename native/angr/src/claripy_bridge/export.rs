@@ -11,8 +11,9 @@
 //!   ([`rustbv_to_claripy`] / [`rustbv_to_claripy_memo`]), its depth guard and
 //!   [`assumed_guard_to_claripy`];
 //! - [`ast_helpers`]: the leaf helpers that build or repair a single claripy
-//!   object (`ensure_claripy_ast`, `bool_to_bv1`, `concrete_value_to_bvv`,
-//!   `build_sound_bitcount`) — everything that needs a live interpreter;
+//!   object (`ensure_claripy_ast`, `bool_to_bv1`, `coerce_bool_to_bv1`,
+//!   `concrete_value_to_bvv`, `build_sound_bitcount`) — everything that needs
+//!   a live interpreter;
 //! - [`width_decisions`]: the pure width/coercion decision seams
 //!   ([`width_decisions::ConcreteBvvEncoding`],
 //!   [`width_decisions::WidthFixup`]), unit-testable without claripy.

@@ -34,7 +34,7 @@
 //! symbolic-file model can take over.
 
 use super::arch_word;
-use super::stdin_common::mint_stdin_bytes;
+use super::stdin_common::{fd0_is_dup2d_tracked_file, mint_stdin_bytes};
 use super::strings::{write_bv_bytes, write_concrete_bytes};
 use super::{ProcedureError, symbol_counter};
 use crate::state::MAX_SYMFILE_SERVE_SIZE;
@@ -57,6 +57,15 @@ crate::declare_proc! {
         }
 
         if fd == 0 {
+            // angr-qmrrp: a prior dup2(real_fd, 0) means fd 0 carries real
+            // tracked content, not pristine/harness-seeded stdin -- defer to
+            // Python rather than mint fresh unconstrained bytes over it.
+            if fd0_is_dup2d_tracked_file(state) {
+                return Err(ProcedureError::Other(
+                    "read from fd=0 (dup2'd to a tracked Rust FileSystem file) falls back to Python"
+                        .to_string(),
+                ));
+            }
             if count > MAX_READ_SIZE {
                 return Err(ProcedureError::Other(format!(
                     "read count {count} exceeds limit"

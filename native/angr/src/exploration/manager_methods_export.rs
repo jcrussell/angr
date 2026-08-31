@@ -478,7 +478,8 @@ impl RustExplorationManager {
         self._get_state_open_fds(state_id)
     }
 
-    /// True when the state has an open fd above stderr.
+    /// True when the state has an open fd above stderr, or fd 0 has been
+    /// `dup2`'d away from the pristine stdin placeholder (angr-qmrrp).
     ///
     /// Fast-path gate for the inbound callback fd sync (angr-op0dn.14.1.6) so
     /// the common bounce (nothing opened natively) never pays for the

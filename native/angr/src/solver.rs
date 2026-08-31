@@ -11,11 +11,13 @@
 //! - here: the Python-boundary error mapping, the [`RustSolverContext`]
 //!   pyclass itself, and the "normal" claripy-AST solver API
 //!   (`add_constraint*` / `eval*` / `min` / `max` / `push` / `pop` / `fork`);
-//! - [`z3_ast_extract`]: raw `Z3_ast`-pointer extraction, sort-checked
-//!   wrapping (`z3_ast_to_bool` / `z3_ast_to_eval_bv`) and evaluation, i.e.
-//!   every `unsafe` in the solver surface. This module holds none: a wrap
-//!   needed here goes *there*, behind a sort check, rather than inline
-//!   (angr-5mnx3.10);
+//! - [`z3_ast_extract`](crate::z3_ast_extract): raw `Z3_ast`-pointer
+//!   extraction, sort-checked wrapping (`z3_ast_to_bool` / `z3_ast_to_eval_bv`)
+//!   and evaluation, i.e. every `unsafe` in the solver surface. This module
+//!   holds none: a wrap needed here goes *there*, behind a sort check, rather
+//!   than inline (angr-5mnx3.10). It is declared as a crate-root sibling of
+//!   `solver` rather than a child of it (angr-8ucb3), so this module's
+//!   `forbid(unsafe_code)` below cannot reach it;
 //! - [`handle_api`]: the handle-based claripy-bypass API (symbol-table
 //!   lifecycle plus the 33 `op_*` arithmetic wrappers — 25 of which route
 //!   through its shared `binop` helper, the rest through `opt_op`).
@@ -31,14 +33,16 @@
 // The "every `unsafe` in the solver surface lives in `z3_ast_extract`" claim
 // above was, until angr-5mnx3.10, only a doc comment — and
 // `add_constraint_tracked_ast` had quietly contradicted it since the
-// angr-9ke6b.205 split. Lint levels propagate into nested modules, so denying
-// here covers this file plus `handle_api`; `z3_ast_extract` re-allows it at
-// its own module top, which is what makes that opt-in the single greppable
-// exception rather than a promise a reviewer has to re-verify.
-#![deny(unsafe_code)]
+// angr-9ke6b.205 split. Lint levels propagate into nested modules, so
+// forbidding here covers this file plus `handle_api`. Unlike `deny`, `forbid`
+// cannot be silently overridden by a nested `#[allow(unsafe_code)]` (angr-8ucb3)
+// — which is exactly why `z3_ast_extract` is declared in `lib.rs` as a sibling
+// of `solver` rather than as a child module here: its own sanctioned
+// `#![allow(unsafe_code)]` is an ordinary, unopposed lint level on an
+// unrelated module, not an override this attribute would otherwise reject.
+#![forbid(unsafe_code)]
 
 mod handle_api;
-mod z3_ast_extract;
 
 use pyo3::exceptions::{PyRecursionError, PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
@@ -51,9 +55,9 @@ use crate::claripy_bridge::{BridgeError, claripy_to_rustbv, try_extract_bvv};
 use crate::symbolic::{BinaryOpError, RustBV, RustSymbolTable, SymContext};
 
 #[cfg(feature = "vex-engine-z3")]
-use self::z3_ast_extract::{extract_z3_ast_ptr, z3_ast_to_bool, z3_ast_to_eval_bv};
-#[cfg(feature = "vex-engine-z3")]
 use crate::symbolic::Z3AstPtr;
+#[cfg(feature = "vex-engine-z3")]
+use crate::z3_ast_extract::{extract_z3_ast_ptr, z3_ast_to_bool, z3_ast_to_eval_bv};
 
 /// Convert a BridgeError to a PyErr, preserving the variant's structure at
 /// the Python boundary (angr-ghwsd.2). Mirrors the per-variant mapping in
@@ -148,7 +152,12 @@ enum SolverCtxStorage {
 
 /// Guard for borrowing SymContext from either storage variant.
 /// Implements Deref<Target=SymContext> for transparent access.
-enum SolverCtxGuard<'a> {
+///
+/// `pub(crate)`, not private: `crate::z3_ast_extract::eval_z3_ast_ptr` reaches
+/// this through `RustSolverContext::i()` (angr-8ucb3 — that module is a
+/// crate-root sibling of `solver`, not a descendant, so private-to-`solver`
+/// is no longer visible to it).
+pub(crate) enum SolverCtxGuard<'a> {
     Ref(&'a SymContext),
     Borrowed(Ref<'a, SymContext>),
 }
@@ -200,7 +209,9 @@ pub struct RustSolverContext {
     owner: std::thread::ThreadId,
 }
 
-struct SolverInner {
+/// `pub(crate)`, not private: reached from `crate::z3_ast_extract` via
+/// `RustSolverContext::i()` (angr-8ucb3, same reasoning as [`SolverCtxGuard`]).
+pub(crate) struct SolverInner {
     sym_ctx: SolverCtxStorage,
     /// Symbol table for handle-based API (claripy bypass).
     symbol_table: RustSymbolTable,
@@ -208,7 +219,7 @@ struct SolverInner {
 
 impl SolverInner {
     /// Get a guard for the SymContext, works for both owned and shared.
-    fn ctx(&self) -> SolverCtxGuard<'_> {
+    pub(crate) fn ctx(&self) -> SolverCtxGuard<'_> {
         match &self.sym_ctx {
             SolverCtxStorage::Owned(ctx) => SolverCtxGuard::Ref(ctx),
             SolverCtxStorage::Shared(rc) => SolverCtxGuard::Borrowed(rc.borrow()),
@@ -880,7 +891,9 @@ impl RustSolverContext {
         clippy::expect_used,
         reason = "use-after-close is an internal-invariant violation, not an input path: the Python contract calls close() only at proxy invalidation / wave teardown, right before drop, so no method call races an emptied context"
     )]
-    fn i(&self) -> &SolverInner {
+    // `pub(crate)`, not private: `crate::z3_ast_extract::eval_z3_ast_ptr`
+    // calls this (angr-8ucb3 — see `SolverCtxGuard`'s doc comment for why).
+    pub(crate) fn i(&self) -> &SolverInner {
         self.inner
             .as_ref()
             .expect("RustSolverContext used after close()")

@@ -18,7 +18,7 @@
 
 use super::arch_word;
 use super::format_common::{parse_length_modifier, parse_width_digits, read_format_string};
-use super::stdin_common::{mint_stdin_bytes, stdin_seed_unconsumed};
+use super::stdin_common::{fd0_is_dup2d_tracked_file, mint_stdin_bytes, stdin_seed_unconsumed};
 use super::{NativeSimProcedure, ProcedureError, extract_concrete_arg, symbol_counter};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
@@ -393,6 +393,15 @@ impl NativeSimProcedure for NativeScanf {
         args: &[RustBV],
     ) -> Result<Option<RustBV>, ProcedureError> {
         let fmt_addr = extract_concrete_arg(&args[0], "format")?;
+        // angr-qmrrp: a prior dup2(real_fd, 0) means fd 0 carries real
+        // tracked content, not pristine/harness-seeded stdin -- defer to
+        // Python rather than mint fresh unconstrained bytes over it.
+        if fd0_is_dup2d_tracked_file(state) {
+            return Err(ProcedureError::Other(
+                "scanf from fd=0 (dup2'd to a tracked Rust FileSystem file) falls back to Python"
+                    .to_string(),
+            ));
+        }
         do_scanf(state, fmt_addr, &args[1..], "stdin", true)
     }
 }
@@ -477,6 +486,15 @@ fn do_fscanf(
         return Ok(Some(arch_word(state, -1i64 as u64)));
     }
     let (source, record_stdin) = if fd == 0 {
+        // angr-qmrrp: mirror the tracked-fd gate below for fd 0 -- a prior
+        // dup2(real_fd, 0) means fd 0 is no longer pristine/harness-seeded
+        // stdin, so it must bounce like any other Rust-tracked open fd.
+        if fd0_is_dup2d_tracked_file(state) {
+            return Err(ProcedureError::Other(
+                "fscanf from fd=0 (dup2'd to a tracked Rust FileSystem file) falls back to Python"
+                    .to_string(),
+            ));
+        }
         ("stdin", true)
     } else {
         if state.file_system_ref().is_open(fd as u32) {

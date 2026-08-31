@@ -75,7 +75,8 @@ pub(crate) fn apply_state_deterministic(_state: &crate::state::RustSimState, _v:
 /// * `pending.state` — the continuing successor `_resume_*` routes back to a
 ///   stash. Its `SymContext` is the same `Rc` that `pending.solver_ctx` wraps
 ///   (`from_shared_sym_context`, see the `PendingCallback::with_context` call
-///   sites in `stepping.rs`), so the Python-facing handle is covered with it.
+///   sites in `stepping_bounce.rs` and `run_loop_single.rs`), so the
+///   Python-facing handle is covered with it.
 /// * `pending.pre_callback_snapshot` — `_resume_after_simprocedure`'s
 ///   `fork_base`, i.e. the parent every materialized deferred fork forks off.
 /// * `pending.fork_snapshots` — `fork_materialize::build_unexplored_fork` turns

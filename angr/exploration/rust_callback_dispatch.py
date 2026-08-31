@@ -501,10 +501,17 @@ class RustCallbackDispatchMixin:
         is already using, so the two sides end up pointing at different files.
 
         Idempotent: an fd already in ``state.posix.fd`` is left alone, which
-        matters because the cached callback state is reused across bounces.
+        matters because the cached callback state is reused across bounces --
+        except fd 0 after a native ``dup2(real_fd, 0)`` (angr-qmrrp): fd 0
+        always pre-exists in ``posix.fd`` (the default tty stream), so without
+        an explicit carve-out it would never be overwritten with the dup2'd
+        file's real content, and a bounced ``fscanf(stdin, ...)``-style
+        fallback would silently read Python's stale default stdin instead.
+
+        Fast check: the standard three fds always exist on both sides, so a
+        state that opened nothing natively -- and never dup2'd onto fd 0 --
+        never crosses the FFI further.
         """
-        # Fast check: the standard three fds always exist on both sides, so a
-        # state that opened nothing natively never crosses the FFI further.
         if not self._rust_mgr.has_state_extra_fds(state_id):
             return
         posix = state.plugins.get("posix")
@@ -518,7 +525,13 @@ class RustCallbackDispatchMixin:
             l.debug("get_state_open_fds(%d) failed: %s", state_id, e)
             return
         for fd, name, position, flags, _content_len, is_open in rust_fds:
-            if fd <= 2 or not is_open or fd in posix.fd or not name:
+            # angr-qmrrp: fd 0 dup2'd to a real tracked file must override
+            # the pre-existing posix.fd[0] entry rather than be skipped by
+            # the fd<=2 / fd-already-present guards below -- mirrors the
+            # unconditional posix.fd[newfd] = posix.fd[oldfd] dup2 does on
+            # the Python side (angr/procedures/posix/dup.py's dup2 class).
+            is_dup2d_stdin = fd == 0 and name != "/dev/stdin"
+            if (fd <= 2 and not is_dup2d_stdin) or not is_open or (fd in posix.fd and not is_dup2d_stdin) or not name:
                 continue
             try:
                 content = bytes(self._rust_mgr.get_state_fd_content(state_id, fd))

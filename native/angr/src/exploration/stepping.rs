@@ -14,15 +14,20 @@
 //! service. The matching re-entry points live in `resume.rs`.
 //!
 //! Three sibling `#[path]` submodules hold the concerns that used to share
-//! this file (angr-5mnx3.71), each reached only through `RustExplorationManager`
-//! methods so no import path outside `stepping.rs` changed:
+//! this file (angr-5mnx3.71); no import path outside `stepping.rs` changed:
 //!
 //! - `stepping_subcall.rs` — the native sub-call ABI setup shared with the
 //!   parallel path ([`SubcallAbi`] / [`setup_native_subcall_with_abi`], both
-//!   re-exported here for `core_outcome.rs`).
-//! - `stepping_bounce.rs` — `dispatch_bounce` and the unmodeled-call arm.
+//!   re-exported here for `core_outcome.rs`). Unlike its two siblings below,
+//!   this one is *not* `RustExplorationManager`-only: `setup_native_subcall_with_abi`
+//!   is also reached via `CcSnapshot::setup_native_subcall`, from the
+//!   GIL-free parallel worker path (`run_loop_worker.rs`'s
+//!   `parallel_process_state`), which has no `RustExplorationManager` receiver.
+//! - `stepping_bounce.rs` — `dispatch_bounce` and the unmodeled-call arm,
+//!   reached only through `RustExplorationManager` methods.
 //! - `stepping_forks.rs` — `process_deferred_forks_into` /
-//!   `dispatch_fork_inspect`.
+//!   `dispatch_fork_inspect`, reached only through `RustExplorationManager`
+//!   methods.
 //!
 //! What stays: [`StepError`], [`InterpreterStepResult`] and
 //! `apply_interpreter_step_result`, the `step_state_*` / `apply_core_outcome`

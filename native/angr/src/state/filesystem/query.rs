@@ -173,6 +173,18 @@ impl FileSystem {
         self.fds.iter().any(|(&fd, d)| fd > 2 && d.is_open)
     }
 
+    /// True when fd 0 no longer points at the pristine harness-seeded stdin
+    /// placeholder [`Default for FileSystem`](struct@FileSystem)'s `impl`
+    /// registers at process start -- i.e. a guest `dup2(real_fd, 0)` rewired
+    /// it onto a real, Rust-tracked file (angr-qmrrp). `dup2` clones the
+    /// whole source [`FileDescriptor`], including its `name`, into fd 0's
+    /// slot, so the only way the name can differ from the `"/dev/stdin"`
+    /// placeholder is a `dup2` onto it.
+    pub fn fd0_is_dup2d(&self) -> bool {
+        self.fd_info(0)
+            .is_some_and(|(name, ..)| name != "/dev/stdin")
+    }
+
     /// Get the next fd number (for pre-allocating).
     pub fn next_fd(&self) -> u32 {
         self.next_fd

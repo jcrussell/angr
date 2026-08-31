@@ -269,7 +269,7 @@ impl RustExplorationManager {
             // still dispatching — deadlock instead of a wrong worker count — so
             // keep the stale pool and say so.
             log::warn!(
-                "set_parallel_workers({wanted}) could not resize the worker pool: a steady                  session survived the config guard, so the existing pool keeps its worker count"
+                "set_parallel_workers({wanted}) could not resize the worker pool: a steady session survived the config guard, so the existing pool keeps its worker count"
             );
             return;
         }

@@ -1087,8 +1087,14 @@ impl RustExplorationManager {
     }
 
     pub(crate) fn _has_state_extra_fds(&self, state_id: u64) -> bool {
-        self.find_state(state_id)
-            .is_some_and(|state| state.file_system_ref().has_fds_above_stderr())
+        self.find_state(state_id).is_some_and(|state| {
+            let fs = state.file_system_ref();
+            // angr-qmrrp: a dup2'd-onto-fd-0 state needs syncing too, even
+            // when the fd it dup2'd from has since been closed (so no fd
+            // above stderr remains open) -- `has_fds_above_stderr` alone
+            // would wrongly gate this state out of `_inject_rust_fds`.
+            fs.has_fds_above_stderr() || fs.fd0_is_dup2d()
+        })
     }
 
     pub(crate) fn _get_state_fd_content(&self, state_id: u64, fd: u32) -> PyResult<Vec<u8>> {
