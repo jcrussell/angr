@@ -49,12 +49,32 @@ impl SymbolicMemory {
                 width_bits,
             });
         }
+        let sym_bytes = width_bits / 8;
+        // angr-6cp06.62: this is a Multi->Symbolic transition site, so it owes
+        // the same cleanup `store_concrete`'s symbolic branch (angr-9ke6b.95)
+        // and `merge`'s per-byte collapse (angr-0jh0j.31) do. A byte may be
+        // marked Multi *or* Symbolic but not both (invariant documented on
+        // `SymbolicMemory`), and `load_concrete_common` dispatches
+        // Multi-marked bytes before `symbolic_objects` is consulted — so a
+        // stale Multi cell here would shadow the imported value on every later
+        // load, and `flush_multi_cells` would re-derive `symbolic_objects`
+        // from the stale payload on export, clobbering it a second time.
+        // Must run before the page-marking loop below, which would otherwise
+        // flush a stale `multi_bitmap` back over the clear. Gated on the
+        // emptiness check like its two siblings so the common Multi-free
+        // import keeps its per-byte cost at zero map lookups.
+        if !self.multi_objects.is_empty() {
+            for i in 0..sym_bytes {
+                // overflow-ok: `Add<u64> for Address` is `wrapping_add`, like
+                // the guest — an import straddling the top wraps the same way.
+                self.clear_multi_at(addr + i as u64);
+            }
+        }
         // Track as Python-imported so get_state_symbolic_z3_asts can filter it out
         self.imported_addrs.insert(addr);
         // Store in symbolic_objects for lookup
         self.symbolic_objects.insert(addr, value.clone());
         // Update reverse span index
-        let sym_bytes = width_bits / 8;
         for i in 1..sym_bytes {
             // overflow-ok: `Add<u64> for Address` is `wrapping_add`, like the guest.
             self.symbolic_spans

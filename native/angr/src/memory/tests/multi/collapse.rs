@@ -304,6 +304,83 @@ fn test_symbolic_overwrite_of_multi_loads_new_value() {
     );
 }
 
+/// angr-6cp06.62: `import_symbolic_value` is the third Multi->Symbolic
+/// transition site (after `store_concrete`'s symbolic branch and `merge`'s
+/// per-byte collapse) and owes the same cleanup. It is on the live
+/// `flush_stores` / `flush_stores_to_rust_memory` path, so a surviving Multi
+/// cell would shadow every flushed symbolic store at a previously-Multi byte.
+#[test]
+fn test_import_symbolic_value_clears_multi_cell() {
+    let ctx = SymContext::new_mock();
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    mem.map(0x3000, 0x1000, Permission::RWX);
+
+    let addr_var = RustBV::symbolic(&ctx, "imp_over_multi_addr", 64);
+    mem.set_multi_alternatives(
+        0x3000,
+        MultiPayload::from_alternatives(vec![make_alt(&ctx, &addr_var, 0x3000, 0x42)]),
+    );
+    mem.set_multi_alternatives(
+        0x3001,
+        MultiPayload::from_alternatives(vec![make_alt(&ctx, &addr_var, 0x3001, 0x43)]),
+    );
+    assert_eq!(mem.multi_cell_count(), 2);
+
+    // A 2-byte symbolic import covering both Multi bytes.
+    let fresh = RustBV::symbolic(&ctx, "imp_over_multi_val", 16);
+    mem.import_symbolic_value(0x3000, fresh, None).unwrap();
+
+    let page = mem.pages.get(&(0x3000 >> 12)).expect("page must exist");
+    for offset in 0..2u16 {
+        assert!(
+            mem.get_multi_alternatives(0x3000 + u64::from(offset)).is_none(),
+            "import must drop the Multi sidecar entry at +{offset}"
+        );
+        assert!(
+            !page.is_multi(offset),
+            "import must clear the multi_bitmap bit at +{offset}"
+        );
+        assert!(
+            page.is_symbolic(offset),
+            "the imported byte at +{offset} must be marked Symbolic"
+        );
+    }
+    assert_eq!(mem.multi_cell_count(), 0);
+}
+
+/// Value-level companion to the test above: after the import the load must
+/// resolve to the imported symbol, not the stale Multi alternative (0x42).
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_import_symbolic_value_over_multi_loads_new_value() {
+    let ctx = SymContext::new_mock();
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    mem.map(0x3000, 0x1000, Permission::RWX);
+
+    let addr_var = RustBV::symbolic(&ctx, "iovm_addr", 64);
+    mem.set_multi_alternatives(
+        0x3000,
+        MultiPayload::from_alternatives(vec![make_alt(&ctx, &addr_var, 0x3000, 0x42)]),
+    );
+
+    let fresh = RustBV::symbolic(&ctx, "iovm_val", 8);
+    mem.import_symbolic_value(0x3000, fresh.clone(), None)
+        .unwrap();
+
+    let loaded = mem
+        .load_concrete_lazy(0x3000, 1, &ctx)
+        .expect("lazy load must succeed");
+
+    let probe = ctx.fork();
+    probe.assume_true(&addr_var.eq(&RustBV::concrete(0x3000, 64), &probe));
+    probe.assume_true(&fresh.eq(&RustBV::concrete(0x77, 8), &probe));
+    assert_eq!(
+        probe.eval(&loaded),
+        Some(0x77),
+        "load must return the imported symbol, not the stale Multi alternative"
+    );
+}
+
 // angr-9ke6b.96: `load_concrete` (the non-lazy load path behind
 // `RustSimState::memory_load` / `_pending_memory_load`) must dispatch to
 // `assemble_load_with_multi` too. `install_multi_for_candidates` never sets
