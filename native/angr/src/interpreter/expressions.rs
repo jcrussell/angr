@@ -369,6 +369,14 @@ impl<'a> VEXInterpreter<'a> {
         if let Some(data) = self.pending_stores.try_load(addr_concrete, size) {
             return Ok(bytes_to_bv(data, (size * 8) as u32));
         }
+        // No *single* buffered store covers the whole load (a byte-wise write
+        // loop followed by a wider read-back). Assemble it from several of
+        // them before falling through to the layers below, which know nothing
+        // about the still-buffered stores and would answer with stale
+        // pre-write bytes (angr-6cp06.69).
+        if let Some(data) = self.pending_stores.try_load_assembled(addr_concrete, size) {
+            return Ok(bytes_to_bv(&data, (size * 8) as u32));
+        }
 
         // Also check previously flushed symbolic stores (cross-block), with the
         // same exact-then-overlap fallback as the pending map above.

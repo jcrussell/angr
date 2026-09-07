@@ -150,6 +150,44 @@ impl PendingStoreBuffer {
         None
     }
 
+    /// Assemble a load at `[addr, addr+size)` from *several* pending stores
+    /// when no single store covers the whole range.
+    ///
+    /// `try_load` can only ever hand back a slice of one store's buffer, so a
+    /// byte-wise write loop (store 1 byte at `addr`, then 1 byte at
+    /// `addr + 1`) followed by a wider read-back missed the buffer entirely
+    /// and fell through to stale pre-write memory (angr-6cp06.69). Callers
+    /// should try `try_load` first — it is allocation-free — and only reach
+    /// for this on a miss.
+    ///
+    /// Every byte of the range must be buffered; a partially covered load
+    /// still returns `None`, because merging buffered bytes with the caller's
+    /// lower layers (flushed stores, concrete cache, Python callback) needs
+    /// machinery that does not live here.
+    ///
+    /// `byte_index` records, per byte, the index of the most recent store
+    /// covering it, so gathering byte-by-byte is last-write-wins by
+    /// construction — unlike `try_load`'s reverse scan, it does not lean on
+    /// `push`'s overlap patching.
+    pub(crate) fn try_load_assembled(&self, addr: u64, size: usize) -> Option<Vec<u8>> {
+        // Fast-skip the common miss (no pending store at the load address)
+        // before allocating the output buffer.
+        if !self.byte_index.contains_key(&addr) {
+            return None;
+        }
+        let mut out = Vec::with_capacity(size);
+        for offset in 0..size as u64 {
+            // Guest addresses wrap at the top of the address space, matching
+            // how `push` indexes a store's bytes.
+            let byte_addr = addr.wrapping_add(offset);
+            let &idx = self.byte_index.get(&byte_addr)?;
+            let (store_addr, store_data) = &self.stores[idx];
+            let off = usize::try_from(byte_addr.wrapping_sub(*store_addr)).ok()?;
+            out.push(*store_data.get(off)?);
+        }
+        Some(out)
+    }
+
     /// Find bytes from a pending store whose base address exactly equals
     /// `addr` and whose length is at least `size`. Used by callers that need
     /// the value originally written at `addr` (not arbitrary bytes from a

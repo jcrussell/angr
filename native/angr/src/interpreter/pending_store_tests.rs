@@ -165,3 +165,81 @@ fn load_at_top_of_address_space_does_not_overflow() {
     assert_eq!(buf.try_load(u64::MAX - 7, 8).unwrap(), &[9, 10, 3, 4, 5, 6, 7, 8]);
     assert!(buf.try_load(u64::MAX, 8).is_none());
 }
+
+// --- try_load_assembled: multi-store union coverage (angr-6cp06.69) ---
+
+#[test]
+fn adjacent_narrow_stores_assemble_into_wider_load() {
+    // The shape the bug was filed for: a byte-wise write loop, then a wider
+    // read-back before the buffer is flushed. No single store covers the
+    // 2-byte load, so `try_load` misses and the assembly path must answer.
+    let mut buf = PendingStoreBuffer::with_capacity(8);
+    buf.push(0x100, vec![0xaa]);
+    buf.push(0x101, vec![0xbb]);
+    assert!(buf.try_load(0x100, 2).is_none());
+    assert_eq!(buf.try_load_assembled(0x100, 2).unwrap(), vec![0xaa, 0xbb]);
+}
+
+#[test]
+fn assembled_load_spans_four_single_byte_stores() {
+    let mut buf = PendingStoreBuffer::with_capacity(8);
+    for (i, b) in [1u8, 2, 3, 4].into_iter().enumerate() {
+        buf.push(0x100 + i as u64, vec![b]);
+    }
+    assert_eq!(
+        buf.try_load_assembled(0x100, 4).unwrap(),
+        vec![1, 2, 3, 4]
+    );
+    // Sub-ranges assemble too.
+    assert_eq!(buf.try_load_assembled(0x101, 2).unwrap(), vec![2, 3]);
+}
+
+#[test]
+fn assembled_load_is_last_write_wins_per_byte() {
+    // Overlapping (not merely adjacent) stores: the newest store owns each
+    // byte it covers, even where an older store also covers it.
+    let mut buf = PendingStoreBuffer::with_capacity(8);
+    buf.push(0x100, vec![1, 2, 3]); // 0x100..0x103
+    buf.push(0x102, vec![9, 9]); // 0x102..0x104, overwrites 0x102
+    assert!(buf.try_load(0x100, 4).is_none()); // neither store covers 4 bytes
+    assert_eq!(
+        buf.try_load_assembled(0x100, 4).unwrap(),
+        vec![1, 2, 9, 9]
+    );
+}
+
+#[test]
+fn partially_covered_load_does_not_assemble() {
+    // A hole in the middle and a hole past the end both fall through to the
+    // caller's lower layers rather than fabricating bytes.
+    let mut buf = PendingStoreBuffer::with_capacity(8);
+    buf.push(0x100, vec![1]);
+    buf.push(0x102, vec![3]);
+    assert!(buf.try_load_assembled(0x100, 3).is_none()); // 0x101 unbuffered
+    assert!(buf.try_load_assembled(0x102, 2).is_none()); // 0x103 unbuffered
+    // Load starting outside the buffer misses without allocating.
+    assert!(buf.try_load_assembled(0x101, 1).is_none());
+}
+
+#[test]
+fn assembled_load_wraps_at_top_of_address_space() {
+    // `push` indexes bytes with `wrapping_add`; the assembly path must
+    // recover the offsets with the matching `wrapping_sub`.
+    let mut buf = PendingStoreBuffer::with_capacity(4);
+    buf.push(u64::MAX, vec![0xde]);
+    buf.push(0, vec![0xad]);
+    assert_eq!(
+        buf.try_load_assembled(u64::MAX, 2).unwrap(),
+        vec![0xde, 0xad]
+    );
+}
+
+#[test]
+fn assembled_load_after_drain_misses() {
+    let mut buf = PendingStoreBuffer::with_capacity(4);
+    buf.push(0x100, vec![1]);
+    buf.push(0x101, vec![2]);
+    let drained: Vec<_> = buf.drain().collect();
+    assert_eq!(drained.len(), 2);
+    assert!(buf.try_load_assembled(0x100, 2).is_none());
+}
