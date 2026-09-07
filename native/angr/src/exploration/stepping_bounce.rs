@@ -41,11 +41,8 @@ impl RustExplorationManager {
                 } else {
                     None
                 };
-                let pre_callback_snapshot = if !deferred_forks.is_empty() {
-                    Some(state.fork())
-                } else {
-                    None
-                };
+                let pre_callback_snapshot =
+                    super::helpers::pre_callback_snapshot_for(&state, &deferred_forks);
                 let solver_ref = state.solver();
                 let shared_ctx = RustSolverContext::from_shared_sym_context(solver_ref.clone());
                 if let Some(start) = hook_fork_start {
@@ -134,9 +131,19 @@ impl RustExplorationManager {
             ),
             BounceKind::PythonVEXFallback { addr, reason } => {
                 // state.set_pc(addr) was applied by the core before bouncing.
+                //
+                // `bounce()` (core_outcome_handlers.rs) forwards the step's
+                // deferred forks into every `PendingBounce` regardless of kind,
+                // so a block that forked on a symbolic guard and *then* hit an
+                // unsupported VEX op arrives here with a non-empty
+                // `deferred_forks`. Those forks diverged before the fallback
+                // block ran, so they need a pre-callback base like the sibling
+                // arms (angr-6cp06.19).
+                let pre_callback_snapshot =
+                    super::helpers::pre_callback_snapshot_for(&state, &deferred_forks);
                 Err(StepError::NeedCallback(PendingCallback::with_context(
                     state,
-                    None,
+                    pre_callback_snapshot,
                     CallbackReason::PythonVEXFallback { addr, reason },
                     JumpKind::Boring.ijk_name(),
                     None,
@@ -280,3 +287,5 @@ impl RustExplorationManager {
         Ok(successors)
     }
 }
+
+test_submod!(z3 "stepping_bounce_tests.rs" => stepping_bounce_tests);

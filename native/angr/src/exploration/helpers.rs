@@ -811,6 +811,28 @@ pub(crate) fn extract_args_with_abi(
     Ok(args)
 }
 
+/// Snapshot `state` for later deferred-fork materialization — but only when
+/// there are deferred forks to materialize, since `state.fork()` clones the Z3
+/// solver (~3-40ms) and most callbacks defer nothing.
+///
+/// Every Python round-trip that can carry a non-empty `deferred_forks` MUST
+/// call this: `_resume_after_simprocedure` (`resume.rs`) computes its fork base
+/// as `pre_callback_snapshot.unwrap_or_else(|| state.fork())` *after* the
+/// callback's register/memory writes and constraints have been applied to
+/// `state`, so a `None` snapshot silently bases a branch that diverged *before*
+/// the callback on the post-callback state (angr-6cp06.19; same shape as bd
+/// memory `avoid-deferred-fork-base-mismatch`).
+pub(crate) fn pre_callback_snapshot_for(
+    state: &RustSimState,
+    deferred_forks: &[DeferredFork],
+) -> Option<RustSimState> {
+    if deferred_forks.is_empty() {
+        None
+    } else {
+        Some(state.fork())
+    }
+}
+
 /// Prepare the per-callback solver context for a Python round-trip.
 ///
 /// Two things every "return to Python" exit needs: (1) a pre-callback
@@ -820,20 +842,16 @@ pub(crate) fn extract_args_with_abi(
 /// not a fork) so the callback evaluates against the live constraints.
 ///
 /// Returns `(pre_callback_snapshot, shared_ctx)` ready to hand to
-/// `PendingCallback::with_context`. `dispatch_bounce`'s Hook arm
-/// (`stepping_bounce.rs`) keeps its own
-/// inline copy because it interleaves fork-timing profiling around the snapshot;
-/// the symbolic-branch / VEX-fallback exits pass `(None, None)` by design and
-/// do not use this.
+/// `PendingCallback::with_context`. `dispatch_bounce`'s Hook and
+/// `PythonVEXFallback` arms (`stepping_bounce.rs`) call
+/// [`pre_callback_snapshot_for`] directly instead — the former because it
+/// interleaves fork-timing profiling around the snapshot, the latter because it
+/// deliberately hands the callback no shared solver context.
 pub(crate) fn prepare_shared_callback_solver(
     state: &RustSimState,
     deferred_forks: &[DeferredFork],
 ) -> (Option<RustSimState>, RustSolverContext) {
-    let pre_callback_snapshot = if !deferred_forks.is_empty() {
-        Some(state.fork())
-    } else {
-        None
-    };
+    let pre_callback_snapshot = pre_callback_snapshot_for(state, deferred_forks);
     let solver_ref = state.solver();
     let shared_ctx = RustSolverContext::from_shared_sym_context(solver_ref.clone());
     (pre_callback_snapshot, shared_ctx)
