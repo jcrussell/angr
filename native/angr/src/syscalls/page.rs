@@ -20,9 +20,10 @@ use crate::memory::Permission;
 /// up. Re-exported from `crate::memory::page` — the single definition — so
 /// `super::page::{PAGE_SIZE, PAGE_MASK}` keeps resolving for the `brk` /
 /// `mmap` / `mprotect` handlers. [`PageIndex`] rides along for the same
-/// reason: `mprotect` converts byte addresses to the page numbers the raw
-/// `memory/` page API is keyed by, and open-coding that as `>> 12` is the
-/// drift angr-c7xno.49 tracked.
+/// reason: `brk` and `mprotect` convert byte addresses to the page numbers the
+/// raw `memory/` page API is keyed by, and open-coding that as `>> 12` is the
+/// drift angr-c7xno.49 tracked (`mmap` converts too, but reaches for
+/// `PageIndex::range_covering` directly from `crate::memory`).
 pub(crate) use crate::memory::{PAGE_MASK, PAGE_SIZE, PageIndex};
 
 /// Translate Linux PROT bits (0x1=R, 0x2=W, 0x4=X) into the internal

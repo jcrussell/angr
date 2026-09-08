@@ -22,7 +22,7 @@
 //! detect that any page in the to-be-mapped range is already mapped
 //! we fall back to the Python path to preserve semantics.
 
-use super::page::{PAGE_MASK, PAGE_SIZE};
+use super::page::{PAGE_MASK, PAGE_SIZE, PageIndex};
 use super::require_syscall_args;
 use super::{
     BoundedArg, MAX_MAP_SIZE as MAX_BRK_GROWTH, NativeSyscall, SyscallError, SyscallOutcome,
@@ -108,7 +108,12 @@ impl NativeSyscall for NativeBrkSyscall {
             let memory = state.memory();
             let mut page_addr = aligned_start;
             while page_addr < aligned_end {
-                let page_num = page_addr >> 12;
+                // `.get()` is the one boundary crossing: `page_permissions` is
+                // part of the raw-`u64` page API inside `memory/`. Open-coding
+                // the shift is the drift `PageIndex` exists to prevent — see
+                // its doc in `memory/page.rs`, and the identical conversion in
+                // sibling `mprotect.rs`.
+                let page_num = PageIndex::of(page_addr).get();
                 if memory.page_permissions(page_num).is_some() {
                     return Err(SyscallError::Other(format!(
                         "brk: page {page_addr:#x} already mapped (collision)"
