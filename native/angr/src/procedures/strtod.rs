@@ -45,6 +45,10 @@ const MAX_LEN: usize = 256;
 ///               | "inf" | "infinity"
 ///               | "nan" )
 /// ```
+///
+/// The `0x` alternative backtracks: when no hex digit follows the prefix, the
+/// longest valid subject sequence is the leading `0` alone, so the returned
+/// index lands on the `x` rather than rejecting the whole literal.
 fn floating_prefix_len(bytes: &[u8]) -> usize {
     let mut i = 0;
     // whitespace (C-locale `isspace`, `\v` included — see `ctype::is_c_space`)
@@ -88,7 +92,16 @@ fn floating_prefix_len(bytes: &[u8]) -> usize {
             }
         }
         if !saw_digit {
-            return prefix_start;
+            // `0x` with no hex digit after it is not a hex-float, but the
+            // leading `0` is still a complete decimal literal on its own, so
+            // C's longest-valid-subject-sequence rule stops *at the `x`*, not
+            // back at the sign: glibc `strtod("0xg", &e)` yields 0.0 with
+            // `e` on the `x`, and `strtod("-0xz", &e)` yields -0.0 with `e`
+            // at offset 2. Returning `prefix_start` here discarded both the
+            // `0` and the sign (angr-6cp06.2).
+            // overflow-ok: `start` indexes into `bytes`, whose length is
+            // capped at `MAX_LEN`, so `+ 1` cannot approach `usize::MAX`.
+            return start + 1;
         }
         if i < bytes.len() && (bytes[i] == b'p' || bytes[i] == b'P') {
             let exp_start = i;

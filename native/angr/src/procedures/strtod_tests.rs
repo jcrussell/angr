@@ -366,3 +366,56 @@ fn test_floating_prefix_len_grammar() {
     // Trailing 'e' without digits gets dropped
     assert_eq!(floating_prefix_len(b"1.5ex"), 3);
 }
+
+/// `0x` with no hex digit after it: C's longest-valid-subject-sequence rule
+/// backtracks to the leading `0`, so the prefix ends *at the `x`* instead of
+/// rejecting the literal outright and losing the sign with it (angr-6cp06.2).
+#[test]
+fn test_floating_prefix_len_hex_prefix_without_digits_backtracks_to_zero() {
+    assert_eq!(floating_prefix_len(b"0x"), 1);
+    assert_eq!(floating_prefix_len(b"0X"), 1);
+    assert_eq!(floating_prefix_len(b"0xg"), 1);
+    assert_eq!(floating_prefix_len(b"0x."), 1);
+    assert_eq!(floating_prefix_len(b"0x.p3"), 1);
+    // The sign survives the backtrack.
+    assert_eq!(floating_prefix_len(b"-0xz"), 2);
+    assert_eq!(floating_prefix_len(b"+0x"), 2);
+    // Leading whitespace is still skipped first.
+    assert_eq!(floating_prefix_len(b"  -0xz"), 4);
+    // A valid hex digit still takes the successful path.
+    assert_eq!(floating_prefix_len(b"0x0z"), 3);
+}
+
+/// End-to-end shape of the same backtrack: the value is a signed zero and
+/// `*endptr` lands on the `x`, matching glibc `strtod("-0xz", &e)`.
+#[test]
+fn test_strtod_hex_prefix_without_digits_returns_signed_zero() {
+    for (input, want_bits, want_end) in [
+        (&b"0xg"[..], 0.0f64.to_bits(), 1u64),
+        (&b"-0xz"[..], (-0.0f64).to_bits(), 2),
+        (&b"0x"[..], 0.0f64.to_bits(), 1),
+    ] {
+        let mut state = RustSimState::new("amd64").unwrap();
+        setup_string(&mut state, 0x1000, input);
+        state.map_memory_data(0x2000, &[0u8; 8], Permission::RWX);
+        NativeStrtod
+            .call(
+                &mut state,
+                &[RustBV::concrete(0x1000, 64), RustBV::concrete(0x2000, 64)],
+            )
+            .unwrap();
+        assert_eq!(
+            read_xmm0_low64(&state),
+            want_bits,
+            "strtod({:?}) value",
+            std::str::from_utf8(input).unwrap()
+        );
+        let end = state.memory_load(0x2000, 8).unwrap();
+        assert_eq!(
+            end.as_u64(),
+            Some(0x1000 + want_end),
+            "strtod({:?}) endptr",
+            std::str::from_utf8(input).unwrap()
+        );
+    }
+}
