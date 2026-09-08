@@ -18,6 +18,8 @@
 //!   hooks, and the parked-bounce flush.
 //! - `native_return` — angr-sqfj8.37 / angr-c7xno.29: the return path's SP
 //!   adjustment, per calling convention and for a symbolic SP.
+//! - `simproc_forks` — angr-6cp06.24: the fork base the same success path hands
+//!   to `process_deferred_forks_into_core`.
 //! - `syscall_dispatch` — angr-c7xno.33: `handle_syscall_core`'s four dispatch
 //!   outcomes, plus `CcSnapshot::write_syscall_return`.
 //! - `symbolic_jump` — angr-c7xno.33: `handle_symbolic_jump_target_core`.
@@ -39,6 +41,7 @@ mod errors;
 mod hooks;
 mod native_resume;
 mod native_return;
+mod simproc_forks;
 mod stats;
 mod symbolic_jump;
 mod syscall_dispatch;
@@ -52,6 +55,10 @@ fn fresh_ctx() -> super::StepContext {
 
 const HOOK_ADDR: u64 = 0x50_0000;
 const HOOK_RET: u64 = 0x40_2000;
+/// What [`FindTargetProc`] returns. Deliberately non-zero so a successor's
+/// return register distinguishes "the proc ran and wrote here" from a
+/// never-written register (`simproc_forks` leans on that).
+const PROC_RET_VAL: u128 = 0x1234_5678;
 
 /// Stands in for any zero-arg native libc proc (getenv/time/...) hooked in the
 /// extern object, i.e. outside `binary_regions`, where native dispatch fires.
@@ -69,7 +76,7 @@ impl crate::procedures::NativeSimProcedure for FindTargetProc {
         _args: &[crate::symbolic::RustBV],
     ) -> Result<Option<crate::symbolic::RustBV>, crate::procedures::ProcedureError> {
         Ok(Some(crate::symbolic::RustBV::concrete(
-            0,
+            PROC_RET_VAL,
             state.arch().bits(),
         )))
     }
@@ -100,6 +107,47 @@ fn dispatch_hook_on_arch(
     sp: SpSeed,
     cfg: impl FnOnce(&mut RustExplorationManager),
 ) -> CoreOutcome {
+    dispatch_hook_seeded(arch, sp, None, cfg).outcome
+}
+
+/// Condition id the [`ForkSeed`] guard is registered under.
+const FORK_COND_ID: u64 = 55;
+
+/// A deferred fork to ride along with the hook dispatch, modelling a symbolic
+/// branch the same VEX block took before reaching the hook. Its guard is minted
+/// by [`dispatch_hook_seeded`] (it needs the state's solver) and registered in
+/// `stored_conditions` under [`FORK_COND_ID`], so the materializer takes the
+/// guarded path rather than the id-missing conservative one.
+struct ForkSeed {
+    /// Which side of the branch the main state took.
+    path_taken: bool,
+    /// Where the unexplored sibling resumes.
+    unexplored_target: u64,
+    /// Whether to seed the pre-branch `BranchSnapshot` the interpreter records
+    /// next to every deferred fork (`interpreter/statements.rs`'s
+    /// `GuardClass::Symbolic` arm inserts both unconditionally). `false` models
+    /// the degenerate snapshot-less shape `build_unexplored_fork` still has an
+    /// arm for.
+    with_snapshot: bool,
+}
+
+/// What [`dispatch_hook_seeded`] hands back: the outcome, the main state's id
+/// (for the fork's root hint), and the minted guard when a [`ForkSeed`] was
+/// supplied, so each successor's solver can be asked which side it carries.
+struct SeededDispatch {
+    outcome: CoreOutcome,
+    sid: u64,
+    condition: Option<crate::symbolic::RustBV>,
+}
+
+/// [`dispatch_hook_on_arch`] with an optional deferred fork riding into
+/// `PostStepInputs` (angr-6cp06.24).
+fn dispatch_hook_seeded(
+    arch: &str,
+    sp: SpSeed,
+    fork: Option<ForkSeed>,
+    cfg: impl FnOnce(&mut RustExplorationManager),
+) -> SeededDispatch {
     let mut mgr = RustExplorationManager::new(arch, None).unwrap();
     cfg(&mut mgr);
     let ctx = mgr.step_context();
@@ -121,7 +169,35 @@ fn dispatch_hook_on_arch(
     }
     let sid = state.state_id();
 
-    run_post_step_core(
+    let mut deferred_forks = Vec::new();
+    let mut stored_conditions = FxHashMap::default();
+    let mut fork_snapshots = FxHashMap::default();
+    let condition = fork.map(|seed| {
+        let guard = crate::symbolic::RustBV::symbolic(&state.solver().borrow(), "hook_guard", 1);
+        stored_conditions.insert(FORK_COND_ID, guard.clone());
+        if seed.with_snapshot {
+            // Taken before the guard is assumed and before the proc runs, like
+            // the interpreter's.
+            fork_snapshots.insert(
+                FORK_COND_ID,
+                crate::interpreter::BranchSnapshot {
+                    solver: state.solver().borrow().fork(),
+                    registers: state.registers().fork(),
+                    memory: None,
+                },
+            );
+        }
+        deferred_forks.push(DeferredFork {
+            branch_addr: HOOK_ADDR - 0x10,
+            path_taken: seed.path_taken,
+            unexplored_target: seed.unexplored_target,
+            condition_id: FORK_COND_ID,
+            condition_ast: None,
+        });
+        guard
+    });
+
+    let outcome = run_post_step_core(
         &CoreCtx {
             ctx: &ctx,
             prof: &prof,
@@ -137,11 +213,16 @@ fn dispatch_hook_on_arch(
                 num_args: 0,
                 return_addr: HOOK_RET,
             },
-            deferred_forks: Vec::new(),
+            deferred_forks,
             last_condition: None,
-            stored_conditions: FxHashMap::default(),
-            fork_snapshots: FxHashMap::default(),
+            stored_conditions,
+            fork_snapshots,
         },
         sid,
-    )
+    );
+    SeededDispatch {
+        outcome,
+        sid,
+        condition,
+    }
 }
