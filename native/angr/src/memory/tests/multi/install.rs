@@ -101,8 +101,11 @@ fn test_store_concrete_multi_fork_independence() {
     assert_eq!(child.multi_cell_count(), parent_count_before);
 
     // Child overwrites byte 0 of the first candidate with a concrete byte.
-    // store_concrete clears the corresponding multi bit AND the
-    // multi_objects entry (per test_concrete_overwrite_clears_multi_bit).
+    // store_concrete clears the corresponding multi bit (pinned by
+    // collapse.rs::test_concrete_overwrite_clears_multi_bit) AND the
+    // multi_objects entry (angr-1tes; pinned by
+    // cache.rs::test_concrete_overwrite_clears_multi_cell), so the
+    // clear_multi_at below is belt-and-suspenders for this fork test.
     child
         .store_concrete(0x1000, RustBV::concrete(0xFF, 8))
         .unwrap();

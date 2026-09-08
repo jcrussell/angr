@@ -201,10 +201,15 @@ fn test_multi_cell_load_multiple_multi_bytes() {
 }
 
 /// Concrete overwrite of a Multi byte must clear the multi_bitmap bit on
-/// the page. The owning `multi_objects` entry is the caller's
-/// responsibility (documented on `store_concrete`), but the page-level
-/// bookkeeping must self-clean so later loads do not see a stale Multi
-/// marker.
+/// the page — the half of the cleanup `page.store_concrete` performs, so
+/// later loads do not see a stale Multi marker.
+///
+/// This pins only that page-level half. The sidecar half — dropping the
+/// owning `multi_objects` entry and bumping its `multi_versions` counter —
+/// is `SymbolicMemory::store_concrete`'s own responsibility since angr-1tes,
+/// and is pinned by the sibling
+/// `multi/cache.rs::test_concrete_overwrite_clears_multi_cell`, whose doc
+/// describes the pre-angr-1tes bug where only this page bit was cleared.
 #[test]
 fn test_concrete_overwrite_clears_multi_bit() {
     let ctx = SymContext::new_mock();
