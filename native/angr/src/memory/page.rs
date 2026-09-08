@@ -509,9 +509,17 @@ impl MemoryPage {
     }
 
     /// Mark a single byte as Multi (carrying lazy alternatives in
-    /// `SymbolicMemory::multi_objects`). The byte stops being treated as
-    /// plain Symbolic — the caller is responsible for clearing the
-    /// symbolic bit and the `symbolic_objects` entry at this address.
+    /// `SymbolicMemory::multi_objects`). The caller is responsible for
+    /// retiring the `symbolic_objects` entry covering this address —
+    /// `SymbolicMemory::set_multi_alternatives`, the only caller, does that
+    /// via `retire_symbolic_object_at`.
+    ///
+    /// It deliberately does *not* clear the symbolic bit: the two bitmaps are
+    /// not mutually exclusive, and a byte promoted from Symbolic to Multi
+    /// keeps both bits set. Multi wins by dispatch order instead — every
+    /// reader probes `multi_objects` / `has_multi` before `is_symbolic`. See
+    /// `memory::tests::multi::payload::test_multi_supersedes_existing_symbolic`
+    /// (angr-6cp06.64), which pins that state and enumerates the readers.
     pub fn mark_multi(&mut self, offset: u16) {
         debug_assert!(
             (offset as usize) < PAGE_SIZE as usize,

@@ -42,7 +42,7 @@ fn test_multi_payload_round_trip() {
     assert!(page.is_multi(0), "page must mark byte 0 as Multi");
     assert!(
         !page.is_symbolic(0),
-        "Multi marker must not overlap plain Symbolic marker"
+        "installing Multi on a never-symbolic byte must not set the symbolic bit"
     );
 }
 
@@ -147,12 +147,31 @@ fn test_multi_supersedes_existing_symbolic() {
 
     let page = mem.pages.get(&(0x1000 >> 12)).expect("page must exist");
     assert!(page.is_multi(0), "Multi marker must be set");
-    // import_symbolic_value set the symbolic bit; set_multi_alternatives
-    // does not currently clear that bit since the byte is still "abstract" in
-    // some sense — load-side collapse (Phase 1.2) handles the priority. Just
-    // assert the multi bit is set and the symbolic_objects entry is gone,
-    // which is what later phases rely on.
-    let _ = page.is_symbolic(0);
+    // angr-6cp06.64: the two bitmaps are deliberately NOT mutually exclusive
+    // in this direction. `import_symbolic_value` set the symbolic bit and
+    // `set_multi_alternatives` leaves it set — it retires the
+    // `symbolic_objects` entry (`retire_symbolic_object_at`) but never calls
+    // `MemoryPage::clear_symbolic`. Pinned as an assertion rather than
+    // discarded, because "which bit wins" is a real contract every Multi-aware
+    // reader depends on: `load_concrete_common` dispatches on
+    // `range_has_multi` before it looks at any symbolic sidecar,
+    // `assemble_load_with_multi` and `compute_wider_load_fingerprint` both
+    // probe `multi_objects` before `page.is_symbolic`, and
+    // `merge::merge_byte_value` takes its `is_multi` arm before its `is_sym`
+    // arm. So the leftover symbolic bit is unreachable on every value path,
+    // and only ever makes a Multi byte look *more* abstract than it is
+    // (`read_concrete_bytes_for_lift` stops its concrete run at it).
+    //
+    // The reverse transition is not symmetric and must not be read as one:
+    // `collapse.rs::test_symbolic_overwrite_clears_multi_cell` pins that a
+    // symbolic store over a Multi cell *does* clear the multi bit, because
+    // there the stale bit would win the dispatch order and shadow the fresh
+    // value (angr-0jh0j.31).
+    assert!(
+        page.is_symbolic(0),
+        "set_multi_alternatives leaves the prior symbolic bit set; Multi wins \
+         by dispatch order, not by bitmap exclusivity"
+    );
 }
 
 /// Counter invariant: every set_multi_alternatives must bump mem_ite_depth.
