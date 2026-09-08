@@ -74,6 +74,11 @@ fn format_string(
         if i >= fmt.len() {
             break;
         }
+        // Index of the first byte after '%', i.e. the start of the "nugget"
+        // `format_parser.py::_match_spec` is handed. Its `.*` arm only fires
+        // when the nugget *starts* with `.*`, so any flag or width digit ahead
+        // of the precision changes Python's decision — see the `.*` block below.
+        let nugget_start = i;
 
         // Handle %%
         if fmt[i] == b'%' {
@@ -150,15 +155,49 @@ fn format_string(
         if i < fmt.len() && fmt[i] == b'.' {
             i += 1;
             if i < fmt.len() && fmt[i] == b'*' {
-                // '.*' precision (arg-supplied) is matched correctly by Python.
-                if arg_idx >= args.len() {
-                    return Err(ProcedureError::SymbolicArgument(
-                        "precision arg".to_string(),
+                // '.*' precision (arg-supplied). Python's
+                // `format_parser.py::_match_spec` only recognizes it when the
+                // nugget *starts* with `.*` — a preceding '0' flag or width
+                // digit sends it down the digit-scanning path, which leaves
+                // nugget == ".*<spec>" and matches no entry of `all_spec`, so
+                // the whole specifier fails to match, a literal '%' is emitted
+                // and NO variadic arg is consumed. Native cannot cheaply
+                // reproduce that arg-shift; defer, as the '*' dynamic-width
+                // guard above does (angr-6cp06.8).
+                //
+                // overflow-ok: `dot_pos` is `i - 1` where `i > 0` — the '.' was
+                // just consumed above, so the subtraction cannot underflow.
+                let dot_pos = i - 1;
+                if dot_pos != nugget_start {
+                    return Err(ProcedureError::Other(
+                        "'.*' precision after a flag/width defers to Python".to_string(),
                     ));
                 }
-                let p = extract_concrete_arg(&args[arg_idx], "precision")?;
-                precision = Some(p as usize);
-                arg_idx += 1;
+                // Even when matched, Python only reads a *separate* precision
+                // vararg for '%s': `FormatString.replace` does
+                // `va_arg("size_t") if fmt_spec.length_spec == b".*"` inside the
+                // `spec_type == b"s"` arm only. Every other conversion falls to
+                // the `else` branch, reads exactly one `va_arg("void*")`, and
+                // ignores `length_spec` entirely (the `rjust` below it is gated
+                // on `isinstance(length_spec, int)`, and b".*" is not an int).
+                // Consuming a precision arg for `%.*d` therefore shifted every
+                // later vararg by one. Mirror Python: consume only for '%s',
+                // and otherwise drop the precision (angr-6cp06.8).
+                //
+                // overflow-ok: both indices are positions inside an in-memory
+                // format string, nowhere near usize::MAX.
+                let (_, peek_adv) = parse_length_modifier(fmt, i + 1);
+                let conv = fmt.get(i + 1 + peek_adv).copied();
+                if conv == Some(b's') {
+                    if arg_idx >= args.len() {
+                        return Err(ProcedureError::SymbolicArgument(
+                            "precision arg".to_string(),
+                        ));
+                    }
+                    let p = extract_concrete_arg(&args[arg_idx], "precision")?;
+                    precision = Some(p as usize);
+                    arg_idx += 1;
+                }
                 i += 1;
             } else {
                 // '.N' digit precision diverges: format_parser.py's _match_spec

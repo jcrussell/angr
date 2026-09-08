@@ -976,3 +976,94 @@ fn test_sprintf_percent_s_scan_bounded_by_max_string_scan() {
     let first = state.memory_load(0x2000, 1).unwrap();
     assert_eq!(first.as_u64().unwrap() as u8, 0);
 }
+
+// --- '.*' precision: only '%s' consumes a separate precision vararg ---
+//
+// Python's `format_parser.py::FormatString.replace` reads
+// `va_arg("size_t") if fmt_spec.length_spec == b".*"` **inside the
+// `spec_type == b"s"` arm only**; every other conversion reads exactly one
+// `va_arg("void*")` and ignores `length_spec`. Native used to consume a
+// precision arg for all of them, shifting every later vararg (angr-6cp06.8).
+
+/// Run `NativeSprintf` on `fmt` with `varargs`, returning the rendered bytes.
+fn render(fmt: &[u8], varargs: &[u64]) -> Result<Vec<u8>, ProcedureError> {
+    let mut state = setup_state();
+    state.map_memory_data(0x1000, fmt, Permission::RWX);
+    state.map_memory_data(0x3000, b"abcdef\x00", Permission::RWX);
+
+    let mut args = vec![
+        RustBV::concrete(0x2000, 64), // dest
+        RustBV::concrete(0x1000, 64), // format
+    ];
+    args.extend(varargs.iter().map(|&v| RustBV::concrete(v.into(), 64)));
+    while args.len() < 8 {
+        args.push(RustBV::concrete(0, 64));
+    }
+
+    let n = NativeSprintf.call(&mut state, &args)?.unwrap().as_u64().unwrap();
+    Ok((0..n)
+        .map(|i| state.memory_load(0x2000 + i, 1).unwrap().as_u64().unwrap() as u8)
+        .collect())
+}
+
+#[test]
+fn test_sprintf_star_precision_non_string_does_not_consume_arg() {
+    // Python renders "3 42": the '%.* d' spec consumes only `3`, the trailing
+    // "%d" consumes `42`, and 99 is never read. Native previously ate `3` as a
+    // precision and rendered "42 99".
+    assert_eq!(render(b"%.*d %d\x00", &[3, 42, 99]).unwrap(), b"3 42");
+}
+
+#[test]
+fn test_sprintf_star_precision_ignored_for_each_int_conversion() {
+    // The precision is dropped, not applied as zero-padding: Python's `rjust`
+    // is gated on `isinstance(length_spec, int)` and b".*" is not an int.
+    for (fmt, expected) in [
+        (b"%.*d\x00".as_slice(), b"7".as_slice()),
+        (b"%.*i\x00".as_slice(), b"7".as_slice()),
+        (b"%.*u\x00".as_slice(), b"7".as_slice()),
+        (b"%.*x\x00".as_slice(), b"7".as_slice()),
+        (b"%.*o\x00".as_slice(), b"7".as_slice()),
+    ] {
+        assert_eq!(
+            render(fmt, &[7, 99]).unwrap(),
+            expected,
+            "{}",
+            String::from_utf8_lossy(fmt)
+        );
+    }
+}
+
+#[test]
+fn test_sprintf_star_precision_length_modifier_still_ignored() {
+    // The conversion letter sits behind a length modifier ("%.*ld"); the
+    // lookahead must see past it, else the arg would be consumed again.
+    assert_eq!(render(b"%.*ld %d\x00", &[3, 42, 99]).unwrap(), b"3 42");
+}
+
+#[test]
+fn test_sprintf_star_precision_string_consumes_arg() {
+    // '%s' is the one conversion Python *does* read a precision vararg for,
+    // truncating the string to it. Unchanged native behavior.
+    assert_eq!(render(b"%.*s\x00", &[3, 0x3000]).unwrap(), b"abc");
+}
+
+#[test]
+fn test_sprintf_star_precision_after_width_or_flag_falls_back() {
+    // `_match_spec` only takes its `.*` arm when the nugget *starts* with
+    // ".*". A leading width digit or '0' flag routes it through the
+    // digit-scanning path, leaving nugget == ".*<spec>", which matches no
+    // entry of `all_spec` — the specifier fails to match entirely and no
+    // vararg is consumed. Defer rather than reproduce that arg-shift.
+    for fmt in [
+        b"%5.*d\x00".as_slice(),
+        b"%0.*d\x00".as_slice(),
+        b"%5.*s\x00".as_slice(),
+    ] {
+        assert!(
+            render(fmt, &[3, 0x3000, 99]).is_err(),
+            "{} should defer to Python",
+            String::from_utf8_lossy(fmt)
+        );
+    }
+}
