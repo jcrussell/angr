@@ -3,7 +3,7 @@
 The :class:`RustDiskCacheManager` mixin owns both sides of the on-disk init
 cache. The *write* side hashes a binary into a stable cache key, snapshots
 the post-init :class:`~angr.SimState` (registers, stack page, loader pages,
-callstack frames, section patches) and pickles it under
+callstack frames, section patches, posix entry pointers) and pickles it under
 ``~/.cache/angr_rust_init/<key>.pkl``. The *read* side
 (``_load_init_from_disk_cache`` and its ``_load_init_pickle`` /
 ``_deserialize_init_state`` / ``_apply_init_side_effects`` phases, plus the
@@ -21,7 +21,8 @@ resolve through the MRO.
 
 The module-level ``_extract_*`` functions are pure snapshot helpers over a
 SimState / loader — kept at module scope (not on the mixin) because they take
-no manager state and are independently testable.
+no manager state and are independently testable. ``_restore_posix_entry_fields``
+is their read-side mirror, module-scope for the same reason.
 """
 
 from __future__ import annotations
@@ -59,7 +60,7 @@ l = logging.getLogger(name=__name__)
 # from a different (rust, python, arch) tuple lands at a different file and
 # is treated as a miss — never deserialized into a current-format slot.
 _RUST_CACHE_VERSION = 2
-_PYTHON_METADATA_VERSION = 2
+_PYTHON_METADATA_VERSION = 3
 
 # Bounded-cache policy for ~/.cache/angr_rust_init. The cache key is an MD5 of
 # (binary content, version axes, arch), so a version bump orphans the whole
@@ -113,30 +114,94 @@ def _extract_register_snapshot(state, arch) -> dict[str, int]:
     return registers
 
 
-def _extract_posix_environ(state) -> int | None:
-    """The state's ``posix.environ`` envp array pointer as a plain int, or None.
+# The ``state.posix`` entry-stack pointers ``SimLinux.state_entry`` sets and a
+# blank_state does not: the argv/envp/auxv arrays it dumps just above SP. Each
+# is a plain address, so they share one extract/restore path; ``argc`` is a
+# claripy BV and gets its own (see ``_extract_posix_argc``).
+_POSIX_POINTER_FIELDS = ("argv", "environ", "auxv")
 
-    ``simos/linux.py::state_blank`` stores this alongside the ``KEY=VALUE``
-    string table it dumps onto the entry stack; it is the only handle either
-    engine has on ``entry_state(env=...)`` (angr-6cp06.12). Returns None when
-    the plugin never set it, or when it is symbolic — the pickle must stay
-    plain-data, and a symbolic envp pointer is unusable to both the Python
-    ``getenv`` SimProcedure and the Rust seed bridge anyway.
+
+def _extract_posix_pointer(state, field: str) -> int | None:
+    """One of the ``_POSIX_POINTER_FIELDS`` pointers as a plain int, or None.
+
+    ``simos/linux.py::state_entry`` stores these alongside the argv/``KEY=VALUE``
+    string table it dumps onto the entry stack; they are the only handle either
+    engine has on ``entry_state(args=..., env=...)`` (angr-6cp06.12 did
+    ``environ`` for the Rust getenv seed bridge, angr-7tmoz the other two for
+    the Python SimProcedures — e.g. ``__libc_start_main`` — that read
+    ``state.posix.argv``). Returns None when the plugin never set the field, or
+    when it is symbolic — the pickle must stay plain-data, and a symbolic
+    pointer is unusable to those consumers anyway.
     """
-    environ = getattr(getattr(state, "posix", None), "environ", None)
-    if environ is None:
+    ptr = getattr(getattr(state, "posix", None), field, None)
+    if ptr is None:
         return None
     try:
-        if isinstance(environ, claripy.ast.Base):
-            if environ.symbolic:
+        if isinstance(ptr, claripy.ast.Base):
+            if ptr.symbolic:
                 return None
-            environ = state.solver.eval(environ)
-        return int(environ)
+            ptr = state.solver.eval(ptr)
+        return int(ptr)
     except Exception:
-        # cat-(b) FALLBACK WITH LOSS: unreadable envp pointer is cached as
-        # absent, so a warm hit restores no environment — the pre-angr-6cp06.12
+        # cat-(b) FALLBACK WITH LOSS: an unreadable pointer is cached as absent,
+        # so a warm hit restores that field as None — the pre-angr-6cp06.12
         # behavior — rather than aborting the cache write.
         return None
+
+
+def _extract_posix_argc(state) -> tuple[int, int] | None:
+    """``posix.argc`` as a ``(value, width_in_bits)`` pair, or None.
+
+    Unlike the three pointer fields, ``argc`` is a claripy BV that consumers
+    call BV methods on (``simos/linux.py`` does ``state.posix.argc.sign_extend``),
+    so it must come back as a BV rather than an int — hence the width travels
+    with the value, keeping a caller-supplied ``entry_state(argc=BVV(n, w))`` of
+    non-default width round-tripping exactly. ``state_entry`` otherwise builds
+    it as ``claripy.BVV(len(args), 32)``.
+
+    A *symbolic* argc returns None, but never actually reaches here: the BVS is
+    also stored to the entry stack page, where ``_state_has_user_symbolic``
+    finds it and disables the cache for that state entirely. The None arm is
+    defense in depth against a symbolic argc that leaves no stack footprint.
+    """
+    argc = getattr(getattr(state, "posix", None), "argc", None)
+    if argc is None:
+        return None
+    try:
+        if isinstance(argc, claripy.ast.Base):
+            if argc.symbolic:
+                return None
+            return (int(state.solver.eval(argc)), argc.size())
+        return (int(argc), state.arch.bits)
+    except Exception:
+        # cat-(b) FALLBACK WITH LOSS: same policy as _extract_posix_pointer —
+        # cache the field as absent rather than abort the write.
+        return None
+
+
+def _restore_posix_entry_fields(state, data: dict) -> None:
+    """Put the ``posix`` entry pointers + argc back onto a rebuilt blank_state.
+
+    ``_deserialize_init_state`` rebuilds a *blank* state, whose ``posix`` plugin
+    has no argv/argc/envp/auxv — only memory and registers are restored — so a
+    warm disk hit used to hand back a state on which ``getenv`` found no
+    environment (angr-6cp06.12) and ``__libc_start_main`` read ``argv is None``
+    (angr-7tmoz), diverging from the cold run. The arrays and string table
+    themselves live in the cached ``stack_page``; only the pointers are missing.
+    They are restored as claripy BVs of the same shape ``state_entry`` produced,
+    not as ints, so a warm state is indistinguishable from a cold one.
+
+    Fields absent from the pickle (older generation, or unreadable/symbolic at
+    save time) are left at the blank-state default.
+    """
+    for field in _POSIX_POINTER_FIELDS:
+        ptr = data.get(f"posix_{field}")
+        if ptr is not None:
+            setattr(state.posix, field, claripy.BVV(ptr, state.arch.bits))
+    argc = data.get("posix_argc")
+    if argc is not None:
+        value, width = argc
+        state.posix.argc = claripy.BVV(value, width)
 
 
 def _extract_stack_page(state, page_size: int):
@@ -485,16 +550,12 @@ class RustDiskCacheManager:
                     state, page_size, mapped_page_addrs, stack_page[0] if stack_page is not None else None
                 ),
                 "callstack_frames": callstack_frames,
-                # The envp array pointer (angr-6cp06.12). `_deserialize_init_state`
-                # rebuilds a *blank* state, whose `posix` plugin has no argv/envp/
-                # auxv pointers — only memory and registers are restored — so a warm
-                # disk hit used to hand back a state whose environment was
-                # unreachable to both Python's `getenv` SimProcedure and the Rust
-                # engine's `_seed_environ_to_rust` bridge. The string table itself
-                # lives in `stack_page`, so the pointer is all that is missing.
-                # argv/argc/auxv are equally lost and not restored here — see
-                # `_deserialize_init_state` for why.
-                "posix_environ": _extract_posix_environ(state),
+                # The entry-stack pointers a rebuilt blank_state lacks — see
+                # `_restore_posix_entry_fields` for what breaks without them.
+                # The arrays and string table they point at already ride along
+                # inside `stack_page`.
+                **{f"posix_{field}": _extract_posix_pointer(state, field) for field in _POSIX_POINTER_FIELDS},
+                "posix_argc": _extract_posix_argc(state),
             }
 
             cache_path = os.path.join(cache_dir, f"{cache_key}.pkl")
@@ -698,16 +759,9 @@ class RustDiskCacheManager:
                 # stays blank and Rust sees concrete zeros there.
                 pass
 
-        # Restore the envp array pointer (angr-6cp06.12). Absent from pre-p2
-        # pickles, which the version bump already orphans. `posix.argv` /
-        # `posix.argc` / `posix.auxv` are dropped by the same blank-state
-        # rebuild and are deliberately still not restored: nothing here reads
-        # them off a cached state, and `argc` is a claripy BV, so persisting it
-        # would need either an eval-to-int (losing a symbolic argc) or a
-        # claripy-safe encoding.
-        posix_environ = data.get("posix_environ")
-        if posix_environ is not None:
-            state.posix.environ = posix_environ
+        # Restore posix.argv/argc/environ/auxv (angr-6cp06.12, angr-7tmoz).
+        # Absent from pre-p3 pickles, which the version bump already orphans.
+        _restore_posix_entry_fields(state, data)
 
         # Restore callstack frames
         callstack_frames = data.get("callstack_frames", [])
