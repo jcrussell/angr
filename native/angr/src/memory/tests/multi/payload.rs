@@ -159,8 +159,7 @@ fn test_multi_supersedes_existing_symbolic() {
     // probe `multi_objects` before `page.is_symbolic`, and
     // `merge::merge_byte_value` takes its `is_multi` arm before its `is_sym`
     // arm. So the leftover symbolic bit is unreachable on every value path,
-    // and only ever makes a Multi byte look *more* abstract than it is
-    // (`read_concrete_bytes_for_lift` stops its concrete run at it).
+    // and only ever makes a Multi byte look *more* abstract than it is.
     //
     // The reverse transition is not symmetric and must not be read as one:
     // `collapse.rs::test_symbolic_overwrite_clears_multi_cell` pins that a

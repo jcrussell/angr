@@ -471,3 +471,54 @@ fn test_load_concrete_partial_multi_overlap() {
         "Multi byte 0 must override; bytes 1..3 keep their concrete values"
     );
 }
+
+/// angr-4r8mh: `read_concrete_bytes_for_lift` must stop its concrete run at a
+/// Multi byte, not just a symbolic one. A cell installed on a never-symbolic
+/// byte carries no symbolic bit (see `test_multi_payload_round_trip`), and its
+/// page byte is the don't-care default `MultiPayload::collapse` was handed —
+/// handing it to the native lifter would decode a placeholder as an
+/// instruction byte.
+#[test]
+fn test_lift_read_stops_at_multi_byte() {
+    let ctx = SymContext::new_mock();
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    mem.map(0x1000, 0x1000, Permission::RWX);
+    mem.store_concrete(0x1000, RustBV::concrete(0x1122_3344, 32))
+        .expect("concrete seed store");
+
+    // Sanity: the whole range lifts before any Multi cell exists.
+    assert_eq!(
+        mem.read_concrete_bytes_for_lift(0x1000, 4),
+        Some(vec![0x44, 0x33, 0x22, 0x11]),
+        "all-concrete range must lift in full"
+    );
+
+    // Install a Multi cell on byte 2 — never symbolic, so only the multi
+    // bitmap bit is set.
+    let addr_var = RustBV::symbolic(&ctx, "lift_multi_addr", 64);
+    let payload = MultiPayload::from_alternatives(vec![
+        make_alt(&ctx, &addr_var, 0x1000, 0xEE),
+        make_alt(&ctx, &addr_var, 0x2000, 0xFF),
+    ]);
+    mem.set_multi_alternatives(0x1002, payload);
+    let page = mem.pages.get(&(0x1000 >> 12)).expect("page must exist");
+    assert!(page.is_multi(2), "byte 2 must be marked Multi");
+    assert!(
+        !page.is_symbolic(2),
+        "never-symbolic byte must not gain a symbolic bit — this is what \
+         hid the bug: the is_symbolic check alone lets it through"
+    );
+
+    assert_eq!(
+        mem.read_concrete_bytes_for_lift(0x1000, 4),
+        Some(vec![0x44, 0x33]),
+        "the run must stop at the Multi byte, keeping only the concrete prefix"
+    );
+
+    // A lift starting *on* the Multi byte has no concrete prefix at all.
+    assert_eq!(
+        mem.read_concrete_bytes_for_lift(0x1002, 2),
+        None,
+        "a leading Multi byte must be reported as no readable code"
+    );
+}

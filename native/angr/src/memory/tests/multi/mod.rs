@@ -23,7 +23,9 @@
 //!   `assemble_load_with_multi`), plus **angr-9ke6b.96**: the non-lazy
 //!   `load_concrete` path (behind `RustSimState::memory_load`) must dispatch
 //!   to `assemble_load_with_multi` as well, since
-//!   `install_multi_for_candidates` never sets the page's symbolic bit.
+//!   `install_multi_for_candidates` never sets the page's symbolic bit; and
+//!   **angr-4r8mh**: the native-lift read (`read_concrete_bytes_for_lift`)
+//!   must break its concrete run on a Multi byte for that same reason.
 //! - `install` — **Phase 1.3** (angr-aija): the store-side helpers
 //!   `store_concrete_multi` / `store_symbolic_unified_multi`; and **Phase 2**
 //!   (angr-qh5u): end-to-end install via `install_multi_for_candidates`,

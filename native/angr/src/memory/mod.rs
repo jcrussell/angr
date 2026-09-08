@@ -787,10 +787,18 @@ impl SymbolicMemory {
     }
 
     /// Read up to `max_size` concrete bytes starting at `addr` for native
-    /// lifting. Returns the concrete prefix found before the first symbolic
-    /// or unmapped byte. `None` is returned only if the very first byte is
-    /// unmapped or symbolic. The lifter accepts a partial buffer and stops
-    /// at the byte boundary, so a short read is still useful.
+    /// lifting. Returns the concrete prefix found before the first
+    /// non-concrete (symbolic, Multi) or unmapped byte. `None` is returned
+    /// only if the very first byte is one of those. The lifter accepts a
+    /// partial buffer and stops at the byte boundary, so a short read is
+    /// still useful.
+    ///
+    /// Multi bytes must terminate the run for the same reason symbolic ones
+    /// do, and the check cannot be folded into `is_symbolic`: a cell that was
+    /// Multi from a never-symbolic start (see
+    /// `MemoryPage::mark_multi`) carries no symbolic bit, and its page byte is
+    /// a documented don't-care default (`MultiPayload::collapse`'s
+    /// `concrete_byte` argument), not an instruction byte (angr-4r8mh).
     pub fn read_concrete_bytes_for_lift(
         &self,
         addr: impl Into<Address>,
@@ -812,13 +820,14 @@ impl SymbolicMemory {
             // the guard — the difference is at least 1 on every iteration.
             let remaining = max_size - result.len();
             let to_read = remaining.min((PAGE_SIZE - (current.raw() & PAGE_MASK)) as usize);
-            // Stop at the first symbolic byte; native lift can't use it.
+            // Stop at the first non-concrete byte; native lift can't use it.
             let mut concrete_run = 0usize;
             for i in 0..to_read {
                 // `to_read` is clamped to `PAGE_SIZE - offset_in_page` just above.
                 // overflow-ok: the sum therefore stays below `PAGE_SIZE` (4096) —
                 // well inside `u16`, and inside the page's own offset domain.
-                if page.is_symbolic(offset_in_page + i as u16) {
+                let off = offset_in_page + i as u16;
+                if page.is_symbolic(off) || page.is_multi(off) {
                     break;
                 }
                 concrete_run += 1;
@@ -830,7 +839,7 @@ impl SymbolicMemory {
             result.extend(bytes);
             current = Address(current.raw().saturating_add(concrete_run as u64));
             if concrete_run < to_read {
-                break; // hit a symbolic byte
+                break; // hit a symbolic or Multi byte
             }
         }
         if result.is_empty() {
