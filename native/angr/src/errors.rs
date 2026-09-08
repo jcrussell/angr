@@ -56,8 +56,9 @@
 //! 2. **Internal functions return `Result<T, DomainError>` with a
 //!    subsystem-local, `thiserror`-derived enum.** Each subsystem owns its
 //!    error type and composes upward via `#[from]`. The canonical set:
-//!    `CbExecutionError` (`interpreter/execution_error.rs`), `StepError` /
-//!    `SubcallSetupError` (`exploration/stepping.rs`), `MemoryError`
+//!    `CbExecutionError` (`interpreter/execution_error.rs`), `StepError`
+//!    (`exploration/stepping.rs`), `SubcallSetupError`
+//!    (`exploration/stepping_subcall.rs`), `MemoryError`
 //!    (`memory/mod.rs`), `OpError` (`vex/ops/error.rs`), `ProcedureError`
 //!    (`procedures/mod.rs`), `SyscallError` (`syscalls/support.rs`),
 //!    `BridgeError` (`claripy_bridge/mod.rs`), `LiftError`
