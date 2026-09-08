@@ -74,6 +74,33 @@ fn read_bytes_until_null(
     Ok(result)
 }
 
+/// Is the byte after a `0x`/`0X` base-16 prefix one the digit parser can
+/// actually consume?
+///
+/// C's longest-valid-subject-sequence rule: when `0x` is *not* followed by a
+/// hex digit, the subject sequence is just the leading `0`, which is itself a
+/// complete conversion. Consuming the prefix anyway discards that `0`, so the
+/// caller sees "no conversion" and `*endptr` lands past the `x`
+/// (`strtol("0xg", &e, 16)` gave offset 2 where glibc and
+/// `angr/procedures/libc/strtol.py::strtol_inner`'s empty-prefix branch both
+/// give 1). `idx` points at the `0`, so the byte under test is `idx + 2`.
+///
+/// A symbolic byte counts as usable: the symbolic accumulator handles it, and
+/// per this module's design note callers typically constrain such bytes to
+/// digits. Same backtrack corollary as `strtod.rs::floating_prefix_len`
+/// (bd angr-6cp06.2).
+fn hex_prefix_has_digit(bytes: &[RustBV], idx: usize) -> bool {
+    match bytes.get(idx + 2) {
+        // Past end: "0x" alone converts as the single digit `0`.
+        None => false,
+        Some(b) => match b.as_u64() {
+            Some(v) => (v as u8).is_ascii_hexdigit(),
+            // Symbolic — assume a digit and let the accumulator decide.
+            None => true,
+        },
+    }
+}
+
 /// Parse the whitespace / sign / base-prefix prefix of `bytes`. Returns the
 /// index immediately after the prefix and, if a digit region can follow, the
 /// chosen base + sign.
@@ -128,7 +155,10 @@ fn parse_concrete_prefix(
                     .get(idx + 1)
                     .and_then(super::super::symbolic::RustBV::as_u64)
                 {
-                    Some(n) if (n as u8) == b'x' || (n as u8) == b'X' => {
+                    Some(n)
+                        if ((n as u8) == b'x' || (n as u8) == b'X')
+                            && hex_prefix_has_digit(bytes, idx) =>
+                    {
                         idx += 2;
                         16
                     }
@@ -156,6 +186,7 @@ fn parse_concrete_prefix(
                 .and_then(super::super::symbolic::RustBV::as_u64),
         ) && (b0 as u8) == b'0'
             && ((b1 as u8) == b'x' || (b1 as u8) == b'X')
+            && hex_prefix_has_digit(bytes, idx)
         {
             idx += 2;
         }

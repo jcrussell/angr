@@ -494,3 +494,74 @@ fn test_atoi_int_width_truncates_amd64() {
         .unwrap();
     assert_eq!(result.as_u64(), Some(0x540B_E400));
 }
+
+// ---------- '0x' prefix with no hex digit after it (bd angr-bmfj0) ----------
+
+/// Drive `strtol(nptr, &e, base)` with the string at 0x1000 and `*endptr`
+/// at 0x2000; return `(value, endptr_offset_from_nptr)`.
+fn strtol_with_endptr(s: &[u8], base: u64) -> (u64, u64) {
+    let mut state = RustSimState::new("amd64").unwrap();
+    setup_string(&mut state, 0x1000, s);
+    state.map_memory_data(0x2000, &[0u8; 8], Permission::RWX);
+    let result = NativeStrtol
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x1000, 64),
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(base as u128, 64),
+            ],
+        )
+        .unwrap()
+        .unwrap();
+    let end = state.memory_load(0x2000, 8).unwrap();
+    (
+        result.as_u64().unwrap(),
+        end.as_u64().unwrap() - 0x1000,
+    )
+}
+
+/// C's longest-valid-subject-sequence rule: `0x` not followed by a hex digit
+/// backtracks to the leading `0`, which converts on its own. Pre-fix the
+/// scanner consumed the prefix unconditionally, so `*endptr` landed past the
+/// `x` and the `0` was discarded.
+#[test]
+fn test_strtol_hex_prefix_without_digits_backtracks_to_zero() {
+    // (input, base, expected endptr offset) — value is 0 in every row.
+    let cases: &[(&[u8], u64, u64)] = &[
+        (b"0xg", 16, 1),
+        (b"0Xg", 16, 1),
+        (b"0x", 16, 1),
+        (b"0x.", 16, 1),
+        (b"-0xz", 16, 2),
+        (b"+0xz", 16, 2),
+        (b"  -0xz", 16, 4),
+        // base 0 auto-detect takes the same backtrack (falls back to octal).
+        (b"0xg", 0, 1),
+        (b"-0xz", 0, 2),
+    ];
+    for &(s, base, want_end) in cases {
+        let (val, end) = strtol_with_endptr(s, base);
+        let shown = String::from_utf8_lossy(s);
+        assert_eq!(val, 0, "value for {shown:?} base {base}");
+        assert_eq!(end, want_end, "endptr for {shown:?} base {base}");
+    }
+}
+
+/// The success path is unchanged: a hex digit after `0x` still consumes the
+/// prefix rather than parsing the leading `0` as a lone digit.
+#[test]
+fn test_strtol_hex_prefix_with_digits_still_consumes_prefix() {
+    let cases: &[(&[u8], u64, u64, u64)] = &[
+        (b"0x1g", 16, 1, 3),
+        (b"0xff", 16, 255, 4),
+        (b"-0x10", 16, (-16i64) as u64, 5),
+        (b"0x1g", 0, 1, 3),
+    ];
+    for &(s, base, want_val, want_end) in cases {
+        let (val, end) = strtol_with_endptr(s, base);
+        let shown = String::from_utf8_lossy(s);
+        assert_eq!(val, want_val, "value for {shown:?} base {base}");
+        assert_eq!(end, want_end, "endptr for {shown:?} base {base}");
+    }
+}
