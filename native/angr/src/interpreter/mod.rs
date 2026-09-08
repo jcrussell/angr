@@ -64,8 +64,9 @@ pub(crate) const BLOCK_CACHE_CAPACITY: usize = 4096;
 ///
 /// Doing the conversion once in a `const` moves the non-zero proof to compile
 /// time: a zero capacity fails the build here instead of surfacing as a runtime
-/// `.expect` in each of the three constructors that build a block cache
-/// (`ExecutionEnv::new`, `VexInterpreter::new`, and `scheduler::pool::worker_thread`).
+/// `.expect` in each of the constructors that build a block cache
+/// (`ExecutionEnv::new`, `VEXInterpreter::new`, and
+/// `exploration::scheduler_pool::worker_thread`).
 pub(crate) const BLOCK_CACHE_CAPACITY_NZ: std::num::NonZeroUsize =
     match std::num::NonZeroUsize::new(BLOCK_CACHE_CAPACITY) {
         Some(n) => n,
