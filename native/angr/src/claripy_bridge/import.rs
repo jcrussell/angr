@@ -67,6 +67,36 @@ pub(crate) fn try_extract_bvv(ast: &Bound<'_, PyAny>) -> Option<(u128, u32)> {
     Some((value, width))
 }
 
+/// Reject a same-width binary operation whose operands disagree in width.
+///
+/// `value_ops.rs` only `debug_assert_eq!`s this, and its module doc says that
+/// is deliberate *because* "the Python boundary rejects it up front" — this is
+/// that boundary, so the check has to be here or it does not exist in the
+/// shipped `release` profile. A mismatch reaching `RustBV::add`/`ult`/... in
+/// release builds a Z3 term out of two different sorts, which aborts the
+/// process under `panic = "abort"` rather than raising into Python; the same
+/// reasoning is written up at `solver::handle_api`'s
+/// `reject_ite_width_mismatch`, the mirror of this guard at the handle-based
+/// boundary.
+///
+/// The "claripy already validates this" assumption does not hold
+/// unconditionally: claripy's `length_same_check` is gated behind
+/// `_d._DEBUG`, a documented user-facing performance toggle whose audience is
+/// exactly the one reaching for this engine. `Extract` and `Concat` in this
+/// same file already guard their own width preconditions explicitly
+/// (`check_extract_bounds`, `check_bv_width`); the binary-op and `If` arms
+/// were the inconsistent case (angr-6cp06.81).
+fn check_same_width(op: &str, left: &RustBV, right: &RustBV) -> Result<(), BridgeError> {
+    if left.width() != right.width() {
+        return Err(BridgeError::InvalidArgs(format!(
+            "{op}: operand width mismatch: {}-bit vs {}-bit",
+            left.width(),
+            right.width()
+        )));
+    }
+    Ok(())
+}
+
 /// Width of an op whose result width is *derived* from its operands.
 ///
 /// The `"ZeroExt"` / `"SignExt"` arms of [`claripy_to_rustbv_depth`] compute
@@ -443,6 +473,7 @@ fn claripy_to_rustbv_depth(
             let cond = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
             let then_val = claripy_to_rustbv_depth(py, &args_list[1], ctx, depth + 1)?;
             let else_val = claripy_to_rustbv_depth(py, &args_list[2], ctx, depth + 1)?;
+            check_same_width("If", &then_val, &else_val)?;
             Ok(cond.ite(&then_val, &else_val, ctx))
         }
 
@@ -551,6 +582,7 @@ fn import_binary_op(
     }
     let left = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
     let right = claripy_to_rustbv_depth(py, &args_list[1], ctx, depth + 1)?;
+    check_same_width(op_name, &left, &right)?;
     Ok(apply(&left, &right, ctx))
 }
 

@@ -196,3 +196,30 @@ fn test_concat_arm_refuses_oversized_derived_width() {
         assert_eq!(bv.width(), 16);
     });
 }
+
+/// angr-6cp06.81: unlike `Extract`/`Concat`, the ~25 binary-op arms and the
+/// `If` arm had no width guard of their own — `value_ops.rs` only
+/// `debug_assert_eq!`s operand-width equality, and its module doc names *this*
+/// boundary as the reason that is enough. So in the shipped `release` profile
+/// the check existed nowhere, and the "claripy validated it already" backstop
+/// is gated behind claripy's `_d._DEBUG` performance toggle.
+#[test]
+fn test_check_same_width_refuses_mismatched_operands() {
+    let a = RustBV::concrete(0, 32);
+    let b = RustBV::concrete(0, 64);
+
+    let err = match check_same_width("__add__", &a, &b) {
+        Ok(()) => panic!("expected a refusal for 32-bit vs 64-bit operands"),
+        Err(e) => e.to_string(),
+    };
+    assert!(err.contains("__add__"), "{err}");
+    assert!(err.contains("32-bit"), "{err}");
+    assert!(err.contains("64-bit"), "{err}");
+
+    // Equal widths pass, including the 1-bit Bool operands the comparison and
+    // `If` arms feed it.
+    assert!(check_same_width("ULT", &a, &RustBV::concrete(1, 32)).is_ok());
+    assert!(
+        check_same_width("If", &RustBV::concrete(1, 1), &RustBV::concrete(0, 1)).is_ok()
+    );
+}
