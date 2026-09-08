@@ -247,6 +247,10 @@ impl RustSimState {
     ///
     /// This creates a self-contained snapshot that can be used to
     /// reconstruct an angr SimState.
+    ///
+    /// Does **not** flush deferred symbolic stores — see the note at the
+    /// memory-page export below. Prefer [`Self::flush_and_export_full`]
+    /// unless the pending queue is known to be empty.
     pub fn export_full(&self) -> ExplorationStateSnapshot {
         // Export registers
         let registers_raw = self.get_registers_raw();
@@ -272,12 +276,19 @@ impl RustSimState {
             }
         }
 
-        // Flush pending writes before exporting memory pages.
-        // We need a mutable borrow, but export_full takes &self. Use an
-        // unsafe interior mutability pattern is not ideal, so we just report
-        // unflushed writes via pending_writes_count on the snapshot.
-        // Callers should call flush_pending_writes() before export_full()
-        // if they need materialized memory.
+        // Pending writes are NOT flushed before the memory pages below:
+        // `SymbolicMemory::flush_pending_writes` needs `&mut`, and this method
+        // takes `&self`. Nor does the snapshot advertise the shortfall —
+        // `ExplorationStateSnapshot` has no pending-write count, so a deferred
+        // store that never got materialized is simply missing from the
+        // exported pages with nothing to signal it.
+        //
+        // The mitigation is therefore at the call sites, not here: every
+        // production export path goes through `flush_and_export_full`
+        // instead — `state::pymethods::PyRustSimState::export_full`,
+        // `exploration::state_api`, `exploration::pending_api` (angr-sqfj8.27)
+        // and `exploration::stepping`. Call `export_full` directly only when
+        // the pending queue is known to be empty.
 
         // Export memory pages as tuples: (addr, data, permissions, symbolic_offsets)
         let mut memory_pages: Vec<PageData> = Vec::new();
