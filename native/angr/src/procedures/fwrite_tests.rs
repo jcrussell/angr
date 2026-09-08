@@ -2,7 +2,7 @@
 //! `stdio_tests.rs` alongside `fwrite.rs`).
 use super::*;
 use crate::memory::Permission;
-use crate::procedures::test_util::{open_registered_sym_file, setup_file_struct};
+use crate::procedures::test_util::{assert_over_limit, open_registered_sym_file, setup_file_struct};
 
 #[test]
 fn test_fwrite_stdout() {
@@ -100,21 +100,51 @@ fn test_fwrite_negative_fd_returns_minus_one() {
 }
 
 #[test]
-fn test_fwrite_too_large() {
+fn fwrite_total_over_limit_falls_back() {
     let mut state = RustSimState::new("amd64").unwrap();
     let file_ptr = 0x10000u64;
     setup_file_struct(&mut state, file_ptr, 1);
 
-    let result = NativeFwrite.call(
-        &mut state,
-        &[
-            RustBV::concrete(0x1000, 64),
-            RustBV::concrete(1, 64),
-            RustBV::concrete(8192, 64),
-            RustBV::concrete(file_ptr as u128, 64),
-        ],
-    );
-    assert!(result.is_err());
+    let err = NativeFwrite
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x1000, 64),
+                RustBV::concrete(1, 64),
+                RustBV::concrete(MAX_FWRITE_SIZE as u128 + 1, 64),
+                RustBV::concrete(file_ptr as u128, 64),
+            ],
+        )
+        .expect_err("must fall back");
+    assert_over_limit(&err, "fwrite byte count");
+    // The cap sits before the gather, so nothing reached stdout and Python's
+    // fallback fwrite stays the single authoritative one.
+    assert!(state.stdout_buffer().is_empty());
+}
+
+#[test]
+fn fwrite_total_at_limit_is_native() {
+    // Companion to `fwrite_total_over_limit_falls_back`: this is what pins the
+    // check as `>` rather than `>=`. The over-limit half alone passes either
+    // way.
+    let mut state = RustSimState::new("amd64").unwrap();
+    let file_ptr = 0x10000u64;
+    setup_file_struct(&mut state, file_ptr, 1);
+    state.map_memory_data(0x1000, &vec![b'x'; MAX_FWRITE_SIZE as usize], Permission::RWX);
+
+    let ret = NativeFwrite
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x1000, 64),
+                RustBV::concrete(1, 64),
+                RustBV::concrete(MAX_FWRITE_SIZE as u128, 64),
+                RustBV::concrete(file_ptr as u128, 64),
+            ],
+        )
+        .expect("a byte count exactly at the limit stays native");
+    assert_eq!(ret.unwrap().as_u64(), Some(MAX_FWRITE_SIZE));
+    assert_eq!(state.stdout_buffer().len(), MAX_FWRITE_SIZE as usize);
 }
 
 /// `size * nmemb` is guest-controlled, so both of `NativeFwrite`'s

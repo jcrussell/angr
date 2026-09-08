@@ -3,6 +3,7 @@
 use super::*;
 use crate::memory::Permission;
 use crate::procedures::NativeSimProcedure;
+use crate::procedures::test_util::assert_over_limit;
 use crate::state::{FdFlags, RustSimState};
 use crate::symbolic::RustBV;
 
@@ -366,4 +367,67 @@ fn test_fread_unlocked_matches_fread() {
         .unwrap();
 
     assert_eq!(result.unwrap().as_u64(), Some(4));
+}
+
+#[test]
+fn fread_total_over_limit_falls_back() {
+    // The cap is re-checked after the bounded-symbolic-file attempt, so a
+    // concrete-content fd is what reaches it.
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory(0x2000, 0x1000, Permission::RWX);
+    let fd = state
+        .file_system()
+        .open_with_content("a.txt".to_string(), FdFlags::ReadOnly, b"hello".to_vec())
+        .expect("fd space is not exhausted in tests");
+    let file_ptr = 0x2800;
+    write_file_struct(&mut state, file_ptr, fd);
+
+    let err = NativeFread
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(1, 64),
+                RustBV::concrete(MAX_FREAD_SIZE as u128 + 1, 64),
+                RustBV::concrete(file_ptr as u128, 64),
+            ],
+        )
+        .expect_err("must fall back");
+    assert_over_limit(&err, "fread total");
+    // The cap sits before the serve, so the position is untouched and
+    // Python's fallback fread stays the single authoritative one.
+    let info = state.file_system_ref().fd_info(fd).expect("fd is open");
+    assert_eq!(info.1, 0);
+}
+
+#[test]
+fn fread_total_at_limit_is_native() {
+    // Companion to `fread_total_over_limit_falls_back`: this is what pins the
+    // check as `>` rather than `>=`. The over-limit half alone passes either
+    // way.
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory(0x2000, 0x2000, Permission::RWX);
+    let fd = state
+        .file_system()
+        .open_with_content(
+            "a.txt".to_string(),
+            FdFlags::ReadOnly,
+            vec![b'A'; MAX_FREAD_SIZE as usize],
+        )
+        .expect("fd space is not exhausted in tests");
+    let file_ptr = 0x3800;
+    write_file_struct(&mut state, file_ptr, fd);
+
+    let ret = NativeFread
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(1, 64),
+                RustBV::concrete(MAX_FREAD_SIZE as u128, 64),
+                RustBV::concrete(file_ptr as u128, 64),
+            ],
+        )
+        .expect("a total exactly at the limit stays native");
+    assert_eq!(ret.unwrap().as_u64(), Some(MAX_FREAD_SIZE));
 }

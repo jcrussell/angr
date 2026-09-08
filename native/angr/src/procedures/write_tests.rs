@@ -3,6 +3,7 @@
 use super::*;
 use crate::memory::Permission;
 use crate::procedures::NativeSimProcedure;
+use crate::procedures::test_util::assert_over_limit;
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
@@ -130,17 +131,43 @@ fn test_write_closed_fd_falls_back() {
 }
 
 #[test]
-fn test_write_too_large() {
+fn write_count_over_limit_falls_back() {
     let mut state = RustSimState::new("amd64").unwrap();
-    let result = NativeWrite.call(
-        &mut state,
-        &[
-            RustBV::concrete(1, 64),
-            RustBV::concrete(0x1000, 64),
-            RustBV::concrete(5000, 64),
-        ],
-    );
-    assert!(result.is_err());
+    let err = NativeWrite
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(1, 64),
+                RustBV::concrete(0x1000, 64),
+                RustBV::concrete(MAX_WRITE_SIZE as u128 + 1, 64),
+            ],
+        )
+        .expect_err("must fall back");
+    assert_over_limit(&err, "write count");
+    // The cap sits before the gather, so nothing reached stdout and Python's
+    // fallback write stays the single authoritative one.
+    assert!(state.stdout_buffer().is_empty());
+}
+
+#[test]
+fn write_count_at_limit_is_native() {
+    // Companion to `write_count_over_limit_falls_back`: this is what pins the
+    // check as `>` rather than `>=`. The over-limit half alone passes either
+    // way.
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory_data(0x1000, &vec![b'x'; MAX_WRITE_SIZE as usize], Permission::RWX);
+    let ret = NativeWrite
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(1, 64),
+                RustBV::concrete(0x1000, 64),
+                RustBV::concrete(MAX_WRITE_SIZE as u128, 64),
+            ],
+        )
+        .expect("a count exactly at the limit stays native");
+    assert_eq!(ret.unwrap().as_u64(), Some(MAX_WRITE_SIZE));
+    assert_eq!(state.stdout_buffer().len(), MAX_WRITE_SIZE as usize);
 }
 
 #[test]

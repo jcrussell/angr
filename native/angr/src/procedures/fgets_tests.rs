@@ -4,6 +4,7 @@
 use super::*;
 use crate::memory::Permission;
 use crate::procedures::NativeSimProcedure;
+use crate::procedures::test_util::assert_over_limit;
 use crate::state::RustSimState;
 
 /// AMD64 `_IO_FILE._fileno` byte offset (see `io_file_for_arch` in fileops.rs).
@@ -703,4 +704,55 @@ fn test_fgetc_permission_error_does_not_masquerade_as_stdin() {
         result,
         Err(ProcedureError::Memory(MemoryError::Permission { .. }))
     ));
+}
+
+#[test]
+fn fgets_size_over_limit_falls_back() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory(0x2000, 0x1000, Permission::RWX);
+    let stdin: u64 = 0x50000;
+    setup_file_struct(&mut state, stdin, 0);
+
+    let err = NativeFgets
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(MAX_FGETS_SIZE as u128 + 1, 64),
+                RustBV::concrete(stdin as u128, 64),
+            ],
+        )
+        .expect_err("must fall back");
+    assert_over_limit(&err, "fgets size");
+    // The cap sits before the mint, so no stdin byte was consumed and
+    // Python's fallback fgets stays the single authoritative one.
+    assert!(!state.has_stdin_symbols());
+}
+
+#[test]
+fn fgets_size_at_limit_is_native() {
+    // Companion to `fgets_size_over_limit_falls_back`: this is what pins the
+    // check as `>` rather than `>=`. The over-limit half alone passes either
+    // way.
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory(0x2000, 0x2000, Permission::RWX);
+    let stdin: u64 = 0x50000;
+    setup_file_struct(&mut state, stdin, 0);
+
+    let ret = NativeFgets
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(MAX_FGETS_SIZE as u128, 64),
+                RustBV::concrete(stdin as u128, 64),
+            ],
+        )
+        .expect("a size exactly at the limit stays native");
+    assert_eq!(ret.unwrap().as_u64(), Some(0x2000));
+    // size-1 symbolic bytes then the NUL terminator.
+    let nul = state
+        .memory_load(0x2000 + MAX_FGETS_SIZE - 1, 1)
+        .expect("mapped");
+    assert_eq!(nul.as_u64(), Some(0));
 }

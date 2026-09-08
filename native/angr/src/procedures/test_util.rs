@@ -62,3 +62,19 @@ pub(crate) fn open_registered_sym_file(state: &mut RustSimState, path: &str, n: 
         .open(path.to_string(), FdFlags::ReadOnly)
         .expect("fd space is not exhausted in tests")
 }
+
+/// Assert `err` is the `Other` fallback naming `what` as over-limit.
+///
+/// The procedures-side mirror of
+/// [`crate::syscalls::tests_support::assert_over_limit`]; the two differ only
+/// in error type, and neither family can use the other's. Deliberately matches
+/// on the message and not just [`ProcedureError::Other`]: every fallback arm in
+/// these procedures is an `Other`, so the weaker assertion passes even when the
+/// bounce came from an unrelated check.
+pub(crate) fn assert_over_limit(err: &crate::procedures::ProcedureError, what: &str) {
+    assert!(
+        matches!(err, crate::procedures::ProcedureError::Other(m)
+                 if m.contains(what) && m.contains("exceeds limit")),
+        "expected an over-limit fallback mentioning {what}, got {err:?}"
+    );
+}

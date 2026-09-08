@@ -6,6 +6,7 @@
 use super::*;
 use crate::memory::Permission;
 use crate::state::RustSimState;
+use crate::syscalls::tests_support::assert_over_limit;
 use crate::symbolic::{RustBV, SymContext};
 
 fn fresh_state() -> RustSimState {
@@ -147,19 +148,52 @@ fn getrandom_two_calls_mint_distinct_bytes() {
 }
 
 #[test]
-fn getrandom_oversize_falls_back() {
+fn getrandom_buflen_over_limit_falls_back() {
     let mut state = fresh_state();
     let err = NativeGetrandomSyscall
         .call(
             &mut state,
             &[
                 RustBV::concrete(0x2000, 64),
-                RustBV::concrete(9000, 64),
+                RustBV::concrete(MAX_GETRANDOM as u128 + 1, 64),
                 RustBV::concrete(0, 64),
             ],
         )
         .expect_err("fallback");
-    assert!(matches!(err, SyscallError::Other(_)));
+    assert_over_limit(&err, "getrandom buflen");
+    // The cap sits before the mint, so the buffer is untouched and Python's
+    // fallback getrandom stays the single authoritative one.
+    assert_eq!(
+        state.memory_load(0x2000, 1).expect("mapped").as_u64(),
+        Some(0),
+        "no byte should have been minted"
+    );
+}
+
+#[test]
+fn getrandom_buflen_at_limit_is_native() {
+    // Companion to `getrandom_buflen_over_limit_falls_back`: this is what
+    // pins the check as `>` rather than `>=`. The over-limit half alone
+    // passes either way.
+    let mut state = fresh_state();
+    let out = NativeGetrandomSyscall
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(MAX_GETRANDOM as u128, 64),
+                RustBV::concrete(0, 64),
+            ],
+        )
+        .expect("a buflen exactly at the limit stays native");
+    match out {
+        SyscallOutcome::Continue { ret } => assert_eq!(ret, MAX_GETRANDOM),
+        _ => panic!("expected Continue"),
+    }
+    assert!(
+        state.memory_load(0x2000, 1).unwrap().as_u64().is_none(),
+        "first byte should be symbolic"
+    );
 }
 
 #[test]

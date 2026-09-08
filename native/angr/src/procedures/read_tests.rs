@@ -2,6 +2,7 @@
 use super::*;
 use crate::memory::Permission;
 use crate::procedures::NativeSimProcedure;
+use crate::procedures::test_util::assert_over_limit;
 
 #[test]
 fn test_read_stdin() {
@@ -395,17 +396,101 @@ fn test_read_stdin_default_returns_concrete_count() {
 }
 
 #[test]
-fn test_read_too_large() {
+fn read_stdin_count_over_limit_falls_back() {
     let mut state = RustSimState::new("amd64").unwrap();
-    let result = NativeRead.call(
-        &mut state,
-        &[
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0x2000, 64),
-            RustBV::concrete(5000, 64),
-        ],
-    );
-    assert!(result.is_err());
+    let err = NativeRead
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(MAX_READ_SIZE as u128 + 1, 64),
+            ],
+        )
+        .expect_err("must fall back");
+    assert_over_limit(&err, "read count");
+    // The cap sits before the mint, so no stdin byte was consumed and
+    // Python's fallback read stays the single authoritative one.
+    assert!(!state.has_stdin_symbols());
+}
+
+#[test]
+fn read_stdin_count_at_limit_is_native() {
+    // Companion to `read_stdin_count_over_limit_falls_back`: this is what
+    // pins the check as `>` rather than `>=`. The over-limit half alone
+    // passes either way.
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory(0x2000, 0x2000, Permission::RWX);
+    let ret = NativeRead
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(MAX_READ_SIZE as u128, 64),
+            ],
+        )
+        .expect("a count exactly at the limit stays native");
+    assert_eq!(ret.unwrap().as_u64(), Some(MAX_READ_SIZE));
+}
+
+#[test]
+fn read_user_fd_count_over_limit_falls_back() {
+    // A second, independent cap: the non-stdin path re-checks `count` after
+    // the bounded-symbolic-file attempt, so the stdin test above never
+    // reaches it.
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory(0x2000, 0x1000, Permission::RWX);
+    let fd = state
+        .file_system()
+        .open_with_content(
+            "in.bin".to_string(),
+            crate::state::FdFlags::ReadOnly,
+            b"abcdef".to_vec(),
+        )
+        .expect("fd space is not exhausted in tests");
+
+    let err = NativeRead
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(fd as u128, 64),
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(MAX_READ_SIZE as u128 + 1, 64),
+            ],
+        )
+        .expect_err("must fall back");
+    assert_over_limit(&err, "read count");
+    // The cap sits before the serve, so the position is untouched and
+    // Python's fallback read stays the single authoritative one.
+    let info = state.file_system_ref().fd_info(fd).expect("fd is open");
+    assert_eq!(info.1, 0);
+}
+
+#[test]
+fn read_user_fd_count_at_limit_is_native() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory(0x2000, 0x2000, Permission::RWX);
+    let fd = state
+        .file_system()
+        .open_with_content(
+            "in.bin".to_string(),
+            crate::state::FdFlags::ReadOnly,
+            vec![b'A'; MAX_READ_SIZE as usize],
+        )
+        .expect("fd space is not exhausted in tests");
+
+    let ret = NativeRead
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(fd as u128, 64),
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(MAX_READ_SIZE as u128, 64),
+            ],
+        )
+        .expect("a count exactly at the limit stays native");
+    assert_eq!(ret.unwrap().as_u64(), Some(MAX_READ_SIZE));
 }
 
 /// angr-0xyq2 B1 (revised at Phase 3 review): a single read whose count

@@ -6,11 +6,21 @@
 use super::*;
 use crate::memory::Permission;
 use crate::state::RustSimState;
+use crate::syscalls::tests_support::assert_over_limit;
 use crate::symbolic::{RustBV, SymContext};
 
 fn x86_state_with_buf() -> RustSimState {
     let mut state = RustSimState::new("x86").expect("x86 state");
     state.map_memory(0x2000, 0x1000, Permission::RWX);
+    state
+}
+
+/// x86 state with a full `MAX_CGC_BYTES`-sized buffer at 0x4000, on top of the
+/// scratch page [`x86_state_with_buf`] provides for the `tx_bytes`/`rx_bytes`
+/// out-params. Needed by the at-limit halves of the count-cap tests.
+fn x86_state_with_max_buf() -> RustSimState {
+    let mut state = x86_state_with_buf();
+    state.map_memory(0x4000, MAX_CGC_BYTES, Permission::RWX);
     state
 }
 
@@ -110,6 +120,51 @@ fn transmit_unknown_fd_falls_back() {
         )
         .expect_err("fall back");
     assert!(matches!(err, SyscallError::Other(_)));
+}
+
+#[test]
+fn transmit_count_over_limit_falls_back() {
+    let h = NativeTransmitSyscall;
+    let mut state = x86_state_with_buf();
+    let err = h
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(1, 32),
+                RustBV::concrete(0x2000, 32),
+                RustBV::concrete(MAX_CGC_BYTES as u128 + 1, 32),
+                RustBV::concrete(0, 32),
+            ],
+        )
+        .expect_err("must fall back");
+    assert_over_limit(&err, "transmit count");
+    // The cap sits before the gather, so nothing reached stdout and Python's
+    // fallback transmit stays the single authoritative one.
+    assert!(state.stdout_buffer().is_empty());
+}
+
+#[test]
+fn transmit_count_at_limit_is_native() {
+    // Companion to `transmit_count_over_limit_falls_back`: this is what pins
+    // the check as `>` rather than `>=`. The over-limit half alone passes
+    // either way.
+    let h = NativeTransmitSyscall;
+    let mut state = x86_state_with_max_buf();
+    let outcome = h
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(1, 32),
+                RustBV::concrete(0x4000, 32),
+                RustBV::concrete(MAX_CGC_BYTES as u128, 32),
+                RustBV::concrete(0x2000, 32),
+            ],
+        )
+        .expect("a count exactly at the limit stays native");
+    assert!(matches!(outcome, SyscallOutcome::Continue { ret: 0 }));
+    assert_eq!(state.stdout_buffer().len(), MAX_CGC_BYTES as usize);
+    let stored = state.memory_load(0x2000, 4).expect("load").as_u64();
+    assert_eq!(stored, Some(MAX_CGC_BYTES));
 }
 
 #[test]
@@ -258,6 +313,54 @@ fn receive_zero_count_non_stdin_fd_falls_back() {
 
 /// fdwait's native stub only models the `CGC_NON_BLOCKING_FDS` mode, so
 /// every fdwait happy-path test must opt into it (angr-op0dn.14.8).
+#[test]
+fn receive_count_over_limit_falls_back() {
+    let h = NativeReceiveSyscall;
+    let mut state = x86_state_with_buf();
+    let err = h
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0, 32),
+                RustBV::concrete(0x2000, 32),
+                RustBV::concrete(MAX_CGC_BYTES as u128 + 1, 32),
+                RustBV::concrete(0x2800, 32),
+            ],
+        )
+        .expect_err("must fall back");
+    assert_over_limit(&err, "receive count");
+    // The cap sits before the mint, so no stdin byte was consumed and
+    // Python's fallback receive stays the single authoritative one.
+    assert!(!state.has_stdin_symbols());
+}
+
+#[test]
+fn receive_count_at_limit_is_native() {
+    // Companion to `receive_count_over_limit_falls_back`: this is what pins
+    // the check as `>` rather than `>=`. The over-limit half alone passes
+    // either way.
+    let h = NativeReceiveSyscall;
+    let mut state = x86_state_with_max_buf();
+    let outcome = h
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0, 32),
+                RustBV::concrete(0x4000, 32),
+                RustBV::concrete(MAX_CGC_BYTES as u128, 32),
+                RustBV::concrete(0x2000, 32),
+            ],
+        )
+        .expect("a count exactly at the limit stays native");
+    assert!(matches!(outcome, SyscallOutcome::Continue { ret: 0 }));
+    assert!(
+        state.memory_load(0x4000, 1).expect("load").as_u64().is_none(),
+        "first byte should be symbolic"
+    );
+    let stored = state.memory_load(0x2000, 4).expect("load").as_u64();
+    assert_eq!(stored, Some(MAX_CGC_BYTES));
+}
+
 fn nonblocking_state() -> RustSimState {
     let mut state = x86_state_with_buf();
     state.set_option("CGC_NON_BLOCKING_FDS", true);
@@ -427,6 +530,53 @@ fn random_writes_symbolic_and_stores_count() {
     }
     let stored = state.memory_load(0x2800, 4).expect("load").as_u64();
     assert_eq!(stored, Some(8));
+}
+
+#[test]
+fn random_count_over_limit_falls_back() {
+    let h = NativeRandomSyscall;
+    let mut state = x86_state_with_buf();
+    let err = h
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x2000, 32),
+                RustBV::concrete(MAX_CGC_BYTES as u128 + 1, 32),
+                RustBV::concrete(0x2800, 32),
+            ],
+        )
+        .expect_err("must fall back");
+    assert_over_limit(&err, "random count");
+    // The cap sits before both the mint and the `rnd_bytes` store, so the
+    // out-param is untouched and Python's fallback stays authoritative.
+    let stored = state.memory_load(0x2800, 4).expect("load").as_u64();
+    assert_eq!(stored, Some(0));
+}
+
+#[test]
+fn random_count_at_limit_is_native() {
+    // Companion to `random_count_over_limit_falls_back`: this is what pins
+    // the check as `>` rather than `>=`. The over-limit half alone passes
+    // either way.
+    let h = NativeRandomSyscall;
+    let mut state = x86_state_with_max_buf();
+    let outcome = h
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x4000, 32),
+                RustBV::concrete(MAX_CGC_BYTES as u128, 32),
+                RustBV::concrete(0x2000, 32),
+            ],
+        )
+        .expect("a count exactly at the limit stays native");
+    assert!(matches!(outcome, SyscallOutcome::Continue { ret: 0 }));
+    assert!(
+        state.memory_load(0x4000, 1).expect("load").as_u64().is_none(),
+        "first byte should be symbolic"
+    );
+    let stored = state.memory_load(0x2000, 4).expect("load").as_u64();
+    assert_eq!(stored, Some(MAX_CGC_BYTES));
 }
 
 #[test]
