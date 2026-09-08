@@ -644,7 +644,7 @@ impl RustExplorationManager {
                 .memory()
                 .pages()
                 .keys()
-                .map(|&pn| pn << 12)
+                .map(|&pn| crate::memory::PageIndex::from_raw(pn).base_addr())
                 .collect())
         })
     }
@@ -683,7 +683,7 @@ impl RustExplorationManager {
         self.with_pending_mut(state_id, |pending| {
             pending.state.flush_memory();
             let claripy_mod = py.import("claripy")?;
-            let target_page = page_addr >> 12;
+            let target_page = crate::memory::Address::new(page_addr).page_num();
             let mut out = Vec::new();
             for (addr, bv) in pending.state.memory().symbolic_objects_iter() {
                 if addr.page_num() != target_page {
