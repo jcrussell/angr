@@ -336,15 +336,24 @@ pub struct PythonCallbacks {
     /// Callback for state.inspect mem_read events.
     /// Signature:
     ///   fn(state_id: int, when: str, addr: int, size: int,
-    ///      value_ast: object | None, endness: str) -> None
+    ///      value_ast: object | None, endness: str) -> claripy.AST | None
     /// `when` is "before" or "after"; on BEFORE `value_ast` is None,
     /// on AFTER it holds the loaded value (concrete value as int or
     /// claripy AST). `endness` is "Iend_LE" or "Iend_BE".
+    /// The return value is **not** ignored: a non-None AST is the user's
+    /// overridden `state.inspect.mem_read_expr`, which the caller converts
+    /// back to a `RustBV` and substitutes for the loaded value (value
+    /// injection — angr-uy32); None leaves the original load result standing.
+    /// See `PythonCallbacks::call_inspect_mem_read` for the Rust-side contract.
     /// Only dispatched when bit InspectEvent::MemRead in `inspect_enabled` is set.
     pub inspect_mem_read: Option<Py<PyAny>>,
     /// Callback for state.inspect mem_write events.
     /// Signature mirrors `inspect_mem_read` but `value_ast` is the data
-    /// being stored (set on BEFORE and AFTER).
+    /// being stored (set on BEFORE and AFTER), and a non-None return is the
+    /// overridden `state.inspect.mem_write_expr` substituted for the stored
+    /// value (value injection — angr-inh0). Only the BEFORE return can
+    /// change anything; on AFTER the store has already committed, so the
+    /// return is informational. See `PythonCallbacks::call_inspect_mem_write`.
     pub inspect_mem_write: Option<Py<PyAny>>,
     /// Callback for state.inspect reg_read events.
     /// Signature:
