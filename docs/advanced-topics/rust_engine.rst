@@ -3955,6 +3955,21 @@ above for the full chain of issues (dispatch, exception inheritance,
 ``executed_instruction_count`` attribute) that would each need to be
 addressed before Oppologist could work under Rust.
 
+**The guest environment is bridged, with two narrow gaps.** angr models
+the initial environment purely in memory --- ``entry_state(env={...})``
+becomes a ``KEY=VALUE`` string table on the stack plus the ``envp`` array
+pointer in ``state.posix.environ``, which the Python ``getenv``
+SimProcedure walks. The Rust engine instead keeps a byte-keyed map on
+``RustSimState`` that the native ``getenv``/``setenv``/``putenv``/
+``unsetenv`` procedures read. ``RustExplorationManager`` walks the ``envp``
+array at state-add time and seeds the map from it, so a harness-supplied
+var is visible to a native ``getenv``. Two differences remain: an entry
+whose bytes are **symbolic** is skipped by the bridge (the native
+``getenv`` returns NULL where Python would return a pointer to it), and the
+map is write-only with respect to memory --- a guest that walks
+``environ``/``__environ`` itself instead of calling ``getenv`` does not
+observe a native ``setenv``/``putenv``/``unsetenv``.
+
 **Standard ``except SimError`` does not catch Rust errors.** By the
 same mechanism, downstream code that ``except angr.errors.SimError:``
 around ``mgr.run(...)`` will not catch the typed Rust exceptions.

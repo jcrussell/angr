@@ -57,6 +57,7 @@
 
 mod basics;
 mod cow_peek;
+mod environment;
 mod export;
 mod filesystem_demote;
 mod filesystem_state;

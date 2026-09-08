@@ -403,6 +403,29 @@ impl RustExplorationManager {
         self._seed_stdin_content(py, state_id, byte_asts)
     }
 
+    /// Seed the guest's initial environment — the `entry_state(env=...)`
+    /// key/value pairs Python materializes as the memory-backed `envp` array
+    /// — into the state's environment map, which the native `getenv` /
+    /// `setenv` / `putenv` procedures read (angr-6cp06.12). Without this the
+    /// map only ever holds vars the guest set at runtime, so a
+    /// `getenv("FLAG")` on an `entry_state(env={"FLAG": ...})` state returned
+    /// NULL where the Python `getenv` SimProcedure finds it.
+    ///
+    /// Insert-if-absent and never resurrecting a `unsetenv`'d key — see
+    /// `RustSimState::seed_environment`. Returns the number of keys inserted.
+    /// Errors (not panics) on unknown `state_id`.
+    #[angr_macros::steady_guard_exempt(
+        reason = "mutates one state_id-scoped state's own environment map; does not mutate \
+                  exploration config or the active stash."
+    )]
+    pub fn seed_environment(
+        &mut self,
+        state_id: u64,
+        entries: Vec<(Vec<u8>, Vec<u8>)>,
+    ) -> PyResult<usize> {
+        self._seed_environment(state_id, entries)
+    }
+
     /// The cwd-normalized paths a state's lineage has demoted to Python
     /// ownership via native writes (angr-qluof). The Python re-add path
     /// (merge / legacy-fork push) queries these before re-registering

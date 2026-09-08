@@ -116,6 +116,31 @@ impl RustSimState {
         }
     }
 
+    /// Seed the guest's *initial* environment — the `entry_state(env=...)`
+    /// block that angr materializes as the memory-backed `envp` array
+    /// (`simos/linux.py::state_blank`) and that the native `getenv` family
+    /// otherwise never sees. Bridged in by
+    /// `rust_manager.py::_seed_environ_to_rust`. Returns the number of keys
+    /// actually inserted.
+    ///
+    /// Insert-if-absent, and never resurrects: a key already written by a
+    /// native `setenv`/`putenv`, or already dropped by `unsetenv`/`clearenv`,
+    /// wins over the seed. That matters on a mid-run re-add (merge,
+    /// cross-manager transfer), where the source `envp` array still holds the
+    /// pristine initial values — it never tracks the guest's runtime
+    /// mutations, which live only in this map.
+    pub fn seed_environment(&mut self, entries: Vec<(Vec<u8>, Vec<u8>)>) -> usize {
+        let mut inserted = 0;
+        for (key, value) in entries {
+            if self.environment.contains_key(&key) || self.removed_env_keys.contains(&key) {
+                continue;
+            }
+            Arc::make_mut(&mut self.environment).insert(key, value);
+            inserted += 1;
+        }
+        inserted
+    }
+
     /// Get the environment map (for export).
     pub fn environment(&self) -> &HashMap<Vec<u8>, Vec<u8>> {
         &self.environment

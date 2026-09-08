@@ -14,7 +14,8 @@
 //!   pending for the id. `_get_active_handle_ids` belongs here too — it
 //!   unions over *all* `pending_callbacks` rather than taking a `state_id`.
 //! * **General-state-scoped**: `_import_symbolic_to_state`, `_set_fs_cwd`,
-//!   `_register_file_content`, `_seed_stdin_content`, `_get_demoted_paths`
+//!   `_register_file_content`, `_seed_stdin_content`, `_seed_environment`,
+//!   `_get_demoted_paths`
 //!   and `_demote_file_path` route through `with_state` / `with_state_mut`
 //!   against an arbitrary `state_id`, which resolves a pending callback
 //!   *or* a stashed state — the same access shape as the methods homed in
@@ -331,6 +332,17 @@ impl RustExplorationManager {
             state.file_system().set_fd_content_sym(0, bytes);
             Ok(())
         })
+    }
+
+    /// Seed the guest's initial `entry_state(env=...)` environment into the
+    /// state's environment map (angr-6cp06.12). See
+    /// `RustSimState::seed_environment` for the insert-if-absent contract.
+    pub(crate) fn _seed_environment(
+        &mut self,
+        state_id: u64,
+        entries: Vec<(Vec<u8>, Vec<u8>)>,
+    ) -> PyResult<usize> {
+        self.with_state_mut(state_id, |state| Ok(state.seed_environment(entries)))
     }
 
     pub(crate) fn _get_demoted_paths(&self, state_id: u64) -> PyResult<Vec<String>> {

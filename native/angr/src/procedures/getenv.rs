@@ -6,6 +6,21 @@
 //! - putenv: parses "KEY=VALUE" string and stores in environment map
 //!
 //! Concrete keys only — falls back to Python for symbolic arguments.
+//!
+//! The map is **seeded** with the guest's initial `entry_state(env=...)`
+//! environment by `rust_manager.py::_seed_environ_to_rust`, which walks the
+//! memory-backed `envp` array angr's `simos/linux.py` builds and pushes the
+//! concrete `KEY=VALUE` pairs through `RustSimState::seed_environment`
+//! (angr-6cp06.12). Before that seed existed the map only ever held vars the
+//! guest set at runtime, so `getenv` on a harness-supplied var returned NULL
+//! where Python's `getenv` SimProcedure — which reads that same `envp` array —
+//! finds it.
+//!
+//! Residual divergence from Python, both narrow: an env entry whose bytes are
+//! symbolic is skipped by the bridge (Python's `getenv` would still return a
+//! pointer to it), and the map is write-only with respect to memory — a guest
+//! that walks `environ`/`__environ` itself, rather than calling `getenv`, does
+//! not see a native `setenv`/`putenv`/`unsetenv`.
 
 use super::strings::{MAX_STRING_SCAN, scan_concrete_bounded, write_cstr};
 use super::{ProcedureError, arch_word};

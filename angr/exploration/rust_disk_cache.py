@@ -59,7 +59,7 @@ l = logging.getLogger(name=__name__)
 # from a different (rust, python, arch) tuple lands at a different file and
 # is treated as a miss — never deserialized into a current-format slot.
 _RUST_CACHE_VERSION = 2
-_PYTHON_METADATA_VERSION = 1
+_PYTHON_METADATA_VERSION = 2
 
 # Bounded-cache policy for ~/.cache/angr_rust_init. The cache key is an MD5 of
 # (binary content, version axes, arch), so a version bump orphans the whole
@@ -111,6 +111,32 @@ def _extract_register_snapshot(state, arch) -> dict[str, int]:
             # doesn't expose, or the read errors on a symbolic value — skip.
             pass
     return registers
+
+
+def _extract_posix_environ(state) -> int | None:
+    """The state's ``posix.environ`` envp array pointer as a plain int, or None.
+
+    ``simos/linux.py::state_blank`` stores this alongside the ``KEY=VALUE``
+    string table it dumps onto the entry stack; it is the only handle either
+    engine has on ``entry_state(env=...)`` (angr-6cp06.12). Returns None when
+    the plugin never set it, or when it is symbolic — the pickle must stay
+    plain-data, and a symbolic envp pointer is unusable to both the Python
+    ``getenv`` SimProcedure and the Rust seed bridge anyway.
+    """
+    environ = getattr(getattr(state, "posix", None), "environ", None)
+    if environ is None:
+        return None
+    try:
+        if isinstance(environ, claripy.ast.Base):
+            if environ.symbolic:
+                return None
+            environ = state.solver.eval(environ)
+        return int(environ)
+    except Exception:
+        # cat-(b) FALLBACK WITH LOSS: unreadable envp pointer is cached as
+        # absent, so a warm hit restores no environment — the pre-angr-6cp06.12
+        # behavior — rather than aborting the cache write.
+        return None
 
 
 def _extract_stack_page(state, page_size: int):
@@ -459,6 +485,16 @@ class RustDiskCacheManager:
                     state, page_size, mapped_page_addrs, stack_page[0] if stack_page is not None else None
                 ),
                 "callstack_frames": callstack_frames,
+                # The envp array pointer (angr-6cp06.12). `_deserialize_init_state`
+                # rebuilds a *blank* state, whose `posix` plugin has no argv/envp/
+                # auxv pointers — only memory and registers are restored — so a warm
+                # disk hit used to hand back a state whose environment was
+                # unreachable to both Python's `getenv` SimProcedure and the Rust
+                # engine's `_seed_environ_to_rust` bridge. The string table itself
+                # lives in `stack_page`, so the pointer is all that is missing.
+                # argv/argc/auxv are equally lost and not restored here — see
+                # `_deserialize_init_state` for why.
+                "posix_environ": _extract_posix_environ(state),
             }
 
             cache_path = os.path.join(cache_dir, f"{cache_key}.pkl")
@@ -661,6 +697,17 @@ class RustDiskCacheManager:
                 # cat-(b) FALLBACK WITH LOSS: extra page restore failed; that page
                 # stays blank and Rust sees concrete zeros there.
                 pass
+
+        # Restore the envp array pointer (angr-6cp06.12). Absent from pre-p2
+        # pickles, which the version bump already orphans. `posix.argv` /
+        # `posix.argc` / `posix.auxv` are dropped by the same blank-state
+        # rebuild and are deliberately still not restored: nothing here reads
+        # them off a cached state, and `argc` is a claripy BV, so persisting it
+        # would need either an eval-to-int (losing a symbolic argc) or a
+        # claripy-safe encoding.
+        posix_environ = data.get("posix_environ")
+        if posix_environ is not None:
+            state.posix.environ = posix_environ
 
         # Restore callstack frames
         callstack_frames = data.get("callstack_frames", [])

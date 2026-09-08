@@ -4147,6 +4147,102 @@ class RustExplorationManager(
             # exported states (the pre-angr-mb09c behavior). Debug-logs.
             l.debug("stdin seed push failed for state %d: %s: %s", state_id, type(e).__name__, e)
 
+    # Caps for the initial-environment bridge (`_seed_environ_to_rust`): at most
+    # this many envp slots, and this many bytes per "KEY=VALUE" entry. Both are
+    # far above any realistic `entry_state(env=...)`; they exist so a corrupt or
+    # symbolic envp pointer cannot turn state-add into an unbounded memory walk.
+    _MAX_ENVIRON_ENTRIES = 512
+    _MAX_ENVIRON_ENTRY_LEN = 4096
+    # Bytes per chunked cstring load. Typical "KEY=VALUE" fits in one.
+    _ENVIRON_SCAN_CHUNK = 64
+
+    def _read_environ_cstring(self, angr_state: angr.SimState, addr: int) -> bytes | None:
+        """Read one NUL-terminated concrete ``KEY=VALUE`` entry from ``addr``.
+
+        Returns ``None`` when a symbolic byte is hit at or before the NUL, or
+        when no NUL appears within :attr:`_MAX_ENVIRON_ENTRY_LEN` --- neither
+        shape can be represented in Rust's byte-keyed environment map, so the
+        entry is skipped rather than guessed at. Bytes *after* the NUL are
+        never inspected, so a chunk that overruns the string into unmapped or
+        symbolic memory is harmless.
+        """
+        out = bytearray()
+        while len(out) < self._MAX_ENVIRON_ENTRY_LEN:
+            n = min(self._ENVIRON_SCAN_CHUNK, self._MAX_ENVIRON_ENTRY_LEN - len(out))
+            chunk = angr_state.memory.load(addr + len(out), n, endness="Iend_BE")
+            for b in chunk.chop(8):  # chop(8)[0] is the byte at the lowest address
+                if b.symbolic:
+                    return None
+                v = angr_state.solver.eval(b)
+                if v == 0:
+                    return bytes(out)
+                out.append(v)
+        return None
+
+    def _seed_environ_to_rust(self, angr_state: angr.SimState, state_id: int) -> None:
+        """Bridge the guest's initial ``entry_state(env=...)`` into Rust (angr-6cp06.12).
+
+        angr models the initial environment purely in memory: ``simos/linux.py``
+        dumps a ``KEY=VALUE`` string table onto the stack and stores the envp
+        array pointer as ``state.posix.environ``; the Python ``getenv``
+        SimProcedure walks that array. Rust's native ``getenv``/``setenv``/
+        ``putenv`` instead read ``RustSimState``'s byte-keyed environment map,
+        which starts empty and is only ever written by those same native procs.
+        Without this push a guest ``getenv("FLAG")`` on an
+        ``entry_state(env={"FLAG": "1"})`` state returns NULL under the Rust
+        engine where Python finds the value --- silently taking the wrong branch
+        --- and native ``setenv(..., overwrite=0)`` clobbers such a var because
+        its existence check misses too.
+
+        Best-effort and lossy by design: a symbolic envp pointer skips the whole
+        walk, and an entry whose bytes are symbolic (or that has no ``=``) is
+        skipped individually. Those keep today's NULL-from-native behavior; see
+        the module doc of ``native/angr/src/procedures/getenv.rs``.
+        """
+        try:
+            envp = getattr(getattr(angr_state, "posix", None), "environ", None)
+            if envp is None:
+                return
+            if isinstance(envp, claripy.ast.Base):
+                if envp.symbolic:
+                    return
+                envp = angr_state.solver.eval(envp)
+            envp = int(envp)
+            if envp == 0:
+                return
+
+            ptr_size = angr_state.arch.bytes
+            entries: list[tuple[bytes, bytes]] = []
+            for i in range(self._MAX_ENVIRON_ENTRIES):
+                slot = angr_state.memory.load(
+                    envp + i * ptr_size, ptr_size, endness=angr_state.arch.memory_endness
+                )
+                if slot.symbolic:
+                    return
+                ptr = angr_state.solver.eval(slot)
+                if ptr == 0:
+                    break
+                line = self._read_environ_cstring(angr_state, ptr)
+                if line is None:
+                    continue
+                key, sep, value = line.partition(b"=")
+                if not sep or not key:
+                    continue
+                entries.append((key, value))
+            else:
+                # No NULL terminator inside the cap — treat the array as
+                # unrecognizable rather than seeding a truncated environment.
+                return
+
+            if entries:
+                self._rust_mgr.seed_environment(state_id, entries)
+        except Exception as e:
+            # cat-(b) FALLBACK WITH LOSS: initial-environment push failed; the
+            # Rust environment map stays empty, so native getenv returns NULL
+            # for vars the harness passed via entry_state(env=...) (the
+            # pre-angr-6cp06.12 behavior). Debug-logs.
+            l.debug("environ seed push failed for state %d: %s: %s", state_id, type(e).__name__, e)
+
     def _export_fs_files_to_rust(self, angr_state: angr.SimState, state_id: int) -> None:
         """Export eligible ``state.fs._files`` entries into the Rust
         FileSystem's path-keyed symbolic-content registry (angr-0xyq2
@@ -4534,6 +4630,11 @@ class RustExplorationManager(
             # the constraint install, so bytes referenced by installed
             # constraints resolve to the same Rust symbols.
             self._seed_stdin_to_rust(angr_state, actual_state_id)
+
+            # Bridge entry_state(env=...) into Rust's environment map so the
+            # native getenv/setenv/putenv family sees the guest's initial
+            # environment, not just vars set at runtime (angr-6cp06.12).
+            self._seed_environ_to_rust(angr_state, actual_state_id)
 
             # Lineage-aware demotion (angr-qluof pt2): on a cross-manager
             # transfer the export above re-arms any symbolic-file path the
