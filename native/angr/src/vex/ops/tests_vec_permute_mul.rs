@@ -857,3 +857,70 @@ fn test_vec_bit_mtx_xpose_symbolic_matches_concrete_path() {
     ctx.pop();
     assert_eq!(evaluated, vgbbd_be_reference(v));
 }
+
+/// Iop_MulHi16{U,S}x16 — the AVX2 `VPMULHW`/`VPMULHUW` shape. `vec_mulhi`'s
+/// concrete fast path is guarded by `as_u128()`, so at 256 bits it always
+/// declines (bd `invariant-concrete-bv-u128-16-byte-limit`) and the per-lane
+/// `extract` + `extend_into` + `mul` + high-half `extract` symbolic path runs
+/// instead — the tier every sibling 256-bit family covers
+/// (`test_vec_mul_16x16_avx2_256_bit`, `test_vqaddsub_8x32_avx2_256_bit`,
+/// `test_vec_shift_n_avx2_256_bit`) but VMulHi did not.
+#[test]
+fn test_vec_mulhi_16x16_avx2_256_bit() {
+    // Low lane first. Covers both signs of both operands, the 0x8000 corner
+    // (whose signed/unsigned widening differs), identity/zero lanes, and lanes
+    // whose high half is zero so a stray shift would show up.
+    let l: [u16; 16] = [
+        0xFFFF, 0x8000, 0, 1, 3, 0x1234, 0x00FF, 0x0100, 7, 0xABCD, 2, 0x7FFF, 0xFFFF, 0x5555,
+        0x0F0F, 12345,
+    ];
+    let r: [u16; 16] = [
+        0xFFFF, 2, 0x1234, 0xBEEF, 5, 0x0010, 0x00FF, 0x0100, 0, 1, 0x8000, 2, 0x0002, 0x0003,
+        0xF0F0, 3,
+    ];
+
+    for signed in [false, true] {
+        let ctx = SymContext::new_mock();
+        let pack = |lanes: &[u16; 16]| {
+            let mut halves = [0u128; 2];
+            for (i, lane) in lanes.iter().enumerate() {
+                halves[i / 8] |= (*lane as u128) << ((i % 8) * 16);
+            }
+            RustBV::concrete(halves[1], 128).concat_into(RustBV::concrete(halves[0], 128), &ctx)
+        };
+
+        let result = VEXOps::binop(
+            IROp::VMulHi {
+                elem: IRType::I16,
+                count: 16,
+                signed,
+            },
+            pack(&l),
+            pack(&r),
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(result.width(), 256);
+
+        for i in 0..16u32 {
+            let low = i * 16;
+            let extracted = result.extract(low + 15, low, &ctx);
+            let got = ctx.eval(&extracted).expect("eval(lane) returned None");
+            let idx = i as usize;
+            // Reference product computed in the wider type, independently of
+            // the lane loop under test.
+            let expected: u16 = if signed {
+                (((l[idx] as i16 as i32) * (r[idx] as i16 as i32)) >> 16) as u16
+            } else {
+                (((l[idx] as u32) * (r[idx] as u32)) >> 16) as u16
+            };
+            assert_eq!(
+                got,
+                u128::from(expected),
+                "signed={signed} lane {i}: {:#06x} *hi {:#06x}",
+                l[idx],
+                r[idx]
+            );
+        }
+    }
+}

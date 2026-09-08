@@ -571,3 +571,107 @@ fn test_parse_cnt_clz_cls_pmul_routing() {
         }
     }
 }
+
+/// Symbolic universality for `Iop_Cls8x8`: `cls_chain` must agree with an
+/// independently-derived identity over *all* inputs. The reference is
+/// `cls(x) == clz(x ^ asr(x, N-1)) - 1` — flipping every bit when the MSB is 1
+/// turns "count leading bits matching the sign" into "count leading zeros",
+/// and the `-1` drops the (now always zero) MSB itself, including the all-same
+/// lane where clz saturates at N and the answer is N-1. Built entirely from
+/// ops that predate `cls_chain` (`VSarN`, `Xor`, `VClz`, `VSub`), so an
+/// off-by-one in its `n - 2 - a` formula cannot cancel out.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_vcls_8x8_symbolic_universal() {
+    let ctx = SymContext::new_mock();
+    let a = RustBV::symbolic(&ctx, "vcls_a", 64);
+    let got = VEXOps::unop(
+        IROp::VCls {
+            elem: IRType::I8,
+            count: 8,
+        },
+        a.clone(),
+        &ctx,
+    )
+    .unwrap();
+
+    // sign_mask lane = 0x00 when the lane's MSB is 0, 0xFF when it is 1.
+    let sign_mask = VEXOps::binop(
+        IROp::VSarN {
+            elem: IRType::I8,
+            count: 8,
+        },
+        a.clone(),
+        RustBV::concrete(7, 8),
+        &ctx,
+    )
+    .unwrap();
+    let flipped = VEXOps::binop(IROp::Xor(IRType::I64), a.clone(), sign_mask, &ctx).unwrap();
+    let clz = VEXOps::unop(
+        IROp::VClz {
+            elem: IRType::I8,
+            count: 8,
+        },
+        flipped,
+        &ctx,
+    )
+    .unwrap();
+    let ones = RustBV::concrete(0x0101_0101_0101_0101, 64);
+    let reference = VEXOps::binop(
+        IROp::VSub {
+            elem: IRType::I8,
+            count: 8,
+        },
+        clz,
+        ones,
+        &ctx,
+    )
+    .unwrap();
+
+    ctx.push();
+    ctx.add_constraint(got.to_z3_ast().eq(reference.to_z3_ast()).not());
+    assert!(
+        !ctx.is_sat(),
+        "VCls 8x8 must match clz(x ^ asr(x, 7)) - 1 for every input"
+    );
+    ctx.pop();
+}
+
+/// Symbolic `Iop_Cls64x2` pinned to a concrete input — the Cls mirror of
+/// `test_vclz_64x2_symbolic_matches_concrete`. `vec_lane_count`'s concrete and
+/// symbolic branches are independently written (masked u128 arithmetic vs
+/// `cls_chain`'s ITE chain), and only the concrete one was covered at the
+/// widest lane shape libVEX emits.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_vcls_64x2_symbolic_matches_concrete() {
+    let ctx = SymContext::new_mock();
+    let a = RustBV::symbolic(&ctx, "vcls64_a", 128);
+    let got = VEXOps::unop(
+        IROp::VCls {
+            elem: IRType::I64,
+            count: 2,
+        },
+        a.clone(),
+        &ctx,
+    )
+    .unwrap();
+    assert_eq!(got.width(), 128);
+
+    // lane0 = 0xFF → MSB 0, bits 62..8 match it, bit 7 differs → 55.
+    // lane1 = all ones → every non-MSB bit matches MSB(1) → N-1 = 63.
+    let input: u128 = 0xFF | (u128::from(u64::MAX) << 64);
+    let expected: u128 = 55 | (63u128 << 64);
+    ctx.push();
+    ctx.add_constraint(a.to_z3_ast().eq(RustBV::concrete(input, 128).to_z3_ast()));
+    ctx.add_constraint(
+        got.to_z3_ast()
+            .eq(RustBV::concrete(expected, 128).to_z3_ast())
+            .not(),
+    );
+    assert!(
+        !ctx.is_sat(),
+        "VCls 64x2 symbolic chain must agree with the concrete semantics"
+    );
+    ctx.pop();
+}

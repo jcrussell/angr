@@ -32,6 +32,85 @@ fn test_float_cmp_lt_symbolic_constraint() {
     );
 }
 
+/// Concrete scalar FCmpEQ (Iop_CmpEQ_F32/F64 → `float_cmp_eq`): 1-bit result,
+/// 1 on equal and 0 otherwise. Guards the `IROp::FCmpEQ` dispatch arm in
+/// `VEXOps::binop`, which no other test reaches (the FCmpScalarLane /
+/// FCmpVecPacked tests below share `fcmp_truth` but not `float_cmp_scalar`).
+#[test]
+fn test_float_cmp_eq_f32_concrete() {
+    let ctx = SymContext::new_mock();
+    let two = RustBV::concrete(2.0f32.to_bits() as u128, 32);
+    let three = RustBV::concrete(3.0f32.to_bits() as u128, 32);
+
+    let eq = VEXOps::binop(IROp::FCmpEQ(IRType::F32), two.clone(), two.clone(), &ctx).unwrap();
+    assert_eq!(eq.width(), 1);
+    assert_eq!(eq.as_u128(), Some(1), "2.0 == 2.0 should be true");
+
+    let ne = VEXOps::binop(IROp::FCmpEQ(IRType::F32), two, three, &ctx).unwrap();
+    assert_eq!(ne.as_u128(), Some(0), "2.0 == 3.0 should be false");
+}
+
+/// Concrete scalar FCmpLE on F64 — covers both the `IROp::FCmpLE` dispatch arm
+/// and `fcmp_truth`'s F64 branch of `float_cmp_scalar`. The equal case is the
+/// discriminating one: it separates LE from LT.
+#[test]
+fn test_float_cmp_le_f64_concrete() {
+    let ctx = SymContext::new_mock();
+    let one = RustBV::concrete(1.0f64.to_bits() as u128, 64);
+    let two = RustBV::concrete(2.0f64.to_bits() as u128, 64);
+
+    let lt = VEXOps::binop(IROp::FCmpLE(IRType::F64), one.clone(), two.clone(), &ctx).unwrap();
+    assert_eq!(lt.width(), 1);
+    assert_eq!(lt.as_u128(), Some(1), "1.0 <= 2.0 should be true");
+
+    let eq = VEXOps::binop(IROp::FCmpLE(IRType::F64), one.clone(), one, &ctx).unwrap();
+    assert_eq!(eq.as_u128(), Some(1), "1.0 <= 1.0 should be true (LE, not LT)");
+
+    let gt = VEXOps::binop(IROp::FCmpLE(IRType::F64), two.clone(), two, &ctx).unwrap();
+    assert_eq!(gt.as_u128(), Some(1), "2.0 <= 2.0 should be true");
+}
+
+/// Symbolic scalar FCmpEQ: `x == 2.5` must pin x to exactly 2.5, proving
+/// `float_cmp_scalar` maps Eq → `FloatOpKind::CmpEq` rather than a sibling
+/// predicate.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_float_cmp_eq_symbolic_constraint() {
+    let ctx = SymContext::new_mock();
+    let x = RustBV::symbolic(&ctx, "fcmp_eq_x", 32);
+    let target = RustBV::concrete(2.5f32.to_bits() as u128, 32);
+
+    let eq = VEXOps::binop(IROp::FCmpEQ(IRType::F32), x.clone(), target, &ctx).unwrap();
+    assert_eq!(eq.width(), 1);
+    ctx.assume_true(&eq);
+    assert!(ctx.is_sat(), "expected SAT for x == 2.5");
+
+    let model_x = ctx.eval(&x).expect("eval(x) returned None");
+    let result_f = f32::from_bits(model_x as u32);
+    assert_eq!(result_f, 2.5f32, "expected x pinned to 2.5, got {result_f}");
+}
+
+/// Symbolic scalar FCmpLE: `x <= 1.0 && 1.0 <= x` is SAT only because the
+/// predicate is non-strict — the same pair under FCmpLT would be UNSAT. Pins x
+/// to 1.0, so a routing regression to CmpLt/CmpEq is caught either way.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_float_cmp_le_symbolic_constraint() {
+    let ctx = SymContext::new_mock();
+    let x = RustBV::symbolic(&ctx, "fcmp_le_x", 32);
+    let one = RustBV::concrete(1.0f32.to_bits() as u128, 32);
+
+    let le_x_one = VEXOps::binop(IROp::FCmpLE(IRType::F32), x.clone(), one.clone(), &ctx).unwrap();
+    let le_one_x = VEXOps::binop(IROp::FCmpLE(IRType::F32), one, x.clone(), &ctx).unwrap();
+    ctx.assume_true(&le_x_one);
+    ctx.assume_true(&le_one_x);
+    assert!(ctx.is_sat(), "expected SAT for 1.0 <= x <= 1.0");
+
+    let model_x = ctx.eval(&x).expect("eval(x) returned None");
+    let result_f = f32::from_bits(model_x as u32);
+    assert_eq!(result_f, 1.0f32, "expected x pinned to 1.0, got {result_f}");
+}
+
 #[test]
 fn test_fcmp_scalar_lane_eq_f32_concrete_true() {
     // CMPEQSS: lane0(left)==lane0(right) → 0xFFFFFFFF in lane0; upper from left.

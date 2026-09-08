@@ -263,3 +263,60 @@ fn test_vec_float_add_symbolic_f32x4() {
     let exp = [3.0f32, 4.0, 5.0, 6.0];
     assert_f32_lanes_approx(model, &exp, 1e-6);
 }
+
+// =========================================================================
+// Over-arity hardening (angr-j60q0.2) — mirror of tests_vec_int_lane.rs's
+// `OverArityLaneOp` / `test_vec_int_lane_over_arity_returns_error`.
+// =========================================================================
+
+/// A `FloatLaneOp` whose `arity()` exceeds `FLOAT_LANE_OP_MAX_ARITY`. No such
+/// op exists in the dispatch table today; this stands in for a future one
+/// (e.g. a fused multiply-add) added without widening the const, which is
+/// exactly the case the fixed-size `buf32`/`buf64` arrays in
+/// `VEXOps::vec_float_lane_op` cannot index.
+struct OverArityFloatLaneOp;
+
+impl FloatLaneOp for OverArityFloatLaneOp {
+    fn arity(&self) -> usize {
+        FLOAT_LANE_OP_MAX_ARITY + 1
+    }
+    fn concrete_f32(&self, a: &[f32]) -> f32 {
+        a[0]
+    }
+    fn concrete_f64(&self, a: &[f64]) -> f64 {
+        a[0]
+    }
+    fn symbolic(
+        &self,
+        args: Vec<RustBV>,
+        _prec: crate::symbolic::FloatPrec,
+        _ctx: &SymContext,
+    ) -> RustBV {
+        args[0].clone()
+    }
+}
+
+/// The concrete fast path must return a typed error rather than index
+/// `buf32`/`buf64` out of bounds. `debug_assert!` alone would not catch it:
+/// the shipped build (and `cargo test --release`) has debug assertions off, so
+/// the guard has to be a real `if`.
+#[test]
+fn test_vec_float_lane_over_arity_returns_error() {
+    let ctx = SymContext::new_mock();
+    let args = [
+        RustBV::concrete(pack_4xf32(1.0, 2.0, 3.0, 4.0), 128),
+        RustBV::concrete(pack_4xf32(1.0, 2.0, 3.0, 4.0), 128),
+        RustBV::concrete(pack_4xf32(1.0, 2.0, 3.0, 4.0), 128),
+    ];
+    let err = VEXOps::vec_float_lane_op(&args, IRType::F32, 4, &OverArityFloatLaneOp, &ctx)
+        .expect_err("over-arity op must not be dispatched");
+    match err {
+        OpError::UnsupportedVectorOp(msg) => {
+            assert!(
+                msg.contains("vec_float_lane_op arity 3 exceeds max 2"),
+                "unexpected message: {msg}"
+            );
+        }
+        other => panic!("expected UnsupportedVectorOp, got {other:?}"),
+    }
+}
