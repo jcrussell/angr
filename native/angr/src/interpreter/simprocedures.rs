@@ -38,13 +38,17 @@ impl<'a> VEXInterpreter<'a> {
     /// VEX stores that are still buffered when the interpreter detects the
     /// SimProcedure hook.
     ///
-    /// The probe mirrors `load_concrete_addr`'s precedence exactly — pending
+    /// The probe mirrors `load_concrete_addr`'s layer precedence — pending
     /// symbolic, pending concrete, flushed symbolic, flushed concrete — so a
     /// return address that landed in a *symbolic* buffer (a hook-written or
     /// otherwise unusual call sequence) is not shadowed by whatever stale
     /// concrete bytes `rust_memory` still holds at `[sp]` (angr-9ke6b.87).
     /// Symbolic stores push no placeholder bytes into the concrete buffers
     /// (angr-ofyh), so without these two checks such a store is invisible here.
+    /// It does not mirror `load_concrete_addr`'s partial-overlay rung
+    /// (angr-6cp06.88): a pointer-width return address split across a buffered
+    /// and an unbuffered half is not a shape any calling convention produces,
+    /// so a partial hit here still falls through to the layers below.
     ///
     /// Only stack-return ABIs get the probe: on a link-register ABI
     /// (`pops_return_addr() == false`) `[sp]` holds no return address at all,

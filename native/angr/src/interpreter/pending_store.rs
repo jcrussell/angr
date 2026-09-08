@@ -188,6 +188,48 @@ impl PendingStoreBuffer {
         Some(out)
     }
 
+    /// Gather whatever buffered bytes cover `[addr, addr+size)`, leaving
+    /// `None` in the positions no pending store has written.
+    ///
+    /// The partial-coverage sibling of [`Self::try_load_assembled`], which
+    /// refuses any load it cannot answer in full. That refusal meant a load
+    /// straddling the edge of a buffered store (store 1 byte at `addr`, then
+    /// read 2) fell through to the layers below, which answer for *both*
+    /// bytes and so hand back the stale pre-write value for the byte that was
+    /// just buffered (angr-6cp06.88). Callers resolve the lower layers
+    /// themselves and splice these bytes over that result — the splice is
+    /// `bv_utils::splice_bytes_over_bv`, which handles a symbolic lower-layer
+    /// answer as an Extract/Concat rather than a byte memcpy.
+    ///
+    /// Returns `None` when *no* byte of the range is buffered, so the caller
+    /// can hand back the lower-layer result untouched; a `Some` therefore
+    /// always carries at least one `Some` byte. Like `try_load_assembled`,
+    /// gathering through `byte_index` makes this last-write-wins by
+    /// construction.
+    pub(crate) fn try_load_partial(&self, addr: u64, size: usize) -> Option<Vec<Option<u8>>> {
+        // Fast-skip the overwhelmingly common miss before allocating. Unlike
+        // `try_load_assembled` this cannot key off the load's *first* byte:
+        // the covered region may start anywhere inside the range.
+        if self.byte_index.is_empty() {
+            return None;
+        }
+        let mut any = false;
+        let mut out = Vec::with_capacity(size);
+        for offset in 0..size as u64 {
+            // Guest addresses wrap at the top of the address space, matching
+            // how `push` indexes a store's bytes.
+            let byte_addr = addr.wrapping_add(offset);
+            let byte = self.byte_index.get(&byte_addr).and_then(|&idx| {
+                let (store_addr, store_data) = &self.stores[idx];
+                let off = usize::try_from(byte_addr.wrapping_sub(*store_addr)).ok()?;
+                store_data.get(off).copied()
+            });
+            any |= byte.is_some();
+            out.push(byte);
+        }
+        any.then_some(out)
+    }
+
     /// Find bytes from a pending store whose base address exactly equals
     /// `addr` and whose length is at least `size`. Used by callers that need
     /// the value originally written at `addr` (not arbitrary bytes from a

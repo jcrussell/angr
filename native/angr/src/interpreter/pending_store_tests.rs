@@ -243,3 +243,73 @@ fn assembled_load_after_drain_misses() {
     assert_eq!(drained.len(), 2);
     assert!(buf.try_load_assembled(0x100, 2).is_none());
 }
+
+#[test]
+fn partial_load_reports_covered_bytes_and_holes() {
+    // The shape angr-6cp06.88 is about: 1 byte stored at 0x100, 2 bytes read
+    // from 0x100. `try_load`/`try_load_assembled` both miss; the partial
+    // gather reports the buffered byte and a hole the caller fills from the
+    // layers below.
+    let mut buf = PendingStoreBuffer::with_capacity(8);
+    buf.push(0x100, vec![0xaa]);
+    assert!(buf.try_load(0x100, 2).is_none());
+    assert!(buf.try_load_assembled(0x100, 2).is_none());
+    assert_eq!(buf.try_load_partial(0x100, 2).unwrap(), vec![Some(0xaa), None]);
+}
+
+#[test]
+fn partial_load_covers_hole_in_the_middle_and_leading_hole() {
+    let mut buf = PendingStoreBuffer::with_capacity(8);
+    buf.push(0x100, vec![1]);
+    buf.push(0x102, vec![3]);
+    // Hole in the middle.
+    assert_eq!(
+        buf.try_load_partial(0x100, 3).unwrap(),
+        vec![Some(1), None, Some(3)]
+    );
+    // A leading hole: the load's *first* byte is unbuffered, which is exactly
+    // what `try_load_assembled`'s first-byte fast-skip cannot see.
+    assert_eq!(
+        buf.try_load_partial(0x101, 2).unwrap(),
+        vec![None, Some(3)]
+    );
+}
+
+#[test]
+fn partial_load_misses_when_no_byte_is_buffered() {
+    let mut buf = PendingStoreBuffer::with_capacity(8);
+    assert!(buf.try_load_partial(0x100, 4).is_none());
+    buf.push(0x200, vec![7]);
+    // Buffer non-empty but disjoint from the load: still a miss, so the
+    // caller hands back the lower-layer result untouched.
+    assert!(buf.try_load_partial(0x100, 4).is_none());
+}
+
+#[test]
+fn partial_load_is_last_write_wins() {
+    let mut buf = PendingStoreBuffer::with_capacity(8);
+    buf.push(0x100, vec![1, 2]);
+    buf.push(0x101, vec![0x99]);
+    assert_eq!(
+        buf.try_load_partial(0x100, 3).unwrap(),
+        vec![Some(1), Some(0x99), None]
+    );
+}
+
+#[test]
+fn partial_load_wraps_at_top_of_address_space() {
+    let mut buf = PendingStoreBuffer::with_capacity(4);
+    buf.push(u64::MAX, vec![0xde]);
+    assert_eq!(
+        buf.try_load_partial(u64::MAX, 2).unwrap(),
+        vec![Some(0xde), None]
+    );
+}
+
+#[test]
+fn partial_load_after_drain_misses() {
+    let mut buf = PendingStoreBuffer::with_capacity(4);
+    buf.push(0x100, vec![1]);
+    let _ = buf.drain().count();
+    assert!(buf.try_load_partial(0x100, 2).is_none());
+}

@@ -13,7 +13,7 @@
 //! `expressions_inspect.rs`, mirror-image of the write-side
 //! `statements_inspect.rs`.
 
-use super::bv_utils::{build_balanced_ite, bytes_to_bv};
+use super::bv_utils::{build_balanced_ite, bytes_to_bv, splice_bytes_over_bv};
 use super::*;
 use crate::vex::ir::{IRCallee, IRRegArray};
 use rustc_hash::FxHashMap;
@@ -377,7 +377,37 @@ impl<'a> VEXInterpreter<'a> {
         if let Some(data) = self.pending_stores.try_load_assembled(addr_concrete, size) {
             return Ok(bytes_to_bv(&data, (size * 8) as u32));
         }
+        // Still no full coverage, but *some* bytes of the load may be
+        // buffered — a load straddling the edge of a pending store. The
+        // layers below know nothing about the buffer and answer for the whole
+        // range, so taking their result verbatim silently undoes the buffered
+        // write (angr-6cp06.88). Resolve them first, then splice the buffered
+        // bytes back over their positions; `splice_bytes_over_bv` handles a
+        // symbolic lower-layer answer as an Extract/Concat rather than a byte
+        // patch.
+        let partial = self.pending_stores.try_load_partial(addr_concrete, size);
+        let below = self.load_concrete_addr_below_pending(callbacks, addr_concrete, size)?;
+        match partial {
+            Some(overlay) => Ok(splice_bytes_over_bv(&below, &overlay, self.ctx)),
+            None => Ok(below),
+        }
+    }
 
+    /// The rungs of `load_concrete_addr`'s ladder below the pending-store
+    /// buffers: previously flushed stores, the Rust concrete-memory cache and
+    /// finally the Python callback.
+    ///
+    /// Split out so `load_concrete_addr` can resolve them *first* and then
+    /// overlay a partially-covering pending store onto the answer. Do not call
+    /// this directly from a load path — it deliberately skips the pending
+    /// buffers, and a load that misses them reads stale pre-block memory
+    /// (the same-block read-back bug `load_layered`'s doc comment describes).
+    fn load_concrete_addr_below_pending(
+        &self,
+        callbacks: &PythonCallbacks,
+        addr_concrete: u64,
+        size: usize,
+    ) -> Result<RustBV, CbExecutionError> {
         // Also check previously flushed symbolic stores (cross-block), with the
         // same exact-then-overlap fallback as the pending map above.
         if let Some(sym_val) =

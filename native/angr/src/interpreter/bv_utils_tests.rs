@@ -1,5 +1,5 @@
-//! Unit tests for [`super::bv_utils`] — the RustBV <-> byte conversions and
-//! the structural ITE-target extractor.
+//! Unit tests for [`super::bv_utils`] — the RustBV <-> byte conversions, the
+//! structural ITE-target extractor and the concrete-byte splice.
 
 use super::*;
 
@@ -202,4 +202,43 @@ fn test_extract_ite_targets_exceeds_max() {
     let i2 = ite_bv(RustBV::concrete(0x2, 64), i1);
     let bv = ite_bv(RustBV::concrete(0x1, 64), i2);
     assert_eq!(extract_ite_targets(&bv, 2), None);
+}
+
+#[test]
+fn splice_patches_a_concrete_base_byte_by_byte() {
+    let base = RustBV::concrete(0x1234_5678, 32);
+    // Index 0 is the least-significant byte, matching `bytes_to_bv`.
+    let spliced = splice_bytes_over_bv(
+        &base,
+        &[Some(0xaa), None, None, Some(0xbb)],
+        &SymContext::new_mock(),
+    );
+    assert_eq!(spliced.as_u64(), Some(0xbb34_56aa));
+}
+
+#[test]
+fn splice_with_an_all_none_overlay_is_the_identity() {
+    let base = RustBV::concrete(0x1234_5678, 32);
+    let spliced = splice_bytes_over_bv(&base, &[None; 4], &SymContext::new_mock());
+    assert_eq!(spliced.as_u64(), Some(0x1234_5678));
+}
+
+#[test]
+fn splice_over_a_symbolic_base_keeps_the_uncovered_lanes_symbolic() {
+    let ctx = SymContext::new_mock();
+    let base = RustBV::symbolic(&ctx, "sym", 16);
+    // Cover the low byte only: the result must still be symbolic (the high
+    // lane is an Extract of `base`), not collapsed to a concrete.
+    let spliced = splice_bytes_over_bv(&base, &[Some(0xaa), None], &ctx);
+    assert_eq!(spliced.width(), 16);
+    assert!(spliced.is_symbolic());
+    assert_eq!(spliced.extract(7, 0, &ctx).as_u64(), Some(0xaa));
+}
+
+#[test]
+fn splice_over_a_symbolic_base_can_cover_every_lane() {
+    let ctx = SymContext::new_mock();
+    let base = RustBV::symbolic(&ctx, "sym", 16);
+    let spliced = splice_bytes_over_bv(&base, &[Some(0x34), Some(0x12)], &ctx);
+    assert_eq!(spliced.as_u64(), Some(0x1234));
 }

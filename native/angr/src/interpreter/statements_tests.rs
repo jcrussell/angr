@@ -1210,3 +1210,85 @@ fn ite_store_buffers_every_candidate_for_rust_memory() {
         }
     });
 }
+
+/// angr-6cp06.88: a load only *partially* covered by the pending-store buffer
+/// must splice the buffered bytes over the lower layers' answer. `try_load`
+/// needs one store covering the whole load and `try_load_assembled` needs every
+/// byte buffered, so a 1-byte store followed by a 2-byte read-back missed both
+/// and the flushed-store layer answered for *both* bytes — silently undoing
+/// the buffered write.
+#[test]
+fn partially_buffered_load_overlays_pending_bytes_on_concrete_lower_layer() {
+    let ctx = SymContext::new_mock();
+    let mut interp = new_interp(&ctx);
+    assert!(!interp.use_rust_memory);
+    // Lower layer (a previously flushed store from an earlier block).
+    interp.all_flushed_stores.insert(0x4000, vec![0x11, 0x22]);
+    // In-flight store covering only the low byte of the coming 2-byte load.
+    interp.pending_stores.push(0x4000, vec![0xaa]);
+
+    let irsb = make_irsb_with_temps(0x1000, &[IRType::I16]);
+    interp.temps.resize(1, None);
+    let load = IRStmt::WrTmp {
+        tmp: 0,
+        data: IRExpr::Load {
+            addr: Box::new(IRExpr::Const(IRConst::U64(0x4000))),
+            ty: IRType::I16,
+            endness: Endness::Little,
+        },
+    };
+
+    with_python(|cb| {
+        interp
+            .execute_stmt_with_callbacks(cb, &load, &irsb)
+            .expect("partially buffered load should resolve");
+    });
+
+    assert_eq!(
+        interp.temps[0].as_ref().and_then(|bv| bv.as_u64()),
+        Some(0x22aa),
+        "buffered byte 0xaa must survive; only the uncovered byte comes from \
+         the flushed store"
+    );
+}
+
+/// The symbolic-lower-layer half of the same fix: when the layers below answer
+/// with a symbolic BV the overlay is an Extract/Concat splice, not a byte
+/// patch, so the uncovered lane must stay symbolic.
+#[test]
+fn partially_buffered_load_overlays_pending_bytes_on_symbolic_lower_layer() {
+    let ctx = SymContext::new_mock();
+    let mut interp = new_interp(&ctx);
+    let sym = RustBV::symbolic(&ctx, "flushed", 16);
+    interp.all_flushed_symbolic_stores.insert(0x4000, sym);
+    interp.pending_stores.push(0x4000, vec![0xaa]);
+
+    let irsb = make_irsb_with_temps(0x1000, &[IRType::I16]);
+    interp.temps.resize(1, None);
+    let load = IRStmt::WrTmp {
+        tmp: 0,
+        data: IRExpr::Load {
+            addr: Box::new(IRExpr::Const(IRConst::U64(0x4000))),
+            ty: IRType::I16,
+            endness: Endness::Little,
+        },
+    };
+
+    with_python(|cb| {
+        interp
+            .execute_stmt_with_callbacks(cb, &load, &irsb)
+            .expect("partially buffered load should resolve");
+    });
+
+    let result = interp.temps[0].as_ref().expect("temp written");
+    assert_eq!(result.width(), 16);
+    assert!(
+        result.is_symbolic(),
+        "the uncovered high byte must remain the flushed symbol"
+    );
+    assert_eq!(
+        result.extract(7, 0, &ctx).as_u64(),
+        Some(0xaa),
+        "the buffered byte must win over the symbolic lower layer"
+    );
+}

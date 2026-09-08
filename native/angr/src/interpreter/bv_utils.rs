@@ -6,8 +6,9 @@
 //! reach them without one depending on the other. Beyond the two byte
 //! conversions, the file holds [`extract_ite_targets`] (harvest the concrete
 //! leaves of a nested ITE jump target), [`build_balanced_ite`] (the inverse:
-//! fold a value set back into a depth-balanced ITE), and
-//! [`reject_symbolic_byte_store`], the guard that turns the lossy
+//! fold a value set back into a depth-balanced ITE),
+//! [`splice_bytes_over_bv`] (overlay concrete bytes onto a possibly-symbolic
+//! value), and [`reject_symbolic_byte_store`], the guard that turns the lossy
 //! symbolic-value byte-store fallback into a loud error.
 
 use super::*;
@@ -168,6 +169,55 @@ pub(super) fn bytes_to_bv(bytes: &[u8], width: u32) -> RustBV {
         );
     }
     RustBV::concrete(value, width)
+}
+
+/// Overlay concrete bytes onto `base`: byte `i` of `overlay`, when `Some`,
+/// replaces bits `[i*8+7 .. i*8]` of the result.
+///
+/// Byte order matches [`bytes_to_bv`] / [`bv_to_bytes`] — index 0 is the
+/// least-significant byte. A `RustBV::Concrete` base is patched as bytes; every
+/// other variant (including `Constrained`, whose constraints a byte round-trip
+/// would drop) is rebuilt as a `Concat` of per-byte lanes, taking the
+/// un-overlaid lanes from `base` via `Extract`.
+///
+/// The caller is `expressions.rs::load_concrete_addr`, splicing
+/// partially-covering pending-store bytes over whatever the layers below
+/// answered with (angr-6cp06.88). Lanes past `base`'s width are ignored, and a
+/// ragged top lane (a `base` width that is not a whole number of bytes) keeps
+/// only the bits `base` actually has.
+pub(super) fn splice_bytes_over_bv(
+    base: &RustBV,
+    overlay: &[Option<u8>],
+    ctx: &SymContext,
+) -> RustBV {
+    let width = base.width();
+    let num_bytes = width.div_ceil(8) as usize;
+    if matches!(base, RustBV::Concrete { .. }) {
+        let mut bytes = bv_to_bytes(base);
+        // `zip` stops at the shorter side, so an overlay longer or shorter
+        // than the value simply patches the positions both agree on.
+        for (slot, patch) in bytes.iter_mut().zip(overlay) {
+            if let Some(byte) = patch {
+                *slot = *byte;
+            }
+        }
+        return bytes_to_bv(&bytes, width);
+    }
+    // Fold high byte first: `a.concat(b)` puts `a` above `b`.
+    let mut lanes = (0..num_bytes).rev().map(|i| {
+        let low = (i * 8) as u32;
+        let high = (low + 7).min(width - 1);
+        match overlay.get(i).copied().flatten() {
+            Some(byte) => RustBV::concrete(u128::from(byte), high - low + 1),
+            None => base.extract(high, low, ctx),
+        }
+    });
+    // `num_bytes == 0` only for a zero-width `base`, which has no bytes to
+    // splice over.
+    let Some(top) = lanes.next() else {
+        return base.clone();
+    };
+    lanes.fold(top, |acc, lane| acc.concat(&lane, ctx))
 }
 
 /// Build a balanced ITE tree from a list of (condition, value) pairs.
