@@ -620,6 +620,41 @@ fn register_state_fd_round_trips_and_refuses_a_duplicate() {
     );
 }
 
+/// angr-tqw60: `_state_fd0_is_dup2d` is how `_inject_rust_fds` tells a dup2'd
+/// fd 0 from the pristine placeholder. It cannot be derived from
+/// `_get_state_open_fds`, whose only provenance signal is the name — and a
+/// guest `open("/dev/stdin")` + `dup2(fd, 0)` leaves fd 0 named exactly like
+/// the placeholder, which is the shape asserted here.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn state_fd0_is_dup2d_tracks_a_dup2_from_a_reopened_dev_stdin() {
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    let pristine = stash_found(&mut mgr, RustSimState::new("amd64").expect("amd64 state"));
+
+    let mut rewired = RustSimState::new("amd64").expect("amd64 state");
+    let src = rewired
+        .file_system()
+        .open_with_content(
+            "/dev/stdin".to_string(),
+            crate::state::FdFlags::ReadOnly,
+            b"REALIN".to_vec(),
+        )
+        .expect("fd space is not exhausted in tests");
+    assert_eq!(rewired.file_system().dup2(src, 0), Some(0));
+    let rewired = stash_found(&mut mgr, rewired);
+
+    assert!(!mgr._state_fd0_is_dup2d(pristine));
+    assert!(mgr._state_fd0_is_dup2d(rewired));
+    assert!(
+        !mgr._state_fd0_is_dup2d(u64::MAX),
+        "a missing state_id answers false rather than panicking",
+    );
+    assert!(
+        mgr._has_state_extra_fds(rewired),
+        "the dup2'd state still needs its fd table synced inbound (angr-qmrrp)",
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Call stack / history / heap getters (angr-0jh0j.26)
 // ---------------------------------------------------------------------------

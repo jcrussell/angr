@@ -265,11 +265,17 @@ fn test_fgets_symbolic_stream_falls_back() {
 /// angr-qmrrp: fd 0 dup2'd from a tracked open fd carries real content, not
 /// pristine/harness-seeded stdin -- fgets/fgetc/getchar/gets must all fall
 /// back rather than mint fresh unconstrained bytes over it.
-fn dup2_tracked_file_onto_stdin(state: &mut RustSimState) {
+///
+/// `name` is the path the source fd was opened as: `"/dev/stdin"` is the
+/// angr-tqw60 corner case (a guest reopening stdin by path), where the dup2'd
+/// clone's `name` is indistinguishable from the pristine placeholder's and
+/// only [`FileSystem::fd0_is_dup2d`](crate::state::FileSystem::fd0_is_dup2d)'s
+/// `is_std_placeholder` provenance separates them.
+fn dup2_tracked_file_onto_stdin_named(state: &mut RustSimState, name: &str) {
     let fd = state
         .file_system()
         .open_with_content(
-            "in.bin".to_string(),
+            name.to_string(),
             crate::state::FdFlags::ReadOnly,
             b"abcdef".to_vec(),
         )
@@ -280,6 +286,10 @@ fn dup2_tracked_file_onto_stdin(state: &mut RustSimState) {
             &[RustBV::concrete(fd as u128, 64), RustBV::concrete(0, 64)],
         )
         .unwrap();
+}
+
+fn dup2_tracked_file_onto_stdin(state: &mut RustSimState) {
+    dup2_tracked_file_onto_stdin_named(state, "in.bin");
 }
 
 #[test]
@@ -328,6 +338,41 @@ fn test_gets_dup2d_stdin_falls_back() {
     dup2_tracked_file_onto_stdin(&mut state);
 
     let result = NativeGets.call(&mut state, &[RustBV::concrete(0x2000, 64)]);
+    assert!(matches!(result, Err(ProcedureError::Other(_))));
+}
+
+/// angr-tqw60: the same rewiring spelled `open("/dev/stdin")` + `dup2(fd, 0)`.
+/// `FileSystem::open` stores the caller-supplied path verbatim, so the dup2'd
+/// clone's `name` is still `"/dev/stdin"` -- the pre-angr-tqw60 name
+/// comparison read fd 0 as pristine here and minted fresh unconstrained bytes
+/// over the guest's real content instead of bouncing.
+#[test]
+fn test_fgets_dup2d_reopened_dev_stdin_falls_back() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory(0x2000, 0x1000, Permission::RWX);
+    dup2_tracked_file_onto_stdin_named(&mut state, "/dev/stdin");
+    let file_ptr: u64 = 0x5000;
+    setup_file_struct(&mut state, file_ptr, 0);
+
+    let result = NativeFgets.call(
+        &mut state,
+        &[
+            RustBV::concrete(0x2000, 64),
+            RustBV::concrete(10, 64),
+            RustBV::concrete(file_ptr as u128, 64),
+        ],
+    );
+    assert!(matches!(result, Err(ProcedureError::Other(_))));
+}
+
+/// The `getchar()` half of [`test_fgets_dup2d_reopened_dev_stdin_falls_back`]
+/// -- the no-FILE* read path reaches fd 0 without a `setup_file_struct`.
+#[test]
+fn test_getchar_dup2d_reopened_dev_stdin_falls_back() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    dup2_tracked_file_onto_stdin_named(&mut state, "/dev/stdin");
+
+    let result = NativeGetchar.call(&mut state, &[]);
     assert!(matches!(result, Err(ProcedureError::Other(_))));
 }
 

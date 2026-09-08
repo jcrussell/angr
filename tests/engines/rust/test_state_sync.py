@@ -783,7 +783,8 @@ class TestCallbackFdInboundSync:
         mgr._rust_mgr = Tripwire()
         mgr._inject_rust_fds(proj.factory.entry_state(), 1)
 
-    def test_dup2d_stdin_overrides_default_fd0(self, mgr_and_sid):
+    @pytest.mark.parametrize("name", ["/tmp/dup2d-stdin.txt", "/dev/stdin"])
+    def test_dup2d_stdin_overrides_default_fd0(self, mgr_and_sid, name):
         """angr-qmrrp: a native ``dup2(real_fd, 0)`` must override
         ``posix.fd[0]`` rather than be skipped by the ``fd <= 2`` /
         fd-already-present guards that apply to every other fd — fd 0 always
@@ -795,8 +796,13 @@ class TestCallbackFdInboundSync:
         ``register_state_fd`` can't simulate this directly (it refuses to
         re-register an already-present fd, and fd 0 always pre-exists), so
         this stubs ``_rust_mgr`` the same way ``test_no_extra_fds_skips_the_ffi``
-        does, reporting fd 0 with a non-placeholder name as
-        ``get_state_open_fds`` would after a real dup2.
+        does, reporting fd 0 as ``get_state_open_fds`` /
+        ``state_fd0_is_dup2d`` would after a real dup2.
+
+        angr-tqw60: parametrized over the dup2 source's name, because
+        ``/dev/stdin`` — what a guest that reopens stdin by path leaves on the
+        clone — is exactly the name the pre-fix heuristic here read as
+        pristine, skipping the override.
         """
         proj, mgr, sid = mgr_and_sid
 
@@ -804,8 +810,11 @@ class TestCallbackFdInboundSync:
             def has_state_extra_fds(self, _state_id):
                 return True
 
+            def state_fd0_is_dup2d(self, _state_id):
+                return True
+
             def get_state_open_fds(self, _state_id):
-                return [(0, "/tmp/dup2d-stdin.txt", 0, TestCallbackFdInboundSync.O_RDONLY, 6, True)]
+                return [(0, name, 0, TestCallbackFdInboundSync.O_RDONLY, 6, True)]
 
             def get_state_fd_content(self, _state_id, _fd):
                 return b"REALIN"

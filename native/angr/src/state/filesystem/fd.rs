@@ -107,6 +107,27 @@ pub struct FileDescriptor {
     /// absolute pseudo-paths those descriptors carry.
     #[serde(default)]
     pub norm_name: Option<String>,
+    /// True only for the three standard descriptors
+    /// [`Default for FileSystem`](struct@crate::state::FileSystem) pre-registers
+    /// at process start, and never set by any other constructor — so a
+    /// descriptor minted by `open`/`open_with_content`/`open_symbolic`/
+    /// `register_fd_at`/`pipe` carries `false` even when its `name` string
+    /// happens to be `"/dev/stdin"`.
+    ///
+    /// [`FileSystem::dup2`](crate::state::FileSystem::dup2) clones the whole
+    /// struct, so this travels with the descriptor and gives
+    /// [`FileSystem::fd0_is_dup2d`](crate::state::FileSystem::fd0_is_dup2d)
+    /// real provenance instead of the `name != "/dev/stdin"` heuristic it used
+    /// before — which missed a guest `open("/dev/stdin")` + `dup2(fd, 0)`,
+    /// whose clone keeps that very name (angr-tqw60).
+    ///
+    /// `#[serde(default)]` keeps pre-angr-tqw60 snapshots loadable; their fd 0
+    /// reconstitutes as `false`, i.e. reported as dup2'd, so native stdin
+    /// readers bounce to Python. That is the conservative direction — the
+    /// Python path is the reference implementation, so a stale snapshot pays
+    /// a bounce, never a wrong answer.
+    #[serde(default)]
+    pub is_std_placeholder: bool,
 }
 
 impl FileDescriptor {
@@ -122,6 +143,7 @@ impl FileDescriptor {
             content_sym: None,
             registry_key: None,
             norm_name: None,
+            is_std_placeholder: false,
         }
     }
 
@@ -137,6 +159,7 @@ impl FileDescriptor {
             content_sym: None,
             registry_key: None,
             norm_name: None,
+            is_std_placeholder: false,
         }
     }
 
@@ -153,6 +176,20 @@ impl FileDescriptor {
             content_sym: None,
             registry_key: None,
             norm_name: None,
+            is_std_placeholder: false,
+        }
+    }
+
+    /// Create one of the three standard descriptors (fd 0/1/2) that
+    /// [`Default for FileSystem`](struct@crate::state::FileSystem)
+    /// pre-registers at process start. Identical to
+    /// [`new`](FileDescriptor::new) except that it stamps
+    /// [`is_std_placeholder`](FileDescriptor::is_std_placeholder) — the ONLY
+    /// place that flag is set.
+    pub fn new_std_placeholder(name: String, flags: FdFlags) -> Self {
+        FileDescriptor {
+            is_std_placeholder: true,
+            ..FileDescriptor::new(name, flags)
         }
     }
 

@@ -96,15 +96,15 @@ impl Default for FileSystem {
         // Pre-register standard file descriptors
         fds.insert(
             0,
-            FileDescriptor::new("/dev/stdin".to_string(), FdFlags::ReadOnly),
+            FileDescriptor::new_std_placeholder("/dev/stdin".to_string(), FdFlags::ReadOnly),
         );
         fds.insert(
             1,
-            FileDescriptor::new("/dev/stdout".to_string(), FdFlags::WriteOnly),
+            FileDescriptor::new_std_placeholder("/dev/stdout".to_string(), FdFlags::WriteOnly),
         );
         fds.insert(
             2,
-            FileDescriptor::new("/dev/stderr".to_string(), FdFlags::WriteOnly),
+            FileDescriptor::new_std_placeholder("/dev/stderr".to_string(), FdFlags::WriteOnly),
         );
         FileSystem {
             fds: crate::arc_shared(fds),

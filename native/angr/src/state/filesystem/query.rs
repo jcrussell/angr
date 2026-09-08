@@ -177,12 +177,18 @@ impl FileSystem {
     /// placeholder [`Default for FileSystem`](struct@FileSystem)'s `impl`
     /// registers at process start -- i.e. a guest `dup2(real_fd, 0)` rewired
     /// it onto a real, Rust-tracked file (angr-qmrrp). `dup2` clones the
-    /// whole source [`FileDescriptor`], including its `name`, into fd 0's
-    /// slot, so the only way the name can differ from the `"/dev/stdin"`
-    /// placeholder is a `dup2` onto it.
+    /// whole source [`FileDescriptor`], so the clone carries the source's
+    /// [`is_std_placeholder`](FileDescriptor::is_std_placeholder) flag —
+    /// `false` for every descriptor `open`/`pipe`/`register_fd_at` mint —
+    /// into fd 0's slot.
+    ///
+    /// Keying off that flag rather than the descriptor's `name` is what
+    /// catches a guest `open("/dev/stdin")` + `dup2(fd, 0)`: `open` stores
+    /// the caller-supplied path verbatim, so the dup2'd clone's name is
+    /// still literally `"/dev/stdin"` and the old string comparison read it
+    /// as pristine (angr-tqw60).
     pub fn fd0_is_dup2d(&self) -> bool {
-        self.fd_info(0)
-            .is_some_and(|(name, ..)| name != "/dev/stdin")
+        self.fds.get(&0).is_some_and(|d| !d.is_std_placeholder)
     }
 
     /// Get the next fd number (for pre-allocating).

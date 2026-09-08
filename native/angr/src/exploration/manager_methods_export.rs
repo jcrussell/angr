@@ -488,6 +488,19 @@ impl RustExplorationManager {
         self._has_state_extra_fds(state_id)
     }
 
+    /// True when the state's fd 0 no longer points at the pristine stdin
+    /// placeholder — i.e. a native `dup2(real_fd, 0)` rewired it (angr-qmrrp).
+    ///
+    /// Companion to [`has_state_extra_fds`](Self::has_state_extra_fds) for
+    /// `_inject_rust_fds`, which must override the callback state's
+    /// pre-existing `posix.fd[0]` in exactly that case. The answer cannot be
+    /// derived from the `get_state_open_fds` tuples: a guest
+    /// `open("/dev/stdin")` + `dup2(fd, 0)` leaves fd 0 named `"/dev/stdin"`,
+    /// indistinguishable from the placeholder by name alone (angr-tqw60).
+    pub fn state_fd0_is_dup2d(&self, state_id: u64) -> bool {
+        self._state_fd0_is_dup2d(state_id)
+    }
+
     /// Get the content of a file descriptor for a state.
     pub fn get_state_fd_content(&self, state_id: u64, fd: u32) -> PyResult<Vec<u8>> {
         self._get_state_fd_content(state_id, fd)

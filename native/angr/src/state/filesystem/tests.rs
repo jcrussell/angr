@@ -355,6 +355,83 @@ fn dup2_closes_target_and_bumps_next_fd() {
     assert!(fs.dup2(999, 30).is_none());
 }
 
+/// angr-qmrrp: fd 0 is pristine until something dup2's over it, and the
+/// pristine placeholder must not be reported as dup2'd -- fd 0 is
+/// unconditionally *open* from process start, so `is_open(0)` cannot tell the
+/// two apart.
+#[test]
+fn fd0_is_dup2d_false_for_the_pristine_placeholder() {
+    let mut fs = FileSystem::default();
+    assert!(!fs.fd0_is_dup2d());
+    // Opening (and even closing) unrelated files leaves fd 0 pristine.
+    let other = fs
+        .open_with_content("in.bin".to_string(), FdFlags::ReadOnly, b"abc".to_vec())
+        .expect("fd space is not exhausted in tests");
+    assert!(!fs.fd0_is_dup2d());
+    fs.close(other);
+    assert!(!fs.fd0_is_dup2d());
+    // Closing fd 0 itself is not a dup2 either.
+    fs.close(0);
+    assert!(!fs.fd0_is_dup2d());
+}
+
+/// angr-tqw60: the pre-`is_std_placeholder` implementation compared fd 0's
+/// `name` against `"/dev/stdin"`, so a guest that reopens stdin by path and
+/// dup2's it onto fd 0 produced a clone whose name still read as pristine --
+/// and native stdin readers kept minting fresh unconstrained bytes over the
+/// guest's real content. Provenance now travels with the descriptor, so both
+/// spellings of the same rewiring are detected.
+#[test]
+fn fd0_is_dup2d_detects_dup2_from_a_reopened_dev_stdin() {
+    for name in ["in.bin", "/dev/stdin"] {
+        let mut fs = FileSystem::default();
+        let src = fs
+            .open_with_content(name.to_string(), FdFlags::ReadOnly, b"abcdef".to_vec())
+            .expect("fd space is not exhausted in tests");
+        assert!(!fs.fd0_is_dup2d(), "fd 0 pristine before the dup2 ({name})");
+        assert_eq!(fs.dup2(src, 0), Some(0));
+        assert!(
+            fs.fd0_is_dup2d(),
+            "dup2 of an open({name}) fd onto 0 must be detected"
+        );
+    }
+}
+
+/// Only [`FileSystem::default`]'s three pre-registered descriptors carry the
+/// placeholder flag; every minting API leaves it false, which is what makes
+/// the [`FileSystem::fd0_is_dup2d`] check above name-independent.
+#[test]
+fn only_the_three_std_fds_are_flagged_as_placeholders() {
+    let mut fs = FileSystem::default();
+    for fd in [0u32, 1, 2] {
+        assert!(fs.all_fds().contains(&fd));
+        assert!(fs.fds[&fd].is_std_placeholder, "fd {fd} is a placeholder");
+    }
+    let opened = fs
+        .open("/dev/stdin".to_string(), FdFlags::ReadOnly)
+        .expect("fd space is not exhausted in tests");
+    let with_content = fs
+        .open_with_content("/dev/stdin".to_string(), FdFlags::ReadOnly, b"x".to_vec())
+        .expect("fd space is not exhausted in tests");
+    let symbolic = fs
+        .open_symbolic("/dev/stdin".to_string(), FdFlags::ReadOnly)
+        .expect("fd space is not exhausted in tests");
+    assert!(fs.register_fd_at(
+        900,
+        "/dev/stdin".to_string(),
+        FdFlags::ReadOnly,
+        Vec::new(),
+        0
+    ));
+    let (pipe_r, pipe_w) = fs.pipe().expect("fd space is not exhausted in tests");
+    for fd in [opened, with_content, symbolic, 900, pipe_r, pipe_w] {
+        assert!(
+            !fs.fds[&fd].is_std_placeholder,
+            "fd {fd} was minted, not pre-registered"
+        );
+    }
+}
+
 #[test]
 fn dup2_refuses_newfd_at_or_above_max_fd() {
     let mut fs = FileSystem::default();

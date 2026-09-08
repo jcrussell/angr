@@ -1097,6 +1097,11 @@ impl RustExplorationManager {
         })
     }
 
+    pub(crate) fn _state_fd0_is_dup2d(&self, state_id: u64) -> bool {
+        self.find_state(state_id)
+            .is_some_and(|state| state.file_system_ref().fd0_is_dup2d())
+    }
+
     pub(crate) fn _get_state_fd_content(&self, state_id: u64, fd: u32) -> PyResult<Vec<u8>> {
         self.with_state(state_id, |state| {
             Ok(state.file_system_ref().fd_content(fd).to_vec())

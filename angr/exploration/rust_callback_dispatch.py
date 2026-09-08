@@ -524,13 +524,17 @@ class RustCallbackDispatchMixin:
             # keeps the pre-fix behavior (native fds invisible to it).
             l.debug("get_state_open_fds(%d) failed: %s", state_id, e)
             return
+        # angr-tqw60: asked of Rust rather than inferred from the fd's name,
+        # which a guest open("/dev/stdin") + dup2(fd, 0) leaves reading exactly
+        # like the pristine placeholder's.
+        fd0_dup2d = self._rust_mgr.state_fd0_is_dup2d(state_id)
         for fd, name, position, flags, _content_len, is_open in rust_fds:
             # angr-qmrrp: fd 0 dup2'd to a real tracked file must override
             # the pre-existing posix.fd[0] entry rather than be skipped by
             # the fd<=2 / fd-already-present guards below -- mirrors the
             # unconditional posix.fd[newfd] = posix.fd[oldfd] dup2 does on
             # the Python side (angr/procedures/posix/dup.py's dup2 class).
-            is_dup2d_stdin = fd == 0 and name != "/dev/stdin"
+            is_dup2d_stdin = fd == 0 and fd0_dup2d
             if (fd <= 2 and not is_dup2d_stdin) or not is_open or (fd in posix.fd and not is_dup2d_stdin) or not name:
                 continue
             try:
