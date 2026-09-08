@@ -310,3 +310,181 @@ fn boundary_sign_vs_zero_extend_diverge_on_negative() {
         assert_eq!(ze, 0xFF, "zext 0xFF -> {tw} must be 0xFF");
     }
 }
+
+// ---------------------------------------------------------------------------
+// Arithmetic: Sub / Mul / DivU / DivS / ModU / ModS / MullU / MullS
+//
+// angr-6cp06.34: of the eight scalar arithmetic arms in `binop_arith`, only
+// `Add` and `MullU` were driven by any test, so swapping `udiv_into` for
+// `sdiv_into` (or copy-pasting `MullU`'s `signed: false` onto `MullS`)
+// compiled clean and passed the whole ops suite. The properties below pin
+// each arm to an independent plain-`u128`/`i128` reference, and the
+// deterministic sweeps that follow pin the signed-vs-unsigned pairs to
+// inputs where the two answers provably differ.
+// ---------------------------------------------------------------------------
+
+/// SMT-LIB total div/mod reference at width `w`, as `(divu, divs, modu, mods)`.
+///
+/// Division by zero is *total* in SMT-LIB (and so in Z3's `bv{u,s}{div,rem}`
+/// and the concrete folds in `symbolic/value_ops.rs`): `bvudiv x 0` is
+/// all-ones, `bvsdiv x 0` is -1 for `x >= 0` and +1 for `x < 0`, and both
+/// remainders return the dividend unchanged.
+fn divmod_reference(a: u128, b: u128, w: u32) -> (u128, u128, u128, u128) {
+    let m = mask(w);
+    let (au, bu) = (a & m, b & m);
+    let (ai, bi) = (to_signed(a, w), to_signed(b, w));
+    if bu == 0 {
+        (m, if ai < 0 { 1 } else { m }, au, au)
+    } else {
+        (
+            au / bu,
+            // `wrapping_*` for the MIN / -1 overflow, matching bvsdiv/bvsrem.
+            (ai.wrapping_div(bi) as u128) & m,
+            au % bu,
+            (ai.wrapping_rem(bi) as u128) & m,
+        )
+    }
+}
+
+#[quickcheck]
+fn prop_sub_mul_match_reference(a: u128, b: u128, ts: u8) -> bool {
+    let ctx = SymContext::new_mock();
+    let t = ty(ts);
+    let m = mask(t.bits());
+    let (am, bm) = (a & m, b & m);
+    let sub = val(&VEXOps::binop(IROp::Sub(t), bv(a, t), bv(b, t), &ctx).unwrap());
+    let mul = val(&VEXOps::binop(IROp::Mul(t), bv(a, t), bv(b, t), &ctx).unwrap());
+    sub == (am.wrapping_sub(bm) & m) && mul == (am.wrapping_mul(bm) & m)
+}
+
+#[quickcheck]
+fn prop_div_mod_match_reference(a: u128, b: u128, ts: u8) -> bool {
+    let ctx = SymContext::new_mock();
+    let t = ty(ts);
+    let (du, ds, mu, ms) = divmod_reference(a, b, t.bits());
+    val(&VEXOps::binop(IROp::DivU(t), bv(a, t), bv(b, t), &ctx).unwrap()) == du
+        && val(&VEXOps::binop(IROp::DivS(t), bv(a, t), bv(b, t), &ctx).unwrap()) == ds
+        && val(&VEXOps::binop(IROp::ModU(t), bv(a, t), bv(b, t), &ctx).unwrap()) == mu
+        && val(&VEXOps::binop(IROp::ModS(t), bv(a, t), bv(b, t), &ctx).unwrap()) == ms
+}
+
+#[quickcheck]
+fn prop_widening_mul_match_reference(a: u128, b: u128, ts: u8) -> bool {
+    let ctx = SymContext::new_mock();
+    let t = ty(ts);
+    let w = t.bits();
+    let m = mask(w);
+    let mullu = VEXOps::binop(IROp::MullU(t), bv(a, t), bv(b, t), &ctx).unwrap();
+    let mulls = VEXOps::binop(IROp::MullS(t), bv(a, t), bv(b, t), &ctx).unwrap();
+    let want_u = (a & m) * (b & m);
+    let want_s = (to_signed(a, w).wrapping_mul(to_signed(b, w)) as u128) & mask(w * 2);
+    mullu.width() == w * 2
+        && mulls.width() == w * 2
+        && val(&mullu) == want_u
+        && val(&mulls) == want_s
+}
+
+#[test]
+fn boundary_arith_match_reference() {
+    let ctx = SymContext::new_mock();
+    for &t in &INT_TYPES {
+        let w = t.bits();
+        let m = mask(w);
+        for &a in &boundary_values(w) {
+            for &b in &boundary_values(w) {
+                let sub = val(&VEXOps::binop(IROp::Sub(t), bv(a, t), bv(b, t), &ctx).unwrap());
+                let mul = val(&VEXOps::binop(IROp::Mul(t), bv(a, t), bv(b, t), &ctx).unwrap());
+                assert_eq!(sub, a.wrapping_sub(b) & m, "sub w={w} a={a:#x} b={b:#x}");
+                assert_eq!(mul, a.wrapping_mul(b) & m, "mul w={w} a={a:#x} b={b:#x}");
+
+                let (du, ds, mu, ms) = divmod_reference(a, b, w);
+                let got_du = val(&VEXOps::binop(IROp::DivU(t), bv(a, t), bv(b, t), &ctx).unwrap());
+                let got_ds = val(&VEXOps::binop(IROp::DivS(t), bv(a, t), bv(b, t), &ctx).unwrap());
+                let got_mu = val(&VEXOps::binop(IROp::ModU(t), bv(a, t), bv(b, t), &ctx).unwrap());
+                let got_ms = val(&VEXOps::binop(IROp::ModS(t), bv(a, t), bv(b, t), &ctx).unwrap());
+                assert_eq!(got_du, du, "divu w={w} a={a:#x} b={b:#x}");
+                assert_eq!(got_ds, ds, "divs w={w} a={a:#x} b={b:#x}");
+                assert_eq!(got_mu, mu, "modu w={w} a={a:#x} b={b:#x}");
+                assert_eq!(got_ms, ms, "mods w={w} a={a:#x} b={b:#x}");
+
+                let mullu = VEXOps::binop(IROp::MullU(t), bv(a, t), bv(b, t), &ctx).unwrap();
+                let mulls = VEXOps::binop(IROp::MullS(t), bv(a, t), bv(b, t), &ctx).unwrap();
+                assert_eq!(mullu.width(), w * 2, "mullu width w={w}");
+                assert_eq!(mulls.width(), w * 2, "mulls width w={w}");
+                assert_eq!(val(&mullu), a * b, "mullu w={w} a={a:#x} b={b:#x}");
+                assert_eq!(
+                    val(&mulls),
+                    (to_signed(a, w).wrapping_mul(to_signed(b, w)) as u128) & mask(w * 2),
+                    "mulls w={w} a={a:#x} b={b:#x}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn boundary_signed_vs_unsigned_div_mod_diverge() {
+    let ctx = SymContext::new_mock();
+    for &t in &INT_TYPES {
+        let w = t.bits();
+        let m = mask(w);
+        // -7 / 3 == -2 rem -1 signed; the same bit pattern is the large
+        // positive 2^w - 7 unsigned, so every one of the four answers differs.
+        let neg7 = (-7i128 as u128) & m;
+        let three = 3u128;
+        let divs = val(&VEXOps::binop(IROp::DivS(t), bv(neg7, t), bv(three, t), &ctx).unwrap());
+        let divu = val(&VEXOps::binop(IROp::DivU(t), bv(neg7, t), bv(three, t), &ctx).unwrap());
+        let mods = val(&VEXOps::binop(IROp::ModS(t), bv(neg7, t), bv(three, t), &ctx).unwrap());
+        let modu = val(&VEXOps::binop(IROp::ModU(t), bv(neg7, t), bv(three, t), &ctx).unwrap());
+        assert_eq!(divs, (-2i128 as u128) & m, "divs -7/3 w={w}");
+        assert_eq!(mods, (-1i128 as u128) & m, "mods -7%3 w={w}");
+        assert_eq!(divu, neg7 / three, "divu w={w}");
+        assert_eq!(modu, neg7 % three, "modu w={w}");
+        assert_ne!(divs, divu, "DivS and DivU must not alias w={w}");
+        assert_ne!(mods, modu, "ModS and ModU must not alias w={w}");
+    }
+}
+
+#[test]
+fn boundary_signed_div_min_by_negative_one_wraps() {
+    let ctx = SymContext::new_mock();
+    for &t in &INT_TYPES {
+        let w = t.bits();
+        let m = mask(w);
+        // The one input where two's-complement division overflows: bvsdiv
+        // wraps MIN / -1 back to MIN, and bvsrem gives 0.
+        let min = 1u128 << (w - 1);
+        assert_eq!(
+            val(&VEXOps::binop(IROp::DivS(t), bv(min, t), bv(m, t), &ctx).unwrap()),
+            min,
+            "MIN / -1 must wrap to MIN w={w}"
+        );
+        assert_eq!(
+            val(&VEXOps::binop(IROp::ModS(t), bv(min, t), bv(m, t), &ctx).unwrap()),
+            0,
+            "MIN % -1 must be 0 w={w}"
+        );
+    }
+}
+
+#[test]
+fn boundary_div_mod_by_zero_is_total() {
+    let ctx = SymContext::new_mock();
+    for &t in &INT_TYPES {
+        let w = t.bits();
+        let m = mask(w);
+        let zero = bv(0, t);
+        let pos = 5u128;
+        let neg = (-5i128 as u128) & m;
+        // x / 0 is all-ones unsigned; signed it is -1 for x >= 0 and +1 for
+        // x < 0. x % 0 returns x for both signednesses.
+        let d = |op: IROp, x: u128| {
+            val(&VEXOps::binop(op, bv(x, t), zero.clone(), &ctx).unwrap())
+        };
+        assert_eq!(d(IROp::DivU(t), pos), m, "5 /u 0 w={w}");
+        assert_eq!(d(IROp::DivS(t), pos), m, "5 /s 0 w={w}");
+        assert_eq!(d(IROp::DivS(t), neg), 1, "-5 /s 0 w={w}");
+        assert_eq!(d(IROp::ModU(t), neg), neg, "x %u 0 == x w={w}");
+        assert_eq!(d(IROp::ModS(t), neg), neg, "x %s 0 == x w={w}");
+    }
+}
