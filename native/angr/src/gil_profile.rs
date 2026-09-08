@@ -74,6 +74,37 @@ thread_local! {
     static PARK_START: Cell<Option<Instant>> = const { Cell::new(None) };
 }
 
+/// Generates a profiling enum's `COUNT`, `all` and `name` from one variant
+/// list.
+///
+/// `COUNT` sizes the thread-local accumulator arrays that [`GilWorkGuard`]
+/// indexes by discriminant with no bounds guard, so a count that lags the enum
+/// is an out-of-bounds panic rather than a missing counter. Deriving all three
+/// from a single list makes that desync a compile error: a variant added to the
+/// enum but not here fails `name`'s exhaustive `match`, and `COUNT`/`all` then
+/// follow the list automatically (bd angr-6cp06.86).
+macro_rules! profile_enum_meta {
+    ($enum:ident, $prefix:literal, $($variant:ident => $label:literal),+ $(,)?) => {
+        impl $enum {
+            const COUNT: usize = [$(stringify!($variant)),+].len();
+
+            #[doc = concat!(
+                "Stable counter suffix, used to name the `", $prefix, "*` stats keys."
+            )]
+            pub(crate) fn name(self) -> &'static str {
+                match self {
+                    $($enum::$variant => $label),+
+                }
+            }
+
+            /// Every variant, for iterating the split when emitting stats.
+            pub(crate) fn all() -> [$enum; Self::COUNT] {
+                [$($enum::$variant),+]
+            }
+        }
+    };
+}
+
 /// Why the run loop is holding the GIL. Attributing the *outermost* region is
 /// what makes this a partition: nested guards do not time (see [`GilWorkGuard`]),
 /// so every banked nanosecond belongs to exactly one class and the classes sum
@@ -117,30 +148,15 @@ pub(crate) enum GilClass {
     Bounce,
 }
 
-impl GilClass {
-    const COUNT: usize = 5;
-
-    /// Stable counter suffix, used to name the `gil_work_ns_*` stats keys.
-    pub(crate) fn name(self) -> &'static str {
-        match self {
-            GilClass::Callback => "callback",
-            GilClass::ClaripyExport => "claripy_export",
-            GilClass::ClaripyImport => "claripy_import",
-            GilClass::ForkMetadata => "fork_metadata",
-            GilClass::Bounce => "bounce",
-        }
-    }
-
-    pub(crate) fn all() -> [GilClass; GilClass::COUNT] {
-        [
-            GilClass::Callback,
-            GilClass::ClaripyExport,
-            GilClass::ClaripyImport,
-            GilClass::ForkMetadata,
-            GilClass::Bounce,
-        ]
-    }
-}
+profile_enum_meta!(
+    GilClass,
+    "gil_work_ns_",
+    Callback => "callback",
+    ClaripyExport => "claripy_export",
+    ClaripyImport => "claripy_import",
+    ForkMetadata => "fork_metadata",
+    Bounce => "bounce",
+);
 
 /// Which `PythonCallbacks` entry point took the GIL. One variant per
 /// `GilWorkGuard` site in `callbacks/dispatch.rs`, plus a bucket for the
@@ -180,52 +196,26 @@ pub(crate) enum CallbackSite {
     Other,
 }
 
-impl CallbackSite {
-    const COUNT: usize = 16;
-
-    /// Stable counter suffix, used to name the `gil_work_ns_callback_*` keys.
-    pub(crate) fn name(self) -> &'static str {
-        match self {
-            CallbackSite::MemoryLoad => "memory_load",
-            CallbackSite::MemoryStore => "memory_store",
-            CallbackSite::MemoryStoreBatch => "memory_store_batch",
-            CallbackSite::MemoryLoadBatch => "memory_load_batch",
-            CallbackSite::MemoryLoadSymbolic => "memory_load_symbolic",
-            CallbackSite::MemoryStoreSymbolic => "memory_store_symbolic",
-            CallbackSite::MemoryStoreSymbolicValue => "memory_store_symbolic_value",
-            CallbackSite::MemoryStoreSymbolicFull => "memory_store_symbolic_full",
-            CallbackSite::MemoryLoadSymbolicFull => "memory_load_symbolic_full",
-            CallbackSite::LiftBlock => "lift_block",
-            CallbackSite::DirtyCall => "dirty_call",
-            CallbackSite::FetchPage => "fetch_page",
-            CallbackSite::BatchFetchPages => "batch_fetch_pages",
-            CallbackSite::ResolveFunction => "resolve_function",
-            CallbackSite::Inspect => "inspect",
-            CallbackSite::Other => "other",
-        }
-    }
-
-    pub(crate) fn all() -> [CallbackSite; CallbackSite::COUNT] {
-        [
-            CallbackSite::MemoryLoad,
-            CallbackSite::MemoryStore,
-            CallbackSite::MemoryStoreBatch,
-            CallbackSite::MemoryLoadBatch,
-            CallbackSite::MemoryLoadSymbolic,
-            CallbackSite::MemoryStoreSymbolic,
-            CallbackSite::MemoryStoreSymbolicValue,
-            CallbackSite::MemoryStoreSymbolicFull,
-            CallbackSite::MemoryLoadSymbolicFull,
-            CallbackSite::LiftBlock,
-            CallbackSite::DirtyCall,
-            CallbackSite::FetchPage,
-            CallbackSite::BatchFetchPages,
-            CallbackSite::ResolveFunction,
-            CallbackSite::Inspect,
-            CallbackSite::Other,
-        ]
-    }
-}
+profile_enum_meta!(
+    CallbackSite,
+    "gil_work_ns_callback_",
+    MemoryLoad => "memory_load",
+    MemoryStore => "memory_store",
+    MemoryStoreBatch => "memory_store_batch",
+    MemoryLoadBatch => "memory_load_batch",
+    MemoryLoadSymbolic => "memory_load_symbolic",
+    MemoryStoreSymbolic => "memory_store_symbolic",
+    MemoryStoreSymbolicValue => "memory_store_symbolic_value",
+    MemoryStoreSymbolicFull => "memory_store_symbolic_full",
+    MemoryLoadSymbolicFull => "memory_load_symbolic_full",
+    LiftBlock => "lift_block",
+    DirtyCall => "dirty_call",
+    FetchPage => "fetch_page",
+    BatchFetchPages => "batch_fetch_pages",
+    ResolveFunction => "resolve_function",
+    Inspect => "inspect",
+    Other => "other",
+);
 
 /// Cumulative GIL-work nanoseconds attributed to `class` on this thread.
 #[inline]
@@ -676,5 +666,19 @@ mod tests {
             gil_work_ns(),
             run_wall_ns()
         );
+    }
+
+    #[test]
+    fn all_is_in_discriminant_order() {
+        // `profile_enum_meta!` ties COUNT/all/name to one list, but it cannot
+        // force that list into declaration order — and the accumulators are
+        // indexed by `variant as usize`, so an out-of-order `all` would emit
+        // one variant's nanoseconds under another's name.
+        for (i, class) in GilClass::all().into_iter().enumerate() {
+            assert_eq!(class as usize, i, "GilClass::all out of order at {i}");
+        }
+        for (i, site) in CallbackSite::all().into_iter().enumerate() {
+            assert_eq!(site as usize, i, "CallbackSite::all out of order at {i}");
+        }
     }
 }
