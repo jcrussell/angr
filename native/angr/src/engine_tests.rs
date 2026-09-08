@@ -147,6 +147,7 @@ fn deliberately_untyped_variants_collapse_to_other_preserving_the_message() {
         CbExecutionError::Callback("python raised".to_string()),
         CbExecutionError::LiftError("bad bytes".to_string()),
         CbExecutionError::Unsupported("symbolic exit".to_string()),
+        CbExecutionError::NeedPythonFallback("unmodeled syscall".to_string()),
     ] {
         let expected = err.to_string();
         match cb_execution_error_to_typed(err, 0x1000, "amd64") {
