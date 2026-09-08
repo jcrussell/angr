@@ -671,9 +671,11 @@ impl RustExplorationManager {
         }
     }
 
-    /// Prepare for a new exploration stage: move a specific found state
-    /// to active and clear all other stashes. Returns the state ID of the
-    /// moved state. This avoids constraint transfer between managers.
+    /// Prepare for a new exploration stage: move a specific found state to
+    /// active and discard every other live state — the other stashes, the
+    /// remaining actives, and the two non-stash buckets (`pending_callbacks`,
+    /// `pending_parallel_bounces`). Returns the state ID of the moved state.
+    /// This avoids constraint transfer between managers.
     /// See `state_lifecycle::_reset_for_stage` for the body.
     #[angr_macros::steady_guarded]
     pub fn reset_for_stage(&mut self, found_state_id: u64) -> PyResult<u64> {

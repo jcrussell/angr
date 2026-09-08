@@ -427,6 +427,44 @@ impl RustExplorationManager {
             self.sm.remove_root(id);
         }
 
+        // Clearing the stashes is not enough: a live `RustSimState` sits in
+        // one of THREE buckets (see `find_state`), and the other two are not
+        // stashes. A state parked in `pending_callbacks` (mid-Python-callback)
+        // or in `pending_parallel_bounces` (a wave's undispatched bounce)
+        // belongs to the stage we are tearing down, so leaving it here leaks
+        // stage-1 constraints/history into the supposedly clean stage-2
+        // frontier the moment the next `run()` resumes or flushes it.
+        // `load_snapshot_bytes` — the other "replace the whole stash world"
+        // entry point — already clears both for the same reason; this one
+        // omitted them (angr-6cp06.27).
+        //
+        // Unlike that one we cannot drop the bookkeeping wholesale (it swaps
+        // in a fresh `StashManager`; we keep ours), so each discarded id gets
+        // the same unindex + remove_root treatment as the dropped actives
+        // above — otherwise `stash_of` would keep answering for a dead id, the
+        // angr-ph300.26 bug in a different bucket. No `on_state_removed`: a
+        // parked state already left STASH_ACTIVE through `policy.select`,
+        // which notifies. `found_state_id` is skipped because a parked bounce
+        // may legitimately duplicate a state that is also stash-resident, and
+        // the kept state's bookkeeping must survive.
+        let discarded: Vec<u64> = self
+            .pending_callbacks
+            .values()
+            .map(|pending| pending.state.state_id())
+            .chain(
+                self.pending_parallel_bounces
+                    .iter()
+                    .map(|(state, _, _)| state.state_id()),
+            )
+            .filter(|id| *id != found_state_id)
+            .collect();
+        self.pending_callbacks.clear();
+        self.pending_parallel_bounces.clear();
+        for id in discarded {
+            self.sm.unindex(id);
+            self.sm.remove_root(id);
+        }
+
         Ok(found_state_id)
     }
 }

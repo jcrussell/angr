@@ -866,3 +866,76 @@ fn merge_states_reinstated_item_survives_own_tombstone() {
         "re-setenv value must win after _merge_states"
     );
 }
+
+/// Regression for angr-6cp06.27: `_reset_for_stage` swept the stashes but not
+/// the two non-stash buckets a live state can sit in, so a state parked in
+/// `pending_callbacks` (mid-Python-callback) or `pending_parallel_bounces` (a
+/// wave's undispatched bounce) survived the stage transition and leaked its
+/// stage-1 constraints/history into the next stage's frontier. Both buckets
+/// must be emptied, and each discarded id unindexed + un-rooted the same way
+/// the dropped actives are.
+#[test]
+fn reset_for_stage_clears_pending_callbacks_and_parked_bounces() {
+    use crate::exploration::callback_types::{CallbackReason, PendingCallback};
+    use crate::exploration::core_outcome::BounceKind;
+    use crate::exploration::state_id::StateId;
+
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+
+    let mut found = RustSimState::new("amd64").expect("state");
+    found.set_pc(0x40_1000);
+    let found_id = found.state_id();
+    mgr.sm.push("found", found);
+    mgr.sm.set_root(found_id, found_id);
+
+    // A stage-1 state parked across a Python callback: owned by
+    // `pending_callbacks`, resident in no stash, but still indexed/rooted
+    // from before `policy.select` popped it off active.
+    let mut parked = RustSimState::new("amd64").expect("state");
+    parked.set_pc(0x40_2000);
+    let parked_id = parked.state_id();
+    mgr.sm.set_root(parked_id, parked_id);
+    mgr.pending_callbacks.insert(
+        StateId::new(parked_id),
+        PendingCallback::lightweight(
+            parked,
+            CallbackReason::Error {
+                message: "parked".to_string(),
+            },
+        ),
+    );
+
+    // A stage-1 bounce a parallel wave could not dispatch.
+    let mut bounced = RustSimState::new("amd64").expect("state");
+    bounced.set_pc(0x40_3000);
+    let bounced_id = bounced.state_id();
+    mgr.sm.set_root(bounced_id, bounced_id);
+    mgr.pending_parallel_bounces
+        .push((bounced, BounceKind::Hook { addr: 0x40_5000 }, bounced_id));
+
+    let kept = mgr._reset_for_stage(found_id).expect("reset for stage");
+    assert_eq!(kept, found_id);
+
+    assert!(
+        mgr.pending_callbacks.is_empty(),
+        "parked callback state discarded by reset_for_stage",
+    );
+    assert!(
+        mgr.pending_parallel_bounces.is_empty(),
+        "parked bounce discarded by reset_for_stage",
+    );
+    // `find_state` walks all three buckets — neither stage-1 state is
+    // reachable through any of them any more.
+    assert!(mgr.find_state(parked_id).is_none(), "parked state gone");
+    assert!(mgr.find_state(bounced_id).is_none(), "bounced state gone");
+
+    for id in [parked_id, bounced_id] {
+        assert_eq!(mgr.sm.stash_of(id), None, "discarded state {id} unindexed");
+        assert_eq!(mgr.sm.get_root(id), None, "discarded state {id} un-rooted");
+    }
+
+    // The retained state is untouched: still the sole active, still rooted.
+    assert_eq!(mgr.sm.count(STASH_ACTIVE), 1);
+    assert_eq!(mgr.sm.stash_of(found_id), Some(STASH_ACTIVE));
+    assert_eq!(mgr.sm.get_root(found_id), Some(found_id));
+}
