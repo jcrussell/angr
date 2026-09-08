@@ -29,7 +29,7 @@ use super::*;
 /// NOT honored on this path (the guard is already lowered to a `RustBV`);
 /// the `RustSolverProxyPlugin.add` path does honor it.
 #[inline]
-pub(crate) fn add_fork_guard_constraint(
+fn add_fork_guard_constraint(
     callbacks: Option<&PythonCallbacks>,
     state: &RustSimState,
     guard: &RustBV,
@@ -99,7 +99,7 @@ pub(crate) fn reconstruct_deferred_fork_condition(
 /// otherwise `fork_false` / `fork_true` off `base` depending on which side the
 /// main path took. The forked state's PC is then set to
 /// `fork.unexplored_target`.
-pub(crate) fn build_unexplored_fork(
+fn build_unexplored_fork(
     base: &RustSimState,
     fork: &DeferredFork,
     condition: &RustBV,
@@ -134,6 +134,40 @@ pub(crate) fn build_unexplored_fork(
         f
     };
     forked.set_pc(fork.unexplored_target);
+    forked
+}
+
+/// Mint the unexplored-side fork for one deferred branch and *then* install the
+/// taken-path guard on `base` — the only correct order when the fork base and
+/// the guard sink are the same state, which they are for all three
+/// `base`-is-also-the-continuing-state materializers
+/// (`stepping_forks.rs::process_deferred_forks_into` and
+/// `core_outcome_handlers.rs`'s `materialize_deferred_forks_core` /
+/// `process_deferred_forks_into_core`).
+///
+/// Guard-first is wrong and silently so (angr-z3obp): when the fork carries no
+/// `BranchSnapshot`, [`build_unexplored_fork`] falls back to
+/// `base.fork_false`/`fork_true`, and a `base` that has already assumed the
+/// taken side yields a sibling that is UNSAT by construction — it is minted,
+/// fails the SAT check and lands in `pruned` rather than being explored. The
+/// snapshot arm is immune (it rebuilds from a pre-branch clone), which is why
+/// the bug stayed latent: the interpreter's `GuardClass::Symbolic` arm records
+/// a snapshot next to every `stored_conditions` entry.
+///
+/// The two halves are module-private so this ordering cannot be re-derived at a
+/// fourth call site. Callers that guard a state *distinct* from the fork base
+/// (`materialize_deferred_forks`'s `guard_sink`) are structurally immune and do
+/// not need this helper.
+pub(crate) fn fork_unexplored_and_guard_base(
+    callbacks: Option<&PythonCallbacks>,
+    base: &RustSimState,
+    fork: &DeferredFork,
+    condition: &RustBV,
+    snapshots: &mut FxHashMap<u64, crate::interpreter::BranchSnapshot>,
+    priors: &PriorGuards,
+) -> RustSimState {
+    let forked = build_unexplored_fork(base, fork, condition, snapshots, priors);
+    add_fork_guard_constraint(callbacks, base, condition, fork.path_taken);
     forked
 }
 

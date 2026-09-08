@@ -82,19 +82,15 @@ pub(super) fn materialize_deferred_forks_core(
 
     for fork in deferred_forks {
         if let Some(condition) = stored_conditions.get(&fork.condition_id) {
-            super::super::fork_materialize::add_fork_guard_constraint(
-                cc.callbacks,
-                base,
-                condition,
-                fork.path_taken,
-            );
-
             let fork_start = if ctx.profiling_enabled {
                 Some(Instant::now())
             } else {
                 None
             };
-            let mut forked = super::super::fork_materialize::build_unexplored_fork(
+            // Fork first, guard `base` second — the order is load-bearing; see
+            // `fork_unexplored_and_guard_base`.
+            let mut forked = super::super::fork_materialize::fork_unexplored_and_guard_base(
+                cc.callbacks,
                 base,
                 &fork,
                 condition,
@@ -194,14 +190,10 @@ fn process_deferred_forks_into_core(
     let mut prior_guards = super::super::fork_materialize::PriorGuards::new(true);
     for fork in &deferred_forks {
         if let Some(condition) = stored_conditions.get(&fork.condition_id) {
-            super::super::fork_materialize::add_fork_guard_constraint(
+            // Fork first, guard `base` second — the order is load-bearing; see
+            // `fork_unexplored_and_guard_base`.
+            let forked = super::super::fork_materialize::fork_unexplored_and_guard_base(
                 cc.callbacks,
-                base,
-                condition,
-                fork.path_taken,
-            );
-
-            let forked = super::super::fork_materialize::build_unexplored_fork(
                 base,
                 fork,
                 condition,

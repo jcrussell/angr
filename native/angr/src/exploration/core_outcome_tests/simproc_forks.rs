@@ -154,33 +154,49 @@ fn simproc_success_fork_guard_polarities_are_opposite() {
     });
 }
 
-/// The snapshot-less shape is where the post-call `base` actually bites: with
-/// no `BranchSnapshot` to rebuild from, `build_unexplored_fork` forks the base
-/// — which `add_fork_guard_constraint` has *already* assumed onto the taken
-/// side — and then assumes the opposite guard on top. The sibling is UNSAT by
-/// construction and lands in `pruned` instead of being explored.
+/// The snapshot-less shape: with no `BranchSnapshot` to rebuild from,
+/// `build_unexplored_fork` forks `base` directly, so the sibling's
+/// satisfiability depends entirely on `base` NOT yet carrying the taken-path
+/// guard when the fork is minted.
 ///
-/// Not reachable from the interpreter (its `GuardClass::Symbolic` arm inserts a
-/// snapshot next to every `stored_conditions` entry), so this pins a latent
-/// shape rather than a live path — but it is the concrete failure mode any
-/// future unification of the two fork bases has to avoid.
+/// It did carry it until angr-z3obp — the guard was assumed onto `base` before
+/// the fork was built, so the sibling was UNSAT by construction and landed in
+/// `pruned` instead of being explored. `fork_unexplored_and_guard_base` now
+/// owns the order (fork first, guard second), and this pins the sibling
+/// surviving with the *opposite* guard, matching the snapshot shape above.
+///
+/// Still not reachable from the interpreter (its `GuardClass::Symbolic` arm
+/// inserts a snapshot next to every `stored_conditions` entry), so this pins a
+/// latent shape rather than a live path — but it is the one any future
+/// unification of the two fork bases has to keep working.
 #[test]
-fn simproc_success_fork_without_snapshot_is_pruned_unsat() {
+fn simproc_success_fork_without_snapshot_survives_with_opposite_guard() {
     pyo3::Python::initialize();
     pyo3::Python::attach(|_py| {
-        let d = dispatch_with_fork(true, false);
-        assert_eq!(d.outcome.fork_ids.len(), 1, "the fork is still minted");
-        let CoreReturn::Continue(succ) = d.outcome.ret else {
-            panic!("expected Continue");
-        };
-        if cfg!(feature = "vex-engine-z3") {
-            assert_eq!(succ.len(), 1, "only the main successor survives");
-            assert_eq!(d.outcome.pruned.len(), 1, "the sibling is pruned UNSAT");
-            assert_eq!(d.outcome.pruned[0].state_id(), d.outcome.fork_ids[0]);
-        } else {
-            // The mock solver asserts nothing, so nothing can be proven UNSAT.
-            assert_eq!(succ.len(), 2);
-            assert!(d.outcome.pruned.is_empty());
+        for path_taken in [true, false] {
+            let d = dispatch_with_fork(path_taken, false);
+            assert_eq!(d.outcome.fork_ids.len(), 1, "the fork is still minted");
+            assert!(
+                d.outcome.pruned.is_empty(),
+                "the sibling is no longer UNSAT by construction (path_taken={path_taken})"
+            );
+            let guard = d.condition.expect("seeded guard");
+            let CoreReturn::Continue(succ) = d.outcome.ret else {
+                panic!("expected Continue");
+            };
+            assert_eq!(succ.len(), 2, "main successor plus the sibling");
+            assert_eq!(succ[1].0.state_id(), d.outcome.fork_ids[0]);
+            let want = |v: bool| cfg!(feature = "vex-engine-z3").then_some(u128::from(v));
+            assert_eq!(
+                succ[0].0.eval(&guard),
+                want(path_taken),
+                "main successor carries the taken-path guard (path_taken={path_taken})"
+            );
+            assert_eq!(
+                succ[1].0.eval(&guard),
+                want(!path_taken),
+                "sibling carries the opposite guard (path_taken={path_taken})"
+            );
         }
     });
 }
