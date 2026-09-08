@@ -161,6 +161,34 @@ pub(crate) fn install_shared_z3_context(py_z3_ctx_ptr: usize) -> PyResult<bool> 
     Ok(true)
 }
 
+/// Distinct `libz3` shared objects currently mapped into this process, sorted
+/// and deduplicated. Reads `/proc/self/maps`, so it yields an empty vec on any
+/// platform without procfs — which disables the
+/// [`install_python_z3_context`] guard rather than failing it.
+#[cfg(all(test, feature = "vex-engine-z3"))]
+fn mapped_libz3_objects() -> Vec<String> {
+    // SILENT(cat-a): no procfs (non-Linux, or a sandbox that hides it) means
+    // the duplicate-libz3 guard simply does not apply, not that it failed.
+    let Ok(maps) = std::fs::read_to_string("/proc/self/maps") else {
+        return Vec::new();
+    };
+    let mut paths: Vec<String> = maps
+        .lines()
+        // `addr perms offset dev inode  pathname` — pathname is field 6.
+        .filter_map(|line| line.split_whitespace().nth(5))
+        .filter(|path| {
+            std::path::Path::new(path)
+                .file_name()
+                .and_then(std::ffi::OsStr::to_str)
+                .is_some_and(|name| name.starts_with("libz3."))
+        })
+        .map(str::to_owned)
+        .collect();
+    paths.sort_unstable();
+    paths.dedup();
+    paths
+}
+
 /// Install claripy's Z3 context as this thread's Rust thread-local context —
 /// the cargo-test equivalent of `rust_manager._setup_shared_z3_context()`.
 /// Returns `false` (skip signal) when the `z3` module is not importable, which
@@ -173,11 +201,31 @@ pub(crate) fn install_shared_z3_context(py_z3_ctx_ptr: usize) -> PyResult<bool> 
 /// silently never lands (angr-sqfj8.125). Must run BEFORE any `SymContext` the
 /// test will use is constructed, since `SymContext::new` captures the
 /// thread-local context that is current at that moment.
+///
+/// Panics — loudly, with the fix — when Python's `z3` and the linked Rust side
+/// are two *different* `libz3` objects: handing one library's `Z3_context` to
+/// the other is a SIGSEGV that takes the whole test binary down, so the
+/// pre-flight check is worth more than the caller's skip signal (angr-exwth).
+/// `build.rs`'s `find_z3_lib_dir` probes `python3` from `PATH`, so a `cargo
+/// test` run without the venv active links the *system* libz3 while the
+/// embedded interpreter still imports the venv's — see the `#[ignore]` recipes
+/// on the tests that call this.
 #[cfg(all(test, feature = "vex-engine-z3"))]
 pub(crate) fn install_python_z3_context(py: Python<'_>) -> bool {
     let Ok(z3_mod) = py.import("z3") else {
         return false;
     };
+    let libz3 = mapped_libz3_objects();
+    assert!(
+        libz3.len() <= 1,
+        "refusing to install claripy's Z3_context: {} distinct libz3 objects are \
+         mapped into this process ({}). Passing one library's Z3_context to the \
+         other segfaults. Rebuild the test binary against the interpreter's own \
+         libz3, e.g. Z3_LIBRARY_PATH_OVERRIDE=$VIRTUAL_ENV/lib/python3.12/\
+         site-packages/z3/lib cargo test --release ... (angr-exwth)",
+        libz3.len(),
+        libz3.join(", ")
+    );
     let ptr = z3_mod
         .call_method0("main_ctx")
         .and_then(|c| c.getattr("ctx"))

@@ -267,11 +267,21 @@ fn import_skips_unconvertible_items_without_aborting_siblings() {
 /// means claripy's `Z3_context` has to be the Rust thread-local one, and
 /// `install_python_z3_context` is process-global while libtest runs each test
 /// on its own thread. Production installs it once before any `SymContext`
-/// exists (`rust_manager._setup_shared_z3_context`). Run explicitly:
+/// exists (`rust_manager._setup_shared_z3_context`). Run explicitly — and note
+/// the `Z3_LIBRARY_PATH_OVERRIDE`, which is not optional (angr-exwth):
 ///
 /// ```text
-/// cargo test --release import_fast_path -- --ignored --test-threads=1
+/// Z3_LIBRARY_PATH_OVERRIDE=$VIRTUAL_ENV/lib/python3.12/site-packages/z3/lib \
+///   cargo test --release import_fast_path -- --ignored --test-threads=1
 /// ```
+///
+/// Without it, `build.rs`'s `find_z3_lib_dir` falls back to the *system* libz3
+/// whenever the venv is not on the `PATH` cargo inherited (and its result is
+/// cached until `Z3_LIBRARY_PATH_OVERRIDE`/`PYVEX_FFI_LIB_DIR` change, so a
+/// later `cargo test` from an activated venv reuses it). The embedded
+/// interpreter still imports the venv's libz3, and handing claripy's
+/// `Z3_context` to a second, differently-versioned library segfaults;
+/// `install_python_z3_context` now asserts against that up front.
 #[cfg(feature = "vex-engine-z3")]
 #[test]
 #[ignore = "installs claripy's Z3 context process-wide; needs --test-threads=1"]
@@ -314,7 +324,8 @@ fn import_fast_path_asserts_and_records_convertible_constraint() {
 /// adds nothing to the assumed IR. Proven by a second import: if the first
 /// constraint had merely been counted, `f < 0.0` alone would still be SAT.
 ///
-/// `#[ignore]` for the same process-global-context reason as its sibling above.
+/// `#[ignore]` for the same process-global-context reason as its sibling above,
+/// and it needs the same `Z3_LIBRARY_PATH_OVERRIDE` recipe.
 #[cfg(feature = "vex-engine-z3")]
 #[test]
 #[ignore = "installs claripy's Z3 context process-wide; needs --test-threads=1"]

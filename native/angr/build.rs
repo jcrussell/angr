@@ -10,6 +10,13 @@ use std::process::Command;
 fn main() {
     println!("cargo:rerun-if-env-changed=Z3_LIBRARY_PATH_OVERRIDE");
     println!("cargo:rerun-if-env-changed=PYVEX_FFI_LIB_DIR");
+    // `find_z3_pkg_from_python` shells out to whichever `python3` is on PATH,
+    // so the answer changes when a venv is activated/deactivated. Without this
+    // key the first answer is cached forever, and a build that ran without the
+    // venv leaves the system libz3 rpath baked into every later `cargo test`
+    // — two libz3 objects in one process, which segfaults the moment claripy's
+    // `Z3_context` crosses into Rust (angr-exwth).
+    println!("cargo:rerun-if-env-changed=VIRTUAL_ENV");
 
     // Native libVEX FFI backend (`libvex-ffi` feature, default-ON via setup.py
     // since angr-3trr7): link the venv's libpyvex.so so `vex_lift`/`vex_init`

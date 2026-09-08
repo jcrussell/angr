@@ -114,10 +114,14 @@ fn sync_constraints_unsat_returns_false_for_pruning() {
 /// `sync_constraints_typed_convert_binds_constraint` scheduled alongside it).
 /// That is a property of the test harness, not of the code under test —
 /// production installs the shared context once, before any `SymContext` exists
-/// (`rust_manager._setup_shared_z3_context`). Run it explicitly:
+/// (`rust_manager._setup_shared_z3_context`). Run it explicitly — the
+/// `Z3_LIBRARY_PATH_OVERRIDE` is not optional (angr-exwth; see the recipe on
+/// `constraints_tests.rs`'s
+/// `import_fast_path_asserts_and_records_convertible_constraint` for why):
 ///
 /// ```text
-/// cargo test --release sync_constraints_fp -- --ignored --test-threads=1
+/// Z3_LIBRARY_PATH_OVERRIDE=$VIRTUAL_ENV/lib/python3.12/site-packages/z3/lib \
+///   cargo test --release sync_constraints_fp -- --ignored --test-threads=1
 /// ```
 #[cfg(feature = "vex-engine-z3")]
 #[test]
