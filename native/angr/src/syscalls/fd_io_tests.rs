@@ -4,6 +4,7 @@ use super::*;
 use crate::memory::Permission;
 use crate::state::{FdFlags, RustSimState};
 use crate::symbolic::{RustBV, SymContext};
+use crate::syscalls::tests_support::assert_over_limit;
 
 fn fresh_state() -> RustSimState {
     let mut state = RustSimState::new("amd64").expect("amd64 state");
@@ -723,14 +724,6 @@ fn map_big_regions(state: &mut RustSimState) -> u64 {
     state.map_memory_data(BIG, &vec![b'A'; MAX_IO_SIZE as usize], Permission::RWX);
     state.map_memory(BIG + 0x10000, 0x8000, Permission::RWX);
     BIG + 0x10000
-}
-
-/// Assert `err` is the `Other` fallback naming `what` as over-limit.
-fn assert_over_limit(err: &SyscallError, what: &str) {
-    assert!(
-        matches!(err, SyscallError::Other(m) if m.contains(what) && m.contains("exceeds limit")),
-        "expected an over-limit fallback mentioning {what}, got {err:?}"
-    );
 }
 
 #[test]

@@ -7,6 +7,7 @@ use super::*;
 use crate::memory::Permission;
 use crate::state::RustSimState;
 use crate::symbolic::{RustBV, SymContext};
+use crate::syscalls::tests_support::assert_over_limit;
 
 #[test]
 fn handler_metadata() {
@@ -153,20 +154,50 @@ fn write_closed_user_fd_falls_back() {
 }
 
 #[test]
-fn write_too_large_falls_back() {
+fn write_count_over_limit_falls_back() {
     let h = NativeWriteSyscall;
     let mut state = RustSimState::new("amd64").expect("amd64 state");
+    state.map_memory_data(0x1000, &vec![b'A'; MAX_WRITE_SIZE as usize], Permission::RWX);
     let err = h
         .call(
             &mut state,
             &[
                 RustBV::concrete(1, 64),
                 RustBV::concrete(0x1000, 64),
-                RustBV::concrete(5000, 64),
+                RustBV::concrete(MAX_WRITE_SIZE as u128 + 1, 64),
             ],
         )
         .expect_err("must fall back");
-    assert!(matches!(err, SyscallError::Other(_)));
+    assert_over_limit(&err, "write count");
+    // The cap sits before the gather, so nothing reached the fd — Python's
+    // fallback write stays the single authoritative one.
+    assert_eq!(state.stdout_buffer(), b"");
+}
+
+#[test]
+fn write_count_at_limit_is_native() {
+    // Companion to `write_count_over_limit_falls_back`: this is what pins
+    // the check as `>` rather than `>=`. The over-limit half alone passes
+    // either way.
+    let h = NativeWriteSyscall;
+    let mut state = RustSimState::new("amd64").expect("amd64 state");
+    state.map_memory_data(0x1000, &vec![b'A'; MAX_WRITE_SIZE as usize], Permission::RWX);
+
+    let outcome = h
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(1, 64),
+                RustBV::concrete(0x1000, 64),
+                RustBV::concrete(MAX_WRITE_SIZE as u128, 64),
+            ],
+        )
+        .expect("a count exactly at the limit stays native");
+    match outcome {
+        SyscallOutcome::Continue { ret } => assert_eq!(ret, MAX_WRITE_SIZE),
+        _ => panic!("expected Continue"),
+    }
+    assert_eq!(state.stdout_buffer(), vec![b'A'; MAX_WRITE_SIZE as usize]);
 }
 
 #[test]

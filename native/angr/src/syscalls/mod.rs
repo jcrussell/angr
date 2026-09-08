@@ -973,4 +973,5 @@ impl NativeSyscallRegistry {
     }
 }
 
+test_submod!("tests_support.rs" => tests_support);
 test_submod!("mod_tests.rs" => mod_tests);
