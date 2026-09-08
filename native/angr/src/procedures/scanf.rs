@@ -37,8 +37,50 @@ struct ScanfSpec {
     is_char: bool,
     /// Max width for %s (from field width, e.g. %10s), or MAX_SCANF_STR_LEN.
     max_str_len: u64,
+    /// Range bound implied by an explicit field width on a numeric conversion
+    /// (`%2d`), as `(hi, lo_magnitude)` — see `digit_range_bound`. `None` for
+    /// non-numeric conversions and for numeric ones whose width can already
+    /// spell every value of the destination type.
+    digit_bound: Option<(u64, u64)>,
     /// Whether to suppress assignment (*).
     suppress: bool,
+}
+
+/// Range bound for a numeric conversion carrying an explicit field width,
+/// mirroring `angr/procedures/stubs/format_parser.py::FormatString.interpret`'s
+/// `not_enough_bits` branch: a `%<w>d` can only spell `base**w` distinct
+/// values, so when that is narrower than the destination type Python constrains
+/// the parsed variable to `[-(base**(w-1) - 1), base**w - 1]`. Without it the
+/// natively minted BVS is free across all 32/64 bits and the engine explores
+/// states (`x == 12345` for a `%2d`) neither real scanf(3) nor angr's own
+/// Python engine can reach.
+///
+/// Returns `(hi, lo_magnitude)`; the caller builds
+/// `sym <=s hi && sym >=s -lo_magnitude`. `None` means "no constraint", for
+/// three reasons:
+///
+/// * the width can already spell the whole type (Python's
+///   `available_bits >= bits`),
+/// * `bits` is outside the `1..=64` range a `u64` bound can describe, or
+/// * the width is the degenerate `%0d`, where Python computes `base ** -1` —
+///   a float its own `SGE` would choke on — so glibc's UB is left unmodelled
+///   rather than mis-modelled.
+fn digit_range_bound(base: u32, digits: u64, bits: u32) -> Option<(u64, u64)> {
+    if digits == 0 || bits == 0 || bits > 64 {
+        return None;
+    }
+    // `base**digits < 2**bits` is the exact integer form of Python's
+    // `digits * log2(base) < bits`. An overflow means the width dwarfs any
+    // 64-bit type, i.e. it constrains nothing.
+    let span = u128::from(base).checked_pow(u32::try_from(digits).ok()?)?;
+    if span >= 1u128 << bits {
+        return None;
+    }
+    // `span < 2**bits <= 2**64` and `digits >= 1`, so both fit a `u64` and the
+    // division is exact: `span / base == base**(digits - 1)`.
+    let hi = u64::try_from(span.checked_sub(1)?).ok()?;
+    let lo_magnitude = u64::try_from((span / u128::from(base)).checked_sub(1)?).ok()?;
+    Some((hi, lo_magnitude))
 }
 
 /// Parse scanf format specifiers from a format string.
@@ -106,11 +148,27 @@ fn parse_scanf_format(fmt: &[u8], arch_bits: u32) -> Result<Vec<ScanfSpec>, Proc
         match spec {
             b'd' | b'i' | b'u' | b'x' | b'X' | b'o' => {
                 let bits = modifier.int_conv_bits(arch_bits);
+                // Matches Python's `interpret`: %x/%X read hex, %o octal,
+                // everything else decimal.
+                let base = match spec {
+                    b'x' | b'X' => 16,
+                    b'o' => 8,
+                    _ => 10,
+                };
+                // Note `field_width` is the MAX_SCANF_STR_LEN-clamped value;
+                // any width that large is far too wide to bound a <=64-bit
+                // type, so `digit_range_bound` returns `None` either way.
+                let digit_bound = if has_width {
+                    digit_range_bound(base, field_width, bits)
+                } else {
+                    None
+                };
                 specs.push(ScanfSpec {
                     bits,
                     is_string: false,
                     is_char: false,
                     max_str_len: 0,
+                    digit_bound,
                     suppress,
                 });
             }
@@ -120,6 +178,7 @@ fn parse_scanf_format(fmt: &[u8], arch_bits: u32) -> Result<Vec<ScanfSpec>, Proc
                     is_string: false,
                     is_char: true,
                     max_str_len: 0,
+                    digit_bound: None,
                     suppress,
                 });
             }
@@ -134,6 +193,7 @@ fn parse_scanf_format(fmt: &[u8], arch_bits: u32) -> Result<Vec<ScanfSpec>, Proc
                     is_string: true,
                     is_char: false,
                     max_str_len: max_len,
+                    digit_bound: None,
                     suppress,
                 });
             }
@@ -307,6 +367,25 @@ fn do_scanf(
                 let ctx = state.solver().borrow();
                 RustBV::symbolic(&ctx, &name, spec.bits)
             };
+
+            // An explicit field width bounds how many digits the conversion can
+            // read, so it bounds the value — see `digit_range_bound`. Built
+            // inside its own borrow scope because `add_constraint` re-borrows
+            // the solver (same shape as access.rs/fgets.rs).
+            if let Some((hi, lo_magnitude)) = spec.digit_bound {
+                let bound = {
+                    let ctx = state.solver().borrow();
+                    // `RustBV::concrete` masks to the width, so the two's
+                    // complement of `lo_magnitude` needs no hand-masking.
+                    let hi_bv = RustBV::concrete(u128::from(hi), spec.bits);
+                    let lo_bv =
+                        RustBV::concrete(u128::from(lo_magnitude).wrapping_neg(), spec.bits);
+                    sym_val
+                        .sle(&hi_bv, &ctx)
+                        .and(&sym_val.sge(&lo_bv, &ctx), &ctx)
+                };
+                state.add_constraint(bound);
+            }
 
             // A suppressed numeric still consumes digits off the stream, so it
             // is recorded for the stdin reconstruction exactly like an assigned

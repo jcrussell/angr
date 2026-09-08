@@ -1167,3 +1167,134 @@ fn test_scanf_unmapped_format_propagates_error() {
         "no symbolic value should be stored when the format read faulted"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Numeric field width (angr-6cp06.9)
+//
+// `%2d` can only read two digits, so Python's
+// `format_parser.py::FormatString.interpret` range-constrains the parsed
+// variable whenever the width is too narrow to spell the whole destination
+// type. Natively the value is a free BVS, so the bound has to be added
+// explicitly — see `digit_range_bound`.
+// ---------------------------------------------------------------------------
+
+/// The pure decision seam, so the four `--no-default-features` combos keep
+/// coverage of the arithmetic even where the z3-gated behavioural tests below
+/// are compiled out.
+#[test]
+fn test_digit_range_bound_matches_python_not_enough_bits() {
+    // (base, digits, bits) -> (hi, lo_magnitude), i.e. the interval
+    // [-(base**(digits-1) - 1), base**digits - 1].
+    assert_eq!(digit_range_bound(10, 1, 32), Some((9, 0)));
+    assert_eq!(digit_range_bound(10, 2, 32), Some((99, 9)));
+    assert_eq!(digit_range_bound(10, 9, 32), Some((999_999_999, 99_999_999)));
+    assert_eq!(digit_range_bound(16, 2, 32), Some((255, 15)));
+    assert_eq!(digit_range_bound(8, 3, 32), Some((511, 63)));
+    assert_eq!(digit_range_bound(10, 3, 64), Some((999, 99)));
+    // Destination narrowed by `hh`: two decimal digits still cannot spell all
+    // 256 values of an 8-bit int, so the bound stays.
+    assert_eq!(digit_range_bound(10, 2, 8), Some((99, 9)));
+}
+
+/// The `None` cases: a width wide enough to spell the whole type (Python's
+/// `available_bits >= bits`, where it adds no constraint at all), the
+/// degenerate `%0d`, and a width so wide the `base**digits` power overflows.
+#[test]
+fn test_digit_range_bound_declines_when_width_spells_whole_type() {
+    // 10**10 > 2**32.
+    assert_eq!(digit_range_bound(10, 10, 32), None);
+    // 16**8 == 2**32 exactly — Python's `available_bits < bits` is strict.
+    assert_eq!(digit_range_bound(16, 8, 32), None);
+    assert_eq!(digit_range_bound(16, 7, 32), Some((0x0fff_ffff, 0x00ff_ffff)));
+    // `%0d` — Python would compute `base ** -1` here.
+    assert_eq!(digit_range_bound(10, 0, 32), None);
+    // Overflowing power, and the MAX_SCANF_STR_LEN clamp value.
+    assert_eq!(digit_range_bound(10, 300, 64), None);
+    assert_eq!(digit_range_bound(10, MAX_SCANF_STR_LEN, 64), None);
+}
+
+/// Run `scanf(fmt, &x)` on a fresh state and return the 32-bit value stored at
+/// the pointer argument.
+fn scanf_one_int(fmt: &[u8]) -> (RustSimState, RustBV) {
+    let mut state = setup_state();
+    state.map_memory_data(0x1000, fmt, Permission::RWX);
+    let result = NativeScanf
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x1000, 64), // format
+                RustBV::concrete(0x2000, 64), // &int_var
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+            ],
+        )
+        .unwrap();
+    assert_eq!(result.unwrap().as_u64(), Some(1));
+    let val = state.memory_load(0x2000, 4).unwrap();
+    (state, val)
+}
+
+/// `%2d` must not be able to hold a value no two-digit decimal run could
+/// produce — the soundness half of the gap.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_scanf_numeric_field_width_bounds_value() {
+    let (state, val) = scanf_one_int(b"%2d\x00");
+    let ctx = state.solver().borrow();
+    for unreachable in [12345u128, 100, 0xffff_ff00] {
+        assert!(
+            !ctx.can_be_true(&val.eq(&RustBV::concrete(unreachable, 32), &ctx)),
+            "%2d must not reach {unreachable:#x}"
+        );
+    }
+}
+
+/// ...and it must still reach everything a two-digit run *can* produce,
+/// including the negative half Python's `SGE(-(base**(digits-1) - 1))` opens up
+/// for the leading minus sign.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_scanf_numeric_field_width_keeps_in_range_values() {
+    let (state, val) = scanf_one_int(b"%2d\x00");
+    let ctx = state.solver().borrow();
+    // 99 = 10**2 - 1 (the SLE bound), 0, and -9 = -(10**1 - 1) (the SGE bound).
+    for reachable in [99u128, 0, 0xffff_fff7] {
+        assert!(
+            ctx.can_be_true(&val.eq(&RustBV::concrete(reachable, 32), &ctx)),
+            "%2d must still reach {reachable:#x}"
+        );
+    }
+}
+
+/// A width-less `%d` keeps the fully unconstrained value: the bound is opt-in
+/// on an explicit field width, exactly as Python's `spec_digits is None` arm.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_scanf_numeric_without_field_width_is_unconstrained() {
+    let (state, val) = scanf_one_int(b"%d\x00");
+    let ctx = state.solver().borrow();
+    assert!(
+        ctx.can_be_true(&val.eq(&RustBV::concrete(12345, 32), &ctx)),
+        "plain %d must stay unconstrained"
+    );
+}
+
+/// The base is per-specifier: `%2x` reads hex, so its two digits span 0..0xff,
+/// not 0..99.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_scanf_hex_field_width_uses_base_16() {
+    let (state, val) = scanf_one_int(b"%2x\x00");
+    let ctx = state.solver().borrow();
+    assert!(
+        ctx.can_be_true(&val.eq(&RustBV::concrete(0xff, 32), &ctx)),
+        "%2x must reach 0xff (16**2 - 1)"
+    );
+    assert!(
+        !ctx.can_be_true(&val.eq(&RustBV::concrete(0x100, 32), &ctx)),
+        "%2x must not reach 0x100"
+    );
+}
