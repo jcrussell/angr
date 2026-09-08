@@ -4,9 +4,16 @@
 //! isascii, isblank, iscntrl, isgraph, ispunct, tolower, toupper.
 //!
 //! Each takes a single int argument and returns 0 or non-zero.
-//! Symbolic arguments are handled by emitting a constraint-shaped result that
-//! mirrors the concrete predicate on bits\[7:0\] of the argument; the operand
-//! pattern matches the underlying `as u8` truncation in the concrete path.
+//!
+//! **Full-width comparison (angr-6cp06.1).** The argument is compared at its
+//! own width (the arch word — native procs receive pointer-sized register
+//! values), *not* truncated to bits\[7:0\]. The Python siblings this module
+//! mirrors (`angr/procedures/libc/isdigit.py`, `tolower.py`, ...) all compare
+//! the full `c` unsigned, so truncating diverged: `isdigit(304)` was true
+//! natively (`304 & 0xff == b'0'`) and false in Python, and `tolower(EOF)`
+//! returned `255` instead of preserving `-1` — breaking the ubiquitous
+//! `while ((c = getchar()) != EOF) putchar(tolower(c));` idiom. The symbolic
+//! path shares the concrete path's range tables, so the two cannot drift.
 //!
 //! **Panic policy (angr-9ke6b.212):** the guest-supplied argument reaches these
 //! procedures as a `RustBV` and is never unwrapped — a symbolic argument takes
@@ -23,28 +30,41 @@ use super::{ProcedureError, arch_word};
 use crate::state::RustSimState;
 use crate::symbolic::{RustBV, SymContext};
 
-/// C-locale `isspace()`: `' '` plus the `0x09..=0x0d` run (`\t \n \v \f \r`).
+/// C-locale whitespace: `' '` plus the `0x09..=0x0d` run (`\t \n \v \f \r`).
+///
+/// Deliberately *not* Rust's `is_ascii_whitespace`, which omits `\v` (0x0b);
+/// see `invariant-ctype-mirror-python-not-rust-std`.
+pub(crate) const C_SPACE_RANGES: &[(u8, u8)] = &[(0x09, 0x0d), (b' ', b' ')];
+
+/// C-locale `isspace()` over a single byte.
 ///
 /// The single source of truth for "is this byte whitespace" across the native
-/// procedures — `NativeIsSpace` below plus the leading-whitespace skips in
+/// procedures — `NativeIsSpace` below (via [`C_SPACE_RANGES`], which this
+/// delegates to so the two cannot drift) plus the leading-whitespace skips in
 /// `strtod::floating_prefix_len` / `strtod`'s endptr rescan and
-/// `strtol::parse_concrete_prefix`. Deliberately *not* Rust's
-/// `is_ascii_whitespace`, which omits `\v` (0x0b); see
-/// `invariant-ctype-mirror-python-not-rust-std`.
+/// `strtol::parse_concrete_prefix`.
 pub(crate) fn is_c_space(c: u8) -> bool {
-    c == b' ' || (0x09..=0x0d).contains(&c)
+    in_ranges(u64::from(c), C_SPACE_RANGES)
 }
 
-/// Truncate an argument to its low 8 bits, matching the concrete `as u8` path.
-fn arg_byte(arg: &RustBV, ctx: &SymContext) -> RustBV {
-    arg.extract(7, 0, ctx)
+/// Concrete twin of [`ranges_predicate`]'s symbolic disjunction.
+fn in_ranges(v: u64, ranges: &[(u8, u8)]) -> bool {
+    ranges
+        .iter()
+        .any(|&(lo, hi)| v >= u64::from(lo) && v <= u64::from(hi))
 }
 
-/// Build `byte >= lo && byte <= hi` as a 1-bit BV.
-fn byte_in_range(byte: &RustBV, lo: u8, hi: u8, ctx: &SymContext) -> RustBV {
-    let lo_bv = RustBV::concrete(lo as u128, 8);
-    let hi_bv = RustBV::concrete(hi as u128, 8);
-    byte.uge(&lo_bv, ctx).and(&byte.ule(&hi_bv, ctx), ctx)
+/// Concrete twin of [`set_predicate`]'s symbolic disjunction.
+fn in_set(v: u64, members: &[u8]) -> bool {
+    members.iter().any(|&m| v == u64::from(m))
+}
+
+/// Build `arg >= lo && arg <= hi` (unsigned, at `arg`'s own width) as a 1-bit BV.
+fn arg_in_range(arg: &RustBV, lo: u8, hi: u8, ctx: &SymContext) -> RustBV {
+    let width = arg.width();
+    let lo_bv = RustBV::concrete(lo as u128, width);
+    let hi_bv = RustBV::concrete(hi as u128, width);
+    arg.uge(&lo_bv, ctx).and(&arg.ule(&hi_bv, ctx), ctx)
 }
 
 /// Zero-extend a 1-bit predicate to arch.bits() and return it.
@@ -53,7 +73,11 @@ fn lift_predicate(state: &RustSimState, pred: RustBV, ctx: &SymContext) -> RustB
     pred.zero_extend(bits, ctx)
 }
 
-/// tolower/toupper share the same pattern: if byte is in [lo, hi], shift by `delta`.
+/// tolower/toupper share the same pattern: if `arg` is in [lo, hi], shift by
+/// `delta`; otherwise return `arg` **unchanged and untruncated**, exactly as
+/// `claripy.If(And(c >= lo, c <= hi), c + delta, c)` does in `tolower.py` /
+/// `toupper.py`. Returning the low byte instead is what corrupted `EOF` into
+/// `255` (angr-6cp06.1).
 fn case_shift(
     state: &RustSimState,
     arg: &RustBV,
@@ -61,23 +85,23 @@ fn case_shift(
     hi: u8,
     delta: i8,
 ) -> Result<Option<RustBV>, ProcedureError> {
-    let bits = state.arch().bits();
+    let width = arg.width();
     if let Some(c) = arg.as_u64() {
-        let b = c as u8;
-        let result = if b >= lo && b <= hi {
-            ((b as i16) + delta as i16) as u8
+        let result = if in_ranges(c, &[(lo, hi)]) {
+            // `c` is inside [lo, hi] ⊆ [0, 255] on this arm and `delta` is
+            // ±32, so the sum lands back inside [0, 255]; `wrapping_add` is
+            // just how a negative `delta` is spelled against a `u64`.
+            c.wrapping_add(delta as i64 as u64)
         } else {
-            b
+            c
         };
-        return Ok(Some(arch_word(state, u64::from(result))));
+        return Ok(Some(RustBV::concrete(u128::from(result), width)));
     }
     let ctx = state.solver().borrow();
-    let byte = arg_byte(arg, &ctx);
-    let in_range = byte_in_range(&byte, lo, hi, &ctx);
-    let delta_bv = RustBV::concrete(delta as u8 as u128, 8);
-    let shifted = byte.add(&delta_bv, &ctx);
-    let new_byte = in_range.ite(&shifted, &byte, &ctx);
-    Ok(Some(new_byte.zero_extend(bits, &ctx)))
+    let in_range = arg_in_range(arg, lo, hi, &ctx);
+    let delta_bv = RustBV::concrete(delta as u8 as u128, 8).sign_extend(width, &ctx);
+    let shifted = arg.add(&delta_bv, &ctx);
+    Ok(Some(in_range.ite(&shifted, arg, &ctx)))
 }
 
 /// Build a symbolic ctype predicate from a list of inclusive ranges.
@@ -89,20 +113,18 @@ fn ranges_predicate(
     state: &RustSimState,
     arg: &RustBV,
     ranges: &[(u8, u8)],
-    concrete_check: fn(u8) -> bool,
 ) -> Result<Option<RustBV>, ProcedureError> {
     let bits = state.arch().bits();
     if let Some(c) = arg.as_u64() {
         return Ok(Some(RustBV::concrete(
-            u128::from(concrete_check(c as u8)),
+            u128::from(in_ranges(c, ranges)),
             bits,
         )));
     }
     let ctx = state.solver().borrow();
-    let byte = arg_byte(arg, &ctx);
     let mut pred: Option<RustBV> = None;
     for &(lo, hi) in ranges {
-        let r = byte_in_range(&byte, lo, hi, &ctx);
+        let r = arg_in_range(arg, lo, hi, &ctx);
         pred = Some(match pred {
             None => r,
             Some(prev) => prev.or(&r, &ctx),
@@ -121,21 +143,16 @@ fn set_predicate(
     state: &RustSimState,
     arg: &RustBV,
     members: &[u8],
-    concrete_check: fn(u8) -> bool,
 ) -> Result<Option<RustBV>, ProcedureError> {
     let bits = state.arch().bits();
     if let Some(c) = arg.as_u64() {
-        return Ok(Some(RustBV::concrete(
-            u128::from(concrete_check(c as u8)),
-            bits,
-        )));
+        return Ok(Some(RustBV::concrete(u128::from(in_set(c, members)), bits)));
     }
     let ctx = state.solver().borrow();
-    let byte = arg_byte(arg, &ctx);
     let mut pred: Option<RustBV> = None;
     for &m in members {
-        let m_bv = RustBV::concrete(m as u128, 8);
-        let eq = byte.eq(&m_bv, &ctx);
+        let m_bv = RustBV::concrete(m as u128, arg.width());
+        let eq = arg.eq(&m_bv, &ctx);
         pred = Some(match pred {
             None => eq,
             Some(prev) => prev.or(&eq, &ctx),
@@ -199,7 +216,7 @@ crate::declare_proc! {
     struct = NativeIsDigit,
     args = [c: bv],
     call |state| {
-        ranges_predicate(state, &c, &[(b'0', b'9')], |c| c.is_ascii_digit())
+        ranges_predicate(state, &c, &[(b'0', b'9')])
     }
 }
 
@@ -209,23 +226,23 @@ crate::declare_proc! {
     struct = NativeIsAlpha,
     args = [c: bv],
     call |state| {
-        ranges_predicate(state, &c, &[(b'A', b'Z'), (b'a', b'z')], |c| c.is_ascii_alphabetic())
+        ranges_predicate(state, &c, &[(b'A', b'Z'), (b'a', b'z')])
     }
 }
 
 crate::declare_proc! {
     /// `int isspace(int c)`.
-    /// C locale whitespace: ' ' plus the 0x09..=0x0d run (`\t \n \v \f \r`).
-    /// Note this deliberately does *not* use Rust's `is_ascii_whitespace`,
-    /// which omits `\v` (0x0b) — the Python `isspace` SimProcedure matches on
-    /// `c == 32 || (9 <= c <= 13)`, and so does real libc, so excluding `\v`
-    /// would make a guest tokenizer take a different branch under the native
-    /// fast path than under Python.
+    /// C locale whitespace: the [`C_SPACE_RANGES`] table, shared with
+    /// [`is_c_space`]. Note this deliberately does *not* use Rust's
+    /// `is_ascii_whitespace`, which omits `\v` (0x0b) — the Python `isspace`
+    /// SimProcedure matches on `c == 32 || (9 <= c <= 13)`, and so does real
+    /// libc, so excluding `\v` would make a guest tokenizer take a different
+    /// branch under the native fast path than under Python.
     name = "isspace",
     struct = NativeIsSpace,
     args = [c: bv],
     call |state| {
-        ranges_predicate(state, &c, &[(0x09, 0x0d), (b' ', b' ')], is_c_space)
+        ranges_predicate(state, &c, C_SPACE_RANGES)
     }
 }
 
@@ -235,7 +252,7 @@ crate::declare_proc! {
     struct = NativeIsAlnum,
     args = [c: bv],
     call |state| {
-        ranges_predicate(state, &c, &[(b'0', b'9'), (b'A', b'Z'), (b'a', b'z')], |c| c.is_ascii_alphanumeric())
+        ranges_predicate(state, &c, &[(b'0', b'9'), (b'A', b'Z'), (b'a', b'z')])
     }
 }
 
@@ -245,7 +262,7 @@ crate::declare_proc! {
     struct = NativeIsUpper,
     args = [c: bv],
     call |state| {
-        ranges_predicate(state, &c, &[(b'A', b'Z')], |c| c.is_ascii_uppercase())
+        ranges_predicate(state, &c, &[(b'A', b'Z')])
     }
 }
 
@@ -255,7 +272,7 @@ crate::declare_proc! {
     struct = NativeIsLower,
     args = [c: bv],
     call |state| {
-        ranges_predicate(state, &c, &[(b'a', b'z')], |c| c.is_ascii_lowercase())
+        ranges_predicate(state, &c, &[(b'a', b'z')])
     }
 }
 
@@ -265,7 +282,7 @@ crate::declare_proc! {
     struct = NativeIsXdigit,
     args = [c: bv],
     call |state| {
-        ranges_predicate(state, &c, &[(b'0', b'9'), (b'A', b'F'), (b'a', b'f')], |c| c.is_ascii_hexdigit())
+        ranges_predicate(state, &c, &[(b'0', b'9'), (b'A', b'F'), (b'a', b'f')])
     }
 }
 
@@ -275,7 +292,7 @@ crate::declare_proc! {
     struct = NativeIsPrint,
     args = [c: bv],
     call |state| {
-        ranges_predicate(state, &c, &[(0x20, 0x7e)], |c| (0x20..=0x7e).contains(&c))
+        ranges_predicate(state, &c, &[(0x20, 0x7e)])
     }
 }
 
@@ -285,7 +302,7 @@ crate::declare_proc! {
     struct = NativeIsAscii,
     args = [c: bv],
     call |state| {
-        ranges_predicate(state, &c, &[(0x00, 0x7f)], |c| c <= 0x7f)
+        ranges_predicate(state, &c, &[(0x00, 0x7f)])
     }
 }
 
@@ -295,7 +312,7 @@ crate::declare_proc! {
     struct = NativeIsBlank,
     args = [c: bv],
     call |state| {
-        set_predicate(state, &c, b" \t", |c| c == b' ' || c == b'\t')
+        set_predicate(state, &c, b" \t")
     }
 }
 
@@ -305,7 +322,7 @@ crate::declare_proc! {
     struct = NativeIsCntrl,
     args = [c: bv],
     call |state| {
-        ranges_predicate(state, &c, &[(0x00, 0x1f), (0x7f, 0x7f)], |c| c <= 0x1f || c == 0x7f)
+        ranges_predicate(state, &c, &[(0x00, 0x1f), (0x7f, 0x7f)])
     }
 }
 
@@ -315,7 +332,7 @@ crate::declare_proc! {
     struct = NativeIsGraph,
     args = [c: bv],
     call |state| {
-        ranges_predicate(state, &c, &[(0x21, 0x7e)], |c| (0x21..=0x7e).contains(&c))
+        ranges_predicate(state, &c, &[(0x21, 0x7e)])
     }
 }
 
@@ -330,10 +347,6 @@ crate::declare_proc! {
             state,
             &c,
             &[(0x21, 0x2f), (0x3a, 0x40), (0x5b, 0x60), (0x7b, 0x7e)],
-            |c| (0x21..=0x2f).contains(&c)
-                || (0x3a..=0x40).contains(&c)
-                || (0x5b..=0x60).contains(&c)
-                || (0x7b..=0x7e).contains(&c),
         )
     }
 }

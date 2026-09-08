@@ -224,3 +224,95 @@ fn test_ispunct() {
     assert_eq!(call_with(&p, &mut s, b'0'), 0);
     assert_eq!(call_with(&p, &mut s, b' '), 0);
 }
+
+/// Call a ctype proc with a full arch-word argument (not narrowed to a byte),
+/// the shape `call_with` cannot express.
+fn call_word(proc: &dyn NativeSimProcedure, state: &mut RustSimState, c: u64) -> u64 {
+    let args = [RustBV::concrete(c as u128, 64)];
+    proc.call(state, &args).unwrap().unwrap().as_u64().unwrap()
+}
+
+/// angr-6cp06.1: the predicates compare the **full** argument, like their
+/// Python siblings, instead of truncating to bits[7:0]. `304 & 0xff == b'0'`,
+/// so the pre-fix code answered "yes, a digit" where `isdigit.py`'s
+/// `And(c >= 48, c <= 57)` says no.
+#[test]
+fn test_predicates_compare_full_width_not_low_byte() {
+    let mut s = make_state();
+    assert_eq!(call_word(&NativeIsDigit, &mut s, 0x100 + u64::from(b'0')), 0);
+    assert_eq!(call_word(&NativeIsAlpha, &mut s, 0x100 + u64::from(b'A')), 0);
+    assert_eq!(call_word(&NativeIsSpace, &mut s, 0x100 + u64::from(b' ')), 0);
+    assert_eq!(call_word(&NativeIsUpper, &mut s, 0x100 + u64::from(b'A')), 0);
+    assert_eq!(call_word(&NativeIsAscii, &mut s, 0x100), 0);
+    assert_eq!(call_word(&NativeIsCntrl, &mut s, 0x100), 0);
+    // set_predicate has the identical defect and the identical fix.
+    assert_eq!(call_word(&NativeIsBlank, &mut s, 0x100 + u64::from(b' ')), 0);
+    // ...and EOF (-1) is not any character class.
+    for p in [
+        &NativeIsDigit as &dyn NativeSimProcedure,
+        &NativeIsAlpha,
+        &NativeIsSpace,
+        &NativeIsPrint,
+        &NativeIsBlank,
+        &NativeIsAscii,
+    ] {
+        assert_eq!(call_word(p, &mut s, u64::MAX), 0);
+    }
+}
+
+/// angr-6cp06.1: `tolower`/`toupper` return the argument *verbatim* when it is
+/// outside the shift range, so `while ((c = getchar()) != EOF) putchar(tolower(c));`
+/// still sees EOF. The pre-fix code returned the low byte, turning -1 into 255.
+#[test]
+fn test_case_shift_preserves_out_of_range_argument() {
+    let mut s = make_state();
+    assert_eq!(call_word(&NativeToLower, &mut s, u64::MAX), u64::MAX);
+    assert_eq!(call_word(&NativeToUpper, &mut s, u64::MAX), u64::MAX);
+    // Aliases of 'A'/'a' one byte up must not be shifted either.
+    let hi_a = 0x100 + u64::from(b'A');
+    assert_eq!(call_word(&NativeToLower, &mut s, hi_a), hi_a);
+    let hi_lower_a = 0x100 + u64::from(b'a');
+    assert_eq!(call_word(&NativeToUpper, &mut s, hi_lower_a), hi_lower_a);
+    // In-range values still shift.
+    assert_eq!(call_word(&NativeToLower, &mut s, u64::from(b'A')), u64::from(b'a'));
+    assert_eq!(call_word(&NativeToUpper, &mut s, u64::from(b'a')), u64::from(b'A'));
+}
+
+/// The symbolic path shares the concrete path's range tables, so it must reject
+/// the same out-of-byte-range values. Before the fix the solver could satisfy
+/// `isdigit(c) == 1` with `c == 304`, an unsoundness Python would never allow.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_symbolic_predicate_rejects_high_byte_alias() {
+    let mut s = make_state();
+    let ctx = s.solver().borrow();
+    let sym = RustBV::symbolic(&ctx, "c", 64);
+    let eq = sym.eq(&RustBV::concrete(0x100 + b'0' as u128, 64), &ctx);
+    drop(ctx);
+    let result = NativeIsDigit
+        .call(&mut s, std::slice::from_ref(&sym))
+        .unwrap()
+        .unwrap();
+    s.add_constraint(eq);
+    let ctx = s.solver().borrow();
+    assert_eq!(ctx.min(&result, false), Some(0));
+    assert_eq!(ctx.max(&result, false), Some(0));
+}
+
+/// Symbolic twin of `test_case_shift_preserves_out_of_range_argument`.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_symbolic_tolower_preserves_eof() {
+    let mut s = make_state();
+    let ctx = s.solver().borrow();
+    let sym = RustBV::symbolic(&ctx, "c", 64);
+    let eq = sym.eq(&RustBV::concrete(u64::MAX as u128, 64), &ctx);
+    drop(ctx);
+    let result = NativeToLower
+        .call(&mut s, std::slice::from_ref(&sym))
+        .unwrap()
+        .unwrap();
+    s.add_constraint(eq);
+    let ctx = s.solver().borrow();
+    assert_eq!(ctx.min(&result, false), Some(u128::from(u64::MAX)));
+}
