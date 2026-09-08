@@ -670,10 +670,10 @@ fn import_symbolic_leaf(
         //
         // SILENT(cat-b): a name miss here means the two maps disagree, which
         // `SymbolicIdentityRegistry::register` never produces —
-        // `update_hash_mapping` (no callers) is the only way to add a hash
-        // mapping without a name, and `remove` drops `rust_id_to_name` a few
-        // instructions before `py_hash_to_rust_id`, so a hash hit can briefly
-        // outlive its name. That window is not reachable today (both
+        // `update_hash_mapping` (no production callers) is the only way to add
+        // a hash mapping without a name, and `remove` drops `rust_id_to_name`
+        // a few instructions before `py_hash_to_rust_id`, so a hash hit can
+        // briefly outlive its name. That window is not reachable today (both
         // `import_symbolic_leaf` and the sole production remover,
         // `claripy_bridge::export`'s `evict_claripy_ast`, run under the GIL,
         // and nothing releases it between the two lookups here) — hence

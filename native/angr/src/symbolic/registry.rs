@@ -418,8 +418,11 @@ impl SymbolicIdentityRegistry {
     /// rather than by `id(ast)`. See angr-9ke6b.34: an earlier
     /// `get_stable_ast_id` helper claimed the opposite and was removed.
     ///
-    /// Currently has no callers; `symbolic` is a `pub mod` so `dead_code`
-    /// cannot flag it (see the `lib.rs` header).
+    /// Has no production callers — the only caller is
+    /// `claripy_bridge::import_tests`, which uses it to construct the
+    /// two-maps-disagree "torn state" that `import_symbolic_leaf`'s
+    /// `SILENT(cat-b)` fallback handles. `symbolic` is a `pub mod` so
+    /// `dead_code` cannot flag it (see the `lib.rs` header).
     ///
     /// # Arguments
     /// * `py_hash` - The new Python hash to map
