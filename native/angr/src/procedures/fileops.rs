@@ -446,13 +446,18 @@ crate::declare_proc! {
     /// `fdopen.py`'s `get_concrete_fd` concretization path is unreachable
     /// natively either way.
     ///
-    /// Parity: NULL matches `fdopen.py`'s `if fd_concr not in self.state.posix.fd:
-    /// return 0` for the read modes (`r`, `r+`), whose `create_file` is False.
-    /// For the creating modes (`w`, `w+`, `a`, `a+`) Python instead
-    /// materializes a backing file via `get_concrete_fd(.., create_file=True)`
-    /// and returns a real `FILE *` — a divergence native cannot reach as
-    /// written, since it has no path name to create the file under. Closing it
-    /// means deferring the creating modes to Python, not widening this arm.
+    /// Parity: NULL matches `fdopen.py`'s `if fd_concr not in
+    /// self.state.posix.fd: return 0`, for **every** mode. The
+    /// `create_file=True` that `fdopen.py::create_file` passes for the
+    /// `w`/`w+`/`a`/`a+` modes reads like a divergence — Python materializing a
+    /// backing file where native returns NULL — but it is unreachable from
+    /// here: `SimSystemPosix::_get_concrete_fd` only opens its
+    /// `/tmp/angr_implicit_N` file on the branch where `eval_one` raises
+    /// `SimSolverError`, i.e. a **multi-solution symbolic** fd. A concrete fd
+    /// evaluates cleanly and is returned unchanged whatever the mode, so both
+    /// engines take the `not in posix.fd` path together (angr-j0dp3). Hence
+    /// the mode is parsed only to reject unsupported spellings; its `FdFlags`
+    /// are deliberately unused.
     name = "fdopen",
     struct = NativeFdopen,
     args = [fd_raw: concrete, mode_addr: concrete],

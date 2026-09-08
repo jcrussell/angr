@@ -847,6 +847,24 @@ fn test_fdopen_unknown_fd_returns_null() {
 }
 
 #[test]
+fn test_fdopen_unknown_fd_returns_null_for_creating_mode() {
+    let mut state = setup_amd64_state();
+    state.map_memory_data(0x2000, b"w\0", Permission::RWX);
+
+    // A creating mode (`w`) on a not-open fd still returns NULL, same as `r`:
+    // Python's create_file=True only materializes a file for a multi-solution
+    // symbolic fd, which the `concrete` arg spec excludes here (angr-j0dp3).
+    let fp = NativeFdopen
+        .call(
+            &mut state,
+            &[RustBV::concrete(42, 64), RustBV::concrete(0x2000, 64)],
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(fp.as_u64(), Some(0));
+}
+
+#[test]
 fn test_fdopen_negative_fd_returns_null() {
     let mut state = setup_amd64_state();
     state.map_memory_data(0x2000, b"r\0", Permission::RWX);
