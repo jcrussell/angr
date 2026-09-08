@@ -24,8 +24,9 @@
 //! `fstat64.py::_store_i386`, angr-11djq.5.1), and ARM EABI / MIPS32
 //! (their own 32-bit LFS `struct stat64` layouts — `write_arm_stat` /
 //! `write_mips32_stat`). `write_stat_for_arch` is the single dispatch
-//! point; anything outside those five arches returns `Other` and falls
-//! through to Python. On i386 and MIPS32 the legacy pre-LFS numbers
+//! point and `stat_layouts::STAT_LAYOUT_WRITERS` the table it and every
+//! handler's `require_stat_arch` guard read; an arch absent from that
+//! table returns `Other` and falls through to Python. On i386 and MIPS32 the legacy pre-LFS numbers
 //! (106/107/108 and 4106/4107/4108, old 32-bit `struct stat`) are
 //! deliberately left unregistered: modern 32-bit glibc emits the `*64`
 //! variants, and angr's own Python map has no writer for the legacy
@@ -102,7 +103,7 @@
 // lstat(pathname, statbuf) → long — see NativeLstatSyscall impl below.
 // newfstatat(dfd, filename, statbuf, flag) → long — see NativeNewfstatatSyscall impl below.
 
-use super::stat_layouts::{S_IFLNK_0777, S_IFREG_0755, write_stat_for_arch};
+use super::stat_layouts::{S_IFLNK_0777, S_IFREG_0755, require_stat_arch, write_stat_for_arch};
 use super::{NEG_ONE, dirfd_allows, read_path};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
@@ -185,19 +186,12 @@ impl NativeSyscall for NativeFstatSyscall {
         let fd = extract_concrete_arg(&args[0], "fstat fd")?;
         let buf = extract_concrete_arg(&args[1], "fstat statbuf")?;
 
-        // arch check first: avoid mutating state.memory if we will fall
-        // back to Python anyway.
+        // Arch check first: avoid mutating state.memory if we will fall
+        // back to Python anyway. `allow_arm64 = true` — `fstat` takes an
+        // fd, so it exists on ARM64's asm-generic ABI (80) like everywhere
+        // else.
         let arch_name = state.arch().name();
-        if arch_name != "AMD64"
-            && arch_name != "ARM64"
-            && arch_name != "X86"
-            && arch_name != "ARM"
-            && arch_name != "MIPS32"
-        {
-            return Err(SyscallError::Other(format!(
-                "fstat: unsupported arch {arch_name} (only AMD64/ARM64/X86/ARM/MIPS32 have a Rust handler)"
-            )));
-        }
+        require_stat_arch("fstat", arch_name, true)?;
 
         // Look up fd — effective_size is the symbolic byte count when
         // bounded symbolic content is attached (angr-0xyq2), else the
@@ -242,16 +236,11 @@ impl NativeSyscall for NativeStatSyscall {
         args: &[RustBV],
     ) -> Result<SyscallOutcome, SyscallError> {
         // Arch check first: avoid traversing memory if we will fall
-        // back to Python anyway. ARM64 is absent because its
-        // asm-generic ABI has no `stat` number at all (only
-        // `newfstatat`), not because the writer is missing.
+        // back to Python anyway. `allow_arm64 = false` because that ABI
+        // has no `stat` number at all (only `newfstatat`), not because
+        // the writer is missing.
         let arch_name = state.arch().name();
-        if arch_name != "AMD64" && arch_name != "X86" && arch_name != "ARM" && arch_name != "MIPS32"
-        {
-            return Err(SyscallError::Other(format!(
-                "stat: unsupported arch {arch_name} (only AMD64/X86/ARM/MIPS32 have a Rust handler)"
-            )));
-        }
+        require_stat_arch("stat", arch_name, false)?;
 
         let pathname_addr = extract_concrete_arg(&args[0], "stat pathname")?;
         let buf = extract_concrete_arg(&args[1], "stat statbuf")?;
@@ -301,13 +290,10 @@ impl NativeSyscall for NativeLstatSyscall {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<SyscallOutcome, SyscallError> {
+        // `allow_arm64 = false`: same reason as `stat` above — no legacy
+        // `lstat` number on the asm-generic ABI.
         let arch_name = state.arch().name();
-        if arch_name != "AMD64" && arch_name != "X86" && arch_name != "ARM" && arch_name != "MIPS32"
-        {
-            return Err(SyscallError::Other(format!(
-                "lstat: unsupported arch {arch_name} (only AMD64/X86/ARM/MIPS32 have a Rust handler)"
-            )));
-        }
+        require_stat_arch("lstat", arch_name, false)?;
 
         let pathname_addr = extract_concrete_arg(&args[0], "lstat pathname")?;
         let buf = extract_concrete_arg(&args[1], "lstat statbuf")?;
@@ -364,17 +350,11 @@ impl NativeSyscall for NativeNewfstatatSyscall {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<SyscallOutcome, SyscallError> {
+        // `allow_arm64 = true` — one arch wider than `stat` / `lstat`,
+        // since `newfstatat` (79) is the only stat-shaped syscall on
+        // ARM64's asm-generic ABI.
         let arch_name = state.arch().name();
-        if arch_name != "AMD64"
-            && arch_name != "ARM64"
-            && arch_name != "X86"
-            && arch_name != "ARM"
-            && arch_name != "MIPS32"
-        {
-            return Err(SyscallError::Other(format!(
-                "newfstatat: unsupported arch {arch_name} (only AMD64/ARM64/X86/ARM/MIPS32 have a Rust handler)"
-            )));
-        }
+        require_stat_arch("newfstatat", arch_name, true)?;
 
         let dirfd = extract_concrete_arg(&args[0], "newfstatat dirfd")?;
         let pathname_addr = extract_concrete_arg(&args[1], "newfstatat pathname")?;

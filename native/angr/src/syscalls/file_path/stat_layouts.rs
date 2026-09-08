@@ -1,13 +1,16 @@
 //! Per-arch `struct stat` field constants and layout writers shared by
 //! every handler in [`super::stat`].
 //!
-//! `fstat`), i386 (`struct stat64` via the LFS `fstat64`/`stat64`/
-//! `lstat64`/`fstatat64` syscalls — `write_i386_stat`, mirroring
-//! `fstat64.py::_store_i386`, angr-11djq.5.1), and ARM EABI / MIPS32
-//! (their own 32-bit LFS `struct stat64` layouts — `write_arm_stat` /
-//! `write_mips32_stat`). `write_stat_for_arch` is the single dispatch
-//! point; anything outside those five arches returns `Other` and falls
-//! through to Python. On i386 and MIPS32 the legacy pre-LFS numbers
+//! Layouts cover AMD64 + ARM64 (the 64-bit `struct stat` —
+//! [`write_amd64_stat`] / [`write_aarch64_stat`]), i386 (`struct stat64`
+//! via the LFS `fstat64`/`stat64`/`lstat64`/`fstatat64` syscalls —
+//! [`write_i386_stat`], mirroring `fstat64.py::_store_i386`,
+//! angr-11djq.5.1), and ARM EABI / MIPS32 (their own 32-bit LFS
+//! `struct stat64` layouts — [`write_arm_stat`] / [`write_mips32_stat`]).
+//! [`STAT_LAYOUT_WRITERS`] is the table pairing each arch with its
+//! writer and [`write_stat_for_arch`] the single dispatch point; an arch
+//! absent from that table returns `Other` and falls through to Python.
+//! On i386 and MIPS32 the legacy pre-LFS numbers
 //! (106/107/108 and 4106/4107/4108, old 32-bit `struct stat`) are
 //! deliberately left unregistered: modern 32-bit glibc emits the `*64`
 //! variants, and angr's own Python map has no writer for the legacy
@@ -280,14 +283,71 @@ pub(super) fn write_stat_for_arch(
     size: u64,
     mode: u32,
 ) -> Result<(), SyscallError> {
-    match arch_name {
-        "AMD64" => write_amd64_stat(state, buf, size, mode),
-        "ARM64" => write_aarch64_stat(state, buf, size, mode),
-        "X86" => write_i386_stat(state, buf, size, mode),
-        "ARM" => write_arm_stat(state, buf, size, mode),
-        "MIPS32" => write_mips32_stat(state, buf, size, mode),
-        other => Err(SyscallError::Other(format!(
-            "stat: no struct-stat writer for arch {other}"
+    match STAT_LAYOUT_WRITERS
+        .iter()
+        .find(|(name, _)| *name == arch_name)
+    {
+        Some((_, write)) => write(state, buf, size, mode),
+        None => Err(SyscallError::Other(format!(
+            "stat: no struct-stat writer for arch {arch_name}"
         ))),
     }
+}
+
+/// Signature shared by every per-arch writer above, so
+/// [`STAT_LAYOUT_WRITERS`] can hold them in one table.
+type StatWriter = fn(&mut RustSimState, u64, u64, u32) -> Result<(), SyscallError>;
+
+/// Every arch this module can lay out a `struct stat` for, paired with
+/// the writer that does it.
+///
+/// Single source of truth for BOTH [`write_stat_for_arch`]'s dispatch
+/// and the pre-flight arch guard [`require_stat_arch`] that each
+/// handler in [`super::stat`] runs. Those guards used to spell the arch
+/// set out by hand — `NativeFstatSyscall` and `NativeNewfstatatSyscall`
+/// the full set, `NativeStatSyscall` and `NativeLstatSyscall` the
+/// ARM64-less subset — so adding an arm here could ship with one of the
+/// four handlers still rejecting the new arch, leaving that syscall
+/// permanently deferred to Python while its siblings worked
+/// (angr-6cp06.53).
+pub(super) const STAT_LAYOUT_WRITERS: [(&str, StatWriter); 5] = [
+    ("AMD64", write_amd64_stat),
+    ("ARM64", write_aarch64_stat),
+    ("X86", write_i386_stat),
+    ("ARM", write_arm_stat),
+    ("MIPS32", write_mips32_stat),
+];
+
+/// Reject `arch_name` unless [`STAT_LAYOUT_WRITERS`] has a layout for
+/// it, naming `syscall` in the error. `allow_arm64 == false` narrows the
+/// set to the legacy-`stat`-number arches: ARM64's asm-generic ABI has
+/// no legacy `stat`/`lstat` syscall at all, so those two handlers
+/// exclude it by design rather than by omission (see
+/// `NativeStatSyscall`'s doc comment).
+///
+/// Every handler calls this FIRST, before reading the path or touching
+/// `state.memory`, so a state on an unsupported arch falls through to
+/// Python with nothing mutated.
+pub(super) fn require_stat_arch(
+    syscall: &str,
+    arch_name: &str,
+    allow_arm64: bool,
+) -> Result<(), SyscallError> {
+    let allowed = |name: &str| allow_arm64 || name != "ARM64";
+    if allowed(arch_name)
+        && STAT_LAYOUT_WRITERS
+            .iter()
+            .any(|(name, _)| *name == arch_name)
+    {
+        return Ok(());
+    }
+    let supported: Vec<&str> = STAT_LAYOUT_WRITERS
+        .iter()
+        .map(|(name, _)| *name)
+        .filter(|&name| allowed(name))
+        .collect();
+    Err(SyscallError::Other(format!(
+        "{syscall}: unsupported arch {arch_name} (only {} have a Rust handler)",
+        supported.join("/")
+    )))
 }

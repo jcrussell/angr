@@ -2,7 +2,9 @@
 //! (angr-03vl4.65).
 
 use super::*;
-use super::stat_layouts::{S_IFREG_0755, ST_BLKSIZE};
+use super::stat_layouts::{
+    S_IFREG_0755, ST_BLKSIZE, STAT_LAYOUT_WRITERS, require_stat_arch, write_stat_for_arch,
+};
 use super::file_path_tests_support::*;
 use crate::memory::Permission;
 use crate::state::{FdFlags, RustSimState};
@@ -457,4 +459,40 @@ fn fstat_statbuf_boundary_sweep_never_panics_and_wraps_field_offsets() {
          (wrapped addr < buf) — the table may have regressed to only far-from-top \
          (no field wraps) or right-at-top (first field already overflows) values"
     );
+}
+
+/// `require_stat_arch` (the handlers' pre-flight guard) and
+/// `write_stat_for_arch` (the dispatcher) both read `STAT_LAYOUT_WRITERS`,
+/// so an arch added to that table reaches all four handlers at once —
+/// the drift angr-6cp06.53 removed. Pins the agreement so a future
+/// rewrite that re-hand-rolls either side reds here.
+#[test]
+fn require_stat_arch_agrees_with_the_writer_table() {
+    let mut state = RustSimState::new("amd64").expect("state");
+    state.map_memory(0x4000, 0x1000, Permission::RW);
+
+    for (arch_name, _) in STAT_LAYOUT_WRITERS {
+        require_stat_arch("fstat", arch_name, true)
+            .unwrap_or_else(|e| panic!("{arch_name} is in the table but the guard rejects it: {e}"));
+        write_stat_for_arch(&mut state, arch_name, 0x4000, 13, S_IFREG_0755 as u32)
+            .unwrap_or_else(|e| panic!("{arch_name} is in the table but has no writer: {e}"));
+    }
+
+    // ARM64 is the one arch the legacy-`stat`-number handlers exclude by
+    // design; every other table entry stays allowed with `allow_arm64 = false`.
+    assert!(require_stat_arch("stat", "ARM64", false).is_err());
+    for (arch_name, _) in STAT_LAYOUT_WRITERS {
+        if arch_name != "ARM64" {
+            assert!(require_stat_arch("stat", arch_name, false).is_ok());
+        }
+    }
+
+    // Off-table arch: rejected by both, and the guard's message names the
+    // allowed set rather than a hand-copied literal.
+    let err = require_stat_arch("lstat", "PPC32", false).expect_err("PPC32 has no layout");
+    let msg = format!("{err}");
+    assert!(msg.contains("lstat: unsupported arch PPC32"), "{msg}");
+    assert!(msg.contains("AMD64/X86/ARM/MIPS32"), "{msg}");
+    assert!(!msg.contains("ARM64"), "{msg}");
+    assert!(write_stat_for_arch(&mut state, "PPC32", 0x4000, 13, S_IFREG_0755 as u32).is_err());
 }
