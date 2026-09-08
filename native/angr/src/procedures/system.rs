@@ -18,8 +18,7 @@
 //! zero-extended to the 32-bit C int width (matching rand.rs, which likewise
 //! zero-extends an int-returning symbolic result to 32 bits).
 
-use super::symbol_counter;
-use crate::symbolic::RustBV;
+use super::fresh_zero_extended_symbol;
 
 crate::declare_proc! {
     /// ```c
@@ -30,17 +29,14 @@ crate::declare_proc! {
     struct = NativeSystem,
     args = [_command: bv],
     call |state| {
-        let counter = symbol_counter("system");
-        let name = format!("system_returncode_{counter}");
-
-        let ctx = state.solver().borrow();
         // 8-bit unconstrained return code, zero-extended to the 32-bit C int
         // width (sizeof(int) == 32 on all supported arches; matches rand.rs).
-        let sym_val = RustBV::symbolic(&ctx, &name, 8);
-        let result = sym_val.zero_extend(32, &ctx);
-        drop(ctx);
-
-        Ok(Some(result))
+        Ok(Some(fresh_zero_extended_symbol(
+            state,
+            "system_returncode",
+            8,
+            32,
+        )))
     }
 }
 

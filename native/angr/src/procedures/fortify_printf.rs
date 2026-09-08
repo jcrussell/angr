@@ -31,13 +31,10 @@
 //!   → `vsnprintf(s, maxlen, fmt, ap)` (drop `flag`, `slen`)
 
 use super::printf::{NativeFprintf, NativePrintf};
-use super::sprintf::{NativeSnprintf, NativeSprintf, NativeVsnprintf};
+use super::sprintf::{MAX_VARARGS, NativeSnprintf, NativeSprintf, NativeVsnprintf};
 use super::{NativeSimProcedure, ProcedureError};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
-
-/// Max variadic args the base sprintf/snprintf procs consume.
-const MAX_VARARGS: usize = 6;
 
 /// `int __printf_chk(int flag, const char *format, ...)`.
 ///

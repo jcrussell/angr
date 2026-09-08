@@ -263,6 +263,32 @@ pub(crate) fn arch_word(state: &RustSimState, value: u64) -> RustBV {
     RustBV::concrete(u128::from(value), state.arch().bits())
 }
 
+/// Mint a fresh symbolic bitvector of `src_bits` and zero-extend it to
+/// `ext_bits`, naming it `<prefix>_<counter>` via [`symbol_counter`].
+///
+/// Models the "unconstrained value narrower than the C return type" shape that
+/// several libc procs share with their Python SimProcedures: `rand` mints 31
+/// bits and zero-extends to `sizeof(int)`, `system` mints 8. Both spelled the
+/// same five lines out by hand — counter, name, borrow the solver, mint,
+/// zero-extend — differing only in the prefix and `src_bits`, so the two could
+/// drift on the extension width with nothing to catch it (angr-6cp06.13).
+///
+/// `ext_bits` is the **total** target width, matching
+/// [`RustBV::zero_extend`], not a count of added bits (claripy's
+/// `zero_extend` takes the latter, which is why the Python procs read
+/// `zero_extend(sizeof(int) - 8)`).
+pub(crate) fn fresh_zero_extended_symbol(
+    state: &RustSimState,
+    prefix: &'static str,
+    src_bits: u32,
+    ext_bits: u32,
+) -> RustBV {
+    let counter = symbol_counter(prefix);
+    let name = format!("{prefix}_{counter}");
+    let ctx = state.solver().borrow();
+    RustBV::symbolic(&ctx, &name, src_bits).zero_extend(ext_bits, &ctx)
+}
+
 /// Reserved SimProcedure name for the native sub-call **resume sentinel**.
 ///
 /// A native proc that returns [`ProcOutcome::CallAndResume`] makes the guest

@@ -13,6 +13,17 @@ use crate::symbolic::RustBV;
 
 const MAX_OUTPUT_LEN: usize = 4096;
 
+/// Max variadic args the sprintf/snprintf family requests from the caller.
+///
+/// A native proc declares a fixed `num_args()`, so this is the cut-off past
+/// which a `%`-specifier finds no argument to consume. `fortify_printf.rs`'s
+/// `__sprintf_chk`/`__snprintf_chk` wrappers forward their variadic tail to
+/// these base procs, so they must request the same count — they import this
+/// constant rather than redeclaring it, since a wrapper asking for fewer would
+/// silently truncate the forwarded list with no compiler or test signal
+/// (angr-6cp06.10).
+pub(crate) const MAX_VARARGS: usize = 6;
+
 /// Format arguments according to a printf-style format string.
 ///
 /// `args` is the slice of variadic arguments (after dest/format/size).
@@ -467,7 +478,7 @@ impl NativeSimProcedure for NativeSprintf {
     }
 
     fn num_args(&self) -> usize {
-        8 // dest + format + up to 6 variadic args
+        2 + MAX_VARARGS // dest + format + varargs
     }
 
     fn call(
@@ -508,7 +519,7 @@ impl NativeSimProcedure for NativeAsprintf {
     }
 
     fn num_args(&self) -> usize {
-        8 // strp + format + up to 6 variadic args
+        2 + MAX_VARARGS // strp + format + varargs
     }
 
     fn call(
@@ -547,7 +558,7 @@ impl NativeSimProcedure for NativeSnprintf {
     }
 
     fn num_args(&self) -> usize {
-        9 // dest + size + format + up to 6 variadic args
+        3 + MAX_VARARGS // dest + size + format + varargs
     }
 
     fn call(

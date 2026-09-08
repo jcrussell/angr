@@ -438,9 +438,21 @@ crate::declare_proc! {
     /// FILE *fdopen(int fd, const char *mode);
     /// ```
     ///
-    /// Allocates an `_IO_FILE` struct for an already-open fd. Returns 0 if `fd` is
-    /// not open in the FileSystem so the Python proc can fall back to its
-    /// symbolic-fd path.
+    /// Allocates an `_IO_FILE` struct for an already-open fd, and returns a
+    /// concrete NULL for an `fd` that is not open — a **successful** native
+    /// return, not a `ProcedureError`, so Python never runs (angr-6cp06.11;
+    /// the doc used to claim a fallback here that the code does not perform).
+    /// Symbolic fds are already excluded by the `concrete` arg spec, so
+    /// `fdopen.py`'s `get_concrete_fd` concretization path is unreachable
+    /// natively either way.
+    ///
+    /// Parity: NULL matches `fdopen.py`'s `if fd_concr not in self.state.posix.fd:
+    /// return 0` for the read modes (`r`, `r+`), whose `create_file` is False.
+    /// For the creating modes (`w`, `w+`, `a`, `a+`) Python instead
+    /// materializes a backing file via `get_concrete_fd(.., create_file=True)`
+    /// and returns a real `FILE *` — a divergence native cannot reach as
+    /// written, since it has no path name to create the file under. Closing it
+    /// means deferring the creating modes to Python, not widening this arm.
     name = "fdopen",
     struct = NativeFdopen,
     args = [fd_raw: concrete, mode_addr: concrete],
