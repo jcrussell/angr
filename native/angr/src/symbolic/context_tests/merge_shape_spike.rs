@@ -11,11 +11,12 @@
 //! (`snapshot_fork_ops.rs::merge`) cost scale with the *divergence* between the
 //! arms, or with their *total* constraint count?
 //!
-//! Answer, established here:
-//!   * The production merge guards EVERY constraint of EVERY arm: it walks
-//!     `shared.iter().chain(ctx_local.z3_assertions.iter())` and emits one
+//! Answer, established here against the merge as it stood in 2026-07 — the
+//! rewrite this spike argued for has since SHIPPED, see "Status" below:
+//!   * That merge guarded EVERY constraint of EVERY arm: it walked
+//!     `shared.iter().chain(ctx_local.z3_assertions.iter())` and emitted one
 //!     `Or(not merge_cond, assertion)` per constraint. So the guarded-`Or`
-//!     count is the TOTAL constraint count (Σ over arms of shared+local),
+//!     count was the TOTAL constraint count (Σ over arms of shared+local),
 //!     even though every arm's `shared` prefix is byte-for-byte identical.
 //!   * The primitive for a divergence-proportional merge ALREADY SHIPS: the
 //!     fork-freeze invariant. `fork()` drains self's local constraints
@@ -36,16 +37,33 @@
 //! shared constraint (the Arc is frozen; new constraints only append to local).
 //! `test_local_never_shadows_shared` checks that invariant directly.
 //!
+//! ## Status: the prototyped rewrite shipped (angr-op0dn.11.3)
+//! `SymContext::merge` now takes exactly this shape: when every input arm's
+//! `z3_assertions_shared` Arc is ptr-equal it asserts that prefix once,
+//! UNGUARDED, and guards only each arm's divergent local suffix, falling back
+//! to guard-every-constraint when the arms share no frozen ancestor.
+//! `context_tests/merge_prefix.rs::test_shared_prefix_merge_guards_divergence_only`
+//! pins the live count at divergent+1 rather than total+1.
+//!
+//! So this module is now a historical record: the pre-11.3 baseline shape, the
+//! feasibility/soundness argument for replacing it, and a standalone
+//! reimplementation (`cow_merge`) kept as an independent oracle that the
+//! shipped merge is checked against
+//! (`test_cow_merge_matches_production_semantics`). It is NOT a description of
+//! work still to be done.
+//!
 //! ## Fidelity gaps NOT covered by this constraint-only prototype
-//! (enumerated per the S5b acceptance; these are the M3-2b impl surface, not
-//! feasibility blockers):
-//!   * `assumed` export pairs — production marks the merge non-reconstructible
+//! (enumerated per the S5b acceptance; these were the M3-2b impl surface, not
+//! feasibility blockers — the first two are settled by the shipped merge):
+//!   * `assumed` export pairs — the merge marks itself non-reconstructible
 //!     (`assume_class_reconstructible = false`) so `to_snapshot` dumps the full
-//!     solver. The unguarded-prefix form must keep that flag; the prefix pairs
-//!     are still export-only and not re-asserted on restore.
+//!     solver. The shipped unguarded-prefix path keeps that flag; the prefix
+//!     pairs are still export-only and not re-asserted on restore.
 //!   * `non_bv_assertions` residual log — the guarded `Or`s have no RustBV form
-//!     (angr-t3l5o residual sink #3); the prefix, now unguarded, DOES have a
-//!     RustBV form and could stay reconstructible, a further win left to impl.
+//!     (angr-t3l5o residual sink #3); the unguarded prefix DOES have one and
+//!     could in principle stay reconstructible, but the shipped merge records
+//!     it in the residual log too, so the whole merged context stays
+//!     full-solver on snapshot.
 //!   * Memory-side fidelity (un-merged `multi_objects`, concatenated
 //!     `pending_writes`, longest-stdout heuristic) is the S5a/memory spike's
 //!     domain, not the constraint solver's.
@@ -96,9 +114,11 @@ fn arm_shape(arm: &SymContext) -> (usize, usize) {
     (shared, local)
 }
 
-/// Cost of the *production* merge shape: guard EVERY constraint of EVERY arm.
+/// Cost of the *pre-angr-op0dn.11.3* merge shape: guard EVERY constraint of
+/// EVERY arm. Kept as the baseline the shipped shared-prefix merge is measured
+/// against — it is arithmetic over `arm_shape`, not a call into `merge`.
 /// Returns the guarded-`Or` count (excludes the final `Or` of merge flags).
-fn current_guarded_count(arms: &[&SymContext]) -> u64 {
+fn baseline_guarded_count(arms: &[&SymContext]) -> u64 {
     arms.iter()
         .map(|a| {
             let (shared, local) = arm_shape(a);
@@ -154,10 +174,10 @@ fn cow_merge(arms: &[&SymContext], merge_conditions: &[RustBV]) -> (SymContext, 
     (merged, guarded)
 }
 
-/// MEASUREMENT: the production merge shape guards the TOTAL constraint count;
-/// the CoW shape guards only the divergent count. On this diamond that is a
-/// (2*(8+2))=20 vs (2*2)=4 = 5x reduction, and — the key claim — the CoW count
-/// equals the divergent-constraint count exactly.
+/// MEASUREMENT: the pre-11.3 merge shape guarded the TOTAL constraint count;
+/// the CoW shape (now shipped) guards only the divergent count. On this
+/// diamond that is a (2*(8+2))=20 vs (2*2)=4 = 5x reduction, and — the key
+/// claim — the CoW count equals the divergent-constraint count exactly.
 #[test]
 fn test_merge_guarded_count_is_divergence_proportional() {
     let (base, x) = build_base();
@@ -169,15 +189,15 @@ fn test_merge_guarded_count_is_divergence_proportional() {
         assert_eq!(arm_shape(a), (SHARED_CONSTRAINTS, DIVERGENT_PER_ARM));
     }
 
-    let current = current_guarded_count(&arms);
+    let baseline = baseline_guarded_count(&arms);
     let cow = cow_guarded_count(&arms);
     let divergent_total = (N_ARMS * DIVERGENT_PER_ARM) as u64;
 
-    // Production guards every constraint of every arm.
+    // The pre-11.3 shape guarded every constraint of every arm.
     assert_eq!(
-        current,
+        baseline,
         (N_ARMS * (SHARED_CONSTRAINTS + DIVERGENT_PER_ARM)) as u64,
-        "current merge should guard the total constraint count"
+        "baseline merge shape should guard the total constraint count"
     );
     // CoW guards exactly the divergent constraints — the S5b acceptance's
     // "guarded assertions == divergent-constraint count".
@@ -185,17 +205,17 @@ fn test_merge_guarded_count_is_divergence_proportional() {
         cow, divergent_total,
         "CoW merge should guard exactly the divergent-constraint count"
     );
-    // Guarded-count delta: production GUARDS the prefix once per arm; CoW
+    // Guarded-count delta: the baseline GUARDS the prefix once per arm; CoW
     // guards it zero times (asserts it unguarded instead).
-    assert_eq!(current - cow, (N_ARMS * SHARED_CONSTRAINTS) as u64);
+    assert_eq!(baseline - cow, (N_ARMS * SHARED_CONSTRAINTS) as u64);
 
     // Total assertions emitted (guarded + the unguarded prefix + the flag Or).
     // The prefix collapses from N_ARMS copies to one, so the whole-merge saving
     // is (N_ARMS - 1) * SHARED_CONSTRAINTS.
-    let current_total = current + 1; // + final Or
+    let baseline_total = baseline + 1; // + final Or
     let cow_total = cow + SHARED_CONSTRAINTS as u64 + 1; // + unguarded prefix + Or
     assert_eq!(
-        current_total - cow_total,
+        baseline_total - cow_total,
         ((N_ARMS - 1) * SHARED_CONSTRAINTS) as u64,
         "prefix collapse saves (N_ARMS-1) * SHARED_CONSTRAINTS total assertions"
     );
@@ -291,8 +311,9 @@ fn test_cow_merge_stays_sat_and_evals_arm_union() {
 
 /// PRODUCTION PARITY: the CoW prototype is behaviour-equivalent to the shipped
 /// `SymContext::merge` — same SAT verdict and same admit/reject on the union of
-/// arm values — while emitting fewer guarded assertions. Proves the
-/// unguarded-prefix rewrite changes cost, not semantics.
+/// arm values. Since angr-op0dn.11.3 shipped the unguarded-prefix shape into
+/// `merge` itself, this is no longer a cost comparison but an independent
+/// reimplementation kept as a semantic oracle for it.
 #[test]
 fn test_cow_merge_matches_production_semantics() {
     let (base, x) = build_base();
