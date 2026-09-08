@@ -15,7 +15,9 @@
 //!
 //! - `payload` — **Phase 1.1** (angr-me3z): `MultiPayload`/`MultiAlternative`
 //!   themselves and their sidecar storage (`multi_objects`, `multi_bitmap`)
-//!   round-trips.
+//!   round-trips; and **angr-6cp06.63**: installing a cell over a byte a
+//!   wider `symbolic_objects` entry already covers must retire that container
+//!   into per-byte lanes (`retire_symbolic_object_at`).
 //! - `collapse` — **Phase 1.2** (angr-n082): collapse of installed cells on
 //!   the lazy load path (`load_concrete_lazy_inner` →
 //!   `assemble_load_with_multi`), plus **angr-9ke6b.96**: the non-lazy

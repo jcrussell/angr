@@ -253,20 +253,20 @@ fn test_extract_byte_lane_refuses_wrapping_byte_offset() {
         // (2^29) * 8 == 2^32 → the old `(off + 1) * 8` wrapped to 0.
         let wrapped = (1u32 << 29) - 1;
         assert!(
-            SymbolicMemory::extract_byte_lane(&sym, wrapped, endness, &ctx).is_none(),
+            SymbolicMemory::extract_byte_lane(&sym, wrapped, endness).is_none(),
             "{endness:?}: offset whose bit position overflows u32 must be refused"
         );
         assert!(
-            SymbolicMemory::extract_byte_lane(&sym, u32::MAX, endness, &ctx).is_none(),
+            SymbolicMemory::extract_byte_lane(&sym, u32::MAX, endness).is_none(),
             "{endness:?}: u32::MAX offset must be refused, not wrap to lane 0"
         );
         // The in-range lanes still work.
         assert!(
-            SymbolicMemory::extract_byte_lane(&sym, 7, endness, &ctx).is_some(),
+            SymbolicMemory::extract_byte_lane(&sym, 7, endness).is_some(),
             "{endness:?}: last in-range lane must still extract"
         );
         assert!(
-            SymbolicMemory::extract_byte_lane(&sym, 8, endness, &ctx).is_none(),
+            SymbolicMemory::extract_byte_lane(&sym, 8, endness).is_none(),
             "{endness:?}: first out-of-range lane must still be refused"
         );
     }

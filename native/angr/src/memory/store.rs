@@ -692,7 +692,7 @@ impl SymbolicMemory {
                     addr: cand,
                     size: size as u64,
                 })?;
-                let byte_value = Self::extract_byte_lane(value, b, endness, ctx).ok_or(
+                let byte_value = Self::extract_byte_lane(value, b, endness).ok_or(
                     MemoryError::SymbolicAddress {
                         description: "value byte offset out of range".to_string(),
                     },

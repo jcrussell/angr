@@ -894,7 +894,7 @@ impl SymbolicMemory {
                 payload.collapse(concrete_byte, ctx)
             } else if page.is_symbolic(offset) {
                 if let Some(sym) = self.symbolic_objects.get(&byte_addr) {
-                    Self::extract_byte_lane(sym, 0, self.endness, ctx).ok_or_else(|| {
+                    Self::extract_byte_lane(sym, 0, self.endness).ok_or_else(|| {
                         MemoryError::SymbolicAddress {
                             description: "symbolic byte lane out of range".to_string(),
                         }
@@ -914,11 +914,11 @@ impl SymbolicMemory {
                     // one from a stale span) that overruns `sym`, so:
                     // overflow-ok: `Sub<Address> for Address` is `wrapping_sub`.
                     let off_in_sym = (byte_addr - base_addr) as u32;
-                    Self::extract_byte_lane(sym, off_in_sym, self.endness, ctx).ok_or_else(
-                        || MemoryError::SymbolicAddress {
+                    Self::extract_byte_lane(sym, off_in_sym, self.endness).ok_or_else(|| {
+                        MemoryError::SymbolicAddress {
                             description: "symbolic span byte offset out of range".to_string(),
-                        },
-                    )?
+                        }
+                    })?
                 } else {
                     return Err(MemoryError::SymbolicAddress {
                         description: "symbolic byte without tracked object".to_string(),
@@ -1016,7 +1016,7 @@ impl SymbolicMemory {
             // matching the guest's own pointer wraparound.
             let byte_addr = addr + i as u64;
             let part = if let Some(sym) = self.symbolic_objects.get(&byte_addr) {
-                Self::extract_byte_lane(sym, 0, self.endness, ctx)?
+                Self::extract_byte_lane(sym, 0, self.endness)?
             } else if let Some(&(base_addr, base_width)) = self.symbolic_spans.get(&byte_addr) {
                 let sym = self.symbolic_objects.get(&base_addr)?;
                 if sym.width() != base_width {
@@ -1026,7 +1026,7 @@ impl SymbolicMemory {
                 // from a stale span) that overruns `sym`, so:
                 // overflow-ok: `Sub<Address> for Address` is `wrapping_sub`.
                 let offset = (byte_addr - base_addr) as u32;
-                Self::extract_byte_lane(sym, offset, self.endness, ctx)?
+                Self::extract_byte_lane(sym, offset, self.endness)?
             } else {
                 return None;
             };
@@ -1043,11 +1043,15 @@ impl SymbolicMemory {
     ///   LE: byte 0 is the LSB → bits `[off*8+7 : off*8]`.
     ///   BE: byte 0 is the MSB → bits `[total-off*8-1 : total-off*8-8]`.
     /// Returns `None` if the offset is out of range.
+    ///
+    /// Takes no [`SymContext`]: the underlying `RustBV::extract` ignores the
+    /// one it is handed, and `retire_symbolic_object_at` — the byte-lane
+    /// splitter `set_multi_alternatives` calls — has no context to pass
+    /// (angr-6cp06.63).
     pub(super) fn extract_byte_lane(
         sym: &RustBV,
         byte_offset: u32,
         endness: Endness,
-        ctx: &SymContext,
     ) -> Option<RustBV> {
         let total_bits = sym.width();
         // angr-xloth.4: `byte_offset` reaches here as a *wrapping* `Address`
@@ -1063,13 +1067,12 @@ impl SymbolicMemory {
             return None;
         }
         Some(match endness {
-            Endness::Little => sym.extract(byte_offset * 8 + 7, byte_offset * 8, ctx),
+            Endness::Little => sym.extract_no_ctx(byte_offset * 8 + 7, byte_offset * 8),
             // overflow-ok: `end_bit <= total_bits` above bounds both terms.
-            Endness::Big => sym.extract(
+            Endness::Big => sym.extract_no_ctx(
                 total_bits - byte_offset * 8 - 1,
                 // overflow-ok: `end_bit <= total_bits` above bounds this too.
                 total_bits - byte_offset * 8 - 8,
-                ctx,
             ),
         })
     }

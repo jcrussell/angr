@@ -378,7 +378,7 @@ impl SymbolicMemory {
         } else if is_sym {
             silent_default!(
                 cat_c,
-                Self::symbolic_byte_lane(symbolic_objects, symbolic_spans, addr, endness, ctx),
+                Self::symbolic_byte_lane(symbolic_objects, symbolic_spans, addr, endness),
                 RustBV::concrete(u128::from(concrete_byte), 8),
                 "merge: byte {addr:?} is marked symbolic by the page bitmap but no \
                  symbolic_objects/symbolic_spans entry resolves it; merging the concrete \
@@ -408,10 +408,9 @@ impl SymbolicMemory {
         symbolic_spans: &FxHashMap<Address, (Address, u32)>,
         addr: Address,
         endness: Endness,
-        ctx: &SymContext,
     ) -> Option<RustBV> {
         if let Some(sym) = symbolic_objects.get(&addr) {
-            return Self::extract_byte_lane(sym, 0, endness, ctx);
+            return Self::extract_byte_lane(sym, 0, endness);
         }
         let &(base_addr, base_width) = symbolic_spans.get(&addr)?;
         let sym = symbolic_objects.get(&base_addr)?;
@@ -419,7 +418,7 @@ impl SymbolicMemory {
             return None;
         }
         let offset = u32::try_from(addr.raw().wrapping_sub(base_addr.raw())).ok()?;
-        Self::extract_byte_lane(sym, offset, endness, ctx)
+        Self::extract_byte_lane(sym, offset, endness)
     }
 
     /// Guard a deferred symbolic store with a merge condition, composing with

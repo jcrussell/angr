@@ -288,8 +288,12 @@ impl SymbolicMemory {
         page.clear_multi(offset); // no-op if not currently Multi
         page.mark_multi(offset);
 
-        self.symbolic_objects.remove(&addr);
-        self.symbolic_spans.remove(&addr);
+        // angr-6cp06.63: a Multi cell supersedes exactly this byte, so the
+        // symbolic object covering it must be retired — the exact-key
+        // `symbolic_objects.remove(&addr)` this used to be missed a *wider*
+        // object based below `addr`, which then raced the collapsed byte on
+        // export. See `retire_symbolic_object_at`.
+        self.retire_symbolic_object_at(addr);
 
         self.multi_objects.insert(addr, payload);
         // Phase 4.1: bump per-byte version so the wider-load cache notices

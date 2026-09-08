@@ -3,6 +3,10 @@
 //! round-trips. These cover only the data structure and storage — load-side
 //! collapse lives in the sibling `collapse` module and the store-side helpers
 //! in `install`.
+//!
+//! Also the home of the angr-6cp06.63 regressions: `set_multi_alternatives`
+//! retiring a *wider* `symbolic_objects` entry that covers the byte being
+//! superseded, rather than only an exact-key one.
 
 use super::*;
 
@@ -198,4 +202,137 @@ fn test_multi_payload_records_ite_depth() {
         post_max >= 3,
         "expected mem_ite_depth_max >= 3 after a 3-alt insert (got {post_max})"
     );
+}
+
+/// angr-6cp06.63: installing a Multi cell on an *interior* byte of a wider
+/// symbolic object must retire that object, not just the (absent) exact-key
+/// entry. Before the fix `symbolic_objects[0x1000]` survived at width 32,
+/// still claiming the byte the Multi now owns — and `flush_multi_cells` then
+/// added a second, disjoint entry for the collapsed byte, leaving the export
+/// walk in `_get_state_symbolic_z3_asts` to race two overlapping stores.
+#[test]
+fn test_multi_inside_wider_symbolic_object_retires_the_container() {
+    let ctx = SymContext::new_mock();
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    mem.map(0x1000, 0x1000, Permission::RWX);
+
+    // A 4-byte imported object spanning [0x1000, 0x1004), pinned to a single
+    // concrete value so every byte lane is checkable by eval.
+    let wide = RustBV::symbolic(&ctx, "wide", 32);
+    ctx.assume_true(&wide.eq(&RustBV::concrete(0xDDCC_BBAA, 32), &ctx));
+    mem.import_symbolic_value(0x1000, wide, None).unwrap();
+
+    // Multi cell on the third byte only.
+    let addr_var = RustBV::symbolic(&ctx, "mi_addr", 64);
+    ctx.assume_true(&addr_var.eq(&RustBV::concrete(0x1002, 64), &ctx));
+    mem.set_multi_alternatives(
+        0x1002,
+        MultiPayload::from_alternatives(vec![make_alt(&ctx, &addr_var, 0x1002, 0x77)]),
+    );
+    assert!(ctx.is_sat());
+
+    // The wide container is gone; the three untouched bytes survive as
+    // 8-bit lanes, and the Multi byte owns no symbolic_objects entry.
+    for byte in [0x1000u64, 0x1001, 0x1003] {
+        let lane = mem
+            .get_symbolic_object(byte)
+            .unwrap_or_else(|| panic!("byte {byte:#x} must survive the split as an 8-bit lane"));
+        assert_eq!(lane.width(), 8, "lane at {byte:#x} must be one byte wide");
+    }
+    assert!(
+        mem.get_symbolic_object(0x1002).is_none(),
+        "the Multi byte must not also carry a symbolic_objects entry"
+    );
+    for byte in 0x1000u64..0x1004 {
+        assert!(
+            !mem.symbolic_spans.contains_key(&Address::new(byte)),
+            "no reverse-span entry may outlive the retired container ({byte:#x})"
+        );
+    }
+
+    // End-to-end: a 4-byte load sees the Multi byte, not the stale container.
+    let loaded = mem
+        .load_concrete_lazy(0x1000, 4, &ctx)
+        .expect("wide load over a split container must succeed");
+    assert_eq!(ctx.eval(&loaded), Some(0xDD77_BBAA));
+
+    // Export path: after the flush every entry is a disjoint single byte, so
+    // no ordering of `state.memory.store()` calls can clobber another.
+    mem.flush_multi_cells(&ctx);
+    let mut exported: Vec<u64> = Vec::new();
+    for (addr, bv) in mem.symbolic_objects_iter() {
+        assert_eq!(
+            bv.width(),
+            8,
+            "no wider entry may overlap the collapsed Multi byte at {addr:?}"
+        );
+        exported.push(addr.raw());
+    }
+    exported.sort_unstable();
+    assert_eq!(exported, vec![0x1000, 0x1001, 0x1002, 0x1003]);
+}
+
+/// The split lanes inherit `imported_addrs` membership from the container, so
+/// a Python-imported object does not start exporting `Extract(sym)` stores
+/// back over bytes Python already holds verbatim (the flareon5 rule on
+/// `_get_state_symbolic_z3_asts`). The superseded byte itself was never
+/// imported, so it stays exportable.
+#[test]
+fn test_split_lanes_inherit_imported_addrs() {
+    let ctx = SymContext::new_mock();
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    mem.map(0x1000, 0x1000, Permission::RWX);
+
+    mem.import_symbolic_value(0x1000, RustBV::symbolic(&ctx, "imp", 32), None)
+        .unwrap();
+    let addr_var = RustBV::symbolic(&ctx, "ia_addr", 64);
+    mem.set_multi_alternatives(
+        0x1001,
+        MultiPayload::from_alternatives(vec![make_alt(&ctx, &addr_var, 0x1001, 0x5A)]),
+    );
+
+    for byte in [0x1000u64, 0x1002, 0x1003] {
+        assert!(
+            mem.is_imported_addr(byte),
+            "lane {byte:#x} must inherit the container's imported flag"
+        );
+    }
+    assert!(
+        !mem.is_imported_addr(0x1001),
+        "the superseded byte was never imported at its own address"
+    );
+}
+
+/// The sibling defect on the same code path: when the Multi lands on the
+/// *base* of a wider object, the old exact-key `symbolic_objects.remove` did
+/// drop the object but orphaned its `symbolic_spans` entries, which then named
+/// a base with no live object.
+#[test]
+fn test_multi_on_wider_object_base_leaves_no_orphan_spans() {
+    let ctx = SymContext::new_mock();
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    mem.map(0x1000, 0x1000, Permission::RWX);
+
+    let wide = RustBV::symbolic(&ctx, "base_wide", 32);
+    ctx.assume_true(&wide.eq(&RustBV::concrete(0x4433_2211, 32), &ctx));
+    mem.import_symbolic_value(0x1000, wide, None).unwrap();
+
+    let addr_var = RustBV::symbolic(&ctx, "bw_addr", 64);
+    ctx.assume_true(&addr_var.eq(&RustBV::concrete(0x1000, 64), &ctx));
+    mem.set_multi_alternatives(
+        0x1000,
+        MultiPayload::from_alternatives(vec![make_alt(&ctx, &addr_var, 0x1000, 0x99)]),
+    );
+
+    assert!(mem.get_symbolic_object(0x1000).is_none());
+    for byte in 0x1000u64..0x1004 {
+        assert!(
+            !mem.symbolic_spans.contains_key(&Address::new(byte)),
+            "orphan reverse-span entry left at {byte:#x}"
+        );
+    }
+    let loaded = mem
+        .load_concrete_lazy(0x1000, 4, &ctx)
+        .expect("wide load must succeed");
+    assert_eq!(ctx.eval(&loaded), Some(0x4433_2299));
 }
