@@ -65,6 +65,17 @@ impl crate::procedures::NativeSimProcedure for ResumeTestProc {
 /// any) after a 2-page stack is mapped around [`RESUME_SP`] and the guest's
 /// `ret` to the sentinel has been simulated (`sp += 8`).
 fn dispatch_native_resume(seed: impl FnOnce(&mut RustSimState)) -> CoreOutcome {
+    dispatch_native_resume_seeded(seed, None).0
+}
+
+/// [`dispatch_native_resume`] with an optional deferred fork riding into
+/// `PostStepInputs` — a symbolic branch the guest sub-call *body* took before
+/// returning to the sentinel (angr-6cp06.25). Hands back the main state's id
+/// alongside the outcome so the sibling's routing can be checked.
+fn dispatch_native_resume_seeded(
+    seed: impl FnOnce(&mut RustSimState),
+    fork: Option<ForkSeed>,
+) -> (CoreOutcome, u64) {
     let mgr = RustExplorationManager::new("amd64", None).unwrap();
     let ctx = mgr.step_context();
     let prof = ParallelProfiling::default();
@@ -84,7 +95,32 @@ fn dispatch_native_resume(seed: impl FnOnce(&mut RustSimState)) -> CoreOutcome {
     seed(&mut state);
     let sid = state.state_id();
 
-    run_post_step_core(
+    let mut deferred_forks = Vec::new();
+    let mut stored_conditions = FxHashMap::default();
+    let mut fork_snapshots = FxHashMap::default();
+    if let Some(seed) = fork {
+        let guard = crate::symbolic::RustBV::symbolic(&state.solver().borrow(), "resume_guard", 1);
+        stored_conditions.insert(FORK_COND_ID, guard);
+        if seed.with_snapshot {
+            fork_snapshots.insert(
+                FORK_COND_ID,
+                crate::interpreter::BranchSnapshot {
+                    solver: state.solver().borrow().fork(),
+                    registers: state.registers().fork(),
+                    memory: None,
+                },
+            );
+        }
+        deferred_forks.push(DeferredFork {
+            branch_addr: RESUME_GUEST_TARGET,
+            path_taken: seed.path_taken,
+            unexplored_target: seed.unexplored_target,
+            condition_id: FORK_COND_ID,
+            condition_ast: None,
+        });
+    }
+
+    let outcome = run_post_step_core(
         &CoreCtx {
             ctx: &ctx,
             prof: &prof,
@@ -100,13 +136,14 @@ fn dispatch_native_resume(seed: impl FnOnce(&mut RustSimState)) -> CoreOutcome {
                 num_args: 0,
                 return_addr: 0,
             },
-            deferred_forks: Vec::new(),
+            deferred_forks,
             last_condition: None,
-            stored_conditions: FxHashMap::default(),
-            fork_snapshots: FxHashMap::default(),
+            stored_conditions,
+            fork_snapshots,
         },
         sid,
-    )
+    );
+    (outcome, sid)
 }
 
 /// Push the continuation frame the sub-call dispatcher would have left behind.
@@ -198,5 +235,92 @@ fn native_resume_core_failures_deadend() {
             push_resume_frame(state, ResumeTestProc::TAG_ERR, "resume_core_test");
         });
         assert!(matches!(failed.ret, CoreReturn::Deadended(_)));
+    });
+}
+
+/// angr-6cp06.25: a branch taken *inside* the sub-call body forks a sibling
+/// that has not yet reached the sentinel — so it must still carry the resume
+/// frame the main successor just popped.
+///
+/// `fork_with` copies `native_resume_stack` from the fork base and no
+/// `BranchSnapshot` covers that field, so materializing against the
+/// already-popped state handed the sibling an empty stack; it would then hit
+/// the sentinel itself and be deadended by the "empty resume stack" arm, losing
+/// the path. `process_deferred_forks_rewound` rewinds just that field.
+#[test]
+fn native_resume_fork_keeps_the_frame_the_main_successor_popped() {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|_py| {
+        for with_snapshot in [true, false] {
+            let (outcome, sid) = dispatch_native_resume_seeded(
+                |state| push_resume_frame(state, ResumeTestProc::TAG_RETURN, "resume_core_test"),
+                Some(ForkSeed {
+                    path_taken: true,
+                    unexplored_target: RESUME_GUEST_TARGET + 0x20,
+                    with_snapshot,
+                }),
+            );
+            assert!(outcome.pruned.is_empty(), "the sibling is SAT");
+            let CoreReturn::Continue(succ) = outcome.ret else {
+                panic!("expected Continue");
+            };
+            assert_eq!(succ.len(), 2, "main successor plus the sibling");
+            let (main, fork) = (&succ[0].0, &succ[1].0);
+            assert_eq!(main.state_id(), sid);
+            assert!(
+                main.native_resume_stack().is_empty(),
+                "main successor consumed the frame (with_snapshot={with_snapshot})"
+            );
+            assert_eq!(
+                fork.native_resume_stack().len(),
+                1,
+                "sibling never reached the sentinel, so it keeps the frame \
+                 (with_snapshot={with_snapshot})"
+            );
+            assert_eq!(
+                fork.native_resume_stack()[0].caller_return_addr,
+                RESUME_CALLER_RET
+            );
+            assert_eq!(fork.pc(), RESUME_GUEST_TARGET + 0x20);
+        }
+    });
+}
+
+/// The nested-sub-call outcome is the mirror: `setup_native_subcall` pushed a
+/// *fresh* frame onto the main successor, which the sibling — branched before
+/// the nested call was made — must not inherit. It keeps exactly the frame that
+/// was live when it branched.
+#[test]
+fn native_resume_nested_subcall_fork_does_not_inherit_the_new_frame() {
+    pyo3::Python::initialize();
+    pyo3::Python::attach(|_py| {
+        let (outcome, _sid) = dispatch_native_resume_seeded(
+            |state| push_resume_frame(state, ResumeTestProc::TAG_NESTED, "resume_core_test"),
+            Some(ForkSeed {
+                path_taken: false,
+                unexplored_target: RESUME_GUEST_TARGET + 0x20,
+                with_snapshot: true,
+            }),
+        );
+        let CoreReturn::Continue(succ) = outcome.ret else {
+            panic!("expected Continue");
+        };
+        assert_eq!(succ.len(), 2);
+        let (main, fork) = (&succ[0].0, &succ[1].0);
+        assert_eq!(main.native_resume_stack().len(), 1, "nested frame pushed");
+        assert_eq!(
+            main.native_resume_stack()[0].resume_tag,
+            ResumeTestProc::TAG_RETURN
+        );
+        assert_eq!(
+            fork.native_resume_stack().len(),
+            1,
+            "sibling keeps its own single pre-nesting frame"
+        );
+        assert_eq!(
+            fork.native_resume_stack()[0].resume_tag,
+            ResumeTestProc::TAG_NESTED,
+            "and it is the frame that was live when the branch was taken"
+        );
     });
 }

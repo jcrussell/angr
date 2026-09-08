@@ -224,6 +224,57 @@ fn process_deferred_forks_into_core(
     ParallelProfiling::add(&prof.deferred_fork_count, deferred_forks.len() as u64);
 }
 
+/// The native sub-call resume stack a fork base has to be rewound to, or
+/// `None` when `payload` has nothing to materialize (the common case — skips
+/// the clone).
+///
+/// Call this *before* the handler mutates the stack; see
+/// [`process_deferred_forks_rewound`] for why.
+fn resume_stack_for_forks(
+    state: &RustSimState,
+    payload: &ForkPayload,
+) -> Option<Vec<crate::state::NativeResumeFrame>> {
+    (!payload.deferred_forks.is_empty()).then(|| state.native_resume_stack().to_vec())
+}
+
+/// [`process_deferred_forks_into_core`] with `state`'s native sub-call resume
+/// stack temporarily rewound to `resume_stack` (from
+/// [`resume_stack_for_forks`]), then restored.
+///
+/// `RustSimState::fork_with` copies `native_resume_stack` verbatim from the
+/// fork base — unlike registers and the solver, no `BranchSnapshot` covers it,
+/// so `build_unexplored_fork`'s snapshot arm cannot undo a mutation the handler
+/// already applied. Both handlers that materialize forks after touching that
+/// stack would therefore hand each sibling the wrong one:
+///
+/// - `handle_native_resume_core` has already *popped* the frame, so a sibling
+///   of a branch taken inside the sub-call body loses it and is deadended by
+///   the "empty resume stack" arm when it reaches the sentinel in turn.
+/// - `handle_simprocedure_core`'s sub-call arm has already *pushed* one, so a
+///   sibling of a branch taken in the caller's block before the call inherits a
+///   continuation it never entered.
+///
+/// Registers, memory and solver deliberately keep the post-mutation base — that
+/// is the characterized behaviour pinned by `core_outcome_tests::simproc_forks`
+/// (bd memory `avoid-deferred-fork-base-mismatch`); only this uncovered field
+/// is rewound.
+fn process_deferred_forks_rewound(
+    cc: &CoreCtx,
+    state: &mut RustSimState,
+    resume_stack: Option<Vec<crate::state::NativeResumeFrame>>,
+    payload: ForkPayload,
+    root_hint: u64,
+    sink: ForkSink,
+) {
+    let Some(stack) = resume_stack else {
+        process_deferred_forks_into_core(cc, state, payload, root_hint, sink);
+        return;
+    };
+    let post = state.replace_native_resume_stack(stack);
+    process_deferred_forks_into_core(cc, state, payload, root_hint, sink);
+    state.replace_native_resume_stack(post);
+}
+
 /// Worker-side helper (angr-vh834 Phase 5): turn the deferred forks that ride
 /// into a `NeedsPython` bounce into real, migratable fork states so the parallel
 /// wave loop can keep exploring them locally instead of losing them across the
@@ -548,6 +599,10 @@ pub(super) fn handle_simprocedure_core(
         return handle_native_resume_core(cc, state, payload, std::mem::take(counters), root_hint);
     }
 
+    // Captured before the `NativeProcDisposition::SubCall` arm below can push a
+    // continuation frame the block's deferred branches predate.
+    let resume_stack = resume_stack_for_forks(&state, &payload);
+
     let prefer_native = crate::exploration::execution_env::prefer_native_dispatch(
         &ctx.binary_regions,
         ctx.main_object_range,
@@ -683,9 +738,10 @@ pub(super) fn handle_simprocedure_core(
         let mut forks_out = Vec::new();
         let mut pruned = Vec::new();
         let mut fork_ids = Vec::new();
-        process_deferred_forks_into_core(
+        process_deferred_forks_rewound(
             cc,
-            &state,
+            &mut state,
+            resume_stack,
             payload,
             root_hint,
             ForkSink {
@@ -750,6 +806,9 @@ fn handle_native_resume_core(
 ) -> CoreOutcome {
     let ctx = cc.ctx;
     let native_procs = cc.native_procs;
+    // Captured before the pop below: the deferred branches rode out of the
+    // sub-call *body*, where this frame was still live.
+    let resume_stack = resume_stack_for_forks(&state, &payload);
     let frame = match state.pop_native_resume_frame() {
         Some(f) => f,
         None => {
@@ -809,9 +868,10 @@ fn handle_native_resume_core(
     let mut forks_out = Vec::new();
     let mut pruned = Vec::new();
     let mut fork_ids = Vec::new();
-    process_deferred_forks_into_core(
+    process_deferred_forks_rewound(
         cc,
-        &state,
+        &mut state,
+        resume_stack,
         payload,
         root_hint,
         ForkSink {

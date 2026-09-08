@@ -289,6 +289,21 @@ impl RustSimState {
         self.native_resume_stack.pop()
     }
 
+    /// Swap the whole native sub-call resume stack, returning the previous one.
+    ///
+    /// Exists for `core_outcome_handlers::process_deferred_forks_rewound`,
+    /// which has to rewind a fork base to the stack that was live *inside* the
+    /// sub-call body before minting the siblings of a branch taken there — no
+    /// `BranchSnapshot` covers this field, so `fork_with` copies whatever the
+    /// base holds at fork time. Not a general-purpose setter: pair every call
+    /// with the restoring one.
+    pub(crate) fn replace_native_resume_stack(
+        &mut self,
+        stack: Vec<NativeResumeFrame>,
+    ) -> Vec<NativeResumeFrame> {
+        std::mem::replace(&mut self.native_resume_stack, stack)
+    }
+
     /// CGC `state.cgc.allocation_base` — current high-water bump pointer
     /// used by the native CGC `allocate(5)` syscall. Inert for non-CGC
     /// binaries. Mirror of `state_plugins/cgc.py::allocation_base`.
