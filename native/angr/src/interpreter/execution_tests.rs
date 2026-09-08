@@ -273,3 +273,125 @@ fn noredir_jumpkind_is_not_treated_as_a_trap() {
         "Ijk_NoRedir must not error, got {result:?}"
     );
 }
+
+// angr-6cp06.71: an undecodable instruction lifts to a well-formed IRSB whose
+// default exit is `Ijk_NoDecode` targeting the block's own address. Before the
+// fix the interpreter executed it, wrote pc back to where it started, and
+// re-lifted the same address every iteration until `max_blocks` ran out —
+// blocks_executed == max_blocks with zero forward progress, a livelock instead
+// of Python's `SimIRSBNoDecodeError` -> errored stash.
+#[test]
+fn self_targeting_nodecode_block_errors_instead_of_livelocking() {
+    let ctx = SymContext::new_mock();
+    let mut interp = new_interp(&ctx);
+    interp.add_concrete_memory(0x1000, vec![0u8; 0x1000]);
+    let mut irsb = make_irsb(0x1000, 4);
+    irsb.next = IRExpr::Const(IRConst::U64(0x1000));
+    irsb.jumpkind = JumpKind::NoDecode;
+    interp.cache_block(0x1000, irsb);
+    interp.set_pc(0x1000);
+
+    let callbacks = PythonCallbacks::new();
+    let (result, blocks, _forks) =
+        interp.run_until_event(&callbacks, 16, &std::collections::HashSet::new(), false);
+    match result {
+        RunResult::Error {
+            message,
+            addr,
+            kind,
+        } => {
+            assert_eq!(addr, 0x1000);
+            assert_eq!(kind, RunErrorKind::Fatal, "must reach the errored stash");
+            assert!(
+                message.contains("IR decoding error"),
+                "unexpected message: {message}"
+            );
+        }
+        other => panic!("expected Error for self-targeting Ijk_NoDecode, got {other:?}"),
+    }
+    // The undecodable block is rejected *before* execution, so it never
+    // consumed a block of the budget.
+    assert_eq!(blocks, 0, "undecodable block must not count as executed");
+}
+
+// The converse halves of the Python condition: a `NoDecode` exit that actually
+// goes somewhere else makes forward progress, and any other jumpkind at a
+// self-targeting exit is an ordinary (if pointless) infinite loop, not a
+// decode failure.
+#[test]
+fn is_undecodable_block_matches_only_the_self_targeting_nodecode_shape() {
+    let mut irsb = make_irsb(0x1000, 4);
+    irsb.jumpkind = JumpKind::NoDecode;
+    irsb.next = IRExpr::Const(IRConst::U64(0x1000));
+    assert!(is_undecodable_block(&irsb));
+
+    // 32-bit arches spell the same self-target with a U32 const.
+    irsb.next = IRExpr::Const(IRConst::U32(0x1000));
+    assert!(is_undecodable_block(&irsb));
+
+    irsb.next = IRExpr::Const(IRConst::U64(0x1004));
+    assert!(!is_undecodable_block(&irsb), "NoDecode elsewhere progresses");
+
+    irsb.next = IRExpr::RdTmp(0);
+    assert!(!is_undecodable_block(&irsb), "non-const next is not the shape");
+
+    irsb.next = IRExpr::Const(IRConst::U64(0x1000));
+    irsb.jumpkind = JumpKind::Boring;
+    assert!(!is_undecodable_block(&irsb), "self-loop is not a decode error");
+}
+
+// angr-6cp06.70: `Ijk_EmFail`/`Ijk_MapFail` are raised identically to every
+// `Ijk_Sig*` kind by `angr/engines/failure.py`, so they must route to the
+// errored stash rather than falling through as ordinary jumps. `Ijk_EmWarn` is
+// the survivable sibling and must keep executing.
+#[test]
+fn emfail_and_mapfail_block_ends_error_but_emwarn_continues() {
+    for (jk, tag) in [
+        (JumpKind::EmFail, "Ijk_EmFail"),
+        (JumpKind::MapFail, "Ijk_MapFail"),
+    ] {
+        let ctx = SymContext::new_mock();
+        let mut interp = new_interp(&ctx);
+        interp.add_concrete_memory(0x1000, vec![0u8; 0x1000]);
+        let mut irsb = make_irsb(0x1000, 4);
+        irsb.next = IRExpr::Const(IRConst::U64(0x1004));
+        irsb.jumpkind = jk;
+        interp.cache_block(0x1000, irsb);
+        interp.set_pc(0x1000);
+
+        let callbacks = PythonCallbacks::new();
+        let (result, _blocks, _forks) =
+            interp.run_until_event(&callbacks, 4, &std::collections::HashSet::new(), false);
+        match result {
+            RunResult::Error {
+                message,
+                addr,
+                kind,
+            } => {
+                assert_eq!(addr, 0x1004, "{tag} should error at the exit target");
+                assert_eq!(kind, RunErrorKind::Fatal, "{tag} must reach errored");
+                assert!(
+                    message.contains(tag),
+                    "{tag} missing from message: {message}"
+                );
+            }
+            other => panic!("expected Error for {tag}, got {other:?}"),
+        }
+    }
+
+    let ctx = SymContext::new_mock();
+    let mut interp = new_interp(&ctx);
+    interp.add_concrete_memory(0x1000, vec![0u8; 0x1000]);
+    let mut irsb = make_irsb(0x1000, 4);
+    irsb.next = IRExpr::Const(IRConst::U64(0x1004));
+    irsb.jumpkind = JumpKind::EmWarn;
+    interp.cache_block(0x1000, irsb);
+    interp.set_pc(0x1000);
+    let callbacks = PythonCallbacks::new();
+    let (result, _blocks, _forks) =
+        interp.run_until_event(&callbacks, 1, &std::collections::HashSet::new(), false);
+    assert!(
+        !matches!(result, RunResult::Error { .. }),
+        "Ijk_EmWarn must not error, got {result:?}"
+    );
+}

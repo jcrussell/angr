@@ -289,6 +289,10 @@ fn test_jumpkind_syscall_and_trap_classification() {
         assert!(!jk.is_trap(), "{} must not be a trap", jk.ijk_name());
     }
     for jk in [
+        // angr-6cp06.70: Python's failure.py raises AngrExitError for
+        // EmFail/MapFail alongside every Ijk_Sig* kind.
+        JumpKind::EmFail,
+        JumpKind::MapFail,
         JumpKind::SigILL,
         JumpKind::SigTRAP,
         JumpKind::SigSEGV,
@@ -305,6 +309,11 @@ fn test_jumpkind_syscall_and_trap_classification() {
     // NoRedir is an ordinary jump with a translation hint, not a trap.
     assert!(!JumpKind::NoRedir.is_trap());
     assert!(!JumpKind::NoRedir.is_syscall());
+    // EmWarn is EmFail's survivable sibling, and NoDecode is caught at lift
+    // time by `interpreter::execution::is_undecodable_block` instead — neither
+    // is a trap here.
+    assert!(!JumpKind::EmWarn.is_trap());
+    assert!(!JumpKind::NoDecode.is_trap());
 }
 
 #[test]

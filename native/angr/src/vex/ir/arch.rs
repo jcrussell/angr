@@ -72,11 +72,11 @@ pub enum JumpKind {
     Yield,
     /// Emit warning.
     EmWarn,
-    /// Emit fail.
+    /// Emulation failure: libVEX could not emulate the instruction.
     EmFail,
-    /// No redirect.
+    /// Instruction decoding failed — libVEX could not decode the bytes.
     NoDecode,
-    /// Map fail.
+    /// Address translation (guest page map) failed.
     MapFail,
     /// Invalid instruction.
     InvalICache,
@@ -139,10 +139,22 @@ impl JumpKind {
     /// `Ijk_Privileged` joins them: the guest took a privilege fault, and
     /// continuing straight-line is equally wrong. `Ijk_NoRedir` does not — it
     /// is a Valgrind translation hint on an otherwise ordinary jump.
+    ///
+    /// `Ijk_EmFail` and `Ijk_MapFail` join them too (angr-6cp06.70): the
+    /// Python check quoted above is `jumpkind in ("Ijk_EmFail", "Ijk_MapFail")
+    /// or jumpkind.startswith("Ijk_Sig")`, so both raise `AngrExitError`
+    /// exactly as every `Ijk_Sig*` kind does. `Ijk_EmWarn` is the survivable
+    /// sibling of `EmFail` and stays an ordinary jump, matching Python.
+    ///
+    /// `Ijk_NoDecode` is deliberately absent: Python catches it one layer
+    /// earlier, at lift time, and only for the self-targeting shape — see
+    /// `interpreter::execution::is_undecodable_block`.
     pub fn is_trap(&self) -> bool {
         matches!(
             self,
-            JumpKind::SigILL
+            JumpKind::EmFail
+                | JumpKind::MapFail
+                | JumpKind::SigILL
                 | JumpKind::SigTRAP
                 | JumpKind::SigSEGV
                 | JumpKind::SigBUS

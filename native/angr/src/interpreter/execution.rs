@@ -27,6 +27,34 @@ enum NativeLiftMiss {
     LiftError,
 }
 
+/// Does `irsb` describe an instruction libVEX could not decode?
+///
+/// The decode failure surfaces as a perfectly well-formed IRSB whose default
+/// exit is `Ijk_NoDecode` and whose `next` is a constant equal to the block's
+/// own address, so nothing upstream — neither the empty-IRSB sentinel check in
+/// `VEXInterpreter::get_or_lift_block` nor `JumpKind::is_trap` — rejects it.
+///
+/// Mirrors the `SimIRSBNoDecodeError` guard in Python's
+/// `angr/engines/vex/heavy/heavy.py`, which tests three things: the jumpkind,
+/// a constant self-targeting `next`, and that the address is not hooked. The
+/// third is already established by the caller — `VEXInterpreter::run_until_event`
+/// returns `RunResult::Hook`/`SimProcedure` for a hooked pc before it lifts
+/// anything — so it is not re-tested here.
+///
+/// A `NoDecode` exit that targets some *other* address is left alone, exactly
+/// as Python leaves it: it makes forward progress, and `engines/failure.py`
+/// does not list `Ijk_NoDecode` among the unexecutable kinds.
+pub(crate) fn is_undecodable_block(irsb: &IRSB) -> bool {
+    if irsb.jumpkind != JumpKind::NoDecode {
+        return false;
+    }
+    match &irsb.next {
+        IRExpr::Const(IRConst::U32(v)) => u64::from(*v) == irsb.addr,
+        IRExpr::Const(IRConst::U64(v)) => *v == irsb.addr,
+        _ => false,
+    }
+}
+
 impl<'a> VEXInterpreter<'a> {
     /// Run the execution loop until an event requires Python handling.
     ///
@@ -139,6 +167,33 @@ impl<'a> VEXInterpreter<'a> {
                     );
                 }
             };
+
+            // angr-6cp06.71: an undecodable instruction is not a lift
+            // *failure* — pyvex hands back an ordinary IRSB whose default exit
+            // is `Ijk_NoDecode` pointing back at the block's own address. Left
+            // alone, the loop executes it, sets pc back to where it started,
+            // re-lifts (cache-hits) the same address and repeats, burning the
+            // whole `max_blocks` budget with zero state progress: a livelock at
+            // the exploration-manager level rather than Python's clean
+            // `SimIRSBNoDecodeError`. Error out instead, so the state lands in
+            // the errored stash like Python's.
+            if is_undecodable_block(&irsb) {
+                let forks = self.take_deferred_forks();
+                return (
+                    RunResult::Error {
+                        message: format!(
+                            "IR decoding error at {addr:#x}: undecodable instruction. \
+                             Hook it with project.hook({addr:#x}, your_function, \
+                             length=length_of_instruction) to continue.",
+                            addr = irsb.addr
+                        ),
+                        addr: irsb.addr,
+                        kind: crate::callbacks::RunErrorKind::Fatal,
+                    },
+                    blocks_executed,
+                    forks,
+                );
+            }
 
             // Execute the block
             let block_start = profile_start!(self);
