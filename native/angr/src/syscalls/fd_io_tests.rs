@@ -703,3 +703,332 @@ fn readv_content_sym_bumps_counter_once_per_call() {
     }
     panic!("readv must bump symfile_reads_native once per call; observed deltas {observed:?}");
 }
+
+// ---------------------------------------------------------------------------
+// Bounds checks: MAX_IOVCNT / MAX_IO_SIZE.
+//
+// Each of the six caps gets a pair — one call just over the limit (must bounce
+// to Python *without* touching the fd) and one exactly at it (must stay
+// native). The at-limit half is what pins the comparison as `>` rather than
+// `>=`; without it an off-by-one or an inverted test still passes.
+// ---------------------------------------------------------------------------
+
+/// Scratch region for the oversized buffers these tests need — `fresh_state`
+/// only maps 0x2000..0x4000, too small for a `MAX_IO_SIZE` segment.
+const BIG: u64 = 0x10000;
+
+/// Map `BIG` with `MAX_IO_SIZE` bytes of 'A' and a 0x8000-byte iovec arena at
+/// `BIG + 0x10000`. Returns the iovec array address.
+fn map_big_regions(state: &mut RustSimState) -> u64 {
+    state.map_memory_data(BIG, &vec![b'A'; MAX_IO_SIZE as usize], Permission::RWX);
+    state.map_memory(BIG + 0x10000, 0x8000, Permission::RWX);
+    BIG + 0x10000
+}
+
+/// Assert `err` is the `Other` fallback naming `what` as over-limit.
+fn assert_over_limit(err: &SyscallError, what: &str) {
+    assert!(
+        matches!(err, SyscallError::Other(m) if m.contains(what) && m.contains("exceeds limit")),
+        "expected an over-limit fallback mentioning {what}, got {err:?}"
+    );
+}
+
+#[test]
+fn writev_iovcnt_over_limit_falls_back() {
+    let mut state = fresh_state();
+    state
+        .file_system()
+        .open("out".to_string(), FdFlags::WriteOnly)
+        .expect("fd space is not exhausted in tests");
+    state.map_memory_data(0x3000, b"abc", Permission::RWX);
+    write_iovec_array(&mut state, 0x2000, &[(0x3000, 3)]);
+    let err = NativeWritevSyscall
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(3, 64),
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(MAX_IOVCNT as u128 + 1, 64),
+            ],
+        )
+        .expect_err("iovcnt over MAX_IOVCNT falls back");
+    assert_over_limit(&err, "iovcnt");
+    // The cap must bounce before any fd mutation, so Python's fallback
+    // produces the single authoritative write.
+    assert!(state.file_system_ref().fd_content(3).is_empty());
+}
+
+#[test]
+fn writev_iovcnt_at_limit_is_native() {
+    let mut state = fresh_state();
+    state
+        .file_system()
+        .open("out".to_string(), FdFlags::WriteOnly)
+        .expect("fd space is not exhausted in tests");
+    let iov = map_big_regions(&mut state);
+    let segments = vec![(BIG, 0u64); MAX_IOVCNT as usize];
+    write_iovec_array(&mut state, iov, &segments);
+    let out = NativeWritevSyscall
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(3, 64),
+                RustBV::concrete(iov as u128, 64),
+                RustBV::concrete(MAX_IOVCNT as u128, 64),
+            ],
+        )
+        .expect("iovcnt exactly at MAX_IOVCNT stays native");
+    match out {
+        SyscallOutcome::Continue { ret } => assert_eq!(ret, 0),
+        _ => panic!("expected Continue"),
+    }
+}
+
+#[test]
+fn writev_iov_len_over_limit_falls_back() {
+    let mut state = fresh_state();
+    state
+        .file_system()
+        .open("out".to_string(), FdFlags::WriteOnly)
+        .expect("fd space is not exhausted in tests");
+    let iov = map_big_regions(&mut state);
+    write_iovec_array(&mut state, iov, &[(BIG, MAX_IO_SIZE + 1)]);
+    let err = NativeWritevSyscall
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(3, 64),
+                RustBV::concrete(iov as u128, 64),
+                RustBV::concrete(1, 64),
+            ],
+        )
+        .expect_err("iov_len over MAX_IO_SIZE falls back");
+    assert_over_limit(&err, "iov_len");
+    assert!(state.file_system_ref().fd_content(3).is_empty());
+}
+
+#[test]
+fn writev_iov_len_at_limit_is_native() {
+    let mut state = fresh_state();
+    state
+        .file_system()
+        .open("out".to_string(), FdFlags::WriteOnly)
+        .expect("fd space is not exhausted in tests");
+    let iov = map_big_regions(&mut state);
+    write_iovec_array(&mut state, iov, &[(BIG, MAX_IO_SIZE)]);
+    let out = NativeWritevSyscall
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(3, 64),
+                RustBV::concrete(iov as u128, 64),
+                RustBV::concrete(1, 64),
+            ],
+        )
+        .expect("iov_len exactly at MAX_IO_SIZE stays native");
+    match out {
+        SyscallOutcome::Continue { ret } => assert_eq!(ret, MAX_IO_SIZE),
+        _ => panic!("expected Continue"),
+    }
+    assert_eq!(
+        state.file_system_ref().fd_content(3).len(),
+        MAX_IO_SIZE as usize
+    );
+}
+
+#[test]
+fn readv_iovcnt_over_limit_falls_back() {
+    let mut state = fresh_state();
+    state
+        .file_system()
+        .open_with_content("in".to_string(), FdFlags::ReadOnly, b"abcdef".to_vec())
+        .expect("fd space is not exhausted in tests");
+    write_iovec_array(&mut state, 0x2000, &[(0x3000, 3)]);
+    let err = NativeReadvSyscall
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(3, 64),
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(MAX_IOVCNT as u128 + 1, 64),
+            ],
+        )
+        .expect_err("iovcnt over MAX_IOVCNT falls back");
+    assert_over_limit(&err, "iovcnt");
+    // The bounce precedes the scatter, so the fd position is untouched.
+    assert_eq!(state.file_system_ref().fd_info(3).unwrap().1, 0);
+}
+
+#[test]
+fn readv_iovcnt_at_limit_is_native() {
+    let mut state = fresh_state();
+    state
+        .file_system()
+        .open_with_content("in".to_string(), FdFlags::ReadOnly, b"abcdef".to_vec())
+        .expect("fd space is not exhausted in tests");
+    let iov = map_big_regions(&mut state);
+    let segments = vec![(BIG, 0u64); MAX_IOVCNT as usize];
+    write_iovec_array(&mut state, iov, &segments);
+    let out = NativeReadvSyscall
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(3, 64),
+                RustBV::concrete(iov as u128, 64),
+                RustBV::concrete(MAX_IOVCNT as u128, 64),
+            ],
+        )
+        .expect("iovcnt exactly at MAX_IOVCNT stays native");
+    match out {
+        SyscallOutcome::Continue { ret } => assert_eq!(ret, 0),
+        _ => panic!("expected Continue"),
+    }
+}
+
+#[test]
+fn readv_iov_len_over_limit_falls_back() {
+    let mut state = fresh_state();
+    state
+        .file_system()
+        .open_with_content("in".to_string(), FdFlags::ReadOnly, b"abcdef".to_vec())
+        .expect("fd space is not exhausted in tests");
+    let iov = map_big_regions(&mut state);
+    write_iovec_array(&mut state, iov, &[(BIG, MAX_IO_SIZE + 1)]);
+    let err = NativeReadvSyscall
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(3, 64),
+                RustBV::concrete(iov as u128, 64),
+                RustBV::concrete(1, 64),
+            ],
+        )
+        .expect_err("iov_len over MAX_IO_SIZE falls back");
+    assert_over_limit(&err, "iov_len");
+    assert_eq!(state.file_system_ref().fd_info(3).unwrap().1, 0);
+}
+
+#[test]
+fn readv_iov_len_at_limit_is_native() {
+    let mut state = fresh_state();
+    state
+        .file_system()
+        .open_with_content("in".to_string(), FdFlags::ReadOnly, b"abcdef".to_vec())
+        .expect("fd space is not exhausted in tests");
+    let iov = map_big_regions(&mut state);
+    write_iovec_array(&mut state, iov, &[(BIG, MAX_IO_SIZE)]);
+    let out = NativeReadvSyscall
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(3, 64),
+                RustBV::concrete(iov as u128, 64),
+                RustBV::concrete(1, 64),
+            ],
+        )
+        .expect("iov_len exactly at MAX_IO_SIZE stays native");
+    // Short read: the segment is capped at MAX_IO_SIZE but the fd only holds
+    // six bytes.
+    match out {
+        SyscallOutcome::Continue { ret } => assert_eq!(ret, 6),
+        _ => panic!("expected Continue"),
+    }
+}
+
+#[test]
+fn pread64_nbyte_over_limit_falls_back() {
+    let mut state = fresh_state();
+    state
+        .file_system()
+        .open_with_content("in".to_string(), FdFlags::ReadOnly, b"abcd".to_vec())
+        .expect("fd space is not exhausted in tests");
+    let err = NativePread64Syscall
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(3, 64),
+                RustBV::concrete(0x3000, 64),
+                RustBV::concrete(MAX_IO_SIZE as u128 + 1, 64),
+                RustBV::concrete(0, 64),
+            ],
+        )
+        .expect_err("nbyte over MAX_IO_SIZE falls back");
+    assert_over_limit(&err, "nbyte");
+}
+
+#[test]
+fn pread64_nbyte_at_limit_is_native() {
+    let mut state = fresh_state();
+    state
+        .file_system()
+        .open_with_content("in".to_string(), FdFlags::ReadOnly, b"abcd".to_vec())
+        .expect("fd space is not exhausted in tests");
+    let out = NativePread64Syscall
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(3, 64),
+                RustBV::concrete(0x3000, 64),
+                RustBV::concrete(MAX_IO_SIZE as u128, 64),
+                RustBV::concrete(0, 64),
+            ],
+        )
+        .expect("nbyte exactly at MAX_IO_SIZE stays native");
+    match out {
+        SyscallOutcome::Continue { ret } => assert_eq!(ret, 4),
+        _ => panic!("expected Continue"),
+    }
+}
+
+#[test]
+fn pwrite64_nbyte_over_limit_falls_back() {
+    let mut state = fresh_state();
+    state
+        .file_system()
+        .open_with_content("out".to_string(), FdFlags::ReadWrite, b"abcd".to_vec())
+        .expect("fd space is not exhausted in tests");
+    map_big_regions(&mut state);
+    let err = NativePwrite64Syscall
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(3, 64),
+                RustBV::concrete(BIG as u128, 64),
+                RustBV::concrete(MAX_IO_SIZE as u128 + 1, 64),
+                RustBV::concrete(0, 64),
+            ],
+        )
+        .expect_err("nbyte over MAX_IO_SIZE falls back");
+    assert_over_limit(&err, "nbyte");
+    // Bounced before the gather, so the fd content is untouched.
+    assert_eq!(state.file_system_ref().fd_content(3), b"abcd");
+}
+
+#[test]
+fn pwrite64_nbyte_at_limit_is_native() {
+    let mut state = fresh_state();
+    state
+        .file_system()
+        .open_with_content("out".to_string(), FdFlags::ReadWrite, b"abcd".to_vec())
+        .expect("fd space is not exhausted in tests");
+    map_big_regions(&mut state);
+    let out = NativePwrite64Syscall
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(3, 64),
+                RustBV::concrete(BIG as u128, 64),
+                RustBV::concrete(MAX_IO_SIZE as u128, 64),
+                RustBV::concrete(0, 64),
+            ],
+        )
+        .expect("nbyte exactly at MAX_IO_SIZE stays native");
+    match out {
+        SyscallOutcome::Continue { ret } => assert_eq!(ret, MAX_IO_SIZE),
+        _ => panic!("expected Continue"),
+    }
+    assert_eq!(
+        state.file_system_ref().fd_content(3).len(),
+        MAX_IO_SIZE as usize
+    );
+}
