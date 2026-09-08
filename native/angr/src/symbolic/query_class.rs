@@ -57,64 +57,96 @@ const NODE_BUDGET: usize = 256;
 /// decide anyway, and the scan is O(|C|) per query.
 const CONSTRAINT_BUDGET: usize = 64;
 
-/// The structural bucket a Z3-bound query falls into.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[repr(usize)]
-pub(super) enum QueryClass {
-    /// Classification disabled, or a check issued outside any classified
-    /// query (e.g. an internal re-check). Not addressable.
-    Unclassified = 0,
-    /// Decidable with no solver and no constraint reasoning: the query
-    /// expression has no free symbols left, so constant folding settles it.
-    /// A non-zero count here means an existing fold/fast-path is leaking.
-    TrivialDecide = 1,
-    /// Exactly one free symbol, and every constraint that mentions it is
-    /// itself single-symbol and interval-shaped: decidable by interval
-    /// arithmetic over that symbol (feeds angr-op0dn.9.2).
-    SingleVarRange = 2,
-    /// Model query whose target is syntactically pinned by the constraints
-    /// (every symbol it reads has an `x == const` constraint, or is already a
-    /// `Constrained` leaf). The value is unique — a fast path here cannot
-    /// change concretization.
-    ForcedValue = 3,
-    /// Model query whose witness is solver-chosen. Fast-pathing this changes
-    /// which value the engine concretizes to (M2 determinism interaction).
-    FreeWitness = 4,
-    /// Multi-symbol, non-interval-shaped, or over budget. Not addressable by
-    /// a cheap tier.
-    Hard = 5,
-    /// Boolean query that still has free symbols but whose *verdict* is fixed
-    /// by syntax alone: `Eq(a, a)`, `Ult(x, 0)`, `Ule(x, UMAX)`, a mask-bit
-    /// contradiction, … (feeds angr-op0dn.9.1). Distinct from
-    /// [`TrivialDecide`](QueryClass::TrivialDecide), which means "no free
-    /// symbols left at all".
-    SyntacticDecide = 6,
+/// Declares [`QueryClass`] and every table indexed by it from one variant
+/// list, so a new bucket cannot be added without its stats-key suffix.
+///
+/// Hand-syncing `NUM_QUERY_CLASSES`, the counter array and the name table
+/// against the enum is the cardinality-rot shape CLAUDE.md warns about, but
+/// here the consequence is worse than stale prose: [`record_check`] indexes
+/// `Z3_CHECK_CLASS_COUNT` by `QueryClass as usize`, so an 8th variant with a
+/// 7-entry array panics out of bounds the first time it is classified
+/// (angr-6cp06.49). The macro owns all four declarations, and the emitted
+/// `const _` block re-checks that each variant's discriminant still equals its
+/// declaration index — the property the indexing relies on.
+macro_rules! query_classes {
+    (
+        $(#[$enum_meta:meta])*
+        enum $name:ident {
+            $( $(#[$var_meta:meta])* $variant:ident => $key:literal, )+
+        }
+    ) => {
+        $(#[$enum_meta])*
+        #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+        #[repr(usize)]
+        pub(super) enum $name {
+            $( $(#[$var_meta])* $variant, )+
+        }
+
+        /// Number of variants in [`QueryClass`].
+        pub(super) const NUM_QUERY_CLASSES: usize = [$($key),+].len();
+
+        /// Stats-key suffixes, indexed by `QueryClass as usize`.
+        pub(crate) const CLASS_NAMES: [&str; NUM_QUERY_CLASSES] = [$($key),+];
+
+        /// Per-class count of `solver.check()` calls. Sums to `z3_check_count`.
+        pub(crate) static Z3_CHECK_CLASS_COUNT: [AtomicU64; NUM_QUERY_CLASSES] =
+            [const { AtomicU64::new(0) }; NUM_QUERY_CLASSES];
+
+        /// Every variant in declaration order; exists only so the const block
+        /// below can walk the discriminants.
+        const ALL_QUERY_CLASSES: [$name; NUM_QUERY_CLASSES] = [$($name::$variant),+];
+
+        const _: () = {
+            let mut i = 0;
+            while i < NUM_QUERY_CLASSES {
+                assert!(
+                    ALL_QUERY_CLASSES[i] as usize == i,
+                    "QueryClass discriminants must equal their declaration index — \
+                     CLASS_NAMES and Z3_CHECK_CLASS_COUNT are indexed by them",
+                );
+                i += 1;
+            }
+        };
+    };
 }
 
-/// Number of variants in [`QueryClass`].
-pub(super) const NUM_QUERY_CLASSES: usize = 7;
-
-/// Per-class count of `solver.check()` calls. Sums to `z3_check_count`.
-pub(crate) static Z3_CHECK_CLASS_COUNT: [AtomicU64; NUM_QUERY_CLASSES] = [
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-];
-
-/// Stats-key suffixes, indexed by `QueryClass as usize`.
-pub(crate) const CLASS_NAMES: [&str; NUM_QUERY_CLASSES] = [
-    "unclassified",
-    "trivial_decide",
-    "single_var_range",
-    "forced_value",
-    "free_witness",
-    "hard",
-    "syntactic_decide",
-];
+query_classes! {
+    /// The structural bucket a Z3-bound query falls into.
+    ///
+    /// Declaration order *is* the index into [`CLASS_NAMES`] and
+    /// [`Z3_CHECK_CLASS_COUNT`]; both are generated from this list, so adding a
+    /// variant means adding its stats-key suffix on the same line.
+    enum QueryClass {
+        /// Classification disabled, or a check issued outside any classified
+        /// query (e.g. an internal re-check). Not addressable.
+        Unclassified => "unclassified",
+        /// Decidable with no solver and no constraint reasoning: the query
+        /// expression has no free symbols left, so constant folding settles it.
+        /// A non-zero count here means an existing fold/fast-path is leaking.
+        TrivialDecide => "trivial_decide",
+        /// Exactly one free symbol, and every constraint that mentions it is
+        /// itself single-symbol and interval-shaped: decidable by interval
+        /// arithmetic over that symbol (feeds angr-op0dn.9.2).
+        SingleVarRange => "single_var_range",
+        /// Model query whose target is syntactically pinned by the constraints
+        /// (every symbol it reads has an `x == const` constraint, or is already a
+        /// `Constrained` leaf). The value is unique — a fast path here cannot
+        /// change concretization.
+        ForcedValue => "forced_value",
+        /// Model query whose witness is solver-chosen. Fast-pathing this changes
+        /// which value the engine concretizes to (M2 determinism interaction).
+        FreeWitness => "free_witness",
+        /// Multi-symbol, non-interval-shaped, or over budget. Not addressable by
+        /// a cheap tier.
+        Hard => "hard",
+        /// Boolean query that still has free symbols but whose *verdict* is fixed
+        /// by syntax alone: `Eq(a, a)`, `Ult(x, 0)`, `Ule(x, UMAX)`, a mask-bit
+        /// contradiction, … (feeds angr-op0dn.9.1). Distinct from
+        /// [`TrivialDecide`](QueryClass::TrivialDecide), which means "no free
+        /// symbols left at all".
+        SyntacticDecide => "syntactic_decide",
+    }
+}
 
 thread_local! {
     /// The class of the query currently in flight on this thread.
