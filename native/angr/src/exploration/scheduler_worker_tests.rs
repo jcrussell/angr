@@ -600,13 +600,19 @@ fn test_dispatch_next_drops_a_corrupt_payload_and_keeps_stealing() {
     );
     assert_eq!(
         t.counters.injector_dispatches.load(Ordering::SeqCst),
-        2,
-        "both steals are counted; the counter is a steal count, not a success count",
+        1,
+        "only the steal that produced a state counts: a dropped payload was          never dispatched, and counting it would inflate          `SchedulerStats::dispatches` (angr-6cp06.21)",
     );
     assert_eq!(
         t.counters.reattaches.load(Ordering::SeqCst),
         1,
         "only the payload that actually rebuilt a state counts as a reattach",
+    );
+    assert_eq!(
+        t.counters.worker_dispatches[0].load(Ordering::SeqCst),
+        t.counters.local_dispatches.load(Ordering::SeqCst)
+            + t.counters.injector_dispatches.load(Ordering::SeqCst),
+        "the per-worker column and `SchedulerStats::dispatches` agree even when          a steal is dropped",
     );
 }
 
@@ -633,7 +639,11 @@ fn test_dispatch_next_corrupt_only_payload_reaches_quiescence() {
         "the phantom task is retired, so quiescence is reachable",
     );
     assert_eq!(t.counters.reattaches.load(Ordering::SeqCst), 0);
-    assert_eq!(t.counters.injector_dispatches.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        t.counters.injector_dispatches.load(Ordering::SeqCst),
+        0,
+        "the only steal never produced a state, so nothing was dispatched",
+    );
     assert_eq!(
         t.counters.local_dispatches.load(Ordering::SeqCst),
         0,

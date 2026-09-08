@@ -99,8 +99,13 @@ macro_rules! scheduler_counters {
         /// non-seed dispatches — the quantity the gate's break-even `f*` bounds.
         #[derive(Clone, Debug, Default, PartialEq, Eq)]
         pub(crate) struct SchedulerStats {
-            /// Initial payloads handed to the `#[cfg(test)]`
-            /// `ParallelScheduler::run_instrumented` shim.
+            /// Size of the initial frontier the run started from — the
+            /// non-stolen part of `injector_dispatches`, which
+            /// `honest_steal_fraction` subtracts out. Populated in production
+            /// by both scheduling modes: `WaveJob::new_with_policy`
+            /// (scheduler_transport.rs, what run_loop_wave.rs constructs) and
+            /// `RunSession::inject_seeds` (scheduler_pool.rs, called from
+            /// run_loop_steady.rs); run_loop_wave.rs logs it unconditionally.
             pub seeds: usize,
             $(
                 $(#[$fmeta])*
@@ -124,8 +129,12 @@ macro_rules! scheduler_counters {
 scheduler_counters! {
     /// Tasks dispatched from a worker's local live queue (zero serde).
     pub(super) local_dispatches: count,
-    /// Tasks pulled from the injector (each paid one `reattach`). Includes the
-    /// initial seeds.
+    /// Tasks pulled from the injector and successfully `reattach`ed into a
+    /// worker context. Includes the initial seeds. A steal whose `reattach`
+    /// fails is dropped without being counted here (see `dispatch_next`'s `Err`
+    /// arm), so this stays a count of *dispatched* states — what
+    /// [`SchedulerStats::dispatches`] promises — rather than of steal attempts
+    /// (angr-6cp06.21).
     pub(super) injector_dispatches: count,
     /// Continue-states detached to the injector on imbalance. The migration
     /// count and the *only* continue-path serde site.

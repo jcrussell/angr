@@ -345,9 +345,11 @@ pub(super) fn dispatch_next(
             None => {
                 match steal_from_injector(&t.injector, &t.pending, &t.cancel, &t.idle_workers) {
                     Some(payload) => {
-                        t.counters
-                            .injector_dispatches
-                            .fetch_add(1, Ordering::SeqCst);
+                        // NOTE: `injector_dispatches` is bumped in the `Ok` arm
+                        // below, not here — a steal whose `reattach` fails never
+                        // becomes a dispatched state, and counting it would
+                        // inflate `SchedulerStats::dispatches` past the states
+                        // that were actually processed (angr-6cp06.21).
                         // Rebuild the state in THIS worker's context. The ptr-eq
                         // guard inside `reattach` holds because `ctx` is exactly this
                         // thread's thread-local. Charged to the serde budget: it is
@@ -359,6 +361,9 @@ pub(super) fn dispatch_next(
                             .fetch_add(crate::elapsed_ns(reattach_start), Ordering::Relaxed);
                         match reattached {
                             Ok(state) => {
+                                t.counters
+                                    .injector_dispatches
+                                    .fetch_add(1, Ordering::SeqCst);
                                 // Observability only (angr-vh834 Phase 1): count every
                                 // injector-steal reattach. No routing change.
                                 t.counters.reattaches.fetch_add(1, Ordering::SeqCst);
@@ -373,6 +378,9 @@ pub(super) fn dispatch_next(
                                 // is a real failure surface. Drop the task loudly and
                                 // never silently keep a phantom outstanding — the
                                 // `fetch_sub` is what makes quiescence reachable.
+                                // Neither `injector_dispatches` nor `reattaches`
+                                // is bumped: no state was produced, so no state
+                                // was dispatched.
                                 // Covered by
                                 // `test_dispatch_next_drops_a_corrupt_payload_and_keeps_stealing`
                                 // and `test_dispatch_next_corrupt_only_payload_reaches_quiescence`.
