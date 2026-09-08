@@ -28,7 +28,7 @@ fn test_hook_management() {
 /// sub-field sitting at each register's base offset. On a big-endian MIPS32
 /// target that field is the register's HIGH word, so the standalone
 /// interpreter must land the value in `f0`'s high half — the same answer
-/// `arch::mod_tests::be_register_file_mirrors_sub_register_access` pins for
+/// `arch::register_file_tests::be_register_file_mirrors_sub_register_access` pins for
 /// the register file, now driven through a whole block (angr-21cz6).
 fn run_mips_movd_lo_copy(is_le: bool) -> u64 {
     let ctx = SymContext::new_mock();

@@ -133,3 +133,5 @@ pub(crate) fn arch_from_vex(arch: VexArch) -> Box<dyn Arch> {
         None => panic!("{}", unsupported_arch_msg(arch)),
     }
 }
+
+test_submod!("registry_tests.rs" => tests);

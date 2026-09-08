@@ -204,7 +204,7 @@ const ALIASES: &[RegEntry] = &[
 // Registers exported to / imported from Python (see `Arch::register_names`).
 // `fpreg` is omitted for the same u128-width reason as on AMD64 (angr-9ke6b.6);
 // every other `CANONICAL` entry must be here, which is what
-// `mod_tests::every_narrow_canonical_register_is_exported` enforces.
+// `registry_tests::every_narrow_canonical_register_is_exported` enforces.
 // `sseround` was the last straggler: it lives in `CANONICAL` and in AMD64's
 // export list, but was left out here, so a Python-side `state.regs.sseround`
 // write on an X86 state was dropped by `_supported_register_names`

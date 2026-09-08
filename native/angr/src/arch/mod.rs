@@ -103,7 +103,7 @@ pub trait Arch: Send + Sync {
     /// archinfo's, not this one.
     ///
     /// Kept rather than deleted because it is the pinned half of
-    /// `mod_tests::test_all_arches_report_expected_special_register_offsets`,
+    /// `registry_tests::test_all_arches_report_expected_special_register_offsets`,
     /// which asserts each arch's answer against a literal in that file's
     /// `ArchExpect` table — so a guest-state layout edit that shifts EBP/RBP/
     /// R11/X29/R30 fails there, the same integrity-sweep role `register_name`
@@ -136,10 +136,10 @@ pub trait Arch: Send + Sync {
     /// which is a load-bearing role, not dead weight — deleting it deletes
     /// these gates:
     ///
-    /// - `mod_tests::register_names_all_resolve_and_fit_in_u128`
-    /// - `mod_tests::exported_register_names_reverse_resolve` (angr-9ke6b.9:
+    /// - `registry_tests::register_names_all_resolve_and_fit_in_u128`
+    /// - `registry_tests::exported_register_names_reverse_resolve` (angr-9ke6b.9:
     ///   catches an exported name that was left in `ALIASES`)
-    /// - `mod_tests::vex_bookkeeping_fields_resolve_on_every_arch`
+    /// - `registry_tests::vex_bookkeeping_fields_resolve_on_every_arch`
     /// - `calling_conventions_tests::test_cc_arg_registers_resolve_to_expected_register_names`
     ///   and `..::test_link_register_set_on_link_register_abis`, which turn a
     ///   raw CC offset back into a name to compare against the ABI tables
@@ -171,7 +171,7 @@ pub trait Arch: Send + Sync {
     ///
     /// Like `register_name`, this exists to be the assertion primitive of the
     /// arch-table integrity sweeps rather than to serve a production caller:
-    /// `mod_tests::every_narrow_canonical_register_is_exported` walks it to
+    /// `registry_tests::every_narrow_canonical_register_is_exported` walks it to
     /// check the *converse* of the `register_names` doc above — every entry
     /// that fits the u128 named-register channel has to be exported, or the
     /// corresponding `state.regs.*` write is silently dropped on the Python
@@ -520,5 +520,3 @@ fn build_containment(arch: &dyn Arch) -> Arc<Vec<(u32, u32)>> {
     }
     Arc::new(table)
 }
-
-test_submod!("mod_tests.rs" => tests);

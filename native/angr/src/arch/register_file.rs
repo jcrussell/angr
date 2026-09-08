@@ -737,3 +737,5 @@ impl RegisterFile {
         merged
     }
 }
+
+test_submod!("register_file_tests.rs" => tests);

@@ -803,7 +803,7 @@ class TestMultiArchSupport:
         ``RustSimState::export_full`` walks for ``named_registers``, so the
         round trip was broken in *both* directions and each side silently read
         0 — the arch-table sweep
-        (``arch::mod_tests::every_narrow_canonical_register_is_exported``)
+        (``arch::registry_tests::every_narrow_canonical_register_is_exported``)
         never saw them because it walks ``canonical_registers()`` only.
 
         The guest *copies* each preset source register into a destination the

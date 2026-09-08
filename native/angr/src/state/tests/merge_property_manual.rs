@@ -49,7 +49,7 @@ fn computed_fields_get_fresh_identity_not_inherited_from_either_branch() {
 
 /// delegate: `registers`. `RegisterFile::merge` (its own independent
 /// `#[derive(MergePolicy)]`, `arch/mod.rs`) has its own deep ITE-shape
-/// coverage in `arch/mod_tests.rs`; this proves `RustSimState::merge` wires
+/// coverage in `arch/register_file_tests.rs`; this proves `RustSimState::merge` wires
 /// its result in rather than dropping a branch-only concrete register write.
 #[cfg(feature = "vex-engine-z3")]
 #[test]

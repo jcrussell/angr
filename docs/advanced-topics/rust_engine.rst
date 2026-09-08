@@ -477,7 +477,7 @@ own hand-written merge:
      - ``memory/tests/merge_sidecars.rs``
    * - ``RegisterFile`` (the ``registers`` field)
      - ``arch/mod.rs``
-     - ``arch/mod_tests.rs``
+     - ``arch/register_file_tests.rs``
    * - ``HeapMetadata`` (the ``heap_metadata`` field)
      - ``state/types.rs``
      - ``state/tests/merge_property_manual.rs`` (a ``delegate`` field, so

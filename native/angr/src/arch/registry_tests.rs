@@ -1,0 +1,700 @@
+//! Unit tests for [`super`] (arch/registry.rs) — the [`ALL_ARCHES`] table, the
+//! `arch_from_*` lookups, and the per-architecture descriptor sweeps those
+//! lookups drive (bits/endianness, special-register offsets, syscall-number
+//! register, alias spellings, `register_names()` exports, VEX bookkeeping
+//! fields).
+//!
+//! Sibling of `register_file_tests.rs`, which holds the [`RegisterFile`]
+//! get/put/merge/fork/serde tests. Split out of `mod_tests.rs` in angr-6cp06.76
+//! along the same seam round 6 (angr-5mnx3.1) used to split `arch/mod.rs` into
+//! `register_file.rs` + `registry.rs`: the register-file regression tests and
+//! the unrelated architecture-registry sweeps sat interleaved in one 1595-line
+//! file.
+
+use super::*;
+
+#[test]
+fn test_arch_from_vex_supported() {
+    // The six supported arches resolve to a singleton with the matching VexArch.
+    for vex in [
+        VexArch::X86,
+        VexArch::AMD64,
+        VexArch::ARM,
+        VexArch::ARM64,
+        VexArch::MIPS32,
+        VexArch::MIPS64,
+    ] {
+        assert_eq!(arch_from_vex(vex).vex_arch(), vex);
+    }
+}
+
+/// Internal consistency of the [`ALL_ARCHES`] registry: each row's `name` and
+/// `vex` must agree with the arch `make_arch` actually builds, and the `vex`
+/// column must be unique so `arch_from_vex`'s linear scan is unambiguous.
+/// Everything else (`arch_from_name`, `cc_for_arch`) reads this table, so a
+/// mismatched row would mis-route silently.
+#[test]
+fn test_all_arches_rows_are_self_consistent() {
+    for (i, desc) in ALL_ARCHES.iter().enumerate() {
+        let arch = desc.name;
+        let built = (desc.make_arch)();
+        assert_eq!(built.name(), desc.name, "{arch}: name vs Arch::name()");
+        assert_eq!(
+            built.vex_arch(),
+            desc.vex,
+            "{arch}: vex column vs Arch::vex_arch()"
+        );
+        assert_eq!(
+            arch_from_vex(desc.vex).name(),
+            desc.name,
+            "{arch}: arch_from_vex round-trip"
+        );
+        for other in &ALL_ARCHES[i + 1..] {
+            assert_ne!(
+                desc.vex, other.vex,
+                "{arch}: duplicate VexArch shared with {}",
+                other.name
+            );
+        }
+    }
+}
+
+/// Compile-time trip-wire for the `arch_from_vex` rewrite: it used to be an
+/// exhaustive `match` on `VexArch`, so a new variant was a build error. Now it
+/// is a linear scan of [`ALL_ARCHES`] with a runtime panic on a miss. This
+/// exhaustive match restores the build error — adding a `VexArch` variant
+/// forces a deliberate supported/unsupported decision here — and the loop then
+/// checks `arch_from_vex` actually agrees with that decision.
+#[test]
+fn test_every_vex_arch_is_classified() {
+    fn supported(vex: VexArch) -> bool {
+        match vex {
+            VexArch::X86
+            | VexArch::AMD64
+            | VexArch::ARM
+            | VexArch::ARM64
+            | VexArch::MIPS32
+            | VexArch::MIPS64 => true,
+            VexArch::PPC32 | VexArch::PPC64 | VexArch::S390X => false,
+        }
+    }
+
+    for vex in [
+        VexArch::X86,
+        VexArch::AMD64,
+        VexArch::ARM,
+        VexArch::ARM64,
+        VexArch::MIPS32,
+        VexArch::MIPS64,
+        VexArch::PPC32,
+        VexArch::PPC64,
+        VexArch::S390X,
+    ] {
+        let in_table = ALL_ARCHES.iter().any(|d| d.vex == vex);
+        assert_eq!(
+            in_table,
+            supported(vex),
+            "{vex:?}: ALL_ARCHES membership disagrees with the supported-arch list",
+        );
+    }
+}
+
+/// Expected scalars for the [`ALL_ARCHES`] sweeps below, one row per
+/// architecture, joined to `ALL_ARCHES` by `name`.
+///
+/// Replaces the per-arch `test_*_basics` / `test_special_registers` /
+/// `test_register_lookup` copies that used to live in `amd64_tests.rs`,
+/// `x86_tests.rs`, `arm_tests.rs`, `arm64_tests.rs` and `mips_tests.rs`
+/// (angr-9ke6b.215). Coverage of a minority arch used to depend on someone
+/// remembering to hand-author the same assertion a sixth time, and it showed:
+/// the two MIPS `*_basics` copies had silently dropped the `is_little_endian`
+/// check and MIPS had no `test_special_registers` at all. Adding an assertion
+/// or an architecture now buys the whole matrix.
+struct ArchExpect {
+    name: &'static str,
+    bits: u32,
+    little_endian: bool,
+    ip_offset: u32,
+    sp_offset: u32,
+    bp_offset: Option<u32>,
+    /// `(name, offset, size)` triples pinning alias-table entries from the
+    /// Rust side, so `cargo test` alone catches a regression rather than
+    /// relying on the Python archinfo parity gate
+    /// (`tests/engines/rust/test_arch_offset_parity.py`). Two groups:
+    ///
+    /// * The architecture-independent full-width `sp`/`bp` names (and `lr` on
+    ///   the arches that have a link register), plus the legacy 16-bit
+    ///   x86/amd64 sub-registers that must have kept their narrow widths when
+    ///   `sp`/`bp` were widened (angr-6qzik).
+    /// * The MIPS `$N` spellings, which the parity gate cannot see at all
+    ///   because archinfo has no register under those names.
+    aliases: &'static [(&'static str, u32, u32)],
+    /// The arch's own spelling of the instruction pointer, i.e. the name that
+    /// must resolve to `ip_offset`.
+    ip_name: &'static str,
+    /// `(name, offset)` for the register the Linux syscall number is read from
+    /// — `Arch::syscall_num_offset`, which `interpreter::exits` consults on
+    /// every `Ijk_Sys_syscall` exit. Pinned here because a shift would
+    /// otherwise only surface as a wrong syscall being dispatched, several
+    /// layers up in the Python integration tests.
+    syscall_num: (&'static str, u32),
+}
+
+const ARCH_EXPECTATIONS: &[ArchExpect] = &[
+    ArchExpect {
+        name: "X86",
+        bits: 32,
+        little_endian: true,
+        ip_offset: 68,
+        sp_offset: 24,
+        bp_offset: Some(28),
+        aliases: &[
+            ("sp", 24, 4),
+            ("bp", 28, 4),
+            ("pc", 68, 4),
+            ("ip", 68, 4),
+            ("ax", 8, 2),
+            ("di", 36, 2),
+        ],
+        ip_name: "eip",
+        syscall_num: ("eax", 8),
+    },
+    ArchExpect {
+        name: "AMD64",
+        bits: 64,
+        little_endian: true,
+        ip_offset: 184,
+        sp_offset: 48,
+        bp_offset: Some(56),
+        aliases: &[
+            ("sp", 48, 8),
+            ("bp", 56, 8),
+            ("pc", 184, 8),
+            ("ip", 184, 8),
+            ("ax", 16, 2),
+            ("si", 64, 2),
+        ],
+        ip_name: "rip",
+        syscall_num: ("rax", 16),
+    },
+    ArchExpect {
+        name: "ARM",
+        bits: 32,
+        little_endian: true,
+        ip_offset: 68,       // PC (R15T)
+        sp_offset: 60,       // R13
+        bp_offset: Some(52), // R11/FP
+        aliases: &[("sp", 60, 4), ("bp", 52, 4), ("lr", 64, 4), ("ip", 68, 4)],
+        ip_name: "pc",
+        syscall_num: ("r7", 36),
+    },
+    ArchExpect {
+        name: "ARM64",
+        bits: 64,
+        little_endian: true,
+        ip_offset: 272,       // PC
+        sp_offset: 264,       // XSP
+        bp_offset: Some(248), // X29/FP
+        aliases: &[("sp", 264, 8), ("bp", 248, 8), ("lr", 256, 8), ("ip", 272, 8)],
+        ip_name: "pc",
+        syscall_num: ("x8", 80),
+    },
+    ArchExpect {
+        name: "MIPS32",
+        bits: 32,
+        // MIPS is bi-endian; the Rust singleton defaults to little-endian and
+        // callers select BE per state. This assertion is new — the hand-written
+        // MIPS `*_basics` tests omitted it.
+        little_endian: true,
+        ip_offset: 136,       // PC
+        sp_offset: 124,       // R29
+        bp_offset: Some(128), // R30 (fp/s8)
+        aliases: &[
+            ("sp", 124, 4),
+            ("bp", 128, 4),
+            ("lr", 132, 4),
+            ("ip", 136, 4),
+            ("$2", 16, 4),
+            ("$29", 124, 4),
+            ("$30", 128, 4),
+        ],
+        ip_name: "pc",
+        syscall_num: ("v0", 16),
+    },
+    ArchExpect {
+        name: "MIPS64",
+        bits: 64,
+        little_endian: true,
+        ip_offset: 272,       // PC
+        sp_offset: 248,       // R29
+        bp_offset: Some(256), // R30 (fp/s8)
+        aliases: &[
+            ("sp", 248, 8),
+            ("bp", 256, 8),
+            ("lr", 264, 8),
+            ("ip", 272, 8),
+            ("$2", 32, 8),
+            ("$29", 248, 8),
+            ("$30", 256, 8),
+        ],
+        ip_name: "pc",
+        syscall_num: ("v0", 32),
+    },
+];
+
+fn arch_expect(name: &str) -> &'static ArchExpect {
+    ARCH_EXPECTATIONS
+        .iter()
+        .find(|e| e.name == name)
+        .unwrap_or_else(|| {
+            panic!("{name}: no ARCH_EXPECTATIONS row; add one alongside the ALL_ARCHES row")
+        })
+}
+
+/// The two tables must describe the same set of architectures, so adding a row
+/// to [`ALL_ARCHES`] without an [`ARCH_EXPECTATIONS`] row (or vice versa) fails
+/// loudly instead of silently shrinking the sweeps below.
+#[test]
+fn test_arch_expectations_cover_all_arches() {
+    for desc in ALL_ARCHES {
+        let _ = arch_expect(desc.name);
+    }
+    for expect in ARCH_EXPECTATIONS {
+        assert!(
+            ALL_ARCHES.iter().any(|d| d.name == expect.name),
+            "{}: ARCH_EXPECTATIONS row has no matching ALL_ARCHES row",
+            expect.name,
+        );
+    }
+}
+
+#[test]
+fn test_all_arches_report_expected_bits_name_and_endianness() {
+    for desc in ALL_ARCHES {
+        let arch = (desc.make_arch)();
+        let expect = arch_expect(desc.name);
+        let name = expect.name;
+        assert_eq!(arch.name(), name, "{name}: Arch::name()");
+        assert_eq!(arch.bits(), expect.bits, "{name}: bits");
+        assert_eq!(arch.bytes(), expect.bits / 8, "{name}: bytes");
+        assert_eq!(
+            arch.is_little_endian(),
+            expect.little_endian,
+            "{name}: is_little_endian",
+        );
+    }
+}
+
+#[test]
+fn test_all_arches_report_expected_special_register_offsets() {
+    for desc in ALL_ARCHES {
+        let arch = (desc.make_arch)();
+        let expect = arch_expect(desc.name);
+        let name = expect.name;
+        assert_eq!(arch.ip_offset(), expect.ip_offset, "{name}: ip_offset");
+        assert_eq!(arch.sp_offset(), expect.sp_offset, "{name}: sp_offset");
+        assert_eq!(arch.bp_offset(), expect.bp_offset, "{name}: bp_offset");
+
+        // The special-register offsets must agree with the name lookup, so a
+        // table edit that moves one but not the other cannot pass.
+        assert_eq!(
+            arch.register_offset(expect.ip_name),
+            Some(expect.ip_offset),
+            "{name}: register_offset({:?}) disagrees with ip_offset",
+            expect.ip_name,
+        );
+        // Every arch must also answer to the architecture-independent `"pc"`
+        // spelling (angr-9ke6b.217 closed the X86/AMD64 gap); archinfo defines
+        // it on all six, and a direct Rust-level `set_register("pc", ...)`
+        // never passes through `RustStateProxy._canonical_name`.
+        assert_eq!(
+            arch.register_offset("pc"),
+            Some(expect.ip_offset),
+            "{name}: register_offset(\"pc\") disagrees with ip_offset",
+        );
+        assert_eq!(
+            arch.register_offset("sp"),
+            Some(expect.sp_offset),
+            "{name}: register_offset(\"sp\") disagrees with sp_offset",
+        );
+    }
+}
+
+/// Every supported arch has a Linux syscall convention, so `syscall_num_offset`
+/// must never fall through to the trait's `None` default — `exits.rs` reads it
+/// on every `Ijk_Sys_syscall`, and a `None` there turns a syscall into an
+/// unhandled exit. Pinning the offset against the arch's own spelling of the
+/// register also catches a per-arch table edit that moves one but not the other
+/// (angr-5mnx3.3).
+#[test]
+fn test_all_arches_pin_their_syscall_number_register() {
+    for desc in ALL_ARCHES {
+        let arch = (desc.make_arch)();
+        let expect = arch_expect(desc.name);
+        let name = expect.name;
+        let (reg, offset) = expect.syscall_num;
+        assert_eq!(
+            arch.syscall_num_offset(),
+            Some(offset),
+            "{name}: syscall_num_offset must be {reg} ({offset})",
+        );
+        assert_eq!(
+            arch.register_offset(reg),
+            Some(offset),
+            "{name}: register_offset({reg:?}) disagrees with syscall_num_offset",
+        );
+        // The syscall number is read at pointer width (documented on the trait
+        // method), so the register must actually be that wide.
+        assert_eq!(
+            arch.register_size(reg),
+            Some(expect.bits / 8),
+            "{name}: {reg} must be pointer-width to hold a syscall number",
+        );
+    }
+}
+
+#[test]
+fn test_all_arches_resolve_their_alias_spellings() {
+    for desc in ALL_ARCHES {
+        let arch = (desc.make_arch)();
+        let expect = arch_expect(desc.name);
+        let name = expect.name;
+        for &(alias, offset, size) in expect.aliases {
+            assert_eq!(
+                arch.register_offset(alias),
+                Some(offset),
+                "{name}: register_offset({alias:?})",
+            );
+            assert_eq!(
+                arch.register_size(alias),
+                Some(size),
+                "{name}: register_size({alias:?})",
+            );
+        }
+    }
+}
+
+/// `lookup_register_offset`/`lookup_register_size` promise case-insensitive
+/// matching, but every caller in-tree passes an already-lowercase name, so
+/// nothing else would notice if a refactor dropped the property (it was an
+/// allocating `to_lowercase()` before angr-c7xno.4 swapped in
+/// `eq_ignore_ascii_case`).
+#[test]
+fn test_all_arches_resolve_register_names_case_insensitively() {
+    for desc in ALL_ARCHES {
+        let arch = (desc.make_arch)();
+        let expect = arch_expect(desc.name);
+        let name = expect.name;
+        for spelling in [expect.ip_name.to_uppercase(), mixed_case(expect.ip_name)] {
+            assert_eq!(
+                arch.register_offset(&spelling),
+                Some(expect.ip_offset),
+                "{name}: register_offset({spelling:?})",
+            );
+            assert_eq!(
+                arch.register_size(&spelling),
+                arch.register_size(expect.ip_name),
+                "{name}: register_size({spelling:?})",
+            );
+        }
+        // Aliases live in the second table searched, so cover that arm too.
+        for &(alias, offset, size) in expect.aliases {
+            let spelling = alias.to_uppercase();
+            assert_eq!(
+                arch.register_offset(&spelling),
+                Some(offset),
+                "{name}: register_offset({spelling:?})",
+            );
+            assert_eq!(
+                arch.register_size(&spelling),
+                Some(size),
+                "{name}: register_size({spelling:?})",
+            );
+        }
+    }
+}
+
+/// "rip" -> "RiP": alternate the case so neither the all-lower nor the
+/// all-upper spelling can pass by accident.
+fn mixed_case(name: &str) -> String {
+    name.chars()
+        .enumerate()
+        .map(|(i, c)| {
+            if i % 2 == 0 {
+                c.to_ascii_uppercase()
+            } else {
+                c.to_ascii_lowercase()
+            }
+        })
+        .collect()
+}
+
+#[test]
+#[should_panic(expected = "Rust engine does not support")]
+fn test_arch_from_vex_ppc32_panics() {
+    let _ = arch_from_vex(VexArch::PPC32);
+}
+
+#[test]
+#[should_panic(expected = "Rust engine does not support")]
+fn test_arch_from_vex_ppc64_panics() {
+    let _ = arch_from_vex(VexArch::PPC64);
+}
+
+#[test]
+#[should_panic(expected = "Rust engine does not support")]
+fn test_arch_from_vex_s390x_panics() {
+    let _ = arch_from_vex(VexArch::S390X);
+}
+
+#[test]
+fn test_clone_box_dyn_arch_roundtrips() {
+    // Cloning a boxed supported arch preserves its identity (no AMD64 fallback).
+    for vex in [
+        VexArch::X86,
+        VexArch::AMD64,
+        VexArch::ARM,
+        VexArch::ARM64,
+        VexArch::MIPS32,
+        VexArch::MIPS64,
+    ] {
+        let boxed = arch_from_vex(vex);
+        assert_eq!(boxed.clone().vex_arch(), vex);
+    }
+}
+
+/// `register_names()` is the set that crosses the Python boundary
+/// (`register_names_for_arch` -> `_supported_register_names`, and
+/// `export_full`'s `named_registers`). Two invariants, for every arch:
+///
+///  1. Every name resolves through `register_offset` / `register_size`,
+///     otherwise `set_registers_bulk` raises `unknown register: ...` on the
+///     Python side and the whole bulk write is lost.
+///  2. No entry exceeds 16 bytes. The named-register channel carries each
+///     value as a `u128` (`ExplorationStateSnapshot::get_registers_named`),
+///     and `RegisterFile::get`'s concrete read shifts bytes into a `u128`, so
+///     a wider register would silently produce garbage. This is why `fpreg`
+///     (64 B) stays out of the x86/AMD64 lists (angr-9ke6b.6).
+#[test]
+fn register_names_all_resolve_and_fit_in_u128() {
+    for desc in ALL_ARCHES {
+        let arch = (desc.make_arch)();
+        for &name in arch.register_names() {
+            let offset = arch
+                .register_offset(name)
+                .unwrap_or_else(|| panic!("{}: register_names has unresolvable {name}", desc.name));
+            let size = arch
+                .register_size(name)
+                .unwrap_or_else(|| panic!("{}: register_names has unsized {name}", desc.name));
+            assert!(
+                size <= 16,
+                "{}: {name} is {size} bytes, too wide for the u128 named-register channel",
+                desc.name
+            );
+            assert!(
+                offset as usize + size as usize <= arch.state_size(),
+                "{}: {name} runs past the guest state",
+                desc.name
+            );
+        }
+    }
+}
+
+/// Every exported register name must also survive the *reverse* lookup:
+/// `register_name(register_offset(name))` has to name that same register.
+///
+/// `register_name` scans only the per-arch `CANONICAL` table, so a name that
+/// lives in `ALIASES` while being advertised by `register_names()` resolves
+/// one way but not the other. X86 shipped exactly that: `xmm0..7` (and the
+/// x87 control words) were exported but alias-only, so `X86::register_name`
+/// returned `None` for the XMM0 offset while `AMD64::register_name` resolved
+/// it — the same debugger query answered differently per x86 variant
+/// (angr-9ke6b.9).
+///
+/// The assertion compares names, not identity: an arch is free to canonicalize
+/// a different spelling at the same offset (`pc` vs `eip`) as long as *some*
+/// canonical name is there, but a `None` is always a bug.
+#[test]
+fn exported_register_names_reverse_resolve() {
+    for desc in ALL_ARCHES {
+        let arch = (desc.make_arch)();
+        for &name in arch.register_names() {
+            let offset = arch.register_offset(name).unwrap();
+            let back = arch.register_name(offset).unwrap_or_else(|| {
+                panic!(
+                    "{}: register_names() exports {name} at offset {offset}, but \
+                     register_name({offset}) is None — move it from ALIASES to CANONICAL",
+                    desc.name
+                )
+            });
+            let back_offset = arch.register_offset(back).unwrap_or_else(|| {
+                panic!(
+                    "{}: register_name({offset}) -> {back} is unresolvable",
+                    desc.name
+                )
+            });
+            assert_eq!(
+                back_offset, offset,
+                "{}: {name}@{offset} reverse-resolved to {back}, which lives elsewhere",
+                desc.name
+            );
+        }
+    }
+}
+
+/// The converse of `register_names_all_resolve_and_fit_in_u128`: every
+/// `CANONICAL` entry narrow enough for the u128 named-register channel must
+/// actually be exported by `register_names()`.
+///
+/// `Arch::register_names`'s own doc says the export list is the whole canonical
+/// table minus the too-wide entries ("`fpreg` is the only such register"), but
+/// nothing checked that direction, so an omission read as a deliberate
+/// exclusion. It is not: a missing name is filtered out of Python's
+/// `_supported_register_names` (`angr/exploration/rust_state_sync.py`), so
+/// `set_registers_bulk` silently drops any `state.regs.<name>` write for that
+/// arch while the identical write works on a sibling arch. X86's `sseround`
+/// shipped exactly that (angr-sqfj8.1), one sweep after angr-9ke6b.6 fixed the
+/// same class for `fptag`/`fpround`/`fc3210`/`ftop` — a hardcoded field list
+/// (`x87_control_registers_round_trip_through_register_names`) only ever
+/// catches the registers someone already thought of.
+///
+/// The width filter is the *only* legitimate reason to omit a canonical entry,
+/// so it is the only exemption here — no per-arch allowlist to drift.
+#[test]
+fn every_narrow_canonical_register_is_exported() {
+    for desc in ALL_ARCHES {
+        let arch = (desc.make_arch)();
+        let exported = arch.register_names();
+        for &(name, _offset, size) in arch.canonical_registers() {
+            if size > 16 {
+                // Cannot cross the boundary: see `register_names`' doc.
+                assert!(
+                    !exported.contains(&name),
+                    "{}: {name} is {size} bytes but is exported — the u128 \
+                     named-register channel would truncate it",
+                    desc.name
+                );
+                continue;
+            }
+            assert!(
+                exported.contains(&name),
+                "{}: CANONICAL has {name} ({size} B) but register_names() does \
+                 not export it — Python-side state.regs.{name} writes are \
+                 silently dropped on this arch",
+                desc.name
+            );
+        }
+    }
+}
+
+/// Expected `(offset, size)` for the five VEX bookkeeping fields, one row per
+/// architecture, joined to [`ALL_ARCHES`] by `name`. Every value here was read
+/// off `archinfo.Arch*.registers` (angr-9ke6b.10).
+///
+/// One row: the arch name plus its five `(field, offset, size)` triples.
+type BookkeepingRow = (&'static str, [(&'static str, u32, u32); 5]);
+
+const VEX_BOOKKEEPING: &[BookkeepingRow] = &[
+    (
+        "X86",
+        [
+            ("emnote", 320, 4),
+            ("cmstart", 324, 4),
+            ("cmlen", 328, 4),
+            ("nraddr", 332, 4),
+            ("ip_at_syscall", 340, 4),
+        ],
+    ),
+    (
+        "AMD64",
+        [
+            ("emnote", 992, 4),
+            ("cmstart", 1000, 8),
+            ("cmlen", 1008, 8),
+            ("nraddr", 1016, 8),
+            ("ip_at_syscall", 1040, 8),
+        ],
+    ),
+    (
+        "ARM",
+        [
+            ("emnote", 108, 4),
+            ("cmstart", 112, 4),
+            ("cmlen", 116, 4),
+            ("nraddr", 120, 4),
+            ("ip_at_syscall", 124, 4),
+        ],
+    ),
+    (
+        "ARM64",
+        [
+            ("emnote", 848, 4),
+            ("cmstart", 856, 8),
+            ("cmlen", 864, 8),
+            ("nraddr", 872, 8),
+            ("ip_at_syscall", 880, 8),
+        ],
+    ),
+    (
+        "MIPS32",
+        [
+            ("emnote", 432, 4),
+            ("cmstart", 436, 4),
+            ("cmlen", 440, 4),
+            ("nraddr", 444, 4),
+            ("ip_at_syscall", 492, 4),
+        ],
+    ),
+    (
+        "MIPS64",
+        [
+            ("emnote", 584, 4),
+            ("cmstart", 592, 8),
+            ("cmlen", 600, 8),
+            ("nraddr", 608, 8),
+            ("ip_at_syscall", 616, 8),
+        ],
+    ),
+];
+
+/// `state.regs.ip_at_syscall` (and the emnote/cmstart/cmlen/nraddr siblings)
+/// must resolve on *every* arch, not just the three that happened to name them
+/// first: X86, ARM and ARM64 had consts while AMD64 and MIPS32/64 silently
+/// returned `None`, so the same Python read worked or failed depending on the
+/// target (angr-9ke6b.10). Also pins the guest state wide enough to hold them —
+/// MIPS32/64's `GUEST_STATE_SIZE` used to stop right where this block begins.
+#[test]
+fn vex_bookkeeping_fields_resolve_on_every_arch() {
+    for desc in ALL_ARCHES {
+        let arch = (desc.make_arch)();
+        let (_, fields) = VEX_BOOKKEEPING
+            .iter()
+            .find(|(name, _)| *name == desc.name)
+            .unwrap_or_else(|| {
+                panic!(
+                    "{}: no VEX_BOOKKEEPING row; add one alongside the ALL_ARCHES row",
+                    desc.name
+                )
+            });
+        for &(field, offset, size) in fields {
+            assert_eq!(
+                arch.register_offset(field),
+                Some(offset),
+                "{}: {field} offset",
+                desc.name
+            );
+            assert_eq!(
+                arch.register_size(field),
+                Some(size),
+                "{}: {field} size",
+                desc.name
+            );
+            assert!(
+                offset as usize + size as usize <= arch.state_size(),
+                "{}: {field} runs past the guest state ({} bytes)",
+                desc.name,
+                arch.state_size()
+            );
+        }
+    }
+}
