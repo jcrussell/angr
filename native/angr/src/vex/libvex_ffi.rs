@@ -10,8 +10,8 @@
 //!
 //! This module is *only* the FFI surface — no marshalling. The
 //! `NativeLibVEXLifter` that turns a `VEXLiftResult` into `vex::ir::IRSB`
-//! lands in a later increment (bd angr-3s5js.3). See
-//! docs/advanced-topics/rust_libvex_ffi.rst for the full plan.
+//! lives in the sibling `libvex_lifter` module. See
+//! docs/advanced-topics/rust_libvex_ffi.rst for the design.
 //!
 //! Safety notes (all inherited from libVEX, see the doc's "Open risks"):
 //! - `vex_lift` returns a pointer into libVEX's temporary arena; it is

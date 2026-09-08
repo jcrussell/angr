@@ -239,7 +239,9 @@ define_execution_stats! {
     /// `docs/extending-angr/rust_vex_ops.rst`.
     vex_bypass_fabricate_count: sum,
     /// Number of cold-block lifts served natively via the `libvex-ffi`
-    /// `NativeLibVEXLifter` (feature-gated, off by default). Each hit is a
+    /// `NativeLibVEXLifter` (gated on the `libvex-ffi` feature, which is not in
+    /// cargo's `default` set but is appended by `setup.py`, so a stock
+    /// `pip install -e .` build has it on). Each hit is a
     /// Python `lift_block` callback + JSON round-trip that did NOT happen.
     native_lift_count: sum,
     /// Number of native-lift *attempts* that fell back to the Python callback

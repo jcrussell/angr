@@ -6,7 +6,8 @@
 //! - VEX lifting interface
 //! - pyvex IRSB serialization/deserialization
 //! - Clean call (CCall) implementations for flag calculations
-//! - Native dirty helper implementations (CPUID, RDTSC, etc.)
+//! - Native dirty helper implementations (RDTSC, IN/OUT port access; see
+//!   `dirty.rs`'s header for why CPUID/RDTSCP are deliberately not among them)
 
 pub mod ccall;
 pub mod dirty;

@@ -51,7 +51,7 @@ pub(super) fn build_float_expr(
 }
 
 /// Maximum arity supported by `FloatLaneOp`. Sized for the current set of
-/// per-lane FP ops (unary Sqrt/Abs and binary Add/Sub/Mul/Div/Min/Max). Sized
+/// per-lane FP ops (unary Sqrt/Abs/Neg and binary Add/Sub/Mul/Div/Min/Max). Sized
 /// to 2 today; bump if a ternary lane op is added (e.g. fused multiply-add).
 pub(super) const FLOAT_LANE_OP_MAX_ARITY: usize = 2;
 
