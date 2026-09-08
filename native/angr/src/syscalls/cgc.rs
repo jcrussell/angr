@@ -208,11 +208,16 @@ impl NativeSyscall for NativeReceiveSyscall {
                 "receive count {count} exceeds limit"
             )));
         }
-        // fd validation precedes every count-based short-circuit, matching
-        // both `NativeTransmitSyscall::call` and the Python reference
-        // (procedures/cgc/receive.py::run), which resolves `posix.get_fd(fd)`
-        // and returns -1 before it ever looks at `count`. Checking `count == 0`
-        // first would report success for a never-opened fd (angr-fs583).
+        // fd validation precedes the `count == 0` short-circuit below, matching
+        // the Python reference (procedures/cgc/receive.py::run), which resolves
+        // `posix.get_fd(fd)` and returns -1 before it ever looks at `count`.
+        // Checking `count == 0` first would report success for a never-opened
+        // fd (angr-fs583). This is *not* a general fd-before-count rule: the
+        // oversize-`count` guard above runs first, here and in
+        // `NativeTransmitSyscall::call` alike. That stays correct only because
+        // the oversize path returns the same Python-fallback `Err` an invalid
+        // fd would; making it answer a concrete CGC errno instead would
+        // reintroduce the angr-fs583 bug for `count > MAX_CGC_BYTES`.
         if fd != 0 {
             // Non-stdin receive: defer to Python's symbolic-file model.
             return Err(SyscallError::Other(format!(

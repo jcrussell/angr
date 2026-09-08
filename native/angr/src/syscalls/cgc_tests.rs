@@ -311,8 +311,37 @@ fn receive_zero_count_non_stdin_fd_falls_back() {
     assert_eq!(stored, Some(0xAAAA_AAAA));
 }
 
-/// fdwait's native stub only models the `CGC_NON_BLOCKING_FDS` mode, so
-/// every fdwait happy-path test must opt into it (angr-op0dn.14.8).
+/// Companion to `receive_zero_count_non_stdin_fd_falls_back` for the *other*
+/// count-based early return. `NativeReceiveSyscall::call` checks
+/// `count > MAX_CGC_BYTES` *before* the fd, which is only safe while that arm
+/// returns a Python fallback — the moment it answers natively (a concrete CGC
+/// errno, say), a never-opened fd would be reported on rather than deferred,
+/// the angr-fs583 bug class one argument over (angr-6cp06.56).
+#[test]
+fn receive_oversize_count_non_stdin_fd_falls_back() {
+    let h = NativeReceiveSyscall;
+    let mut state = x86_state_with_buf();
+    state.map_memory_data(0x2800, &[0xAA; 4], Permission::RWX);
+
+    let err = h
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(999, 32),
+                RustBV::concrete(0x2000, 32),
+                RustBV::concrete(MAX_CGC_BYTES as u128 + 1, 32),
+                RustBV::concrete(0x2800, 32),
+            ],
+        )
+        .expect_err("fall back");
+    assert!(matches!(err, SyscallError::Other(_)));
+    // Same guarantee as the zero-count sibling: nothing written back, so the
+    // state never claims a read on the bogus fd.
+    let stored = state.memory_load(0x2800, 4).expect("load").as_u64();
+    assert_eq!(stored, Some(0xAAAA_AAAA));
+    assert!(!state.has_stdin_symbols());
+}
+
 #[test]
 fn receive_count_over_limit_falls_back() {
     let h = NativeReceiveSyscall;
@@ -361,6 +390,8 @@ fn receive_count_at_limit_is_native() {
     assert_eq!(stored, Some(MAX_CGC_BYTES));
 }
 
+/// fdwait's native stub only models the `CGC_NON_BLOCKING_FDS` mode, so
+/// every fdwait happy-path test must opt into it (angr-op0dn.14.8).
 fn nonblocking_state() -> RustSimState {
     let mut state = x86_state_with_buf();
     state.set_option("CGC_NON_BLOCKING_FDS", true);
