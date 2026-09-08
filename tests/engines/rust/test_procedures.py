@@ -1010,6 +1010,63 @@ class TestCallbackSolverConcretizationFallback:
             proj.unhook(self.HOOK_ADDR)
 
 
+class TestNativeScanfScansetFallback:
+    """`%[...]` must defer the whole scanf call to Python (angr-6cp06.7).
+
+    angr's `format_parser.py::ScanfFormatParser.basic_spec` has no `[` entry,
+    so `_match_spec` never turns `%[a-z]` into a FormatSpecifier: Python keeps
+    the `%` as a literal component, matches the bracket expression as literal
+    text and consumes no pointer argument. Native scanf used to implement the
+    scanset for real — minting a symbolic string into the caller's buffer and
+    consuming a pointer — which silently disagreed with the reference engine.
+
+    Uses the same hook-in-`.ctors` trick as `TestNativeFileDescriptorProcedures`
+    so `prefer_native_dispatch` is true and the native registry actually runs.
+    """
+
+    HOOK_ADDR = 0x600E48  # fauxware .ctors (in-binary, non-executable)
+    DEAD_ADDR = 0x4008B0
+    BUF_ADDR = 0x601100  # past .bss, lazy-mapped
+
+    def _run(self, proj, fmt):
+        import claripy
+
+        proj.hook(self.HOOK_ADDR, angr.SIM_PROCEDURES["libc"]["scanf"](), replace=True)
+        try:
+            state = proj.factory.blank_state(
+                addr=self.HOOK_ADDR,
+                add_options={
+                    angr.options.ZERO_FILL_UNCONSTRAINED_REGISTERS,
+                    angr.options.ZERO_FILL_UNCONSTRAINED_MEMORY,
+                },
+            )
+            state.memory.store(self.BUF_ADDR, fmt)
+            state.regs.rdi = self.BUF_ADDR  # format ptr
+            state.regs.rsi = self.BUF_ADDR + 0x80  # out pointer
+            state.memory.store(state.regs.rsp, claripy.BVV(self.DEAD_ADDR, 64), endness="Iend_LE")
+            mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
+            mgr.run(max_steps=1)
+            return mgr._rust_mgr.native_procedure_stats()
+        finally:
+            proj.unhook(self.HOOK_ADDR)
+
+    def test_scanset_falls_back_to_python(self, fauxware_project):
+        stats = self._run(fauxware_project, b"%[^\n]\x00")
+        assert stats["call_counts"].get("scanf", 0) == 0, (
+            f"%[...] must not be served natively, got stats={stats}"
+        )
+        assert stats["other_fallbacks_by_name"].get("scanf", 0) == 1, (
+            f"%[...] must fall back to Python, got stats={stats}"
+        )
+
+    def test_plain_numeric_spec_still_native(self, fauxware_project):
+        """The fallback is scoped to the scanset — %d stays on the fast path."""
+        stats = self._run(fauxware_project, b"%d\x00")
+        assert stats["call_counts"].get("scanf", 0) == 1, (
+            f"%d must still dispatch natively, got stats={stats}"
+        )
+
+
 class TestNativeFileDescriptorProcedures:
     """Integration test for native pipe/dup/dup2 dispatched through the Rust manager.
 
