@@ -79,7 +79,7 @@ use crate::symbolic::{
 };
 use crate::vex::Endness;
 
-use super::page::{PAGE_SIZE, Permission};
+use super::page::{PAGE_SIZE, PageIndex, Permission};
 use super::{
     Address, MemoryError, SymbolicMemory, check_access_size, end_page_inclusive,
     fabricate_width_bits,
@@ -371,7 +371,7 @@ impl SymbolicMemory {
                         start_page,
                         lazy,
                         MemoryError::Unmapped {
-                            addr: start_page << 12,
+                            addr: PageIndex::from_raw(start_page).base_addr(),
                             size: PAGE_SIZE,
                         },
                     ));
@@ -503,7 +503,7 @@ impl SymbolicMemory {
         if lazy && self.is_in_lazy_region(page_num) {
             record_mem_lazy_page_fault();
             MemoryError::UnmappedPageInRegion {
-                page_addr: page_num << 12,
+                page_addr: PageIndex::from_raw(page_num).base_addr(),
             }
         } else {
             fallback
@@ -871,7 +871,7 @@ impl SymbolicMemory {
                         // (angr-9ke6b.228); see `unmapped_page_error`.
                         record_mem_lazy_page_fault();
                         return Err(MemoryError::UnmappedPageInRegion {
-                            page_addr: page_num << 12,
+                            page_addr: PageIndex::from_raw(page_num).base_addr(),
                         });
                     } else {
                         return Err(MemoryError::Unmapped {

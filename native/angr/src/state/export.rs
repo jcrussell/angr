@@ -293,7 +293,7 @@ impl RustSimState {
         // Export memory pages as tuples: (addr, data, permissions, symbolic_offsets)
         let mut memory_pages: Vec<PageData> = Vec::new();
         for (page_num, page) in self.memory.pages().iter() {
-            let page_addr = page_num << 12;
+            let page_addr = crate::memory::PageIndex::from_raw(*page_num).base_addr();
             let data = page.load_concrete(0, crate::memory::PAGE_SIZE as u16);
             let permissions = page.permissions().to_bits();
             let symbolic_offsets = page.symbolic_offsets();

@@ -14,7 +14,7 @@
 use rustc_hash::FxHashMap;
 
 use super::multi::{MultiAlternative, MultiPayload};
-use super::page::PAGE_SIZE;
+use super::page::{PAGE_SIZE, PageIndex};
 use super::{Address, MemoryPage, PendingWrite, SymbolicMemory};
 use crate::symbolic::{RustBV, SymContext};
 use crate::vex::Endness;
@@ -91,7 +91,7 @@ impl SymbolicMemory {
                         continue;
                     }
 
-                    let base_addr = Address(page_num << 12);
+                    let base_addr = Address(PageIndex::from_raw(page_num).base_addr());
                     for i in 0..PAGE_SIZE as usize {
                         let s_byte = s_data[i];
                         let o_byte = o_data[i];
@@ -184,7 +184,7 @@ impl SymbolicMemory {
                     // silently return the stale page byte, and a later merge's
                     // `s_multi implies a payload` expect panics.
                     let mut adopted = op.clone();
-                    let page_base = Address(page_num << 12);
+                    let page_base = Address(PageIndex::from_raw(page_num).base_addr());
                     for offset in op.multi_offsets() {
                         // overflow-ok: `Address` arithmetic is wrapping, and
                         // `offset` is a u16 page offset (`< PAGE_SIZE`).

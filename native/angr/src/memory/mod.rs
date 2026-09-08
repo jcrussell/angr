@@ -674,7 +674,7 @@ impl SymbolicMemory {
                 let actual = page.permissions();
                 if !actual.allows(required) {
                     return Err(MemoryError::Permission {
-                        addr: page_num << 12,
+                        addr: PageIndex::from_raw(page_num).base_addr(),
                         required,
                         actual,
                     });
@@ -722,7 +722,7 @@ impl SymbolicMemory {
         );
 
         for page_num in start_page..end_page {
-            let base = page_num << 12;
+            let base = PageIndex::from_raw(page_num).base_addr();
             if !self.pages.contains_key(&page_num) {
                 self.pages
                     .insert(page_num, MemoryPage::new(base, permissions));
@@ -744,10 +744,9 @@ impl SymbolicMemory {
             let bytes_in_page = (PAGE_SIZE as usize - page_offset).min(remaining.len());
 
             // Get or create page, modify in place (COW handled by Arc::make_mut in store_concrete)
-            let page = self
-                .pages
-                .entry(page_num)
-                .or_insert_with(|| MemoryPage::new(page_num << 12, permissions));
+            let page = self.pages.entry(page_num).or_insert_with(|| {
+                MemoryPage::new(PageIndex::from_raw(page_num).base_addr(), permissions)
+            });
             page.store_concrete(page_offset as u16, &remaining[..bytes_in_page]);
 
             remaining = &remaining[bytes_in_page..];
@@ -1063,7 +1062,10 @@ impl SymbolicMemory {
 
     /// Get list of dirty page addresses (page-aligned addresses).
     pub fn get_dirty_page_addrs(&self) -> Vec<u64> {
-        self.dirty_pages.iter().map(|&pn| pn << 12).collect()
+        self.dirty_pages
+            .iter()
+            .map(|&pn| PageIndex::from_raw(pn).base_addr())
+            .collect()
     }
 
     /// Load an entire page as concrete bytes (4096 bytes).
@@ -1199,7 +1201,7 @@ impl SymbolicMemory {
 
         for page_num in region_start..region_end {
             if !self.pages.contains_key(&page_num) {
-                pages_to_fetch.push(page_num << 12); // Convert to page address
+                pages_to_fetch.push(PageIndex::from_raw(page_num).base_addr());
                 if pages_to_fetch.len() >= max_pages {
                     break;
                 }
@@ -1256,7 +1258,7 @@ impl SymbolicMemory {
         }
 
         // Create a zero page with RWX permissions
-        let page_addr = page_num << 12;
+        let page_addr = PageIndex::from_raw(page_num).base_addr();
         let page = MemoryPage::new(page_addr, Permission::RWX);
         self.pages.insert(page_num, page);
 

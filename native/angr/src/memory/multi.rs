@@ -37,6 +37,7 @@
 use std::cell::RefCell;
 use std::hash::{Hash, Hasher};
 
+use super::page::PageIndex;
 use super::{Address, MemoryPage, Permission, SymbolicMemory};
 use crate::symbolic::{RustBV, SymContext, record_mem_ite_depth};
 use crate::vex::Endness;
@@ -276,7 +277,7 @@ impl SymbolicMemory {
         // need to pre-map stack regions.
         let page_num = addr.page_num();
         let offset = addr.page_offset();
-        let page_addr = page_num << 12;
+        let page_addr = PageIndex::from_raw(page_num).base_addr();
         let page = self
             .pages
             .entry(page_num)

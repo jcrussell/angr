@@ -85,7 +85,7 @@ use crate::symbolic::{
 use crate::vex::Endness;
 
 use super::multi::MultiAlternative;
-use super::page::{MemoryPage, PAGE_SIZE, Permission};
+use super::page::{MemoryPage, PAGE_SIZE, PageIndex, Permission};
 use super::{Address, MemoryError, SymbolicMemory, end_page_exclusive, end_page_inclusive};
 
 impl SymbolicMemory {
@@ -167,7 +167,7 @@ impl SymbolicMemory {
         if start_page == end_page {
             if !self.pages.contains_key(&start_page) {
                 return Err(MemoryError::Unmapped {
-                    addr: start_page << 12,
+                    addr: PageIndex::from_raw(start_page).base_addr(),
                     size: PAGE_SIZE,
                 });
             }
@@ -175,7 +175,7 @@ impl SymbolicMemory {
             for page_num in start_page..=end_page {
                 if !self.pages.contains_key(&page_num) {
                     return Err(MemoryError::Unmapped {
-                        addr: page_num << 12,
+                        addr: PageIndex::from_raw(page_num).base_addr(),
                         size: PAGE_SIZE,
                     });
                 }
@@ -664,9 +664,9 @@ impl SymbolicMemory {
         // permission check happens up-front for every page.
         for (start_page, end_page) in page_ranges {
             for page_num in start_page..=end_page {
-                self.pages
-                    .entry(page_num)
-                    .or_insert_with(|| MemoryPage::new(page_num << 12, Permission::RW));
+                self.pages.entry(page_num).or_insert_with(|| {
+                    MemoryPage::new(PageIndex::from_raw(page_num).base_addr(), Permission::RW)
+                });
             }
         }
 
@@ -764,7 +764,7 @@ impl SymbolicMemory {
                         // (angr-9ke6b.228); see `check_pages_mapped_lazy`.
                         record_mem_lazy_page_fault();
                         return Err(MemoryError::UnmappedPageInRegion {
-                            page_addr: page_num << 12,
+                            page_addr: PageIndex::from_raw(page_num).base_addr(),
                         });
                     }
                     all_mapped = false;
@@ -972,7 +972,7 @@ impl SymbolicMemory {
     fn check_pages_mapped_lazy(&self, start_page: u64, end_page: u64) -> Result<(), MemoryError> {
         for page_num in start_page..end_page {
             if !self.pages.contains_key(&page_num) {
-                let page_addr = page_num << 12;
+                let page_addr = PageIndex::from_raw(page_num).base_addr();
                 return Err(if self.is_in_lazy_region(page_num) {
                     record_mem_lazy_page_fault();
                     MemoryError::UnmappedPageInRegion { page_addr }
@@ -1005,7 +1005,7 @@ impl SymbolicMemory {
         // Auto-map any missing pages in lazy regions
         for page_num in start_page..end_page {
             if !self.pages.contains_key(&page_num) {
-                let page_addr = page_num << 12;
+                let page_addr = PageIndex::from_raw(page_num).base_addr();
                 if self.is_in_lazy_region(page_num) {
                     self.auto_map_zero_page(page_addr);
                 } else {
