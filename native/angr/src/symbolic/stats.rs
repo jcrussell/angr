@@ -311,59 +311,97 @@ pub(crate) static SYMFILE_READS_NATIVE: AtomicU64 = AtomicU64::new(0);
 /// to Python (see `FileSystem::demote_symbolic_content`).
 pub(crate) static SYMFILE_WRITE_DEMOTIONS: AtomicU64 = AtomicU64::new(0);
 
-/// Per-site counters and timers for solver.check() calls.
-/// Indexed by `CheckSite as usize`.
-pub(crate) const NUM_CHECK_SITES: usize = 9;
-pub(crate) static Z3_CHECK_SITE_COUNT: [AtomicU64; NUM_CHECK_SITES] = [
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-];
-pub(crate) static Z3_CHECK_SITE_TIME_NS: [AtomicU64; NUM_CHECK_SITES] = [
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-];
+/// Declares `CheckSite` and every table indexed by it from one variant list,
+/// so a new site cannot be added without its stats-key suffix.
+///
+/// Same shape, and the same failure mode, as `query_class.rs`'s
+/// `query_classes!`: `solver_build.rs::timed_check` indexes
+/// `Z3_CHECK_SITE_COUNT` and `Z3_CHECK_SITE_TIME_NS` by `CheckSite as usize`,
+/// so a tenth variant against nine-entry arrays panics out of bounds the first
+/// time that site fires (angr-6cp06.89). The emitted `const _` block re-checks
+/// that each variant's discriminant still equals its declaration index — the
+/// property the indexing relies on.
+///
+/// The two macros stay separate rather than being hoisted into one shared
+/// spot: this family splits across the `vex-engine-z3` cfg (the enum and
+/// `SITE_NAMES` are gated; the arity and both counter arrays are not, because
+/// `reset_solver_stats` clears them in every build), carries two counter
+/// arrays instead of one, and uses different visibilities. Parameterizing over
+/// all three for a second caller costs more than the variant list it shares.
+macro_rules! check_sites {
+    (
+        $(#[$enum_meta:meta])*
+        enum $name:ident {
+            $( $(#[$var_meta:meta])* $variant:ident => $key:literal, )+
+        }
+    ) => {
+        /// Number of `CheckSite` variants: the length of `SITE_NAMES` and of
+        /// both per-site counter arrays.
+        pub(crate) const NUM_CHECK_SITES: usize = [$($key),+].len();
 
-/// Distinguishes which call site invoked solver.check() for profiling.
-#[cfg(feature = "vex-engine-z3")]
-#[derive(Clone, Copy)]
-pub(super) enum CheckSite {
-    Satisfiable = 0,
-    BranchTrue = 1,
-    BranchFalse = 2,
-    Eval = 3,
-    EvalUpto = 4,
-    MinInit = 5,
-    MinSearch = 6,
-    MaxInit = 7,
-    MaxSearch = 8,
+        /// Per-site count of `solver.check()` calls, indexed by
+        /// `CheckSite as usize`. Ungated because `reset_solver_stats` clears
+        /// it in every build, z3 or not.
+        pub(crate) static Z3_CHECK_SITE_COUNT: [AtomicU64; NUM_CHECK_SITES] =
+            [const { AtomicU64::new(0) }; NUM_CHECK_SITES];
+
+        /// Per-site accumulated `solver.check()` time in nanoseconds; same
+        /// indexing, and ungated for the same reason, as
+        /// `Z3_CHECK_SITE_COUNT`.
+        pub(crate) static Z3_CHECK_SITE_TIME_NS: [AtomicU64; NUM_CHECK_SITES] =
+            [const { AtomicU64::new(0) }; NUM_CHECK_SITES];
+
+        $(#[$enum_meta])*
+        #[cfg(feature = "vex-engine-z3")]
+        #[derive(Clone, Copy)]
+        #[repr(usize)]
+        pub(super) enum $name {
+            $( $(#[$var_meta])* $variant, )+
+        }
+
+        /// Stats-key suffixes, indexed by `CheckSite as usize`.
+        #[cfg(feature = "vex-engine-z3")]
+        pub(crate) const SITE_NAMES: [&str; NUM_CHECK_SITES] = [$($key),+];
+
+        /// Every variant in declaration order; exists only so the const block
+        /// below can walk the discriminants.
+        #[cfg(feature = "vex-engine-z3")]
+        const ALL_CHECK_SITES: [$name; NUM_CHECK_SITES] = [$($name::$variant),+];
+
+        #[cfg(feature = "vex-engine-z3")]
+        const _: () = {
+            let mut i = 0;
+            while i < NUM_CHECK_SITES {
+                assert!(
+                    ALL_CHECK_SITES[i] as usize == i,
+                    "CheckSite discriminants must equal their declaration index — \
+                     SITE_NAMES and both Z3_CHECK_SITE_* arrays are indexed by them",
+                );
+                i += 1;
+            }
+        };
+    };
 }
 
-#[cfg(feature = "vex-engine-z3")]
-pub(crate) const SITE_NAMES: [&str; NUM_CHECK_SITES] = [
-    "satisfiable",
-    "branch_true",
-    "branch_false",
-    "eval",
-    "eval_upto",
-    "min_init",
-    "min_search",
-    "max_init",
-    "max_search",
-];
+check_sites! {
+    /// Distinguishes which call site invoked solver.check() for profiling.
+    ///
+    /// Declaration order *is* the index into `SITE_NAMES`,
+    /// `Z3_CHECK_SITE_COUNT` and `Z3_CHECK_SITE_TIME_NS`; all three are
+    /// generated from this list, so adding a site means adding its stats-key
+    /// suffix on the same line.
+    enum CheckSite {
+        Satisfiable => "satisfiable",
+        BranchTrue => "branch_true",
+        BranchFalse => "branch_false",
+        Eval => "eval",
+        EvalUpto => "eval_upto",
+        MinInit => "min_init",
+        MinSearch => "min_search",
+        MaxInit => "max_init",
+        MaxSearch => "max_search",
+    }
+}
 
 /// Emit the per-`CheckSite` count/time pairs into `stats`.
 ///
