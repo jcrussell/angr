@@ -509,9 +509,10 @@ impl RustExplorationManager {
         self.materialize_unconstrained_forks
     }
 
-    /// Cumulative number of loop-exit deferred forks dropped at an
-    /// `UnconstrainedJump` while deferred-fork mode was active (angr-ckdy).
-    /// Non-resetting.
+    /// Cumulative number of deferred forks dropped without materialization:
+    /// loop-exit forks at an `UnconstrainedJump` while deferred-fork mode was
+    /// active (angr-ckdy), plus the forks a block was holding when its
+    /// `resolve_function` callback raised (angr-6cp06.20). Non-resetting.
     ///
     /// Diagnostic-only: nothing in `angr/` or `tests/` reads this today. It
     /// distinguishes "the active stash collapsed because egg-reaching forks

@@ -229,8 +229,19 @@ impl RustExplorationManager {
                     )
                 }
                 Err(e) => {
-                    // Callback error - treat as execution error
-                    log::warn!("resolve_function callback error at 0x{addr:x}: {e}");
+                    // Callback error - treat as execution error. `StepError::Error`
+                    // carries a single state, so the forks this block deferred have
+                    // nowhere to go; count and log the loss rather than dropping it
+                    // silently (angr-6cp06.20).
+                    // SILENT(cat-c): the errored state still reaches the `errored`
+                    // stash, but every sibling path this block branched away from is
+                    // lost with it, so a run can report "not found" for a target only
+                    // one of those siblings reached.
+                    log::warn!(
+                        "resolve_function callback error at 0x{addr:x}: {e} (dropping {} deferred fork(s))",
+                        deferred_forks.len()
+                    );
+                    self.deferred_forks_dropped += deferred_forks.len() as u64;
                     Err(StepError::Error(
                         state,
                         format!("resolve_function error: {e}"),

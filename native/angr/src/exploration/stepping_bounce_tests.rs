@@ -1,9 +1,11 @@
 //! Regression coverage for [`RustExplorationManager::dispatch_bounce`]'s
-//! pre-callback snapshot contract (angr-6cp06.19).
+//! pre-callback snapshot contract (angr-6cp06.19) and its `UnmodeledCall`
+//! arm's dropped-fork accounting (angr-6cp06.20).
 
 use super::*;
 use crate::exploration::core_outcome::{BounceKind, PendingBounce};
 use crate::exploration::test_support::mgr_and_state;
+use pyo3::types::PyDict;
 use rustc_hash::FxHashMap;
 
 fn deferred_fork() -> crate::callbacks::DeferredFork {
@@ -112,6 +114,65 @@ fn hook_bounce_snapshots_state_when_forks_are_deferred() {
             snapshot.expect("deferred forks need a fork base").pc(),
             0x40_5000,
             "the Hook arm sets the hook pc before snapshotting"
+        );
+    });
+}
+
+/// A `resolve_function` callback that raises turns the whole block into an
+/// error, and `StepError::Error` has no room for the forks the block deferred
+/// — so they are lost. That loss must at least be *counted*: the sibling
+/// `Ok(None)` / no-callback arms materialize the same forks through
+/// `unmodeled_call_generic_skip`, and losing them without a trace makes a
+/// truncated exploration indistinguishable from an exhausted one
+/// (angr-6cp06.20).
+#[test]
+fn unmodeled_call_resolve_error_counts_the_forks_it_drops() {
+    Python::initialize();
+    Python::attach(|py| {
+        let globals = PyDict::new(py);
+        py.run(
+            c"def boom(addr, symbol_name):
+    raise ValueError('no resolver')
+",
+            Some(&globals),
+            None,
+        )
+        .expect("define raising resolve_function");
+        let mut callbacks = PythonCallbacks::new();
+        callbacks.set_resolve_function(
+            globals
+                .get_item("boom")
+                .unwrap()
+                .expect("boom defined")
+                .unbind(),
+        );
+
+        let (mut mgr, state, _id) = mgr_and_state(0x40_1000);
+        assert_eq!(mgr.deferred_forks_dropped(), 0);
+        let bounce = bounce_with(
+            BounceKind::UnmodeledCall {
+                addr: 0x40_7000,
+                return_addr: 0x40_1010,
+                symbol_name: None,
+            },
+            state,
+            vec![deferred_fork(), deferred_fork()],
+        );
+
+        match mgr.dispatch_bounce(&callbacks, bounce) {
+            Err(StepError::Error(_, message)) => {
+                assert!(
+                    message.contains("resolve_function error"),
+                    "unexpected error message: {message}"
+                );
+            }
+            _ => panic!("a raising resolve_function must error the state"),
+        }
+
+        assert_eq!(
+            mgr.deferred_forks_dropped(),
+            2,
+            "both deferred forks died with the errored state and must be counted"
         );
     });
 }

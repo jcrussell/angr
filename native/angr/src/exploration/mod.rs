@@ -322,11 +322,15 @@ pub struct RustExplorationManager {
     /// the first time `max_active_states` prunes a state — makes a runaway
     /// explosion visible in the log without spamming on tight fork loops.
     pub(crate) max_active_warned: bool,
-    /// Cumulative count of loop-exit deferred forks DROPPED at an
-    /// `UnconstrainedJump` while `exec_config.use_deferred_forks` is true
-    /// (the angr-027h phase-1 behavior). Non-zero means a step-driven run
-    /// reached `active_empty` only because egg-reaching loop-exit forks were
-    /// discarded — the precise trigger Python's `_maybe_step_eager_retry`
+    /// Cumulative count of deferred forks DROPPED without materialization.
+    /// Two contributors: loop-exit forks dropped at an `UnconstrainedJump`
+    /// while `exec_config.use_deferred_forks` is true (the angr-027h phase-1
+    /// behavior), and forks held by a block whose `resolve_function` callback
+    /// raised, since the resulting `StepError::Error` carries only the one
+    /// errored state (`stepping_bounce.rs::handle_unmodeled_call`,
+    /// angr-6cp06.20). Non-zero in the dominant first case means a
+    /// step-driven run reached `active_empty` only because egg-reaching
+    /// loop-exit forks were discarded — the precise trigger Python's `_maybe_step_eager_retry`
     /// uses to flip to eager mode and re-seed (angr-ckdy). Always tracked
     /// (not gated on profiling) so the bare `step()` loop in CADET's solve.py
     /// phase 3 can read it. Read (non-resetting) via
