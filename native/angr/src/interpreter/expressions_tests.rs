@@ -686,3 +686,111 @@ fn oversized_load_falls_back_to_python_rather_than_erroring() {
     let res = interp.try_rust_memory_load(&callbacks, &addr, 8, None);
     assert!(matches!(res, Ok(None)), "unmapped load must defer to Python");
 }
+
+// ---------------------------------------------------------------------------
+// AVOID_MULTIVALUED_READS (angr-6cp06.67)
+// ---------------------------------------------------------------------------
+
+/// Concretizer with `avoid_multivalued_reads` set to `on` and nothing else
+/// changed from the default.
+fn mv_read_concretizer(on: bool) -> crate::concretize::AddressConcretizer {
+    let mut c = crate::concretize::AddressConcretizer::new();
+    c.configure_strategies(false, None, None, false, on, false);
+    c
+}
+
+/// A 64-bit BVS pinned by constraint to `addr`. `as_u64()` stays `None` so
+/// `should_avoid_multivalued_read` fires, yet the concretizer has exactly one
+/// solution when it does not — so ON and OFF differ only by the short-circuit.
+fn pinned_symbolic_addr(ctx: &SymContext, name: &str, addr: u64) -> RustBV {
+    let bv = RustBV::symbolic(ctx, name, 64);
+    ctx.assume_true(&bv.eq(&RustBV::concrete(addr as u128, 64), ctx));
+    assert!(bv.as_u64().is_none(), "address must stay symbolic");
+    bv
+}
+
+/// `load_symbolic_addr` is the callback-mode load path (no `rust_memory`), and
+/// carries its own copy of the AVOID_MULTIVALUED_READS short-circuit ahead of
+/// `concretize_cached_read`. With the option on it must mint an unconstrained
+/// value without consulting the concrete-memory cache at all.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn load_symbolic_addr_short_circuits_under_avoid_multivalued_reads() {
+    use crate::callbacks::PythonCallbacks;
+    pyo3::Python::initialize();
+    let callbacks = PythonCallbacks::new();
+    let ctx = SymContext::new_mock();
+    let backer: u64 = 0xDEAD_BEEF_CAFE_BABE;
+
+    let load = |on: bool, name: &str| {
+        let mut interp = new_interp(&ctx);
+        interp.add_concrete_memory(0x1000, backer.to_le_bytes().to_vec());
+        interp.set_concretizer(mv_read_concretizer(on));
+        let addr = pinned_symbolic_addr(&ctx, name, 0x1000);
+        interp
+            .load_symbolic_addr(&callbacks, &addr, 8)
+            .expect("load must succeed")
+    };
+
+    let off = load(false, "mv_expr_off");
+    assert_eq!(
+        (ctx.min(&off, false), ctx.max(&off, false)),
+        (Some(backer as u128), Some(backer as u128)),
+        "option off: the pinned address must concretize and read the backer"
+    );
+
+    let on = load(true, "mv_expr_on");
+    assert_eq!(
+        (ctx.min(&on, false), ctx.max(&on, false)),
+        (Some(0), Some(u64::MAX as u128)),
+        "option on: the load must be fully unconstrained, not the backer"
+    );
+}
+
+/// `try_rust_memory_load` has a second copy of the same short-circuit that
+/// returns before `SymbolicMemory::load_symbolic_unified` is called at all.
+///
+/// Note it is *defense in depth*, not the sole gate on this path: neutering
+/// only this copy still yields an unconstrained value, because
+/// `load_symbolic_unified` carries its own (covered by
+/// `memory::tests::avoid_multivalued`). So this test pins the entry point's
+/// observable ON/OFF contract; what the interpreter-level copy adds on top is
+/// skipping the call — not a different result.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn try_rust_memory_load_short_circuits_under_avoid_multivalued_reads() {
+    use crate::callbacks::PythonCallbacks;
+    pyo3::Python::initialize();
+    let callbacks = PythonCallbacks::new();
+    let ctx = SymContext::new_mock();
+    let backer: u128 = 0xDEAD_BEEF_CAFE_BABE;
+
+    let load = |on: bool, name: &str| {
+        let mut interp = new_interp(&ctx);
+        let mut mem = SymbolicMemory::new(Endness::Little);
+        mem.map(0x1000, 0x1000, crate::memory::Permission::RWX);
+        mem.store_concrete(0x1000, RustBV::concrete(backer, 64))
+            .expect("plant backer");
+        interp.set_rust_memory(mem);
+        interp.set_concretizer(mv_read_concretizer(on));
+        let addr = pinned_symbolic_addr(&ctx, name, 0x1000);
+        interp
+            .try_rust_memory_load(&callbacks, &addr, 8, None)
+            .expect("load must succeed")
+            .expect("rust memory must handle the load, not defer to Python")
+    };
+
+    let off = load(false, "mv_rustmem_off");
+    assert_eq!(
+        (ctx.min(&off, false), ctx.max(&off, false)),
+        (Some(backer), Some(backer)),
+        "option off: unified load must read the backer"
+    );
+
+    let on = load(true, "mv_rustmem_on");
+    assert_eq!(
+        (ctx.min(&on, false), ctx.max(&on, false)),
+        (Some(0), Some(u64::MAX as u128)),
+        "option on: the load must be fully unconstrained"
+    );
+}

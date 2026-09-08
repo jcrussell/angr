@@ -1292,3 +1292,126 @@ fn partially_buffered_load_overlays_pending_bytes_on_symbolic_lower_layer() {
         "the buffered byte must win over the symbolic lower layer"
     );
 }
+
+// ---------------------------------------------------------------------------
+// AVOID_MULTIVALUED_WRITES (angr-6cp06.67)
+// ---------------------------------------------------------------------------
+
+/// Concretizer with `avoid_multivalued_writes` set to `on` and nothing else
+/// changed from the default.
+fn mv_write_concretizer(on: bool) -> crate::concretize::AddressConcretizer {
+    let mut c = crate::concretize::AddressConcretizer::new();
+    c.configure_strategies(false, None, None, false, false, on);
+    c
+}
+
+/// Interpreter owning a mapped page at 0x1000 with `backer` planted at the
+/// start of it, and `avoid_multivalued_writes` set to `on`.
+fn mv_write_interp<'a>(ctx: &'a SymContext, on: bool, backer: u128) -> VEXInterpreter<'a> {
+    let mut interp = new_interp(ctx);
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    mem.map(0x1000, PAGE_SIZE, crate::memory::Permission::RWX);
+    mem.store_concrete(0x1000, RustBV::concrete(backer, 64))
+        .expect("plant backer");
+    interp.set_rust_memory(mem);
+    interp.set_concretizer(mv_write_concretizer(on));
+    interp
+}
+
+/// Commit any buffered stores and read 0x1000 back out of `rust_memory`.
+/// Reads the memory directly rather than through an interpreter load path, so
+/// the verification never re-enters the code under test.
+fn mv_write_read_back(interp: &mut VEXInterpreter<'_>, ctx: &SymContext) -> Option<u64> {
+    interp.flush_stores_to_rust_memory();
+    let mem = interp.take_rust_memory().expect("interpreter owns memory");
+    mem.load_concrete(0x1000, 8, ctx)
+        .expect("read-back must succeed")
+        .as_u64()
+}
+
+/// A 64-bit BVS pinned by constraint to 0x1000: symbolic enough for
+/// `should_avoid_multivalued_write` to fire, single-valued enough that with the
+/// option off the write concretizes to exactly one place.
+fn mv_write_addr(ctx: &SymContext, name: &str) -> RustBV {
+    let bv = RustBV::symbolic(ctx, name, 64);
+    ctx.assume_true(&bv.eq(&RustBV::concrete(0x1000, 64), ctx));
+    assert!(bv.as_u64().is_none(), "address must stay symbolic");
+    bv
+}
+
+/// `try_rust_memory_store`'s AVOID_MULTIVALUED_WRITES gate returns
+/// `Ok(true)` — "handled" — without concretizing or buffering anything, so the
+/// backer survives. With the option off the same store lands.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn try_rust_memory_store_drops_the_write_under_avoid_multivalued_writes() {
+    pyo3::Python::initialize();
+    let callbacks = PythonCallbacks::new();
+    let ctx = SymContext::new_mock();
+    let backer: u128 = 0xDEAD_BEEF_CAFE_BABE;
+    let stored: u128 = 0x0102_0304_0506_0708;
+
+    let mut off = mv_write_interp(&ctx, false, backer);
+    let addr = mv_write_addr(&ctx, "mvw_off");
+    let handled = off
+        .try_rust_memory_store(&callbacks, &addr, &RustBV::concrete(stored, 64), 8, None)
+        .expect("store with the option off must succeed");
+    assert!(handled, "option off: rust memory must handle the store");
+    assert_eq!(
+        mv_write_read_back(&mut off, &ctx),
+        Some(stored as u64),
+        "option off: the pinned address must concretize and take the write"
+    );
+
+    let mut on = mv_write_interp(&ctx, true, backer);
+    let addr = mv_write_addr(&ctx, "mvw_on");
+    let handled = on
+        .try_rust_memory_store(&callbacks, &addr, &RustBV::concrete(stored, 64), 8, None)
+        .expect("store with the option on must succeed");
+    assert!(
+        handled,
+        "option on: the drop is still 'handled' — it must not fall through to Python"
+    );
+    assert_eq!(
+        mv_write_read_back(&mut on, &ctx),
+        Some(backer as u64),
+        "option on: the write must be dropped, leaving the backer intact"
+    );
+}
+
+/// `handle_symbolic_store` carries a second copy of the same gate, placed
+/// ahead of `flush_stores` and `concretize_cached_write`. Covered separately
+/// from `try_rust_memory_store` because deleting either copy leaves the other
+/// green.
+///
+/// This site is only reachable with `use_rust_memory == false` (see
+/// `handle_symbolic_store_strided_invalidates_cached_candidate_only`), so the
+/// OFF baseline uses that test's idiom: with no `memory_store` callback
+/// registered the store dispatch the gate would have skipped errors out. ON
+/// returning `Ok(())` on the identical setup is therefore proof the write was
+/// dropped before ever reaching that dispatch — the gate's whole contract.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn handle_symbolic_store_drops_the_write_under_avoid_multivalued_writes() {
+    let ctx = SymContext::new_mock();
+    let stored = RustBV::concrete(0x0102_0304, 32);
+
+    let mut off = new_interp(&ctx);
+    off.set_concretizer(mv_write_concretizer(false));
+    let off_addr = mv_write_addr(&ctx, "mvhs_off");
+    with_python(|cb| {
+        let res = off.handle_symbolic_store(cb, &off_addr, &stored, 4);
+        assert!(
+            res.is_err(),
+            "option off: the store must reach the unregistered store dispatch, got {res:?}"
+        );
+    });
+
+    let mut on = new_interp(&ctx);
+    on.set_concretizer(mv_write_concretizer(true));
+    let on_addr = mv_write_addr(&ctx, "mvhs_on");
+    with_python(|cb| {
+        on.handle_symbolic_store(cb, &on_addr, &stored, 4)
+            .expect("option on: the dropped store must report success, not an error");
+    });
+}

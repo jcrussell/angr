@@ -3,6 +3,9 @@
 //! Split into per-feature submodules to keep individual files manageable.
 //! Each submodule lives next door to the production code via `super::super`.
 //!
+//! - `avoid_multivalued`: the AVOID_MULTIVALUED_READS/WRITES short-circuits at
+//!   all five memory-level gates, ON vs OFF, plus the concrete-address
+//!   non-firing case.
 //! - `basic`: core ops (concrete load/store, endianness, fork, map_data,
 //!   fast-path symbolic, permission/check-executable).
 //! - `symbolic_load_store`: core symbolic store/load paths — per-byte concat
@@ -37,6 +40,7 @@
 //! - `page_boundary_property_tests`: property-based concrete round-trips for
 //!   stores/loads straddling a page boundary.
 
+mod avoid_multivalued;
 mod basic;
 mod ite_dedup;
 mod merge_cost_shape;
