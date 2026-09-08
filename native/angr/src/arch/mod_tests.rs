@@ -1491,6 +1491,53 @@ fn be_register_file_mirrors_sub_register_access() {
     );
 }
 
+/// angr-6cp06.74: `RegisterFile::merge` works entirely in *storage*
+/// coordinates — its offset set comes from both files' `symbolic` keys, which
+/// `put` wrote after mirroring. It used to feed those keys to `get`, which
+/// mirrors again; on a big-endian file that lands on the *other* half of the
+/// containing register, so the merge composed and ITE'd the wrong sub-field.
+/// Invisible on every little-endian arch (`mirror_offset` is the identity) and
+/// on every pre-existing merge test, which all use the LE-only
+/// `RegisterFile::new`.
+///
+/// The repro is the documented MIPS FR=0 shape: `self` writes a symbolic
+/// 32-bit `f2_lo` at f2's base offset (stored under the mirrored key `f2 + 4`),
+/// `other` writes a concrete whole-register `f2`. Reading `f2_lo` back out of
+/// the merge must give the register's HIGH word, exactly as
+/// `be_register_file_mirrors_sub_register_access` pins for a plain read.
+#[test]
+fn be_merge_reads_the_other_side_in_storage_coordinates() {
+    let ctx = SymContext::new_mock();
+    let f2 = MIPS32.register_offset("f2").unwrap();
+
+    let build = || {
+        let mut a = RegisterFile::new_with_endian(Box::new(MIPS32), false);
+        a.put(f2, RustBV::symbolic(&ctx, "f2_lo", 32));
+        let mut b = RegisterFile::new_with_endian(Box::new(MIPS32), false);
+        b.put_reg("f2", RustBV::concrete(0xAABB_CCDD_1122_3344, 64));
+        (a, b)
+    };
+
+    // cond = 1 folds the ITE to `other`'s side.
+    let (mut a, b) = build();
+    assert!(a.merge(&b, &RustBV::concrete(1, 1), &ctx));
+    assert_eq!(
+        a.get(f2, 4, &ctx).as_u64(),
+        Some(0xAABB_CCDD),
+        "merged f2_lo must be other's HIGH word, not its low one"
+    );
+
+    // cond = 0 folds to `self`'s side, which is still the symbol it wrote.
+    let (mut a, b) = build();
+    assert!(a.merge(&b, &RustBV::concrete(0, 1), &ctx));
+    let got = a.get(f2, 4, &ctx);
+    assert_eq!(got.width(), 32);
+    assert!(
+        matches!(&got, RustBV::Symbolic { name, .. } if &**name == "f2_lo"),
+        "merged f2_lo must be self's own overlay, got {got:?}"
+    );
+}
+
 /// The little-endian path must be byte-for-byte what it was before
 /// angr-fuhmm: no containment table, `mirror_offset` the identity.
 #[test]

@@ -156,9 +156,34 @@ impl RegisterFile {
         result
     }
 
-    /// Read a register value by offset and size.
+    /// Read a register value by *raw VEX* offset and size.
+    ///
+    /// Mirrors the offset into storage coordinates (see
+    /// [`Self::mirror_offset`]) and delegates to [`Self::get_storage`].
     pub(crate) fn get(&self, offset: u32, size: u32, ctx: &crate::symbolic::SymContext) -> RustBV {
-        let offset = self.mirror_offset(offset, size);
+        self.get_storage(self.mirror_offset(offset, size), size, ctx)
+    }
+
+    /// [`Self::get`] in *storage* coordinates: reads the byte range
+    /// `[offset, offset + size)` of this file's unconditionally little-endian
+    /// storage without applying [`Self::mirror_offset`] first.
+    ///
+    /// A caller that already holds a storage key — i.e. a key of
+    /// `self.symbolic`, which [`Self::put`] wrote *after* mirroring — must come
+    /// through here rather than [`Self::get`]. [`Self::merge`] builds its
+    /// offset set out of both files' `symbolic` keys and out of `data` indices,
+    /// all of which are storage coordinates; re-mirroring one of those on a
+    /// big-endian file lands on the *other* half of the containing register, so
+    /// the merge composes and ITEs the wrong sub-field (angr-6cp06.74). The
+    /// involution property does not rescue it: the doubly-mirrored value is
+    /// used as a real lookup key and bit-range reference against actual storage
+    /// entries, not merely recomputed and discarded.
+    pub(super) fn get_storage(
+        &self,
+        offset: u32,
+        size: u32,
+        ctx: &crate::symbolic::SymContext,
+    ) -> RustBV {
         // Check for symbolic value at this exact offset
         if let Some(sym) = self.symbolic.get(&offset) {
             if sym.width() == size * 8 {
@@ -531,6 +556,13 @@ impl RegisterFile {
     /// value instead, as this used to, made the merged state behave as if only
     /// `self`'s path could reach the register: an unsound merge.
     ///
+    /// Every offset this function handles — the `symbolic` keys of both files
+    /// and the `data` chunk indices — is a *storage* coordinate, so both files
+    /// are read through [`Self::get_storage`], never [`Self::get`]. On a
+    /// big-endian file [`Self::get`] would mirror an already-mirrored key a
+    /// second time and compose the wrong half of the containing register
+    /// (angr-6cp06.74).
+    ///
     /// Returns true if any register was actually merged (values differed).
     pub(crate) fn merge(
         &mut self,
@@ -580,8 +612,8 @@ impl RegisterFile {
                             && end <= self.data.len()
                             && end <= other.data.len()
                         {
-                            let self_full = self.get(offset, size, ctx);
-                            let other_full = other.get(offset, size, ctx);
+                            let self_full = self.get_storage(offset, size, ctx);
+                            let other_full = other.get_storage(offset, size, ctx);
                             updates
                                 .push((offset, merge_cond_other.ite(&other_full, &self_full, ctx)));
                             widened.push((offset, size));
@@ -613,7 +645,7 @@ impl RegisterFile {
                     // concrete for it (angr-49v03).
                     let size = sv.width() / 8;
                     if size > 0 && offset as usize + size as usize <= other.data.len() {
-                        let other_full = other.get(offset, size, ctx);
+                        let other_full = other.get_storage(offset, size, ctx);
                         updates.push((offset, merge_cond_other.ite(&other_full, sv, ctx)));
                     }
                 }
@@ -622,7 +654,7 @@ impl RegisterFile {
                     // symbolic — same reasoning as above, mirrored.
                     let size = ov.width() / 8;
                     if size > 0 && offset as usize + size as usize <= self.data.len() {
-                        let self_full = self.get(offset, size, ctx);
+                        let self_full = self.get_storage(offset, size, ctx);
                         updates.push((offset, merge_cond_other.ite(ov, &self_full, ctx)));
                     }
                 }
@@ -672,8 +704,8 @@ impl RegisterFile {
                         (off + 1..off + reg_bytes).any(|k| all_offsets.contains(&(k as u32)));
                     if inner_symbolic {
                         let size = reg_bytes as u32;
-                        let self_full = self.get(u32_off, size, ctx);
-                        let other_full = other.get(u32_off, size, ctx);
+                        let self_full = self.get_storage(u32_off, size, ctx);
+                        let other_full = other.get_storage(u32_off, size, ctx);
                         updates.push((u32_off, merge_cond_other.ite(&other_full, &self_full, ctx)));
                         widened.push((u32_off, size));
                     } else {
