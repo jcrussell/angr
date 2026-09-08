@@ -182,7 +182,10 @@ impl FileSystem {
     /// (the Python SimFile model has the authoritative content from
     /// Phase 3's export). No-op (`false`) for fds without symbolic content
     /// — the common case, O(1) with no allocation, so native writes stay
-    /// cheap.
+    /// cheap. An fd carrying `content_sym` with no `registry_key` (what
+    /// [`set_fd_content_sym`](Self::set_fd_content_sym) mints for seeded
+    /// stdin) is demoted on its own, since there is no registry entry or
+    /// sibling set to fan out over.
     ///
     /// Post-demotion trade-off (deliberate v1 scope): metadata ops on the
     /// file — `feof` / `fstat` / `SEEK_END` / stat-by-path — keep
@@ -198,10 +201,15 @@ impl FileSystem {
             return false;
         };
         let Some(key) = desc.registry_key.clone() else {
-            // Defensive: `content_sym` without a `registry_key` cannot be
-            // minted by `open` (which sets both), but a hand-built or
-            // legacy-snapshot descriptor could carry it — demote the
-            // single fd so it never serves stale bytes.
+            // `content_sym` without a `registry_key` is the shape
+            // `set_fd_content_sym` mints by design — it attaches straight
+            // to an already-open fd and never touches the path registry —
+            // so this is the NORMAL path for stdin-seeded harnesses
+            // (`RustExplorationManager::_seed_stdin_to_rust` ->
+            // `_seed_stdin_content` -> `set_fd_content_sym(0, ..)`) whose
+            // guest then writes to fd 0, not a defensive corner. There is
+            // no registry entry to drop and no key to fan out over, so
+            // demote just this fd; it can never serve stale bytes after.
             if desc.content_sym.is_none() {
                 return false;
             }

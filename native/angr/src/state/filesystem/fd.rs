@@ -83,7 +83,10 @@ pub struct FileDescriptor {
     /// registry entry (and demotion needs no per-write path allocation).
     /// Set by [`FileSystem::open`] when it attaches `content_sym`, and by
     /// [`FileSystem::register_file_content`] on already-open fds of the
-    /// registered path. Cleared on demotion. `#[serde(default)]` keeps
+    /// registered path — but left `None` when content arrives through
+    /// [`FileSystem::set_fd_content_sym`], which bypasses the registry
+    /// entirely (stdin seeding), so `content_sym.is_some()` does NOT imply
+    /// a key. Cleared on demotion. `#[serde(default)]` keeps
     /// earlier snapshots loadable (reconstitutes to `None`).
     #[serde(default)]
     pub registry_key: Option<String>,
