@@ -1016,6 +1016,53 @@ fn test_eval_wide_deterministic_is_unsigned_min() {
     }
 }
 
+/// Regression (angr-6cp06.45): at a width that is not a multiple of 8, the
+/// ragged chunk belongs in the *most*-significant output byte. `min_wide` used
+/// to slice full bytes off the top and let the remainder fall out last, which
+/// put the ragged bits in the least-significant byte and misaligned every other
+/// byte by `width % 8` — both callers feed the result straight to
+/// `int.from_bytes(..., "big")`, so nothing downstream compensated.
+///
+/// Pins a 129-bit BV to an exact value whose top byte is the 1-bit ragged one,
+/// and cross-checks the strict-deterministic encoding against the default
+/// arbitrary-model path (which goes through `extract_bv_value_wide`, the
+/// convention `make_bv_from_bytes` documents).
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_eval_wide_deterministic_ragged_width_is_big_endian() {
+    const WIDTH: u32 = 129;
+    const LOW: u128 = 0x0102;
+
+    // Right-aligned big-endian: byte 0 is the 1-bit top chunk, bytes 1..=16 are
+    // the low 128 bits.
+    let mut expected = vec![0u8; 17];
+    expected[0] = 1;
+    expected[15] = 0x01;
+    expected[16] = 0x02;
+
+    let pin = |ctx: &SymContext| {
+        let x = RustBV::symbolic(ctx, "x", WIDTH);
+        let top = x.extract(WIDTH - 1, WIDTH - 1, ctx);
+        let low = x.extract(127, 0, ctx);
+        let top_eq = top.eq(&RustBV::concrete(1, 1), ctx);
+        let low_eq = low.eq(&RustBV::concrete(LOW, 128), ctx);
+        ctx.assume_true(&top_eq);
+        ctx.assume_true(&low_eq);
+        x
+    };
+
+    let ctx = SymContext::new();
+    ctx.set_deterministic(true);
+    let x = pin(&ctx);
+    assert_eq!(ctx.eval_wide(&x), Some(expected.clone()));
+
+    // The default path reads the same value off an arbitrary model; the
+    // constraints admit exactly one, so the two encodings must agree.
+    let plain = SymContext::new();
+    let y = pin(&plain);
+    assert_eq!(plain.eval_wide(&y), Some(expected));
+}
+
 // ---------------------------------------------------------------------------
 // angr-ph300.43: Z3 Unknown (timeout) must not be conflated with Unsat in the
 // binary-search extrema or the branch-feasibility checks. A mid-bisection

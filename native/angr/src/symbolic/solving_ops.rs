@@ -901,10 +901,16 @@ impl SymContext {
         let mut parts = Vec::with_capacity(bv.width().div_ceil(8) as usize);
         let mut hi = bv.width();
         while hi > 0 {
-            // The most-significant part is narrower than a byte when the width
-            // is not a multiple of 8; it still lands in one output byte.
-            let lo = hi.saturating_sub(8);
-            parts.push((ast.extract(hi - 1, lo), hi - lo));
+            // The ragged chunk is the FIRST (most-significant) one, not the
+            // last: `make_bv_from_bytes` (bv_codec.rs) documents the byte array
+            // as a right-aligned big-endian value, so a width that is not a
+            // multiple of 8 has a short TOP byte. Slicing full bytes off the
+            // top instead would land the ragged chunk in the least-significant
+            // byte and misalign every other byte by `width % 8` bits
+            // (angr-6cp06.45).
+            let chunk = if hi.is_multiple_of(8) { 8 } else { hi % 8 };
+            let lo = hi - chunk;
+            parts.push((ast.extract(hi - 1, lo), chunk));
             hi = lo;
         }
         Some(
