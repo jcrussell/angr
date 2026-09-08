@@ -478,15 +478,7 @@ impl RustBV {
                 let ast = operands[0].to_z3_ast_cached(cache);
                 let w = operands[0].width();
                 if w.is_multiple_of(8) && w >= 16 {
-                    // Same canonical shape as the non-cached path above.
-                    let bytes = w / 8;
-                    let parts: Vec<z3::ast::BV> =
-                        (0..bytes).map(|i| ast.extract(i * 8 + 7, i * 8)).collect();
-                    let mut result = parts[0].clone();
-                    for part in &parts[1..] {
-                        result = result.concat(part);
-                    }
-                    result
+                    z3_reverse_bytes(&ast, w)
                 } else {
                     ast
                 }
@@ -1125,6 +1117,30 @@ fn collect_concat_leaves<'a>(bv: &'a RustBV, out: &mut Vec<&'a RustBV>) {
     }
 }
 
+/// Emit the canonical byte-reverse shape for an already-built Z3 bitvector:
+/// a `Concat` of per-byte `Extract`s, low byte first, so the low byte of
+/// `ast` becomes the high byte of the result.
+///
+/// Z3 has no native byte-reverse operator, so every lowering of `BVOp::Reverse`
+/// has to spell one out. Single source of truth for the shuffle order, shared
+/// by `build_z3_ast_cached`'s `BVOp::Reverse` arm (bare Reverse) and
+/// `Z3ExtractTarget`'s
+/// [`ExtractTarget::reverse_bytes`](super::value_ops::ExtractTarget::reverse_bytes)
+/// impl (Extract-of-Reverse) — they used to carry their own inline copies, so
+/// a correction to the byte order could have been applied to one and missed in
+/// the other.
+///
+/// `width` must be at least 8; a sub-byte width has no bytes to shuffle and
+/// callers screen it out before reaching here.
+#[cfg(feature = "vex-engine-z3")]
+fn z3_reverse_bytes(ast: &z3::ast::BV, width: u32) -> z3::ast::BV {
+    // Fold rather than index a `Vec`: the first byte is always present given
+    // the width precondition, so there is no empty-slice panic to reason about.
+    (1..width / 8).fold(ast.extract(7, 0), |acc, i| {
+        acc.concat(ast.extract(i * 8 + 7, i * 8))
+    })
+}
+
 /// Width at which the Clz/Ctz/Popcount encodings in
 /// [`RustBV::build_z3_ast_cached`] accumulate, before a single `zero_ext` back
 /// out to the operand width.
@@ -1340,19 +1356,11 @@ impl super::value_ops::ExtractTarget for Z3ExtractTarget<'_> {
         z3::ast::BV::from_u64(0, width)
     }
 
-    /// Byte-reverse an already-extracted multi-byte value. Z3 has no native
-    /// Reverse, so emit the canonical Concat-of-Extracts shape (matching
-    /// build_z3_ast_cached's BVOp::Reverse arm).
+    /// Byte-reverse an already-extracted multi-byte value, via the shared
+    /// [`z3_reverse_bytes`] shape that `build_z3_ast_cached`'s `BVOp::Reverse`
+    /// arm also emits.
     fn reverse_bytes(&mut self, inner: z3::ast::BV, inner_width: u32) -> z3::ast::BV {
-        let byte_count = inner_width / 8;
-        let parts: Vec<z3::ast::BV> = (0..byte_count)
-            .map(|i| inner.extract(i * 8 + 7, i * 8))
-            .collect();
-        let mut result = parts[0].clone();
-        for part in &parts[1..] {
-            result = result.concat(part);
-        }
-        result
+        z3_reverse_bytes(&inner, inner_width)
     }
 
     fn default_extract(&mut self, inner: &RustBV, high: u32, low: u32) -> z3::ast::BV {
