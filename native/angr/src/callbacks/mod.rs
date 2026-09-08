@@ -100,8 +100,13 @@
 //!   unset (module invariant 1 above).
 //! - [`events`] — [`RunResult`] / [`RunErrorKind`] / [`ErrorRoute`], the
 //!   outcome types a dispatch hands back.
-//! - [`inspect`] — the 18 `call_inspect_*` breakpoint dispatches, whose unset
-//!   arm is a documented no-op.
+//! - [`inspect`] — the `call_inspect_*` breakpoint dispatches (`mem_read` /
+//!   `mem_write` / `reg_read` / `reg_write` / `instruction` / `irsb` / `exit` /
+//!   `call` / `return` / `tmp_read` / `tmp_write` / `statement` / `expr` /
+//!   `address_concretization` / `symbolic_variable` / `fork` / `constraints` /
+//!   `vex_lift`), whose unset arm is a documented no-op. Each one's body and
+//!   the slot field it reads are derived from a single ident by
+//!   [`angr_macros::inspect_dispatch`].
 //! - [`inspect_bits`] — [`InspectBit`], the atomic enabled-event bitmask that
 //!   normally keeps the engine from reaching an `inspect` slot at all.
 //! - [`inspect_test_entries`] — Python-visible test entry points onto that

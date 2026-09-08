@@ -1,0 +1,8 @@
+error: inspect_dispatch: `fork` must call `self.with_slot(..)` exactly once (found 0) — that placeholder is what binds the dispatch to `self.inspect_fork`
+  --> tests/ui/inspect_dispatch_missing_placeholder.rs:13:38
+   |
+13 |       fn fork(&self) -> Result<(), ()> {
+   |  ______________________________________^
+14 | |         Ok(())
+15 | |     }
+   | |_____^

@@ -1,0 +1,9 @@
+error: inspect_dispatch: `reg_write` names `with_inspect_cb` or an `inspect_*` slot field directly — call `self.with_slot(..)` instead so the slot is derived from the entry name
+  --> tests/ui/inspect_dispatch_names_sibling_slot.rs:27:43
+   |
+27 |       fn reg_write(&self) -> Result<(), ()> {
+   |  ___________________________________________^
+28 | |         let _peek = self.inspect_reg_read.is_some();
+29 | |         self.with_slot((), |_cb| Ok(()))
+30 | |     }
+   | |_____^

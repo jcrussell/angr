@@ -636,7 +636,7 @@ pub fn inspect_test_entries(input: TokenStream) -> TokenStream {
 /// reachable from unit tests (the `proc_macro` types only exist inside a real
 /// macro invocation).
 fn inspect_test_entries_impl(input: proc_macro2::TokenStream) -> proc_macro2::TokenStream {
-    let spec = match syn::parse2::<InspectTestEntries>(input) {
+    let spec = match syn::parse2::<EventFnEntries>(input) {
         Ok(spec) => spec,
         Err(err) => return err.to_compile_error(),
     };
@@ -746,13 +746,175 @@ fn rewrite_forward(
         .collect()
 }
 
-/// Parsed form of an `inspect_test_entries! { Type => fn .. }` invocation.
-struct InspectTestEntries {
+/// Generates the `call_inspect_<event>` breakpoint dispatch methods from
+/// bodies written against a `self.with_slot(..)` placeholder.
+///
+/// Invoked as `inspect_dispatch! { Type => fn <event>(&self, ..) -> .. { .. } ... }`.
+/// Each entry expands to
+///
+/// ```ignore
+/// pub(crate) fn call_inspect_<event>(&self, ..) -> .. { /* body, with
+///     `self.with_slot(absent, f)` rewritten to
+///     `self.with_inspect_cb(self.inspect_<event>.as_ref(), absent, f)` */ }
+/// ```
+///
+/// so the two names that must agree — the dispatch method and the callback
+/// slot field it reads — both come from the one `<event>` ident. Hand-written,
+/// the bodies of the same-shaped siblings (`reg_read`/`reg_write`,
+/// `tmp_read`/`tmp_write`, `mem_read`/`mem_write`, `call`/`return`) differ only
+/// in that field, so a copy-paste that forgets to swap it compiles cleanly and
+/// silently routes every `reg_write` breakpoint to the `reg_read` callback —
+/// the misroute only a runtime N x N test caught (angr-6cp06.79). This is the
+/// dispatch-body layer of the same derivation [`inspect_test_entries`] applies
+/// to the test entry points and [`callback_setters`] to the slot setters.
+///
+/// A body must call `self.with_slot(..)` exactly once, and may not name
+/// `with_inspect_cb` or an `inspect_*` slot field directly — the placeholder is
+/// the only route to the slot, so it cannot be bypassed back into the drift it
+/// removes. Everything else in the body is passed through untouched, and the
+/// entry's own visibility, attributes and signature are preserved.
+#[proc_macro]
+pub fn inspect_dispatch(input: TokenStream) -> TokenStream {
+    inspect_dispatch_impl(input.into()).into()
+}
+
+/// `proc_macro2` body of [`inspect_dispatch`], so the expansion is reachable
+/// from unit tests (the `proc_macro` types only exist inside a real macro
+/// invocation).
+fn inspect_dispatch_impl(input: proc_macro2::TokenStream) -> proc_macro2::TokenStream {
+    let spec = match syn::parse2::<EventFnEntries>(input) {
+        Ok(spec) => spec,
+        Err(err) => return err.to_compile_error(),
+    };
+
+    let ty = &spec.ty;
+    let mut errors = proc_macro2::TokenStream::new();
+    let mut methods = proc_macro2::TokenStream::new();
+
+    for func in &spec.entries {
+        // A raw ident (`r#return`, the only event whose name is a keyword)
+        // stringifies with its `r#` prefix; strip it so the derived names read
+        // `call_inspect_return` / `inspect_return`.
+        let raw = func.sig.ident.to_string();
+        let event = raw.strip_prefix("r#").unwrap_or(&raw);
+        let slot = format_ident!("inspect_{}", event);
+        let mut sig = func.sig.clone();
+        sig.ident = format_ident!("call_inspect_{}", event);
+
+        let mut hits = 0usize;
+        let mut leaked = false;
+        let body = rewrite_with_slot(func.block.to_token_stream(), &slot, &mut hits, &mut leaked);
+        if hits != 1 {
+            let msg = format!(
+                "inspect_dispatch: `{event}` must call `self.with_slot(..)` exactly once \
+                 (found {hits}) — that placeholder is what binds the dispatch to \
+                 `self.{slot}`"
+            );
+            errors.extend(quote_spanned! { func.block.span() => compile_error!(#msg); });
+        }
+        if leaked {
+            let msg = format!(
+                "inspect_dispatch: `{event}` names `with_inspect_cb` or an `inspect_*` slot \
+                 field directly — call `self.with_slot(..)` instead so the slot is derived \
+                 from the entry name"
+            );
+            errors.extend(quote_spanned! { func.block.span() => compile_error!(#msg); });
+        }
+
+        let attrs = &func.attrs;
+        let vis = &func.vis;
+        methods.extend(quote! {
+            #(#attrs)*
+            #vis #sig #body
+        });
+    }
+
+    if methods.is_empty() {
+        return quote_spanned! { ty.span() =>
+            compile_error!("inspect_dispatch! needs at least one `fn <event>(..)` entry after `=>`");
+        };
+    }
+
+    quote! {
+        #errors
+
+        impl #ty {
+            #methods
+        }
+    }
+}
+
+/// Rewrites the `with_slot(..)` placeholder call to
+/// `with_inspect_cb(self.<slot>.as_ref(), ..)` throughout a body, counting the
+/// rewrites and flagging any direct mention of the real method or a slot field
+/// (which would bypass the derivation).
+///
+/// Only a `with_slot` *followed by a parenthesized argument list* is rewritten
+/// and counted; a bare mention elsewhere is left alone so it reaches rustc as
+/// an ordinary unresolved-name error rather than a misleading arity complaint.
+fn rewrite_with_slot(
+    tokens: proc_macro2::TokenStream,
+    slot: &syn::Ident,
+    hits: &mut usize,
+    leaked: &mut bool,
+) -> proc_macro2::TokenStream {
+    let mut out = proc_macro2::TokenStream::new();
+    let mut iter = tokens.into_iter().peekable();
+    while let Some(tt) = iter.next() {
+        match tt {
+            proc_macro2::TokenTree::Ident(id)
+                if id == "with_slot"
+                    && matches!(
+                        iter.peek(),
+                        Some(proc_macro2::TokenTree::Group(g))
+                            if g.delimiter() == proc_macro2::Delimiter::Parenthesis
+                    ) =>
+            {
+                let Some(proc_macro2::TokenTree::Group(args)) = iter.next() else {
+                    unreachable!("peeked a parenthesized group above")
+                };
+                *hits += 1;
+                let inner = rewrite_with_slot(args.stream(), slot, hits, leaked);
+                let mut rewritten = quote_spanned! { id.span() => self.#slot.as_ref(), };
+                rewritten.extend(inner);
+                let mut group =
+                    proc_macro2::Group::new(proc_macro2::Delimiter::Parenthesis, rewritten);
+                group.set_span(args.span());
+                let mut name = format_ident!("with_inspect_cb");
+                name.set_span(id.span());
+                out.extend([
+                    proc_macro2::TokenTree::Ident(name),
+                    proc_macro2::TokenTree::Group(group),
+                ]);
+            }
+            proc_macro2::TokenTree::Group(g) => {
+                let inner = rewrite_with_slot(g.stream(), slot, hits, leaked);
+                let mut new = proc_macro2::Group::new(g.delimiter(), inner);
+                new.set_span(g.span());
+                out.extend([proc_macro2::TokenTree::Group(new)]);
+            }
+            proc_macro2::TokenTree::Ident(id) => {
+                let name = id.to_string();
+                if name == "with_inspect_cb" || name.starts_with("inspect_") {
+                    *leaked = true;
+                }
+                out.extend([proc_macro2::TokenTree::Ident(id)]);
+            }
+            other => out.extend([other]),
+        }
+    }
+    out
+}
+
+/// Parsed form of a `Type => fn <event>(..) { .. } ...` invocation — the
+/// shared grammar of [`inspect_test_entries`] and [`inspect_dispatch`], both
+/// of which derive names from each entry's `<event>` ident.
+struct EventFnEntries {
     ty: syn::Ident,
     entries: Vec<ItemFn>,
 }
 
-impl syn::parse::Parse for InspectTestEntries {
+impl syn::parse::Parse for EventFnEntries {
     fn parse(input: syn::parse::ParseStream<'_>) -> syn::Result<Self> {
         let ty: syn::Ident = input.parse()?;
         input.parse::<syn::Token![=>]>()?;
@@ -1284,6 +1446,147 @@ mod callback_setters_tests {
     fn missing_fat_arrow_reports_a_parse_error() {
         let out = expand(quote! { Holder alpha });
         assert!(out.contains("compile_error"), "{out}");
+    }
+}
+
+#[cfg(test)]
+mod inspect_dispatch_tests {
+    use super::inspect_dispatch_impl;
+    use quote::quote;
+
+    fn expand(item: proc_macro2::TokenStream) -> String {
+        inspect_dispatch_impl(item).to_string()
+    }
+
+    /// How many `compile_error!` invocations the expansion carries — one per
+    /// diagnostic, so this distinguishes "both validations fired" from "one
+    /// fired and the other was swallowed".
+    fn count_compile_errors(out: &str) -> usize {
+        out.matches("compile_error").count()
+    }
+
+    #[test]
+    fn entry_name_drives_both_the_method_and_the_slot() {
+        let out = expand(quote! {
+            Holder =>
+            pub(crate) fn reg_write(&self, when: &str) -> PyResult<()> {
+                self.with_slot((), |py, cb| { cb.call1(py, (when,)) })
+            }
+        });
+        assert!(!out.contains("compile_error"), "{out}");
+        assert!(
+            out.contains("pub (crate) fn call_inspect_reg_write"),
+            "{out}"
+        );
+        assert!(
+            out.contains("self . with_inspect_cb (self . inspect_reg_write . as_ref () , ()"),
+            "{out}"
+        );
+    }
+
+    /// `return` is the one event whose name is a keyword, so its entry is
+    /// written `r#return`; both derived idents must drop the `r#`.
+    #[test]
+    fn a_raw_ident_entry_derives_unprefixed_names() {
+        let out = expand(quote! {
+            Holder =>
+            fn r#return(&self) -> PyResult<()> { self.with_slot((), f) }
+        });
+        assert!(!out.contains("compile_error"), "{out}");
+        assert!(out.contains("fn call_inspect_return"), "{out}");
+        assert!(out.contains("self . inspect_return . as_ref ()"), "{out}");
+    }
+
+    #[test]
+    fn surrounding_body_statements_and_attributes_are_preserved() {
+        let out = expand(quote! {
+            Holder =>
+            /// doc line
+            #[inline]
+            fn vex_lift(&self, b: &[u8]) -> PyResult<()> {
+                let owned = b.to_vec();
+                self.with_slot((), |py, cb| { cb.call1(py, (owned,)) })
+            }
+        });
+        assert!(!out.contains("compile_error"), "{out}");
+        assert!(out.contains("doc line"), "{out}");
+        assert!(out.contains("inline"), "{out}");
+        assert!(out.contains("let owned = b . to_vec ()"), "{out}");
+    }
+
+    #[test]
+    fn a_body_without_the_placeholder_is_rejected() {
+        let out = expand(quote! {
+            Holder =>
+            fn fork(&self) -> PyResult<()> { Ok(()) }
+        });
+        assert!(out.contains("exactly once (found 0)"), "{out}");
+        assert_eq!(count_compile_errors(&out), 1, "{out}");
+    }
+
+    /// A bare `with_slot` that is not a call is left for rustc to reject as an
+    /// unresolved name, rather than being counted as a rewrite site.
+    #[test]
+    fn a_non_call_mention_of_the_placeholder_does_not_count() {
+        let out = expand(quote! {
+            Holder =>
+            fn fork(&self) -> PyResult<()> { let f = with_slot; Ok(()) }
+        });
+        assert!(out.contains("exactly once (found 0)"), "{out}");
+        assert!(out.contains("let f = with_slot"), "{out}");
+    }
+
+    #[test]
+    fn naming_the_slot_field_directly_is_rejected() {
+        // The misroute the macro exists to prevent: `reg_write`'s body reading
+        // the identically-typed `inspect_reg_read` slot. The body still calls
+        // the placeholder exactly once, so `leaked` is the *only* validation
+        // that fires — the combined case is `both_diagnostics_fire_on_one_entry`
+        // below.
+        let out = expand(quote! {
+            Holder =>
+            fn reg_write(&self) -> PyResult<()> {
+                self.with_slot((), |py, cb| { self.inspect_reg_read.is_some() })
+            }
+        });
+        assert!(out.contains("slot field directly"), "{out}");
+        assert_eq!(count_compile_errors(&out), 1, "{out}");
+    }
+
+    #[test]
+    fn calling_the_real_helper_directly_is_rejected() {
+        let out = expand(quote! {
+            Holder =>
+            fn reg_write(&self) -> PyResult<()> {
+                self.with_inspect_cb(self.inspect_reg_read.as_ref(), (), f)
+            }
+        });
+        assert!(out.contains("exactly once (found 0)"), "{out}");
+        assert!(out.contains("names `with_inspect_cb`"), "{out}");
+        assert_eq!(count_compile_errors(&out), 2, "{out}");
+    }
+
+    #[test]
+    fn both_diagnostics_fire_on_one_entry() {
+        // The two validations are independent and accumulated, not
+        // early-returned: a body that reaches for a slot field *and* never uses
+        // the placeholder trips both. Collapsing them into one `return` would
+        // leave a contributor fixing one mistake, recompiling, and only then
+        // learning about the second — same reasoning as the sibling macro's
+        // case of this name.
+        let out = expand(quote! {
+            Holder =>
+            fn reg_write(&self) -> PyResult<()> { self.inspect_reg_read.is_some() }
+        });
+        assert!(out.contains("exactly once (found 0)"), "{out}");
+        assert!(out.contains("slot field directly"), "{out}");
+        assert_eq!(count_compile_errors(&out), 2, "{out}");
+    }
+
+    #[test]
+    fn empty_entry_list_is_rejected() {
+        let out = expand(quote! { Holder => });
+        assert!(out.contains("at least one `fn <event>(..)` entry"), "{out}");
     }
 }
 

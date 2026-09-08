@@ -1,0 +1,5 @@
+error: inspect_dispatch! needs at least one `fn <event>(..)` entry after `=>`
+ --> tests/ui/inspect_dispatch_no_entries.rs:7:5
+  |
+7 |     Holder =>
+  |     ^^^^^^

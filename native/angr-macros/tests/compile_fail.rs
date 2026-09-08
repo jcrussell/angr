@@ -7,9 +7,10 @@
 //! intentional wording change with `TRYBUILD=overwrite cargo test -p
 //! angr-macros --test compile_fail`.
 //!
-//! Coverage is meant to be *total*: every diagnostic any of the three macro
-//! bodies can emit — `steady_guarded_impl`, `steady_guard_checked_impl`,
-//! `derive_merge_policy_impl` — has a case here, including the ones whose
+//! Coverage is meant to be *total*: every diagnostic any of the four macro
+//! bodies it can reach can emit — `steady_guarded_impl`,
+//! `steady_guard_checked_impl`, `derive_merge_policy_impl` and
+//! `inspect_dispatch_impl` — has a case here, including the ones whose
 //! `compile_error!` is forwarded from a `syn::parse2` failure. A new
 //! diagnostic without a `tests/ui/` case is proven only by an in-process
 //! `to_string().contains(...)` unit test, which cannot see what rustc renders
@@ -26,14 +27,18 @@
 //! early return added to either branch drops the other's diagnostic
 //! (angr-0jh0j.86).
 //!
-//! The two function-like macros -- `callback_setters_impl` and
+//! Two of the three function-like macros -- `callback_setters_impl` and
 //! `inspect_test_entries_impl` -- are deliberately *not* covered here: their
 //! expansion emits a `#[::pyo3::pymethods]` block, so a `tests/ui/` case would
 //! need `pyo3` as a dev-dependency of this crate, built with features that do
 //! not unify with `rustylib`'s. Their diagnostics -- including
 //! `inspect_test_entries!`'s accumulate-don't-return pair -- are held by the
 //! `count_compile_errors` assertions in `inspect_test_entries_tests`
-//! (angr-0jh0j.85).
+//! (angr-0jh0j.85). `inspect_dispatch_impl` has no such obstacle -- it expands
+//! to a plain inherent impl -- so its three diagnostics do get cases here
+//! (angr-6cp06.79); its own accumulate-don't-return pair is still asserted in
+//! `inspect_dispatch_tests`, since a `tests/ui/` snapshot proves the rendering
+//! of each message but not that a second one survives alongside the first.
 //!
 //! The snapshots carry rustc's own rendering of the span, so they are
 //! toolchain-sensitive; that is safe here because `rust-toolchain.toml` pins
