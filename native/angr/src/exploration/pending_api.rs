@@ -436,7 +436,14 @@ impl RustExplorationManager {
 
             let claripy_mod = py.import("claripy")?;
 
-            for rustbv in pending.stored_conditions.values() {
+            // Sorted by condition id, not `.values()`: hash-bucket order would
+            // otherwise leak into an externally-observable Python sequence.
+            // Same contract `pending_callback_ids` upholds with its
+            // `sort_unstable` (angr-6cp06.29).
+            let mut conds: Vec<_> = pending.stored_conditions.iter().collect();
+            conds.sort_unstable_by_key(|(id, _)| **id);
+
+            for (_, rustbv) in conds {
                 match rustbv_to_claripy(py, rustbv, &claripy_mod) {
                     Ok(ast) => {
                         result.push(ast);
