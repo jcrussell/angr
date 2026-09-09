@@ -51,7 +51,8 @@
 //! looped when `find=int` was combined with a non-predicate technique
 //! like DFS — the technique made `_active_techniques` non-empty, routing
 //! through the Python predicate path, which never saw the Rust find.
-//! See module-level I8 in `state.rs`.
+//! See the `Cross-mixin invariants` module-doc header in `state/mod.rs`,
+//! bullet I8.
 //!
 //! **Panic policy (CQ .8):** the parallel-driver half of this module locks the
 //! `ParallelShared` mutexes (`root_map`, `kind_map`, `counters`, `up_rx`) via

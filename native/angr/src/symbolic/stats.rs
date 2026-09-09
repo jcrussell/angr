@@ -892,7 +892,8 @@ pub fn record_vex_qop(family: VexOpFamily) {
 
 /// Record a load operation reaching `SymbolicMemory::load_concrete`. This is
 /// the unified entry point — counts BOTH loads via the public `load(addr_bv)`
-/// and the state.rs hot path that calls `load_concrete(addr_u64)` directly.
+/// and `RustSimState::memory_load`'s hot path, which calls
+/// `load_concrete(addr_u64)` directly.
 #[inline]
 pub fn record_mem_load(bytes: u64) {
     MEM_LOAD_COUNT.fetch_add(1, Ordering::Relaxed);
