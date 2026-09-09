@@ -925,6 +925,12 @@ pub(crate) mod merge_instrument {
 // Gated on vex-engine-z3 (bd angr-cagbn): every test here drives
 // `SymContext::add_constraint` / Z3AstPtr, which only exist with z3. Keeps the
 // no-z3 nightly `cargo test` combos compiling; default build runs them all.
+// The *file* paths below are nested under context_tests/, but the modules they
+// create are FLAT siblings of each other directly under `context` — there is no
+// `context_tests` parent module. Cite a test as
+// `context_tests_constraints::test_name`, never `context_tests::constraints::…`
+// (angr-6cp06.48 found four citations that took the file layout for the module
+// layout; neither grep nor rust-analyzer resolves that form).
 test_submod!(z3 "context_tests/constraints.rs" => context_tests_constraints);
 test_submod!("context_tests/lineage.rs" => context_tests_lineage);
 test_submod!("context_tests/merge_prefix.rs" => context_tests_merge_prefix);
