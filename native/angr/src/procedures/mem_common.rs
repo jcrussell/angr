@@ -13,6 +13,15 @@
 //! `|dst| * |src|` for memcpy), but both feed it to [`check_store_budget`] so
 //! the overflow-safe multiply and the `MAX_SYMBOLIC_ADDR_STORES` comparison
 //! live in one place.
+//!
+//! `memcmp` is deliberately *not* a user of any of this, even though it is in
+//! the same `mem*` family: it only loads and folds the bytes into a single
+//! comparison result, so there is no per-byte conditional *store* to bound.
+//! Supporting a symbolic `s1`/`s2` there would mean an ITE over whole
+//! comparison results, one per candidate *pair* — a different encoding and a
+//! different budget shape than [`check_store_budget`] models — so
+//! `memcmp` declares its pointers concrete and lets a symbolic one fall back
+//! to Python. See the module doc of [`super::memcmp`].
 
 use super::ProcedureError;
 use crate::state::RustSimState;

@@ -5,6 +5,10 @@
 //! # Behavior
 //!
 //! - Concrete addresses are required (symbolic addresses fall back to Python).
+//!   Unlike `memset`/`memcpy`, memcmp does *not* use the bounded
+//!   concrete-address candidate machinery in [`super::mem_common`]: that path
+//!   exists to bound per-byte conditional *stores*, and memcmp only reads.
+//!   See that module's doc for the full rationale.
 //! - Concrete `n` is required (symbolic n falls back).
 //! - Concrete bytes scan with short-circuit on first mismatch (matches libc).
 //! - Symbolic bytes produce a 32-bit ITE chain via `compare_bytes` shared
