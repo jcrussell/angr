@@ -105,15 +105,18 @@ fn hex_prefix_has_digit(bytes: &[RustBV], idx: usize) -> bool {
 /// index immediately after the prefix and, if a digit region can follow, the
 /// chosen base + sign.
 ///
+/// Infallible by construction (angr-6cp06.4): every rejection this step can
+/// reach — input exhausted, base outside 2..=36 — is expressed as a `None`
+/// base/sign, not an error, so the caller always has a `prefix_end` to write
+/// through `endptr`. It deliberately does *not* return `ProcedureError`; a
+/// `Result` here read as a Python-fallback path that does not exist.
+///
 /// Symbolic bytes break out of each prefix-handling step (treated as "not
 /// whitespace / not sign / not base prefix"); the digit accumulator then
 /// handles them. This matches the design constraint that callers using
 /// symbolic bytes typically constrain them to digits, so the prefix steps
 /// are effectively a concrete-only fast forward.
-fn parse_concrete_prefix(
-    bytes: &[RustBV],
-    base_arg: i64,
-) -> Result<(usize, Option<(u32, bool)>), ProcedureError> {
+fn parse_concrete_prefix(bytes: &[RustBV], base_arg: i64) -> (usize, Option<(u32, bool)>) {
     let mut idx = 0;
 
     // Whitespace: only consume *concretely* whitespace bytes. A symbolic
@@ -128,7 +131,7 @@ fn parse_concrete_prefix(
         }
     }
     if idx >= bytes.len() {
-        return Ok((idx, None));
+        return (idx, None);
     }
 
     // Sign: only consume a *concrete* '+' or '-'.
@@ -142,7 +145,7 @@ fn parse_concrete_prefix(
         }
     }
     if idx >= bytes.len() {
-        return Ok((idx, None));
+        return (idx, None);
     }
 
     // Base detection.
@@ -196,9 +199,9 @@ fn parse_concrete_prefix(
     };
 
     if !(2..=36).contains(&base) {
-        return Ok((idx, None));
+        return (idx, None);
     }
-    Ok((idx, Some((base, negative))))
+    (idx, Some((base, negative)))
 }
 
 /// Concrete digit-only parser. Returns (magnitude, num_consumed).
@@ -323,7 +326,7 @@ fn run_strtol(
     let bytes = read_bytes_until_null(state, addr, MAX_DIGITS)?;
     let bits = state.arch().bits();
 
-    let (prefix_end, prefix) = parse_concrete_prefix(&bytes, base_arg)?;
+    let (prefix_end, prefix) = parse_concrete_prefix(&bytes, base_arg);
 
     // No digits possible (empty after prefix or invalid base).
     let (base, negative) = match prefix {

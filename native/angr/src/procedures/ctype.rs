@@ -73,6 +73,20 @@ fn lift_predicate(state: &RustSimState, pred: RustBV, ctx: &SymContext) -> RustB
     pred.zero_extend(bits, ctx)
 }
 
+/// Symbolic half of [`case_shift`]: `ITE(lo <= arg <= hi, arg + delta, arg)`,
+/// built at `arg`'s own width.
+///
+/// Shared with `strcmp::case_fold_byte` so `strcasecmp`'s case folding and
+/// `tolower`/`toupper` cannot drift apart (angr-6cp06.3). `delta` is
+/// sign-extended from 8 bits to `arg.width()`, which is a no-op when the
+/// caller already passes a byte.
+pub(super) fn case_shift_bv(arg: &RustBV, lo: u8, hi: u8, delta: i8, ctx: &SymContext) -> RustBV {
+    let in_range = arg_in_range(arg, lo, hi, ctx);
+    let delta_bv = RustBV::concrete(delta as u8 as u128, 8).sign_extend(arg.width(), ctx);
+    let shifted = arg.add(&delta_bv, ctx);
+    in_range.ite(&shifted, arg, ctx)
+}
+
 /// tolower/toupper share the same pattern: if `arg` is in [lo, hi], shift by
 /// `delta`; otherwise return `arg` **unchanged and untruncated**, exactly as
 /// `claripy.If(And(c >= lo, c <= hi), c + delta, c)` does in `tolower.py` /
@@ -98,10 +112,7 @@ fn case_shift(
         return Ok(Some(RustBV::concrete(u128::from(result), width)));
     }
     let ctx = state.solver().borrow();
-    let in_range = arg_in_range(arg, lo, hi, &ctx);
-    let delta_bv = RustBV::concrete(delta as u8 as u128, 8).sign_extend(width, &ctx);
-    let shifted = arg.add(&delta_bv, &ctx);
-    Ok(Some(in_range.ite(&shifted, arg, &ctx)))
+    Ok(Some(case_shift_bv(arg, lo, hi, delta, &ctx)))
 }
 
 /// Build a symbolic ctype predicate from a list of inclusive ranges.

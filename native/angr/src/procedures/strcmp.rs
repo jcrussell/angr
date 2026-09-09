@@ -33,6 +33,7 @@
 
 use super::ProcedureError;
 use super::check_max;
+use super::ctype;
 use super::strings::{
     ConcreteStep, ScanResult, null_exists_constraint, scan_concrete_then_collect,
 };
@@ -42,15 +43,13 @@ use crate::symbolic::{RustBV, SymContext};
 /// Maximum string length before falling back to Python.
 pub(super) const MAX_STRCMP_LEN: usize = 4096;
 
-/// Per-position case-folding option used by strcasecmp.
+/// Per-position case-folding option used by strcasecmp: `ITE(byte in [A, Z],
+/// byte + 32, byte)` over 8 bits.
+///
+/// Delegates to [`ctype::case_shift_bv`] — the same helper `tolower` is built
+/// on — so the two case-folding implementations cannot drift (angr-6cp06.3).
 fn case_fold_byte(byte: &RustBV, ctx: &SymContext) -> RustBV {
-    // result = ITE(byte in [A, Z], byte + 32, byte) over 8 bits
-    let lo = RustBV::concrete(b'A' as u128, 8);
-    let hi = RustBV::concrete(b'Z' as u128, 8);
-    let in_range = byte.uge(&lo, ctx).and(&byte.ule(&hi, ctx), ctx);
-    let delta = RustBV::concrete(32u128, 8);
-    let lowered = byte.add(&delta, ctx);
-    in_range.ite(&lowered, byte, ctx)
+    ctype::case_shift_bv(byte, b'A', b'Z', 32, ctx)
 }
 
 /// Build the ITE chain from a list of (c1_i, c2_i) pairs (each 8-bit BVs).
