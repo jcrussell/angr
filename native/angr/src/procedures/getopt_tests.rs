@@ -105,13 +105,8 @@ fn test_flag_then_required_arg() {
     // -b val (required arg from next element)
     assert_eq!(call(&mut state, argc), b'b' as i64);
     assert_eq!(read_optind(&state), 4);
-    let optarg = read_optarg(&state);
     // optarg should point at "val"
-    let mut s = Vec::new();
-    for i in 0..3u64 {
-        s.push(state.memory_load(optarg + i, 1).unwrap().as_u64().unwrap() as u8);
-    }
-    assert_eq!(&s, b"val");
+    assert_eq!(read_bytes(&state, read_optarg(&state), 3), b"val");
 
     // "file" is a non-option operand -> stop (-1), optind unchanged
     assert_eq!(call(&mut state, argc), -1);
@@ -146,12 +141,7 @@ fn test_attached_required_arg() {
     let argc = load_argv(&mut state, b"a:", &[b"prog", b"-aval"]);
     assert_eq!(call(&mut state, argc), b'a' as i64);
     assert_eq!(read_optind(&state), 2);
-    let optarg = read_optarg(&state);
-    let mut s = Vec::new();
-    for i in 0..3u64 {
-        s.push(state.memory_load(optarg + i, 1).unwrap().as_u64().unwrap() as u8);
-    }
-    assert_eq!(&s, b"val");
+    assert_eq!(read_bytes(&state, read_optarg(&state), 3), b"val");
 }
 
 #[test]
@@ -394,4 +384,234 @@ fn getopt_argv_ptr_boundary_sweep_wraps_element_slot() {
             "argv_ptr={argv_ptr:#x} must read argv[1] through the wrapped slot {slot1:#x}"
         );
     }
+}
+
+// --- optional-argument spec and symbolic-input deferral (angr-6cp06.14) ----
+//
+// `parse_optstring`'s `OPTIONAL_ARGUMENT` ("a::") spec and the three symbolic
+// inputs that are not `argc` (the optstring, `argv_ptr` itself, and an argv
+// element pointer) had no coverage. The optional-argument arm is the one place
+// a silent Python/Rust divergence could land, because it is the only spec whose
+// *cursor advance* differs from the required-argument arm it shares a branch
+// with: an absent optional argument advances `optind` by 1 and leaves the next
+// element unconsumed, where a missing required one falls through to consume it.
+
+/// Read `len` bytes of the guest C string at `addr`.
+fn read_bytes(state: &RustSimState, addr: u64, len: u64) -> Vec<u8> {
+    (0..len)
+        .map(|i| state.memory_load(addr + i, 1).unwrap().as_u64().unwrap() as u8)
+        .collect()
+}
+
+/// Seed `optarg` with a sentinel so a later `assert_eq!(read_optarg(..), 0)`
+/// proves the proc wrote the 0, rather than passing on fresh-page zeroes.
+fn poison_optarg(state: &mut RustSimState) {
+    state
+        .memory_store(OPTARG_ADDR, RustBV::concrete(0xdead_beef, 64))
+        .unwrap();
+}
+
+#[test]
+fn test_optional_arg_attached() {
+    let mut state = setup();
+    // "a::" — optional argument, supplied attached in the same element.
+    let argc = load_argv(&mut state, b"a::", &[b"prog", b"-aval", b"file"]);
+    assert_eq!(call(&mut state, argc), b'a' as i64);
+    assert_eq!(read_optind(&state), 2);
+    assert_eq!(read_bytes(&state, read_optarg(&state), 3), b"val");
+}
+
+#[test]
+fn test_optional_arg_absent_does_not_consume_next_element() {
+    let mut state = setup();
+    // "a::" with a bare "-a": the optional argument is absent, so optarg is
+    // NULL and "val" stays an operand. The required-argument spec ("a:") would
+    // instead consume "val" and leave optind at 3 — that divergence is what
+    // this test pins.
+    let argc = load_argv(&mut state, b"a::", &[b"prog", b"-a", b"val"]);
+    poison_optarg(&mut state);
+    assert_eq!(call(&mut state, argc), b'a' as i64);
+    assert_eq!(read_optarg(&state), 0);
+    assert_eq!(read_optind(&state), 2);
+
+    // "val" is now a non-option operand -> stop, optind unchanged.
+    assert_eq!(call(&mut state, argc), -1);
+    assert_eq!(read_optind(&state), 2);
+}
+
+#[test]
+fn test_optional_arg_absent_at_end_ignores_leading_colon() {
+    let mut state = setup();
+    // ":a::" — the leading colon selects the ':' return for a *missing required*
+    // argument. An absent *optional* argument is not missing, so the proc must
+    // return 'a', not ':', and must not touch optopt.
+    let argc = load_argv(&mut state, b":a::", &[b"prog", b"-a"]);
+    poison_optarg(&mut state);
+    state
+        .memory_store(OPTOPT_ADDR, RustBV::concrete(0xaa, 32))
+        .unwrap();
+    assert_eq!(call(&mut state, argc), b'a' as i64);
+    assert_eq!(read_optarg(&state), 0);
+    assert_eq!(read_optopt(&state), 0xaa); // untouched
+    assert_eq!(read_optind(&state), 2);
+}
+
+#[test]
+fn test_optional_arg_packed_after_flag() {
+    let mut state = setup();
+    // "ab::" and "-abval": -a is a flag consumed in place (cursor parks at
+    // optchar=2), then -b takes the rest of the element as its optional arg.
+    let argc = load_argv(&mut state, b"ab::", &[b"prog", b"-abval"]);
+    assert_eq!(call(&mut state, argc), b'a' as i64);
+    assert_eq!(read_optind(&state), 1); // still inside the element
+    assert_eq!(call(&mut state, argc), b'b' as i64);
+    assert_eq!(read_optind(&state), 2);
+    assert_eq!(read_bytes(&state, read_optarg(&state), 3), b"val");
+}
+
+#[test]
+fn test_parse_optstring_spec_triple() {
+    // The three specs, plus the leading-colon flag, straight off the parser.
+    let (opts, leading_colon) = parse_optstring(b":ab:c::");
+    assert!(leading_colon);
+    assert_eq!(opts.get(&b'a').copied(), Some(NO_ARGUMENT));
+    assert_eq!(opts.get(&b'b').copied(), Some(REQUIRED_ARGUMENT));
+    assert_eq!(opts.get(&b'c').copied(), Some(OPTIONAL_ARGUMENT));
+    // Mode chars are skipped, and a colon after them still reads as leading.
+    let (opts, leading_colon) = parse_optstring(b"+-:a");
+    assert!(leading_colon);
+    assert_eq!(opts.get(&b'a').copied(), Some(NO_ARGUMENT));
+    assert!(!parse_optstring(b"a:").1);
+}
+
+#[test]
+fn test_bare_colon_option_char_is_unknown() {
+    let mut state = setup();
+    // A fourth colon in "a:::" parses as an option *char* ':' with no argument,
+    // so `opts` really does contain a ':' key. Python guards that with
+    // `spec is None or c == _COLON`; the Rust match arm's `c != COLON` guard is
+    // the same rule, and a "-:" element must still report '?' via optopt.
+    assert_eq!(parse_optstring(b"a:::").0.get(&COLON).copied(), Some(NO_ARGUMENT));
+    let argc = load_argv(&mut state, b"a:::", &[b"prog", b"-:"]);
+    assert_eq!(call(&mut state, argc), b'?' as i64);
+    assert_eq!(read_optopt(&state), COLON as u32);
+    assert_eq!(read_optind(&state), 2);
+}
+
+/// Build a fresh symbolic BV of `width` bits named `name`.
+fn sym(state: &RustSimState, name: &str, width: u32) -> RustBV {
+    let ctx = state.solver().borrow();
+    RustBV::symbolic(&ctx, name, width)
+}
+
+fn call_raw(
+    state: &mut RustSimState,
+    argc: RustBV,
+    argv_ptr: RustBV,
+    optstring_ptr: RustBV,
+) -> Result<Option<RustBV>, ProcedureError> {
+    NativeGetopt.call(state, &[argc, argv_ptr, optstring_ptr])
+}
+
+#[test]
+fn test_symbolic_argv_ptr_defers() {
+    let mut state = setup();
+    let argc = load_argv(&mut state, b"a", &[b"prog", b"-a"]);
+    let symv = sym(&state, "argv_ptr", 64);
+    let res = call_raw(
+        &mut state,
+        RustBV::concrete(argc as u128, 64),
+        symv,
+        RustBV::concrete(STR_BASE as u128, 64),
+    );
+    assert!(matches!(res, Err(ProcedureError::SymbolicArgument(_))), "got {res:?}");
+}
+
+#[test]
+fn test_symbolic_optstring_ptr_defers() {
+    let mut state = setup();
+    let argc = load_argv(&mut state, b"a", &[b"prog", b"-a"]);
+    let symv = sym(&state, "optstring_ptr", 64);
+    let res = call_raw(
+        &mut state,
+        RustBV::concrete(argc as u128, 64),
+        RustBV::concrete(ARGV_BASE as u128, 64),
+        symv,
+    );
+    assert!(matches!(res, Err(ProcedureError::SymbolicArgument(_))), "got {res:?}");
+}
+
+#[test]
+fn test_symbolic_optstring_bytes_defer() {
+    let mut state = setup();
+    // The pointer is concrete but the optstring's first byte is not: the
+    // bounded scan must defer rather than concretize an option table.
+    let argc = load_argv(&mut state, b"a", &[b"prog", b"-a"]);
+    let symv = sym(&state, "optstring_byte", 8);
+    state.memory_store(STR_BASE, symv).unwrap();
+    let res = call_raw(
+        &mut state,
+        RustBV::concrete(argc as u128, 64),
+        RustBV::concrete(ARGV_BASE as u128, 64),
+        RustBV::concrete(STR_BASE as u128, 64),
+    );
+    assert!(matches!(res, Err(ProcedureError::SymbolicArgument(_))), "got {res:?}");
+}
+
+#[test]
+fn test_symbolic_argv_element_ptr_defers() {
+    let mut state = setup();
+    // argv[1]'s *slot* holds a symbolic pointer: `eval_ptr` yields None and the
+    // proc reports the "argv element" deferral rather than concretizing.
+    let argc = load_argv(&mut state, b"a", &[b"prog", b"-a"]);
+    let symv = sym(&state, "elem_ptr", 64);
+    state.memory_store(ARGV_BASE + 8, symv).unwrap();
+    let res = call_raw(
+        &mut state,
+        RustBV::concrete(argc as u128, 64),
+        RustBV::concrete(ARGV_BASE as u128, 64),
+        RustBV::concrete(STR_BASE as u128, 64),
+    );
+    match res {
+        Err(ProcedureError::SymbolicArgument(what)) => assert_eq!(what, "argv element"),
+        other => panic!("expected symbolic-argv-element deferral, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_symbolic_next_argv_element_ptr_defers() {
+    let mut state = setup();
+    // "-a" needs a required argument from argv[2], whose slot is symbolic: the
+    // second `eval_ptr` site (the "argv next" one) must defer too.
+    let argc = load_argv(&mut state, b"a:", &[b"prog", b"-a", b"val"]);
+    let symv = sym(&state, "next_ptr", 64);
+    state.memory_store(ARGV_BASE + 16, symv).unwrap();
+    let res = call_raw(
+        &mut state,
+        RustBV::concrete(argc as u128, 64),
+        RustBV::concrete(ARGV_BASE as u128, 64),
+        RustBV::concrete(STR_BASE as u128, 64),
+    );
+    match res {
+        Err(ProcedureError::SymbolicArgument(what)) => assert_eq!(what, "argv next"),
+        other => panic!("expected symbolic-next-element deferral, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_symbolic_argv_string_byte_defers() {
+    let mut state = setup();
+    // The element pointer is concrete but the option character itself is not.
+    let argc = load_argv(&mut state, b"a", &[b"prog", b"-a"]);
+    let symv = sym(&state, "argv_byte", 8);
+    // Strings sit sequentially from STR_BASE: "a\0" (2B), "prog\0" (5B), "-a\0".
+    let argv1 = STR_BASE + 2 + 5;
+    state.memory_store(argv1, symv).unwrap();
+    let res = call_raw(
+        &mut state,
+        RustBV::concrete(argc as u128, 64),
+        RustBV::concrete(ARGV_BASE as u128, 64),
+        RustBV::concrete(STR_BASE as u128, 64),
+    );
+    assert!(matches!(res, Err(ProcedureError::SymbolicArgument(_))), "got {res:?}");
 }
