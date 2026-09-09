@@ -158,7 +158,7 @@ thread the VEX rounding mode into the concrete path so it agrees with the
 symbolic Z3 FP path. A closure that drops the mode compiles cleanly — naming
 the parameter `_rm` is Rust's *sanctioned* spelling of "unused" — so
 `f64_to_f32_rm` silently computed round-to-nearest-even for RZ/RU/RD while
-every sibling routed through `apply_rounding_f32`/`apply_rounding_f64`
+every sibling routed through `ops::float_arith::apply_rounding`
 (angr-c7xno.85). `tools/audit_rounding_mode_threading.py` gates that shape in
 CI (`rust_check`) against `tools/rounding_mode_baseline.txt` — same
 baseline-audit pattern as the silent-fallback and line-citation checks above,

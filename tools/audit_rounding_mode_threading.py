@@ -12,7 +12,7 @@ symbolic and concrete paths then disagree.
 That is not hypothetical: ``f64_to_f32_rm``'s closure named its mode parameter
 ``_rm`` (Rust's "intentionally unused" convention) and used a bare ``as f32``
 cast, so RZ/RU/RD were silently wrong while every sibling correctly routed
-through ``apply_rounding_f32``/``apply_rounding_f64`` (angr-c7xno.85). Nothing
+through ``float_arith::apply_rounding`` (angr-c7xno.85). Nothing
 flagged the divergence — the compiler is happy with a leading-underscore
 parameter, which is precisely what makes this shape invisible.
 
@@ -201,7 +201,7 @@ def scan() -> list[tuple[str, int, str, str, bool, bool]]:
 _SELF_TEST_SRC = """
 impl VEXOps {
     fn good_rm(rm: RustBV, arg: RustBV) -> R {
-        Self::float_to_int_rm(rm, arg, |v, rm| Self::apply_rounding_f32(v, rm) as u128)
+        Self::float_to_int_rm(rm, arg, |v, rm| apply_rounding(v, rm) as u128)
     }
     fn underscore_rm(rm: RustBV, arg: RustBV) -> R {
         Self::float_to_float_rm(rm, arg, |v, _rm| (v as f32).to_bits() as u128)
@@ -283,7 +283,7 @@ def write_baseline(gaps: list[tuple[str, int, str, str, bool, bool]]) -> int:
         "# One key per known mode-dropping closure: <relpath>\\t<fn>\\t<closure params>.\n"
         "# Regenerate with: tools/audit_rounding_mode_threading.py --update-baseline\n"
         "# This file should stay EMPTY. Threading the mode through (see\n"
-        "# VEXOps::apply_rounding_f32 / apply_rounding_f64 / narrow_f64_to_f32_rm)\n"
+        "# float_arith::apply_rounding / VEXOps::narrow_f64_to_f32_rm)\n"
         "# or documenting the exception with an `rm-ignored:` comment are both\n"
         "# preferable; growing it needs a reason in the commit message.\n"
     )
@@ -335,8 +335,9 @@ def main() -> int:
     for rel, lineno, fn, params, _, _ in new_gaps:
         print(f"  {rel}:{lineno}\t{fn}\t|{params}|")
     print(
-        "\nThread the mode through the concrete path (see `VEXOps::apply_rounding_f32`,\n"
-        "`apply_rounding_f64`, `narrow_f64_to_f32_rm`) so it matches the symbolic Z3 FP\n"
+        "\nThread the mode through the concrete path (see\n"
+        "`ops::float_arith::apply_rounding`, `VEXOps::narrow_f64_to_f32_rm`) so it\n"
+        "matches the symbolic Z3 FP\n"
         "path. If the mode genuinely cannot be honoured (e.g. Rust libm is\n"
         "round-to-nearest-even only), document it with an `rm-ignored: <why>` comment\n"
         "on the line above (a discarded `let _rm` binding means routing the call\n"

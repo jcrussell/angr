@@ -13,6 +13,7 @@
 //! invoked here; they emit `pub(super)` stubs so the generated conversion
 //! methods stay reachable from the dispatch in `ops`.
 
+use super::float_arith::{apply_rounding, round_ties_to_even};
 use super::{OpError, VEXOps, build_float_expr};
 use crate::symbolic::{FloatOpKind, FloatPrec, RustBV, SymContext};
 
@@ -44,13 +45,13 @@ macro_rules! define_int_to_float {
 }
 
 /// Generate concrete float-to-signed-int conversion stubs (RNE round-ties-even).
-/// Entry shape: `name: src_float_ty, src_uint_ty, src_prec, round_fn, dst_signed_int_ty, dst_unsigned_int_ty, dst_width_bits;`
+/// Entry shape: `name: src_float_ty, src_uint_ty, src_prec, dst_signed_int_ty, dst_unsigned_int_ty, dst_width_bits;`
 macro_rules! define_float_to_int_signed {
-    ($($name:ident: $src_ty:ty, $src_uty:ty, $src_prec:expr, $round:ident, $dst_int:ty, $dst_uint:ty, $dst_width:expr;)*) => {
+    ($($name:ident: $src_ty:ty, $src_uty:ty, $src_prec:expr, $dst_int:ty, $dst_uint:ty, $dst_width:expr;)*) => {
         $(
             pub(super) fn $name(arg: RustBV, _ctx: &SymContext) -> Result<RustBV, OpError> {
                 Self::float_to_int(arg, $src_prec, $dst_width, true, |v| {
-                    (Self::$round(<$src_ty>::from_bits(v as $src_uty)) as $dst_int as $dst_uint) as u128
+                    (round_ties_to_even(<$src_ty>::from_bits(v as $src_uty)) as $dst_int as $dst_uint) as u128
                 })
             }
         )*
@@ -58,13 +59,13 @@ macro_rules! define_float_to_int_signed {
 }
 
 /// Generate concrete float-to-unsigned-int conversion stubs (RNE round-ties-even).
-/// Entry shape: `name: src_float_ty, src_uint_ty, src_prec, round_fn, dst_unsigned_int_ty, dst_width_bits;`
+/// Entry shape: `name: src_float_ty, src_uint_ty, src_prec, dst_unsigned_int_ty, dst_width_bits;`
 macro_rules! define_float_to_int_unsigned {
-    ($($name:ident: $src_ty:ty, $src_uty:ty, $src_prec:expr, $round:ident, $dst_uint:ty, $dst_width:expr;)*) => {
+    ($($name:ident: $src_ty:ty, $src_uty:ty, $src_prec:expr, $dst_uint:ty, $dst_width:expr;)*) => {
         $(
             pub(super) fn $name(arg: RustBV, _ctx: &SymContext) -> Result<RustBV, OpError> {
                 Self::float_to_int(arg, $src_prec, $dst_width, false, |v| {
-                    Self::$round(<$src_ty>::from_bits(v as $src_uty)) as $dst_uint as u128
+                    round_ties_to_even(<$src_ty>::from_bits(v as $src_uty)) as $dst_uint as u128
                 })
             }
         )*
@@ -157,16 +158,16 @@ impl VEXOps {
 
     // --- Float-to-int conversions (round ties to even) ---
     define_float_to_int_signed! {
-        f32_to_i32s: f32, u32, FloatPrec::F32, round_ties_to_even_f32, i32, u32, 32;
-        f64_to_i32s: f64, u64, FloatPrec::F64, round_ties_to_even_f64, i32, u32, 32;
-        f32_to_i64s: f32, u32, FloatPrec::F32, round_ties_to_even_f32, i64, u64, 64;
-        f64_to_i64s: f64, u64, FloatPrec::F64, round_ties_to_even_f64, i64, u64, 64;
+        f32_to_i32s: f32, u32, FloatPrec::F32, i32, u32, 32;
+        f64_to_i32s: f64, u64, FloatPrec::F64, i32, u32, 32;
+        f32_to_i64s: f32, u32, FloatPrec::F32, i64, u64, 64;
+        f64_to_i64s: f64, u64, FloatPrec::F64, i64, u64, 64;
     }
     define_float_to_int_unsigned! {
-        f32_to_i32u: f32, u32, FloatPrec::F32, round_ties_to_even_f32, u32, 32;
-        f64_to_i32u: f64, u64, FloatPrec::F64, round_ties_to_even_f64, u32, 32;
-        f32_to_i64u: f32, u32, FloatPrec::F32, round_ties_to_even_f32, u64, 64;
-        f64_to_i64u: f64, u64, FloatPrec::F64, round_ties_to_even_f64, u64, 64;
+        f32_to_i32u: f32, u32, FloatPrec::F32, u32, 32;
+        f64_to_i32u: f64, u64, FloatPrec::F64, u32, 32;
+        f32_to_i64u: f32, u32, FloatPrec::F32, u64, 64;
+        f64_to_i64u: f64, u64, FloatPrec::F64, u64, 64;
     }
 
     /// Round F32 to integer using specified rounding mode (binop version).
@@ -179,7 +180,7 @@ impl VEXOps {
     ) -> Result<RustBV, OpError> {
         if let (Some(m), Some(v)) = (mode.as_u128(), value.as_u128()) {
             let f = f32::from_bits(v as u32);
-            let rounded = Self::apply_rounding_f32(f, m as u32);
+            let rounded = apply_rounding(f, m as u32);
             // Normalize -0.0 to +0.0 to match Python VEX behavior
             let normalized = if rounded == 0.0 { 0.0f32 } else { rounded };
             let result = normalized.to_bits();
@@ -201,7 +202,7 @@ impl VEXOps {
     ) -> Result<RustBV, OpError> {
         if let (Some(m), Some(v)) = (mode.as_u128(), value.as_u128()) {
             let f = f64::from_bits(v as u64);
-            let rounded = Self::apply_rounding_f64(f, m as u32);
+            let rounded = apply_rounding(f, m as u32);
             // Normalize -0.0 to +0.0 to match Python VEX behavior
             let normalized = if rounded == 0.0 { 0.0f64 } else { rounded };
             let result = normalized.to_bits();
@@ -218,64 +219,6 @@ impl VEXOps {
     // Rounding-mode aware float-to-int conversions
     // VEX rounding modes: 0=nearest, 1=down(-inf), 2=up(+inf), 3=zero(truncate)
     // =========================================================================
-
-    /// Round f32 to nearest integer, ties to even (banker's rounding)
-    fn round_ties_to_even_f32(f: f32) -> f32 {
-        let rounded = f.round();
-        // Check if we're exactly at a .5 case
-        let frac = f - f.trunc();
-        if frac.abs() == 0.5 {
-            // Ties to even: round to the nearest even number
-            let truncated = f.trunc();
-            if (truncated as i32) % 2 == 0 {
-                truncated
-            } else {
-                rounded
-            }
-        } else {
-            rounded
-        }
-    }
-
-    /// Round f64 to nearest integer, ties to even (banker's rounding)
-    fn round_ties_to_even_f64(f: f64) -> f64 {
-        let rounded = f.round();
-        // Check if we're exactly at a .5 case
-        let frac = f - f.trunc();
-        if frac.abs() == 0.5 {
-            // Ties to even: round to the nearest even number
-            let truncated = f.trunc();
-            if (truncated as i64) % 2 == 0 {
-                truncated
-            } else {
-                rounded
-            }
-        } else {
-            rounded
-        }
-    }
-
-    /// Apply rounding mode to f32 value
-    fn apply_rounding_f32(f: f32, rm: u32) -> f32 {
-        match rm & 0x3 {
-            0 => Self::round_ties_to_even_f32(f), // nearest, ties to even (banker's rounding)
-            1 => f.floor(),                       // toward negative infinity
-            2 => f.ceil(),                        // toward positive infinity
-            3 => f.trunc(),                       // toward zero (truncate)
-            _ => Self::round_ties_to_even_f32(f), // default to nearest
-        }
-    }
-
-    /// Apply rounding mode to f64 value
-    fn apply_rounding_f64(f: f64, rm: u32) -> f64 {
-        match rm & 0x3 {
-            0 => Self::round_ties_to_even_f64(f), // nearest, ties to even (banker's rounding)
-            1 => f.floor(),                       // toward negative infinity
-            2 => f.ceil(),                        // toward positive infinity
-            3 => f.trunc(),                       // toward zero (truncate)
-            _ => Self::round_ties_to_even_f64(f), // default to nearest
-        }
-    }
 
     /// Float-to-int conversion with explicit rounding mode (binop). Routes
     /// through Z3 FP via `FloatOpKind::ConvertFtoIRm` for symbolic.
@@ -376,7 +319,7 @@ impl VEXOps {
         _ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         Self::float_to_int_rm(rm, arg, FloatPrec::F32, 32, true, |v, rm| {
-            (Self::apply_rounding_f32(f32::from_bits(v as u32), rm) as i32 as u32) as u128
+            (apply_rounding(f32::from_bits(v as u32), rm) as i32 as u32) as u128
         })
     }
     pub(super) fn f64_to_i32s_rm(
@@ -385,7 +328,7 @@ impl VEXOps {
         _ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         Self::float_to_int_rm(rm, arg, FloatPrec::F64, 32, true, |v, rm| {
-            (Self::apply_rounding_f64(f64::from_bits(v as u64), rm) as i32 as u32) as u128
+            (apply_rounding(f64::from_bits(v as u64), rm) as i32 as u32) as u128
         })
     }
     pub(super) fn f32_to_i64s_rm(
@@ -394,7 +337,7 @@ impl VEXOps {
         _ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         Self::float_to_int_rm(rm, arg, FloatPrec::F32, 64, true, |v, rm| {
-            (Self::apply_rounding_f32(f32::from_bits(v as u32), rm) as i64 as u64) as u128
+            (apply_rounding(f32::from_bits(v as u32), rm) as i64 as u64) as u128
         })
     }
     pub(super) fn f64_to_i64s_rm(
@@ -403,7 +346,7 @@ impl VEXOps {
         _ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         Self::float_to_int_rm(rm, arg, FloatPrec::F64, 64, true, |v, rm| {
-            (Self::apply_rounding_f64(f64::from_bits(v as u64), rm) as i64 as u64) as u128
+            (apply_rounding(f64::from_bits(v as u64), rm) as i64 as u64) as u128
         })
     }
     pub(super) fn f32_to_i32u_rm(
@@ -412,7 +355,7 @@ impl VEXOps {
         _ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         Self::float_to_int_rm(rm, arg, FloatPrec::F32, 32, false, |v, rm| {
-            Self::apply_rounding_f32(f32::from_bits(v as u32), rm) as u32 as u128
+            apply_rounding(f32::from_bits(v as u32), rm) as u32 as u128
         })
     }
     pub(super) fn f64_to_i32u_rm(
@@ -421,7 +364,7 @@ impl VEXOps {
         _ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         Self::float_to_int_rm(rm, arg, FloatPrec::F64, 32, false, |v, rm| {
-            Self::apply_rounding_f64(f64::from_bits(v as u64), rm) as u32 as u128
+            apply_rounding(f64::from_bits(v as u64), rm) as u32 as u128
         })
     }
     pub(super) fn f32_to_i64u_rm(
@@ -430,7 +373,7 @@ impl VEXOps {
         _ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         Self::float_to_int_rm(rm, arg, FloatPrec::F32, 64, false, |v, rm| {
-            Self::apply_rounding_f32(f32::from_bits(v as u32), rm) as u64 as u128
+            apply_rounding(f32::from_bits(v as u32), rm) as u64 as u128
         })
     }
     pub(super) fn f64_to_i64u_rm(
@@ -439,7 +382,7 @@ impl VEXOps {
         _ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         Self::float_to_int_rm(rm, arg, FloatPrec::F64, 64, false, |v, rm| {
-            Self::apply_rounding_f64(f64::from_bits(v as u64), rm) as u64 as u128
+            apply_rounding(f64::from_bits(v as u64), rm) as u64 as u128
         })
     }
 }

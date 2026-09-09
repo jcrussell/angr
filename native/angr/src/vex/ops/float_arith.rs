@@ -17,6 +17,7 @@
 use super::{OpError, VEXOps, build_float_expr, float_prec_of};
 use crate::symbolic::{FloatOpKind, RustBV, SymContext};
 use crate::vex::ir::IRType;
+use std::ops::Sub;
 
 impl VEXOps {
     pub(super) fn float_neg(arg: RustBV, ty: IRType, ctx: &SymContext) -> Result<RustBV, OpError> {
@@ -256,27 +257,90 @@ impl VEXOps {
     }
 }
 
-/// Minimal float facade for [`num_min_max`], so the f32 and f64 bodies of
-/// `Iop_MaxNumF*`/`Iop_MinNumF*` are written once instead of twice.
-trait IeeeNum: Copy + PartialOrd {
+/// Minimal float facade, so each body written against it -- [`num_min_max`]
+/// for `Iop_MaxNumF*`/`Iop_MinNumF*`, and [`round_ties_to_even`] /
+/// [`apply_rounding`] for the `ops/conversions.rs` float-to-int paths -- is
+/// written once instead of once per precision.
+pub(super) trait IeeeNum: Copy + PartialOrd + Sub<Output = Self> {
+    /// `0.5` in this precision: the tie point [`round_ties_to_even`] tests for.
+    const HALF: Self;
     fn is_nan(self) -> bool;
     fn is_sign_negative(self) -> bool;
+    fn abs(self) -> Self;
+    /// Nearest integer, ties away from zero (Rust's `round`, *not* RNE).
+    fn round(self) -> Self;
+    fn trunc(self) -> Self;
+    fn floor(self) -> Self;
+    fn ceil(self) -> Self;
+    /// Whether `self.trunc()` is an even integer, decided in the same-width
+    /// signed integer type (`i32` for `f32`, `i64` for `f64`). The width is
+    /// observable rather than incidental: Rust's float-to-int `as` cast
+    /// saturates, so an out-of-range input lands on `iN::MAX`/`MIN`, whose
+    /// parity differs per width.
+    fn trunc_is_even(self) -> bool;
 }
 
 macro_rules! impl_ieee_num {
-    ($t:ty) => {
+    ($t:ty, $int:ty) => {
         impl IeeeNum for $t {
+            const HALF: Self = 0.5;
             fn is_nan(self) -> bool {
                 <$t>::is_nan(self)
             }
             fn is_sign_negative(self) -> bool {
                 <$t>::is_sign_negative(self)
             }
+            fn abs(self) -> Self {
+                <$t>::abs(self)
+            }
+            fn round(self) -> Self {
+                <$t>::round(self)
+            }
+            fn trunc(self) -> Self {
+                <$t>::trunc(self)
+            }
+            fn floor(self) -> Self {
+                <$t>::floor(self)
+            }
+            fn ceil(self) -> Self {
+                <$t>::ceil(self)
+            }
+            fn trunc_is_even(self) -> bool {
+                (<$t>::trunc(self) as $int) % 2 == 0
+            }
         }
     };
 }
-impl_ieee_num!(f32);
-impl_ieee_num!(f64);
+impl_ieee_num!(f32, i32);
+impl_ieee_num!(f64, i64);
+
+/// Round to the nearest integer, ties to even (banker's rounding) -- the
+/// implicit RNE mode of the rounding-mode-free float-to-int conversions in
+/// `ops/conversions.rs`.
+pub(super) fn round_ties_to_even<T: IeeeNum>(f: T) -> T {
+    let truncated = f.trunc();
+    // An exact .5 fractional part is the only input `round` (ties *away from
+    // zero*) gets differently from RNE; there, keep the even neighbour.
+    if (f - truncated).abs() == T::HALF && f.trunc_is_even() {
+        truncated
+    } else {
+        f.round()
+    }
+}
+
+/// Apply a VEX rounding mode to a concrete float: 0=nearest (ties to even),
+/// 1=down (-inf), 2=up (+inf), 3=zero (truncate).
+///
+/// Callers pass the raw mode word; only its low two bits select the mode, so
+/// the `_` arm below is mode 0 and nothing else.
+pub(super) fn apply_rounding<T: IeeeNum>(f: T, rm: u32) -> T {
+    match rm & 0x3 {
+        1 => f.floor(),
+        2 => f.ceil(),
+        3 => f.trunc(),
+        _ => round_ties_to_even(f),
+    }
+}
 
 /// Concrete IEEE-754-2008 `maxNum` (`want_max`) / `minNum` on one scalar pair.
 ///
