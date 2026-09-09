@@ -758,4 +758,4 @@ impl Default for PythonCallbacks {
     }
 }
 
-test_submod!("../callbacks_tests.rs" => tests);
+test_submod!("callbacks_tests.rs" => tests);
