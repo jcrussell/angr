@@ -231,6 +231,104 @@ fn readlinkat_registered_symlink_writes_target() {
     }
 }
 
+// `write_symlink_target`'s arg-extraction order is a documented
+// short-circuit (angr-6cp06.55): the symlink-table lookup runs *first*,
+// and `buf` / `bufsiz` are only extracted from args after it hits. So a
+// symbolic `buf` / `bufsiz` is invisible on a non-symlink path (plain
+// `-1`, no Python fallback) but routes through `SymbolicArgument` on a
+// genuine symlink. The four tests below pin both directions for both
+// operands; swapping the two steps would red exactly half of them.
+
+#[test]
+fn readlink_symbolic_buf_on_non_symlink_returns_minus_one() {
+    let mut state = state_with_path(b"/no/such/link");
+    let sym_buf = {
+        let ctx = state.solver().borrow();
+        RustBV::symbolic(&ctx, "readlink_buf", 64)
+    };
+
+    let out = NativeReadlinkSyscall
+        .call(
+            &mut state,
+            &[RustBV::concrete(0x2000, 64), sym_buf, RustBV::concrete(256, 64)],
+        )
+        .expect("symbolic buf must not fall back on a non-symlink path");
+    assert_eq!(expect_continue(out), NEG_ONE);
+}
+
+#[test]
+fn readlink_symbolic_bufsiz_on_non_symlink_returns_minus_one() {
+    let mut state = state_with_path(b"/no/such/link");
+    let sym_bufsiz = {
+        let ctx = state.solver().borrow();
+        RustBV::symbolic(&ctx, "readlink_bufsiz", 64)
+    };
+
+    let out = NativeReadlinkSyscall
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(0x3000, 64),
+                sym_bufsiz,
+            ],
+        )
+        .expect("symbolic bufsiz must not fall back on a non-symlink path");
+    assert_eq!(expect_continue(out), NEG_ONE);
+}
+
+#[test]
+fn readlink_symbolic_buf_on_symlink_falls_back() {
+    let mut state = state_with_path(b"/link");
+    state
+        .file_system()
+        .add_symlink("/link".to_string(), b"/real/destination".to_vec());
+    let sym_buf = {
+        let ctx = state.solver().borrow();
+        RustBV::symbolic(&ctx, "readlink_buf", 64)
+    };
+
+    let err = NativeReadlinkSyscall
+        .call(
+            &mut state,
+            &[RustBV::concrete(0x2000, 64), sym_buf, RustBV::concrete(256, 64)],
+        )
+        .expect_err("symbolic buf on a real symlink must fall back");
+    assert_symbolic_arg(err, "readlink buf");
+}
+
+#[test]
+fn readlink_symbolic_bufsiz_on_symlink_falls_back() {
+    let mut state = state_with_path(b"/link");
+    state
+        .file_system()
+        .add_symlink("/link".to_string(), b"/real/destination".to_vec());
+    state.map_memory(0x3000, 0x1000, Permission::RWX);
+    let sym_bufsiz = {
+        let ctx = state.solver().borrow();
+        RustBV::symbolic(&ctx, "readlink_bufsiz", 64)
+    };
+
+    let err = NativeReadlinkSyscall
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(0x3000, 64),
+                sym_bufsiz,
+            ],
+        )
+        .expect_err("symbolic bufsiz on a real symlink must fall back");
+    assert_symbolic_arg(err, "readlink bufsiz");
+    // Nothing was written before the fallback: buf is still unmapped-clean
+    // at the first target byte's cell.
+    assert_eq!(
+        state.memory_load(0x3000, 1).expect("load").as_u64().unwrap(),
+        0,
+        "target bytes must not be written before the bufsiz extraction"
+    );
+}
+
 #[test]
 fn readlink_symbolic_path_byte_falls_back() {
     let mut state = RustSimState::new("amd64").expect("state");
