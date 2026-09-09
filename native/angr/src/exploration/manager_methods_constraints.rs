@@ -643,12 +643,16 @@ impl RustExplorationManager {
     /// and state-index entries, and lets the `RustSimState` destructor free
     /// the Z3 solver clone. No-op (returns `false`) when the state is not in
     /// the named stash — the caller is responsible for picking the right
-    /// stash (today this is only ever `"_copies"`, the holding area for
-    /// `RustStateProxy.copy()` clones).
+    /// stash.
     ///
-    /// Backs `RustStateProxy.__del__` — when a copy-proxy is GC'd by Python,
-    /// the Rust-side state can be reclaimed without waiting for the whole
-    /// manager to drop. Returns `true` when a state was actually dropped.
+    /// Three live callers, and the stash is *not* always `"_copies"`:
+    /// `RustExplorationManager.drop_copy` (Python side; backs
+    /// `RustStateProxy.__del__`, so a GC'd copy-proxy reclaims its Rust state
+    /// without waiting for the whole manager to drop) passes `"_copies"`;
+    /// `rust_manager.py::_route_preinit_seed_finds` passes `"active"`; and
+    /// `rust_state_proxy.py::_StashDict.__setitem__` passes whatever stash key
+    /// the caller assigned to. Returns `true` when a state was actually
+    /// dropped.
     #[angr_macros::steady_guard_exempt(
         reason = "routine stash bookkeeping (backs RustStateProxy.__del__), same rationale as \
                   move_states."
@@ -658,9 +662,10 @@ impl RustExplorationManager {
         // handles the stash removal + unindex (angr-ph300.27).
         if self.sm.take_state_from(state_id, stash).is_some() {
             // Dropping from STASH_ACTIVE outside `policy.select` — notify so a
-            // memoizing policy doesn't leak a memo entry (angr-myzjx.25). Today
-            // the caller only passes "_copies", so this is a no-op guard now,
-            // but it keeps the invariant robust if the API gains callers.
+            // memoizing policy doesn't leak a memo entry (angr-myzjx.25). This
+            // arm is live, not defensive: `_route_preinit_seed_finds` drops
+            // from "active" directly, and `_StashDict.__setitem__` can name any
+            // stash. Do not delete it as unreachable.
             if stash == STASH_ACTIVE {
                 self.policy.on_state_removed(state_id);
             }

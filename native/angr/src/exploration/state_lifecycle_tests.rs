@@ -675,8 +675,9 @@ fn reset_for_stage_notifies_dropped_active() {
     );
 }
 
-/// `drop_state_from_stash` on "_copies" (its only real caller) removes a
-/// non-active state and must not notify.
+/// `drop_state_from_stash` on "_copies" (the stash `drop_copy` passes) removes
+/// a non-active state and must not notify. Complement of
+/// `drop_state_from_active_notifies_policy` below.
 #[test]
 fn drop_state_from_copies_does_not_notify() {
     let (mut mgr, spy) = spy_mgr();
@@ -690,6 +691,28 @@ fn drop_state_from_copies_does_not_notify() {
     assert!(
         sorted_removed(&spy).is_empty(),
         "dropping a non-active copy must not notify the policy",
+    );
+}
+
+/// The STASH_ACTIVE arm of `drop_state_from_stash` is live, not defensive:
+/// `rust_manager.py::_route_preinit_seed_finds` drops seed states straight from
+/// "active", and `rust_state_proxy.py::_StashDict.__setitem__` can name any
+/// stash. Dropping from active must notify the policy so a memoizing one does
+/// not leak a memo entry (angr-myzjx.25).
+#[test]
+fn drop_state_from_active_notifies_policy() {
+    let (mut mgr, spy) = spy_mgr();
+
+    let mut s = RustSimState::new("amd64").expect("state");
+    s.set_register("rax", RustBV::concrete(0x7, 64));
+    let id = s.state_id();
+    mgr.sm.push(STASH_ACTIVE, s);
+
+    assert!(mgr.drop_state_from_stash(id, STASH_ACTIVE));
+    assert_eq!(
+        sorted_removed(&spy),
+        vec![id],
+        "dropping from active must notify the policy",
     );
 }
 
