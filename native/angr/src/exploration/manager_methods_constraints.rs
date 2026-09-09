@@ -545,7 +545,7 @@ impl RustExplorationManager {
     /// Without this skip mechanism, the hook would trigger again immediately.
     ///
     /// The skip is automatically cleared after one step or when the address is used.
-    /// GAP 6: Stack-based tracking allows for nested zero-length hooks.
+    /// Stack-based tracking allows for nested zero-length hooks.
     /// See `pending_api::_set_skip_hook_addr` for the body.
     #[angr_macros::steady_guard_exempt(
         reason = "self.skip_hook_stack is transient per-step runtime bookkeeping that \

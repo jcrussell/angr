@@ -773,14 +773,14 @@ impl RustExplorationManager {
     }
 
     /// Consume one skip token for `pc`, returning whether the hook at `pc`
-    /// should be skipped this step (GAP 6, zero-length-hook anti-loop).
+    /// should be skipped this step (the zero-length-hook anti-loop).
     ///
     /// Expired entries (`expiry <= self.steps`) are dropped first, then the
     /// **topmost** matching entry — and only that one — is popped. Two nested
     /// zero-length hooks at the same address push two tokens
     /// (`_set_skip_hook_addr` does not dedup), and each occurrence must get
     /// its own; removing every match at once would leave the second
-    /// occurrence unskipped and re-arm the infinite loop GAP 6 prevents
+    /// occurrence unskipped and re-arm the infinite loop the skip stack prevents
     /// (angr-9ke6b.47).
     pub(crate) fn consume_skip_hook(&mut self, pc: u64) -> bool {
         let steps = self.steps;

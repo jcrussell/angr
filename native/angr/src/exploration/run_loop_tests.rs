@@ -159,7 +159,7 @@ fn must_run_serial_true_when_skip_hook_pending() {
             "workers>1 with no skip pending takes a parallel path"
         );
         // A pending skip-hook entry has no parallel/steady analogue (only
-        // step_one's GAP-6 block consumes it), so it must force serial until
+        // step_one's consume_skip_hook call consumes it), so it must force serial until
         // drained (angr-04tw3.1).
         mgr._set_skip_hook_addr(0x400123);
         assert!(

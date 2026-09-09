@@ -314,7 +314,7 @@ impl RustExplorationManager {
         self.clear_predicate_skip_tokens(state_id);
 
         // Check hooks (SimProcedures)
-        // GAP 6: stack-based skip tracking for zero-length hooks. Expires
+        // Stack-based skip tracking for zero-length hooks. Expires
         // stale entries and pops at most one token for `pc`; see
         // `consume_skip_hook`.
         let should_skip_hook = self.consume_skip_hook(pc);

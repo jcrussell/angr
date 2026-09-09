@@ -96,7 +96,7 @@ impl RustExplorationManager {
         memory_changes: Option<Vec<(u64, Vec<u8>)>>,
         new_constraints: Option<&Bound<'_, pyo3::types::PyList>>,
     ) -> PyResult<()> {
-        // Same as resume_after_simprocedure - ensures constraint sync (GAP 2)
+        // Same as resume_after_simprocedure - ensures constraint sync
         self._resume_after_simprocedure(
             py,
             state_id,
@@ -118,7 +118,7 @@ impl RustExplorationManager {
         self._deadend_pending_callback(state_id)
     }
 
-    /// Resume after an error occurred during callback execution (P17).
+    /// Resume after an error occurred during callback execution.
     /// See `resume::_resume_after_error` for the body.
     #[angr_macros::steady_guard_exempt(
         reason = "resumes one state_id-scoped pending callback; drives the run loop, does not \
@@ -154,7 +154,7 @@ impl RustExplorationManager {
         )
     }
 
-    /// Resume after Python evaluates a find predicate (P2).
+    /// Resume after Python evaluates a find predicate.
     /// See `resume::_resume_find_predicate` for the body.
     #[angr_macros::steady_guard_exempt(
         reason = "resumes one state_id-scoped pending callback; drives the run loop, does not \
@@ -164,7 +164,7 @@ impl RustExplorationManager {
         self._resume_find_predicate(state_id, matched)
     }
 
-    /// Resume after Python evaluates an avoid predicate (P7).
+    /// Resume after Python evaluates an avoid predicate.
     /// See `resume::_resume_avoid_predicate` for the body.
     #[angr_macros::steady_guard_exempt(
         reason = "resumes one state_id-scoped pending callback; drives the run loop, does not \

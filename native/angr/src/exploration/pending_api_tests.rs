@@ -103,11 +103,11 @@ fn pending_ancestry_without_root_is_state_plus_parent() {
     assert_eq!(ancestry, vec![b_id, a_id]);
 }
 
-/// GAP-6 regression (angr-9ke6b.47): two nested zero-length hooks at the SAME
+/// Skip-stack regression (angr-9ke6b.47): two nested zero-length hooks at the SAME
 /// address push two skip tokens, and each occurrence must consume exactly one.
 /// The old `retain(|&(addr, _)| addr != pc)` collapsed both in a single call,
 /// so the second occurrence found no token, re-fired the hook, and re-armed
-/// the very infinite loop GAP 6 exists to prevent.
+/// the very infinite loop the skip stack exists to prevent.
 #[test]
 fn consume_skip_hook_pops_one_entry_per_nested_occurrence() {
     Python::initialize();

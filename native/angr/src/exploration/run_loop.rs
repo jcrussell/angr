@@ -209,7 +209,7 @@ impl RustExplorationManager {
     /// A pending skip-hook entry (`skip_hook_stack`, populated by Python's
     /// `set_skip_hook_addr` across the zero-length/stale-hook recovery callbacks)
     /// also forces serial: `skip_hook_stack` is read and consumed in exactly one
-    /// place — `step_one`'s GAP-6 block — which only the single-threaded loop
+    /// place — `step_one`'s `consume_skip_hook` call — which only the single-threaded loop
     /// reaches. `parallel_process_state` calls `run_interpreter_step_core` with
     /// `skip_addr = None`, so a state resumed into a wave/steady session after a
     /// skip was registered would re-register and immediately re-fire the same
