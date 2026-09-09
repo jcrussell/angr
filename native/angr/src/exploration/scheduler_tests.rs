@@ -55,7 +55,7 @@ fn spin_until(cond: impl Fn() -> bool) {
 // steal path is reached), returning `(insertion_order, dispatch_order)` of
 // `state_id`s. Both policies see three FRESH states in the SAME insertion
 // order; only the pop policy differs.
-fn drain_local_with(policy: &'static str) -> (Vec<u64>, Vec<u64>) {
+fn drain_via_dispatch_next(policy: &'static str) -> (Vec<u64>, Vec<u64>) {
     let ctx = Context::thread_local();
     let transport = match policy {
         "fifo" => WorkTransport::with_policy(Arc::new(Fifo)),
@@ -77,13 +77,13 @@ fn drain_local_with(policy: &'static str) -> (Vec<u64>, Vec<u64>) {
 
 #[test]
 fn test_dispatch_next_honors_selection_policy() {
-    let (fifo_in, fifo_out) = drain_local_with("fifo");
+    let (fifo_in, fifo_out) = drain_via_dispatch_next("fifo");
     assert_eq!(
         fifo_out, fifo_in,
         "Fifo must dispatch the worker-local frontier oldest-first (insertion order)",
     );
 
-    let (lifo_in, lifo_out) = drain_local_with("lifo");
+    let (lifo_in, lifo_out) = drain_via_dispatch_next("lifo");
     let mut lifo_expected = lifo_in.clone();
     lifo_expected.reverse();
     assert_eq!(
