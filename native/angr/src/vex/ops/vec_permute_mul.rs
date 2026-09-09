@@ -133,6 +133,32 @@ impl VEXOps {
         Ok(Self::concat_le_elements(bits, ctx))
     }
 
+    /// Builds the two's-complement lane widener shared by the concrete fast
+    /// paths of `vec_mull` and `vec_mulhi`.
+    ///
+    /// The returned closure takes an `in_width`-bit lane **already masked to
+    /// that width** and reinterprets it as `i128`, so the `wrapping_mul` that
+    /// follows yields the correct double-width product. For a signed lane whose
+    /// sign bit is set that means filling every bit above `in_width` with ones
+    /// first; unsigned lanes (and non-negative signed ones) already are their
+    /// own value. Returning a closure rather than a per-lane function keeps the
+    /// mask/sign-bit derivation out of the callers' lane loops, exactly as
+    /// `vec_saturate.rs::saturation_bound_bvs` hoists its bound constants —
+    /// the same precedent for why this is shared at all, so a sign-fill fix
+    /// cannot land on one caller and miss the other.
+    fn lane_widener(in_width: u32, signed: bool) -> impl Fn(u128) -> i128 {
+        let in_mask = Self::low_bit_mask_u128(in_width);
+        let sign_bit: u128 = 1u128 << (in_width - 1);
+        move |lane: u128| -> i128 {
+            if signed && (lane & sign_bit != 0) {
+                // Two's-complement fill of the upper bits, reinterpreted.
+                (lane | !in_mask) as i128
+            } else {
+                lane as i128
+            }
+        }
+    }
+
     /// Widening vector multiply (`Iop_Mull{N}{S,U}x{M}` full-lane, NEON VMULL;
     /// `Iop_MullEven{N}{S,U}x{M}` even-lane, SSE PMULDQ/PMULUDQ).
     ///
@@ -170,15 +196,7 @@ impl VEXOps {
         if let (Some(l), Some(r)) = (left.as_u128(), right.as_u128()) {
             let in_mask = Self::low_bit_mask_u128(in_width);
             let out_mask = Self::low_bit_mask_u128(out_width);
-            let sign_bit: u128 = 1u128 << (in_width - 1);
-            let widen = |lane: u128| -> i128 {
-                if signed && (lane & sign_bit != 0) {
-                    // Two's-complement fill of the upper bits, reinterpreted.
-                    (lane | !in_mask) as i128
-                } else {
-                    lane as i128
-                }
-            };
+            let widen = Self::lane_widener(in_width, signed);
             let mut result: u128 = 0;
             for j in 0..out_lanes {
                 let lo = j * step * in_width;
@@ -237,15 +255,7 @@ impl VEXOps {
         if let (Some(l), Some(r)) = (left.as_u128(), right.as_u128()) {
             let in_mask = Self::low_bit_mask_u128(width);
             let prod_mask = Self::low_bit_mask_u128(prod_width);
-            let sign_bit: u128 = 1u128 << (width - 1);
-            let widen = |lane: u128| -> i128 {
-                if signed && (lane & sign_bit != 0) {
-                    // Two's-complement fill of the upper bits, reinterpreted.
-                    (lane | !in_mask) as i128
-                } else {
-                    lane as i128
-                }
-            };
+            let widen = Self::lane_widener(width, signed);
             let mut result: u128 = 0;
             for j in 0..lanes {
                 let lo = j * width;
