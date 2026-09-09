@@ -175,7 +175,7 @@ Two pieces in Python make the same workloads cheap:
 3. ``MultiwriteAnnotation``
    (``angr/storage/memory_mixins/address_concretization_mixin.py``) is
    an opt-in annotation used by a few SimProcedures
-   (``libc/strchr.py``, ``libc/gets.py``,
+   (``libc/strchr.py``, ``libc/memchr.py``, ``libc/gets.py``,
    ``libc/fgets.py``) to upgrade Range concretization on writes even
    when ``SYMBOLIC_WRITE_ADDRESSES`` is off. The annotation is *not*
    what makes the workload lazy — laziness comes from the page-level

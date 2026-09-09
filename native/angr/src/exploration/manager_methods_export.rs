@@ -364,8 +364,9 @@ impl RustExplorationManager {
     /// Multi-cell lazy path on the given state. Used by
     /// `_cb_memory_store_symbolic_full` when the address AST carries a
     /// `MultiwriteAnnotation` — the SimProcedures in `libc/strchr.py`,
-    /// `libc/gets.py`, `libc/fgets.py` tag returned addresses with this
-    /// annotation so Range concretization picks up >1 candidate.
+    /// `libc/memchr.py`, `libc/gets.py`, `libc/fgets.py` tag returned
+    /// addresses with this annotation so Range concretization picks up >1
+    /// candidate.
     ///
     /// Returns `true` on success. Returns `false` if conversion or store
     /// fails (caller should fall back to the existing Python state path

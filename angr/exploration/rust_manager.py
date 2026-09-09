@@ -2906,11 +2906,12 @@ class RustExplorationManager(
 
         Phase 1.4 (angr-5zw8): if ``addr_ast`` carries a
         ``MultiwriteAnnotation`` (attached by ``libc/strchr.py``,
-        ``libc/gets.py``, ``libc/fgets.py``), route the store through the
-        Rust Multi-cell lazy path on the current state before falling back
-        to Python's memory model. On success the write lands directly in
-        Rust memory and the Python state is skipped; on failure we fall
-        through to the existing Python path so the write is not lost.
+        ``libc/memchr.py``, ``libc/gets.py``, ``libc/fgets.py``), route the
+        store through the Rust Multi-cell lazy path on the current state
+        before falling back to Python's memory model. On success the write
+        lands directly in Rust memory and the Python state is skipped; on
+        failure we fall through to the existing Python path so the write is
+        not lost.
         """
         state = self._get_per_fork_state()
         if state is None or addr_ast is None or data_ast is None:
