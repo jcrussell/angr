@@ -309,6 +309,13 @@ impl<'a> VEXInterpreter<'a> {
     /// itself is symbolic. The actual store still goes through the Python
     /// callback / pending-store buffer below — this call only protects the
     /// Rust-side `block_cache` against self-modifying `lock cmpxchg` writes.
+    ///
+    /// Precondition (not enforced): `data_bv` is symbolic. Both callers
+    /// uphold it — `cas_dispatch_store` sends a concrete value down the
+    /// synthesized-`IRStmt::Store` path instead, and `cas_writeback`'s
+    /// `None` arm builds an `ite` over an unresolved comparison. A concrete
+    /// value passed here is still handled correctly, but it takes the
+    /// callback path a plain store would have taken more cheaply.
     pub(super) fn cas_store_symbolic_data(
         &mut self,
         callbacks: &PythonCallbacks,
@@ -324,10 +331,22 @@ impl<'a> VEXInterpreter<'a> {
                 self.flush_stores(callbacks)?;
                 self.store_symbolic_value_buffered(callbacks, addr_concrete, data_bv)?;
             } else {
+                // No `memory_store_symbolic_value` callback. Every current
+                // caller arrives with a *symbolic* `data_bv`
+                // (`cas_dispatch_store` gates on `is_symbolic`;
+                // `cas_writeback`'s uncertain-comparison arm hands in an
+                // `ite`), so this guard hard-errors rather than zero-filling
+                // memory (angr-9ke6b.19) and the buffering below is reached
+                // only if a future caller passes a concrete value. Past the
+                // guard the value is *provably concrete*, so this mirrors
+                // `handle_concrete_store`'s concrete fast path and nothing
+                // else: evict the stale symbolic shadow the write overwrites
+                // (angr-ofyh), then buffer the bytes. It must NOT also insert
+                // into `pending_symbolic_stores` — that map holds symbolic
+                // values only, and a concrete entry there would shadow the
+                // concrete buffer on load forwarding (angr-6cp06.72).
                 reject_symbolic_byte_store(data_bv, addr_concrete, "CAS store")?;
                 self.evict_overlapping_symbolic_stores(addr_concrete, data_size);
-                self.pending_symbolic_stores
-                    .insert(addr_concrete, data_bv.clone());
                 let data_bytes = bv_to_bytes(data_bv);
                 self.pending_stores.push(addr_concrete, data_bytes);
                 if self.pending_stores.len() >= self.max_pending_stores {

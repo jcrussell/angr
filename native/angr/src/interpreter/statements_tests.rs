@@ -520,6 +520,41 @@ fn cas_symbolic_store_without_callback_errors_not_zero_fills() {
     );
 }
 
+// angr-6cp06.72: the no-callback branch of `cas_store_symbolic_data` used to
+// insert into `pending_symbolic_stores` *and* push bytes into
+// `pending_stores`. `reject_symbolic_byte_store` short-circuits above it for
+// every symbolic value, so the only value that can reach those lines is a
+// concrete one -- and a concrete entry in the symbolic map would shadow the
+// concrete buffer on load forwarding. This pins the surviving behaviour:
+// concrete bytes buffered, symbolic map untouched.
+#[test]
+fn cas_concrete_store_without_callback_buffers_bytes_only() {
+    let ctx = SymContext::new_mock();
+    let mut interp = new_interp(&ctx);
+    interp.add_concrete_memory(0x1000, vec![0u8; 0x1000]);
+
+    let addr_expr = IRExpr::Const(IRConst::U64(0x1010));
+    let data_bv = RustBV::concrete(0xdead_beef, 32);
+    let call_irsb = make_irsb_with_temps(0x1010, &[]);
+
+    with_python(|cb| {
+        assert!(!cb.has_memory_store_symbolic_value());
+        interp
+            .cas_store_symbolic_data(cb, &addr_expr, &data_bv, &call_irsb)
+            .expect("a concrete CAS value needs no symbolic-store callback");
+    });
+
+    assert_eq!(
+        interp.pending_stores.try_load_exact(0x1010, 4),
+        Some(&0xdead_beefu32.to_le_bytes()[..]),
+        "the concrete value must be buffered as bytes"
+    );
+    assert!(
+        interp.pending_symbolic_stores.is_empty(),
+        "a provably-concrete value must not land in the symbolic-store map"
+    );
+}
+
 // Symbolic-address branch: the CAS-target address itself is unresolved at
 // eval time. `cas_store_symbolic_data` concretizes it via
 // `concretize_cached_write` (the same helper `handle_symbolic_store` uses for
