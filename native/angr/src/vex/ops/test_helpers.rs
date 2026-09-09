@@ -1,5 +1,5 @@
 // angr-9hleg: shared SIMD lane-test helpers, hoisted out of the former
-// monolithic ops_tests.rs so the by-family ops_tests_<fam>.rs siblings can
+// monolithic ops_tests.rs so the by-family `ops/tests_<fam>.rs` siblings can
 // each `use super::test_helpers::*`. Helpers are `pub(super)` so all
 // test sibling modules (children of `ops`) reach them. Behavior-preserving.
 
@@ -8,13 +8,15 @@ use super::*;
 // =========================================================================
 // SIMD lane-test helpers (angr-ec82).
 //
-// The ~57 packed-SIMD tests below all share the same plumbing: pack lane
-// values little-endian into a u128, call VEXOps::binop/unop, then unpack
-// and assert per lane. These helpers move ONLY that mechanical pack/unpack/
-// assert skeleton out of the individual tests. Expected-value arrays stay
-// inline at each call site — they are independent reference constants, never
-// derived from the code under test (vacuous-test audit, 2026-06-12), and the
-// helpers must preserve that property (they never compute an expected value).
+// This file declares no tests of its own. Its consumers are the sibling
+// `ops/tests_vec_*.rs` modules plus `ops/tests_float_cmp.rs`; they all share
+// the same plumbing: pack lane values little-endian into a u128, call
+// VEXOps::binop/unop, then unpack and assert per lane. These helpers move
+// ONLY that mechanical pack/unpack/assert skeleton out of the individual
+// tests. Expected-value arrays stay inline at each call site — they are
+// independent reference constants, never derived from the code under test
+// (vacuous-test audit, 2026-06-12), and the helpers must preserve that
+// property (they never compute an expected value).
 // =========================================================================
 
 /// Pack f32 lanes little-endian into a u128 (lane `i` occupies bits
