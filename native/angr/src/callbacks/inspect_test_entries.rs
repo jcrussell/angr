@@ -15,8 +15,15 @@
 //! name and the dispatch method under test all derive from one ident — a
 //! copy-paste between the identically-typed pairs (mem_read/mem_write,
 //! reg_read/reg_write, tmp_read/tmp_write, call/return) can no longer test the
-//! sibling (angr-0jh0j.6). Each entry returns whatever the registered
-//! breakpoint returned.
+//! sibling (angr-0jh0j.6).
+//!
+//! Only `mem_read` and `mem_write` hand back what the registered breakpoint
+//! returned (`PyResult<Option<Py<PyAny>>>`) — theirs are the only two whose
+//! return value the engine consumes, as the `mem_read_expr`/`mem_write_expr`
+//! value injection. Every other entry is typed `PyResult<()>` and discards the
+//! Python return, mirroring the `PyResult<()>` dispatch method it forwards to;
+//! a test for one of those has to assert on a side effect the Python callback
+//! recorded instead.
 
 use angr_macros::inspect_test_entries;
 use pyo3::prelude::*;
