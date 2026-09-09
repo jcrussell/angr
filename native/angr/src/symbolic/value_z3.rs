@@ -486,9 +486,10 @@ impl RustBV {
 
             // Bit counting ops — build a sound Z3 encoding tied to the
             // operand, mirroring the claripy export ITE ladder
-            // (export.rs::build_sound_bitcount). A bare `new_const` hash-conses
-            // to ONE shared unconstrained variable per width, unrelated to the
-            // operand, so `clz(x)==0 && clz(y)==5` aliased to UNSAT and eval
+            // (`claripy_bridge::export::ast_helpers::build_sound_bitcount`).
+            // A bare `new_const` hash-conses to ONE shared unconstrained
+            // variable per width, unrelated to the operand, so
+            // `clz(x)==0 && clz(y)==5` aliased to UNSAT and eval
             // ignored the operand — diverging from the concrete arm and the
             // exported claripy AST (angr-ph300.29).
             BVOp::Clz | BVOp::Ctz => {
