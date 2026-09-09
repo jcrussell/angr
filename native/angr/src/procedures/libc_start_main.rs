@@ -18,31 +18,25 @@
 //! flow that needs the init side-effects is to disable this native via
 //! `set_python_override("__libc_start_main")`.
 
-use super::{NativeSimProcedure, ProcedureError};
-use crate::state::RustSimState;
-use crate::symbolic::RustBV;
-
-pub(crate) struct NativeLibcStartMain;
-
-impl NativeSimProcedure for NativeLibcStartMain {
-    fn name(&self) -> &'static str {
-        "__libc_start_main"
-    }
-
-    fn num_args(&self) -> usize {
-        // matches Python signature: run(self, main, argc, argv, init, fini)
-        5
-    }
-
-    fn no_return(&self) -> bool {
-        true
-    }
-
-    fn call(
-        &self,
-        _state: &mut RustSimState,
-        _args: &[RustBV],
-    ) -> Result<Option<RustBV>, ProcedureError> {
+crate::declare_proc! {
+    /// Native `__libc_start_main` implementation.
+    ///
+    /// ```c
+    /// int __libc_start_main(int (*main)(int, char **, char **), int argc,
+    ///                       char **argv, void (*init)(void),
+    ///                       void (*fini)(void), void (*rtld_fini)(void),
+    ///                       void *stack_end);
+    /// ```
+    ///
+    /// The five declared args mirror Python angr's
+    /// `run(self, main, argc, argv, init, fini)` signature. All are declared
+    /// `bv` and ignored — the body deadends unconditionally, so a symbolic
+    /// argument must not force a Python fallback the way `concrete` would.
+    name = "__libc_start_main",
+    struct = NativeLibcStartMain,
+    args = [_main: bv, _argc: bv, _argv: bv, _init: bv, _fini: bv],
+    no_return = true,
+    call |_state| {
         // after_main does self.exit(0); native equivalent is just deadending.
         Ok(None)
     }
