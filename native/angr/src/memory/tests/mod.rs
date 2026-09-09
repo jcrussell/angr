@@ -25,6 +25,12 @@
 //!   multi-cell install/collapse/cache/coalesce lifecycle, split further into
 //!   `payload`, `collapse`, `install`, `cache` and `coalesce` submodules.
 //! - `ite_dedup`: ITE deduplication on loads + address-disjunction hoisting.
+//! - `load_unconstrained`: `load_concrete_or_unconstrained`'s unmapped-address
+//!   Err fallback (the ITE build path always hits Ok).
+//! - `merge_branches`: `merge`'s generic per-byte ITE selection plus its
+//!   structural branches (page-only-in-other adoption, non-page symbolic-object
+//!   union, pending-write extension) — the plain cases the specialized
+//!   `merge_*` files below assume.
 //! - `merge_cost_shape`: S5a measurement record for the merge cost-shape
 //!   question (spike; the optimization it recommended has since shipped).
 //! - `merge_divergence`: the shipped divergence-proportional merge — the
@@ -32,24 +38,25 @@
 //!   against the symbolic-overlay trap.
 //! - `merge_multi`: merging a byte that is Multi on both arms into one lazy
 //!   Multi cell, plus merge-condition guarding of deferred `pending_writes`.
-//! - `merge_prefetch`: soundness-critical paths no integration test reaches —
-//!   per-byte merge ITE selection, `load_concrete_or_unconstrained`'s Err
-//!   fallback, and `get_region_prefetch_list`.
 //! - `merge_sidecars`: every `SymbolicMemory` sidecar field is merged per its
 //!   declared `#[merge_policy]` (behavioural half of the `MergePolicy` derive).
 //! - `page_boundary_property_tests`: property-based concrete round-trips for
 //!   stores/loads straddling a page boundary.
+//! - `prefetch_region`: `get_region_prefetch_list`'s eager-region path, off
+//!   under the production `ExecutionConfig::default()`.
 
 mod avoid_multivalued;
 mod basic;
 mod ite_dedup;
+mod load_unconstrained;
+mod merge_branches;
 mod merge_cost_shape;
 mod merge_divergence;
 mod merge_multi;
-mod merge_prefetch;
 mod merge_sidecars;
 mod multi;
 mod page_boundary_property_tests;
+mod prefetch_region;
 mod symbolic_counters;
 mod symbolic_cross_page;
 mod symbolic_fork;
