@@ -42,6 +42,10 @@
 //!   declared `#[merge_policy]` (behavioural half of the `MergePolicy` derive).
 //! - `page_boundary_property_tests`: property-based concrete round-trips for
 //!   stores/loads straddling a page boundary.
+//! - `pin_fallback`: the symbolic-address `ctx.eval` + `pin_fallback_addr` arm
+//!   of the `load`/`store` convenience wrappers, plus their no-witness
+//!   `SymbolicAddress` error — the only tests that pass those two a
+//!   non-concrete address.
 //! - `prefetch_region`: `get_region_prefetch_list`'s eager-region path, off
 //!   under the production `ExecutionConfig::default()`.
 
@@ -56,6 +60,7 @@ mod merge_multi;
 mod merge_sidecars;
 mod multi;
 mod page_boundary_property_tests;
+mod pin_fallback;
 mod prefetch_region;
 mod symbolic_counters;
 mod symbolic_cross_page;
