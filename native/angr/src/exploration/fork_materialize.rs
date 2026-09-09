@@ -56,7 +56,7 @@ fn add_fork_guard_constraint(
 }
 
 /// Reconstruct a deferred fork's branch condition from its stored claripy AST
-/// — the "P11" fallback — when the condition is absent from
+/// — the `condition_ast` fallback — when the condition is absent from
 /// `stored_conditions`.
 ///
 /// Returns `None` when `stored_condition` is already `Some` (nothing to
@@ -70,7 +70,7 @@ fn add_fork_guard_constraint(
 /// `_resume_after_symbolic_branch` (resume.rs) and the run-loop callback path
 /// (run_loop.rs). angr-ph300.7 fixed a drop-bug by porting this arm into the
 /// deadend copy verbatim; consolidating removes that copy-paste hazard (memory
-/// invariant-deferred-fork-p11-p15-fallback).
+/// invariant-deferred-fork-condition-fallback-arms).
 pub(crate) fn reconstruct_deferred_fork_condition(
     stored_condition: Option<&RustBV>,
     fork: &DeferredFork,
@@ -251,18 +251,20 @@ pub(crate) struct MaterializeForkCtx<'a> {
 
 /// Materialize a step's deferred forks into SAT / UNSAT state lists.
 ///
-/// Single source of truth for the condition-lookup → P11 `condition_ast`
-/// reconstruction → P15 conservative-fork → [`build_unexplored_fork`] → SAT
+/// Single source of truth for the condition-lookup →
+/// [`reconstruct_deferred_fork_condition`] → conservative-fork arm →
+/// [`build_unexplored_fork`] → SAT
 /// check pipeline that used to be open-coded in three near-identical copies:
 /// `step_one`'s find/avoid callback arm (`run_loop.rs`), and both
 /// `_resume_after_simprocedure` / `_deadend_pending_callback` /
 /// `_resume_after_symbolic_branch` loops (`resume.rs`). Only the parallel
 /// mirror (`core_outcome_handlers.rs::materialize_deferred_forks_core`) was
 /// unit-tested, so the serial copies were free to drift — angr-ph300.7 was
-/// exactly that drift (a missing P11 arm silently dropping AST-only forks).
+/// exactly that drift (a missing `condition_ast` arm silently dropping
+/// AST-only forks).
 ///
-/// The parallel mirror is deliberately NOT folded in here: it has no P11
-/// fallback, fires the `constraints` inspect BP via
+/// The parallel mirror is deliberately NOT folded in here: it has no
+/// `condition_ast` fallback, fires the `constraints` inspect BP via
 /// [`add_fork_guard_constraint`], and accumulates into atomics rather than
 /// `ExecutionStats`. That split is a knowingly-accepted duplication, not an
 /// outstanding TODO: the bd memory `invariant-stepping-decomposition`
@@ -299,7 +301,7 @@ pub(crate) fn materialize_deferred_forks(
 
     for fork in forks {
         let condition = stored_conditions.get(&fork.condition_id);
-        // P11: reconstruct from the stored claripy AST when the condition is
+        // Reconstruct from the stored claripy AST when the condition is
         // absent from `stored_conditions`.
         let reconstructed = reconstruct_deferred_fork_condition(condition, &fork, fork_base);
 
@@ -320,7 +322,7 @@ pub(crate) fn materialize_deferred_forks(
             }
             if reconstructed.is_some() {
                 log::debug!(
-                    "P11: Reconstructed condition from condition_ast for fork at 0x{:x}",
+                    "Reconstructed condition from condition_ast for fork at 0x{:x}",
                     fork.branch_addr
                 );
             }
@@ -334,17 +336,17 @@ pub(crate) fn materialize_deferred_forks(
                 out.sat.push(forked);
             } else {
                 log::debug!(
-                    "P13: Forked state at 0x{:x} is UNSAT, adding to pruned",
+                    "Forked state at 0x{:x} is UNSAT, adding to pruned",
                     fork.unexplored_target
                 );
                 out.unsat.push(forked);
             }
         } else {
-            // P15: no condition from either source — build a conservative
+            // No condition from either source — build a conservative
             // unconstrained fork so the unexplored branch is still routed
             // rather than dropped.
             log::warn!(
-                "P15: Missing condition for deferred fork at 0x{:x} (condition_id={}). \
+                "Missing condition for deferred fork at 0x{:x} (condition_id={}). \
                  Creating conservative fork to explore the path.",
                 fork.branch_addr,
                 fork.condition_id
@@ -356,7 +358,7 @@ pub(crate) fn materialize_deferred_forks(
                 out.sat.push(forked);
             } else {
                 log::debug!(
-                    "P13: Unconstrained fork at 0x{:x} is UNSAT, adding to pruned",
+                    "Unconstrained fork at 0x{:x} is UNSAT, adding to pruned",
                     fork.unexplored_target
                 );
                 out.unsat.push(forked);

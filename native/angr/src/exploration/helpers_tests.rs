@@ -402,7 +402,7 @@ fn resume_after_error_no_pending_state_raises() {
 /// callback, so it is unrelated to the error; dropping it makes a find target
 /// behind its unexplored side permanently unreachable. Mirrors
 /// `deadend_pending_callback_conservative_fork_not_dropped`: the fork here has
-/// no condition source at all, so the P15 conservative arm must materialize an
+/// no condition source at all, so the conservative arm must materialize an
 /// unconstrained successor at `unexplored_target` and route it to active while
 /// the parking state still lands in the errored stash.
 #[test]
@@ -424,7 +424,7 @@ fn resume_after_error_deferred_fork_not_dropped() {
             jumpkind: None,
             solver_ctx: None,
             // condition_id 999 absent from stored_conditions + no condition_ast
-            // -> only the P15 conservative arm keeps this fork alive.
+            // -> only the conservative arm keeps this fork alive.
             deferred_forks: vec![crate::callbacks::DeferredFork {
                 branch_addr: 0x40_0500,
                 path_taken: true,
@@ -543,7 +543,7 @@ fn avoid_predicate_pending_with_deferred_fork_trips_canary() {
 /// the deadend path, such a fork vanished — its unexplored branch was never
 /// routed, so a find target behind it was unreachable when the parking
 /// callback was an exit/abort SimProcedure. Here the fork has no condition
-/// source at all, so the P15 conservative-fork arm must materialize an
+/// source at all, so the conservative-fork arm must materialize an
 /// unconstrained successor at `unexplored_target`.
 #[test]
 fn deadend_pending_callback_conservative_fork_not_dropped() {
@@ -564,8 +564,8 @@ fn deadend_pending_callback_conservative_fork_not_dropped() {
             jumpkind: None,
             solver_ctx: None,
             // condition_id 999 is absent from stored_conditions and there is no
-            // condition_ast -> neither the direct lookup nor P11 can supply a
-            // condition, so the P15 conservative arm is the only path that
+            // condition_ast -> neither the direct lookup nor reconstruction can
+            // supply a condition, so the conservative arm is the only path that
             // keeps this fork alive.
             deferred_forks: vec![crate::callbacks::DeferredFork {
                 branch_addr: 0x40_0500,

@@ -159,7 +159,7 @@ impl RustExplorationManager {
 
     /// Handle UnmodeledCall: try to resolve via Python callback. Resolved
     /// functions are registered as SimProcedures and dispatched via callback;
-    /// unresolved calls use P21 generic skip (set return register to 0,
+    /// unresolved calls use the generic skip (set return register to 0,
     /// continue at return address) instead of deadending.
     fn handle_unmodeled_call(
         &mut self,
@@ -218,7 +218,7 @@ impl RustExplorationManager {
                     )))
                 }
                 Ok(None) => {
-                    // P21: Function could not be resolved - use generic skip instead of deadending
+                    // Function could not be resolved - use the generic skip instead of deadending
                     self.unmodeled_call_generic_skip(
                         state,
                         addr,
@@ -249,7 +249,7 @@ impl RustExplorationManager {
                 }
             }
         } else {
-            // P21: No resolve_function callback - use generic skip instead of deadending
+            // No resolve_function callback - use the generic skip instead of deadending
             self.unmodeled_call_generic_skip(
                 state,
                 addr,
@@ -261,7 +261,7 @@ impl RustExplorationManager {
         }
     }
 
-    /// P21 generic skip for unmodeled calls: set return register to 0,
+    /// Generic skip for unmodeled calls: set return register to 0,
     /// continue at return_addr, and process any deferred forks. Used both
     /// when resolve_function returns None and when no callback is registered.
     fn unmodeled_call_generic_skip(
@@ -274,7 +274,7 @@ impl RustExplorationManager {
         fork_snapshots: FxHashMap<u64, BranchSnapshot>,
     ) -> Result<Vec<RustSimState>, StepError> {
         log::debug!(
-            "P21: Unmodeled call at 0x{addr:x} - generic skip (ret=0) to return_addr=0x{return_addr:x}"
+            "Unmodeled call at 0x{addr:x} - generic skip (ret=0) to return_addr=0x{return_addr:x}"
         );
 
         // Set return register to 0 (symbolic unconstrained would be better but

@@ -110,7 +110,7 @@ fn materialize_deferred_forks_unsat_split_and_lazy_solves() {
     assert!(lazy.unsat.is_empty());
 }
 
-/// P15: a fork whose condition is in neither `stored_conditions` nor
+/// A fork whose condition is in neither `stored_conditions` nor
 /// `condition_ast` still yields a conservative, unconstrained fork at the
 /// unexplored target — dropping it would lose a reachable path (angr-ph300.7
 /// was exactly that drop, in one copy of this loop).
@@ -133,7 +133,7 @@ fn materialize_deferred_forks_p15_conservative_fork() {
         },
     );
 
-    assert_eq!(out.sat.len(), 1, "P15 must not drop the fork");
+    assert_eq!(out.sat.len(), 1, "the conservative-fork arm must not drop the fork");
     assert!(out.unsat.is_empty());
     assert_eq!(out.sat[0].pc(), 0x40_2000);
 }
@@ -296,7 +296,7 @@ fn snapshot_built_fork_replays_earlier_guards() {
     );
 }
 
-/// `reconstruct_deferred_fork_condition` (the shared P11 helper extracted in
+/// `reconstruct_deferred_fork_condition` (the shared `condition_ast` helper extracted in
 /// angr-ph300.76) short-circuits without ever touching Python in its two
 /// non-reconstruction branches: when the condition is already present in
 /// `stored_conditions`, and when the fork carries no `condition_ast`. Both
@@ -323,8 +323,9 @@ fn reconstruct_deferred_fork_condition_early_returns_none() {
         "present stored condition must short-circuit to None"
     );
 
-    // Branch 2: no stored condition and no condition_ast -> P11 cannot supply
-    // a condition, so the P15 conservative arm must take over at the call site.
+    // Branch 2: no stored condition and no condition_ast -> reconstruction
+    // cannot supply a condition, so the conservative arm must take over at the
+    // call site.
     assert!(
         reconstruct_deferred_fork_condition(None, &fork_with_ast, &fork_base).is_none(),
         "absent condition_ast must yield None"

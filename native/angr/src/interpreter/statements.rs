@@ -467,7 +467,7 @@ impl<'a> VEXInterpreter<'a> {
                 // Skip expensive rustbv_to_claripy conversion for the condition.
                 // The condition is stored in stored_conditions (below) as a RustBV,
                 // which is the primary lookup path in fork processing. The claripy
-                // AST was only a P11 fallback for missing stored_conditions entries.
+                // AST was only a fallback for missing stored_conditions entries.
                 let condition_ast: Option<Py<PyAny>> = None;
 
                 // Take the "true" path (jump to dst), defer the "false" path

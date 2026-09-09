@@ -7,7 +7,7 @@ use crate::state::RustSimState;
 // ---------------------------------------------------------------------------
 // sync_constraints_from_python (angr-9ke6b.78)
 //
-// The P12 prune-on-UNSAT contract: `Ok(false)` means "this state became
+// The prune-on-UNSAT contract: `Ok(false)` means "this state became
 // unsatisfiable while importing the constraints a Python callback added, so
 // `resume.rs` must prune it". These tests pin all three conversion tiers
 // (typed convert / Z3-pointer rescue / failure) and the SAT gate.
@@ -70,7 +70,7 @@ fn sync_constraints_typed_convert_binds_constraint() {
     });
 }
 
-/// P12: contradictory constraints make the state UNSAT, and the method reports
+/// Contradictory constraints make the state UNSAT, and the method reports
 /// that as `Ok(false)` so `resume.rs` prunes instead of exploring a dead state.
 #[cfg(feature = "vex-engine-z3")]
 #[test]
@@ -93,7 +93,7 @@ fn sync_constraints_unsat_returns_false_for_pruning() {
         assert!(
             !mgr.sync_constraints_from_python(py, &state, &list)
                 .expect("sync ok"),
-            "P12: an UNSAT state must be reported as false so the caller prunes it"
+            "an UNSAT state must be reported as false so the caller prunes it"
         );
     });
 }
@@ -218,15 +218,16 @@ fn sync_constraints_unconvertible_item_does_not_abort_siblings() {
     });
 }
 
-/// The partial-sync UNSAT case the P14 gate was written for: some constraints
-/// failed to convert AND the ones that landed are contradictory. It must be
-/// pruned.
+/// The partial-sync UNSAT case the partial-sync re-check was written for: some
+/// constraints failed to convert AND the ones that landed are contradictory. It
+/// must be pruned.
 ///
 /// Note for future readers: under `vex-engine-z3` this outcome is decided by
-/// the P12 gate, which SAT-checks unconditionally and therefore dominates P14
-/// (P14 re-checks only when `failed_count > 0 && success_count > 0`, a strict
-/// subset of what P12 already rejected). P14 is retained as defence-in-depth
-/// for a build where P12's check is compiled out; this test pins the observable
+/// the unconditional post-sync SAT check, which dominates the partial-sync
+/// re-check (that one fires only when `failed_count > 0 && success_count > 0`,
+/// a strict subset of what the unconditional check already rejected). The
+/// re-check is retained as defence-in-depth for a build where the
+/// unconditional check is compiled out; this test pins the observable
 /// contract — partial sync + UNSAT => `Ok(false)` — not which gate fires.
 #[cfg(feature = "vex-engine-z3")]
 #[test]

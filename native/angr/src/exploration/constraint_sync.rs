@@ -44,7 +44,7 @@ impl RustExplorationManager {
     ///
     /// Returns:
     ///   - Ok(true): Constraints synced and state is SAT (satisfiable)
-    ///   - Ok(false): State became UNSAT after syncing - should be pruned (P12)
+    ///   - Ok(false): State became UNSAT after syncing - should be pruned
     ///   - Err: Python error during sync
     pub(crate) fn sync_constraints_from_python(
         &self,
@@ -129,7 +129,7 @@ impl RustExplorationManager {
             log::debug!("Synced {success_count} constraints from Python to Rust");
         }
 
-        // P12: Check satisfiability and return status so callers can prune UNSAT states.
+        // Check satisfiability and return status so callers can prune UNSAT states.
         // Only a *decided* Unsat prunes: an undecided query (Z3 Unknown /
         // timeout) says nothing about feasibility, and dropping the state on it
         // would lose a path that is very likely feasible (angr-03vl4.62,
@@ -139,34 +139,33 @@ impl RustExplorationManager {
         match sym_ctx.is_sat_checked() {
             Some(false) => {
                 log::debug!(
-                    "P12: Constraints are UNSAT after syncing {success_count} from Python (failed={failed_count}). \
+                    "Constraints are UNSAT after syncing {success_count} from Python (failed={failed_count}). \
                      Returning false to trigger pruning."
                 );
                 return Ok(false);
             }
             None => {
                 log::warn!(
-                    "P12: satisfiability undecided (Z3 timeout) after syncing {success_count} constraints \
+                    "Satisfiability undecided (Z3 timeout) after syncing {success_count} constraints \
                      from Python (failed={failed_count}); keeping the state rather than pruning it."
                 );
             }
             Some(true) => {}
         }
 
-        // P14: If many constraints failed to convert, do explicit SAT check
-        // Failed conversions can leave state in divergent state.
-        // Defence-in-depth only: under `vex-engine-z3` the P12 block above
-        // SAT-checks unconditionally, so it already rejects everything this
-        // gate could catch. Kept for a build where P12's check is compiled
-        // out. `sync_constraints_partial_failure_unsat_is_pruned`
+        // Partial-sync re-check: if any constraints failed to convert, do an
+        // explicit SAT check. Failed conversions can leave state in divergent state.
+        // Defence-in-depth only: under `vex-engine-z3` the unconditional
+        // post-sync SAT check above already rejects everything this gate could
+        // catch. Kept for a build where that check is compiled out. `sync_constraints_partial_failure_unsat_is_pruned`
         // (helpers_tests.rs) pins the observable contract — partial sync plus
         // contradictory constraints prunes — not which gate fires.
         #[cfg(feature = "vex-engine-z3")]
         if failed_count > 0 && success_count > 0 {
-            // Same decided-Unsat-only rule as P12 above.
+            // Same decided-Unsat-only rule as the post-sync check above.
             if sym_ctx.is_sat_checked() == Some(false) {
                 log::debug!(
-                    "P14: State became UNSAT with partial constraint sync ({}/{} failed). Pruning.",
+                    "State became UNSAT with partial constraint sync ({}/{} failed). Pruning.",
                     failed_count,
                     // overflow-ok: both are `usize` tallies over the one Python
                     // constraint list this fn walks, so the sum is that list's length.

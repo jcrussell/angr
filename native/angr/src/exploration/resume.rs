@@ -65,13 +65,13 @@ impl RustExplorationManager {
         // This ensures constraints added by SimProcedures (e.g., strcmp return conditions)
         // are properly reflected in the Rust solver state
         //
-        // P12: Track if state becomes UNSAT after constraint sync
+        // Track if state becomes UNSAT after constraint sync
         let mut main_state_unsat = false;
         if let Some(constraints) = new_constraints {
             let is_sat = self.sync_constraints_from_python(py, &state, constraints)?;
             if !is_sat {
                 log::debug!(
-                    "P12: State {} became UNSAT after constraint sync in resume_after_simprocedure.",
+                    "State {} became UNSAT after constraint sync in resume_after_simprocedure.",
                     state.state_id()
                 );
                 main_state_unsat = true;
@@ -80,8 +80,9 @@ impl RustExplorationManager {
 
         // NOTE: deferred forks whose condition_id is absent from stored_conditions
         // are NOT dropped — the materialization loop below reconstructs the
-        // condition from `fork.condition_ast` (P11) or, failing that, creates a
-        // conservative unconstrained fork (P15). A diagnostic loop that warned
+        // condition from `fork.condition_ast` via
+        // `reconstruct_deferred_fork_condition` or, failing that, creates a
+        // conservative unconstrained fork. A diagnostic loop that warned
         // such forks "will be skipped" was removed (angr-cudgw.16): the claim was
         // false and the loop had no side effect.
 
@@ -123,7 +124,7 @@ impl RustExplorationManager {
         // The root is inherited from the original pending state
         let root_state_id = self.sm.root_or_self(state.state_id());
 
-        // P12: Only add main state if SAT, otherwise add to pruned list
+        // Only add main state if SAT, otherwise add to pruned list
         let (mut successors, mut pruned_states) = if main_state_unsat {
             (Vec::new(), vec![state])
         } else {
@@ -161,7 +162,7 @@ impl RustExplorationManager {
         }
 
         // Add all successors (original state + forks) to stashes
-        // P13: Check satisfiability for each before adding
+        // Check satisfiability for each before adding
         // Note: We split the loops to avoid double mutable borrow of self.sm
         let mut final_successors = Vec::new();
         for successor in successors {
@@ -169,7 +170,7 @@ impl RustExplorationManager {
                 final_successors.push(successor);
             } else {
                 log::debug!(
-                    "P13: Successor state {} is UNSAT, moving to pruned stash",
+                    "Successor state {} is UNSAT, moving to pruned stash",
                     successor.state_id()
                 );
                 pruned_states.push(successor);
@@ -301,7 +302,8 @@ impl RustExplorationManager {
             .ok_or_else(|| PyRuntimeError::new_err("no pending callback state for deadend"))?;
 
         // Process deferred forks BEFORE deadending — these represent
-        // unexplored branches that diverged before the exit/abort call. The P11
+        // unexplored branches that diverged before the exit/abort call. The
+        // `condition_ast`
         // `condition_ast` reconstruction matters most here: without it an
         // AST-only deferred fork parked behind a no-return SimProcedure
         // (exit/abort) was silently dropped and its unexplored branch never
@@ -325,7 +327,7 @@ impl RustExplorationManager {
         let state_id = pending.state.state_id();
 
         log::warn!(
-            "P17: Moving state {state_id} to errored stash after callback error at 0x{pc:x}: {error_msg}"
+            "Moving state {state_id} to errored stash after callback error at 0x{pc:x}: {error_msg}"
         );
 
         // Record the error

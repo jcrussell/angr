@@ -3,7 +3,8 @@
 //! Extracted from `stepping.rs` (angr-5mnx3.71).
 //! [`RustExplorationManager::process_deferred_forks_into`] is the
 //! single-threaded materializer used by the step-driver arms that do not go
-//! through the main MaxBlocks/BlockEnd path (notably the P21 generic skip in
+//! through the main MaxBlocks/BlockEnd path (notably the generic skip for
+//! unmodeled calls in
 //! `stepping_bounce.rs`); `dispatch_fork_inspect` is the `state.inspect`
 //! `fork` breakpoint dispatch it fires per forked state.
 
@@ -11,7 +12,7 @@ use super::*;
 
 impl RustExplorationManager {
     /// Process deferred forks and add the resulting forked states to the successor list.
-    /// This is used by code paths (like P21 generic skip) that don't go through
+    /// This is used by code paths (like the unmodeled-call generic skip) that don't go through
     /// the main MaxBlocks/BlockEnd deferred fork processing.
     pub(crate) fn process_deferred_forks_into(
         &mut self,

@@ -73,7 +73,7 @@ fn block_end_missing_condition_fork_is_materialized_and_dispatched() {
         state.set_pc(0x40_0000);
         let sid = state.state_id();
 
-        // condition_id 999 is absent from stored_conditions -> P15 conservative
+        // condition_id 999 is absent from stored_conditions -> conservative
         // fork path: base.fork() to the unexplored target, SAT check, dispatch.
         let inputs = PostStepInputs {
             result: block_end(0x40_1000),

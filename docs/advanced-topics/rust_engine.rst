@@ -3011,7 +3011,7 @@ Decision history
   forked state created by the deferred-fork processing
   (``stepping.rs``'s ``apply_core_outcome`` and the same file's
   ``process_deferred_forks_into`` — covers ``fork_from_snapshot``,
-  ``fork_true``/``fork_false``, and the P15 conservative
+  ``fork_true``/``fork_false``, and the conservative
   ``fork()`` fallback path). Mirrors Python
   ``engines/successors.py:201`` where ``state._inspect("fork",
   BP_AFTER)`` fires on the newly-added successor; the Rust dispatch

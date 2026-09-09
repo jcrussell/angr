@@ -125,14 +125,14 @@ pub(super) fn materialize_deferred_forks_core(
                     ParallelProfiling::add(&prof.solver_sat_count, 1);
                 }
                 log::debug!(
-                    "P13: Deferred fork at 0x{:x} is UNSAT, will be pruned",
+                    "Deferred fork at 0x{:x} is UNSAT, will be pruned",
                     fork.unexplored_target
                 );
                 pruned_out.push(forked);
             }
         } else {
             log::warn!(
-                "P15: Missing condition for deferred fork at 0x{:x} (condition_id={}). \
+                "Missing condition for deferred fork at 0x{:x} (condition_id={}). \
                  Creating conservative fork.",
                 fork.branch_addr,
                 fork.condition_id
@@ -148,7 +148,7 @@ pub(super) fn materialize_deferred_forks_core(
                 forks_out.push((forked, RoutingTag::fork(root_hint)));
             } else {
                 log::debug!(
-                    "P13: Unconstrained fork at 0x{:x} is UNSAT, will be pruned",
+                    "Unconstrained fork at 0x{:x} is UNSAT, will be pruned",
                     fork.unexplored_target
                 );
                 pruned_out.push(forked);
