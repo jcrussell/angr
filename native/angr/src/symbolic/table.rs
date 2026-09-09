@@ -213,10 +213,14 @@ impl RustSymbolTable {
     // Op method generators
     // =========================================================================
     //
-    // The 27 single-operand and two-operand op_* methods all share the same
-    // shape: read-lock the table, fetch operand(s), call a same-named RustBV
-    // method, drop the read lock, then insert the result. These two macros
-    // generate them from a table of `(method_name, RustBV-method)` rows.
+    // The two-operand op_* methods (arithmetic, bitwise, shift/rotate and
+    // comparison) and the single-operand ones (negate, bitwise-NOT) all share
+    // the same shape: read-lock the table, fetch operand(s), call a same-named
+    // RustBV method, drop the read lock, then insert the result. These two
+    // macros generate them from a table of `(method_name, RustBV-method)` rows;
+    // the rows below are the authoritative list -- deliberately not restated as
+    // a count here, since a count silently goes stale the moment a row is
+    // appended (see CLAUDE.md's cardinality-claim rule).
     //
     // To add a new operation, append one row to the appropriate macro call
     // below and implement the matching RustBV method.
