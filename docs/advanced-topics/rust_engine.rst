@@ -4788,14 +4788,20 @@ malformed address just lives in the map and is ignored on lookup.
 BV inputs (``RustBVHandle``)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-``RustBVHandle`` (``symbolic/handle.rs:28``) is a pure value type:
+``RustBVHandle`` (``symbolic/handle.rs``, ``struct RustBVHandle``) is a
+pure value type:
 ``id: u64``, ``width: u32``, ``concrete: Option<u128>``. It carries
 **no raw Rust pointer** — Python only gets back a numeric handle.
 The class is ``#[derive(Clone)]``; ``__eq__`` and ``__hash__`` are
 ``id``-based, so a forged handle compares equal to a real one with
 the same ID. The symbol-table lookup that resolves the handle to a
 ``RustBV`` (``RustSymbolTable``) returns ``Option<…>`` on miss — no
-UB risk from forged or stale IDs.
+UB risk from forged or stale IDs. Note that ids are unique only within
+one table lineage: ``RustSymbolTable::fork`` continues the child's
+counter from the parent's rather than partitioning the id space, so two
+*sibling* tables (the tables of two states forked from the same parent)
+can bind the same id to unrelated values. Comparing or dict-keying
+handles drawn from sibling-forked states is therefore unsound.
 
 Claripy AST inputs (``add_constraint_ast``, ``eval``,
 ``import_symbolic_memory``, etc.) flow through ``claripy_to_rustbv``
@@ -5644,7 +5650,7 @@ GIL controls actual dereference). No refactor needed for these:
   callback handles (Send+Sync) and ``Arc<Atomic*>`` shared toggles.
 - ``ExplorationEvent`` (``native/angr/src/exploration/event.rs``) —
   value type built from primitives + ``Py<PyAny>``.
-- ``RustBVHandle`` (``native/angr/src/symbolic/handle.rs:28``) — three
+- ``RustBVHandle`` (``native/angr/src/symbolic/handle.rs``) — three
   POD fields (``id: u64``, ``width: u32``, ``concrete: Option<u128>``).
   Cheap to ship across threads but useless without the matching
   symbol-table entry, which lives inside the ``unsendable``

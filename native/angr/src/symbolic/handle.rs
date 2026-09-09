@@ -23,6 +23,17 @@ use pyo3::prelude::*;
 /// handle_c = handle_a + handle_b   # Operation happens in Rust
 /// result = solver.eval(handle_c)   # Extract concrete value
 /// ```
+///
+/// **Ids are only unique within one table's lineage.** `RustSymbolTable::fork`
+/// seeds the child's counter from the parent's *current* value rather than
+/// partitioning the id space, so a parent and its child never reissue an id
+/// either already bound — but two *sibling* tables (e.g. the tables of two
+/// states forked from the same parent) mint from the same starting point
+/// independently and can hand out the same numeric id for two unrelated
+/// values. Since `__eq__` and `__hash__` key purely on that id, comparing or
+/// dict-keying handles that came from different sibling-forked states is
+/// unsound: unrelated values may compare equal and collide in a dict. Only mix
+/// handles that share a table lineage.
 #[pyclass]
 #[derive(Clone)]
 pub struct RustBVHandle {
@@ -99,11 +110,17 @@ impl RustBVHandle {
     }
 
     /// Hash based on ID for use in Python dicts/sets.
+    ///
+    /// Only meaningful among handles from one table lineage — see the
+    /// sibling-fork id-collision caveat on [`RustBVHandle`].
     pub fn __hash__(&self) -> u64 {
         self.id
     }
 
     /// Equality check based on ID.
+    ///
+    /// Only meaningful among handles from one table lineage — see the
+    /// sibling-fork id-collision caveat on [`RustBVHandle`].
     pub fn __eq__(&self, other: &RustBVHandle) -> bool {
         self.id == other.id
     }

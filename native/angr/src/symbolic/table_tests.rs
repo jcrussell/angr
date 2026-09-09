@@ -92,3 +92,23 @@ fn test_fork_child_does_not_reissue_parent_ids() {
     assert_eq!(child.get(h1.id()).unwrap().as_u128(), Some(1));
     assert_eq!(child.get(h2.id()).unwrap().as_u128(), Some(2));
 }
+
+/// The flip side of the test above, and the reason `RustBVHandle`'s docstring
+/// warns against mixing handles across states: two *siblings* of the same
+/// parent both continue the parent's counter, so they mint identical ids for
+/// unrelated values. Pinned because the docs now promise this is possible —
+/// partitioning the id space later would make that warning a lie.
+#[test]
+fn test_sibling_forks_mint_colliding_ids() {
+    let table = RustSymbolTable::new();
+    table.create_concrete(1, 32);
+
+    let left = table.fork();
+    let right = table.fork();
+    let l = left.create_concrete(0xaa, 32);
+    let r = right.create_concrete(0xbb, 32);
+
+    assert_eq!(l.id(), r.id(), "sibling tables share an id namespace");
+    assert_eq!(left.get(l.id()).unwrap().as_u128(), Some(0xaa));
+    assert_eq!(right.get(r.id()).unwrap().as_u128(), Some(0xbb));
+}

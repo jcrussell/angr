@@ -355,6 +355,15 @@ impl RustSymbolTable {
     /// `next_id` continues from the parent's counter, so neither side reissues
     /// an id the other already bound.
     ///
+    /// That guarantee covers only ids inherited *through* a fork. Because the
+    /// child's counter merely continues from the parent's rather than
+    /// partitioning the id space, two *sibling* children of the same parent
+    /// mint post-fork ids independently and can bind the same numeric id to
+    /// two unrelated values — they are separate id namespaces, pinned by
+    /// `table_tests.rs::test_fork_child_does_not_reissue_parent_ids`. The
+    /// Python-visible consequence is documented on [`crate::symbolic::RustBVHandle`],
+    /// whose `__eq__`/`__hash__` key on the raw id.
+    ///
     /// This is the *only* way to copy a table: `RustSymbolTable` deliberately
     /// does not implement [`Clone`]. A `Clone` forwarding to `fork` existed and
     /// had zero call sites, so nothing would have caught it drifting out of
