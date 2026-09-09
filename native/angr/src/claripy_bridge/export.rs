@@ -116,9 +116,13 @@ pub(crate) fn rustbv_to_claripy(
 }
 
 /// Maximum recursion depth for [`rustbv_to_claripy_memo`]'s self-recursion
-/// (angr-2a3i9). Mirrors `import::MAX_IMPORT_RECURSION_DEPTH`'s
-/// calibration for the opposite (Rust -> claripy) direction of the same
-/// bridge, reachable from the same unguarded main-thread 8 MiB stack.
+/// (angr-2a3i9). **Defined as** `import::MAX_IMPORT_RECURSION_DEPTH` rather
+/// than as its own literal (angr-6cp06.83): the two sides of the same bridge
+/// are reachable from the same unguarded main-thread 8 MiB stack, and the
+/// dominance argument below only justifies reusing the import side's budget —
+/// it never justified an independently-derived number that could silently
+/// drift away from it. Revising the import calibration now moves this bound
+/// with it.
 ///
 /// Per-frame budget, from measured (`std::mem::size_of`, release build)
 /// sizes: `size_of::<RustBV>() == 64 B` (the memo/DAG cache entries and the
@@ -132,15 +136,15 @@ pub(crate) fn rustbv_to_claripy(
 /// 104 B of live locals per frame; this recurses one level per operand
 /// nesting depth via `operands.iter().map(rustbv_to_claripy_memo)`, so the
 /// per-level footprint is the same order of magnitude as the import side.
-/// Applying the same doubling for return-address/saved-register/alignment
-/// overhead and 1024 B/frame padding as `MAX_IMPORT_RECURSION_DEPTH` (that
-/// budget dominates this smaller measured footprint, so it stays a safe
-/// upper bound), the same **4096**-deep limit costs at most `4096 * 1024 B
-/// = 4 MiB`, leaving >2x headroom under the 8 MiB main-thread stack. Real
-/// exported trees stay far shallower: the sym-write benchmark's 142k-node
-/// bushy DAG described above collapses to ~25 shared subtrees via the
-/// per-call `memo` + the cross-call `EXPRESSION_BY_OPERANDS_PTR` cache.
-const MAX_EXPORT_RECURSION_DEPTH: u32 = 4096;
+/// That measured footprint is *smaller* than the import side's, so
+/// `MAX_IMPORT_RECURSION_DEPTH`'s per-frame padding dominates it and its
+/// stack-headroom argument (see that constant's doc for the doubling,
+/// 1024 B/frame rounding, and the 8 MiB main-thread budget) carries over
+/// unchanged to this direction. Real exported trees stay far shallower: the
+/// sym-write benchmark's 142k-node bushy DAG collapses to ~25 shared subtrees
+/// via the per-call `memo` + the cross-call `EXPRESSION_BY_OPERANDS_PTR`
+/// cache.
+const MAX_EXPORT_RECURSION_DEPTH: u32 = super::import::MAX_IMPORT_RECURSION_DEPTH;
 
 /// Depth-guarded recursive AST-tree walk (angr-2a3i9). `depth` starts at 0
 /// from [`rustbv_to_claripy`] and increments once per `Expression` operand

@@ -193,7 +193,13 @@ pub(crate) fn claripy_to_rustbv(
 /// tree without dedup — collapse to ~25 shared subtrees via the per-call memo
 /// (see `rustbv_to_claripy`'s doc comment), so real trees bottom out at a
 /// few dozen levels, not thousands.
-const MAX_IMPORT_RECURSION_DEPTH: u32 = 4096;
+///
+/// `pub(super)` because `export::MAX_EXPORT_RECURSION_DEPTH` is *defined as*
+/// this constant rather than repeating the literal (angr-6cp06.83) — its
+/// smaller measured per-frame footprint is dominated by the padding above, so
+/// the two bounds are meant to move together. Revising the calibration here
+/// revises both; re-check that dominance claim in `export.rs` when you do.
+pub(super) const MAX_IMPORT_RECURSION_DEPTH: u32 = 4096;
 
 /// Depth-guarded recursive implementation of [`claripy_to_rustbv`]. See that
 /// function's doc comment for the public contract; see
