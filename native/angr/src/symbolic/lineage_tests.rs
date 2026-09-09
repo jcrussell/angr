@@ -616,7 +616,7 @@ fn test_switch_fast_path_does_not_collide_on_different_tails() {
 /// unconstrained SAT solutions (the baby-re `chr()` repro in angr-v5ht).
 ///
 /// This is the arm gates (a) and (b) have no coverage for: their guards
-/// are pinned by `context_tests::smtlib2_snapshot::test_fork_skips_mint_when_flag_off`
+/// are pinned by `context_tests_smtlib2_snapshot::test_fork_skips_mint_when_flag_off`
 /// and `::test_fork_skips_mint_when_bare_push_outstanding`, both of which
 /// start from a parent whose own lineage is already `None`, so they
 /// cannot tell "refused to mint" apart from "cloned a None".
