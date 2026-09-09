@@ -5,8 +5,8 @@
 //! over a bitvector, kept out of `expressions.rs`/`statements.rs` so both can
 //! reach them without one depending on the other. Beyond the two byte
 //! conversions, the file holds [`extract_ite_targets`] (harvest the concrete
-//! leaves of a nested ITE jump target), [`build_balanced_ite`] (the inverse:
-//! fold a value set back into a depth-balanced ITE),
+//! leaves of a nested ITE jump target), [`build_ite_chain`] (the near-inverse:
+//! fold a (condition, value) set back into a linear ITE chain),
 //! [`splice_bytes_over_bv`] (overlay concrete bytes onto a possibly-symbolic
 //! value), and [`reject_symbolic_byte_store`], the guard that turns the lossy
 //! symbolic-value byte-store fallback into a loud error.
@@ -220,11 +220,18 @@ pub(super) fn splice_bytes_over_bv(
     lanes.fold(top, |acc, lane| acc.concat(&lane, ctx))
 }
 
-/// Build a balanced ITE tree from a list of (condition, value) pairs.
+/// Build a linear ITE chain from a list of (condition, value) pairs:
+/// `ITE(c1, v1, ITE(c2, v2, ... ITE(cn, vn, default)))`.
 ///
-/// Build a linear ITE chain: ITE(c1, v1, ITE(c2, v2, ... ITE(cn, vn, default)))
-/// Returns the value for the first matching condition, or a default value.
-pub(super) fn build_balanced_ite(
+/// Returns the value for the first matching condition, or `default_value` when
+/// none match. The chain is *linear* — depth N for N pairs, not a depth-balanced
+/// tree. That is deliberate here: the conditions are arbitrary and unordered, so
+/// there is no partition predicate to split on. Contrast
+/// `SymbolicMemory::build_ite_tree_generic` (`memory/ite_builder.rs`), which does
+/// build a genuinely balanced tree by recursively splitting a *sorted address*
+/// slice at its midpoint. Anything moving this to a balanced shape has to supply
+/// that missing ordering first, and will change the Z3 solve characteristics.
+pub(super) fn build_ite_chain(
     pairs: &[(RustBV, RustBV)],
     default_value: RustBV,
     ctx: &SymContext,

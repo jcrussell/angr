@@ -13,7 +13,7 @@
 //! `expressions_inspect.rs`, mirror-image of the write-side
 //! `statements_inspect.rs`.
 
-use super::bv_utils::{build_balanced_ite, bytes_to_bv, splice_bytes_over_bv};
+use super::bv_utils::{build_ite_chain, bytes_to_bv, splice_bytes_over_bv};
 use super::*;
 use crate::vex::ir::{IRCallee, IRRegArray};
 use rustc_hash::FxHashMap;
@@ -980,7 +980,8 @@ impl<'a> VEXInterpreter<'a> {
     /// This is more efficient than calling Python's symbolic memory handler because:
     /// 1. We avoid FFI overhead for the ITE chain construction
     /// 2. The RustBV ITE nodes stay in Rust's Z3 context
-    /// 3. We can use balanced ITE trees for better solver performance
+    /// 3. The chain is assembled in one pass by `build_ite_chain`, after a single
+    ///    batched `call_memory_load_batch` for every candidate address
     fn build_ite_load_from_callbacks(
         &self,
         callbacks: &PythonCallbacks,
@@ -1024,7 +1025,7 @@ impl<'a> VEXInterpreter<'a> {
             .map(|(_, v)| v.clone())
             .unwrap_or_else(|| RustBV::symbolic(self.ctx, "ite_default", width));
 
-        Ok(build_balanced_ite(
+        Ok(build_ite_chain(
             &pairs[..pairs.len() - 1],
             default_value,
             self.ctx,
