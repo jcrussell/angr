@@ -164,3 +164,109 @@ fn handler_metadata() {
     assert_eq!(h.name(), "arch_prctl");
     assert_eq!(h.num_args(), 2);
 }
+
+// --- Defensive error arms (angr-6cp06.58) ------------------------------------
+//
+// `ARCH_SET_FS`/`ARCH_SET_GS`'s "not writable" returns and `ARCH_GET_FS`/
+// `ARCH_GET_GS`'s "unreadable" return guard a state whose arch has no
+// `fs_const`/`gs_const` pseudo-register. That cannot happen on amd64 — the
+// only arch this handler is registered for — so the arms are driven here with
+// an x86 state instead, where `Arch::register_offset` returns `None` for both
+// names (pinned by `arch/x86_tests.rs`, angr-rfxc7) and so `set_register`
+// returns `false` / `get_register` returns `None`.
+
+fn state_without_fs_gs() -> RustSimState {
+    RustSimState::new("x86").expect("x86 state")
+}
+
+#[test]
+fn arch_set_fs_errors_when_fs_const_not_writable() {
+    let h = NativeArchPrctlSyscall;
+    let mut state = state_without_fs_gs();
+    let err = h
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(ARCH_SET_FS as u128, 64),
+                RustBV::concrete(0xDEAD_BEEF, 64),
+            ],
+        )
+        .expect_err("fs_const is absent on x86");
+    match err {
+        SyscallError::Other(msg) => assert!(
+            msg.contains("fs_const not writable"),
+            "should name the unwritable register, got {msg:?}"
+        ),
+        other => panic!("expected Other, got {other:?}"),
+    }
+}
+
+#[test]
+fn arch_set_gs_errors_when_gs_const_not_writable() {
+    let h = NativeArchPrctlSyscall;
+    let mut state = state_without_fs_gs();
+    let err = h
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(ARCH_SET_GS as u128, 64),
+                RustBV::concrete(0x1234_5678, 64),
+            ],
+        )
+        .expect_err("gs_const is absent on x86");
+    match err {
+        SyscallError::Other(msg) => assert!(
+            msg.contains("gs_const not writable"),
+            "should name the unwritable register, got {msg:?}"
+        ),
+        other => panic!("expected Other, got {other:?}"),
+    }
+}
+
+#[test]
+fn arch_get_fs_errors_when_fs_const_unreadable() {
+    let h = NativeArchPrctlSyscall;
+    let mut state = state_without_fs_gs();
+    // Map the destination page: the error must come from the unreadable
+    // register, not from a failing `memory_store` further down.
+    state.map_memory(0x4000, 0x1000, Permission::RW);
+    let err = h
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(ARCH_GET_FS as u128, 64),
+                RustBV::concrete(0x4000, 64),
+            ],
+        )
+        .expect_err("fs_const is absent on x86");
+    match err {
+        SyscallError::Other(msg) => assert!(
+            msg.contains("fs_const unreadable"),
+            "should name the unreadable register, got {msg:?}"
+        ),
+        other => panic!("expected Other, got {other:?}"),
+    }
+}
+
+#[test]
+fn arch_get_gs_errors_when_gs_const_unreadable() {
+    let h = NativeArchPrctlSyscall;
+    let mut state = state_without_fs_gs();
+    state.map_memory(0x5000, 0x1000, Permission::RW);
+    let err = h
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(ARCH_GET_GS as u128, 64),
+                RustBV::concrete(0x5000, 64),
+            ],
+        )
+        .expect_err("gs_const is absent on x86");
+    match err {
+        SyscallError::Other(msg) => assert!(
+            msg.contains("gs_const unreadable"),
+            "should name the unreadable register, got {msg:?}"
+        ),
+        other => panic!("expected Other, got {other:?}"),
+    }
+}
