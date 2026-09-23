@@ -25,7 +25,7 @@ crate::declare_proc! {
     args = [s1: concrete, s2: concrete, n: concrete],
     call |state| {
         // n == 0 and the MAX_STRCMP_LEN cap are both handled by compare_bytes.
-        compare_bytes(state, s1, s2, n,
+        compare_bytes(state, s1, s2, n, /*unbounded=*/false,
                       /*stop_at_null=*/false, /*case_insensitive=*/false)
     }
 }

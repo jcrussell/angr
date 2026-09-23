@@ -439,8 +439,11 @@ pub(crate) fn build_strlen_chain(
 ///
 /// **Only sound when the window is the procedure's own MAX bound**, not a
 /// caller-supplied one: `strncmp(a, b, 4)` may legitimately compare four
-/// non-null bytes, so bounded variants (strnlen/strncmp with `n < MAX`) must
-/// not apply this.
+/// non-null bytes, so the caller-bounded variants (strnlen, strncmp,
+/// strncasecmp) must not apply this **at any `n`** — not even one that reaches
+/// the MAX cap, which is how angr-fs8kb.36 crept in. Callers pass an explicit
+/// flag (`strlen::scan_for_null`'s `require_null`, `strcmp::compare_bytes`'s
+/// `unbounded`); never re-derive it from the window length.
 pub(crate) fn null_exists_constraint(bytes: &[(u64, RustBV)], ctx: &SymContext) -> Option<RustBV> {
     let zero_byte = RustBV::concrete(0u128, 8);
     let mut disjunction: Option<RustBV> = None;

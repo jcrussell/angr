@@ -87,11 +87,21 @@ fn build_diff_chain(
 }
 
 /// Shared scan body for strcmp / strncmp / strcasecmp / memcmp.
+///
+/// `unbounded` says where `max_len` came from, and must NOT be re-derived from
+/// `max_len >= MAX_STRCMP_LEN`: `true` means the window is this module's own
+/// cap (strcmp/strcasecmp, which compare until a terminator), `false` means it
+/// is the caller's own `n` (strncmp/strncasecmp/memcmp). The distinction
+/// decides both whether exhausting the window is an answer or a shortfall and
+/// whether s1 may be forced to terminate inside it — see the two
+/// `ScanResult` arms below (angr-fs8kb.36). It mirrors `strlen::scan_for_null`'s
+/// explicit `require_null`, which is why strnlen never had this bug.
 pub(super) fn compare_bytes(
     state: &mut RustSimState,
     s1_addr: u64,
     s2_addr: u64,
     max_len: u64,
+    unbounded: bool,
     stop_at_null: bool,
     case_insensitive: bool,
 ) -> Result<Option<RustBV>, ProcedureError> {
@@ -149,20 +159,26 @@ pub(super) fn compare_bytes(
         ScanResult::Stopped(r) => r,
         ScanResult::Exhausted => {
             // Walked through max_len with all-concrete bytes and no
-            // mismatch / null hit. For strcmp/strncmp this means we ran out
-            // of room — error out (matches the prior MaxIterations behavior).
-            // For memcmp, equal-up-to-limit is the natural "0" return.
-            if stop_at_null && max_len >= MAX_STRCMP_LEN as u64 {
+            // mismatch / null hit. For strcmp/strcasecmp that means we ran out
+            // of room before finding the terminator the compare is defined in
+            // terms of — error out so Python retries with its own window.
+            // For a caller-bounded compare (strncmp/strncasecmp/memcmp) the
+            // window IS the whole compare, so equal-up-to-n is the answer: 0.
+            if stop_at_null && unbounded {
                 return Err(ProcedureError::MaxIterations(MAX_STRCMP_LEN));
             }
             RustBV::zero(32)
         }
         ScanResult::Collected(collected) => {
-            // Only the unbounded compares (strcmp/strcasecmp, or strncmp with
-            // n >= MAX) may assert that s1 is terminated inside the window: a
-            // caller-bounded strncmp(a, b, 4) can legitimately compare four
-            // non-null bytes. See strings::null_exists_constraint (angr-sgcye).
-            let require_null = stop_at_null && max_len >= MAX_STRCMP_LEN as u64;
+            // Only the unbounded compares (strcmp/strcasecmp) may assert that
+            // s1 is terminated inside the window: a caller-bounded
+            // strncmp(a, b, n) can legitimately compare n non-null bytes, at
+            // ANY n — C does not require termination for a bounded compare,
+            // and Python's strncmp.py lets the null sit beyond the compared
+            // range. Deriving this from `max_len >= MAX_STRCMP_LEN` instead
+            // pruned exactly those states for n >= 4096 (angr-fs8kb.36).
+            // See strings::null_exists_constraint (angr-sgcye).
+            let require_null = stop_at_null && unbounded;
             let s1_bytes: Vec<(u64, RustBV)> = collected
                 .iter()
                 .map(|(i, (c1, _))| (*i, c1.clone()))
@@ -200,7 +216,7 @@ crate::declare_proc! {
     args = [s1: concrete, s2: concrete],
     aliases = ["strcoll"],
     call |state| {
-        compare_bytes(state, s1, s2, MAX_STRCMP_LEN as u64,
+        compare_bytes(state, s1, s2, MAX_STRCMP_LEN as u64, /*unbounded=*/true,
                       /*stop_at_null=*/true, /*case_insensitive=*/false)
     }
 }
@@ -213,8 +229,12 @@ crate::declare_proc! {
     struct = NativeStrncmp,
     args = [s1: concrete, s2: concrete, n: concrete],
     call |state| {
-        let max_len = n.min(MAX_STRCMP_LEN as u64);
-        compare_bytes(state, s1, s2, max_len,
+        // Deliberately NOT clamped to MAX_STRCMP_LEN: a clamped window would
+        // answer for the first 4096 bytes while claiming to answer for `n`.
+        // compare_bytes's own check_max defers n > MAX to Python, which sizes
+        // its window off strlen instead (angr-fs8kb.36) — same shape as
+        // strnlen's check_max.
+        compare_bytes(state, s1, s2, n, /*unbounded=*/false,
                       /*stop_at_null=*/true, /*case_insensitive=*/false)
     }
 }
@@ -225,7 +245,7 @@ crate::declare_proc! {
     struct = NativeStrcasecmp,
     args = [s1: concrete, s2: concrete],
     call |state| {
-        compare_bytes(state, s1, s2, MAX_STRCMP_LEN as u64,
+        compare_bytes(state, s1, s2, MAX_STRCMP_LEN as u64, /*unbounded=*/true,
                       /*stop_at_null=*/true, /*case_insensitive=*/true)
     }
 }
@@ -239,8 +259,8 @@ crate::declare_proc! {
     struct = NativeStrncasecmp,
     args = [s1: concrete, s2: concrete, n: concrete],
     call |state| {
-        let max_len = n.min(MAX_STRCMP_LEN as u64);
-        compare_bytes(state, s1, s2, max_len,
+        // Unclamped `n`, for the reason spelled out on strncmp above.
+        compare_bytes(state, s1, s2, n, /*unbounded=*/false,
                       /*stop_at_null=*/true, /*case_insensitive=*/true)
     }
 }

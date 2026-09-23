@@ -476,3 +476,118 @@ fn test_strcasecmp_symbolic_mismatch_folds_then_signs() {
         u32::MAX as u128
     );
 }
+
+// ---------- Caller-bounded vs unbounded window (angr-fs8kb.36) ----------
+
+/// Map `len` non-null concrete bytes at both buffers, then run `proc`.
+fn compare_unterminated_buffers<P: NativeSimProcedure>(
+    proc: &P,
+    len: usize,
+    extra_args: &[RustBV],
+) -> Result<Option<RustBV>, ProcedureError> {
+    let mut state = RustSimState::new("amd64").unwrap();
+    let buf = vec![b'A'; len];
+    state.map_memory_data(0x10000, &buf, Permission::RWX);
+    state.map_memory_data(0x20000, &buf, Permission::RWX);
+    let mut args = vec![RustBV::concrete(0x10000, 64), RustBV::concrete(0x20000, 64)];
+    args.extend_from_slice(extra_args);
+    proc.call(&mut state, &args)
+}
+
+/// `strncmp(a, b, 4096)` over two byte-identical buffers with no terminator
+/// anywhere in range returns 0 — the window is the caller's whole compare, so
+/// exhausting it is the answer, not a shortfall. Before angr-fs8kb.36 the
+/// `max_len >= MAX_STRCMP_LEN` test treated this exactly like unbounded strcmp
+/// and bailed to Python.
+#[test]
+fn test_strncmp_at_max_window_returns_zero_without_terminator() {
+    let result = compare_unterminated_buffers(
+        &NativeStrncmp,
+        MAX_STRCMP_LEN,
+        &[RustBV::concrete(MAX_STRCMP_LEN as u128, 64)],
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(result.as_u64(), Some(0));
+    // Same for the case-insensitive sibling.
+    let result = compare_unterminated_buffers(
+        &NativeStrncasecmp,
+        MAX_STRCMP_LEN,
+        &[RustBV::concrete(MAX_STRCMP_LEN as u128, 64)],
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(result.as_u64(), Some(0));
+}
+
+/// The unbounded compares keep the old behavior: running the full cap without
+/// seeing the terminator they are defined in terms of defers to Python.
+#[test]
+fn test_strcmp_at_max_window_without_terminator_defers_to_python() {
+    for err in [
+        compare_unterminated_buffers(&NativeStrcmp, MAX_STRCMP_LEN, &[]),
+        compare_unterminated_buffers(&NativeStrcasecmp, MAX_STRCMP_LEN, &[]),
+    ] {
+        assert!(matches!(err, Err(ProcedureError::MaxIterations(_))));
+    }
+}
+
+/// `n` past the cap must defer to Python rather than silently answering for a
+/// truncated 4096-byte prefix.
+#[test]
+fn test_strncmp_above_max_defers_to_python() {
+    let n = RustBV::concrete(MAX_STRCMP_LEN as u128 + 1, 64);
+    assert!(matches!(
+        compare_unterminated_buffers(&NativeStrncmp, 16, std::slice::from_ref(&n)),
+        Err(ProcedureError::MaxIterations(_))
+    ));
+    assert!(matches!(
+        compare_unterminated_buffers(&NativeStrncasecmp, 16, &[n]),
+        Err(ProcedureError::MaxIterations(_))
+    ));
+}
+
+/// Two symbolic bytes compared under a caller-supplied `n` that covers exactly
+/// them: "both bytes equal and neither is null" must stay satisfiable. The
+/// unbounded spelling of the same window asserts a terminator and kills it.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_compare_bytes_null_requirement_follows_the_unbounded_flag() {
+    for (unbounded, expect_sat) in [(false, true), (true, false)] {
+        let mut state = RustSimState::new("amd64").unwrap();
+        state.map_memory_data(0x1000, b"\x00\x00", Permission::RWX);
+        state.map_memory_data(0x2000, b"\x00\x00", Permission::RWX);
+        let a0 = place_symbolic_byte(&mut state, 0x1000, "a0");
+        let a1 = place_symbolic_byte(&mut state, 0x1001, "a1");
+        state.memory_store(0x2000, a0.clone()).unwrap();
+        state.memory_store(0x2001, a1.clone()).unwrap();
+
+        compare_bytes(
+            &mut state,
+            0x1000,
+            0x2000,
+            2,
+            unbounded,
+            /*stop_at_null=*/ true,
+            /*case_insensitive=*/ false,
+        )
+        .unwrap()
+        .unwrap();
+
+        // Both compared bytes are non-null: legal for a bounded compare.
+        let nonnull = {
+            let ctx = state.solver().borrow();
+            let zero = RustBV::concrete(0u128, 8);
+            a0.ne(&zero, &ctx).and(&a1.ne(&zero, &ctx), &ctx)
+        };
+        state.add_constraint(nonnull);
+        let ctx = state.solver().borrow();
+        assert_eq!(
+            ctx.is_sat(),
+            expect_sat,
+            "unbounded={unbounded}: unterminated-but-equal window should be \
+             {}",
+            if expect_sat { "reachable" } else { "pruned" }
+        );
+    }
+}
