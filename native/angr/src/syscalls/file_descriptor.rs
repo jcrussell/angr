@@ -55,8 +55,15 @@
 //! syscall-side memory-write helpers are not yet plumbed through
 //! here. Falls back to the symbolic stub.
 //!
-//! Unrecognized `cmd` (including symbolic) falls through to
-//! `RustBV::symbolic` of width `arch().bits()`.
+//! An unrecognized *concrete* `cmd` falls through to a fresh
+//! symbolic `RustBV` of width `arch().bits()`, minted locally by
+//! `symbolic_outcome`. A symbolic `fd` or `cmd` never reaches that
+//! match: `NativeIoctlSyscall::call` extracts both via
+//! `extract_concrete_arg`, so it returns
+//! `SyscallError::SymbolicArgument` and the whole syscall bounces to
+//! the Python stub instead. The externally-visible result is a fresh
+//! symbolic return either way, but only the first case counts as a
+//! natively-handled syscall.
 //!
 //! ## pipe / pipe2
 //!
@@ -229,8 +236,9 @@ impl NativeSyscall for NativeFcntl64Syscall {
 }
 
 /// `ioctl(fd, cmd, arg) → int` — see module doc. Currently handles
-/// `TIOCGWINSZ` → `-ENOTTY` (no terminal model); everything else
-/// falls back to a fresh symbolic return.
+/// `TIOCGWINSZ` → `-ENOTTY` (no terminal model); every other concrete
+/// `cmd` returns a locally-minted fresh symbolic value, while a
+/// symbolic `fd` or `cmd` bounces the syscall to Python.
 pub(crate) struct NativeIoctlSyscall;
 
 impl NativeSyscall for NativeIoctlSyscall {
