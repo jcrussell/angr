@@ -184,8 +184,19 @@ impl SegmentList {
             .collect()
     }
 
+    /// Replaces the whole list with `state`, the `(start, size, sort)` triples
+    /// `__getstate__` produced.
+    ///
+    /// Resets **both** halves of the representation, not just the map:
+    /// `occupy` only ever adds to `bytes_occupied`, so replaying the saved
+    /// segments onto a stale total would report the old total plus the restored
+    /// one. The pickle path never hits that (`__getnewargs__` returns an empty
+    /// tuple, so `__reduce_ex__` always builds a fresh instance first), but this
+    /// is a plain `#[pymethods]` fn any Python caller can invoke on a populated
+    /// list (angr-fs8kb.83).
     pub fn __setstate__(&mut self, state: Vec<(u64, u64, Option<String>)>) {
         self.map.clear();
+        self.bytes_occupied = 0;
         for (start, size, sort) in state {
             self.occupy(start, size, sort);
         }
