@@ -357,12 +357,25 @@ impl Icicle {
     }
 
     pub(crate) fn mem_read(&mut self, addr: u64, size: u64) -> PyResult<Vec<u8>> {
-        let mut buf = vec![0; size as usize];
+        // `size` is an unbounded u64 straight from Python, so the buffer length
+        // is validated *before* it is allocated -- see `checked_read_len`.
+        let len = checked_read_len(addr, size, self.max_mem_read_bytes())
+            .map_err(PyRuntimeError::new_err)?;
+        let mut buf = vec![0; len];
         ffi_result(
             self.vm.cpu.mem.read_bytes(addr, &mut buf, perm::NONE),
             "read memory",
         )?;
         Ok(buf)
+    }
+
+    /// Upper bound, in bytes, on what a single `mem_read` can be asked for.
+    ///
+    /// The mmu will never hand out more than `capacity()` physical pages, so a
+    /// request larger than that cannot be satisfied by backed memory and is
+    /// rejected rather than allocated for.
+    fn max_mem_read_bytes(&self) -> u64 {
+        (self.vm.cpu.mem.capacity() as u64).saturating_mul(self.vm.cpu.mem.page_size())
     }
 
     pub(crate) fn mem_write(&mut self, addr: u64, data: Vec<u8>) -> PyResult<()> {
@@ -632,6 +645,35 @@ fn perms_to_icicle(perm: u8) -> u8 {
         icicle_perm |= perm::EXEC;
     }
     icicle_perm
+}
+
+/// Buffer length for a `mem_read` of `size` bytes at `addr`, or the reason the
+/// request is refused.
+///
+/// `Icicle::mem_read` takes `size` as an unbounded `u64` from Python, and the
+/// buffer used to be allocated before `read_bytes` got a chance to reject the
+/// range. That is not a wrong-answer bug but a process-abort one: this crate
+/// builds with `panic = "abort"`, so `Vec`'s "capacity overflow" panic for a
+/// `size` near `usize::MAX` and `handle_alloc_error` for a merely huge one both
+/// kill the interpreter instead of raising the `PyRuntimeError` a bad read
+/// raises. Same guard-before-you-build-a-range shape as
+/// `SegmentList::occupy`/`release` (bd memory
+/// `invariant-rangemap-inverted-range-aborts`).
+///
+/// `max_bytes` is the caller's ceiling — see `Icicle::max_mem_read_bytes`.
+fn checked_read_len(addr: u64, size: u64, max_bytes: u64) -> Result<usize, String> {
+    if addr.checked_add(size).is_none() {
+        return Err(format!(
+            "read memory at {addr:#x} with size {size}: range wraps past the end of the address space"
+        ));
+    }
+    if size > max_bytes {
+        return Err(format!(
+            "read memory at {addr:#x} with size {size}: exceeds the {max_bytes}-byte memory capacity"
+        ));
+    }
+    usize::try_from(size)
+        .map_err(|_| format!("read memory at {addr:#x} with size {size}: size is not addressable"))
 }
 
 /// The half-open range `[addr, addr + size)` a write touches, or `None` for an

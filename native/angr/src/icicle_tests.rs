@@ -11,7 +11,8 @@
 // everything in icicle.rs that can be exercised without a sleigh install.
 
 use super::{
-    ExceptionCode, Hitmap, VmExit, code_group_overlaps, disasm_addr_retained, written_range,
+    ExceptionCode, Hitmap, VmExit, checked_read_len, code_group_overlaps, disasm_addr_retained,
+    written_range,
 };
 
 /// Convenience: does a group `[gs, ge]` get invalidated by a write of `size` at `addr`?
@@ -208,4 +209,76 @@ fn exception_code_from_code_matches_the_from_impl() {
         );
     }
     assert!(!ExceptionCode::Halt.__eq__(&ExceptionCode::None));
+}
+
+// `checked_read_len` — the pre-allocation guard on `Icicle::mem_read`'s
+// Python-supplied `size`. Every rejection here is one the old code would have
+// turned into an allocation attempt, i.e. a process abort under `panic =
+// "abort"` rather than a catchable PyRuntimeError.
+
+/// Stand-in for `Icicle::max_mem_read_bytes()` (50_000 pages * 4 KiB by
+/// default); the exact value is the caller's business, the guard only compares.
+const TEST_MAX: u64 = 50_000 * 4096;
+
+#[test]
+fn read_len_accepts_an_ordinary_request() {
+    assert_eq!(checked_read_len(0x1000, 2, TEST_MAX), Ok(2));
+    assert_eq!(checked_read_len(0x1000, 4096, TEST_MAX), Ok(4096));
+    // Exactly at the ceiling is still served.
+    assert_eq!(
+        checked_read_len(0x1000, TEST_MAX, TEST_MAX),
+        Ok(TEST_MAX as usize)
+    );
+}
+
+#[test]
+fn read_len_of_zero_is_an_empty_buffer_not_an_error() {
+    // Unlike `written_range`, a zero-length read is a legal no-op that must
+    // hand `read_bytes` an empty slice rather than be refused.
+    assert_eq!(checked_read_len(0x1000, 0, TEST_MAX), Ok(0));
+    // ...even at the very top of the address space, where `addr + size` is
+    // still in range.
+    assert_eq!(checked_read_len(u64::MAX, 0, TEST_MAX), Ok(0));
+}
+
+#[test]
+fn read_len_rejects_a_range_that_wraps_the_address_space() {
+    let err = checked_read_len(u64::MAX - 3, 8, TEST_MAX).unwrap_err();
+    assert!(err.contains("wraps"), "{err}");
+    // The wrap check runs before the size check, so a wrapping *small* read is
+    // caught too -- `read_bytes` would otherwise walk `addr.wrapping_add(1)`
+    // back around to 0 and read unrelated memory.
+    let err = checked_read_len(u64::MAX, 2, TEST_MAX).unwrap_err();
+    assert!(err.contains("wraps"), "{err}");
+}
+
+#[test]
+fn read_len_rejects_a_size_beyond_the_memory_capacity() {
+    let err = checked_read_len(0x1000, TEST_MAX + 1, TEST_MAX).unwrap_err();
+    assert!(err.contains("exceeds"), "{err}");
+    // The motivating case: a garbage size from Python. `u64::MAX` at addr 0
+    // does not wrap, so the capacity check is the one that must catch it.
+    let err = checked_read_len(0, u64::MAX, TEST_MAX).unwrap_err();
+    assert!(err.contains("exceeds"), "{err}");
+    // And a merely large one, well under `usize::MAX` but far past anything
+    // the mmu could have mapped.
+    let err = checked_read_len(0x1000, 1 << 40, TEST_MAX).unwrap_err();
+    assert!(err.contains("exceeds"), "{err}");
+}
+
+#[test]
+fn read_len_error_names_the_request() {
+    // The message has to carry addr+size: it replaces the `ffi_result` context
+    // the caller would otherwise have produced.
+    let err = checked_read_len(0xdead_beef, u64::MAX, TEST_MAX).unwrap_err();
+    assert!(err.contains("0xdeadbeef"), "{err}");
+    assert!(err.contains(&u64::MAX.to_string()), "{err}");
+}
+
+#[test]
+fn read_len_with_a_zero_capacity_refuses_every_nonempty_read() {
+    // `max_mem_read_bytes` saturates, so a pathological mmu config degrades to
+    // "nothing is readable" rather than to an unbounded allocation.
+    assert_eq!(checked_read_len(0x1000, 0, 0), Ok(0));
+    assert!(checked_read_len(0x1000, 1, 0).is_err());
 }
