@@ -50,7 +50,7 @@ pub(crate) use arm::ARM;
 pub(crate) use arm64::ARM64;
 pub(crate) use calling_conventions::{
     AArch64, ARMEABI, CallingConvention, Cdecl, ExtractionError, MAX_EXTRACT_ARGS, MipsN64,
-    MipsO32, SystemVAMD64, cc_for_arch, default_cc_for_arch,
+    MipsO32, ReturnExtension, SystemVAMD64, cc_for_arch, default_cc_for_arch,
 };
 pub(crate) use mips::{MIPS32, MIPS64};
 pub(crate) use x86::X86;

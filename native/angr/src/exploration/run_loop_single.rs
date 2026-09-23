@@ -385,8 +385,7 @@ impl RustExplorationManager {
 
                             // Set return value if present
                             if let Some(rv) = ret_val {
-                                let ret_reg = self.environment.calling_convention.return_register();
-                                state.set_register_by_offset(ret_reg, rv);
+                                self.write_proc_return(&mut state, rv);
                             }
 
                             // Get return address and set PC. Use the state's real

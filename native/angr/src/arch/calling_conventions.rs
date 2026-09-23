@@ -79,6 +79,28 @@ pub(crate) enum ExtractionError {
 /// to the Python SimProcedure rather than crash the host process.
 pub(crate) const MAX_EXTRACT_ARGS: usize = 64;
 
+/// How an ABI widens an integer return value narrower than its return register.
+///
+/// A native SimProcedure that models a C `int`-returning function builds a
+/// 32-bit [`RustBV`](crate::symbolic::RustBV), but `RegisterFile::put` only
+/// overwrites as many bytes as the value is wide — it never touches the rest
+/// of the slot. Without an explicit widening step the stale upper half of the
+/// return register survives the call, which no real machine does
+/// (angr-fs8kb.40).
+///
+/// Which widening is correct is an ABI fact, not a universal one, so it lives
+/// on [`CallingConvention::return_extension`] rather than being hardcoded at
+/// the write site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReturnExtension {
+    /// Zero-fill the upper bits — hardware sub-register-write semantics
+    /// (amd64 `eax`→`rax`, AArch64 `w0`→`x0`).
+    Zero,
+    /// Sign-fill the upper bits — the MIPS64 ABI requires every 32-bit value
+    /// held in a 64-bit register to be stored sign-extended.
+    Sign,
+}
+
 /// Calling convention trait: the per-ABI facts argument extraction, native
 /// sub-calls and return-value stores need.
 pub(crate) trait CallingConvention: Send + Sync {
@@ -136,6 +158,19 @@ pub(crate) trait CallingConvention: Send + Sync {
 
     /// Get the return value register offset.
     fn return_register(&self) -> u32;
+
+    /// How this ABI widens an integer return value that is narrower than its
+    /// return register (see [`ReturnExtension`]).
+    ///
+    /// Defaults to [`ReturnExtension::Zero`], which matches every ABI here
+    /// whose return register is wider than a C `int`: on amd64 and AArch64 a
+    /// 32-bit sub-register write (`mov eax, …` / `mov w0, …`) architecturally
+    /// clears the upper half. On the 32-bit ABIs (`Cdecl`, `ARMEABI`,
+    /// `MipsO32`) the return register is already `int`-wide, so the choice is
+    /// inert. [`MipsN64`] overrides it.
+    fn return_extension(&self) -> ReturnExtension {
+        ReturnExtension::Zero
+    }
 
     /// Byte offset of the register slot carrying a scalar `double` return
     /// value, or `None` when this ABI has no single-register FP-return slot we
@@ -652,6 +687,15 @@ impl CallingConvention for MipsN64 {
 
     fn return_register(&self) -> u32 {
         mips64_off::R2 // $v0
+    }
+
+    /// N64 has no 32-bit sub-register write: the hardware always writes all 64
+    /// bits, and the ABI in turn requires a 32-bit value living in a 64-bit
+    /// register to be held sign-extended (so `sltu`/`addu` on it behave). An
+    /// `int`-returning callee therefore leaves `$v0` = `0xFFFF_FFFF_FFFF_FFFF`
+    /// for `-1`, not `0x0000_0000_FFFF_FFFF`.
+    fn return_extension(&self) -> ReturnExtension {
+        ReturnExtension::Sign
     }
 
     fn syscall_error_register(&self) -> Option<(u32, i64)> {

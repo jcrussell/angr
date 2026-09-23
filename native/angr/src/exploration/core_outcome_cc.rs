@@ -23,6 +23,7 @@ pub(crate) struct CcSnapshot {
     pub(crate) stack_arg_offset: u64,
     pub(crate) syscall_stack_arg_offset: Option<u64>,
     pub(crate) syscall_error_register: Option<(u32, i64)>,
+    pub(crate) return_extension: ReturnExtension,
 }
 
 impl CcSnapshot {
@@ -57,6 +58,22 @@ impl CcSnapshot {
         };
         state.set_register_by_offset(ret_reg, ret_val);
         state.set_register_by_offset(err_reg, err_val);
+    }
+
+    /// Store a native SimProcedure's return value into the return register.
+    ///
+    /// Thin adapter over [`write_proc_return_with_abi`], which holds the
+    /// widening rule and documents why it exists; the single-threaded
+    /// `RustExplorationManager::write_proc_return` adapts the same helper from
+    /// the live `Box<dyn CallingConvention>`.
+    pub(crate) fn write_proc_return(&self, state: &mut RustSimState, rv: RustBV) {
+        write_proc_return_with_abi(
+            state,
+            self.return_register,
+            rv,
+            self.pointer_size * 8,
+            self.return_extension,
+        );
     }
 
     /// Extract procedure arguments from this scalar snapshot.

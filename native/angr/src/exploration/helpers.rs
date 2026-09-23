@@ -636,6 +636,22 @@ impl RustExplorationManager {
         extract_args_with_abi(&abi, state, num_args)
     }
 
+    /// Store a native SimProcedure's return value into the return register.
+    ///
+    /// Thin adapter over [`write_proc_return_with_abi`], which holds the
+    /// widening rule and documents why it exists; the parallel post-step path
+    /// adapts the same helper from the scalar `CcSnapshot`.
+    pub(crate) fn write_proc_return(&self, state: &mut RustSimState, rv: RustBV) {
+        let cc = &self.environment.calling_convention;
+        write_proc_return_with_abi(
+            state,
+            cc.return_register(),
+            rv,
+            cc.pointer_size() * 8,
+            cc.return_extension(),
+        );
+    }
+
     /// Extract syscall arguments from state registers.
     ///
     /// Uses the calling convention's `syscall_arg_registers()` rather than
@@ -895,6 +911,44 @@ pub(crate) fn advance_sp_past_return_addr(state: &mut RustSimState, pops_return_
         }
     };
     state.set_sp(bumped);
+}
+
+/// Store a native SimProcedure's return value into the ABI's return register,
+/// widening it to the register's full width first.
+///
+/// `RegisterFile::put` writes exactly `rv.width() / 8` bytes at the offset and
+/// leaves the rest of the slot alone, so writing the 32-bit `RustBV` that an
+/// `int`-returning proc (`printf`, `puts`, `open`, `strcmp`, …) builds would
+/// let whatever previously sat in `RAX[63:32]` / `X0[63:32]` survive the call.
+/// No real machine does that: on amd64 and AArch64 a 32-bit sub-register write
+/// clears the upper half, and MIPS64 requires the value sign-extended. Which
+/// of the two applies is [`ReturnExtension`], read off the ABI rather than
+/// assumed here (angr-fs8kb.40).
+///
+/// A value at or above the register width is stored verbatim — a genuinely
+/// wider return is the `invariant-wide-return-needs-python-fallback` case and
+/// never reaches a native proc's `Return`.
+///
+/// Shared by the scalar `CcSnapshot::write_proc_return` (parallel post-step
+/// path) and [`RustExplorationManager::write_proc_return`] (single-threaded
+/// path), the same twinning `extract_args_with_abi` has.
+pub(crate) fn write_proc_return_with_abi(
+    state: &mut RustSimState,
+    ret_reg: u32,
+    rv: RustBV,
+    reg_bits: u32,
+    ext: ReturnExtension,
+) {
+    let widened = if rv.width() >= reg_bits {
+        rv
+    } else {
+        let ctx = state.solver().borrow();
+        match ext {
+            ReturnExtension::Zero => rv.zero_extend_into(reg_bits, &ctx),
+            ReturnExtension::Sign => rv.sign_extend_into(reg_bits, &ctx),
+        }
+    };
+    state.set_register_by_offset(ret_reg, widened);
 }
 
 test_submod!("helpers_tests.rs" => tests);

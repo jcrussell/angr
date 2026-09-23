@@ -1171,3 +1171,83 @@ fn reconvergence_max_group_is_a_high_water_mark_across_samples() {
         "a calmer later step must not lower the high-water mark",
     );
 }
+
+// amd64 RAX guest-state offset — the SystemV return register.
+const RAX: u32 = 16;
+
+/// `RegisterFile::put` only overwrites as many bytes as the value is wide, so
+/// an `int`-returning native proc's 32-bit `RustBV` used to leave the stale
+/// upper half of RAX intact — something no amd64 machine does, since a write
+/// to `eax` clears `rax[63:32]` (angr-fs8kb.40).
+#[test]
+fn write_proc_return_zero_extends_a_32bit_return_over_stale_amd64_rax_bits() {
+    let mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    let mut state = RustSimState::new("amd64").expect("amd64 state");
+    state.set_register_by_offset(RAX, RustBV::concrete(0xDEAD_BEEF_1234_5678, 64));
+
+    // A C `int` return of -1, as puts/open/strcmp build it.
+    mgr.write_proc_return(&mut state, RustBV::concrete(0xFFFF_FFFF, 32));
+
+    assert_eq!(
+        state.get_register_by_offset(RAX, 8).as_u64(),
+        Some(0x0000_0000_FFFF_FFFF)
+    );
+}
+
+/// The MIPS N64 ABI has no 32-bit sub-register write: a 32-bit value held in a
+/// 64-bit register must be stored sign-extended, so `$v0` for an `int` return
+/// of -1 is all-ones rather than amd64's `0x0000_0000_FFFF_FFFF`.
+#[test]
+fn write_proc_return_sign_extends_a_32bit_return_on_mips_n64() {
+    let mgr = RustExplorationManager::new("mips64", None).expect("mips64 mgr");
+    let mut state = RustSimState::new("mips64").expect("mips64 state");
+    let v0 = mgr.environment.calling_convention.return_register();
+    state.set_register_by_offset(v0, RustBV::concrete(0xDEAD_BEEF_1234_5678, 64));
+
+    mgr.write_proc_return(&mut state, RustBV::concrete(0xFFFF_FFFF, 32));
+
+    assert_eq!(
+        state.get_register_by_offset(v0, 8).as_u64(),
+        Some(0xFFFF_FFFF_FFFF_FFFF)
+    );
+}
+
+/// A return value already at (or above) the register width is stored verbatim
+/// — the pointer-returning procs (malloc/strdup) build `arch_word`-wide values
+/// and must not be re-extended.
+#[test]
+fn write_proc_return_passes_a_full_width_return_through_unchanged() {
+    let mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    let mut state = RustSimState::new("amd64").expect("amd64 state");
+    state.set_register_by_offset(RAX, RustBV::concrete(0xDEAD_BEEF_1234_5678, 64));
+
+    mgr.write_proc_return(&mut state, RustBV::concrete(0xFFFF_FFFF_FFFF_FFFF, 64));
+
+    assert_eq!(
+        state.get_register_by_offset(RAX, 8).as_u64(),
+        Some(0xFFFF_FFFF_FFFF_FFFF)
+    );
+}
+
+/// A symbolic 32-bit return (e.g. `strcmp`'s ITE chain) must widen through the
+/// same path: the register's upper half becomes *provably* zero rather than
+/// keeping stale concrete bits.
+#[test]
+fn write_proc_return_zero_extends_a_symbolic_32bit_return() {
+    let mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    let mut state = RustSimState::new("amd64").expect("amd64 state");
+    state.set_register_by_offset(RAX, RustBV::concrete(0xDEAD_BEEF_1234_5678, 64));
+
+    let sym = {
+        let ctx = state.solver().borrow();
+        RustBV::symbolic(&ctx, "ret", 32)
+    };
+    mgr.write_proc_return(&mut state, sym);
+
+    let rax = state.get_register_by_offset(RAX, 8);
+    assert_eq!(rax.width(), 64);
+    assert!(rax.as_u64().is_none(), "symbolic return must stay symbolic");
+    let ctx = state.solver().borrow();
+    let upper = rax.extract(63, 32, &ctx);
+    assert_eq!(upper.as_u64(), Some(0), "upper half must be a concrete zero");
+}

@@ -665,7 +665,7 @@ pub(super) fn handle_simprocedure_core(
         NativeProcDisposition::Returned { no_return, ret_val } => {
             if !no_return {
                 if let Some(rv) = ret_val {
-                    state.set_register_by_offset(ctx.cc.return_register, rv);
+                    ctx.cc.write_proc_return(&mut state, rv);
                 }
                 state.set_pc(return_addr);
                 // Only stack-return ABIs (x86/AMD64) pop the return address, so
@@ -831,7 +831,7 @@ fn handle_native_resume_core(
     match outcome {
         Ok(ProcOutcome::Return(ret_val)) => {
             if let Some(rv) = ret_val {
-                state.set_register_by_offset(ctx.cc.return_register, rv);
+                ctx.cc.write_proc_return(&mut state, rv);
             }
             state.set_pc(frame.caller_return_addr);
         }

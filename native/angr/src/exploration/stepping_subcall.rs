@@ -198,8 +198,7 @@ impl RustExplorationManager {
         match outcome {
             Ok(ProcOutcome::Return(ret_val)) => {
                 if let Some(rv) = ret_val {
-                    let ret_reg = self.environment.calling_convention.return_register();
-                    state.set_register_by_offset(ret_reg, rv);
+                    self.write_proc_return(&mut state, rv);
                 }
                 // Resume the original caller. The guest routine's `ret` already
                 // consumed the sentinel return slot (stack-return ABI advances

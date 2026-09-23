@@ -127,6 +127,21 @@ fn test_return_register_offsets_per_arch() {
     assert_eq!(MipsN64.return_register(), 32);
 }
 
+/// Widening an `int`-wide return into a wider return register is an ABI fact,
+/// not a universal one: amd64/AArch64 sub-register writes zero-fill, while the
+/// MIPS64 ABI requires 32-bit values held in 64-bit registers to be
+/// sign-extended (angr-fs8kb.40). The 32-bit ABIs have an `int`-wide return
+/// register, so the choice never fires for them — the default stands.
+#[test]
+fn test_return_extension_per_arch() {
+    assert_eq!(SystemVAMD64.return_extension(), ReturnExtension::Zero);
+    assert_eq!(AArch64.return_extension(), ReturnExtension::Zero);
+    assert_eq!(MipsN64.return_extension(), ReturnExtension::Sign);
+    assert_eq!(Cdecl.return_extension(), ReturnExtension::Zero);
+    assert_eq!(ARMEABI.return_extension(), ReturnExtension::Zero);
+    assert_eq!(MipsO32.return_extension(), ReturnExtension::Zero);
+}
+
 #[test]
 fn test_pops_return_addr_per_arch() {
     // Stack-based ABIs (x86/AMD64): return addr lives at [sp], so the

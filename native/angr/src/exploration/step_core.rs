@@ -164,6 +164,7 @@ impl RustExplorationManager {
                     stack_arg_offset: cc.stack_arg_offset(),
                     syscall_stack_arg_offset: cc.syscall_stack_arg_offset(),
                     syscall_error_register: cc.syscall_error_register(),
+                    return_extension: cc.return_extension(),
                 }
             },
             os_name: self.environment.os_name.clone(),
