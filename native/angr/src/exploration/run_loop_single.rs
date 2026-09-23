@@ -735,7 +735,8 @@ impl RustExplorationManager {
                     if self.dcas_warned_states.insert(state_id) {
                         log::warn!(
                             "DCAS (cmpxchg16b) unsupported in Rust interpreter at \
-                             0x{addr:x} (state {state_id}); falling back to Python VEX engine"
+                             0x{addr:x} (state {state_id}): {reason}; falling back \
+                             to Python VEX engine"
                         );
                     }
                 }

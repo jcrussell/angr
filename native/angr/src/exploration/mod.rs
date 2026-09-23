@@ -249,6 +249,8 @@ pub struct RustExplorationManager {
     /// Incremented alongside `vex_fallback_count` whenever the reason carries
     /// `DCAS_UNSUPPORTED_REASON`. Surfaced via `stats()` and
     /// `get_fallback_stats()` so DCAS-driven deadends are diagnosable.
+    /// Expected to stay 0 on every supported arch: only the big-endian
+    /// rejection in `statements_cas.rs::execute_cas_stmt` produces that marker.
     pub(crate) dcas_unsupported_count: u64,
     /// Visibility counter for `IRExpr::VECRET`/`IRExpr::GSPTR` Python
     /// fallbacks. Incremented alongside `vex_fallback_count` whenever the

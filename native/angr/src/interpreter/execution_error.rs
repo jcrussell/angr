@@ -9,9 +9,14 @@ use crate::callbacks::RunErrorKind;
 use crate::memory::MemoryError;
 use crate::vex::ops::OpError;
 
-/// Reason string used by the CAS handler when it sees a double-CAS (cmpxchg16b).
+/// Reason marker for a double-CAS (cmpxchg16b) the Rust CAS handler declines.
 /// Shared with `exploration::mod` so the manager can identify DCAS in
 /// `PythonVEXFallback` events and bump a dedicated visibility counter.
+///
+/// Little-endian DCAS is fully implemented natively and never falls back, so
+/// the single producer is `statements_cas.rs::execute_cas_stmt`'s big-endian
+/// rejection — no real DCAS arch (x86-64, ARM64) is big-endian, so a non-zero
+/// `dcas_unsupported_count` means something quite unusual showed up.
 pub(crate) const DCAS_UNSUPPORTED_REASON: &str = "double compare-and-swap";
 
 /// Reason marker used by the VECRET/GSPTR fallback site

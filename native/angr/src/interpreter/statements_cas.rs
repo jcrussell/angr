@@ -101,9 +101,14 @@ impl<'a> VEXInterpreter<'a> {
             // No real arch (x86-64 cmpxchg16b, ARM64 LDXP) is BE; if BE DCAS
             // ever shows up, defer to Python's full-CAS implementation rather
             // than guessing the address-of-Hi vs address-of-Lo convention.
-            return Err(CbExecutionError::Unsupported(
-                "DCAS with big-endian memory not supported".to_string(),
-            ));
+            // The message embeds `DCAS_UNSUPPORTED_REASON` because this is the
+            // one path that can still produce a DCAS fallback: the manager
+            // string-matches that marker to bump `dcas_unsupported_count` and
+            // emit its per-state warning (angr-fs8kb.59 — the old message did
+            // not contain it, so the counter was permanently 0).
+            return Err(CbExecutionError::Unsupported(format!(
+                "{DCAS_UNSUPPORTED_REASON} with big-endian memory not supported"
+            )));
         }
 
         // Load current_lo at addr.
