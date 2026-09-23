@@ -75,11 +75,89 @@ pub(crate) fn sample_simplify_skip(constraint: &z3::ast::Bool) {
     }
 }
 
+/// Test-only fault injection making solution *enumeration* stop partway.
+///
+/// [`SymContext::pin_rlimit_for_test`](super::SymContext::pin_rlimit_for_test)
+/// starves every check in the query, so it can only produce an enumeration
+/// that gave up on its *first* check — an empty `values` with `undecided` set.
+/// Branches that fire only for a *non-empty* undecided prefix, or only for an
+/// enumeration that runs after some other query has already been decided
+/// (`concretize::AddressConcretizer::concretize_internal`'s
+/// `enumeration.undecided` arm sits behind a decided
+/// [`range_seeded`](super::SymContext::range_seeded)), are unreachable with an
+/// rlimit. This rig is the partway form: the first `decided` checks at
+/// [`CheckSite::EvalUpto`] run for real and every later one reports `Unknown`
+/// without consulting Z3, which is exactly what
+/// `SymContext::enumerate_distinct` and `SymContext::eval_upto_ascending`
+/// translate into `Enumeration::undecided` with a populated prefix.
+///
+/// Only `EvalUpto` is intercepted, so the `min`/`max` bisection and plain
+/// satisfiability checks stay honest — a test can therefore have a *decided*
+/// range and an *undecided* enumeration at the same time.
+///
+/// State is thread-local and released by the returned [`EnumerationFault`]
+/// guard: `cargo test -- --test-threads=1` runs every test on one thread, so
+/// an arming that outlived its test would silently corrupt the next one.
+#[cfg(all(test, feature = "vex-engine-z3"))]
+pub(crate) fn stop_enumeration_after_for_test(decided: u32) -> EnumerationFault {
+    ENUM_FAULT.set(Some(decided));
+    EnumerationFault
+}
+
+// ENUM_FAULT: remaining real `CheckSite::EvalUpto` checks, or `None` when
+// disarmed. A `///` here would be an unused doc comment — rustdoc does not
+// document items produced by a macro invocation.
+#[cfg(all(test, feature = "vex-engine-z3"))]
+thread_local! {
+    static ENUM_FAULT: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(None) };
+}
+
+/// Scope guard for [`stop_enumeration_after_for_test`]; disarms on drop.
+#[cfg(all(test, feature = "vex-engine-z3"))]
+#[must_use = "the fault is disarmed as soon as the guard drops"]
+pub(crate) struct EnumerationFault;
+
+#[cfg(all(test, feature = "vex-engine-z3"))]
+impl Drop for EnumerationFault {
+    fn drop(&mut self) {
+        ENUM_FAULT.set(None);
+    }
+}
+
+/// Whether this check must be forced to `Unknown`, consuming one unit of the
+/// armed allowance. Always `false` unless a test armed
+/// [`stop_enumeration_after_for_test`].
+#[cfg(all(test, feature = "vex-engine-z3"))]
+fn enum_fault_fires(site: CheckSite) -> bool {
+    if site as usize != CheckSite::EvalUpto as usize {
+        return false;
+    }
+    match ENUM_FAULT.get() {
+        None => false,
+        Some(0) => true,
+        Some(remaining) => {
+            ENUM_FAULT.set(Some(remaining - 1));
+            false
+        }
+    }
+}
+
 /// Timed wrapper around solver.check() — records count, total time, and per-site stats.
 #[cfg(feature = "vex-engine-z3")]
 #[inline]
 pub(crate) fn timed_check(solver: &z3::Solver, site: CheckSite) -> z3::SatResult {
     let start = std::time::Instant::now();
+    // Test-only stand-in for a Z3 resource abort (see
+    // `stop_enumeration_after_for_test`). The real check is skipped so the
+    // injection is exact rather than budget-dependent; the counters below then
+    // record it as the timeout it impersonates.
+    #[cfg(test)]
+    let result = if enum_fault_fires(site) {
+        z3::SatResult::Unknown
+    } else {
+        solver.check()
+    };
+    #[cfg(not(test))]
     let result = solver.check();
     let elapsed_ns = crate::elapsed_ns(start);
     Z3_CHECK_COUNT.fetch_add(1, Ordering::Relaxed);

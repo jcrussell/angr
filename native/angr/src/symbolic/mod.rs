@@ -143,6 +143,8 @@ pub use handle::RustBVHandle;
 pub use registry::clear_global_registry;
 pub use registry::{SymbolInfo, SymbolKind, SymbolicIdentityRegistry, global_registry};
 pub use sharing::{ConstraintSharingStats, ConstraintSharingWalk};
+#[cfg(all(test, feature = "vex-engine-z3"))]
+pub(crate) use solver_build::stop_enumeration_after_for_test;
 pub use solving_ops::Enumeration;
 pub use stats::{
     VexOpFamily, get_solver_stats, record_bvop_concat, record_bvop_extract, record_bvop_reverse,

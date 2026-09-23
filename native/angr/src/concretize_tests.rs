@@ -450,3 +450,169 @@ fn strided_addrs_wraps_at_the_top_of_the_address_space() {
     // A huge stride wraps in the multiply too.
     assert_eq!(strided_addrs(0, u64::MAX, 3), vec![0, u64::MAX, u64::MAX - 1]);
 }
+
+// ---------------------------------------------------------------------------
+// Undecided (solver-timeout) enumeration paths (angr-fs8kb.84)
+// ---------------------------------------------------------------------------
+
+/// 64 feasible addresses in `[0x1000, 0x103f]`: more than
+/// `concretize_internal`'s `FAST_ENUM_LIMIT`, so the fast enumeration always
+/// truncates and the range-based tail of the algorithm is reached, yet a range
+/// of 63 that fits inside both the read (1024) and write (128) limits, so the
+/// tail reaches the `max_solutions` enumeration instead of stopping at the
+/// over-range fallback.
+#[cfg(feature = "vex-engine-z3")]
+fn ranged_addr(ctx: &SymContext, name: &str) -> RustBV {
+    let addr = ctx.new_bv(name, 64);
+    ctx.assume_true(&addr.uge(&RustBV::concrete(0x1000, 64), ctx));
+    ctx.assume_true(&addr.ule(&RustBV::concrete(0x103f, 64), ctx));
+    addr
+}
+
+/// Stride detection off, so `unenumerable` reports `TooLarge` rather than a
+/// `Strided` grid: `[0x1000, 0x103f]` is a stride-1 run, and a grid the
+/// angr-lf108 completeness gate accepts would be a *correct* answer that hides
+/// which branch produced it.
+#[cfg(feature = "vex-engine-z3")]
+fn no_stride_concretizer() -> AddressConcretizer {
+    let mut concretizer = AddressConcretizer::new();
+    concretizer.enable_stride_detection = false;
+    concretizer
+}
+
+/// An enumeration whose very first check times out yields an *empty*
+/// `Enumeration` with `undecided` set, which is not "unsat" — `eval` would
+/// re-ask the same undecidable question. All three entry points that run the
+/// Range strategy must report `Failed`, never a fabricated address.
+///
+/// Driven by a real Z3 abort (`pin_rlimit_for_test`, the rig
+/// `state/tests/solver_gate.rs` uses) rather than by the injection rig below,
+/// so this also proves the branch is reachable from an actual solver timeout.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn fast_enum_undecided_reports_failed_for_every_entry_point() {
+    let ctx = SymContext::with_timeout(u32::MAX);
+    let addr = ranged_addr(&ctx, "fast_undecided_addr");
+    let concretizer = no_stride_concretizer();
+
+    // Re-pinned before each call: `set_params` lives on the current solver, so
+    // a rebuild between calls would silently restore an unbounded budget and
+    // turn this into a vacuous pass.
+    for (label, result) in [
+        ("concretize", {
+            ctx.pin_rlimit_for_test(1);
+            concretizer.concretize(&addr, &ctx)
+        }),
+        ("concretize_read", {
+            ctx.pin_rlimit_for_test(1);
+            concretizer.concretize_read(&addr, &ctx)
+        }),
+        ("concretize_write_multiwrite", {
+            ctx.pin_rlimit_for_test(1);
+            concretizer.concretize_write_multiwrite(&addr, &ctx)
+        }),
+    ] {
+        match result {
+            ConcretizationResult::Failed(msg) => assert!(
+                msg.contains("undecided"),
+                "{label}: expected the undecided-enumeration message, got {msg:?}"
+            ),
+            other => panic!(
+                "{label}: an undecided enumeration must degrade to Failed, got {other:?}"
+            ),
+        }
+    }
+
+    // Guard: the same queries decide instantly once the budget is lifted, so
+    // the three `Failed`s above came from the rlimit and not from a query this
+    // concretizer cannot answer at all.
+    ctx.pin_rlimit_for_test(0);
+    match concretizer.concretize(&addr, &ctx) {
+        ConcretizationResult::Multiple(addrs) => assert_eq!(addrs.len(), 64),
+        other => panic!("expected the complete 64-address set, got {other:?}"),
+    }
+}
+
+/// The `enumeration.undecided` arm: `range_seeded` decides (giving real
+/// `[min, max]` bounds) but the `max_solutions` enumeration behind it stops
+/// partway. A short list from a stopped enumeration has the same shape as an
+/// exhaustive one, so treating it as `Multiple` would hand consumers a
+/// truncated set they read as complete (angr-03vl4.85) — it must come back as
+/// `TooLarge` with the honest bounds instead.
+///
+/// The allowance is the fast enumeration's own check count (17 solutions, one
+/// `EvalUpto` check each; 16 when the warm model cache seeds the first value),
+/// so the forced `Unknown` lands on the *second* enumeration. Either count
+/// leaves that enumeration undecided — with an empty or a one-element prefix —
+/// which is the branch under test.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn undecided_max_solutions_enum_reports_too_large_not_a_truncated_set() {
+    let ctx = SymContext::new_mock();
+    let addr = ranged_addr(&ctx, "enum_undecided_addr");
+    let concretizer = no_stride_concretizer();
+
+    let _fault = crate::symbolic::stop_enumeration_after_for_test(17);
+    match concretizer.concretize(&addr, &ctx) {
+        ConcretizationResult::TooLarge { min, max, limit } => {
+            assert_eq!((min, max), (0x1000, 0x103f), "bounds must be the decided ones");
+            assert_eq!(limit, concretizer.read_range_limit);
+        }
+        other => panic!("expected TooLarge with decided bounds, got {other:?}"),
+    }
+}
+
+/// The fall-through the `!fast.undecided` guard exists for: a fast enumeration
+/// that stopped partway still has a *non-empty* prefix, and returning it as
+/// `Single`/`Multiple` would claim a 3-address set for a 64-address one. The
+/// prefix must never escape — here the range tail takes over and reports
+/// `TooLarge`.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn undecided_fast_enum_prefix_never_escapes_as_a_complete_set() {
+    let ctx = SymContext::new_mock();
+    let addr = ranged_addr(&ctx, "fast_prefix_addr");
+    let concretizer = no_stride_concretizer();
+
+    let _fault = crate::symbolic::stop_enumeration_after_for_test(3);
+    match concretizer.concretize(&addr, &ctx) {
+        ConcretizationResult::TooLarge { min, max, .. } => {
+            assert_eq!((min, max), (0x1000, 0x103f));
+        }
+        ConcretizationResult::Single(a) => panic!("truncated prefix escaped as Single({a:#x})"),
+        ConcretizationResult::Multiple(addrs) => {
+            panic!("truncated prefix escaped as an exhaustive Multiple: {addrs:x?}")
+        }
+        ConcretizationResult::Strided { .. } => unreachable!("stride detection is off"),
+        ConcretizationResult::Failed(msg) => {
+            // Acceptable (also a "take the symbolic path" answer) only if the
+            // range query is what failed — but nothing starves it here.
+            panic!("range query should have decided, got Failed({msg:?})")
+        }
+    }
+}
+
+/// Guard on the injection rig itself: it must actually reach `timed_check`,
+/// and — because `--test-threads=1` puts every test on one thread — must be
+/// fully released when its guard drops. A rig that silently did nothing would
+/// make the two tests above pass vacuously.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn enumeration_fault_arms_and_disarms_with_its_guard() {
+    let ctx = SymContext::new_mock();
+    let addr = ranged_addr(&ctx, "fault_guard_addr");
+
+    {
+        let _fault = crate::symbolic::stop_enumeration_after_for_test(0);
+        let stopped = ctx.solutions_checked(&addr, 4);
+        assert!(
+            stopped.undecided,
+            "allowance 0 must force the first EvalUpto check to Unknown"
+        );
+        assert!(stopped.values.len() < 4, "got {:?}", stopped.values);
+    }
+
+    let decided = ctx.solutions_checked(&addr, 4);
+    assert!(!decided.undecided, "the guard must disarm on drop");
+    assert_eq!(decided.values.len(), 4);
+}
