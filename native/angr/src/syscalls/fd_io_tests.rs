@@ -612,6 +612,54 @@ fn pread64_content_sym_reads_at_offset_without_moving_position() {
 }
 
 #[test]
+fn writev_iovcnt_zero_is_native_no_op_without_demoting() {
+    // angr-0xyq2 A3, writev leg — see the `write` twin in write_tests.rs.
+    let mut state = fresh_state();
+    let fd = open_registered_sym_file(&mut state, "/tmp/flag", 3);
+    write_iovec_array(&mut state, 0x2100, &[(0x2200, 2)]);
+
+    let outcome = NativeWritevSyscall
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(fd as u128, 64),
+                RustBV::concrete(0x2100, 64),
+                RustBV::concrete(0, 64),
+            ],
+        )
+        .expect("zero-segment writev is a native no-op");
+    assert!(matches!(outcome, SyscallOutcome::Continue { ret: 0 }));
+    assert!(
+        state.file_system_ref().fd_content_sym(fd).is_some(),
+        "content_sym NOT demoted"
+    );
+}
+
+#[test]
+fn pwrite64_nbyte_zero_is_native_no_op_without_demoting() {
+    // angr-0xyq2 A3, pwrite64 leg — see the `write` twin in write_tests.rs.
+    let mut state = fresh_state();
+    let fd = open_registered_sym_file(&mut state, "/tmp/flag", 3);
+
+    let outcome = NativePwrite64Syscall
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(fd as u128, 64),
+                RustBV::concrete(0x2200, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+            ],
+        )
+        .expect("zero-length pwrite64 is a native no-op");
+    assert!(matches!(outcome, SyscallOutcome::Continue { ret: 0 }));
+    assert!(
+        state.file_system_ref().fd_content_sym(fd).is_some(),
+        "content_sym NOT demoted"
+    );
+}
+
+#[test]
 fn writev_content_sym_demotes_and_falls_back() {
     // angr-0xyq2 Phase 2 write-demotion, writev leg.
     let mut state = fresh_state();

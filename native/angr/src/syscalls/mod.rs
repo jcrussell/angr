@@ -98,6 +98,10 @@ pub(crate) mod write;
 /// Re-exported below, so handlers still spell them `crate::syscalls::X`.
 mod support;
 
+/// The shared demotion-gate prologue the write-path handlers (`write`,
+/// `writev`, `pwrite64`) are written against. Re-exported below.
+mod write_gate;
+
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -107,6 +111,7 @@ pub(crate) use support::{
     fresh_symbolic, gather_concrete_bytes, gather_concrete_bytes_into, mint_symbolic_bytes,
     require_syscall_args, stub_syscall, symbolic_outcome,
 };
+pub(crate) use write_gate::write_path_gate;
 
 /// Registry of native syscall handlers, keyed by arch name then syscall num.
 ///

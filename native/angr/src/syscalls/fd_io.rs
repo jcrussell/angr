@@ -32,7 +32,9 @@
 //! (angr-8j16). `writev` / `pwrite64` demote the content
 //! (`demote_symbolic_content`) and bounce to Python before mutating;
 //! zero-length writes are a no-demotion no-op, and a symbolic fd demotes
-//! everything (`demote_all_symbolic_content`) before falling back.
+//! everything (`demote_all_symbolic_content`) before falling back. That whole
+//! ordering is [`crate::syscalls::write_path_gate`], shared
+//! with the `write` handler — these two only supply the gather-and-sink body.
 //!
 //!   - `pread64(fd, buf, nbyte, offset)` / `pwrite64(fd, buf, nbyte, offset)`
 //!     (angr-dbb1) mirror `posix/pread64.py` / `pwrite64.py`: positioned I/O
@@ -48,7 +50,7 @@ use super::errno::NEG_ONE;
 use super::require_syscall_args;
 use super::{
     MAX_IO_SIZE, NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg,
-    gather_concrete_bytes, gather_concrete_bytes_into,
+    gather_concrete_bytes, gather_concrete_bytes_into, write_path_gate,
 };
 use crate::procedures::strings::write_bv_bytes;
 use crate::state::MAX_SYMFILE_SERVE_SIZE;
@@ -144,72 +146,39 @@ impl NativeSyscall for NativeWritevSyscall {
         args: &[RustBV],
     ) -> Result<SyscallOutcome, SyscallError> {
         require_syscall_args!(self, args);
-        let fd = match extract_concrete_arg(&args[0], "writev fd") {
-            Ok(fd) => fd,
-            Err(e) => {
-                // Symbolic fd on a write path: any bounded symbolic file
-                // could be the target — hand them all to Python before the
-                // fallback (angr-0xyq2 A4; O(1) when none attached).
-                state.file_system().demote_all_symbolic_content();
-                return Err(e);
-            }
-        };
-        if fd == 0 {
-            return Err(SyscallError::Other(
-                "writev to fd=0 (stdin) falls back to Python".to_string(),
-            ));
-        }
-        if !state.file_system_ref().is_open(fd as u32) {
-            return Err(SyscallError::Other(format!(
-                "writev to fd={fd} (not open in Rust FileSystem) falls back to Python"
-            )));
-        }
-        // Deferred `?` + zero-check before the demote gate — see
-        // syscalls/write.rs (A3/A4 ordering).
-        let iov = extract_concrete_arg(&args[1], "writev iov");
-        let iovcnt = extract_concrete_arg(&args[2], "writev iovcnt");
-        if let Ok(0) = iovcnt {
-            return Ok(SyscallOutcome::Continue { ret: 0 });
-        }
-        // Write-demotion (angr-0xyq2 Phase 2) — see procedures/write.rs.
-        if state.file_system().demote_symbolic_content(fd as u32) {
-            return Err(SyscallError::Other(format!(
-                "writev to fd={fd} with symbolic content falls back to Python (demoted)"
-            )));
-        }
-        let iov = iov?;
-        let iovcnt = iovcnt?;
-        if iovcnt > MAX_IOVCNT {
-            return Err(SyscallError::Other(format!(
-                "writev iovcnt {iovcnt} exceeds limit"
-            )));
-        }
-
-        let word = state.arch().bytes();
-
-        // Gather every concrete byte across all segments BEFORE mutating the
-        // fd buffer — a symbolic byte must leave the fd untouched so the
-        // Python fallback path produces the single authoritative write.
-        let mut bytes: Vec<u8> = Vec::new();
-        for idx in 0..iovcnt {
-            let (base, len) = read_iovec(state, iov, idx, word)?;
-            if len > MAX_IO_SIZE {
+        write_path_gate(state, self.name(), &args[0], &args[2], |state, target| {
+            let iov = extract_concrete_arg(&args[1], "writev iov")?;
+            let iovcnt = extract_concrete_arg(&args[2], "writev iovcnt")?;
+            if iovcnt > MAX_IOVCNT {
                 return Err(SyscallError::Other(format!(
-                    "writev iov_len {len} exceeds limit"
+                    "writev iovcnt {iovcnt} exceeds limit"
                 )));
             }
-            gather_concrete_bytes_into(state, base, len, &format!("iov[{idx}]"), &mut bytes)?;
-        }
 
-        let total = bytes.len() as u64;
-        // Unreachable after the gate above; choke-point insurance (see
-        // FileSystem::write).
-        if !state.write_fd(fd as u32, &bytes) {
-            return Err(SyscallError::Other(format!(
-                "writev to fd={fd} with symbolic content falls back to Python (demoted)"
-            )));
-        }
-        Ok(SyscallOutcome::Continue { ret: total })
+            let word = state.arch().bytes();
+
+            // Gather every concrete byte across all segments BEFORE mutating
+            // the fd buffer — a symbolic byte must leave the fd untouched so
+            // the Python fallback path produces the single authoritative write.
+            let mut bytes: Vec<u8> = Vec::new();
+            for idx in 0..iovcnt {
+                let (base, len) = read_iovec(state, iov, idx, word)?;
+                if len > MAX_IO_SIZE {
+                    return Err(SyscallError::Other(format!(
+                        "writev iov_len {len} exceeds limit"
+                    )));
+                }
+                gather_concrete_bytes_into(state, base, len, &format!("iov[{idx}]"), &mut bytes)?;
+            }
+
+            let total = bytes.len() as u64;
+            // Choke-point insurance — unreachable after the gate (see
+            // syscalls::write_gate).
+            if !state.write_fd(target.fd_u32(), &bytes) {
+                return Err(target.demoted());
+            }
+            Ok(total)
+        })
     }
 }
 
@@ -468,61 +437,32 @@ impl NativeSyscall for NativePwrite64Syscall {
         args: &[RustBV],
     ) -> Result<SyscallOutcome, SyscallError> {
         require_syscall_args!(self, args);
-        let fd = match extract_concrete_arg(&args[0], "pwrite64 fd") {
-            Ok(fd) => fd,
-            Err(e) => {
-                // Symbolic fd on a write path — see writev above (A4).
-                state.file_system().demote_all_symbolic_content();
-                return Err(e);
+        write_path_gate(state, self.name(), &args[0], &args[2], |state, target| {
+            let buf = extract_concrete_arg(&args[1], "pwrite64 buf")?;
+            let nbyte = extract_concrete_arg(&args[2], "pwrite64 nbyte")?;
+            let offset = extract_concrete_arg(&args[3], "pwrite64 offset")?;
+            if nbyte > MAX_IO_SIZE {
+                return Err(SyscallError::Other(format!(
+                    "pwrite64 nbyte {nbyte} exceeds limit"
+                )));
             }
-        };
-        if fd == 0 {
-            return Err(SyscallError::Other(
-                "pwrite64 to fd=0 (stdin) falls back to Python".to_string(),
-            ));
-        }
-        if !state.file_system_ref().is_open(fd as u32) {
-            return Err(SyscallError::Other(format!(
-                "pwrite64 to fd={fd} (not open in Rust FileSystem) falls back to Python"
-            )));
-        }
-        // Deferred `?` + zero-check before the demote gate — see
-        // syscalls/write.rs (A3/A4 ordering).
-        let buf = extract_concrete_arg(&args[1], "pwrite64 buf");
-        let nbyte = extract_concrete_arg(&args[2], "pwrite64 nbyte");
-        let offset = extract_concrete_arg(&args[3], "pwrite64 offset");
-        if let Ok(0) = nbyte {
-            return Ok(SyscallOutcome::Continue { ret: 0 });
-        }
-        // Write-demotion (angr-0xyq2 Phase 2) — see procedures/write.rs.
-        if state.file_system().demote_symbolic_content(fd as u32) {
-            return Err(SyscallError::Other(format!(
-                "pwrite64 to fd={fd} with symbolic content falls back to Python (demoted)"
-            )));
-        }
-        let buf = buf?;
-        let nbyte = nbyte?;
-        let offset = offset?;
-        if nbyte > MAX_IO_SIZE {
-            return Err(SyscallError::Other(format!(
-                "pwrite64 nbyte {nbyte} exceeds limit"
-            )));
-        }
 
-        // Gather every concrete byte BEFORE mutating the fd — a symbolic byte
-        // must leave the fd untouched so the Python fallback produces the
-        // single authoritative write (same discipline as writev).
-        let bytes = gather_concrete_bytes(state, buf, nbyte, "pwrite64 buf")?;
+            // Gather every concrete byte BEFORE mutating the fd — a symbolic
+            // byte must leave the fd untouched so the Python fallback produces
+            // the single authoritative write (same discipline as writev).
+            let bytes = gather_concrete_bytes(state, buf, nbyte, "pwrite64 buf")?;
 
-        let total = bytes.len() as u64;
-        // Unreachable after the gate above; choke-point insurance (see
-        // FileSystem::write_at).
-        if !state.file_system().write_at(fd as u32, offset, &bytes) {
-            return Err(SyscallError::Other(format!(
-                "pwrite64 to fd={fd} with symbolic content falls back to Python (demoted)"
-            )));
-        }
-        Ok(SyscallOutcome::Continue { ret: total })
+            let total = bytes.len() as u64;
+            // Choke-point insurance — unreachable after the gate (see
+            // syscalls::write_gate).
+            if !state
+                .file_system()
+                .write_at(target.fd_u32(), offset, &bytes)
+            {
+                return Err(target.demoted());
+            }
+            Ok(total)
+        })
     }
 }
 

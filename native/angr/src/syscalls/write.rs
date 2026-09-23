@@ -12,12 +12,17 @@
 //! goes through `state.posix.get_fd(fd).write(...)`, which owns the
 //! symbolic-content + symbolic-fd plumbing.
 //!
+//! The symbolic-fd / zero-length / content-demotion ordering in front of the
+//! actual write is shared with `writev` and `pwrite64` (`syscalls/fd_io.rs`)
+//! and lives in [`crate::syscalls::write_path_gate`]; this
+//! handler supplies only the gather-and-sink body.
+//!
 //! See `procedures/write.rs` for the fd-table sync invariant (angr-8j16).
 
 use super::require_syscall_args;
 use super::{
     MAX_IO_SIZE as MAX_WRITE_SIZE, NativeSyscall, SyscallError, SyscallOutcome,
-    extract_concrete_arg, gather_concrete_bytes,
+    extract_concrete_arg, gather_concrete_bytes, write_path_gate,
 };
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
@@ -39,60 +44,22 @@ impl NativeSyscall for NativeWriteSyscall {
         args: &[RustBV],
     ) -> Result<SyscallOutcome, SyscallError> {
         require_syscall_args!(self, args);
-        let fd = match extract_concrete_arg(&args[0], "write fd") {
-            Ok(fd) => fd,
-            Err(e) => {
-                // Symbolic fd on a write path: any bounded symbolic file
-                // could be the target — hand them all to Python before the
-                // fallback (angr-0xyq2 A4; O(1) when none attached).
-                state.file_system().demote_all_symbolic_content();
-                return Err(e);
+        write_path_gate(state, self.name(), &args[0], &args[2], |state, target| {
+            let buf = extract_concrete_arg(&args[1], "write buf")?;
+            let count = extract_concrete_arg(&args[2], "write count")?;
+            if count > MAX_WRITE_SIZE {
+                return Err(SyscallError::Other(format!(
+                    "write count {count} exceeds limit"
+                )));
             }
-        };
-        if fd == 0 {
-            return Err(SyscallError::Other(
-                "write to fd=0 (stdin) falls back to Python".to_string(),
-            ));
-        }
-        let fd_u32 = fd as u32;
-        if !state.file_system_ref().is_open(fd_u32) {
-            return Err(SyscallError::Other(format!(
-                "write to fd={fd} (not open in Rust FileSystem) falls back to Python"
-            )));
-        }
-        // Deferred `?`: a symbolic buf/count on a symbolic-content fd must
-        // demote before bouncing (the gate below), but a concrete
-        // zero-length write is a POSIX no-op that must NOT demote (A3).
-        let buf = extract_concrete_arg(&args[1], "write buf");
-        let count = extract_concrete_arg(&args[2], "write count");
-        if let Ok(0) = count {
-            return Ok(SyscallOutcome::Continue { ret: 0 });
-        }
-        // Write-demotion (angr-0xyq2 Phase 2) — see procedures/write.rs.
-        if state.file_system().demote_symbolic_content(fd_u32) {
-            return Err(SyscallError::Other(format!(
-                "write to fd={fd} with symbolic content falls back to Python (demoted)"
-            )));
-        }
-        let buf = buf?;
-        let count = count?;
-
-        if count > MAX_WRITE_SIZE {
-            return Err(SyscallError::Other(format!(
-                "write count {count} exceeds limit"
-            )));
-        }
-
-        let bytes = gather_concrete_bytes(state, buf, count, "write buf")?;
-
-        // Unreachable after the gate above; choke-point insurance (see
-        // FileSystem::write).
-        if !state.write_fd(fd_u32, &bytes) {
-            return Err(SyscallError::Other(format!(
-                "write to fd={fd} with symbolic content falls back to Python (demoted)"
-            )));
-        }
-        Ok(SyscallOutcome::Continue { ret: count })
+            let bytes = gather_concrete_bytes(state, buf, count, "write buf")?;
+            // Choke-point insurance — unreachable after the gate (see
+            // syscalls::write_gate).
+            if !state.write_fd(target.fd_u32(), &bytes) {
+                return Err(target.demoted());
+            }
+            Ok(count)
+        })
     }
 }
 

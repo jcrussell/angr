@@ -256,6 +256,47 @@ fn write_symbolic_byte_falls_back() {
 }
 
 #[test]
+fn write_count_zero_is_native_no_op_without_demoting() {
+    // angr-0xyq2 A3, now enforced in one place for all three write-path
+    // handlers (syscalls::write_gate step 4): a concrete zero-length write is
+    // a POSIX no-op, so it must return 0 natively and leave the fd's symbolic
+    // content registered rather than demoting it to Python.
+    let h = NativeWriteSyscall;
+    let mut state = RustSimState::new("amd64").expect("amd64 state");
+    let bytes: Vec<RustBV> = {
+        let ctx = state.solver().borrow();
+        (0..3)
+            .map(|i| RustBV::symbolic(&ctx, format!("syswzero_{i}"), 8))
+            .collect()
+    };
+    state
+        .file_system()
+        .register_file_content("/tmp/flag", bytes);
+    let fd = state
+        .file_system()
+        .open("/tmp/flag".to_string(), crate::state::FdFlags::ReadWrite)
+        .expect("fd space is not exhausted in tests");
+
+    let outcome = h
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(fd as u128, 64),
+                RustBV::concrete(0x1000, 64),
+                RustBV::concrete(0, 64),
+            ],
+        )
+        .expect("zero-length write is a native no-op");
+    assert!(matches!(outcome, SyscallOutcome::Continue { ret: 0 }));
+    let fs = state.file_system_ref();
+    assert!(fs.fd_content_sym(fd).is_some(), "content_sym NOT demoted");
+    assert!(
+        fs.file_content_for_path("/tmp/flag").is_some(),
+        "registry entry kept"
+    );
+}
+
+#[test]
 fn write_content_sym_demotes_and_falls_back() {
     // angr-0xyq2 Phase 2 write-demotion — syscall twin of
     // procedures/write_tests.rs::test_write_content_sym_demotes_and_falls_back.
