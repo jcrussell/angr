@@ -47,6 +47,38 @@ fn covering_range(
     (end <= s_len).then_some(off..end)
 }
 
+/// Offsets of the region where a new store of `len` bytes at `addr` overlaps
+/// an existing store of `s_len` bytes based at `s_addr`, as
+/// `(new_off, s_off, overlap_len)`, or `None` when the two ranges are
+/// disjoint.
+///
+/// Like `covering_range`, the overlap is derived entirely in offset space with
+/// `wrapping_sub`, because either store may sit at the top of the guest
+/// address space and wrap. Forming an end address — even with
+/// `saturating_add` — collapses a wrapped range onto `u64::MAX` and hides any
+/// overlap that lies in its wrapped tail.
+fn overlap_offsets(
+    addr: u64,
+    len: usize,
+    s_addr: u64,
+    s_len: usize,
+) -> Option<(usize, usize, usize)> {
+    // Two cases, by which store's first byte the overlap begins at. They
+    // cannot both apply: that would need the ranges to overlap in two
+    // disjoint pieces, i.e. a combined length exceeding the whole 2^64-byte
+    // address space.
+    if let Some(s_off) = usize::try_from(addr.wrapping_sub(s_addr))
+        .ok()
+        .filter(|d| *d < s_len)
+    {
+        // The new store's base lands inside the existing buffer.
+        return Some((0, s_off, len.min(s_len - s_off))); // overflow-ok: s_off < s_len
+    }
+    // Otherwise the existing store's base must land inside the new buffer.
+    let new_off = usize::try_from(s_addr.wrapping_sub(addr)).ok()?;
+    (new_off < len).then(|| (new_off, 0, (len - new_off).min(s_len))) // overflow-ok: new_off < len
+}
+
 impl PendingStoreBuffer {
     pub(crate) fn with_capacity(cap: usize) -> Self {
         Self {
@@ -66,7 +98,6 @@ impl PendingStoreBuffer {
     pub(crate) fn push(&mut self, addr: u64, data: Vec<u8>) {
         let idx = self.stores.len();
         let len = data.len() as u64;
-        let new_end = addr.saturating_add(len);
 
         // Patch any earlier store whose byte range overlaps this new store's
         // range so the earlier store's buffer reflects the newest bytes for
@@ -78,19 +109,15 @@ impl PendingStoreBuffer {
         // byte_index, so every store's own buffer must stay internally
         // coherent regardless of whether byte_index currently points at it.
         for (s_addr, s_data) in self.stores.iter_mut() {
-            let s_end = s_addr.saturating_add(s_data.len() as u64);
-            let overlap_start = addr.max(*s_addr);
-            let overlap_end = new_end.min(s_end);
-            // Neither end can outrun its buffer: both came from a
-            // `saturating_add`, which only ever *under*-estimates a range that
-            // crosses the top of the address space, so `end - base` stays
-            // `<= buffer.len()`.
-            if overlap_start < overlap_end {
-                let s_off = (overlap_start - *s_addr) as usize; // overflow-ok: overlap_start = max(addr, s_addr)
-                let new_off = (overlap_start - addr) as usize; // overflow-ok: overlap_start = max(addr, s_addr)
-                let overlap_len = (overlap_end - overlap_start) as usize; // overflow-ok: guarded by the `if`
-                let s_range = s_off..s_off + overlap_len; // overflow-ok: overlap_end <= saturating s_end
-                let new_range = new_off..new_off + overlap_len; // overflow-ok: overlap_end <= saturating new_end
+            // `overlap_offsets` works in offset space precisely so a store
+            // that wraps past the top of the address space still has its
+            // wrapped tail patched — the ends it would otherwise need are
+            // unrepresentable.
+            if let Some((new_off, s_off, overlap_len)) =
+                overlap_offsets(addr, data.len(), *s_addr, s_data.len())
+            {
+                let s_range = s_off..s_off + overlap_len; // overflow-ok: s_off + overlap_len <= s_data.len()
+                let new_range = new_off..new_off + overlap_len; // overflow-ok: new_off + overlap_len <= data.len()
                 s_data[s_range].copy_from_slice(&data[new_range]);
             }
         }

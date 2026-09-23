@@ -166,6 +166,57 @@ fn load_at_top_of_address_space_does_not_overflow() {
     assert!(buf.try_load(u64::MAX, 8).is_none());
 }
 
+#[test]
+fn overlap_patch_reaches_the_wrapped_tail_of_an_earlier_store() {
+    // angr-fs8kb.63: `push`'s overlap patch used to derive both ranges from
+    // `saturating_add`, so an earlier store wrapping past the top of the
+    // address space had its end clamped to u64::MAX and its wrapped tail was
+    // never patched. The later store's byte_index entry hid it for a load of
+    // exactly that byte; a wider load resolving through an *unpatched*
+    // neighbour byte returned the stale pre-overwrite value.
+    let base = u64::MAX - 11; // covers MAX-11..=MAX and then 0..=3
+    let mut buf = PendingStoreBuffer::with_capacity(4);
+    buf.push(base, (0..16).collect());
+    // Overwrite address 2 — the third byte of the wrapped tail, store offset 14.
+    buf.push(2, vec![99]);
+
+    // The narrow store alone answers a load of exactly address 2.
+    assert_eq!(buf.try_load(2, 1).unwrap(), &[99]);
+    // The wide load resolves via byte_index[1] -> the earlier store, whose
+    // buffer must now carry the patched byte.
+    assert_eq!(buf.try_load(1, 3).unwrap(), &[13, 99, 15]);
+}
+
+#[test]
+fn overlap_patch_reaches_an_earlier_store_from_a_wrapping_new_store() {
+    // The mirror case: the *new* store wraps into an earlier store based near
+    // zero, so the overlap begins at the earlier store's first byte rather
+    // than the new store's. `saturating_add` on the new store's end hid this
+    // one too.
+    let mut buf = PendingStoreBuffer::with_capacity(4);
+    buf.push(0, vec![100, 101, 102, 103, 104, 105, 106, 107]);
+    buf.push(u64::MAX - 11, (0..16).collect()); // covers MAX-11..=MAX, then 0..=3
+
+    // The wide load is not covered by the indexed (wrapping) store, so it
+    // falls back to the reverse scan and lands on the earlier store — whose
+    // first four bytes must now be the wrapping store's tail.
+    assert_eq!(
+        buf.try_load(0, 8).unwrap(),
+        &[12, 13, 14, 15, 104, 105, 106, 107]
+    );
+}
+
+#[test]
+fn overlap_patch_ignores_a_store_that_only_looks_adjacent_after_wrapping() {
+    // A store at the very top of the space and one at the very bottom do not
+    // overlap unless one of them actually wraps into the other.
+    let mut buf = PendingStoreBuffer::with_capacity(4);
+    buf.push(u64::MAX - 3, vec![1, 2, 3, 4]);
+    buf.push(0, vec![9, 9, 9, 9]);
+    assert_eq!(buf.try_load(u64::MAX - 3, 4).unwrap(), &[1, 2, 3, 4]);
+    assert_eq!(buf.try_load(0, 4).unwrap(), &[9, 9, 9, 9]);
+}
+
 // --- try_load_assembled: multi-store union coverage (angr-6cp06.69) ---
 
 #[test]
