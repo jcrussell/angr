@@ -4,6 +4,13 @@
 //! [`CbExecutionError`], the [`FallbackStrategy`] each variant maps to, and the
 //! reason-marker constants the exploration manager string-matches on when it
 //! attributes a `PythonVEXFallback` event to a specific cause.
+//!
+//! Invariant for every marker const below: the *producing* site must build its
+//! reason string from the const (`format!("{MARKER} ...")`), never retype the
+//! text. The coupling is by substring match at a distance, so a hand-written
+//! message that merely paraphrases the marker compiles, reads correctly, and
+//! leaves the matching counter permanently 0 — which is exactly what happened
+//! to `DCAS_UNSUPPORTED_REASON` (angr-fs8kb.59).
 
 use crate::callbacks::RunErrorKind;
 use crate::memory::MemoryError;
