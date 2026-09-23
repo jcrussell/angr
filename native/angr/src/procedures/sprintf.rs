@@ -1,8 +1,23 @@
 //! Native sprintf/snprintf implementations.
 //!
-//! Handles %s, %d, %i, %u, %x, %X, %o, %c, %p, %% format specifiers
-//! with width, zero-padding, and left-alignment flags. Falls back to
-//! Python for symbolic format strings or arguments.
+//! Formats %s, %d, %i, %u, %x, %X, %o, %c and %% natively, with an
+//! explicit width and the bare '0' (zero-pad) flag.
+//!
+//! Everything else defers to Python — not because it is unimplemented,
+//! but because native output would diverge from `format_parser.py`,
+//! which is the engine this mirrors (see `format-string-parity-defers`):
+//!
+//! * `%p` — Python emits bare hex and sign-folds bit-63-set pointers
+//!   (angr-3i88a).
+//! * the `-`, `+`, ' ' and `#` conversion flags — Python's `_match_spec`
+//!   has no arm for them, so it emits a literal '%' and consumes no
+//!   variadic arg (angr-1yge9.2). The downstream `left_align` /
+//!   `plus_sign` / `space_sign` / `hash_flag` handling below is retained
+//!   but unreachable while that guard stands.
+//! * `*` dynamic width; `.N` digit precision; `.*` precision that is
+//!   not the first thing after the '%' (angr-6cp06.8).
+//! * `%n`, the float specifiers, and any unknown specifier.
+//! * a symbolic format string or argument.
 
 use super::arch_word;
 use super::format_common::{parse_length_modifier, parse_width_digits, read_format_string};
