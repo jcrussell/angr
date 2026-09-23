@@ -255,9 +255,10 @@ impl SymbolicMemory {
 
         // Merge symbolic objects from other that aren't page-based
         for (&addr, other_obj) in &other.symbolic_objects {
+            let width = other_obj.width();
+            let byte_count = u64::from(width / 8);
             if let std::collections::hash_map::Entry::Vacant(e) = self.symbolic_objects.entry(addr)
             {
-                let width = other_obj.width();
                 e.insert(other_obj.clone());
                 // `symbolic_spans` is the *reverse* index: an object wider than
                 // one byte owns an entry per covered byte, not just its base
@@ -269,11 +270,62 @@ impl SymbolicMemory {
                 // adopt-the-bitmap-forget-the-sidecar shape as angr-c7xno.50,
                 // one map over (angr-91vj9.3).
                 self.symbolic_spans.insert(addr, (addr, width));
-                for i in 1..u64::from(width / 8) {
+                for i in 1..byte_count {
                     // overflow-ok: `Address` arithmetic is wrapping (see above).
                     self.symbolic_spans.insert(addr + i, (addr, width));
                 }
                 merged = true;
+                continue;
+            }
+            // Base key Occupied, so the whole-object adopt above is off the
+            // table — but "occupied" does not imply "resolvable". An object
+            // spanning a page boundary whose *base* page is both-present and
+            // whose *tail* page is other-only hits exactly that: the
+            // both-present byte walk replaced the base key with a fresh 8-bit
+            // ITE, while the tail page arrived through the adopt-wholesale arm,
+            // which copies `is_symbolic` (and `multi_objects`) but not
+            // `symbolic_objects`/`symbolic_spans`. The tail bytes end up
+            // bitmap-symbolic with nothing resolving them, and a load of the
+            // wide value fails outright (angr-fs8kb.68).
+            //
+            // Repair per byte rather than by re-pointing `symbolic_spans` at
+            // `addr`: the occupying base entry is 8 bits wide, so a span
+            // claiming `width` there fails `symbolic_byte_lane`'s width check.
+            // An 8-bit self-referential entry per byte is the same shape the
+            // both-present walk installs for its own bytes.
+            for i in 1..byte_count {
+                // overflow-ok: `Address` arithmetic is wrapping (see above).
+                let byte_addr = addr + i;
+                // The page bitmap is authoritative (`invariant-page-bitmap-authoritative`):
+                // only a byte `self` actually marks symbolic wants a sidecar
+                // entry, and only one `self` cannot already resolve.
+                // A Multi byte is deliberately excluded: `Multi` supersedes
+                // `Symbolic` (`invariant-multi-vs-symbolic-cell-states`), so
+                // installing a `symbolic_objects` entry beside a live payload
+                // would manufacture the inconsistent fourth cell state.
+                if !self.bytes_all_marked_symbolic(byte_addr, 1)
+                    || self.multi_objects.contains_key(&byte_addr)
+                {
+                    continue;
+                }
+                if Self::symbolic_byte_lane(
+                    &self.symbolic_objects,
+                    &self.symbolic_spans,
+                    byte_addr,
+                    self.endness,
+                )
+                .is_some()
+                {
+                    continue;
+                }
+                let Ok(lane_offset) = u32::try_from(i) else {
+                    continue;
+                };
+                if let Some(lane) = Self::extract_byte_lane(other_obj, lane_offset, other.endness) {
+                    self.symbolic_objects.insert(byte_addr, lane);
+                    self.symbolic_spans.insert(byte_addr, (byte_addr, 8));
+                    merged = true;
+                }
             }
         }
 

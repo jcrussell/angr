@@ -284,3 +284,57 @@ fn wide_symbolic_divergence_resolves_under_a_concrete_merge_cond() {
         "m==1 folds every lane to other's byte"
     );
 }
+
+/// angr-fs8kb.68 regression: a wide symbolic object straddling a page boundary
+/// where the **base** page is both-present and the **tail** page is other-only.
+///
+/// Neither existing case covers it. The both-present per-byte walk rewrites the
+/// object's base key with a fresh 8-bit ITE, which makes the adopt-wholesale
+/// backfill's `Entry::Vacant` test fail — so the tail bytes arrive
+/// bitmap-symbolic (the page clone carries `is_symbolic`) with no
+/// `symbolic_objects`/`symbolic_spans` entry resolving them, and the load fails
+/// outright instead of returning the merged value.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn split_page_object_backfills_tail_bytes_when_base_key_is_occupied() {
+    let ctx = SymContext::new();
+    // 0x8ffe..0x9002: two bytes on page 0x8, two on page 0x9.
+    let base = Address(0x8ffe);
+
+    let mut b = SymbolicMemory::new(Endness::Little);
+    b.map(0x8000u64, 0x2000, Permission::RWX);
+    b.store_concrete(base, RustBV::symbolic(&ctx, "straddle", 32))
+        .expect("wide symbolic store across the page boundary");
+
+    // `self` has only the base page, so the tail page takes the
+    // adopt-wholesale arm while the base page takes the byte walk.
+    let mut a = SymbolicMemory::new(Endness::Little);
+    a.map(0x8000u64, 0x1000, Permission::RWX);
+    a.store_concrete(base, RustBV::concrete(0xef, 8))
+        .expect("self's concrete write on the base page");
+
+    a.merge(&b, &RustBV::symbolic(&ctx, "m", 1), &ctx);
+
+    for i in 2..4u64 {
+        let byte = base + i;
+        assert!(
+            a.bytes_all_marked_symbolic(byte, 1),
+            "tail byte {i} is bitmap-symbolic via the adopted page"
+        );
+        assert!(
+            a.symbolic_spans.contains_key(&byte),
+            "tail byte {i} must be span-indexed, not left unresolvable"
+        );
+        assert!(
+            a.get_symbolic_object(byte).is_some(),
+            "tail byte {i} must resolve to a symbolic lane"
+        );
+    }
+
+    // The end-to-end symptom: a load of the tail bytes used to fail rather
+    // than return the merged value.
+    let loaded = a
+        .load(RustBV::concrete(0x9000, 64), 2, &ctx)
+        .expect("tail-page load of the straddling object");
+    assert!(loaded.is_symbolic(), "merged tail bytes stay symbolic");
+}
