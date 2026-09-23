@@ -4,7 +4,7 @@
 // child of `mprotect` so `use super::*` reaches the module's private items.
 
 use super::*;
-use crate::memory::Permission;
+use crate::memory::{PAGE_SIZE, Permission};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
@@ -277,6 +277,89 @@ fn oversized_length_is_refused_even_when_the_whole_range_is_mapped() {
             .page_permissions((0x1000 + MAX_MPROTECT_RANGE) >> 12),
         Some(Permission::RW),
     );
+}
+
+/// angr-fs8kb.49: a range touching the *final* page of the address space.
+///
+/// The old hand-rolled `page_addr += PAGE_SIZE` walks could never reach
+/// `page_end` (which saturates to the non-page-aligned `u64::MAX`) and so
+/// always overflowed on the step after the top page: a silent wrap to 0 in
+/// `[profile.release]`, a panic under `release-checked`/debug. Both walks now
+/// go through `PageIndex::range_covering`, which iterates page numbers.
+#[test]
+fn range_touching_the_final_page_succeeds() {
+    let h = NativeMprotectSyscall;
+    let mut state = RustSimState::new("amd64").expect("amd64 state");
+    let base = u64::MAX - 2 * PAGE_SIZE + 1; // 0xFFFF_FFFF_FFFF_E000
+    state.map_memory(base, 2 * PAGE_SIZE, Permission::RW);
+
+    let args = vec![
+        RustBV::concrete(u128::from(base), 64),
+        RustBV::concrete(0x1800, 64), // spills into the last page
+        RustBV::concrete(0x1, 64),    // PROT_READ
+    ];
+    let outcome = h.call(&mut state, &args).expect("ok");
+    match outcome {
+        SyscallOutcome::Continue { ret } => assert_eq!(ret, 0),
+        _ => panic!("expected Continue"),
+    }
+    for pn in [base >> 12, u64::MAX >> 12] {
+        assert_eq!(
+            state.memory().page_permissions(pn),
+            Some(Permission::R),
+            "page_num {pn:#x}",
+        );
+    }
+}
+
+/// A region ending *exactly* at 2^64 is legal: `do_mmap`'s MAP_FIXED guard
+/// accepts it, so refusing it here would make a fully mapped region
+/// un-mprotectable. Only the last byte has to be representable.
+#[test]
+fn range_ending_exactly_at_two_to_the_64_succeeds() {
+    let h = NativeMprotectSyscall;
+    let mut state = RustSimState::new("amd64").expect("amd64 state");
+    let base = u64::MAX - 2 * PAGE_SIZE + 1;
+    state.map_memory(base, 2 * PAGE_SIZE, Permission::RW);
+
+    let args = vec![
+        RustBV::concrete(u128::from(base), 64),
+        RustBV::concrete(u128::from(2 * PAGE_SIZE), 64),
+        RustBV::concrete(0x5, 64), // PROT_READ | PROT_EXEC
+    ];
+    let outcome = h.call(&mut state, &args).expect("ok");
+    match outcome {
+        SyscallOutcome::Continue { ret } => assert_eq!(ret, 0),
+        _ => panic!("expected Continue"),
+    }
+    assert_eq!(
+        state.memory().page_permissions(u64::MAX >> 12),
+        Some(Permission::RX),
+    );
+}
+
+/// The unmapped-tail variant of the same shape: the walk must report -1 for
+/// the genuinely unmapped top page rather than wrapping to 0 and resuming its
+/// scan from low memory.
+#[test]
+fn unmapped_final_page_returns_neg_one_without_wrapping() {
+    let h = NativeMprotectSyscall;
+    let mut state = RustSimState::new("amd64").expect("amd64 state");
+    let base = u64::MAX - 2 * PAGE_SIZE + 1;
+    state.map_memory(base, PAGE_SIZE, Permission::RW); // only the penultimate page
+
+    let args = vec![
+        RustBV::concrete(u128::from(base), 64),
+        RustBV::concrete(u128::from(2 * PAGE_SIZE), 64),
+        RustBV::concrete(0x1, 64),
+    ];
+    let outcome = h.call(&mut state, &args).expect("ok");
+    match outcome {
+        SyscallOutcome::Continue { ret } => assert_eq!(ret, u64::MAX),
+        _ => panic!("expected Continue"),
+    }
+    // Refused before any update: the mapped page keeps its original perms.
+    assert_eq!(state.memory().page_permissions(base >> 12), Some(Permission::RW));
 }
 
 #[test]

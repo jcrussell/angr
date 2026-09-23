@@ -5,7 +5,8 @@
 //!      args fall back to the Python path (which itself raises
 //!      `SimValueError`, matching prior behavior).
 //!   2. If `addr & 0xFFF != 0`, return -1 (alignment).
-//!   3. If any page in `[addr, page_end)` is unmapped, return -1.
+//!   3. If any page touched by `[addr, addr + length)` is unmapped,
+//!      return -1.
 //!   4. Otherwise set permissions on every page to `prot & 7` and
 //!      return 0.
 //!
@@ -21,7 +22,7 @@
 //! `read=0x4, write=0x2, execute=0x1` (reversed). We translate the
 //! Linux bits explicitly here rather than going through `from_bits`.
 
-use super::page::{PAGE_MASK, PAGE_SIZE, PageIndex, linux_prot_to_permission};
+use super::page::{PAGE_MASK, PageIndex, linux_prot_to_permission};
 use super::require_syscall_args;
 use super::{
     BoundedArg, MAX_MAP_SIZE as MAX_MPROTECT_RANGE, NativeSyscall, SyscallError, SyscallOutcome,
@@ -51,8 +52,8 @@ impl NativeSyscall for NativeMprotectSyscall {
         // Host-safety cap, the same `MAX_MAP_SIZE` bound `mmap` and `brk`
         // already apply to their guest-controlled length (angr-c7xno.81).
         //
-        // Both loops below step one page at a time over the guest-named range.
-        // The mapped-range check does bail at the first hole, so the walk is
+        // Both page walks below visit one page at a time over the guest-named
+        // range. The mapped-range check does bail at the first hole, so the walk is
         // bounded by the *contiguously mapped* prefix rather than by `length`
         // itself — the round-3 finding's "O(requested pages)" framing is
         // stronger than what the code does. The cap still earns its place:
@@ -82,30 +83,40 @@ impl NativeSyscall for NativeMprotectSyscall {
             return Ok(SyscallOutcome::Continue { ret: 0 });
         }
 
-        // page_end matches Python: ((addr + length - 1) & ~0xFFF) + 0x1000
-        // i.e. one past the last page touched. Use checked arithmetic to
-        // avoid overflowing u64 on absurd inputs.
-        let last_byte = match addr.checked_add(length).and_then(|v| v.checked_sub(1)) {
-            Some(v) => v,
-            None => return Ok(SyscallOutcome::Continue { ret: u64::MAX }),
-        };
-        let page_end = (last_byte & !PAGE_MASK).saturating_add(PAGE_SIZE);
+        // A range whose *last byte* is unrepresentable is refused outright,
+        // mirroring `do_mmap`'s MAP_FIXED guard exactly: it is the last byte
+        // that must fit, so a region ending precisely at 2^64 (e.g. one
+        // covering the final page) stays legal here instead of being rejected
+        // by `mprotect` after `mmap` accepted it.
+        // overflow-ok: the length == 0 fast path returned above, so length >= 1.
+        if addr.checked_add(length - 1).is_none() {
+            return Ok(SyscallOutcome::Continue { ret: u64::MAX });
+        }
 
+        // Both walks below go through `PageIndex::range_covering`, the same
+        // helper `mmap.rs::range_collides` uses. It is inclusive of the page
+        // holding the last byte, matching Python's
+        // `((addr + length - 1) & ~0xFFF) + 0x1000` end calculation, and it
+        // iterates page *numbers* (all under 2^52) rather than stepping a byte
+        // address by `PAGE_SIZE`. That is what makes the top of the address
+        // space safe: the old `page_addr += PAGE_SIZE` loops wrapped to 0 on
+        // the step after the final page — silently, since `[profile.release]`
+        // sets no overflow-checks — and resumed scanning from low memory,
+        // turning a legitimate mprotect of the last page into a -1 (or, with
+        // low memory densely mapped, a ~2^52-iteration hang). angr-fs8kb.49.
         let memory = state.memory();
-        let mut page_addr = addr;
-        while page_addr < page_end {
-            let page_num = PageIndex::of(page_addr).get();
-            if memory.page_permissions(page_num).is_none() {
-                return Ok(SyscallOutcome::Continue { ret: u64::MAX });
-            }
-            page_addr += PAGE_SIZE;
+        if PageIndex::range_covering(addr, length)
+            // `.get()` is the one boundary crossing: `page_permissions` is part
+            // of the raw-`u64` page API inside `memory/`.
+            .any(|page| memory.page_permissions(page.get()).is_none())
+        {
+            return Ok(SyscallOutcome::Continue { ret: u64::MAX });
         }
 
         let new_perm = linux_prot_to_permission(prot & 7);
         let memory = state.memory_mut();
-        let mut page_addr = addr;
-        while page_addr < page_end {
-            let page_num = PageIndex::of(page_addr).get();
+        for page in PageIndex::range_covering(addr, length) {
+            let page_num = page.get();
             // angr-sqfj8.109: the loop above confirmed every page is mapped, so
             // this cannot fail today. Guard it in *every* profile anyway: a
             // debug_assert! here compiled out in release, where a failed update
@@ -115,6 +126,7 @@ impl NativeSyscall for NativeMprotectSyscall {
             // (ENOMEM) for a range with a hole — partial application before the
             // failure matches Linux too.
             if !memory.set_page_permissions(page_num, new_perm) {
+                let page_addr = page.base_addr();
                 log::warn!(
                     "mprotect: page {page_addr:#x} unmapped between the \
                      mapped-range check and the permission update; \
@@ -122,7 +134,6 @@ impl NativeSyscall for NativeMprotectSyscall {
                 );
                 return Ok(SyscallOutcome::Continue { ret: u64::MAX });
             }
-            page_addr += PAGE_SIZE;
         }
 
         Ok(SyscallOutcome::Continue { ret: 0 })
