@@ -29,12 +29,22 @@ This closes the loop the same way ``tools/audit_rounding_mode_threading.py``
 and ``tools/audit_sp_default_zero.py`` do: a heuristic detector plus a
 checked-in baseline of already-triaged sites. Only *new* sites fail.
 
-Detection heuristic -- in any non-test ``.rs`` file under
-``native/angr/src/{memory,interpreter,symbolic,state,syscalls,procedures,exploration}/``,
-a bare ``+`` or ``-`` (not ``+=``/``-=``/``->``, not unary) whose left or
-right operand is a simple identifier / dotted field access (or, on the
-right, a numeric literal) whose last ``_``-separated component is one of
-:data:`NAME_COMPONENTS`.
+Two detectors, over any non-test ``.rs`` file under
+``native/angr/src/{memory,interpreter,symbolic,state,syscalls,procedures,exploration}/``:
+
+1. :data:`BINOP_RE` -- a bare ``+`` or ``-`` (not ``+=``/``-=``/``->``, not
+   unary) whose left or right operand is a simple identifier / dotted field
+   access (or, on the right, a numeric literal) whose last ``_``-separated
+   component is one of :data:`NAME_COMPONENTS`.
+2. :data:`COMPOUND_RE` -- a compound assignment ``lhs += rhs`` / ``lhs -= rhs``
+   whose *destination* name ends in one of :data:`COMPOUND_NAME_COMPONENTS`
+   (:data:`NAME_COMPONENTS` minus ``count``). Detector 1's ``(?![=>])``
+   lookahead steps over ``+=``/``-=`` by construction, so before this existed
+   a stepped address such as ``page_addr += PAGE_SIZE`` was invisible
+   *project-wide*, not merely untriaged -- which is how two page-walk
+   wraparounds (bd angr-fs8kb.49, angr-fs8kb.51) landed in ``syscalls/``
+   while that directory was fully scanned with an empty baseline
+   (bd angr-fs8kb.52).
 
 A site is exempt when the marker :data:`EXEMPT_RE` -- ``overflow-ok:``
 followed by a rationale -- appears within the scan window: the site's own
@@ -122,10 +132,37 @@ _NUM = r"\d[\w]*"
 _PAREN = r"(?<![A-Za-z0-9_])\([^()\n]*\)"
 _OPERAND = rf"(?:{_PAREN}|{_TOKEN}|{_NUM})"
 
-# A bare `+`/`-` between two operands. The lookahead after the operator
-# excludes `+=`/`-=`/`->`; there is no lhs-adjacency requirement for unary
-# minus since OPERAND must immediately precede the operator.
+# Detector 1: a bare `+`/`-` between two operands. The lookahead after the
+# operator excludes `+=`/`-=`/`->`; there is no lhs-adjacency requirement for
+# unary minus since OPERAND must immediately precede the operator.
 BINOP_RE = re.compile(rf"(?P<lhs>{_OPERAND})[ \t]*(?P<op>[+-])(?![=>])[ \t]*(?P<rhs>{_OPERAND})")
+
+# Detector 2: compound assignment, `addr += delta` / `addr -= delta`. Detector
+# 1's `(?![=>])` lookahead deliberately steps over these, which made a
+# byte-stepping page walk (`page_addr += PAGE_SIZE`) structurally invisible
+# *project-wide* rather than merely untriaged -- the exact mechanism that let
+# the mprotect.rs and brk.rs page-walk wraparounds (bd angr-fs8kb.49/.51)
+# through a fully-scanned, zero-baseline directory. Rust has no
+# `wrapping_add_assign`, so the safe spelling is a plain assignment whose RHS
+# is a method call (`addr = addr.wrapping_add(delta)`), which neither detector
+# matches.
+COMPOUND_RE = re.compile(rf"(?P<lhs>{_TOKEN})[ \t]*(?P<op>[+-])=[ \t]*(?P<rhs>{_OPERAND})")
+
+# Detector 2 keys on the *destination* name only, and on its last
+# `_`-separated component rather than any component. In `a += b` the LHS is
+# both an operand and the accumulator: if it holds an address or offset the
+# accumulation wraps it, whereas `total += buf_len` wraps a total, not an
+# address. The trailing component is what the variable *holds*
+# (`page_addr` -> addr, `chunk_size` -> size), so keying on it alone drops
+# incidental matches like `z3_ptr_fallback_count`.
+#
+# `count` is excluded outright: `self.stats.<something>_count += 1` is by far
+# the most common compound assignment in this codebase (60+ sites), and a
+# statistics counter that wraps at 2^64 is a cosmetic-stat bug, not the
+# wrong-answer-instead-of-crash risk this gate exists for. Detector 1 still
+# covers `count`-named operands in bare `+`/`-` expressions, where they can
+# feed a range check.
+COMPOUND_NAME_COMPONENTS = NAME_COMPONENTS - {"count"}
 
 
 def _iter_source_files() -> list[Path]:
@@ -160,14 +197,33 @@ def _normalize(text: str) -> str:
     return re.sub(r"\s+", "", text)
 
 
+def _is_accumulator_shaped(operand: str) -> bool:
+    """Detector 2's destination test: last name component, minus ``count``."""
+    name = _core_name(operand)
+    if name is None:
+        return False
+    return name.rsplit("_", 1)[-1].lower() in COMPOUND_NAME_COMPONENTS
+
+
 def scan_text(rel: str, raw: str) -> list[tuple[str, int, str, str, bool]]:
-    """Return (rel, lineno, fn_name, shape, exempt) per address-shaped bare +/- site."""
+    """Return (rel, lineno, fn_name, shape, exempt) per address-shaped +/- site.
+
+    Runs both detectors -- bare binary ``+``/``-`` (:data:`BINOP_RE`) and
+    compound assignment (:data:`COMPOUND_RE`) -- and returns their union in
+    source order.
+    """
     hits: list[tuple[str, int, str, str, bool]] = []
     src = blank_noise(raw)
     raw_lines = raw.splitlines()
 
-    for m in BINOP_RE.finditer(src):
-        if not (_is_addr_shaped(m.group("lhs")) or _is_addr_shaped(m.group("rhs"))):
+    matches = [(m, False) for m in BINOP_RE.finditer(src)]
+    matches += [(m, True) for m in COMPOUND_RE.finditer(src)]
+
+    for m, compound in sorted(matches, key=lambda pair: pair[0].start()):
+        if compound:
+            if not _is_accumulator_shaped(m.group("lhs")):
+                continue
+        elif not (_is_addr_shaped(m.group("lhs")) or _is_addr_shaped(m.group("rhs"))):
             continue
         lineno = src.count("\n", 0, m.start()) + 1
         window = raw_lines[max(0, lineno - 3) : lineno]
@@ -188,9 +244,12 @@ def scan() -> list[tuple[str, int, str, str, bool]]:
 # Synthetic source for --self-test: a wrapping control, an unrelated-name
 # control (bare + but neither operand is address-shaped), a real gap, a
 # documented-exempt gap, a parenthesized-operand gap (the `do_mmap` align-up
-# shape of angr-5mnx3.53, invisible before `_PAREN` joined `_OPERAND`), and
-# three must-NOT-fire controls: compound assignment, `->`, and a call whose
-# *arguments* are address-shaped but whose result is not described by them.
+# shape of angr-5mnx3.53, invisible before `_PAREN` joined `_OPERAND`), a
+# compound-assignment gap and its documented-exempt twin (the page-walk shape
+# of angr-fs8kb.52), and four must-NOT-fire controls: `->`, a call whose
+# *arguments* are address-shaped but whose result is not described by them, a
+# statistics counter incremented with `+=`, and a `+=` whose address-shaped
+# name is on the *right* (the accumulator is a plain total).
 _SELF_TEST_SRC = """
 impl Thing {
     fn safe_wrapping(&self, addr: u64, offset: u64) -> u64 {
@@ -212,8 +271,18 @@ impl Thing {
     fn call_result_add(&self, addr: u64) -> u64 {
         self.page_of(addr) + 1
     }
-    fn compound_assign(&mut self, addr: u64) {
-        addr += 1;
+    fn compound_page_walk(&mut self, mut page_addr: u64) {
+        page_addr += PAGE_SIZE;
+    }
+    fn compound_exempt(&mut self, mut offset: u64) {
+        // overflow-ok: offset is bounded by the loop condition above.
+        offset += 1;
+    }
+    fn compound_stat_counter(&mut self) {
+        self.stats.native_lift_count += 1;
+    }
+    fn compound_total(&mut self, buf: &[u8]) {
+        self.total += buf.len();
     }
     fn arrow_return(&self) -> u64 {
         0
@@ -225,6 +294,8 @@ _SELF_TEST_EXPECTED = [
     ("raw_addr_add", "addr+offset", False),
     ("raw_size_sub", "size-1", True),
     ("paren_align_up", "(new_base&!PAGE_MASK)+PAGE_SIZE", False),
+    ("compound_page_walk", "page_addr+=PAGE_SIZE", False),
+    ("compound_exempt", "offset+=1", True),
 ]
 
 
@@ -245,7 +316,7 @@ def self_test() -> int:
         for row in got:
             print(f"    {row}")
         return 1
-    print(f"self-test OK: {len(got)} sites classified as expected (2 gaps, 1 documented-exempt, 5 clean controls)")
+    print(f"self-test OK: {len(got)} sites classified as expected (3 gaps, 2 documented-exempt, 6 clean controls)")
     return 0
 
 

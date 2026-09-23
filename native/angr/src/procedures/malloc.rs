@@ -64,11 +64,13 @@ crate::declare_proc! {
             while offset + 8 <= total {
                 let bv = RustBV::concrete(0, 64);
                 state.memory_store(addr.wrapping_add(offset), bv)?;
+                // overflow-ok: the loop condition keeps `offset + 8 <= total`.
                 offset += 8;
             }
             while offset < total {
                 let bv = RustBV::concrete(0, 8);
                 state.memory_store(addr.wrapping_add(offset), bv)?;
+                // overflow-ok: the loop condition keeps `offset < total`.
                 offset += 1;
             }
         }

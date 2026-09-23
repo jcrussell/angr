@@ -329,6 +329,7 @@ crate::declare_proc! {
             // for f64::from_str (it does not accept leading whitespace).
             let mut start = 0;
             while start < bytes.len() && is_c_space(bytes[start]) {
+                // overflow-ok: the loop condition keeps `start < bytes.len()`.
                 start += 1;
             }
             let slice = &bytes[start..prefix_end];

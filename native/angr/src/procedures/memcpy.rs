@@ -176,6 +176,7 @@ pub(super) fn copy_forward(
     while offset + 8 <= size {
         let value = state.memory_load(src.wrapping_add(offset as u64), 8)?;
         state.memory_store(dst.wrapping_add(offset as u64), value)?;
+        // overflow-ok: the loop condition keeps `offset + 8 <= size`.
         offset += 8;
     }
 
@@ -183,6 +184,7 @@ pub(super) fn copy_forward(
     while offset < size {
         let value = state.memory_load(src.wrapping_add(offset as u64), 1)?;
         state.memory_store(dst.wrapping_add(offset as u64), value)?;
+        // overflow-ok: the loop condition keeps `offset < size`.
         offset += 1;
     }
     Ok(())

@@ -87,6 +87,8 @@ where
         // under `overflow-checks` — and `panic = "abort"` makes that SIGABRT the
         // whole Python process — while release wraps anyway (angr-xloth.2).
         store(addr.wrapping_add(offset as u64), bv)?;
+        // overflow-ok: `chunk_size <= data.len() - offset`, so the step lands
+        // at `data.len()` at the very most.
         offset += chunk_size;
     }
     Ok(())
@@ -162,6 +164,8 @@ where
         // Wraps mod 2^64 for the same reason the store side does — see
         // `store_concrete_bytes_chunked`.
         out.extend_from_slice(&load(addr.wrapping_add(offset as u64), chunk_size)?);
+        // overflow-ok: `chunk_size <= size - offset`, so the step lands at
+        // `size` at the very most.
         offset += chunk_size;
     }
     Ok(out)

@@ -231,8 +231,17 @@ runtime net, not a static one.
 
 `tools/audit_overflow_wraparound.py` gates the shape in CI (`rust_check`)
 against `tools/overflow_baseline.txt`, same baseline + `--self-test`-first
-pattern as the two gates above. It flags a bare `+`/`-` whose operand name is
-address/size/offset/count-shaped, in
+pattern as the two gates above. Two detectors: (1) a bare `+`/`-` whose operand
+name is address/size/offset/count-shaped, and (2) since bd `angr-fs8kb.52`, a
+compound assignment `+=`/`-=` whose **destination** name ends in one of those
+components except `count` — detector 1's `(?![=>])` lookahead steps over `+=`
+by construction, so a stepped address like `page_addr += PAGE_SIZE` was
+invisible *project-wide* rather than merely untriaged, which is how two
+page-walk wraparounds (`angr-fs8kb.49`, `.51`) landed in a fully-scanned,
+empty-baseline directory. Detector 2 keys on the destination only (in `a += b`
+the LHS is the accumulator, so `total += buf_len` wraps a total, not an
+address) and drops `count` because `self.stats.*_count += 1` is 60+ sites of
+cosmetic-stat noise. Both run over
 `native/angr/src/{memory,interpreter,symbolic,state,syscalls,procedures,exploration}/`
 (`exploration/` added in bd `angr-goev1` — it is where the SP/return-address
 arithmetic family kept recurring, and the `AddrOrSymbolic` newtype only closed

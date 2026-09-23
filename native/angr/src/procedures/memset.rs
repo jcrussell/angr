@@ -102,11 +102,13 @@ crate::declare_proc! {
             // length capped well below u64::MAX.
             while offset + 8 <= size {
                 state.memory_store(dest.wrapping_add(offset), chunk_bv.clone())?;
+                // overflow-ok: the loop condition keeps `offset + 8 <= size`.
                 offset += 8;
             }
             // Handle remaining bytes
             while offset < size {
                 state.memory_store(dest.wrapping_add(offset), byte_bv.clone())?;
+                // overflow-ok: the loop condition keeps `offset < size`.
                 offset += 1;
             }
 
