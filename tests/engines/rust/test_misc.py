@@ -1741,6 +1741,102 @@ class TestSnapshotRoundTrip:
         resumed._explore_find_addrs = {fauxware_project.entry}
         assert resumed._maybe_phase2_eager_retry(num_find=1) is False
 
+    def test_load_snapshot_clears_python_predicate_shadow_maps(self, fauxware_project, tmp_path):
+        """angr-fs8kb.90: a restored state must have its callable find/avoid
+        predicate evaluated again, even when its id matched before the load.
+
+        Python half of angr-fs8kb.89. ``StashManager::from_snapshot`` rebuilds
+        ``state_index`` from each state's own serialized ``state_id``, so a
+        restore into a live manager resurrects the *original* ids -- the one
+        case the ``invariant-state-id-never-reused`` guarantee does not cover.
+        ``_evaluate_predicates_on_active`` skips (``continue``) any id in
+        ``_predicate_matched_ids``, so pre-fix the restored frontier was passed
+        over wholesale and the find was silently lost.
+
+        Behavioural construction, no white-box seeding of the shadow maps: dump
+        the frontier, match it with an address predicate (populating the skip
+        set and moving the state to ``found``), then load the *pre-match*
+        snapshot back into the same manager and re-run the sweep. The state is
+        active again under its original id, so the second sweep must re-find it.
+        """
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        mgr.step(n=10)
+        assert mgr._rust_mgr.get_state_ids("active"), "pre-condition: the stepped manager must have an active frontier"
+
+        snapshot_path = tmp_path / "predicate.snap"
+        mgr.dump_snapshot(str(snapshot_path))
+
+        # Match on whichever address the sweep hands us first. The predicate
+        # sees the exported/proxy view of a state, whose ``addr`` need not equal
+        # the Rust ``get_state_pc_by_id`` of the same id, so the target is
+        # discovered rather than assumed.
+        target_addrs: list[int] = []
+
+        def find_pred(s):
+            if not target_addrs:
+                target_addrs.append(s.addr)
+            return s.addr in target_addrs
+
+        mgr._find_predicate = find_pred
+        mgr._avoid_predicate = None
+        mgr._evaluate_predicates_on_active()
+
+        matched = set(mgr._rust_mgr.get_state_ids("found"))
+        assert matched, "pre-condition: the predicate must move at least one state to found"
+        assert mgr._predicate_matched_ids == matched, (
+            f"pre-condition: the match must bank a skip token per moved state; "
+            f"tokens={mgr._predicate_matched_ids} found={matched}"
+        )
+
+        # Restore the pre-match world: the matched states are active again,
+        # under their original ids.
+        mgr.load_snapshot(str(snapshot_path))
+        assert matched <= set(mgr._rust_mgr.get_state_ids("active")), (
+            "pre-condition: the restore must resurrect the original state ids as active"
+        )
+        assert not mgr._predicate_matched_ids, "load_snapshot must drop the pre-restore skip tokens"
+        assert not mgr._predicate_eval_cache, "load_snapshot must drop the pre-restore change-detection memo"
+        assert not mgr._predicate_found, "load_snapshot must drop the pre-restore predicate-found list"
+
+        mgr._evaluate_predicates_on_active()
+        assert matched <= set(mgr._rust_mgr.get_state_ids("found")), (
+            f"restored states {sorted(matched)} must have their find predicate re-evaluated "
+            f"after load_snapshot; found={sorted(mgr._rust_mgr.get_state_ids('found'))}"
+        )
+
+    def test_load_snapshot_clears_python_lineage_and_metadata_maps(self, fauxware_project, tmp_path):
+        """angr-fs8kb.90: the remaining id-keyed shadow maps must not survive a
+        restore either.
+
+        None of ``_state_roots`` / ``_py_state_options`` / ``_py_state_globals``
+        is captured by the snapshot, so a surviving entry under a resurrected id
+        hands a *different* state's lineage root or user-visible
+        options/globals to the restored state. Clearing is lossless: every
+        reader falls back to Rust's ``get_state_root`` and re-seeds lazily.
+        """
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        mgr.step(n=5)
+
+        snapshot_path = tmp_path / "lineage.snap"
+        mgr.dump_snapshot(str(snapshot_path))
+
+        sid = sorted(mgr._rust_mgr.get_state_ids("active"))[0]
+        mgr.get_state_options_py(sid).add("SENTINEL_OPTION")
+        mgr.get_state_globals_py(sid)["sentinel"] = 1
+        assert mgr._state_roots, "pre-condition: the seeded run must have recorded a lineage root"
+
+        mgr.load_snapshot(str(snapshot_path))
+
+        assert not mgr._state_roots, "load_snapshot must drop the pre-restore lineage map"
+        assert not mgr._py_state_options, "load_snapshot must drop the pre-restore options stand-ins"
+        assert not mgr._py_state_globals, "load_snapshot must drop the pre-restore globals stand-ins"
+        # Lazy re-seed still works, and the restored state does not inherit the
+        # pre-load sentinel.
+        assert "SENTINEL_OPTION" not in mgr.get_state_options_py(sid)
+        assert "sentinel" not in mgr.get_state_globals_py(sid)
+
     def test_load_from_disk_constructs_fresh_manager_without_placeholder(self, fauxware_project, tmp_path):
         """angr-9o4n: the v1.0 classmethod constructs a fresh manager
         without requiring the caller to pre-build an entry state purely

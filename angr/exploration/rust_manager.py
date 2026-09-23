@@ -4215,9 +4215,7 @@ class RustExplorationManager(
             ptr_size = angr_state.arch.bytes
             entries: list[tuple[bytes, bytes]] = []
             for i in range(self._MAX_ENVIRON_ENTRIES):
-                slot = angr_state.memory.load(
-                    envp + i * ptr_size, ptr_size, endness=angr_state.arch.memory_endness
-                )
+                slot = angr_state.memory.load(envp + i * ptr_size, ptr_size, endness=angr_state.arch.memory_endness)
                 if slot.symbolic:
                     return
                 ptr = angr_state.solver.eval(slot)
@@ -7128,6 +7126,7 @@ class RustExplorationManager(
         # preserves them), so external state-export caches indexed by id
         # must be flushed.
         self._invalidate_state_export_cache()
+        self._reset_python_shadow_maps_for_restore()
         # angr-op0dn.13.12: the restored frontier — not the state this manager
         # was constructed with — is now the exploration's root. The angr-027h
         # phase-2 eager retry re-seeds `_initial_seed_states`, i.e. the caller's
@@ -7139,6 +7138,56 @@ class RustExplorationManager(
         # its own states, so phase 2 is simply disabled for a resumed manager.
         self._initial_seed_states = None
         self._phase2_retried = True
+
+    def _reset_python_shadow_maps_for_restore(self) -> None:
+        """Drop the id-keyed Python shadow maps across a snapshot restore.
+
+        Python half of angr-fs8kb.89 (which cleared the Rust
+        ``ConstraintTracker``'s three per-run sets in ``load_snapshot_bytes``).
+
+        ``StashManager::from_snapshot`` rebuilds ``state_index`` from each
+        state's own serialized ``state_id``, so a restore into a *live* manager
+        resurrects the original ids — the one case the
+        ``invariant-state-id-never-reused`` guarantee does not cover. Every
+        structure below is keyed by that id and holds a *verdict* or a *lineage*
+        computed against the pre-load world, neither of which
+        :meth:`_invalidate_state_export_cache` can repair (it only unsets
+        ``scratch.rust_fully_synced``, which re-reads a mirror's contents from
+        Rust — the right treatment for ``_state_cache``, which holds mirrorable
+        state *contents*, and the wrong one for these).
+
+        A restore is a whole-world replacement, not a rewind within one
+        exploration, so the recorded decision for all six is *clear*:
+
+        * ``_predicate_matched_ids`` — :meth:`_evaluate_predicates_on_active`
+          ``continue``\\ s outright on a member, so a restored state whose id
+          matched pre-dump would never have its find/avoid predicate evaluated
+          again: a silently lost ``found``. Direct mirror of .89's
+          ``skip_find_predicate_states`` / ``skip_avoid_predicate_states``.
+        * ``_predicate_found`` — written in the same loop; it is *added* to the
+          reported found set (see :meth:`found_states`), so pre-load matches
+          would surface as finds of the resumed exploration.
+        * ``_predicate_eval_cache`` — ``state_id -> (addr, stdout_len)``
+          change-detection memo. A restored state sitting at the same pair as
+          its pre-dump self would reuse a verdict computed under different
+          constraints.
+        * ``_state_roots`` — pre-load lineage. A stale entry maps a restored id
+          to a root from a different lineage, which both misdirects plugin
+          restoration and pins the wrong entries in
+          :meth:`_cleanup_state_cache`. Rust carries its own roots, so the map
+          rebuilds itself from ``get_state_root``.
+        * ``_py_state_options`` / ``_py_state_globals`` — user-visible
+          stand-ins the snapshot does not capture at all, so a surviving entry
+          hands a *different* state's options/globals to the restored id.
+          Clearing is lossless: :meth:`get_state_options_py` /
+          :meth:`get_state_globals_py` re-seed lazily from the lineage root.
+        """
+        self._predicate_matched_ids = set()
+        self._predicate_eval_cache = {}
+        self._predicate_found = []
+        self._state_roots = {}
+        self._py_state_options = {}
+        self._py_state_globals = {}
 
     @classmethod
     def load_from_disk(
