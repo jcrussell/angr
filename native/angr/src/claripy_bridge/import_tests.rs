@@ -223,3 +223,70 @@ fn test_check_same_width_refuses_mismatched_operands() {
         check_same_width("If", &RustBV::concrete(1, 1), &RustBV::concrete(0, 1)).is_ok()
     );
 }
+
+/// angr-fs8kb.80: the `And` / `Or` arms folded their operand list by reaching
+/// `RustBV::and` / `RustBV::or` directly, so the angr-6cp06.81 sweep that gave
+/// every other multi-operand arm a [`check_same_width`] call never touched
+/// them. Both now fold through `import_nary_op`, which performs the check.
+#[test]
+fn test_bool_fold_refuses_mismatched_operand_widths() {
+    Python::initialize();
+    Python::attach(|py| {
+        let ctx = SymContext::new_mock();
+        let module = pyo3::types::PyModule::from_code(
+            py,
+            &std::ffi::CString::new(
+                "class Fake:\n\
+                 \x20   def __init__(self, op, args, length):\n\
+                 \x20       self.op = op\n\
+                 \x20       self.args = args\n\
+                 \x20       self.length = length\n\
+                 \x20   def __hash__(self):\n\
+                 \x20       return id(self)\n\
+                 \n\
+                 def bvv(width):\n\
+                 \x20   return Fake('BVV', (0, width), width)\n\
+                 \n\
+                 def fold(op, widths):\n\
+                 \x20   return Fake(op, tuple(bvv(w) for w in widths), max(widths))\n\
+                 \n\
+                 def empty(op):\n\
+                 \x20   return Fake(op, (), 1)\n",
+            )
+            .expect("cstring"),
+            &std::ffi::CString::new("fake_bool_ast.py").expect("cstring"),
+            &std::ffi::CString::new("fake_bool_ast").expect("cstring"),
+        )
+        .expect("module");
+        let fold = module.getattr("fold").expect("fold");
+
+        for op in ["And", "Or"] {
+            let ast = fold
+                .call1((op, vec![1u32, 8u32]))
+                .expect("build mismatched fake AST");
+            let msg = claripy_to_rustbv(py, &ast, &ctx)
+                .expect_err("mismatched bool operand widths must be refused")
+                .to_string();
+            assert!(msg.contains(op), "{msg}");
+            assert!(msg.contains("1-bit"), "{msg}");
+            assert!(msg.contains("8-bit"), "{msg}");
+
+            // Control: the same shape at equal widths still converts, so the
+            // refusal above cannot be an artifact of the fake AST.
+            let ok = fold
+                .call1((op, vec![1u32, 1u32, 1u32]))
+                .expect("build matched fake AST");
+            let bv = claripy_to_rustbv(py, &ok, &ctx).expect("same-width bool fold is legal");
+            assert_eq!(bv.width(), 1);
+        }
+
+        // Empty-operand identities are unchanged by the refactor: And -> 1, Or -> 0.
+        let empty = module.getattr("empty").expect("empty");
+        for (op, want) in [("And", 1u64), ("Or", 0u64)] {
+            let ast = empty.call1((op,)).expect("build empty fake AST");
+            let bv = claripy_to_rustbv(py, &ast, &ctx).expect("empty bool fold is legal");
+            assert_eq!(bv.width(), 1, "{op}");
+            assert_eq!(bv.as_u64(), Some(want), "{op}");
+        }
+    });
+}

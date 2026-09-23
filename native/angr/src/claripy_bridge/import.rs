@@ -483,36 +483,11 @@ fn claripy_to_rustbv_depth(
             Ok(cond.ite(&then_val, &else_val, ctx))
         }
 
-        // Boolean operations (for constraints)
-        "And" => {
-            let args_list: Vec<Bound<'_, PyAny>> = args.extract()?;
-            if args_list.is_empty() {
-                // Empty And is True
-                return Ok(RustBV::concrete(1, 1));
-            }
-            // Boolean And: all 1-bit values must be 1
-            let mut result = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
-            for arg in &args_list[1..] {
-                let next = claripy_to_rustbv_depth(py, arg, ctx, depth + 1)?;
-                result = result.and(&next, ctx);
-            }
-            Ok(result)
-        }
+        // Boolean operations (for constraints). Both fold their operand list
+        // with `import_nary_op`; empty `And` is True, empty `Or` is False.
+        "And" => import_nary_op(py, &args, ctx, depth, "And", RustBV::and, 1),
 
-        "Or" => {
-            let args_list: Vec<Bound<'_, PyAny>> = args.extract()?;
-            if args_list.is_empty() {
-                // Empty Or is False
-                return Ok(RustBV::concrete(0, 1));
-            }
-            // Boolean Or: at least one 1-bit value must be 1
-            let mut result = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
-            for arg in &args_list[1..] {
-                let next = claripy_to_rustbv_depth(py, arg, ctx, depth + 1)?;
-                result = result.or(&next, ctx);
-            }
-            Ok(result)
-        }
+        "Or" => import_nary_op(py, &args, ctx, depth, "Or", RustBV::or, 0),
 
         // Boolean Not: invert 1-bit value — same `RustBV::not` as `__invert__`.
         "Not" => import_unary_op(py, &args, ctx, depth, "Not", RustBV::not),
@@ -622,6 +597,45 @@ fn import_unary_op(
     }
     let val = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
     Ok(apply(&val, ctx))
+}
+
+/// Variadic counterpart of [`import_binary_op`], for the boolean `And` / `Or`
+/// arms claripy emits with an arbitrary operand count.
+///
+/// Both arms had kept a hand-rolled fold that reached `RustBV::and` /
+/// `RustBV::or` directly and so skipped the [`check_same_width`] guard every
+/// other multi-operand arm performs — `RustBV`'s own width-equality checks are
+/// `debug_assert_eq!` and compile out of the shipped release profile, so a
+/// mismatched-width operand pair built a mismatched-sort Z3 `bvand`/`bvor` and
+/// aborted the process (angr-fs8kb.80). Folding through one helper makes the
+/// check structural: every operand is measured against the accumulator before
+/// it is applied.
+///
+/// `empty` is the identity the op returns for a zero-operand list, as a 1-bit
+/// concrete: `1` for `And` (empty conjunction is True), `0` for `Or`.
+///
+/// Like the other two helpers, `apply` is a plain `fn` pointer so both call
+/// sites share one instantiation.
+fn import_nary_op(
+    py: Python<'_>,
+    args: &Bound<'_, PyAny>,
+    ctx: &SymContext,
+    depth: u32,
+    op_name: &str,
+    apply: fn(&RustBV, &RustBV, &SymContext) -> RustBV,
+    empty: u128,
+) -> Result<RustBV, BridgeError> {
+    let args_list: Vec<Bound<'_, PyAny>> = args.extract()?;
+    let Some((first, rest)) = args_list.split_first() else {
+        return Ok(RustBV::concrete(empty, 1));
+    };
+    let mut result = claripy_to_rustbv_depth(py, first, ctx, depth + 1)?;
+    for arg in rest {
+        let next = claripy_to_rustbv_depth(py, arg, ctx, depth + 1)?;
+        check_same_width(op_name, &result, &next)?;
+        result = apply(&result, &next, ctx);
+    }
+    Ok(result)
 }
 
 /// Import a symbolic *leaf* (`BVS` / `BoolS`) while preserving symbol identity
