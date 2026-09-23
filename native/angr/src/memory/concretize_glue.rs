@@ -6,7 +6,7 @@
 //! "concretizer told us X addresses" and "page table is ready for X" stays
 //! easy to find.
 
-use super::SymbolicMemory;
+use super::{Address, SymbolicMemory};
 
 impl SymbolicMemory {
     /// Filter the candidate address list down to the ones whose pages are
@@ -31,7 +31,7 @@ impl SymbolicMemory {
         addrs
             .iter()
             .copied()
-            .filter(|&addr| self.pages.contains_key(&(addr >> 12)))
+            .filter(|&addr| self.pages.contains_key(&Address::new(addr).page_num()))
             .collect()
     }
 

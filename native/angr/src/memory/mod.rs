@@ -243,7 +243,7 @@ pub(super) fn end_page_inclusive(addr: u64, size: u64) -> Result<u64, MemoryErro
         // that makes `size - 1` unable to underflow.
         .checked_add(size - 1)
         .ok_or(MemoryError::OutOfBounds { addr, size })?;
-    Ok(last >> 12)
+    Ok(Address::new(last).page_num())
 }
 
 /// Exclusive page number one past the last page touched by
@@ -269,7 +269,7 @@ pub(super) fn end_page_inclusive(addr: u64, size: u64) -> Result<u64, MemoryErro
 pub(super) fn end_page_exclusive(addr: u64, size: u64) -> Result<u64, MemoryError> {
     match addr.checked_add(size) {
         Some(end_addr) => Ok(end_addr.div_ceil(PAGE_SIZE)),
-        None if addr.wrapping_add(size) == 0 => Ok((u64::MAX >> 12) + 1),
+        None if addr.wrapping_add(size) == 0 => Ok(Address::new(u64::MAX).page_num() + 1),
         None => Err(MemoryError::OutOfBounds { addr, size }),
     }
 }

@@ -653,7 +653,7 @@ impl SymbolicMemory {
         // interleaving of `end_page_inclusive` and permission errors.
         let mut page_ranges: Vec<(u64, u64)> = Vec::with_capacity(addrs.len());
         for &cand in addrs {
-            let start_page = cand >> 12;
+            let start_page = Address::new(cand).page_num();
             let end_page = end_page_inclusive(cand, size as u64)?;
             self.check_perms_range(start_page, end_page, Permission::W)?;
             page_ranges.push((start_page, end_page));
@@ -754,7 +754,7 @@ impl SymbolicMemory {
         // are silently filtered (matches eager `prepare_addresses_for_ite`).
         let mut ready: Vec<u64> = Vec::with_capacity(addrs.len());
         for &cand in addrs {
-            let start_page = cand >> 12;
+            let start_page = Address::new(cand).page_num();
             let end_page = end_page_inclusive(cand, size as u64)?;
             let mut all_mapped = true;
             for page_num in start_page..=end_page {
