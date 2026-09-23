@@ -137,6 +137,27 @@ fn test_extended_width_refuses_overflow_and_absurd_widths() {
     assert_eq!(extended_width("SignExt", 32, 32).unwrap(), 64);
 }
 
+/// Python source for the `Fake` stand-in AST class shared by the
+/// `PyModule::from_code` fixtures below.
+///
+/// `__hash__` is **content-addressed** — `(op, length, child hashes)`, the way
+/// real claripy hashes an AST — and deliberately *not* `id(self)`. That is not
+/// cosmetic: `cache.rs`'s `AST_CACHE` is keyed on `ast.__hash__()` precisely
+/// because a content hash survives collection while an `id` is handed back out
+/// once CPython frees the object. A fixture hashing by `id` therefore lets a
+/// later `Fake` inherit a freed sibling's cached `RustBV`, which is how
+/// `test_bool_fold_refuses_mismatched_operand_widths` intermittently read the
+/// empty-`And` identity (1) back for empty-`Or` (0) — angr-5o2v7.
+const FAKE_AST_CLASS: &str = "class Fake:\n\
+     \x20   def __init__(self, op, args, length):\n\
+     \x20       self.op = op\n\
+     \x20       self.args = args\n\
+     \x20       self.length = length\n\
+     \x20   def __hash__(self):\n\
+     \x20       kids = tuple(a if isinstance(a, int) else hash(a) for a in self.args)\n\
+     \x20       return hash((self.op, self.length, kids))\n\
+     \n";
+
 /// angr-5mnx3.9: `Concat` derives its result width from the operand list, so —
 /// like `ZeroExt`/`SignExt` — the derivation is the guard site, and the guard
 /// has to run on the *accumulator* at every step. Two operands that are each
@@ -155,19 +176,12 @@ fn test_concat_arm_refuses_oversized_derived_width() {
         let ctx = SymContext::new_mock();
         let module = pyo3::types::PyModule::from_code(
             py,
-            &std::ffi::CString::new(
-                "class Fake:\n\
-                 \x20   def __init__(self, op, args, length):\n\
-                 \x20       self.op = op\n\
-                 \x20       self.args = args\n\
-                 \x20       self.length = length\n\
-                 \x20   def __hash__(self):\n\
-                 \x20       return id(self)\n\
-                 \n\
+            &std::ffi::CString::new(format!(
+                "{FAKE_AST_CLASS}\
                  def concat(half):\n\
                  \x20   leaf = lambda: Fake('BVV', (0, half), half)\n\
-                 \x20   return Fake('Concat', (leaf(), leaf()), 2 * half)\n",
-            )
+                 \x20   return Fake('Concat', (leaf(), leaf()), 2 * half)\n"
+            ))
             .expect("cstring"),
             &std::ffi::CString::new("fake_ast.py").expect("cstring"),
             &std::ffi::CString::new("fake_ast").expect("cstring"),
@@ -235,15 +249,8 @@ fn test_bool_fold_refuses_mismatched_operand_widths() {
         let ctx = SymContext::new_mock();
         let module = pyo3::types::PyModule::from_code(
             py,
-            &std::ffi::CString::new(
-                "class Fake:\n\
-                 \x20   def __init__(self, op, args, length):\n\
-                 \x20       self.op = op\n\
-                 \x20       self.args = args\n\
-                 \x20       self.length = length\n\
-                 \x20   def __hash__(self):\n\
-                 \x20       return id(self)\n\
-                 \n\
+            &std::ffi::CString::new(format!(
+                "{FAKE_AST_CLASS}\
                  def bvv(width):\n\
                  \x20   return Fake('BVV', (0, width), width)\n\
                  \n\
@@ -251,8 +258,8 @@ fn test_bool_fold_refuses_mismatched_operand_widths() {
                  \x20   return Fake(op, tuple(bvv(w) for w in widths), max(widths))\n\
                  \n\
                  def empty(op):\n\
-                 \x20   return Fake(op, (), 1)\n",
-            )
+                 \x20   return Fake(op, (), 1)\n"
+            ))
             .expect("cstring"),
             &std::ffi::CString::new("fake_bool_ast.py").expect("cstring"),
             &std::ffi::CString::new("fake_bool_ast").expect("cstring"),
@@ -282,6 +289,21 @@ fn test_bool_fold_refuses_mismatched_operand_widths() {
 
         // Empty-operand identities are unchanged by the refactor: And -> 1, Or -> 0.
         let empty = module.getattr("empty").expect("empty");
+
+        // Guard the fixture's own precondition (see `FAKE_AST_CLASS`): the
+        // `AST_CACHE` these conversions go through is keyed on `__hash__`, so
+        // two content-identical rebuilds must hash the same and two
+        // content-distinct ones must not. An `id(self)` hash fails the first
+        // half outright, and — once CPython recycles the id of a freed node —
+        // aliases unrelated ASTs onto one cache entry (angr-5o2v7).
+        let py_hash = |obj: &pyo3::Bound<'_, pyo3::PyAny>| obj.hash().expect("hash");
+        let and_a = empty.call1(("And",)).expect("empty And");
+        let and_b = empty.call1(("And",)).expect("empty And again");
+        let or_a = empty.call1(("Or",)).expect("empty Or");
+        assert_eq!(py_hash(&and_a), py_hash(&and_b), "fake AST must hash by content");
+        assert_ne!(py_hash(&and_a), py_hash(&or_a), "distinct ops must hash apart");
+        drop((and_a, and_b, or_a));
+
         for (op, want) in [("And", 1u64), ("Or", 0u64)] {
             let ast = empty.call1((op,)).expect("build empty fake AST");
             let bv = claripy_to_rustbv(py, &ast, &ctx).expect("empty bool fold is legal");
