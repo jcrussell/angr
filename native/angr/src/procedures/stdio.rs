@@ -9,8 +9,17 @@
 //!
 //! The two transfer procedures that outgrew this grab-bag live next door:
 //! [`super::fwrite`] and [`super::fread`].
+//!
+//! Every value-returning proc here is `int`-typed in C, so each mints a 32-bit
+//! `RustBV` rather than calling [`super::arch_word`] — the same convention
+//! [`super::fgets`]'s `fgetc`/`getchar`/`getc` follow, and the one the
+//! `invariant-native-proc-return-width-extension` bd memory's second corollary
+//! requires: `write_proc_return_with_abi` extends a narrow return to the
+//! return register per the ABI, so an amd64 `(int)-1` lands in RAX as
+//! `0x0000_0000_FFFF_FFFF`, not all-ones. `fwrite`'s identical `-1` path does
+//! use `arch_word`, correctly — it returns `size_t`. Pinned by
+//! `test_stdio_return_widths`.
 
-use super::arch_word;
 use super::fileops::{read_fileno, resolve_stream_fd_or_demote_all};
 use super::{NativeSimProcedure, ProcedureError, extract_concrete_arg};
 use crate::state::RustSimState;
@@ -40,10 +49,10 @@ impl NativeSimProcedure for NativeFflush {
 
     fn call(
         &self,
-        state: &mut RustSimState,
+        _state: &mut RustSimState,
         _args: &[RustBV],
     ) -> Result<Option<RustBV>, ProcedureError> {
-        Ok(Some(arch_word(state, 0u64)))
+        Ok(Some(RustBV::concrete(0, 32)))
     }
 }
 
@@ -67,10 +76,10 @@ impl NativeSimProcedure for NativeSetvbuf {
 
     fn call(
         &self,
-        state: &mut RustSimState,
+        _state: &mut RustSimState,
         _args: &[RustBV],
     ) -> Result<Option<RustBV>, ProcedureError> {
-        Ok(Some(arch_word(state, 0u64)))
+        Ok(Some(RustBV::concrete(0, 32)))
     }
 }
 
@@ -150,7 +159,7 @@ impl NativeSimProcedure for NativeFeof {
         let file_ptr = extract_concrete_arg(&args[0], "stream")?;
         let fd = read_fileno(state, file_ptr)?;
         if fd < 0 {
-            return Ok(Some(arch_word(state, 0u64)));
+            return Ok(Some(RustBV::concrete(0, 32)));
         }
         // effective_len = max(concrete, symbolic content_sym length)
         // (angr-0xyq2 Phase 2) — identical to the concrete content length
@@ -160,7 +169,7 @@ impl NativeSimProcedure for NativeFeof {
             Some((pos, len)) => pos as usize >= len,
             None => false,
         };
-        Ok(Some(arch_word(state, u64::from(at_eof))))
+        Ok(Some(RustBV::concrete(u128::from(at_eof), 32)))
     }
 }
 
@@ -188,10 +197,10 @@ impl NativeSimProcedure for NativeFerror {
 
     fn call(
         &self,
-        state: &mut RustSimState,
+        _state: &mut RustSimState,
         _args: &[RustBV],
     ) -> Result<Option<RustBV>, ProcedureError> {
-        Ok(Some(arch_word(state, 0u64)))
+        Ok(Some(RustBV::concrete(0, 32)))
     }
 }
 
@@ -212,8 +221,8 @@ const MAX_FPUTS_LEN: u64 = super::strings::MAX_STRING_SCAN as u64;
 ///
 /// Resolves `stream->_fileno`, reads a NUL-terminated string from `s` (up to
 /// MAX_FPUTS_LEN bytes), and appends it to the fd buffer. Returns 1 on
-/// success and -1 on a closed/negative fd (matching the Python proc's `-1`
-/// short-circuit when `simfd is None`).
+/// success and `(int)-1` on a closed/negative fd (matching the Python proc's
+/// `-1` short-circuit when `simfd is None`).
 ///
 /// Any non-negative fd is handled inline: the bytes are appended to the
 /// tracked fd buffer via `write_fd` (`FileSystem::write`), regardless of
@@ -241,7 +250,7 @@ impl NativeSimProcedure for NativeFputs {
         let str_addr = extract_concrete_arg(&args[0], "s")?;
         let fd = resolve_stream_fd_or_demote_all(state, &args[1])?;
         if fd < 0 {
-            return Ok(Some(arch_word(state, -1i64 as u64)));
+            return Ok(Some(RustBV::concrete(u128::from(-1i32 as u32), 32)));
         }
 
         // No pre-scan demote gate: a zero-length fputs("") must stay a
@@ -275,7 +284,7 @@ impl NativeSimProcedure for NativeFputs {
                 "fputs to fd={fd} with symbolic content falls back to Python (demoted)"
             )));
         }
-        Ok(Some(arch_word(state, 1u64)))
+        Ok(Some(RustBV::concrete(1, 32)))
     }
 }
 

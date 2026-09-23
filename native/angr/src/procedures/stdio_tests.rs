@@ -3,7 +3,7 @@
 use super::*;
 use crate::memory::Permission;
 use crate::procedures::test_util::{
-    arch_ret_bits, assert_ret_width, open_registered_sym_file, setup_file_struct,
+    RET_INT_BITS, assert_ret_width, open_registered_sym_file, setup_file_struct,
 };
 
 #[test]
@@ -273,8 +273,9 @@ fn test_fputs_negative_fd_returns_minus_one() {
             ],
         )
         .unwrap();
-    // -1 as size_t on amd64
-    assert_eq!(result.unwrap().as_u64(), Some(u64::MAX));
+    // `(int)-1`: fputs returns int, so the BV is 32 bits wide and
+    // `write_proc_return_with_abi` zero-extends it into RAX as 0xFFFFFFFF.
+    assert_eq!(result.unwrap().as_u64(), Some(0xFFFF_FFFF));
 }
 
 #[test]
@@ -297,21 +298,20 @@ fn test_fputs_empty_string_writes_nothing_returns_one() {
     assert_eq!(state.stdout_buffer(), b"");
 }
 
-/// Every value-returning proc in `stdio.rs` builds its return through
-/// `arch_word`, i.e. at the arch word width, even though all five are `int`
-/// in C — unlike `fgets.rs`'s `fgetc`/`getchar`/`getc`, which mint a 32-bit
-/// `int`. This test is descriptive, not a blessing: it pins the current shape
-/// so that changing either convention is a visible diff. Whether arch-word is
-/// right here is a live question — the `invariant-native-proc-return-width-
-/// extension` bd memory's second corollary says an `int` return must NOT be
-/// widened with `arch_word`, because an amd64 `(int)-1` is `0xFFFFFFFF` in
-/// RAX, not all-ones, which is exactly what `fputs`'s error path produces
-/// below. See [`assert_ret_width`] for why the `.as_u64()` assertions above
-/// cannot see a width change at all.
+/// Every value-returning proc in `stdio.rs` is `int`-typed in C, so each must
+/// mint a 32-bit return — never the arch word width, which is what the
+/// `invariant-native-proc-return-width-extension` bd memory's second corollary
+/// rules out (an amd64 `(int)-1` is `0xFFFFFFFF` in RAX, not all-ones). The
+/// five used to go through `arch_word`; angr-fs8kb.93 flipped them to match
+/// `fgets.rs`'s `fgetc`/`getchar`/`getc`. `fputs`'s error path below is the
+/// sharpest case: all-ones and `(int)-1` are indistinguishable by
+/// `.as_u64()` once the ABI extension runs, so only the width assertion
+/// covers it. See [`assert_ret_width`] for why the `.as_u64()` assertions
+/// above cannot see a width change at all.
 #[test]
 fn test_stdio_return_widths() {
     let mut state = RustSimState::new("amd64").unwrap();
-    let bits = arch_ret_bits(&state);
+    let bits = RET_INT_BITS;
     let file_ptr = 0x10000u64;
     setup_file_struct(&mut state, file_ptr, 1);
     state.map_memory_data(0x1000, b"hi\0", Permission::RWX);

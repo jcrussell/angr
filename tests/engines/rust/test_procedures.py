@@ -2260,8 +2260,10 @@ class TestNativeStdioStatusAndWrite:
             sid = self._first_state_id(mgr)
             assert sid is not None
             rax = mgr._rust_mgr.get_state_register(sid, "rax")
-            # -1 as a 64-bit unsigned value
-            assert rax == (1 << 64) - 1, f"fputs(fd=-1) → rax={rax:#x}"
+            # `int fputs(..)`: the proc mints a 32-bit -1 and the amd64 ABI
+            # zero-extends it into RAX, so the low word is all-ones and the
+            # high word is clear — not a 64-bit -1 (angr-fs8kb.93).
+            assert rax == 0xFFFFFFFF, f"fputs(fd=-1) → rax={rax:#x}"
             stdout_bytes = bytes(mgr._rust_mgr.get_state_fd_output(sid, 1))
             assert stdout_bytes == b"", f"stdout should be untouched, got {stdout_bytes!r}"
         finally:
