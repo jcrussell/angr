@@ -749,17 +749,26 @@ impl RustBV {
         let width = self.width();
         match (self.as_u128(), amount.as_u128()) {
             (Some(v), Some(a)) => {
-                // Match the symbolic `c >= w → 0` arm: clamp BEFORE narrowing so
-                // amounts >= 2^32 (and the width==128 full-shift) don't wrap.
-                // `width.min(128)`: for a `Concrete` of `width > 128` only the
-                // low 128 bits are stored, so any shift `>= 128` clears every
-                // readable bit (and `wrapping_shl(a)` would wrap `a` mod 128,
-                // corrupting the low 128 bits). For `width <= 128` this is
-                // exactly the original `a >= width` cutoff.
-                if a >= width.min(128) as u128 {
+                // Match the symbolic `c >= w → 0` arm: compare the *full-width*
+                // amount BEFORE narrowing, so amounts >= 2^32 (and the
+                // width==128 full-shift) don't wrap to a small shift.
+                if a >= width as u128 {
                     Self::zero(width)
-                } else {
+                } else if concrete_arith_fits(width, exact_shl(v, a)) {
+                    // `a < width` and the true result fits the payload, so the
+                    // narrowing cast and `wrapping_shl` are both exact (for
+                    // `width <= 128` that is every in-range `a`; above it,
+                    // `exact_shl` has already ruled out a lost high bit).
                     Self::concrete(v.wrapping_shl(a as u32), width)
+                } else {
+                    // `width > 128` and the shift pushes a set bit to position
+                    // >= 128, where a `Concrete` has nowhere to store it — the
+                    // same unstorable-result case `define_rotate_pair!` and
+                    // `reverse_owned` decline. Folding here would silently drop
+                    // the bit (`1 << 127` at width 256 shifted by 1 is 2^128, an
+                    // ordinary 256-bit number, not zero), so stay symbolic and
+                    // let Z3 compute it at the declared width.
+                    Self::expr_node(width, BVOp::Shl, [self, amount])
                 }
             }
             // x << 0 → x
@@ -1529,6 +1538,25 @@ fn try_zext_const_cmp_fold(
 #[inline]
 fn bits_beyond_storage(width: u32) -> bool {
     width > 128
+}
+
+/// The exact mathematical `v << a`, or `None` when the true result needs a bit
+/// at or past position 128 (angr-fs8kb.25).
+///
+/// This is the `checked_*` companion [`concrete_arith_fits`] expects for a left
+/// shift: `u128::checked_shl` reports only an out-of-range *amount*, never a
+/// bit shifted off the top, and `wrapping_shl` drops that bit silently. Unlike
+/// `lshr`/`ashr`, which can only shrink the represented magnitude, `shl` grows
+/// it, so it is the one shift that can outrun the storage ceiling.
+#[inline]
+fn exact_shl(v: u128, a: u128) -> Option<u128> {
+    if v == 0 {
+        Some(0)
+    } else if a >= 128 {
+        None
+    } else {
+        v.checked_mul(1u128 << a)
+    }
 }
 
 /// `true` when a concrete arithmetic result fits the `width`-bit `Concrete`

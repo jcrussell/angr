@@ -703,21 +703,48 @@ fn wide_shift_amounts(w: u32) -> [u128; 8] {
     [0, 1, 63, 127, 128, 129, (w - 1) as u128, w as u128]
 }
 
+/// `true` when `v << a` sets a bit at or past position 128, the ceiling of a
+/// `Concrete`'s u128 payload.
+///
+/// Phrased in terms of `v`'s highest set bit (`127 - leading_zeros`) rather
+/// than `shl_into`'s own `checked_mul`, so the oracle below stays an
+/// independent statement of the rule instead of a restatement of the code
+/// under test (angr-fs8kb.26).
+fn shl_escapes_payload(v: u128, a: u128) -> bool {
+    v != 0 && a > u128::from(v.leading_zeros())
+}
+
 #[test]
-fn wide_shl_clears_readable_bits_past_128() {
+fn wide_shl_declines_the_fold_when_bits_escape_the_payload() {
     let ctx = SymContext::new_mock();
     for &w in &WIDE_WIDTHS {
         for &v in &wide_payloads() {
             for &a in &wide_shift_amounts(w) {
-                // low 128 bits of `v << a`: any shift >= 128 pushes every stored
-                // bit out of the readable window.
-                let want = if a >= 128 {
-                    0
+                let got = bv(v, w).shl(&bv(a, w), &ctx);
+                assert_eq!(got.width(), w, "shl width w={w} v={v:#x} a={a}");
+                if a >= u128::from(w) {
+                    // Every bit leaves the declared width: 0 at any width.
+                    assert_eq!(val(&got), 0, "shl w={w} v={v:#x} a={a}");
+                } else if shl_escapes_payload(v, a) {
+                    // The true result (e.g. `2^127 << 1` = `2^128`, an ordinary
+                    // 256-bit number) needs a bit the u128 payload cannot hold,
+                    // so the fold must be declined — the same choice
+                    // `define_rotate_pair!` and `reverse_owned` make.
+                    assert!(
+                        got.as_u128().is_none(),
+                        "shl must not fold w={w} v={v:#x} a={a}"
+                    );
+                    assert_eq!(got.op(), Some(&BVOp::Shl), "shl op w={w} v={v:#x} a={a}");
                 } else {
-                    v.wrapping_shl(a as u32)
-                };
-                let got = val(&bv(v, w).shl(&bv(a, w), &ctx));
-                assert_eq!(got, want, "shl w={w} v={v:#x} a={a}");
+                    // Whole result fits the payload. Oracle by repeated
+                    // doubling, which cannot overflow here and shares no code
+                    // with `shl_into`'s `wrapping_shl`.
+                    let mut want = v;
+                    for _ in 0..a {
+                        want *= 2;
+                    }
+                    assert_eq!(val(&got), want, "shl w={w} v={v:#x} a={a}");
+                }
             }
         }
     }
