@@ -491,7 +491,13 @@ pub struct RustSimState {
     stdin_symbols: Vec<(String, u32)>,
     /// Function call stack. Pushed on Ijk_Call, popped on Ijk_Ret.
     /// Cloned on fork so each path has its own call stack.
-    #[merge_policy = "self_wins"]
+    ///
+    /// Merged like [`Self::native_resume_stack`]: `self`'s stack is carried,
+    /// but a branch whose call history differs is announced first
+    /// (angr-fs8kb.71) — this field gates a real control-flow decision in
+    /// `interpreter::exits`, so a silent drop misclassifies a later `ret`.
+    #[merge_policy = "warn_on_diverge"]
+    #[merge_manual = "divergence is per-frame and skips `stack_ptr` (call_stack_diverges), not `!=`"]
     call_stack: Vec<CallStackEntry>,
     /// Heap metadata tracking: allocated regions and freed addresses.
     /// Cloned on fork so each path has its own heap state.

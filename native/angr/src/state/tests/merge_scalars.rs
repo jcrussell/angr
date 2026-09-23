@@ -159,6 +159,67 @@ fn test_merge_takes_symbolic_max_of_last_time() {
 /// singleton, and `engine_tests.rs`'s `set_rust_log_level_accepts_levels_and_specs`
 /// already claims that slot in the same test binary, so a competing logger
 /// installed here would race it non-deterministically.
+/// angr-fs8kb.71: `call_stack` gates a real control-flow decision
+/// (`interpreter::exits` treats a `ret` with an empty stack as an
+/// unconstrained jump), and the default `RustExplorationManager.merge()`
+/// groups by pc alone — so a merge that drops a branch's frames must at least
+/// say so. Exercises `fork::call_stack_diverges` directly, for the same
+/// process-global-logger reason
+/// `test_native_resume_stack_diverges_detects_depth_mismatch` records.
+///
+/// Also pins the deliberate `stack_ptr` exclusion: an identical call history
+/// recorded at different SPs is not divergence, or the warning would fire on
+/// essentially every merge and say nothing.
+#[test]
+fn test_call_stack_diverges_ignores_stack_ptr_noise() {
+    let mut a = RustSimState::new("amd64").unwrap();
+    let mut b = a.fork();
+    assert!(
+        !fork::call_stack_diverges(&a, &[&b]),
+        "two empty call stacks must not read as diverged"
+    );
+
+    a.push_call(0x400100, 0x400200, 0x400105, 0x7fff_f000);
+    assert!(
+        fork::call_stack_diverges(&a, &[&b]),
+        "a depth-1 vs depth-0 call stack must be detected as diverged"
+    );
+
+    // Same frame, different SP at call time: per-path data, not divergence.
+    b.push_call(0x400100, 0x400200, 0x400105, 0x7fff_e000);
+    assert!(
+        !fork::call_stack_diverges(&a, &[&b]),
+        "frames matching on call_site/callee/return must not diverge on stack_ptr alone"
+    );
+
+    // Same depth, different callee: real divergence.
+    b.pop_call();
+    b.push_call(0x400100, 0x400900, 0x400105, 0x7fff_f000);
+    assert!(
+        fork::call_stack_diverges(&a, &[&b]),
+        "an equal-depth stack calling a different callee must be detected as diverged"
+    );
+
+    // The merge itself still self-wins regardless of the diagnostic.
+    let (m0, m1) = {
+        let s = a.solver().borrow();
+        (
+            RustBV::symbolic(&s, "fs8kb_71_m0", 1),
+            RustBV::symbolic(&s, "fs8kb_71_m1", 1),
+        )
+    };
+    let merged = a.merge(&[&b], &[m0, m1]);
+    assert_eq!(
+        merged
+            .call_stack()
+            .iter()
+            .map(|c| c.callee_addr)
+            .collect::<Vec<_>>(),
+        vec![0x400200],
+        "merge must still carry self's call stack"
+    );
+}
+
 #[test]
 fn test_native_resume_stack_diverges_detects_depth_mismatch() {
     let mut a = RustSimState::new("amd64").unwrap();

@@ -123,6 +123,34 @@ pub(crate) fn native_resume_stack_diverges(this: &RustSimState, others: &[&RustS
         .any(|o| o.native_resume_stack.len() != this.native_resume_stack.len())
 }
 
+/// True when any other branch's function call stack differs from `this`'s in
+/// a way that changes control flow.
+///
+/// Compares depth plus each frame's `call_site_addr`/`callee_addr`/
+/// `return_addr` triple — deliberately **not** `stack_ptr`. `CallStackEntry`
+/// therefore gets no `PartialEq`/`warn_on_diverge`-mechanical body: the SP
+/// recorded at call time is per-path *data* (two branches that reconverge at
+/// one pc can have pushed different amounts below the same call), so folding
+/// it into the comparison would make this warn on merges whose call history is
+/// identical — the noise the `inspection (enabled_mask only)` check in
+/// [`RustSimState::merge`] exists to avoid. The triple is what
+/// `interpreter::exits`'s `jumpkind.is_ret() && call_stack.is_empty()` arm and
+/// `interpreter::execution`'s push/pop pairing actually read.
+///
+/// Split out of `merge` (rather than left inline) so the detection logic is
+/// directly unit-testable without the process-global logger — same reasoning
+/// as [`native_resume_stack_diverges`] above.
+pub(crate) fn call_stack_diverges(this: &RustSimState, others: &[&RustSimState]) -> bool {
+    let frame_key = |e: &CallStackEntry| (e.call_site_addr, e.callee_addr, e.return_addr);
+    others.iter().any(|o| {
+        o.call_stack.len() != this.call_stack.len()
+            || o.call_stack
+                .iter()
+                .zip(this.call_stack.iter())
+                .any(|(a, b)| frame_key(a) != frame_key(b))
+    })
+}
+
 impl RustSimState {
     /// Clone the three Python-AST metadata maps so the parent and the fork hold
     /// independent maps over shared AST handles.
@@ -627,6 +655,17 @@ impl RustSimState {
             "native_resume_stack",
             native_resume_stack_diverges(self, others),
         );
+        // angr-fs8kb.71: `call_stack` has the identical shape and risk. It is
+        // not merely diagnostic state — `interpreter::exits` decides
+        // `BlockResult::UnconstrainedJump` vs "a ret we should treat as an
+        // unmodeled call" from `call_stack.is_empty()`, and the default
+        // Python-facing `RustExplorationManager.merge()` groups candidates by
+        // *program counter alone* (`_merge_native` in
+        // `angr/exploration/rust_manager.py`), not by call stack. So two
+        // states reconverging at one pc with different call histories is the
+        // ordinary case, and keeping `self`'s stack silently makes the merged
+        // state misclassify the next `ret` on the dropped branch's behalf.
+        warn_config_divergence("call_stack", call_stack_diverges(self, others));
 
         // angr-sqfj8.88: `last_time` is the symbolic analogue of the
         // tsc_counter/heap_brk/mmap_base watermarks above — it must never
@@ -691,7 +730,7 @@ impl RustSimState {
             native_resume_stack: self.native_resume_stack.clone(),
             ctype_loc: self.merge_field_ctype_loc(others),
             stdin_symbols: merged_stdin,
-            call_stack: self.merge_field_call_stack(others),
+            call_stack: self.call_stack.clone(),
             // Union every branch's heap bookkeeping, not just self's: heap_brk
             // is maxed above so a branch-only allocation stays reachable in the
             // merged memory, and dropping its alloc_size entry makes

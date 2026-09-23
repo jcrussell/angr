@@ -96,10 +96,14 @@ fn mechanical_arch_and_vex_arch_self_wins_across_differing_archs() {
     );
 }
 
-/// self_wins (6 of the remaining 8; `arch`/`vex_arch` above): `pc`,
-/// `history`, `detailed_history`, `max_history`, `track_history`,
-/// `call_stack`. One populated pair, one merge, per-field comparison against
-/// the generated `merge_field_*` method.
+/// self_wins (5 of the remaining 8; `arch`/`vex_arch` above): `pc`,
+/// `history`, `detailed_history`, `max_history`, `track_history`. One
+/// populated pair, one merge, per-field comparison against the generated
+/// `merge_field_*` method. `call_stack` used to belong here; angr-fs8kb.71
+/// moved it to `warn_on_diverge` + `#[merge_manual]`, so its carry is
+/// asserted below against `self`'s value directly and its divergence
+/// detection is unit-tested by
+/// `test_call_stack_diverges_ignores_stack_ptr_noise`.
 #[test]
 fn mechanical_self_wins_fields_keep_selfs_value() {
     let (mut a, mut b) = base_pair("amd64");
@@ -135,7 +139,6 @@ fn mechanical_self_wins_fields_keep_selfs_value() {
     let expected_detailed: VecDeque<HistoryEntry> = a.merge_field_detailed_history(&[&b]);
     let expected_max_history = a.merge_field_max_history(&[&b]);
     let expected_track_history = a.merge_field_track_history(&[&b]);
-    let expected_call_stack: Vec<CallStackEntry> = a.merge_field_call_stack(&[&b]);
 
     assert_eq!(expected_pc, 0x1000, "self_wins must compute self's pc");
     assert_eq!(
@@ -145,13 +148,6 @@ fn mechanical_self_wins_fields_keep_selfs_value() {
     assert_eq!(
         expected_detailed.iter().map(|h| h.addr).collect::<Vec<_>>(),
         vec![0x1100]
-    );
-    assert_eq!(
-        expected_call_stack
-            .iter()
-            .map(|c| c.call_site_addr)
-            .collect::<Vec<_>>(),
-        vec![0x1000]
     );
     assert_eq!(expected_max_history, 50);
     assert!(!expected_track_history);
@@ -178,10 +174,9 @@ fn mechanical_self_wins_fields_keep_selfs_value() {
             .iter()
             .map(|c| c.call_site_addr)
             .collect::<Vec<_>>(),
-        expected_call_stack
-            .iter()
-            .map(|c| c.call_site_addr)
-            .collect::<Vec<_>>()
+        vec![0x1000],
+        "call_stack still carries self's frames after the angr-fs8kb.71 switch \
+         to warn_on_diverge — only the diagnostic is new"
     );
     assert_eq!(merged.max_history(), expected_max_history);
     assert_eq!(merged.track_history, expected_track_history);
