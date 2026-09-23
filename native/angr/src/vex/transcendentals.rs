@@ -139,19 +139,15 @@ pub fn try_concretize_binop_rm(
     if x.is_concrete() {
         return try_concrete_binop_rm(opcode, rm, x);
     }
-    let xv = ctx.eval(x)? as u64;
-    let xf = f64::from_bits(xv);
-    let r = match opcode {
-        IOP_SIN_F64 => xf.sin(),
-        IOP_COS_F64 => xf.cos(),
-        IOP_TAN_F64 => xf.tan(),
-        IOP_2XM1_F64 => xf.exp2() - 1.0,
-        _ => return None,
-    };
-    let pinned = RustBV::concrete(xv as u128, x.width());
+    let xv = ctx.eval(x)?;
+    // Delegate the formula itself to the concrete path (angr-fs8kb.21) — one
+    // definition per opcode, so a formula fix cannot land on only one of the
+    // two entry points.
+    let pinned = RustBV::concrete(xv, x.width());
+    let r = try_concrete_binop_rm(opcode, rm, &pinned)?;
     let cond = x.eq(&pinned, ctx);
     ctx.assume_true(&cond);
-    Some(RustBV::concrete(r.to_bits() as u128, 64))
+    Some(r)
 }
 
 /// Symbolic-input fallback for the in-scope x87 triop transcendentals:
@@ -189,28 +185,21 @@ pub fn try_concretize_triop_rm(
     // feasible yet jointly infeasible — and the pins below would then turn a
     // SAT context UNSAT, silently killing a feasible path.
     let vals = ctx.eval_many(&[a.clone(), b.clone()])?;
-    let av = vals[0] as u64;
-    let bv = vals[1] as u64;
-    let af = f64::from_bits(av);
-    let bf = f64::from_bits(bv);
-    let r = match opcode {
-        IOP_YL2X_F64 => af * bf.log2(),
-        IOP_YL2XP1_F64 => af * (bf + 1.0).log2(),
-        IOP_SCALE_F64 => af * bf.trunc().exp2(),
-        IOP_ATAN_F64 => af.atan2(bf),
-        _ => return None,
-    };
+    // Delegate the formula itself to the concrete path (angr-fs8kb.21) — one
+    // definition per opcode, so a formula fix cannot land on only one of the
+    // two entry points.
+    let pinned_a = RustBV::concrete(vals[0], a.width());
+    let pinned_b = RustBV::concrete(vals[1], b.width());
+    let r = try_concrete_triop_rm(opcode, rm, &pinned_a, &pinned_b)?;
     if a.is_symbolic() {
-        let pinned = RustBV::concrete(av as u128, a.width());
-        let cond = a.eq(&pinned, ctx);
+        let cond = a.eq(&pinned_a, ctx);
         ctx.assume_true(&cond);
     }
     if b.is_symbolic() {
-        let pinned = RustBV::concrete(bv as u128, b.width());
-        let cond = b.eq(&pinned, ctx);
+        let cond = b.eq(&pinned_b, ctx);
         ctx.assume_true(&cond);
     }
-    Some(RustBV::concrete(r.to_bits() as u128, 64))
+    Some(r)
 }
 
 /// IEEE 754 reciprocal exponent (ARM AArch64 FRECPX semantics).
