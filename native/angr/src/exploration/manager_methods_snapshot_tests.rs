@@ -282,3 +282,92 @@ fn load_snapshot_notifies_policy_for_every_pre_restore_active_state() {
         );
     });
 }
+
+// ConstraintTracker per-run sets across the restore (angr-fs8kb.89)
+//
+// A snapshot restores states under their ORIGINAL ids, so every id-keyed or
+// content-keyed set the pre-restore run accumulated can match a live restored
+// state. See `load_snapshot_bytes` for why all three are cleared here even
+// though `_reset_for_stage` (state_lifecycle.rs) clears only `uniqueness_set`.
+// ---------------------------------------------------------------------------
+
+/// The restored frontier must survive the next `apply_uniqueness_filter`.
+///
+/// Every dumped state's register-tuple hash was inserted into `uniqueness_set`
+/// while it was live, so a set that outlived the load would send the whole
+/// restored active stash to `not_unique` on the first post-load step.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn load_snapshot_clears_uniqueness_set_so_restored_states_are_not_dropped() {
+    Python::initialize();
+    Python::attach(|py| {
+        let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+        mgr.register_uniqueness_filter(vec!["rax".to_string()]);
+        mgr.sm
+            .push(STASH_ACTIVE, RustSimState::new("amd64").expect("state"));
+
+        // The pre-dump run banks the frontier's hashes, exactly as the run loop
+        // would after the step that produced it.
+        mgr.apply_uniqueness_filter();
+        assert_eq!(mgr.uniqueness_set_size(), 1, "precondition: hash banked");
+
+        let bytes = mgr.dump_snapshot_bytes(py).as_bytes().to_vec();
+        mgr.load_snapshot_bytes(&bytes).expect("load");
+        assert_eq!(
+            mgr.uniqueness_set_size(),
+            0,
+            "the pre-restore seen-set must not survive the swap"
+        );
+
+        mgr.apply_uniqueness_filter();
+        assert_eq!(
+            mgr.sm.count(STASH_ACTIVE),
+            1,
+            "restored state must stay active, not collide with its own pre-dump hash"
+        );
+        assert_eq!(mgr.sm.count("not_unique"), 0);
+    });
+}
+
+/// Both callable-predicate skip tokens must be dropped by the restore.
+///
+/// Unlike `_reset_for_stage`, the monotonic-`StateId` argument does not hold
+/// here: the same-process load brings each state back under its original id,
+/// so a leftover token makes `step_one` skip the find/avoid predicate for a
+/// restored state at a pc it was never asked about.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn load_snapshot_clears_predicate_skip_tokens_for_restored_ids() {
+    Python::initialize();
+    Python::attach(|py| {
+        let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+        let state = RustSimState::new("amd64").expect("state");
+        let id = state.state_id();
+        mgr.sm.push(STASH_ACTIVE, state);
+
+        let bytes = mgr.dump_snapshot_bytes(py).as_bytes().to_vec();
+        // The post-dump run answers both predicates for this state.
+        mgr.constraint_tracker.skip_find_predicate_states.insert(id);
+        mgr.constraint_tracker.skip_avoid_predicate_states.insert(id);
+
+        mgr.load_snapshot_bytes(&bytes).expect("load");
+
+        assert_eq!(
+            mgr.sm.state_ids(STASH_ACTIVE),
+            vec![id],
+            "precondition: the restore reuses the original state id"
+        );
+        assert!(
+            !mgr.constraint_tracker
+                .skip_find_predicate_states
+                .contains(&id),
+            "stale find-predicate token would silently skip a restored state's find check"
+        );
+        assert!(
+            !mgr.constraint_tracker
+                .skip_avoid_predicate_states
+                .contains(&id),
+            "stale avoid-predicate token would silently skip a restored state's avoid check"
+        );
+    });
+}

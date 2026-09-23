@@ -111,6 +111,28 @@ impl RustExplorationManager {
             self.policy.on_state_removed(state_id);
         }
         self.sm = restored;
+        // angr-fs8kb.89: `ConstraintTracker`'s three per-run sets belong to the
+        // pre-restore world too, and unlike the sets `_reset_for_stage`
+        // (`state_lifecycle.rs`) leaves alone, ALL three are stale here.
+        //
+        // The snapshot is a rewind, not a continuation: `from_snapshot`
+        // (`stash.rs`) rebuilds `state_index` from each state's own
+        // `state_id()`, so a same-process restore brings back the ORIGINAL ids.
+        // The monotonic-id argument that lets `_reset_for_stage` keep
+        // `skip_find_predicate_states` / `skip_avoid_predicate_states` — a
+        // stale entry can only name a dead id — therefore does not hold, and a
+        // leftover token makes `run_loop_single.rs::step_one` skip the callable
+        // find/avoid predicate for a restored state at a pc it has never been
+        // asked about, silently losing a `found`.
+        //
+        // `uniqueness_set` is worse than stale: `apply_uniqueness_filter`
+        // (`helpers.rs`) inserted every dumped state's register-tuple hash
+        // while it was live, so keeping the set would send the entire restored
+        // frontier straight to `not_unique` (or drop it under
+        // `drop_terminal_states`) on the first step after the load.
+        self.constraint_tracker.uniqueness_set.clear();
+        self.constraint_tracker.skip_find_predicate_states.clear();
+        self.constraint_tracker.skip_avoid_predicate_states.clear();
         Ok(())
     }
 }
