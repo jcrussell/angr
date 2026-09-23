@@ -255,3 +255,40 @@ fn test_comparison_signed() {
     assert_eq!(a.slt(&b, &ctx).as_u64(), Some(1)); // -1 < 1
     assert_eq!(a.ult(&b, &ctx).as_u64(), Some(0)); // 255 > 1 unsigned
 }
+
+/// Width-0 symbolic construction degenerates to `Concrete` instead of aborting.
+///
+/// Z3 has no 0-width bitvector sort, so `BV::new_const(name, 0)` panicked inside
+/// the sort constructor — a SIGABRT under `panic="abort"`, not a catchable
+/// error. All three symbolic construction paths funnel through
+/// `RustBV::from_parts`, so all three are covered here (angr-fs8kb.28).
+#[test]
+fn test_zero_width_symbolic_degenerates_to_concrete() {
+    let ctx = SymContext::new_mock();
+
+    for bv in [
+        RustBV::symbolic(&ctx, "zw", 0),
+        RustBV::symbolic_with_id(7, "zw_id", 0),
+        RustBV::from(RustBVData::Symbolic {
+            id: 7,
+            width: 0,
+            name: "zw_snapshot".to_string(),
+        }),
+    ] {
+        assert!(bv.is_concrete(), "width-0 symbolic must degenerate: {bv:?}");
+        assert_eq!(bv.width(), 0);
+        // The empty bitvector has exactly one inhabitant, and `concrete`'s mask
+        // collapses to 0 at width 0, so that inhabitant is spelled `0`.
+        assert_eq!(bv.as_u64(), Some(0));
+    }
+}
+
+/// A nonzero width still builds a real `Symbolic` leaf — the width-0 early
+/// return must not swallow the ordinary path.
+#[test]
+fn test_nonzero_width_symbolic_still_symbolic() {
+    let ctx = SymContext::new_mock();
+    let bv = RustBV::symbolic(&ctx, "nonzero", 8);
+    assert!(!bv.is_concrete());
+    assert!(matches!(bv, RustBV::Symbolic { width: 8, .. }));
+}

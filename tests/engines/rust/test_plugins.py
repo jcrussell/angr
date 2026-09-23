@@ -581,6 +581,33 @@ class TestAdversarial:
         assert h.is_concrete is True
         assert h.concrete() == 0
 
+    def test_create_symbolic_zero_width_does_not_abort(self):
+        """Width-0 *symbolic* construction degenerates instead of aborting.
+
+        Z3 has no 0-width bitvector sort, so ``BV::new_const(name, 0)``
+        panicked inside the sort constructor — and the extension builds with
+        ``panic="abort"``, so this was a hard SIGABRT of the whole process,
+        not a catchable Python exception (angr-fs8kb.28). ``check_bv_width``
+        permits width 0 because a width-0 *concrete* RustBV is a supported
+        degenerate value (see the sibling round-trip test above), which left
+        every symbolic construction path exposed.
+
+        The empty bitvector has exactly one inhabitant, so the width-0
+        symbolic leaf collapses to that value rather than erroring.
+        """
+        import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
+
+        # Entry point 1: the direct handle API (no claripy AST involved).
+        ctx = RustSolverContext()
+        h = ctx.create_symbolic("zw", 0)
+        assert h.width == 0
+        assert ctx.eval_handle(h.id) == 0
+
+        # Entry point 2: claripy BVS import through claripy_bridge::import.
+        ctx2 = RustSolverContext()
+        assert ctx2.min(claripy.BVS("zw_import", 0), signed=True) == 0
+
     def test_solver_very_wide_bitvector_round_trip(self):
         """1024-bit BV survives add_constraint + eval round-trip across PyO3.
 

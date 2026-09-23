@@ -571,8 +571,35 @@ impl RustBV {
     /// deserialize path can't drift from the constructors. Callers must be inside
     /// `with_z3_context` when the z3 feature is enabled (BV::new_const reads the
     /// active thread-local context).
+    ///
+    /// **Width 0 degenerates to `Concrete`.** Z3 has no 0-width bitvector sort,
+    /// so `BV::new_const(name, 0)` panics inside the sort constructor — and the
+    /// extension builds with `panic="abort"`, making that a hard SIGABRT of the
+    /// whole process rather than a catchable Python exception. Every symbolic
+    /// construction path reaches this function (`symbolic`, `symbolic_with_id`,
+    /// and the `From<RustBVData>` snapshot/deserialize arm), and all three take
+    /// a caller-chosen width that `check_bv_width` deliberately permits to be 0
+    /// (see `width_guards`, where 0 is documented as a supported *concrete*
+    /// degenerate value) — so `claripy.BVS(name, 0)` imported through
+    /// `claripy_bridge::import`, a restored snapshot carrying a width-0
+    /// `Symbolic`, and `RustSolverContext::create_symbolic(name, 0)` were each a
+    /// live process abort (angr-fs8kb.28).
+    ///
+    /// The empty bitvector has exactly one inhabitant, so a width-0 *symbolic*
+    /// leaf denotes the same single value a width-0 concrete does: collapsing it
+    /// loses no information, and no constraint can distinguish two of them. That
+    /// makes the degenerate answer correct here rather than merely safe, which
+    /// is why this returns a value instead of plumbing a `Result` through three
+    /// infallible signatures (same reasoning as the `w == 0` rotate arm in
+    /// `value_ops`; see bd memory `invariant-rustbv-zero-width`). Handled before
+    /// the cfg split so the no-z3 build agrees with the z3 one.
     #[inline]
     pub(super) fn from_parts(id: u64, name: Arc<str>, width: u32) -> Self {
+        if width == 0 {
+            // SILENT(cat-a): expected control flow — the empty bitvector's only
+            // value, not a fallback for a failure.
+            return RustBV::Concrete { value: 0, width: 0 };
+        }
         #[cfg(feature = "vex-engine-z3")]
         {
             // A claripy `Bool` leaf has no `RustBV` sort of its own — it is
