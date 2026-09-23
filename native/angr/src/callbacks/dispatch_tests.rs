@@ -574,3 +574,180 @@ fn extract_data_tuple_handles_all_three_tuple_shapes() {
         );
     });
 }
+
+/// Poison `lock` the only way a `RwLock` can be poisoned: panic on a thread
+/// that holds its write guard.
+///
+/// The panic hook is silenced for the duration so the deliberate unwind does
+/// not print a backtrace that reads like a failing test. `set_hook` is
+/// process-global, so the window is kept to the single `join()` below.
+fn poison_page_set_lock(
+    lock: &std::sync::Arc<std::sync::RwLock<Option<std::collections::HashSet<u64>>>>,
+) {
+    let handle = std::sync::Arc::clone(lock);
+    let prev_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let joined = std::thread::spawn(move || {
+        let _guard = handle.write().expect("lock must be healthy before poisoning");
+        panic!("deliberate panic to poison a page-set lock");
+    })
+    .join();
+    std::panic::set_hook(prev_hook);
+
+    assert!(joined.is_err(), "the poisoning thread must have panicked");
+    assert!(lock.is_poisoned(), "the write-guard panic must poison the lock");
+}
+
+fn fresh_page_set(
+    pages: Option<&[u64]>,
+) -> std::sync::Arc<std::sync::RwLock<Option<std::collections::HashSet<u64>>>> {
+    std::sync::Arc::new(std::sync::RwLock::new(
+        pages.map(|p| p.iter().copied().collect()),
+    ))
+}
+
+/// `warn_page_set_poisoned` must speak at most once per latch, and a latch
+/// that is already set must suppress the call before `detail` is built.
+///
+/// The latch is what keeps a poisoned lock from emitting one `log::warn!` per
+/// page probe for the rest of the process — the reader sits in the
+/// per-candidate-page prefetch loop (`prefetch::fetch_page`), so an unlatched
+/// warning is a log flood, not a log line.
+///
+/// Asserts on the latch and on how often `detail` is built rather than on the
+/// emitted line: `log::set_logger` is a process-global one-shot singleton that
+/// `engine_tests.rs`'s `set_rust_log_level_accepts_levels_and_specs` already
+/// claims in this test binary, so a capture logger here would race it — the
+/// same reasoning `symbolic/constraint_ops_tests.rs` records. That also means
+/// the *lower* bound is not assertable: with no subscriber listening
+/// `log::warn!` never evaluates its arguments, so a correct implementation
+/// builds `detail` zero times. The upper bound is the half that can regress.
+#[test]
+fn warn_page_set_poisoned_speaks_once_per_latch() {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    let warned = AtomicBool::new(false);
+    let details_built = AtomicUsize::new(0);
+    for _ in 0..4 {
+        warn_page_set_poisoned("test_page_set", &warned, || {
+            details_built.fetch_add(1, Ordering::Relaxed);
+            "detail".to_string()
+        });
+    }
+    assert!(
+        details_built.load(Ordering::Relaxed) <= 1,
+        "only the first call may reach the warning, so `detail` is built at most once"
+    );
+    assert!(
+        warned.load(Ordering::Relaxed),
+        "the first call must set the latch and no later call may clear it"
+    );
+
+    // A latch that is already set suppresses the call before `detail` is even
+    // built, which is what lets the reader and the writer share one voice.
+    let pre_latched = AtomicBool::new(true);
+    let suppressed = AtomicUsize::new(0);
+    warn_page_set_poisoned("test_page_set", &pre_latched, || {
+        suppressed.fetch_add(1, Ordering::Relaxed);
+        "detail".to_string()
+    });
+    assert_eq!(suppressed.load(Ordering::Relaxed), 0);
+    assert!(pre_latched.load(Ordering::Relaxed));
+}
+
+/// A poisoned lock must make `page_set_contains` fail *open* — answering
+/// `true` for a page the snapshot excludes — rather than reporting the
+/// snapshot's verdict from stale state or answering `false`.
+///
+/// `false` is the dangerous direction: it tells the prefetch loop to skip the
+/// crossing entirely, so the page never gets fetched at all.
+#[test]
+fn page_set_contains_fails_open_on_poisoned_lock() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let lock = fresh_page_set(Some(&[0x1000]));
+    let warned = AtomicBool::new(false);
+
+    // Healthy first, so the assertions below are about the poison and not
+    // about an empty snapshot.
+    assert!(page_set_contains(&lock, "test_page_set", &warned, 0x1000));
+    assert!(!page_set_contains(&lock, "test_page_set", &warned, 0x2000));
+    assert!(!warned.load(Ordering::Relaxed), "a healthy lock must not warn");
+
+    poison_page_set_lock(&lock);
+
+    assert!(
+        page_set_contains(&lock, "test_page_set", &warned, 0x2000),
+        "an excluded page must now be answered `true` (ask Python), not `false`"
+    );
+    assert!(warned.load(Ordering::Relaxed), "the reader must latch the warning");
+
+    // The latch gates the log line only: the fallback itself must keep
+    // working on every later probe.
+    assert!(page_set_contains(&lock, "test_page_set", &warned, 0x3000));
+}
+
+/// A poisoned lock must make `store_page_set` drop the update rather than
+/// panic, and the reader sharing that lock must not go on consulting the
+/// snapshot the dropped update was meant to replace.
+#[test]
+fn store_page_set_drops_update_on_poisoned_lock() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let lock = fresh_page_set(Some(&[0x1000]));
+    let warned = AtomicBool::new(false);
+    poison_page_set_lock(&lock);
+
+    // Neither installing nor clearing may panic.
+    store_page_set(
+        &lock,
+        "test_page_set",
+        &warned,
+        Some(std::iter::once(0x4000).collect()),
+    );
+    assert!(warned.load(Ordering::Relaxed), "the writer must latch the warning");
+    store_page_set(&lock, "test_page_set", &warned, None);
+
+    // The pre-poison snapshot still physically holds `{0x1000}` and not
+    // `{0x4000}`, but that cannot leak out: the reader sees the same poison
+    // and answers `true` for both.
+    assert!(page_set_contains(&lock, "test_page_set", &warned, 0x4000));
+    assert!(page_set_contains(&lock, "test_page_set", &warned, 0x9999));
+}
+
+/// End-to-end over the real call sites: poisoning one snapshot's lock must
+/// degrade only that predicate, leaving the sibling snapshot authoritative.
+///
+/// The two locks are independent (angr-gorvf.4.6 / .4.7), so a fault in one
+/// must not disable the other's optimization.
+#[test]
+fn poisoned_servable_lock_degrades_only_its_own_predicate() {
+    use std::sync::atomic::Ordering;
+
+    Python::initialize();
+    let cb = PythonCallbacks::new();
+    cb.py_set_python_servable_pages(vec![0x1000]);
+    cb.py_set_python_page_universe(vec![0x1000]);
+    assert!(!cb.python_can_serve_page(0x2000));
+
+    poison_page_set_lock(&cb.python_servable_pages);
+
+    assert!(
+        cb.python_can_serve_page(0x2000),
+        "the poisoned predicate must fail open"
+    );
+    assert!(
+        !cb.python_has_page(0x2000),
+        "the healthy predicate must still consult its own snapshot"
+    );
+    assert!(
+        SERVABLE_POISON_WARNED.load(Ordering::Relaxed),
+        "the real call site must latch the process-wide warning"
+    );
+
+    // A setter aimed at the poisoned snapshot drops its update without
+    // panicking, and the predicate keeps failing open.
+    cb.py_set_python_servable_pages(vec![0x2000]);
+    cb.py_clear_python_servable_pages();
+    assert!(cb.python_can_serve_page(0x3000));
+}
