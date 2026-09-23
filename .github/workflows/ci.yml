@@ -125,6 +125,16 @@ jobs:
         run: |
           python3 tools/audit_overflow_wraparound.py --self-test
           python3 tools/audit_overflow_wraparound.py
+      # angr-fs8kb.91: open-coding the address<->page-number shift (or the
+      # PAGE_SIZE/PAGE_MASK literals it derives from) is the repo's most
+      # persistent recurring class -- PageIndex's own doc records that every
+      # audit round has turned one up (angr-c7xno.49, angr-sqfj8.140,
+      # angr-fs8kb.70). Same baseline + `--self-test`-first shape as the three
+      # audits above; the baseline is empty and should stay so.
+      - name: Open-coded page-arithmetic audit
+        run: |
+          python3 tools/audit_page_shift.py --self-test
+          python3 tools/audit_page_shift.py
 
   rust_test:
     strategy:

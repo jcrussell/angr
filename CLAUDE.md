@@ -261,10 +261,47 @@ in that window, not merely some line of the rationale comment. Prefer that over
 `angr-xloth`, `angr-goev1`): the baseline is **empty** and, like the
 rounding-mode and SP-default ones, should stay so.
 
-The rounding-mode, SP-default and overflow audit scripts share comment/string
-blanking, test-file filtering and `fn`-name resolution via
+### Open-coded page arithmetic (Rust)
+
+An address and a page number are both bare `u64`, so converting between them is
+a shift by `PageIndex::SHIFT` — and open-coding that shift, or the
+`PAGE_SIZE`/`PAGE_MASK` literals it derives from, is the repo's most persistent
+recurring class. `PageIndex`'s own doc in `memory/page.rs` records that *every*
+audit round has found one (`angr-c7xno.49` — `PAGE_SIZE` spelled three
+incompatible ways in `interpreter/` alone; `angr-sqfj8.140` — `syscalls/page.rs`
+redefining the constants; `angr-fs8kb.70` — five more, two of them *inside*
+`end_page_inclusive`/`end_page_exclusive`, the helpers that exist to centralize
+the formula).
+
+`tools/audit_page_shift.py` gates it in CI (`rust_check`) against
+`tools/page_shift_baseline.txt`, same baseline + `--self-test`-first pattern as
+the three gates above. Two detectors, over all of `native/angr/src/`: (1) a
+`>>`/`<<` by a page shift — named (`PageIndex::SHIFT`, `Self::SHIFT`,
+`PAGE_SHIFT`; those constants have no other purpose, so no operand check) or
+the bare literal `12` on an address/page-shaped operand; (2) a page-size /
+page-mask **magic literal** (`0x1000`, `4096`, `0xFFF`, `4095`) adjacent to an
+address/page-shaped operand — `addr & !0xFFF` is `Address::page_base()` spelled
+by hand, and `length.div_ceil(0x1000)` cannot follow if `PAGE_SIZE` changes.
+Detector 2's adjacency requirement is what keeps it off the many legitimate
+`const MAX_...: usize = 4096;` buffer bounds, which sit to the right of an `=`
+and never next to an operator. Unlike the overflow gate's, this operand test
+matches **any** `_`-separated component rather than the trailing one: both ends
+of the conversion are shaped names and they put the marker in different
+positions (`page_num`/`page_addr` lead, `start_page`/`aligned_length` trail).
+
+Sanctioned spellings are all method calls or named constants — `Address::{page_num,
+page_base, page_offset}`, `PageIndex::{of, base_addr, range_covering}`,
+`PAGE_SIZE`/`PAGE_MASK` — so the scan never matches an already-fixed site.
+Exempt with a `page-shift-ok: <why>` comment on the flagged line or either of
+the two lines above; the four definitions of the conversion itself carry that
+marker, because something has to do the shift. The seven pre-existing open-coded
+sites (`state/export.rs`, `syscalls/cgc.rs`, `procedures/test_util.rs`) were
+fixed when the gate landed, so the baseline is **empty** and should stay so.
+
+The rounding-mode, SP-default, overflow and page-shift audit scripts share
+comment/string blanking, test-file filtering and `fn`-name resolution via
 `tools/rust_source_utils.py` — put new helpers there rather than copying a
-fourth blanker.
+fifth blanker.
 
 ### Where context lives
 

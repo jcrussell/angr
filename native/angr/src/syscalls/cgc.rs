@@ -53,7 +53,7 @@ use super::{
     MAX_IO_SIZE as MAX_CGC_BYTES, NativeSyscall, SyscallError, SyscallOutcome, exit,
     extract_concrete_arg, fresh_byte_names, gather_concrete_bytes, mint_symbolic_bytes,
 };
-use crate::memory::Permission;
+use crate::memory::{PAGE_MASK, PAGE_SIZE, Permission};
 use crate::procedures::stdin_common::mint_stdin_bytes;
 use crate::procedures::strings::write_bv_bytes;
 use crate::state::RustSimState;
@@ -75,7 +75,7 @@ const CGC_MAX_ALLOCATION: u64 = 0x1000_0000;
 /// back to Python rather than risk landing on or straddling the flag
 /// page — the proper overlap-handling lives in the Python procedure.
 const CGC_FLAG_PAGE_START: u64 = 0x4347_C000;
-const CGC_FLAG_PAGE_END: u64 = CGC_FLAG_PAGE_START + 0x1000;
+const CGC_FLAG_PAGE_END: u64 = CGC_FLAG_PAGE_START + PAGE_SIZE;
 
 /// Re-export so `syscalls::cgc::NativeTerminateSyscall` reads naturally
 /// alongside the other CGC handlers.
@@ -436,7 +436,7 @@ impl NativeSyscall for NativeAllocateSyscall {
             return Ok(SyscallOutcome::Continue { ret: CGC_EFAULT });
         }
 
-        let aligned_length = length.div_ceil(0x1000) * 0x1000;
+        let aligned_length = length.div_ceil(PAGE_SIZE) * PAGE_SIZE;
 
         // First-fit over the sinkhole freelist; bump otherwise.
         let chosen = if let Some(addr) = state.cgc_take_max_sinkhole(aligned_length) {
@@ -514,7 +514,7 @@ impl NativeSyscall for NativeDeallocateSyscall {
 
         // Validation order matches deallocate.py's claripy.ite_cases:
         // alignment, length, addr != 0, addr + length != 0.
-        if addr & 0xFFF != 0 || length == 0 || addr == 0 {
+        if addr & PAGE_MASK != 0 || length == 0 || addr == 0 {
             return Ok(SyscallOutcome::Continue { ret: CGC_EINVAL });
         }
         let end_excl = match addr.checked_add(length) {
@@ -525,7 +525,7 @@ impl NativeSyscall for NativeDeallocateSyscall {
             return Ok(SyscallOutcome::Continue { ret: CGC_EINVAL });
         }
 
-        let aligned_length = length.div_ceil(0x1000) * 0x1000;
+        let aligned_length = length.div_ceil(PAGE_SIZE) * PAGE_SIZE;
 
         // Walk consecutive mapped pages starting at `addr` up to
         // `aligned_length`. Python's procedure stops at the first
@@ -540,7 +540,7 @@ impl NativeSyscall for NativeDeallocateSyscall {
             if !state.memory().is_mapped(probe) {
                 break;
             }
-            allowed += 0x1000;
+            allowed += PAGE_SIZE;
         }
 
         if allowed == 0 {

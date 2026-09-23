@@ -6,6 +6,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use super::*;
+use crate::memory::Address;
 
 // =============================================================================
 // State Snapshot for Exploration Export
@@ -176,8 +177,8 @@ impl ExplorationStateSnapshot {
     /// would wrap and let an out-of-range request pass the `<= len` bound
     /// check and return a short, wrong slice).
     pub fn memory_load(&self, addr: u64, size: usize) -> Option<Vec<u8>> {
-        let page_addr = addr & !0xFFF;
-        let offset = (addr & 0xFFF) as usize;
+        let page_addr = Address::new(addr).page_base();
+        let offset = Address::new(addr).page_offset() as usize;
         let end = offset.checked_add(size)?;
 
         // Find the page

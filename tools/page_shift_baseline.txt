@@ -1,0 +1,8 @@
+# Open-coded page-arithmetic baseline -- see tools/audit_page_shift.py
+# One key per known site: <relpath>\t<fn>\t<normalized shape>.
+# Regenerate with: tools/audit_page_shift.py --update-baseline
+# This file should stay EMPTY. Routing through Address::page_num /
+# page_base / page_offset, PageIndex::of / base_addr / range_covering,
+# or the PAGE_SIZE / PAGE_MASK constants, or documenting the exception
+# with a `page-shift-ok:` comment, are all preferable; growing it needs
+# a reason in the commit message.

@@ -27,6 +27,11 @@ pub const PAGE_MASK: u64 = PAGE_SIZE - 1;
 /// deliberately stay raw `u64`: see the `invariant-address-vs-page-number`
 /// note on `Address`. `PageIndex` is for callers *above* that layer, which
 /// convert once at the boundary via [`PageIndex::get`].
+///
+/// Since angr-fs8kb.91 the recurrence is also gated in CI:
+/// `tools/audit_page_shift.py` flags an open-coded shift, or a bare
+/// `0x1000`/`0xFFF` standing in for [`PAGE_SIZE`]/[`PAGE_MASK`], anywhere
+/// under `native/angr/src/`.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize)]
 pub struct PageIndex(u64);
 
@@ -38,6 +43,7 @@ impl PageIndex {
     /// The page containing byte address `addr`.
     #[inline]
     pub fn of(addr: u64) -> Self {
+        // page-shift-ok: this *is* the address->page-number conversion.
         Self(addr >> Self::SHIFT)
     }
 
@@ -57,6 +63,7 @@ impl PageIndex {
     /// First byte address of this page.
     #[inline]
     pub fn base_addr(self) -> u64 {
+        // page-shift-ok: the inverse conversion's definition.
         self.0 << Self::SHIFT
     }
 

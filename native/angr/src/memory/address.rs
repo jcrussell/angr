@@ -61,6 +61,8 @@ impl Address {
     /// `memory/` uses (angr-c7xno.49).
     #[inline]
     pub const fn page_num(self) -> u64 {
+        // page-shift-ok: this *is* the address->page-number conversion
+        // every other call site is supposed to route through.
         self.0 >> PageIndex::SHIFT
     }
 
@@ -71,6 +73,7 @@ impl Address {
     /// open-code the `<< 12` (angr-c7xno.49).
     #[inline]
     pub const fn page_base(self) -> u64 {
+        // page-shift-ok: the inverse conversion's definition.
         self.page_num() << PageIndex::SHIFT
     }
 

@@ -7,7 +7,7 @@
 //! deliberately amd64-hardcoded `write_file_struct`) stay local to their
 //! module.
 
-use crate::memory::Permission;
+use crate::memory::{PAGE_MASK, Permission};
 use crate::state::{FdFlags, RustSimState};
 use crate::symbolic::RustBV;
 
@@ -37,7 +37,7 @@ pub(crate) fn setup_file_struct(state: &mut RustSimState, file_ptr: u64, fd: i32
     let arch_name = state.arch().name();
     let (off, _size) =
         crate::procedures::fileops::io_file_for_arch(arch_name).expect("test arch supported");
-    state.map_memory_data(file_ptr & !0xfff, &vec![0u8; 0x4000], Permission::RWX);
+    state.map_memory_data(file_ptr & !PAGE_MASK, &vec![0u8; 0x4000], Permission::RWX);
     let fd_bv = RustBV::concrete(fd as u32 as u128, 32);
     // This helper is `#[cfg(test)]` but lives outside a `*_tests.rs` file, so
     // the overflow audit still scans it.
