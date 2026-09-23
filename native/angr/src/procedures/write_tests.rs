@@ -3,7 +3,7 @@
 use super::*;
 use crate::memory::Permission;
 use crate::procedures::NativeSimProcedure;
-use crate::procedures::test_util::assert_over_limit;
+use crate::procedures::test_util::{arch_ret_bits, assert_over_limit, assert_ret_width};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
@@ -267,4 +267,42 @@ fn test_zero_length_write_does_not_demote() {
         fs.file_content_for_path("/tmp/flag").is_some(),
         "registry intact"
     );
+}
+
+/// `write` is `ssize_t`-typed on every return path, so all of them must be
+/// the arch word width — see [`assert_ret_width`] for why this file's
+/// `.as_u64()` assertions cannot catch a wrong one.
+#[test]
+fn test_write_return_widths() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory_data(0x1000, b"hello", Permission::RWX);
+    let bits = arch_ret_bits(&state);
+
+    // Zero-length early return.
+    let zero = NativeWrite
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(1, 64),
+                RustBV::concrete(0x1000, 64),
+                RustBV::concrete(0, 64),
+            ],
+        )
+        .unwrap()
+        .unwrap();
+    assert_ret_width(&zero, bits, "write (count=0)");
+
+    // stdout path.
+    let out = NativeWrite
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(1, 64),
+                RustBV::concrete(0x1000, 64),
+                RustBV::concrete(5, 64),
+            ],
+        )
+        .unwrap()
+        .unwrap();
+    assert_ret_width(&out, bits, "write (stdout)");
 }

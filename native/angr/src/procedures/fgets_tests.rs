@@ -4,7 +4,9 @@
 use super::*;
 use crate::memory::Permission;
 use crate::procedures::NativeSimProcedure;
-use crate::procedures::test_util::assert_over_limit;
+use crate::procedures::test_util::{
+    RET_INT_BITS, arch_ret_bits, assert_over_limit, assert_ret_width,
+};
 use crate::state::RustSimState;
 
 /// AMD64 `_IO_FILE._fileno` byte offset (see `io_file_for_arch` in fileops.rs).
@@ -800,4 +802,88 @@ fn fgets_size_at_limit_is_native() {
         .memory_load(0x2000 + MAX_FGETS_SIZE - 1, 1)
         .expect("mapped");
     assert_eq!(nul.as_u64(), Some(0));
+}
+
+/// Pointer-returning (`fgets`, `gets`) vs `int`-returning (`fgetc`,
+/// `getchar`, `getc`) procs in this file mint their returns at two different
+/// widths, and every other assertion here is an `.as_u64()` value check that
+/// cannot tell them apart — see [`assert_ret_width`].
+#[test]
+fn test_fgets_family_return_widths() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory(0x2000, 0x1000, Permission::RWX);
+    let stdin: u64 = 0x5000;
+    setup_file_struct(&mut state, stdin, 0);
+    let bits = arch_ret_bits(&state);
+
+    // char *fgets(...) — size 0 (NULL), normal read, and the invalid-fd -1.
+    let null = NativeFgets
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(stdin as u128, 64),
+            ],
+        )
+        .unwrap()
+        .unwrap();
+    assert_ret_width(&null, bits, "fgets (size=0)");
+
+    let ok = NativeFgets
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(10, 64),
+                RustBV::concrete(stdin as u128, 64),
+            ],
+        )
+        .unwrap()
+        .unwrap();
+    assert_ret_width(&ok, bits, "fgets (stdin)");
+
+    let bad_stream: u64 = 0x6000;
+    setup_file_struct(&mut state, bad_stream, -1);
+    let neg = NativeFgets
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(10, 64),
+                RustBV::concrete(bad_stream as u128, 64),
+            ],
+        )
+        .unwrap()
+        .unwrap();
+    assert_ret_width(&neg, bits, "fgets (invalid fd)");
+
+    // char *gets(char *s)
+    let gets = NativeGets
+        .call(&mut state, &[RustBV::concrete(0x2000, 64)])
+        .unwrap()
+        .unwrap();
+    assert_ret_width(&gets, bits, "gets");
+
+    // int fgetc/getchar/getc — 32-bit, NOT the arch word width.
+    let fgetc = NativeFgetc
+        .call(&mut state, &[RustBV::concrete(stdin as u128, 64)])
+        .unwrap()
+        .unwrap();
+    assert_ret_width(&fgetc, RET_INT_BITS, "fgetc");
+
+    let fgetc_bad = NativeFgetc
+        .call(&mut state, &[RustBV::concrete(bad_stream as u128, 64)])
+        .unwrap()
+        .unwrap();
+    assert_ret_width(&fgetc_bad, RET_INT_BITS, "fgetc (invalid fd)");
+
+    let getchar = NativeGetchar.call(&mut state, &[]).unwrap().unwrap();
+    assert_ret_width(&getchar, RET_INT_BITS, "getchar");
+
+    let getc = NativeGetc
+        .call(&mut state, &[RustBV::concrete(stdin as u128, 64)])
+        .unwrap()
+        .unwrap();
+    assert_ret_width(&getc, RET_INT_BITS, "getc");
 }

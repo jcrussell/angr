@@ -78,3 +78,34 @@ pub(crate) fn assert_over_limit(err: &crate::procedures::ProcedureError, what: &
         "expected an over-limit fallback mentioning {what}, got {err:?}"
     );
 }
+
+/// Width, in bits, of a C `int` return value — what an `int`-typed native
+/// procedure (`fgetc`, `getchar`, `getc`) builds its return `RustBV` at.
+/// Pointer/`size_t`/`ssize_t` returns use [`arch_ret_bits`] instead.
+pub(crate) const RET_INT_BITS: u32 = 32;
+
+/// Width, in bits, of a pointer / `size_t` / `ssize_t` return value on
+/// `state`'s arch — i.e. what [`crate::procedures::arch_word`] produces.
+pub(crate) fn arch_ret_bits(state: &RustSimState) -> u32 {
+    state.arch().bits()
+}
+
+/// Assert a native procedure's return value is exactly `bits` wide.
+///
+/// Every assertion on these returns used to be an `.as_u64()` value check, so
+/// nothing in the suite could tell a correctly-typed return from one built at
+/// the wrong width — the gap that let the return-register extension bug
+/// (angr-fs8kb.40) go unnoticed across seven procedure families. The width is
+/// observable to the guest: `write_proc_return_with_abi` zero- or
+/// sign-extends a narrow value to the return register per
+/// [`crate::arch::CallingConvention::return_extension`], so a return minted at
+/// 64 bits where the C signature says `int` writes bits an `int`-returning
+/// call can never set, with an identical `.as_u64()`.
+pub(crate) fn assert_ret_width(ret: &RustBV, bits: u32, what: &str) {
+    assert_eq!(
+        ret.width(),
+        bits,
+        "{what} must return a {bits}-bit value, got {}",
+        ret.width()
+    );
+}

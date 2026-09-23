@@ -2,7 +2,7 @@
 use super::*;
 use crate::memory::Permission;
 use crate::procedures::NativeSimProcedure;
-use crate::procedures::test_util::assert_over_limit;
+use crate::procedures::test_util::{arch_ret_bits, assert_over_limit, assert_ret_width};
 
 #[test]
 fn test_read_stdin() {
@@ -548,4 +548,64 @@ fn test_read_content_sym_over_4096_serves_whole_file_like_python() {
         )
         .expect("served natively");
     assert_eq!(result.unwrap().as_u64(), Some(0));
+}
+
+/// Every `read` return path is `ssize_t`-typed, so all of them must be the
+/// arch word width — see [`assert_ret_width`] for why the value assertions
+/// everywhere else in this file cannot catch a wrong one.
+#[test]
+fn test_read_return_widths() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory(0x2000, 0x1000, Permission::RWX);
+    let bits = arch_ret_bits(&state);
+
+    // Zero-length early return.
+    let zero = NativeRead
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(0, 64),
+            ],
+        )
+        .unwrap()
+        .unwrap();
+    assert_ret_width(&zero, bits, "read (count=0)");
+
+    // Symbolic-stdin path.
+    let stdin = NativeRead
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(4, 64),
+            ],
+        )
+        .unwrap()
+        .unwrap();
+    assert_ret_width(&stdin, bits, "read (stdin)");
+
+    // Tracked-file path.
+    let fd = state
+        .file_system()
+        .open_with_content(
+            "w.txt".to_string(),
+            crate::state::FdFlags::ReadOnly,
+            b"hello".to_vec(),
+        )
+        .expect("fd space is not exhausted in tests");
+    let file = NativeRead
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(u128::from(fd), 64),
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(5, 64),
+            ],
+        )
+        .unwrap()
+        .unwrap();
+    assert_ret_width(&file, bits, "read (tracked file)");
 }

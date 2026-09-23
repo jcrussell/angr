@@ -3,7 +3,7 @@
 use super::*;
 use crate::memory::Permission;
 use crate::procedures::NativeSimProcedure;
-use crate::procedures::test_util::assert_over_limit;
+use crate::procedures::test_util::{arch_ret_bits, assert_over_limit, assert_ret_width};
 use crate::state::{FdFlags, RustSimState};
 use crate::symbolic::RustBV;
 
@@ -430,4 +430,66 @@ fn fread_total_at_limit_is_native() {
         )
         .expect("a total exactly at the limit stays native");
     assert_eq!(ret.unwrap().as_u64(), Some(MAX_FREAD_SIZE));
+}
+
+/// `fread` returns `size_t`, so every return path must be the arch word
+/// width — see [`assert_ret_width`] for why this file's `.as_u64()`
+/// assertions cannot catch a wrong one.
+#[test]
+fn test_fread_return_widths() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory(0x2000, 0x1000, Permission::RWX);
+    let bits = arch_ret_bits(&state);
+
+    let fd = state
+        .file_system()
+        .open_with_content("a.txt".to_string(), FdFlags::ReadOnly, b"hello".to_vec())
+        .expect("fd space is not exhausted in tests");
+    let file_ptr = 0x2800;
+    write_file_struct(&mut state, file_ptr, fd);
+
+    // size * nmemb == 0 early return.
+    let zero = NativeFread
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(1, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(file_ptr as u128, 64),
+            ],
+        )
+        .unwrap()
+        .unwrap();
+    assert_ret_width(&zero, bits, "fread (count=0)");
+
+    // Concrete-content path.
+    let items = NativeFread
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(1, 64),
+                RustBV::concrete(5, 64),
+                RustBV::concrete(file_ptr as u128, 64),
+            ],
+        )
+        .unwrap()
+        .unwrap();
+    assert_ret_width(&items, bits, "fread (concrete content)");
+
+    // fread_unlocked delegates to fread, so it inherits the same width.
+    let unlocked = NativeFreadUnlocked
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(1, 64),
+                RustBV::concrete(1, 64),
+                RustBV::concrete(file_ptr as u128, 64),
+            ],
+        )
+        .unwrap()
+        .unwrap();
+    assert_ret_width(&unlocked, bits, "fread_unlocked");
 }

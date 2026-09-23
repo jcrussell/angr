@@ -2,7 +2,9 @@
 //! SimProcedures (extracted from stdio.rs). fwrite's live in `fwrite_tests.rs`.
 use super::*;
 use crate::memory::Permission;
-use crate::procedures::test_util::{open_registered_sym_file, setup_file_struct};
+use crate::procedures::test_util::{
+    arch_ret_bits, assert_ret_width, open_registered_sym_file, setup_file_struct,
+};
 
 #[test]
 fn test_fflush_returns_zero() {
@@ -293,4 +295,81 @@ fn test_fputs_empty_string_writes_nothing_returns_one() {
         .unwrap();
     assert_eq!(result.unwrap().as_u64(), Some(1));
     assert_eq!(state.stdout_buffer(), b"");
+}
+
+/// Every value-returning proc in `stdio.rs` builds its return through
+/// `arch_word`, i.e. at the arch word width, even though all five are `int`
+/// in C — unlike `fgets.rs`'s `fgetc`/`getchar`/`getc`, which mint a 32-bit
+/// `int`. The divergence is deliberate on this side: `arch_word` is what
+/// Python's `SimProcedure.ret` produces for these procs, and parity with the
+/// Python engine outranks matching the C prototype. This test pins the shape
+/// so changing it is a visible diff. See [`assert_ret_width`] for why the
+/// `.as_u64()` assertions above cannot see a width change at all.
+#[test]
+fn test_stdio_return_widths() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    let bits = arch_ret_bits(&state);
+    let file_ptr = 0x10000u64;
+    setup_file_struct(&mut state, file_ptr, 1);
+    state.map_memory_data(0x1000, b"hi\0", Permission::RWX);
+
+    let fflush = NativeFflush
+        .call(&mut state, &[RustBV::concrete(file_ptr as u128, 64)])
+        .unwrap()
+        .unwrap();
+    assert_ret_width(&fflush, bits, "fflush");
+
+    let setvbuf = NativeSetvbuf
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(file_ptr as u128, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0, 64),
+            ],
+        )
+        .unwrap()
+        .unwrap();
+    assert_ret_width(&setvbuf, bits, "setvbuf");
+
+    let feof = NativeFeof
+        .call(&mut state, &[RustBV::concrete(file_ptr as u128, 64)])
+        .unwrap()
+        .unwrap();
+    assert_ret_width(&feof, bits, "feof");
+
+    let ferror = NativeFerror
+        .call(&mut state, &[RustBV::concrete(file_ptr as u128, 64)])
+        .unwrap()
+        .unwrap();
+    assert_ret_width(&ferror, bits, "ferror");
+
+    let fputs = NativeFputs
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x1000, 64),
+                RustBV::concrete(file_ptr as u128, 64),
+            ],
+        )
+        .unwrap()
+        .unwrap();
+    assert_ret_width(&fputs, bits, "fputs");
+
+    // Unbacked FILE -> -1: the value alone cannot distinguish `(int)-1` from
+    // a word-width one, so only the width assertion covers this path.
+    let bad_ptr = 0x20000u64;
+    setup_file_struct(&mut state, bad_ptr, -1);
+    let fputs_err = NativeFputs
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x1000, 64),
+                RustBV::concrete(bad_ptr as u128, 64),
+            ],
+        )
+        .unwrap()
+        .unwrap();
+    assert_ret_width(&fputs_err, bits, "fputs (unbacked FILE)");
 }

@@ -2,7 +2,9 @@
 //! `stdio_tests.rs` alongside `fwrite.rs`).
 use super::*;
 use crate::memory::Permission;
-use crate::procedures::test_util::{assert_over_limit, open_registered_sym_file, setup_file_struct};
+use crate::procedures::test_util::{
+    arch_ret_bits, assert_over_limit, assert_ret_width, open_registered_sym_file, setup_file_struct,
+};
 
 #[test]
 fn test_fwrite_stdout() {
@@ -240,4 +242,64 @@ fn test_fwrite_zero_total_does_not_demote() {
         fs.file_content_for_path("/tmp/flag").is_some(),
         "registry intact"
     );
+}
+
+/// `fwrite` returns `size_t`, so every return path must be the arch word
+/// width — see [`assert_ret_width`] for why this file's `.as_u64()`
+/// assertions cannot catch a wrong one.
+#[test]
+fn test_fwrite_return_widths() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory_data(0x1000, b"hello world", Permission::RWX);
+    let file_ptr = 0x10000u64;
+    setup_file_struct(&mut state, file_ptr, 1);
+    let bits = arch_ret_bits(&state);
+
+    // size * nmemb == 0 no-op.
+    let zero = NativeFwrite
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x1000, 64),
+                RustBV::concrete(1, 64),
+                RustBV::concrete(0, 64),
+                RustBV::concrete(file_ptr as u128, 64),
+            ],
+        )
+        .unwrap()
+        .unwrap();
+    assert_ret_width(&zero, bits, "fwrite (count=0)");
+
+    // Normal stdout write.
+    let out = NativeFwrite
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x1000, 64),
+                RustBV::concrete(1, 64),
+                RustBV::concrete(5, 64),
+                RustBV::concrete(file_ptr as u128, 64),
+            ],
+        )
+        .unwrap()
+        .unwrap();
+    assert_ret_width(&out, bits, "fwrite (stdout)");
+
+    // Unbacked FILE -> -1. The value fits in 32 bits' worth of ones, so only
+    // the width assertion distinguishes `(size_t)-1` from `(int)-1` here.
+    let bad_ptr = 0x20000u64;
+    setup_file_struct(&mut state, bad_ptr, -1);
+    let err = NativeFwrite
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x1000, 64),
+                RustBV::concrete(1, 64),
+                RustBV::concrete(5, 64),
+                RustBV::concrete(bad_ptr as u128, 64),
+            ],
+        )
+        .unwrap()
+        .unwrap();
+    assert_ret_width(&err, bits, "fwrite (unbacked FILE)");
 }
