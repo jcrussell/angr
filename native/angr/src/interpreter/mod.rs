@@ -685,6 +685,13 @@ impl<'a> VEXInterpreter<'a> {
             // When Rust owns memory, flush stores to rust_memory instead of Python.
             if let Some(ref mut rust_mem) = self.rust_memory {
                 for (addr, data) in self.pending_stores.iter() {
+                    // SILENT(cat-c): the only failure here is an unmapped
+                    // target outside every lazy region (or a range that wraps
+                    // the address space), which the store path cannot repair.
+                    // The write is dropped while the drain below still records
+                    // it in `all_flushed_stores`, so a later load served from
+                    // that sidecar would see a value `rust_memory` never got —
+                    // log loudly and keep going.
                     if let Err(e) = rust_mem.store_concrete_le_bytes_automap_internal(*addr, data) {
                         log::error!("dropped concrete store at {addr:#x}: {e:?}");
                     }
@@ -701,8 +708,8 @@ impl<'a> VEXInterpreter<'a> {
                     // always byte-multiple (Ity_I8 and wider), so this is a
                     // "shouldn't happen" arm — log loudly and keep the value
                     // in all_flushed_symbolic_stores so the block-boundary
-                    // path still sees it, mirroring the concrete-store arm
-                    // above.
+                    // path still sees it. Different failure mode from the
+                    // concrete-store arm above, same cat-c handling.
                     if let Err(e) = rust_mem.import_symbolic_value(addr, bv.clone(), None) {
                         log::error!("dropped symbolic store at {addr:#x}: {e:?}");
                     }
@@ -742,6 +749,11 @@ impl<'a> VEXInterpreter<'a> {
         if let Some(ref mut rust_mem) = self.rust_memory {
             // Flush concrete pending stores
             for (addr, data) in self.pending_stores.drain() {
+                // SILENT(cat-c): same unmapped-target arm as the concrete
+                // branch of `flush_stores`, but here it is terminal — both
+                // sidecars are cleared below and `rust_memory` is about to be
+                // handed back to the state, so the dropped write is simply
+                // gone. Nothing at this layer can repair it; log loudly.
                 if let Err(e) = rust_mem.store_concrete_le_bytes_automap_internal(addr, &data) {
                     log::error!("dropped concrete store at {addr:#x}: {e:?}");
                 }
