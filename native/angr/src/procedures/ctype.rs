@@ -47,6 +47,24 @@ pub(crate) fn is_c_space(c: u8) -> bool {
     in_ranges(u64::from(c), C_SPACE_RANGES)
 }
 
+/// Could a C numeric subject sequence continue *through* byte `c`?
+///
+/// The shared over-approximation behind both growing-window raw scans —
+/// `strtol::may_continue_subject` (via its `RustBV` wrapper) and
+/// `strtod::may_continue_literal`, which adds `.` for the fractional part.
+/// Both run *before* their parser has picked a base or a form, so this
+/// answers with "every byte any prefix, digit or exponent region could
+/// contain": whitespace, a sign, or an alphanumeric (decimal and hex digits,
+/// the `0x`/`0X` marker, the `e`/`E`/`p`/`P` exponent markers, and the
+/// `inf`/`infinity`/`nan` spellings).
+///
+/// Over-approximating only costs a few extra guest loads; the parsers stop at
+/// the first byte they cannot consume regardless. Shared so the two windows
+/// cannot drift apart into accepting different subject sequences.
+pub(crate) fn may_continue_numeric_subject(c: u8) -> bool {
+    is_c_space(c) || c == b'+' || c == b'-' || c.is_ascii_alphanumeric()
+}
+
 /// Concrete twin of [`ranges_predicate`]'s symbolic disjunction.
 fn in_ranges(v: u64, ranges: &[(u8, u8)]) -> bool {
     ranges

@@ -419,3 +419,87 @@ fn test_strtod_hex_prefix_without_digits_returns_signed_zero() {
         );
     }
 }
+
+/// A digit run longer than the initial `MAX_LEN` window must not be truncated
+/// mid-mantissa: the raw scan grows while the window still ends on a byte the
+/// literal could continue through (bd angr-fs8kb.92). Before the grow loop the
+/// 301-byte literal was cut to 256 bytes, so `1e300` parsed as `1e255` and
+/// `*endptr` landed mid-digit-run.
+#[test]
+fn test_strtod_long_digit_run_past_initial_window() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    let mut literal = b"1".to_vec();
+    literal.extend(std::iter::repeat_n(b'0', 300));
+    setup_string(&mut state, 0x1000, &literal);
+    state.map_memory_data(0x8000, &[0u8; 8], Permission::RWX);
+    let p = NativeStrtod;
+    p.call(
+        &mut state,
+        &[RustBV::concrete(0x1000, 64), RustBV::concrete(0x8000, 64)],
+    )
+    .unwrap();
+    assert_eq!(read_xmm0_low64(&state), 1e300f64.to_bits());
+    let end = state.memory_load(0x8000, 8).unwrap();
+    assert_eq!(end.as_u64(), Some(0x1000 + literal.len() as u64));
+}
+
+/// Leading whitespace counts against the same window, so a literal that starts
+/// past `MAX_LEN` used to be invisible entirely: the truncated buffer was all
+/// spaces, `floating_prefix_len` returned 0, and the call reported "no
+/// conversion" (0.0 with `*endptr == nptr`) for a perfectly good `2.5`.
+#[test]
+fn test_strtod_literal_after_long_whitespace_run() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    let mut literal = vec![b' '; 300];
+    literal.extend_from_slice(b"2.5");
+    setup_string(&mut state, 0x1000, &literal);
+    state.map_memory_data(0x8000, &[0u8; 8], Permission::RWX);
+    let p = NativeStrtod;
+    p.call(
+        &mut state,
+        &[RustBV::concrete(0x1000, 64), RustBV::concrete(0x8000, 64)],
+    )
+    .unwrap();
+    assert_eq!(read_xmm0_low64(&state), 2.5f64.to_bits());
+    let end = state.memory_load(0x8000, 8).unwrap();
+    assert_eq!(end.as_u64(), Some(0x1000 + 303));
+}
+
+/// The grow loop stops at `MAX_SCAN_BYTES`; past it the old truncation
+/// semantics are kept deliberately (a 4 KiB numeric literal is not a shape real
+/// code produces, and the scan is one guest load per byte).
+#[test]
+fn test_strtod_scan_window_ceiling_truncates() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    setup_string(&mut state, 0x1000, &vec![b'1'; 5000]);
+    state.map_memory_data(0x8000, &[0u8; 8], Permission::RWX);
+    let p = NativeStrtod;
+    p.call(
+        &mut state,
+        &[RustBV::concrete(0x1000, 64), RustBV::concrete(0x8000, 64)],
+    )
+    .unwrap();
+    let end = state.memory_load(0x8000, 8).unwrap();
+    assert_eq!(end.as_u64(), Some(0x1000 + MAX_SCAN_BYTES as u64));
+}
+
+/// The window must not grow past a byte no part of the grammar can consume:
+/// a short literal followed by a `,` reads once and stops, even though the
+/// string continues well past `MAX_LEN`.
+#[test]
+fn test_strtod_window_stops_at_non_literal_byte() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    let mut s = b"1.5,".to_vec();
+    s.extend(std::iter::repeat_n(b'9', 400));
+    setup_string(&mut state, 0x1000, &s);
+    state.map_memory_data(0x8000, &[0u8; 8], Permission::RWX);
+    let p = NativeStrtod;
+    p.call(
+        &mut state,
+        &[RustBV::concrete(0x1000, 64), RustBV::concrete(0x8000, 64)],
+    )
+    .unwrap();
+    assert_eq!(read_xmm0_low64(&state), 1.5f64.to_bits());
+    let end = state.memory_load(0x8000, 8).unwrap();
+    assert_eq!(end.as_u64(), Some(0x1000 + 3));
+}

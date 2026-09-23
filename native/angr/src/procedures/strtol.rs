@@ -21,7 +21,7 @@
 //! `all(..)` check followed by a re-`unwrap`ping second pass.
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
-use super::ctype::is_c_space;
+use super::ctype::{is_c_space, may_continue_numeric_subject};
 use super::{ProcedureError, arch_word};
 use crate::state::RustSimState;
 use crate::symbolic::{RustBV, SymContext};
@@ -96,20 +96,15 @@ fn read_bytes_until_null(
 /// Could the subject sequence continue *through* `b`?
 ///
 /// Base-agnostic on purpose — `read_subject_bytes` runs before
-/// `parse_concrete_prefix` has picked a base, so it over-approximates with
-/// "every byte any prefix or digit region could contain". Over-approximating
-/// only costs a few extra guest loads; the parsers stop at the first byte they
-/// cannot consume regardless.
+/// `parse_concrete_prefix` has picked a base — so the byte test is
+/// `ctype::may_continue_numeric_subject`, shared with `strtod`'s window.
 ///
 /// A symbolic byte answers `false`: the symbolic path caps its accumulator at
 /// `MAX_DIGITS` digit positions (see `run_strtol`), so growing the window past
 /// a symbolic byte buys nothing.
 fn may_continue_subject(b: &RustBV) -> bool {
     match b.as_u64() {
-        Some(v) => {
-            let c = v as u8;
-            is_c_space(c) || c == b'+' || c == b'-' || c.is_ascii_alphanumeric()
-        }
+        Some(v) => may_continue_numeric_subject(v as u8),
         None => false,
     }
 }

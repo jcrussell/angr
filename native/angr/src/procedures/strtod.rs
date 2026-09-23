@@ -4,9 +4,10 @@
 //! double strtod(const char *nptr, char **endptr);
 //! ```
 //!
-//! Concrete fast path: scan up to a fixed number of bytes until the first
-//! null terminator, leading whitespace + sign + optional digits-dot-digits
-//! + optional exponent, and feed the slice through Rust's `f64::from_str`.
+//! Concrete fast path: scan the raw literal window (see `read_literal_bytes`)
+//! up to the first null terminator, recognize leading whitespace + sign +
+//! optional digits-dot-digits + optional exponent, and feed the slice through
+//! Rust's `f64::from_str`.
 //!
 //! C99 hex-float literals (`0x1.8p3`) are the exception: `f64::from_str`
 //! rejects that syntax outright, so `parse_hex_float` handles them.
@@ -23,15 +24,65 @@
 //! integer-return store is suppressed by returning `Ok(None)`.
 
 use super::arch_word;
-use super::ctype::is_c_space;
+use super::ctype::{is_c_space, may_continue_numeric_subject};
 use super::strings::scan_concrete_bounded;
 use super::{ProcedureError, extract_concrete_arg};
 use crate::arch::cc_for_arch;
+use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
-/// Maximum byte scan length when reading the numeric literal. Real strings
-/// rarely need more than ~64 bytes; cap the work even for hostile inputs.
+/// Initial raw-scan window when reading the numeric literal. Real strings
+/// rarely need more than ~64 bytes; `read_literal_bytes` grows past this only
+/// when the window ends on a byte the literal could continue through.
 const MAX_LEN: usize = 256;
+
+/// Hard ceiling on the raw scan window `read_literal_bytes` will grow to.
+///
+/// `MAX_LEN` alone used to be the whole scan, with the call site asserting
+/// that "hitting the cap is fine — parsing stops at the first non-numeric byte
+/// anyway". That reasoning is wrong for the same reason it was wrong in
+/// `strtol` (bd angr-fs8kb.37, memory `invariant-scan-window-bounds-whole-subject`):
+/// the cap bounds the *whole* subject sequence, not the tail past it, so a
+/// literal longer than the window — a long digit run, or long leading
+/// whitespace ahead of a short literal — got a mantissa truncated mid-run and
+/// an `*endptr` landing mid-literal (bd angr-fs8kb.92).
+///
+/// Past this ceiling the old truncation semantics remain, deliberately: the
+/// scan is O(window) guest memory loads with no null in sight, and a 4 KiB
+/// numeric literal is not a shape real code produces. Pinned by
+/// `test_strtod_scan_window_ceiling_truncates`.
+const MAX_SCAN_BYTES: usize = 4096;
+
+/// Could a C99 floating-point literal continue *through* byte `c`?
+///
+/// `ctype::may_continue_numeric_subject` (whitespace, sign, alphanumeric —
+/// which covers hex digits, the `0x` marker, the `e`/`E`/`p`/`P` exponent
+/// markers and the `inf`/`nan` spellings) plus `.` for the fractional part.
+fn may_continue_literal(c: u8) -> bool {
+    may_continue_numeric_subject(c) || c == b'.'
+}
+
+/// Read the raw literal window at `addr`, doubling from `MAX_LEN` up to
+/// `MAX_SCAN_BYTES` while the window keeps ending on a byte a floating-point
+/// literal could continue through.
+///
+/// Stopping early is safe in both directions: a window that ended on a null
+/// (short read) or on a byte no part of the grammar can consume already
+/// contains the whole literal, and reading *more* than the literal never
+/// changes what `floating_prefix_len` accepts.
+fn read_literal_bytes(state: &mut RustSimState, addr: u64) -> Result<Vec<u8>, ProcedureError> {
+    let mut window = MAX_LEN;
+    loop {
+        let (bytes, null_found) = scan_concrete_bounded(state, addr, window, "nptr")?;
+        if null_found
+            || window >= MAX_SCAN_BYTES
+            || !bytes.last().is_some_and(|&c| may_continue_literal(c))
+        {
+            return Ok(bytes);
+        }
+        window = (window * 2).min(MAX_SCAN_BYTES);
+    }
+}
 
 /// Walk `bytes` from the front and return the byte index immediately past
 /// the longest prefix that looks like a C99 floating-point literal. Returns
@@ -100,7 +151,7 @@ fn floating_prefix_len(bytes: &[u8]) -> usize {
             // at offset 2. Returning `prefix_start` here discarded both the
             // `0` and the sign (angr-6cp06.2).
             // overflow-ok: `start` indexes into `bytes`, whose length is
-            // capped at `MAX_LEN`, so `+ 1` cannot approach `usize::MAX`.
+            // capped at `MAX_SCAN_BYTES`, so `+ 1` cannot approach `usize::MAX`.
             return start + 1;
         }
         if i < bytes.len() && (bytes[i] == b'p' || bytes[i] == b'P') {
@@ -314,12 +365,14 @@ crate::declare_proc! {
         let nptr = extract_concrete_arg(&nptr, "nptr")?;
         let endptr = extract_concrete_arg(&endptr, "endptr")?;
 
-        // Scan the concrete numeric prefix up to the first null (cap = MAX_LEN;
-        // hitting the cap is fine — parsing stops at the first non-numeric byte
-        // anyway). A symbolic byte propagates as `Err(SymbolicArgument)` and
-        // falls back to Python: strtod has no useful symbolic-FP story without
-        // a real floating-point solver.
-        let (bytes, _null_found) = scan_concrete_bounded(state, nptr, MAX_LEN, "nptr")?;
+        // Scan the raw literal window up to the first null. The window grows
+        // past `MAX_LEN` when it ends on a byte the literal could continue
+        // through, so a long digit run is not truncated mid-mantissa; see
+        // `MAX_SCAN_BYTES` for the ceiling where truncation does resume. A
+        // symbolic byte propagates as `Err(SymbolicArgument)` and falls back to
+        // Python: strtod has no useful symbolic-FP story without a real
+        // floating-point solver.
+        let bytes = read_literal_bytes(state, nptr)?;
 
         let prefix_end = floating_prefix_len(&bytes);
         let (value, end_offset) = if prefix_end == 0 {
