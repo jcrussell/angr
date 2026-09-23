@@ -28,6 +28,60 @@ pub(super) struct LoadGArgs<'s> {
     pub(super) cvt: &'s IRLoadGOp,
 }
 
+/// VEX's payload for a guarded dirty call's result temp when the guard turns
+/// out false: the repeating `0x5555…5555` bit pattern libvex_ir.h's `IRDirty`
+/// documentation promises. Truncated to the temp's width by
+/// [`RustBV::concrete`].
+const DIRTY_GUARD_FALSE_PATTERN: u128 = 0x5555_5555_5555_5555_5555_5555_5555_5555;
+
+/// The bit width of `dirty`'s result temp, or `0` when it names none.
+///
+/// A dirty call that names a result temp must have that temp in the block's
+/// tyenv; a missing entry is malformed IR, not a "assume 64" case. The width
+/// feeds the native-handler write path (`RustBV::concrete`), the
+/// Python-callback path (`bytes_to_bv`) and the guard-false poison below, so
+/// defaulting silently produces a wrong-width tmp that propagates instead of
+/// erroring. Fail loud, matching the `IRStmt::LLSC` arm of
+/// `execute_stmt_with_callbacks`, which does the same lookup for the same
+/// condition (angr-03vl4.33).
+fn dirty_ret_ty_bits(
+    dirty: &crate::vex::ir::IRDirty,
+    irsb: &IRSB,
+) -> Result<u32, CbExecutionError> {
+    let Some(tmp) = dirty.tmp else {
+        return Ok(0); // No return value.
+    };
+    Ok(irsb
+        .tyenv
+        .get(tmp)
+        .ok_or_else(|| {
+            CbExecutionError::InvalidIR(format!(
+                "dirty call '{}': result temp {tmp} not in tyenv",
+                dirty.cee.name
+            ))
+        })?
+        .bits())
+}
+
+/// The value a guarded dirty call writes to its result temp when the guard is
+/// false — see [`DIRTY_GUARD_FALSE_PATTERN`] and `handle_dirty_call`'s
+/// `GuardClass::Never` arm.
+///
+/// Declines above 128 bits, where `RustBV::Concrete`'s `u128` payload cannot
+/// hold the pattern (the same storage ceiling `RustBV::ones` documents): a
+/// masked-to-zero-high-half poison would be a silently wrong *defined* value,
+/// so route the block to Python instead. Only `Ity_V256` can reach this, and
+/// no dirty helper in the supported set returns one.
+fn dirty_guard_false_poison(name: &str, bits: u32) -> Result<RustBV, CbExecutionError> {
+    if bits > 128 {
+        return Err(CbExecutionError::NeedPythonFallback(format!(
+            "dirty call '{name}': guard-false poison for a {bits}-bit result \
+             temp exceeds the 128-bit concrete payload"
+        )));
+    }
+    Ok(RustBV::concrete(DIRTY_GUARD_FALSE_PATTERN, bits))
+}
+
 /// Tristate classification of a guarded statement's guard expression.
 ///
 /// `Exit`, `StoreG`, `LoadG` and `Dirty` all ask the same two questions of
@@ -737,8 +791,25 @@ impl<'a> VEXInterpreter<'a> {
         if let Some(guard) = &dirty.guard {
             let guard_val = self.eval_expr_with_callbacks(callbacks, guard, &irsb.tyenv)?;
             match self.classify_guard(&guard_val) {
-                // Guard is false - skip the dirty call.
-                GuardClass::Never => return Ok(StmtResult::Continue),
+                // Guard is false - skip the dirty call, but still define the
+                // result temp. libvex_ir.h's `IRDirty` doc promises that "if
+                // at runtime the guard evaluates to false, .tmp has an
+                // 0x555...555 bit pattern written to it", which is precisely
+                // why VEX emits conditional calls that assign `.tmp` and why
+                // downstream statements read it unconditionally. Our `temps`
+                // is a `Vec<Option<RustBV>>` with no lazy default, so leaving
+                // the slot `None` made such a read fail with
+                // `CbExecutionError::UnknownTemp` (angr-fs8kb.57). Mirrors
+                // `handle_loadg`'s `Never` arm, which writes `alt` for the
+                // same reason.
+                GuardClass::Never => {
+                    if let Some(tmp) = dirty.tmp {
+                        let bits = dirty_ret_ty_bits(dirty, irsb)?;
+                        let poison = dirty_guard_false_poison(&dirty.cee.name, bits)?;
+                        self.write_tmp(tmp, poison)?;
+                    }
+                    return Ok(StmtResult::Continue);
+                }
                 // Guard must be true - fall through and execute it.
                 GuardClass::Always => {}
                 GuardClass::Symbolic => {
@@ -775,28 +846,7 @@ impl<'a> VEXInterpreter<'a> {
             }
         }
 
-        // Determine return type bits. A dirty call that names a result temp
-        // must have that temp in the block's tyenv; a missing entry is
-        // malformed IR, not a "assume 64" case. `ret_ty_bits` feeds both the
-        // native-handler write path (`RustBV::concrete` below) and the
-        // Python-callback path (`bytes_to_bv`), so defaulting silently
-        // produces a wrong-width tmp that propagates instead of erroring.
-        // Fail loud, matching the `IRStmt::LLSC` arm of
-        // `execute_stmt_with_callbacks`, which does the same lookup for the
-        // same condition (angr-03vl4.33).
-        let ret_ty_bits = if let Some(tmp) = dirty.tmp {
-            irsb.tyenv
-                .get(tmp)
-                .ok_or_else(|| {
-                    CbExecutionError::InvalidIR(format!(
-                        "dirty call '{}': result temp {tmp} not in tyenv",
-                        dirty.cee.name
-                    ))
-                })?
-                .bits()
-        } else {
-            0 // No return value
-        };
+        let ret_ty_bits = dirty_ret_ty_bits(dirty, irsb)?;
 
         // Try native dirty helper dispatch first
         if all_args_concrete
