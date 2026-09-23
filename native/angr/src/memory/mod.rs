@@ -836,7 +836,12 @@ impl SymbolicMemory {
             }
             let bytes = page.load_concrete(offset_in_page, concrete_run as u16);
             result.extend(bytes);
-            current = Address(current.raw().saturating_add(concrete_run as u64));
+            // overflow-ok: Address + u64 is wrapping_add, matching every other
+            // address-stepping loop in this file (angr-fs8kb.69). A run ending
+            // exactly at 2^64 must continue at page 0 — `saturating_add` clamped
+            // to u64::MAX instead, and the outer loop then re-read the final
+            // byte until `max_size` was satisfied.
+            current = current + concrete_run as u64;
             if concrete_run < to_read {
                 break; // hit a symbolic or Multi byte
             }

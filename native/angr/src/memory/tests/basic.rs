@@ -846,3 +846,40 @@ fn add_lazy_region_boundary_sweep_matches_overflow_guard() {
         }
     }
 }
+
+#[test]
+fn test_read_concrete_bytes_for_lift_wraps_past_top_of_address_space() {
+    // angr-fs8kb.69: the concrete-run advance used `saturating_add`, so a run
+    // ending exactly at 2^64 clamped `current` to u64::MAX instead of wrapping
+    // to page 0 like every other address-stepping loop in `mod.rs`. The outer
+    // loop then kept re-reading the final byte until `max_size` was satisfied,
+    // returning a lift buffer with a duplicated trailing byte rather than the
+    // bytes the guest would actually execute after the wrap.
+    let last_page = u64::MAX - 0xFFF;
+
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    mem.map(last_page, 0x1000, Permission::RWX);
+    mem.map(0x0u64, 0x1000, Permission::RWX);
+    // 4 bytes ending exactly at u64::MAX, then 4 more at the bottom of page 0.
+    mem.store_concrete(u64::MAX - 3, RustBV::concrete(0x4433_2211, 32))
+        .unwrap();
+    mem.store_concrete(0x0u64, RustBV::concrete(0x8877_6655, 32))
+        .unwrap();
+    assert_eq!(
+        mem.read_concrete_bytes_for_lift(u64::MAX - 3, 8),
+        Some(vec![0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88]),
+        "a lift read crossing 2^64 must continue at page 0, not repeat the last byte"
+    );
+
+    // With page 0 unmapped the wrap is a plain short read: the run stops at the
+    // top of the address space instead of manufacturing trailing bytes.
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    mem.map(last_page, 0x1000, Permission::RWX);
+    mem.store_concrete(u64::MAX - 3, RustBV::concrete(0x4433_2211, 32))
+        .unwrap();
+    assert_eq!(
+        mem.read_concrete_bytes_for_lift(u64::MAX - 3, 8),
+        Some(vec![0x11, 0x22, 0x33, 0x44]),
+        "a lift read that wraps into an unmapped page 0 must stop, not duplicate"
+    );
+}
