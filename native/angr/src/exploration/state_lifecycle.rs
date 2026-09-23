@@ -465,6 +465,23 @@ impl RustExplorationManager {
             self.sm.remove_root(id);
         }
 
+        // The native uniqueness filter's seen-hash set is stage-scoped too.
+        // `apply_uniqueness_filter` (helpers.rs) drops any active state whose
+        // register-tuple hash is already in `uniqueness_set`, so a hash left
+        // over from stage 1 silently sends a legitimate stage-2 state to
+        // `not_unique` and loses it from exploration. Only
+        // `register_uniqueness_filter` / `disable_uniqueness_filter`
+        // (manager_methods_techniques.rs) used to clear it, and neither is
+        // part of the documented reuse pattern (bd `multi-stage-manager-reuse`)
+        // this method exists to serve (angr-fs8kb.9).
+        //
+        // `ConstraintTracker`'s two sibling sets (`skip_find_predicate_states`
+        // / `skip_avoid_predicate_states`) are deliberately left alone: they
+        // are keyed by the monotonic `StateId`, never reused across the
+        // dropped states, so a stale entry can only match an id that no longer
+        // exists.
+        self.constraint_tracker.uniqueness_set.clear();
+
         Ok(found_state_id)
     }
 }

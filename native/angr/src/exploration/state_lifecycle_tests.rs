@@ -962,3 +962,60 @@ fn reset_for_stage_clears_pending_callbacks_and_parked_bounces() {
     assert_eq!(mgr.sm.stash_of(found_id), Some(STASH_ACTIVE));
     assert_eq!(mgr.sm.get_root(found_id), Some(found_id));
 }
+
+/// Regression for angr-fs8kb.9: `_reset_for_stage` swept the stashes and both
+/// pending buckets but left `constraint_tracker.uniqueness_set` populated with
+/// stage-1 register-tuple hashes, so `apply_uniqueness_filter` would send a
+/// legitimate stage-2 state whose hash collided with any stage-1 state to
+/// `not_unique` and lose it from exploration.
+///
+/// Asserted behaviourally rather than by peeking at the set size: a stage-2
+/// state that reuses a stage-1 register tuple must stay active.
+#[test]
+fn reset_for_stage_clears_uniqueness_seen_set() {
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    mgr.constraint_tracker.uniqueness_registers = vec!["rax".to_string()];
+
+    // Stage 1: two distinct tuples, both recorded in the seen-set.
+    for v in [0x10u128, 0x20] {
+        let mut s = RustSimState::new("amd64").expect("state");
+        s.set_register("rax", RustBV::concrete(v, 64));
+        mgr.sm.push(STASH_ACTIVE, s);
+    }
+    mgr.apply_uniqueness_filter();
+    assert_eq!(mgr.uniqueness_set_size(), 2, "stage-1 hashes recorded");
+
+    let mut found = RustSimState::new("amd64").expect("state");
+    found.set_register("rax", RustBV::concrete(0x30, 64));
+    let found_id = found.state_id();
+    mgr.sm.push("found", found);
+    mgr.sm.set_root(found_id, found_id);
+
+    assert_eq!(
+        mgr._reset_for_stage(found_id).expect("reset for stage"),
+        found_id
+    );
+    assert_eq!(
+        mgr.uniqueness_set_size(),
+        0,
+        "stage-1 hashes cleared by reset_for_stage"
+    );
+
+    // Stage 2: a fresh state reusing a stage-1 tuple must survive the filter.
+    let mut stage2 = RustSimState::new("amd64").expect("state");
+    stage2.set_register("rax", RustBV::concrete(0x10, 64));
+    mgr.sm.push(STASH_ACTIVE, stage2);
+    mgr.apply_uniqueness_filter();
+
+    assert_eq!(
+        mgr.sm.count(STASH_ACTIVE),
+        2,
+        "stage-2 state reusing a stage-1 register tuple stays active"
+    );
+    assert!(
+        mgr.sm
+            .get("not_unique")
+            .is_none_or(std::collections::VecDeque::is_empty),
+        "no stage-2 state dropped as a stage-1 duplicate"
+    );
+}
