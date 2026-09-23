@@ -228,3 +228,63 @@ fn growth_one_byte_over_cap_is_rejected() {
     }
     assert_eq!(state.posix_brk(), DEFAULT_BRK);
 }
+
+// angr-fs8kb.51: the collision scan used to step a *byte* address by
+// PAGE_SIZE, which wraps to 0 on the step past the final page (release builds
+// set no overflow-checks), and the to-be-mapped length came from aligning
+// `new_brk` up — also a wrap to 0 for a break inside the final page. Both now
+// go through `PageIndex::range_covering` over page *numbers*, driven by a
+// last-byte length. MAX_BRK_GROWTH bounds each growth relative to the current
+// break, not the absolute break, so repeated in-bounds growths reach here.
+
+#[test]
+fn brk_into_final_page_maps_it_without_wrapping() {
+    let h = NativeBrkSyscall;
+    let mut state = fresh_state();
+    // Break sitting at the start of the last page; grow it to the very top of
+    // the address space (growth 0x1000, far under MAX_BRK_GROWTH).
+    let last_page_base = !0xFFF_u64;
+    state.set_posix_brk(last_page_base);
+    // A mapped low page would be rescanned by a wrapped byte-stepping loop.
+    state.map_memory(0x1000, 0x1000, Permission::RW);
+
+    let outcome = h
+        .call(&mut state, &[RustBV::concrete(u128::from(u64::MAX), 64)])
+        .expect("must complete natively, not report a phantom collision");
+    match outcome {
+        SyscallOutcome::Continue { ret } => assert_eq!(ret, u64::MAX),
+        other => panic!("expected Continue, got {other:?}"),
+    }
+    assert_eq!(state.posix_brk(), u64::MAX);
+    assert_eq!(
+        state.memory().page_permissions(last_page_base >> 12),
+        Some(Permission::RWX),
+        "the final page must be mapped, not skipped by a wrapped end",
+    );
+    assert_eq!(
+        state.memory().page_permissions(1),
+        Some(Permission::RW),
+        "the pre-existing low page must be untouched",
+    );
+}
+
+#[test]
+fn brk_collision_in_final_page_is_detected() {
+    let h = NativeBrkSyscall;
+    let mut state = fresh_state();
+    let last_page_base = !0xFFF_u64;
+    state.set_posix_brk(last_page_base);
+    // Pre-map the one page the grow needs. The old byte-stepping scan never
+    // ran here (its aligned-up end wrapped to 0, so `page_addr < end` was
+    // false on the first iteration), silently mapping over the collision
+    // instead of falling back to Python's SimMemoryError fixup.
+    state.map_memory(last_page_base, 0x1000, Permission::RW);
+
+    let err = h
+        .call(&mut state, &[RustBV::concrete(u128::from(u64::MAX), 64)])
+        .expect_err("collision must fall back to Python");
+    assert!(
+        format!("{err:?}").contains("already mapped"),
+        "expected a collision error, got {err:?}",
+    );
+}

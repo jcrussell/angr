@@ -22,7 +22,7 @@
 //! detect that any page in the to-be-mapped range is already mapped
 //! we fall back to the Python path to preserve semantics.
 
-use super::page::{PAGE_MASK, PAGE_SIZE, PageIndex};
+use super::page::{PAGE_MASK, PageIndex};
 use super::require_syscall_args;
 use super::{
     BoundedArg, MAX_MAP_SIZE as MAX_BRK_GROWTH, NativeSyscall, SyscallError, SyscallOutcome,
@@ -96,39 +96,49 @@ impl NativeSyscall for NativeBrkSyscall {
         };
 
         if need_map {
-            // Align up: pages [aligned_start, aligned_end). wrapping_add since
-            // new_brk is a guest-controlled concrete value bounded only by
-            // MAX_BRK_GROWTH relative to `current`, not by an absolute cap.
+            // The range to map is every page from `aligned_start` through the
+            // *last byte before the break* — the break is the address of the
+            // first unmapped byte, same convention `need_map` above uses. It is
+            // expressed as (start, length) rather than an aligned exclusive
+            // end because `new_brk` is guest-controlled and bounded only by
+            // MAX_BRK_GROWTH *relative to `current`*, not by an absolute cap:
+            // repeated in-bounds growths can walk the break into the final
+            // page, where aligning the end up wraps to 0.
+            //
+            // Neither expression below can wrap. `need_map` is true only when
+            // the two page floors differ, which forces `current < new_brk`
+            // (so `new_brk >= 1`) and `aligned_start <= new_brk - 1`; the
+            // saturating forms keep that argument from being load-bearing.
             let aligned_start = current.wrapping_add(PAGE_MASK) & !PAGE_MASK;
-            let aligned_end = new_brk.wrapping_add(PAGE_MASK) & !PAGE_MASK;
+            let map_len = new_brk
+                .saturating_sub(1)
+                .saturating_sub(aligned_start)
+                .saturating_add(1);
 
             // Collision check: if any page in the new range is already
             // mapped, fall back to Python so its SimMemoryError-driven
-            // fixup logic runs.
+            // fixup logic runs. `PageIndex::range_covering` is the same helper
+            // `mprotect.rs` and `mmap.rs::range_collides` use: it iterates page
+            // *numbers*, so there is no byte-address `+= PAGE_SIZE` step that
+            // could wrap to 0 past the final page and rescan low memory
+            // (angr-fs8kb.49's bug, in the shape that produced it —
+            // angr-fs8kb.51), and open-coding the shift is the drift
+            // `PageIndex` exists to prevent (see its doc in `memory/page.rs`).
             let memory = state.memory();
-            let mut page_addr = aligned_start;
-            while page_addr < aligned_end {
+            for page in PageIndex::range_covering(aligned_start, map_len) {
                 // `.get()` is the one boundary crossing: `page_permissions` is
-                // part of the raw-`u64` page API inside `memory/`. Open-coding
-                // the shift is the drift `PageIndex` exists to prevent — see
-                // its doc in `memory/page.rs`, and the identical conversion in
-                // sibling `mprotect.rs`.
-                let page_num = PageIndex::of(page_addr).get();
-                if memory.page_permissions(page_num).is_some() {
+                // part of the raw-`u64` page API inside `memory/`.
+                if memory.page_permissions(page.get()).is_some() {
+                    let page_addr = page.base_addr();
                     return Err(SyscallError::Other(format!(
                         "brk: page {page_addr:#x} already mapped (collision)"
                     )));
                 }
-                page_addr += PAGE_SIZE;
             }
 
             // Map the new pages with RWX (matches Python `map_region(..., 7)`).
             let memory = state.memory_mut();
-            memory.map(
-                aligned_start,
-                aligned_end.wrapping_sub(aligned_start),
-                Permission::RWX,
-            );
+            memory.map(aligned_start, map_len, Permission::RWX);
         }
 
         state.set_posix_brk(new_brk);
