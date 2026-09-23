@@ -300,11 +300,14 @@ fn test_fputs_empty_string_writes_nothing_returns_one() {
 /// Every value-returning proc in `stdio.rs` builds its return through
 /// `arch_word`, i.e. at the arch word width, even though all five are `int`
 /// in C — unlike `fgets.rs`'s `fgetc`/`getchar`/`getc`, which mint a 32-bit
-/// `int`. The divergence is deliberate on this side: `arch_word` is what
-/// Python's `SimProcedure.ret` produces for these procs, and parity with the
-/// Python engine outranks matching the C prototype. This test pins the shape
-/// so changing it is a visible diff. See [`assert_ret_width`] for why the
-/// `.as_u64()` assertions above cannot see a width change at all.
+/// `int`. This test is descriptive, not a blessing: it pins the current shape
+/// so that changing either convention is a visible diff. Whether arch-word is
+/// right here is a live question — the `invariant-native-proc-return-width-
+/// extension` bd memory's second corollary says an `int` return must NOT be
+/// widened with `arch_word`, because an amd64 `(int)-1` is `0xFFFFFFFF` in
+/// RAX, not all-ones, which is exactly what `fputs`'s error path produces
+/// below. See [`assert_ret_width`] for why the `.as_u64()` assertions above
+/// cannot see a width change at all.
 #[test]
 fn test_stdio_return_widths() {
     let mut state = RustSimState::new("amd64").unwrap();
