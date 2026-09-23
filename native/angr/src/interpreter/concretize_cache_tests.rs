@@ -367,3 +367,56 @@ fn bv_cache_key_distinguishes_leaf_variants_with_equal_scalars() {
         "Concrete{{value:N}} vs Constrained{{id:N}}"
     );
 }
+
+/// angr-fs8kb.65: the `Constrained` arm of `hash_bv` used to drop `value`,
+/// justified by all three call sites early-returning on `addr.as_u64()` — which
+/// only filters a TOP-LEVEL `Constrained`. Nested under an `Expression`, two
+/// leaves sharing a registry `id` but carrying different concrete values then
+/// hashed byte-identically: a guaranteed collision, not a probabilistic one.
+#[test]
+fn bv_cache_key_distinguishes_nested_constrained_values() {
+    let ctx = SymContext::new_mock();
+    let sym = RustBV::symbolic(&ctx, "base", 64);
+    let RustBV::Symbolic { id, width, .. } = &sym else {
+        panic!("RustBV::symbolic must produce a Symbolic leaf");
+    };
+    let (id, width) = (*id, *width);
+
+    let addr_lo = sym.add(
+        &RustBV::Constrained {
+            id,
+            value: 10,
+            width,
+        },
+        &ctx,
+    );
+    let addr_hi = sym.add(
+        &RustBV::Constrained {
+            id,
+            value: 20,
+            width,
+        },
+        &ctx,
+    );
+
+    // Sanity: the Constrained leaf must survive as a nested operand rather than
+    // being constant-folded away, or the test would prove nothing.
+    for addr in [&addr_lo, &addr_hi] {
+        let RustBV::Expression { operands, .. } = addr else {
+            panic!("add(Symbolic, Constrained) must stay an Expression, got {addr:?}");
+        };
+        assert!(
+            operands
+                .iter()
+                .any(|op| matches!(op, RustBV::Constrained { .. })),
+            "the Constrained operand must survive unfolded, got {operands:?}"
+        );
+    }
+
+    assert_ne!(
+        VEXInterpreter::bv_cache_key(ConcretizeNs::ReadJump, &addr_lo),
+        VEXInterpreter::bv_cache_key(ConcretizeNs::ReadJump, &addr_hi),
+        "nested Constrained leaves with equal id/width but different values \
+         must produce distinct cache keys"
+    );
+}

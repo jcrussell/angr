@@ -197,7 +197,10 @@ impl<'a> VEXInterpreter<'a> {
     /// harmless today, since all three call sites early-return on
     /// `addr.as_u64()` (`Some` for both `Concrete` and `Constrained`) and so
     /// only ever reach here with a `Symbolic` or `Expression`, but a foot-gun
-    /// for any future caller that skips that filter.
+    /// for any future caller that skips that filter. Note that the
+    /// early-return argument covers only the **top-level** value: `hash_bv`
+    /// recurses into operands, where a `Concrete` or `Constrained` leaf is
+    /// routine, so each arm must hash its full payload (angr-fs8kb.65).
     ///
     /// The Expression case recurses over the entire operand tree (angr-owr37):
     /// a nested `Expression` operand carries the `RustBV::EXPRESSION_ID`
@@ -236,9 +239,18 @@ impl<'a> VEXInterpreter<'a> {
                 id.hash(hasher);
                 width.hash(hasher);
             }
-            RustBV::Constrained { id, width, .. } => {
+            RustBV::Constrained { id, value, width } => {
                 2u8.hash(hasher);
                 id.hash(hasher);
+                // `value` participates even though a TOP-LEVEL Constrained can
+                // never reach here (all three call sites early-return on
+                // `addr.as_u64()`, which is `Some` for this variant): the
+                // recursion below descends into nested operands, where no such
+                // filter applies. Dropping it made
+                // `Add(y, Constrained{id:5, value:10})` and
+                // `Add(y, Constrained{id:5, value:20})` hash byte-identically —
+                // a guaranteed, not probabilistic, collision (angr-fs8kb.65).
+                value.hash(hasher);
                 width.hash(hasher);
             }
             RustBV::Expression {
