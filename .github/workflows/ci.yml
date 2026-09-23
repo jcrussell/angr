@@ -118,10 +118,9 @@ jobs:
       # bug class (3 P1s, 6 subsystems) -- [profile.release] has no
       # overflow-checks, so a bare +/- silently wraps in the shipped .so
       # instead of panicking. Same baseline + `--self-test`-first shape as
-      # the rounding-mode / SP-default audits above. The baseline currently
-      # holds 99 pre-existing sites in memory/interpreter/symbolic/state
-      # deferred for triage (angr-xloth) -- syscalls/ and procedures/ are
-      # fully clean.
+      # the rounding-mode / SP-default audits above. The 99 pre-existing
+      # sites (angr-xloth, angr-goev1) have all been triaged and fixed --
+      # the baseline is empty and should stay so.
       - name: Integer overflow / wraparound audit
         run: |
           python3 tools/audit_overflow_wraparound.py --self-test
