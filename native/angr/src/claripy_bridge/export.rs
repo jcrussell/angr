@@ -423,52 +423,65 @@ fn rustbv_to_claripy_memo(
                     .call_method0(name)
                     .map(std::convert::Into::into)
             };
-            // The bitwise dunders answer Python's `NotImplemented` sentinel on
-            // a type/width mismatch instead of raising, so it would otherwise
-            // escape as a non-AST return value. Diagnose both operands (the
-            // richer message `__or__` alone used to build; `__and__`/`__xor__`
-            // reported only the op name).
-            let bitwise_dunder = |name: &str| -> PyResult<Py<PyAny>> {
-                let result = args[0].bind(py).call_method1(name, (&args[1],))?;
-                if result.is_none()
+            // Binary dunders answer Python's `NotImplemented` sentinel (or, for
+            // a misbehaving operand type, `None`) on a type/width mismatch
+            // instead of raising, so it would otherwise escape as a non-AST
+            // return value. Diagnose both operands (the richer message `__or__`
+            // alone used to build; `__and__`/`__xor__` reported only the op
+            // name). Shared by `bitwise_dunder` and `compare_dunder` — both
+            // return the dunder's result verbatim and so have the same hazard
+            // (angr-fs8kb.81).
+            let reject_non_ast = |name: &str, result: &Bound<'_, PyAny>| -> PyResult<()> {
+                if !(result.is_none()
                     || result
                         .get_type()
                         .name()
-                        .is_ok_and(|n| n == "NotImplementedType")
+                        .is_ok_and(|n| n == "NotImplementedType"))
                 {
-                    let describe = |arg: &Py<PyAny>| {
-                        let bound = arg.bind(py);
-                        let ty = bound
-                            .get_type()
-                            .name()
-                            .map_or_else(|_| "?".to_string(), |n| n.to_string());
-                        let w = bound
-                            .getattr("length")
-                            .map_or_else(|_| "?".to_string(), |l| format!("{l}"));
-                        format!("{ty}(w={w})")
-                    };
-                    return Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
-                        "{name} returned NotImplemented: {} {name} {}",
-                        describe(&args[0]),
-                        describe(&args[1])
-                    )));
+                    return Ok(());
                 }
+                let describe = |arg: &Py<PyAny>| {
+                    let bound = arg.bind(py);
+                    let ty = bound
+                        .get_type()
+                        .name()
+                        .map_or_else(|_| "?".to_string(), |n| n.to_string());
+                    let w = bound
+                        .getattr("length")
+                        .map_or_else(|_| "?".to_string(), |l| format!("{l}"));
+                    format!("{ty}(w={w})")
+                };
+                Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
+                    "{name} returned NotImplemented: {} {name} {}",
+                    describe(&args[0]),
+                    describe(&args[1])
+                )))
+            };
+            let bitwise_dunder = |name: &str| -> PyResult<Py<PyAny>> {
+                let result = args[0].bind(py).call_method1(name, (&args[1],))?;
+                reject_non_ast(name, &result)?;
                 Ok(result.into())
             };
             // `__eq__` / `__ne__` on claripy BVV objects may return a Python
             // bool rather than a claripy Bool (concrete comparison result), so
             // wrap that back into a `BoolV` to keep the output an AST.
             // `extract::<bool>` covers PyBool and PyInt alike (True/False are
-            // ints in Python).
+            // ints in Python). Anything else that is not an AST — `None` or the
+            // `NotImplemented` singleton — is rejected the same way the bitwise
+            // dunders reject it, rather than propagating as a bogus operand.
+            // The rejection runs *before* the bool unwrap precisely because
+            // `extract::<bool>` is truthiness-shaped: a `None` return would
+            // otherwise unwrap to a perfectly plausible `BoolV(False)`
+            // (angr-fs8kb.81).
             let compare_dunder = |name: &str| -> PyResult<Py<PyAny>> {
                 let result = args[0].bind(py).call_method1(name, (&args[1],))?;
+                reject_non_ast(name, &result)?;
                 if let Ok(bool_val) = result.extract::<bool>() {
-                    claripy_mod
+                    return claripy_mod
                         .call_method1("BoolV", (bool_val,))
-                        .map(std::convert::Into::into)
-                } else {
-                    Ok(result.into())
+                        .map(std::convert::Into::into);
                 }
+                Ok(result.into())
             };
 
             match op {
