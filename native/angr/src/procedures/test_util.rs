@@ -80,8 +80,11 @@ pub(crate) fn assert_over_limit(err: &crate::procedures::ProcedureError, what: &
 }
 
 /// Width, in bits, of a C `int` return value — what an `int`-typed native
-/// procedure (`fgetc`, `getchar`, `getc`) builds its return `RustBV` at.
-/// Pointer/`size_t`/`ssize_t` returns use [`arch_ret_bits`] instead.
+/// procedure builds its return `RustBV` at: `fgets.rs`'s
+/// `fgetc`/`getchar`/`getc`, `stdio.rs`'s
+/// `fflush`/`setvbuf`/`feof`/`ferror`/`fputs`, plus `puts`, `printf`,
+/// `getopt` and `posix_memalign`. Pointer/`size_t`/`ssize_t` returns use
+/// [`arch_ret_bits`] instead.
 pub(crate) const RET_INT_BITS: u32 = 32;
 
 /// Width, in bits, of a pointer / `size_t` / `ssize_t` return value on
