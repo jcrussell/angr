@@ -10,7 +10,20 @@ pub enum FdFlags {
     ReadWrite,
 }
 
+/// POSIX `O_APPEND` (Linux value). Outside [`FdFlags`]'s three access modes —
+/// append is orthogonal to read/write and lives on
+/// [`FileDescriptor::append`], not in the access-mode enum, exactly as POSIX
+/// puts it in a separate flag bit.
+pub const O_APPEND: u32 = 0o2000;
+
 impl FdFlags {
+    /// Whether raw POSIX `open(2)` flags request append mode. Companion to
+    /// [`from_posix`](Self::from_posix), which deliberately sees only the
+    /// low two access-mode bits.
+    pub fn posix_has_append(flags: u32) -> bool {
+        flags & O_APPEND != 0
+    }
+
     /// Convert from POSIX O_RDONLY/O_WRONLY/O_RDWR integer flags.
     pub fn from_posix(flags: u32) -> Self {
         match flags & 3 {
@@ -107,6 +120,24 @@ pub struct FileDescriptor {
     /// absolute pseudo-paths those descriptors carry.
     #[serde(default)]
     pub norm_name: Option<String>,
+    /// `O_APPEND`: every `write(2)`-family write on this fd seeks to the
+    /// current end of content first, regardless of the tracked `position`
+    /// (an intervening `lseek` cannot move a write off the end).
+    /// [`FileSystem::write`](crate::state::FileSystem::write) is the single
+    /// enforcement point; positioned writes
+    /// ([`FileSystem::write_at`](crate::state::FileSystem::write_at), i.e.
+    /// `pwrite`) ignore it, matching Linux. Reads are unaffected, so `"a+"`
+    /// still reads from the start.
+    ///
+    /// Mirrors Python `storage/file.py::SimFileDescriptor::write_data`, which
+    /// does `self._pos = self.file.size` when `flags & O_APPEND`. Set only by
+    /// [`FileSystem::open_with_append`](crate::state::FileSystem::open_with_append);
+    /// the Python→Rust fd sync (`register_fd_at`) does not carry it, so a
+    /// descriptor imported from a Python state reconstitutes non-append.
+    /// `#[serde(default)]` keeps earlier snapshots loadable (also non-append,
+    /// the prior behavior).
+    #[serde(default)]
+    pub append: bool,
     /// True only for the three standard descriptors
     /// [`Default for FileSystem`](struct@crate::state::FileSystem) pre-registers
     /// at process start, and never set by any other constructor — so a
@@ -140,6 +171,7 @@ impl FileDescriptor {
             content: Vec::new(),
             is_open: true,
             symbolic: false,
+            append: false,
             content_sym: None,
             registry_key: None,
             norm_name: None,
@@ -156,6 +188,7 @@ impl FileDescriptor {
             content,
             is_open: true,
             symbolic: false,
+            append: false,
             content_sym: None,
             registry_key: None,
             norm_name: None,
@@ -173,6 +206,7 @@ impl FileDescriptor {
             content: Vec::new(),
             is_open: true,
             symbolic: true,
+            append: false,
             content_sym: None,
             registry_key: None,
             norm_name: None,

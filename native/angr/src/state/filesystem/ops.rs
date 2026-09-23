@@ -34,12 +34,30 @@ impl FileSystem {
     ///
     /// Returns `None` — changing nothing — when the fd space is exhausted;
     /// see `alloc_fd` for why that is not unreachable.
+    ///
+    /// Opens in non-append mode; callers that have an `O_APPEND` /
+    /// `fopen("a")` request go through
+    /// [`open_with_append`](Self::open_with_append) instead.
     pub fn open(&mut self, name: String, flags: FdFlags) -> Option<u32> {
+        self.open_with_append(name, flags, false)
+    }
+
+    /// [`open`](Self::open), plus the orthogonal `O_APPEND` bit — see
+    /// [`FileDescriptor::append`] for the semantics it buys and
+    /// [`O_APPEND`] for decoding it out of raw
+    /// `open(2)` flags.
+    ///
+    /// Kept as one entry point taking the bool rather than an `open_append`
+    /// sibling so the three production callers (`fopen`, the `open` native
+    /// proc, the `open`/`openat` syscalls) each name their append decision at
+    /// the call site and none can be silently added without one.
+    pub fn open_with_append(&mut self, name: String, flags: FdFlags, append: bool) -> Option<u32> {
         let fd = self.alloc_fd()?;
         // Normalized before install (freezes cwd-at-open) — see `install_fd`.
         let norm = self.normalize_path(&name);
         let content_sym = self.file_contents.get(&norm).cloned();
         let mut desc = FileDescriptor::new(name, flags);
+        desc.append = append;
         if content_sym.is_some() {
             // Freeze the registry key on the descriptor so demotion can
             // find the entry (and every sibling fd) without re-normalizing
@@ -292,7 +310,20 @@ impl FileSystem {
         // Read the position before the shared body runs: none of the gates it
         // applies mutate `position` on a path that goes on to copy bytes
         // (`demote_symbolic_content` only runs on a refusal).
-        let position = self.fds.get(&fd).map_or(0, |d| d.position);
+        //
+        // An `O_APPEND` fd ignores its tracked position and writes at the
+        // current end of content, recomputed per write so an intervening
+        // `lseek` cannot move the write off the end. `write_bytes_at` then
+        // advances `position` to the new end, exactly as Python
+        // `SimFileDescriptor::write_data` does after its
+        // `self._pos = self.file.size`. See [`FileDescriptor::append`].
+        let position = self.fds.get(&fd).map_or(0, |d| {
+            if d.append {
+                d.effective_len() as u64
+            } else {
+                d.position
+            }
+        });
         self.write_bytes_at(fd, position, data, true)
     }
 

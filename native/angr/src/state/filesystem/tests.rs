@@ -962,3 +962,72 @@ fn register_file_content_noop_skips_known_paths_cow_clone() {
         "re-registering content for a known path must not deep-clone known_paths"
     );
 }
+
+#[test]
+fn append_fd_writes_at_eof_regardless_of_seek() {
+    // O_APPEND: every write goes to the current end of content, and an
+    // intervening `lseek` cannot move it off the end — the behavior Python
+    // `SimFileDescriptor::write_data` gets from `self._pos = self.file.size`.
+    let mut fs = FileSystem::default();
+    let fd = fs
+        .open_with_append("log.txt".to_string(), FdFlags::WriteOnly, true)
+        .expect("fd space is not exhausted in tests");
+
+    assert!(fs.write(fd, b"one"));
+    // Rewind to the start: a non-append fd would overwrite from 0 here.
+    assert_eq!(fs.seek(fd, 0, 0), Some(0));
+    assert!(fs.write(fd, b"two"));
+    assert_eq!(fs.fd_content(fd), b"onetwo");
+    // The write still advances the position to the new end.
+    assert_eq!(fs.fd_info(fd).map(|i| i.1), Some(6));
+
+    // Seeking into the middle does not let a later write clobber earlier bytes.
+    assert_eq!(fs.seek(fd, 3, 0), Some(3));
+    assert!(fs.write(fd, b"!"));
+    assert_eq!(fs.fd_content(fd), b"onetwo!");
+}
+
+#[test]
+fn plain_open_is_not_append() {
+    // `open` is `open_with_append(.., false)`; the seek-then-write path must
+    // stay overwriting, as `write_overwrites_in_place_and_zero_fills_after_a_sparse_seek`
+    // documents for the non-append case.
+    let mut fs = FileSystem::default();
+    let fd = fs
+        .open("plain.txt".to_string(), FdFlags::WriteOnly)
+        .expect("fd space is not exhausted in tests");
+    assert!(fs.write(fd, b"one"));
+    assert_eq!(fs.seek(fd, 0, 0), Some(0));
+    assert!(fs.write(fd, b"two"));
+    assert_eq!(fs.fd_content(fd), b"two");
+}
+
+#[test]
+fn write_at_ignores_append() {
+    // Linux `pwrite(2)` ignores O_APPEND (and leaves the offset untouched);
+    // `write_at` is the positioned path, so the append seek must not apply.
+    let mut fs = FileSystem::default();
+    let fd = fs
+        .open_with_append("log.txt".to_string(), FdFlags::WriteOnly, true)
+        .expect("fd space is not exhausted in tests");
+    assert!(fs.write(fd, b"abcdef"));
+    assert!(fs.write_at(fd, 0, b"XY"));
+    assert_eq!(fs.fd_content(fd), b"XYcdef");
+    assert_eq!(fs.fd_info(fd).map(|i| i.1), Some(6));
+}
+
+#[test]
+fn posix_append_flag_decodes_independently_of_access_mode() {
+    // O_APPEND lives outside the two access-mode bits `from_posix` reads, so
+    // the two decoders must not interfere.
+    assert!(!FdFlags::posix_has_append(1));
+    assert!(FdFlags::posix_has_append(crate::state::O_APPEND | 1));
+    assert_eq!(
+        FdFlags::from_posix(crate::state::O_APPEND | 1),
+        FdFlags::WriteOnly
+    );
+    assert_eq!(
+        FdFlags::from_posix(crate::state::O_APPEND | 2),
+        FdFlags::ReadWrite
+    );
+}

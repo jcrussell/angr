@@ -52,7 +52,11 @@ impl NativeSyscall for NativeOpenSyscall {
         // rather than wrapping `next_fd` and handing out stdin as a fresh file.
         let fd = state
             .file_system()
-            .open(path, FdFlags::from_posix(flags as u32))
+            .open_with_append(
+                path,
+                FdFlags::from_posix(flags as u32),
+                FdFlags::posix_has_append(flags as u32),
+            )
             .ok_or_else(|| SyscallError::Other("open: fd space exhausted".to_string()))?;
         Ok(SyscallOutcome::Continue { ret: fd as u64 })
     }
@@ -95,7 +99,11 @@ impl NativeSyscall for NativeOpenatSyscall {
         // `None` = the fd space is exhausted (angr-03vl4.88) — see `NativeOpenSyscall`.
         let fd = state
             .file_system()
-            .open(path, FdFlags::from_posix(flags as u32))
+            .open_with_append(
+                path,
+                FdFlags::from_posix(flags as u32),
+                FdFlags::posix_has_append(flags as u32),
+            )
             .ok_or_else(|| SyscallError::Other("openat: fd space exhausted".to_string()))?;
         Ok(SyscallOutcome::Continue { ret: fd as u64 })
     }

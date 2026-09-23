@@ -112,7 +112,8 @@ fn read_cstring_strict(
     scan_concrete_until_null(state, addr, max_len as usize, name)
 }
 
-/// Convert an fopen-style mode string (e.g. `"r"`, `"w+b"`, `"rb+"`) to FdFlags.
+/// Convert an fopen-style mode string (e.g. `"r"`, `"w+b"`, `"rb+"`) to an
+/// access mode plus the append bit.
 /// Returns None for unrecognized modes (caller falls back to Python).
 ///
 /// glibc semantics: the first character selects the base access mode
@@ -121,7 +122,13 @@ fn read_cstring_strict(
 /// read+write — the rest are buffering/sharing/exclusivity hints that do not
 /// affect the FdFlags mapping. Parsing the trailing flags positionally (only
 /// popping a trailing `b`/`t`) silently missed valid orderings like `"rb+"`.
-fn parse_fopen_mode(mode: &[u8]) -> Option<FdFlags> {
+///
+/// The second tuple element is `O_APPEND`, which `"a"`/`"a+"` carry and
+/// `"w"`/`"w+"` do not — the one thing that distinguishes the two truncating
+/// modes in this model (see [`FileDescriptor::append`](crate::state::FileDescriptor::append)).
+/// It is returned separately because [`FdFlags`] is the POSIX access mode
+/// alone.
+fn parse_fopen_mode(mode: &[u8]) -> Option<(FdFlags, bool)> {
     let first = *mode.first()?;
     // Flag characters glibc accepts after the base mode. Anything outside this
     // set is genuinely unrecognized, so defer to Python rather than guess.
@@ -130,15 +137,16 @@ fn parse_fopen_mode(mode: &[u8]) -> Option<FdFlags> {
         return None;
     }
     let read_write = mode[1..].contains(&b'+');
-    match (first, read_write) {
-        (b'r', false) => Some(FdFlags::ReadOnly),
-        (b'r', true) => Some(FdFlags::ReadWrite),
-        (b'w', false) => Some(FdFlags::WriteOnly),
-        (b'w', true) => Some(FdFlags::ReadWrite),
-        (b'a', false) => Some(FdFlags::WriteOnly),
-        (b'a', true) => Some(FdFlags::ReadWrite),
-        _ => None,
-    }
+    let access = match (first, read_write) {
+        (b'r', false) => FdFlags::ReadOnly,
+        (b'r', true) => FdFlags::ReadWrite,
+        (b'w', false) => FdFlags::WriteOnly,
+        (b'w', true) => FdFlags::ReadWrite,
+        (b'a', false) => FdFlags::WriteOnly,
+        (b'a', true) => FdFlags::ReadWrite,
+        _ => return None,
+    };
+    Some((access, first == b'a'))
 }
 
 /// Read a 32-bit fd from a FILE struct on the given arch. Returns the signed fd
@@ -225,11 +233,12 @@ crate::declare_proc! {
 
         let pathname = String::from_utf8_lossy(&name).to_string();
         let fd_flags = FdFlags::from_posix(flags as u32);
+        let append = FdFlags::posix_has_append(flags as u32);
         // `None` = the fd space is exhausted (angr-03vl4.88); bounce to Python
         // rather than wrapping `next_fd` and handing out stdin as a fresh file.
         let fd = state
             .file_system()
-            .open(pathname, fd_flags)
+            .open_with_append(pathname, fd_flags, append)
             .ok_or_else(|| ProcedureError::Other("open: fd space exhausted".to_string()))?;
 
         Ok(Some(arch_word(state, u64::from(fd))))
@@ -396,13 +405,21 @@ crate::declare_proc! {
     /// arch-specific `_fileno` offset, and returns the struct pointer. Returns 0 on
     /// unrecognized modes / unsupported arches / unmapped heap pages so the Python
     /// implementation can take over.
+    ///
+    /// The `"a"`/`"a+"` modes open with `O_APPEND`
+    /// ([`FileDescriptor::append`](crate::state::FileDescriptor::append)), which is
+    /// the only thing separating them from `"w"`/`"w+"` here: this model has no
+    /// `O_TRUNC` to skip, since a freshly-opened path starts empty either way.
+    /// Python `fopen.py::mode_to_flag` maps the same two modes to `O_APPEND` and
+    /// `storage/file.py::SimFileDescriptor::write_data` honors it, so the engines
+    /// agree on append ordering (angr-fs8kb.47).
     name = "fopen",
     struct = NativeFopen,
     args = [path_addr: concrete, mode_addr: concrete],
     call |state| {
         let path = read_cstring_strict(state, path_addr, MAX_PATH, "pathname")?;
         let mode = read_cstring_strict(state, mode_addr, MAX_FOPEN_MODE_LEN, "mode")?;
-        let flags = parse_fopen_mode(&mode).ok_or_else(|| {
+        let (flags, append) = parse_fopen_mode(&mode).ok_or_else(|| {
             ProcedureError::Other(format!(
                 "unsupported fopen mode {:?}",
                 String::from_utf8_lossy(&mode)
@@ -418,7 +435,7 @@ crate::declare_proc! {
         // `None` = the fd space is exhausted (angr-03vl4.88) — see `NativeOpen`.
         let fd = state
             .file_system()
-            .open(path_str, flags)
+            .open_with_append(path_str, flags, append)
             .ok_or_else(|| ProcedureError::Other("fopen: fd space exhausted".to_string()))?;
 
         let file_ptr = state.heap_alloc(struct_size);
@@ -457,7 +474,10 @@ crate::declare_proc! {
     /// evaluates cleanly and is returned unchanged whatever the mode, so both
     /// engines take the `not in posix.fd` path together (angr-j0dp3). Hence
     /// the mode is parsed only to reject unsupported spellings; its `FdFlags`
-    /// are deliberately unused.
+    /// — and its append bit — are deliberately unused. That matches
+    /// `fdopen.py`'s own `# TODO: handle append and other mode subtleties`:
+    /// Python re-opens nothing and never re-flags the existing descriptor, so
+    /// neither does this (unlike `fopen` above, which mints the fd itself).
     name = "fdopen",
     struct = NativeFdopen,
     args = [fd_raw: concrete, mode_addr: concrete],

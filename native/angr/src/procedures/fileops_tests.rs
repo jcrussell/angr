@@ -562,6 +562,103 @@ fn test_fopen_rw_plus_after_binary_order_independent() {
 }
 
 #[test]
+fn test_fopen_append_mode_writes_at_eof() {
+    // angr-fs8kb.47: "a" used to be byte-for-byte identical to "w" — same
+    // FdFlags, same position 0, no O_APPEND anywhere — so a seek-then-write
+    // clobbered earlier bytes instead of appending.
+    let mut state = setup_amd64_state();
+    state.map_memory_data(0x1000, b"log.txt\0", Permission::RWX);
+    state.map_memory_data(0x2000, b"a\0", Permission::RWX);
+
+    NativeFopen
+        .call(
+            &mut state,
+            &[RustBV::concrete(0x1000, 64), RustBV::concrete(0x2000, 64)],
+        )
+        .unwrap();
+    // a → WriteOnly (1), same access mode as "w".
+    assert_eq!(state.file_system_ref().fd_info(3).unwrap().2, 1);
+
+    let fs = state.file_system();
+    assert!(fs.write(3, b"one"));
+    assert_eq!(fs.seek(3, 0, 0), Some(0));
+    assert!(fs.write(3, b"two"));
+    assert_eq!(fs.fd_content(3), b"onetwo");
+}
+
+#[test]
+fn test_fopen_write_mode_is_not_append() {
+    // The other half of the pair above: "w" must keep overwriting after a
+    // seek, so the append bit is what distinguishes the two modes.
+    let mut state = setup_amd64_state();
+    state.map_memory_data(0x1000, b"log.txt\0", Permission::RWX);
+    state.map_memory_data(0x2000, b"w\0", Permission::RWX);
+
+    NativeFopen
+        .call(
+            &mut state,
+            &[RustBV::concrete(0x1000, 64), RustBV::concrete(0x2000, 64)],
+        )
+        .unwrap();
+
+    let fs = state.file_system();
+    assert!(fs.write(3, b"one"));
+    assert_eq!(fs.seek(3, 0, 0), Some(0));
+    assert!(fs.write(3, b"two"));
+    assert_eq!(fs.fd_content(3), b"two");
+}
+
+#[test]
+fn test_fopen_a_plus_is_readwrite_and_appends() {
+    let mut state = setup_amd64_state();
+    state.map_memory_data(0x1000, b"log.txt\0", Permission::RWX);
+    state.map_memory_data(0x2000, b"a+\0", Permission::RWX);
+
+    NativeFopen
+        .call(
+            &mut state,
+            &[RustBV::concrete(0x1000, 64), RustBV::concrete(0x2000, 64)],
+        )
+        .unwrap();
+    // a+ → ReadWrite (2)
+    assert_eq!(state.file_system_ref().fd_info(3).unwrap().2, 2);
+
+    let fs = state.file_system();
+    assert!(fs.write(3, b"one"));
+    // "a+" reads from the start — append governs writes only.
+    assert_eq!(fs.seek(3, 0, 0), Some(0));
+    assert_eq!(fs.read(3, 3), b"one");
+    assert_eq!(fs.seek(3, 0, 0), Some(0));
+    assert!(fs.write(3, b"two"));
+    assert_eq!(fs.fd_content(3), b"onetwo");
+}
+
+#[test]
+fn test_open_o_append_flag_appends() {
+    // The `open(2)` half of the same wiring: O_APPEND sits outside the two
+    // access-mode bits `FdFlags::from_posix` reads.
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory_data(0x1000, b"log.txt\0", Permission::RWX);
+
+    NativeOpen
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x1000, 64),
+                RustBV::concrete(u128::from(crate::state::O_APPEND | 1), 64),
+            ],
+        )
+        .unwrap();
+    assert_eq!(state.file_system_ref().fd_info(3).unwrap().2, 1);
+
+    let fs = state.file_system();
+    assert!(fs.write(3, b"one"));
+    assert_eq!(fs.seek(3, 0, 0), Some(0));
+    assert!(fs.write(3, b"two"));
+    assert_eq!(fs.fd_content(3), b"onetwo");
+}
+
+#[test]
 fn test_fopen_unknown_mode_falls_back() {
     let mut state = setup_amd64_state();
     state.map_memory_data(0x1000, b"x.txt\0", Permission::RWX);
