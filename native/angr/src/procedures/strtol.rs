@@ -26,7 +26,10 @@ use super::{ProcedureError, arch_word};
 use crate::state::RustSimState;
 use crate::symbolic::{RustBV, SymContext};
 
-/// Native parses up to 64 digits. Python caps at `state.libc.max_strtol_len`
+/// Initial raw-scan window, and the hard cap on the *symbolic* accumulator's
+/// digit positions (the concrete path grows past it — see `MAX_SCAN_BYTES`).
+///
+/// Native parses up to 64 digits symbolically. Python caps at `state.libc.max_strtol_len`
 /// (= 11, angr/state_plugins/libc.py). This is a **deliberate divergence**: a
 /// 12+-digit concrete string makes Python's `final_constraint` Or(...) evaluate
 /// False, so the state goes unsat and is silently discarded, while native
@@ -36,6 +39,22 @@ use crate::symbolic::{RustBV, SymContext};
 /// (Python rejects the input outright rather than truncating), and forcing the
 /// state unsat is an invasive behavior change with real benchmark risk.
 const MAX_DIGITS: usize = 64;
+
+/// Hard ceiling on the raw scan window `read_subject_bytes` will grow to.
+///
+/// `MAX_DIGITS` is only the *initial* window: a concrete digit run longer than
+/// it used to be truncated mid-run, so `parse_concrete_digits` returned a
+/// magnitude short of the real one (visible for low bases, where the `u128`
+/// accumulator does not saturate early) and `endptr` landed mid-digit-run
+/// instead of past the subject sequence (bd angr-fs8kb.37). The window now
+/// doubles while the byte it ended on could still continue the subject
+/// sequence, so any subject sequence up to this many bytes parses exactly.
+///
+/// Past this ceiling the old truncation semantics remain, deliberately: the
+/// scan is O(window) guest memory loads with no null in sight, and a 4 KiB
+/// numeric literal is not a shape real code produces. Pinned by
+/// `test_strtol_scan_window_ceiling_truncates`.
+const MAX_SCAN_BYTES: usize = 4096;
 
 /// Python's `_string_to_int` clamps the accumulated magnitude at the SIGNED max
 /// `2^(bits-1) - 1` — `strtol.run` always calls `strtol_inner(..., signed=True)`,
@@ -72,6 +91,49 @@ fn read_bytes_until_null(
         result.push(byte);
     }
     Ok(result)
+}
+
+/// Could the subject sequence continue *through* `b`?
+///
+/// Base-agnostic on purpose — `read_subject_bytes` runs before
+/// `parse_concrete_prefix` has picked a base, so it over-approximates with
+/// "every byte any prefix or digit region could contain". Over-approximating
+/// only costs a few extra guest loads; the parsers stop at the first byte they
+/// cannot consume regardless.
+///
+/// A symbolic byte answers `false`: the symbolic path caps its accumulator at
+/// `MAX_DIGITS` digit positions (see `run_strtol`), so growing the window past
+/// a symbolic byte buys nothing.
+fn may_continue_subject(b: &RustBV) -> bool {
+    match b.as_u64() {
+        Some(v) => {
+            let c = v as u8;
+            is_c_space(c) || c == b'+' || c == b'-' || c.is_ascii_alphanumeric()
+        }
+        None => false,
+    }
+}
+
+/// Read the raw subject-sequence window at `addr`, doubling from `MAX_DIGITS`
+/// up to `MAX_SCAN_BYTES` while the window keeps ending on a byte the subject
+/// sequence could continue through.
+///
+/// Stopping early is safe in both directions: a window that ended on a concrete
+/// null (short read) or on a byte no prefix/digit parser can consume already
+/// contains the whole subject sequence, and reading *more* than the sequence
+/// never changes a parse result.
+fn read_subject_bytes(state: &RustSimState, addr: u64) -> Result<Vec<RustBV>, ProcedureError> {
+    let mut window = MAX_DIGITS;
+    loop {
+        let bytes = read_bytes_until_null(state, addr, window)?;
+        if bytes.len() < window
+            || window >= MAX_SCAN_BYTES
+            || !bytes.last().is_some_and(may_continue_subject)
+        {
+            return Ok(bytes);
+        }
+        window = (window * 2).min(MAX_SCAN_BYTES);
+    }
 }
 
 /// Is the byte after a `0x`/`0X` base-16 prefix one the digit parser can
@@ -323,7 +385,7 @@ fn run_strtol(
     base_arg: i64,
     ret_int_bits: Option<u32>,
 ) -> Result<Option<RustBV>, ProcedureError> {
-    let bytes = read_bytes_until_null(state, addr, MAX_DIGITS)?;
+    let bytes = read_subject_bytes(state, addr)?;
     let bits = state.arch().bits();
 
     let (prefix_end, prefix) = parse_concrete_prefix(&bytes, base_arg);
@@ -390,10 +452,14 @@ fn run_strtol(
         return Ok(Some(RustBV::concrete(reg_val, bits)));
     }
 
-    // Symbolic digit region: build accumulator.
+    // Symbolic digit region: build accumulator over at most `MAX_DIGITS` digit
+    // positions. `read_subject_bytes` may have grown the window past that for
+    // the concrete path's sake; an ITE chain one term per byte is the one
+    // consumer that cannot absorb a longer window, so it keeps the old cap.
+    let sym_end = bytes.len().min(prefix_end.saturating_add(MAX_DIGITS));
     let ctx_handle = state.solver().clone();
     let ctx = ctx_handle.borrow();
-    let accum = build_symbolic_accumulator(&bytes, prefix_end, base, bits, &ctx);
+    let accum = build_symbolic_accumulator(&bytes[..sym_end], prefix_end, base, bits, &ctx);
     let result = if negative { accum.neg(&ctx) } else { accum };
     // atoi returns int-width bits (Python: `val[sizeof(int)*8 - 1 : 0]`).
     // Extract the low `w` bits then zero-extend back into the return register.
@@ -411,7 +477,7 @@ fn run_strtol(
     if let Some(end) = endptr
         && end != 0
     {
-        let end_addr = addr.wrapping_add(bytes.len() as u64);
+        let end_addr = addr.wrapping_add(sym_end as u64);
         state.memory_store(end, arch_word(state, end_addr))?;
     }
 

@@ -565,3 +565,93 @@ fn test_strtol_hex_prefix_with_digits_still_consumes_prefix() {
         assert_eq!(end, want_end, "endptr for {shown:?} base {base}");
     }
 }
+
+// ---------- scan window longer than MAX_DIGITS (bd angr-fs8kb.37) ----------
+
+/// A concrete digit run longer than the initial `MAX_DIGITS` window used to be
+/// truncated at 64 raw bytes, so `*endptr` landed mid-run. The window now grows
+/// while it keeps ending on a byte the subject sequence could continue through.
+#[test]
+fn test_strtol_endptr_past_long_digit_run() {
+    // 100 digits, then a terminator the digit parser cannot consume.
+    let mut s = vec![b'7'; 100];
+    s.push(b'!');
+    let (_, end) = strtol_with_endptr(&s, 10);
+    assert_eq!(end, 100, "endptr must point past the whole digit run");
+
+    // The prefix counts against the same window: 40 spaces + a sign + 40
+    // digits is 81 raw bytes, past MAX_DIGITS but well short of the run above.
+    let mut s = vec![b' '; 40];
+    s.push(b'-');
+    s.extend_from_slice(&[b'3'; 40]);
+    s.push(b'x');
+    let (_, end) = strtol_with_endptr(&s, 10);
+    assert_eq!(end, 81);
+}
+
+/// Base 2 is the case where truncation corrupted the *value* too: the `u128`
+/// accumulator needs 128 binary digits before it saturates, so a run past the
+/// old 64-byte window was neither fully parsed nor clamped — it just came back
+/// short by a factor of two per dropped digit.
+#[test]
+fn test_strtol_base2_value_past_initial_window() {
+    // 10 leading zeros + '1' + 60 zeros = 71 digits, value 2^60. Truncating the
+    // run at 64 raw bytes drops 7 trailing zeros and yields 2^53 instead.
+    let mut s = vec![b'0'; 10];
+    s.push(b'1');
+    s.extend_from_slice(&[b'0'; 60]);
+    s.push(b'2'); // not a base-2 digit: terminates the run
+    let (val, end) = strtol_with_endptr(&s, 2);
+    assert_eq!(val, 1u64 << 60);
+    assert_eq!(end, 71);
+}
+
+/// The growth loop stops at `MAX_SCAN_BYTES`; past it the old truncation
+/// semantics stand, deliberately.
+#[test]
+fn test_strtol_scan_window_ceiling_truncates() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    // 5000 digits: longer than MAX_SCAN_BYTES (4096).
+    let digits = vec![b'9'; 5000];
+    setup_string(&mut state, 0x10000, &digits);
+    state.map_memory_data(0x100000, &[0u8; 8], Permission::RWX);
+    NativeStrtol
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x10000, 64),
+                RustBV::concrete(0x100000, 64),
+                RustBV::concrete(10, 64),
+            ],
+        )
+        .unwrap()
+        .unwrap();
+    let end = state.memory_load(0x100000, 8).unwrap();
+    assert_eq!(end.as_u64().unwrap() - 0x10000, MAX_SCAN_BYTES as u64);
+}
+
+/// A symbolic byte stops the growth: the symbolic accumulator caps at
+/// `MAX_DIGITS` digit positions, so the over-approximate `*endptr` stays at the
+/// old bound rather than tracking a window the concrete path grew.
+#[test]
+fn test_strtol_symbolic_digits_endptr_capped_at_max_digits() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    let digits = vec![b'1'; 200];
+    setup_string(&mut state, 0x10000, &digits);
+    state.map_memory_data(0x100000, &[0u8; 8], Permission::RWX);
+    // Make the first byte symbolic so the all-concrete fast path is skipped.
+    place_symbolic_byte(&mut state, 0x10000, "d0");
+    NativeStrtol
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x10000, 64),
+                RustBV::concrete(0x100000, 64),
+                RustBV::concrete(10, 64),
+            ],
+        )
+        .unwrap()
+        .unwrap();
+    let end = state.memory_load(0x100000, 8).unwrap();
+    assert_eq!(end.as_u64().unwrap() - 0x10000, MAX_DIGITS as u64);
+}
