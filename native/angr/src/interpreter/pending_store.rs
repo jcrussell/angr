@@ -36,7 +36,10 @@ pub(crate) struct PendingStoreBuffer {
 /// address space and wrap, which is exactly how `push` indexes its bytes. A
 /// load below the store's base wraps to a huge offset and so fails the bounds
 /// check, which is what the old `s_addr <= addr` guard did.
-fn covering_range(
+///
+/// Shared with `VEXInterpreter::symbolic_overlap_load` (expressions.rs), which
+/// asks the same fully-covers question of the symbolic-store maps.
+pub(super) fn covering_range(
     s_addr: u64,
     s_len: usize,
     addr: u64,
@@ -57,7 +60,10 @@ fn covering_range(
 /// address space and wrap. Forming an end address — even with
 /// `saturating_add` — collapses a wrapped range onto `u64::MAX` and hides any
 /// overlap that lies in its wrapped tail.
-fn overlap_offsets(
+///
+/// Shared with `VEXInterpreter::evict_overlapping_symbolic_stores`
+/// (statements_store.rs), which only needs the `is_some()` predicate.
+pub(super) fn overlap_offsets(
     addr: u64,
     len: usize,
     s_addr: u64,

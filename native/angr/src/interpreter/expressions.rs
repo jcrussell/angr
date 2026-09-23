@@ -14,6 +14,7 @@
 //! `statements_inspect.rs`.
 
 use super::bv_utils::{build_ite_chain, bytes_to_bv, splice_bytes_over_bv};
+use super::pending_store::covering_range;
 use super::*;
 use crate::vex::ir::{IRCallee, IRRegArray};
 use rustc_hash::FxHashMap;
@@ -217,6 +218,13 @@ impl<'a> VEXInterpreter<'a> {
     /// `o = addr - s_addr` returns bits `[o*8, (o+size)*8)`. Short-circuits when
     /// no symbolic stores are buffered so the common all-concrete load pays
     /// nothing.
+    ///
+    /// Coverage is decided by `pending_store::covering_range` — the same
+    /// offset-space test the concrete pending-store buffer uses — so a
+    /// symbolic store that wraps past the top of the guest address space
+    /// still serves the loads in its wrapped tail (angr-fs8kb.64). Forming
+    /// either end address instead, as this did with `checked_add` /
+    /// `saturating_add`, turned such a store into a silent miss.
     fn symbolic_overlap_load(
         &self,
         map: &FxHashMap<u64, RustBV>,
@@ -226,21 +234,17 @@ impl<'a> VEXInterpreter<'a> {
         if map.is_empty() {
             return None;
         }
-        let load_hi = addr.checked_add(size as u64)?;
         for (&s_addr, bv) in map.iter() {
-            if s_addr > addr {
+            let Some(range) = covering_range(s_addr, (bv.width() / 8) as usize, addr, size) else {
                 continue;
-            }
-            let s_hi = s_addr.saturating_add((bv.width() / 8) as u64);
-            if load_hi <= s_hi {
-                // overflow-ok: the `s_addr > addr` continue above proves
-                // `s_addr <= addr`, and `load_hi <= s_hi` bounds the extract.
-                let off_bits = (addr - s_addr) * 8;
-                // overflow-ok: `load_hi <= s_hi` bounds `off_bits + size * 8`
-                // by `bv.width()`, and `size >= 1` keeps the `- 1` in range.
-                let hi_bit = (off_bits + (size as u64) * 8 - 1) as u32;
-                return Some(bv.extract(hi_bit, off_bits as u32, self.ctx));
-            }
+            };
+            // overflow-ok: `covering_range` bounds `range.end` by the store's
+            // byte width, so both bit positions stay inside `bv.width()`, and
+            // a zero-size load cannot reach here (`range.end > range.start`
+            // would fail, and callers never pass 0).
+            let off_bits = (range.start * 8) as u32;
+            let hi_bit = (range.end * 8 - 1) as u32;
+            return Some(bv.extract(hi_bit, off_bits, self.ctx));
         }
         None
     }

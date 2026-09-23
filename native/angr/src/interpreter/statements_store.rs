@@ -11,6 +11,7 @@
 //! evicting concrete/symbolic cache entries the store now contradicts.
 
 use super::bv_utils::{bv_to_bytes, reject_symbolic_byte_store};
+use super::pending_store::overlap_offsets;
 use super::*;
 use crate::symbolic::{MAX_CONCRETE_CHUNK, u128_to_le_bytes};
 
@@ -516,15 +517,19 @@ impl<'a> VEXInterpreter<'a> {
     /// load at the same address would return the stale symbolic value instead
     /// of the concrete bytes (angr-ofyh). Short-circuits when no symbolic
     /// stores are buffered, so the all-concrete hot path pays nothing.
+    ///
+    /// Overlap is decided by `pending_store::overlap_offsets` — the same
+    /// offset-space test `PendingStoreBuffer::push` uses — so a symbolic store
+    /// (or a concrete store) that wraps past the top of the guest address
+    /// space still evicts its wrapped tail (angr-fs8kb.64). Comparing end
+    /// addresses instead, as this did with `saturating_add`, clamped a wrapped
+    /// range onto `u64::MAX` and left the stale symbolic shadow in place.
     pub(super) fn evict_overlapping_symbolic_stores(&mut self, addr: u64, size: usize) {
         if self.pending_symbolic_stores.is_empty() && self.all_flushed_symbolic_stores.is_empty() {
             return;
         }
-        let lo = addr;
-        let hi = addr.saturating_add(size as u64);
         let overlaps = |s_addr: u64, bv: &RustBV| {
-            let s_hi = s_addr.saturating_add((bv.width() / 8) as u64);
-            s_addr < hi && lo < s_hi
+            overlap_offsets(addr, size, s_addr, (bv.width() / 8) as usize).is_some()
         };
         self.pending_symbolic_stores
             .retain(|&s_addr, bv| !overlaps(s_addr, bv));

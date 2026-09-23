@@ -397,6 +397,55 @@ fn symbolic_overlap_load_returns_symbolic_for_offset_load() {
     );
 }
 
+// angr-fs8kb.64: a symbolic store based near the top of the address space
+// wraps past u64::MAX, exactly as the concrete `PendingStoreBuffer` already
+// models it. The old end-address form (`addr.checked_add(size)` for the load,
+// `s_addr.saturating_add(..)` for the store) turned every load in the wrapped
+// tail into a silent miss: `checked_add` returned `None` outright for a load
+// that itself wraps, and the saturated `s_hi` clamped the store's reach to
+// `u64::MAX`. A miss here is not merely a lost fast path -- it falls through
+// to the concrete buffer, which holds `bv_to_bytes`' concrete-0 placeholder
+// for a symbolic store (the angr-ofyh bug this function exists to fix).
+#[test]
+fn symbolic_overlap_load_covers_store_wrapping_past_address_top() {
+    let ctx = SymContext::new_mock();
+    let mut interp = new_interp(&ctx);
+    // 8-byte store based at u64::MAX-3 covers MAX-3..=MAX and 0..=3.
+    let base = u64::MAX - 3;
+    interp
+        .pending_symbolic_stores
+        .insert(base, RustBV::symbolic(&ctx, "w", 64));
+
+    // Load entirely inside the wrapped tail.
+    let tail = interp
+        .symbolic_overlap_load(&interp.pending_symbolic_stores, 0x0, 4)
+        .expect("wrapped tail [0x0,0x4) is covered by the store");
+    assert_eq!(tail.width(), 32);
+    assert!(tail.is_symbolic());
+
+    // Load straddling the wrap itself.
+    let straddle = interp
+        .symbolic_overlap_load(&interp.pending_symbolic_stores, u64::MAX - 1, 4)
+        .expect("straddling load [MAX-1, 0x2) is covered by the store");
+    assert_eq!(straddle.width(), 32);
+
+    // One byte past the store's wrapped end is still a miss.
+    assert!(
+        interp
+            .symbolic_overlap_load(&interp.pending_symbolic_stores, 0x1, 4)
+            .is_none(),
+        "[0x1,0x5) runs one byte past the store's wrapped end"
+    );
+    // ... and so is a load just below its base, which the offset-space test
+    // rejects as a huge wrapped offset rather than a negative one.
+    assert!(
+        interp
+            .symbolic_overlap_load(&interp.pending_symbolic_stores, base - 1, 4)
+            .is_none(),
+        "[MAX-4, MAX) starts one byte below the store's base"
+    );
+}
+
 #[test]
 fn symbolic_overlap_load_misses_when_not_fully_covered() {
     let ctx = SymContext::new_mock();

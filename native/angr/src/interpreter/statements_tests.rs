@@ -424,6 +424,38 @@ fn evict_overlapping_symbolic_stores_drops_shadowed_entries() {
     assert!(!interp.all_flushed_symbolic_stores.contains_key(&0x2000));
 }
 
+// angr-fs8kb.64: the eviction overlap test must see a wrapped range, in
+// either role. With `saturating_add` both ends clamped to `u64::MAX`, so a
+// symbolic store whose tail wrapped kept its stale shadow alive under the
+// concrete store that overwrote it -- and a later load of those bytes
+// returned the symbolic value instead of the concrete ones.
+#[test]
+fn evict_overlapping_symbolic_stores_drops_entries_across_address_top() {
+    let ctx = SymContext::new_mock();
+    let mut interp = new_interp(&ctx);
+    // Symbolic store wraps: [MAX-3, MAX] plus [0, 3].
+    let wrapped = u64::MAX - 3;
+    interp
+        .pending_symbolic_stores
+        .insert(wrapped, RustBV::symbolic(&ctx, "w", 64));
+    // Concrete store [0x0,0x2) touches only the wrapped tail.
+    interp.evict_overlapping_symbolic_stores(0x0, 2);
+    assert!(
+        !interp.pending_symbolic_stores.contains_key(&wrapped),
+        "a concrete store landing in the wrapped tail must evict the shadow"
+    );
+
+    // Mirror case: the *concrete* store is the one that wraps.
+    interp
+        .all_flushed_symbolic_stores
+        .insert(0x2, RustBV::symbolic(&ctx, "f", 32));
+    interp.evict_overlapping_symbolic_stores(u64::MAX - 1, 8);
+    assert!(
+        !interp.all_flushed_symbolic_stores.contains_key(&0x2),
+        "a wrapped concrete store must evict shadows in its wrapped tail"
+    );
+}
+
 #[test]
 fn evict_overlapping_symbolic_stores_keeps_disjoint_entries() {
     let ctx = SymContext::new_mock();
