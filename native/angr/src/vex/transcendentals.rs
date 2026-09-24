@@ -2,7 +2,7 @@
 //! Iop_CosF64, Iop_TanF64, Iop_2xm1F64, Iop_AtanF64, Iop_Yl2xF64,
 //! Iop_Yl2xp1F64, Iop_ScaleF64) and ARM AArch64 FRECPX (Iop_RecpExpF64,
 //! Iop_RecpExpF32). We expose no named `IROp` variant for these, so
-//! `opcode_map::parse_transcendental` maps the pyvex name to
+//! `opcode_map_float::parse_transcendental` maps the pyvex name to
 //! `IROp::Raw(<one of the IOP_* consts below>)`, and the `IROp::Raw` arms
 //! of `VEXOps::binop` (in its private `binop_misc` helper) and
 //! `VEXOps::binop_with_rm` dispatch that straight here.

@@ -874,7 +874,7 @@ pub enum IROp {
     /// `Iop_SinF64`/`CosF64`/`TanF64`/`2xm1F64`/`AtanF64`/… plus AArch64
     /// `Iop_RecpExpF32`/`F64`).
     ///
-    /// **This is not a generic escape hatch.** `opcode_map::parse_transcendental`
+    /// **This is not a generic escape hatch.** `opcode_map_float::parse_transcendental`
     /// is the *only* producer, and the `IROp::Raw` arms of `VEXOps::binop`
     /// (via its private `binop_misc` helper) and `VEXOps::binop_with_rm` —
     /// both of which route straight into `transcendentals` — are the only

@@ -18,6 +18,8 @@ pub mod libvex_ffi;
 pub mod libvex_lifter;
 mod lifter;
 pub mod opcode_map;
+pub(crate) mod opcode_map_float;
+pub(crate) mod opcode_map_vector;
 pub mod ops;
 pub mod pyvex_bridge;
 pub mod transcendentals;
