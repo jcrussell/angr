@@ -4,9 +4,19 @@
 //! and stores it at the corresponding pointer argument. This eliminates
 //! Python callback overhead for common CTF patterns using scanf for input.
 //!
-//! Supported specifiers: %d, %i, %u, %x, %o, %s, %c, %ld, %lld, %lu, %lx, %%
+//! Supported conversions: `%d`, `%i`, `%u`, `%x`, `%X`, `%o`, `%s`, `%c` and
+//! the `%%` literal. Each may carry an assignment-suppressing `*` and a field
+//! width; the numeric conversions additionally honour every length modifier
+//! [`parse_length_modifier`] accepts — `h`, `hh`, `l`, `ll`, `z`, `j`, `t` —
+//! sized by [`LengthModifier::int_conv_bits`], so `%hhd`, `%hd`, `%ld`,
+//! `%lld`, `%lu`, `%lx`, `%zu`, `%jd` and `%td` all parse natively. `%s` and
+//! `%c` parse a modifier too but ignore it: their widths are fixed.
 //! Falls back to Python for symbolic format strings or pointer arguments, and
-//! for the specifiers Python models differently — see `parse_scanf_format`.
+//! for the conversions Python models differently — the `%[...]` scanset,
+//! `%n`, and the float conversions; see `parse_scanf_format`, whose arms
+//! record why deferring is the faithful behavior for each.
+//!
+//! [`LengthModifier::int_conv_bits`]: super::format_common::LengthModifier::int_conv_bits
 //!
 //! **Panic policy / enforcement (angr-qwyti.11, angr-9ke6b.212):** the format
 //! string and every pointer argument are guest data, so this module carries
