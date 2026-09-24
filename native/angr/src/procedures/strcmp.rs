@@ -47,9 +47,22 @@ pub(super) const MAX_STRCMP_LEN: usize = 4096;
 /// byte + 32, byte)` over 8 bits.
 ///
 /// Delegates to [`ctype::case_shift_bv`] — the same helper `tolower` is built
-/// on — so the two case-folding implementations cannot drift (angr-6cp06.3).
+/// on — so `strcasecmp`'s symbolic fold and `tolower`/`toupper` cannot drift
+/// apart (angr-6cp06.3). [`case_fold_byte_concrete`] does the same for the
+/// concrete path (angr-fs8kb.38).
 fn case_fold_byte(byte: &RustBV, ctx: &SymContext) -> RustBV {
     ctype::case_shift_bv(byte, b'A', b'Z', 32, ctx)
+}
+
+/// Concrete counterpart of [`case_fold_byte`], for `compare_bytes`'s
+/// all-concrete fast path.
+///
+/// Delegates to [`ctype::case_shift_concrete`] — the concrete twin of the
+/// helper [`case_fold_byte`] uses — so the fold rule is not spelled a third
+/// time (angr-fs8kb.38). A fold of a byte is still a byte ([A, Z] + 32 = [a, z]),
+/// so narrowing the `u64` result back is lossless.
+fn case_fold_byte_concrete(byte: u8) -> u8 {
+    ctype::case_shift_concrete(u64::from(byte), b'A', b'Z', 32) as u8
 }
 
 /// Build the ITE chain from a list of (c1_i, c2_i) pairs (each 8-bit BVs).
@@ -120,16 +133,14 @@ pub(super) fn compare_bytes(
         },
         |(c1_val, c2_val), _i| match (c1_val.as_u64(), c2_val.as_u64()) {
             (Some(b1), Some(b2)) => {
-                let mut a = b1 as u8;
-                let mut b = b2 as u8;
-                if case_insensitive {
-                    if a.is_ascii_uppercase() {
-                        a += 32;
-                    }
-                    if b.is_ascii_uppercase() {
-                        b += 32;
-                    }
-                }
+                let (a, b) = if case_insensitive {
+                    (
+                        case_fold_byte_concrete(b1 as u8),
+                        case_fold_byte_concrete(b2 as u8),
+                    )
+                } else {
+                    (b1 as u8, b2 as u8)
+                };
                 if a != b {
                     // Return the SIGN, not the raw byte difference: Python's
                     // strncmp/memcmp SimProcedures return exactly -1 or 1 on a

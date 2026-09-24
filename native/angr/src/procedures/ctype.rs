@@ -105,6 +105,24 @@ pub(super) fn case_shift_bv(arg: &RustBV, lo: u8, hi: u8, delta: i8, ctx: &SymCo
     in_range.ite(&shifted, arg, ctx)
 }
 
+/// Concrete twin of [`case_shift_bv`]: if `v` is in [lo, hi], shift by
+/// `delta`; otherwise return `v` unchanged.
+///
+/// Shared with `strcmp::case_fold_byte_concrete` for the same reason
+/// [`case_shift_bv`] is shared with `strcmp::case_fold_byte` — the fold rule
+/// has exactly one spelling per path, so an edit to one cannot silently miss
+/// the other (angr-fs8kb.38).
+pub(super) fn case_shift_concrete(v: u64, lo: u8, hi: u8, delta: i8) -> u64 {
+    if in_ranges(v, &[(lo, hi)]) {
+        // `v` is inside [lo, hi] ⊆ [0, 255] on this arm and `delta` is ±32, so
+        // the sum lands back inside [0, 255]; `wrapping_add` is just how a
+        // negative `delta` is spelled against a `u64`.
+        v.wrapping_add(delta as i64 as u64)
+    } else {
+        v
+    }
+}
+
 /// tolower/toupper share the same pattern: if `arg` is in [lo, hi], shift by
 /// `delta`; otherwise return `arg` **unchanged and untruncated**, exactly as
 /// `claripy.If(And(c >= lo, c <= hi), c + delta, c)` does in `tolower.py` /
@@ -119,14 +137,7 @@ fn case_shift(
 ) -> Result<Option<RustBV>, ProcedureError> {
     let width = arg.width();
     if let Some(c) = arg.as_u64() {
-        let result = if in_ranges(c, &[(lo, hi)]) {
-            // `c` is inside [lo, hi] ⊆ [0, 255] on this arm and `delta` is
-            // ±32, so the sum lands back inside [0, 255]; `wrapping_add` is
-            // just how a negative `delta` is spelled against a `u64`.
-            c.wrapping_add(delta as i64 as u64)
-        } else {
-            c
-        };
+        let result = case_shift_concrete(c, lo, hi, delta);
         return Ok(Some(RustBV::concrete(u128::from(result), width)));
     }
     let ctx = state.solver().borrow();
