@@ -56,17 +56,13 @@ impl<'a> VEXInterpreter<'a> {
     ///
     /// Production always has the region bytes behind an `Arc` already (the
     /// binary-region copy in `step_core`), so it calls
-    /// `add_concrete_memory_shared`; only the interpreter tests hand over an
-    /// owned `Vec` (angr-9ke6b.214).
+    /// [`Self::add_concrete_memory_shared`]; only the interpreter tests hand
+    /// over an owned `Vec` (angr-9ke6b.214). This is the owning-caller
+    /// convenience wrapper over that one, not a second implementation
+    /// (angr-fs8kb.67).
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn add_concrete_memory(&mut self, base: u64, data: Vec<u8>) {
-        let size = data.len() as u64;
-        Arc::make_mut(&mut self.concrete_memory).push(ConcreteMemoryRegion {
-            base,
-            size,
-            data: Arc::new(data),
-        });
-        self.concrete_memory_sorted = false;
+        self.add_concrete_memory_shared(base, Arc::new(data));
     }
 
     /// Add a concrete memory region using pre-shared Arc data (O(1) clone).
