@@ -20,7 +20,8 @@ use crate::vex::ir::IRType;
 #[track_caller]
 fn assert_width_rejected(result: Result<RustBV, OpError>, site: &str) {
     match result {
-        Err(OpError::UnsupportedVectorOp(msg)) => {
+        Err(e @ OpError::OperandWidthMismatch { .. }) => {
+            let msg = e.to_string();
             assert!(
                 msg.contains(site) && msg.contains("operand width"),
                 "expected an operand-width rejection naming {site}, got: {msg}"

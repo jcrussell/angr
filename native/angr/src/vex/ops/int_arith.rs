@@ -23,8 +23,8 @@ impl VEXOps {
         ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         let in_width = ty.bits();
-        debug_assert_eq!(left.width(), in_width);
-        debug_assert_eq!(right.width(), in_width);
+        Self::require_operand_width("widening_mul left", left.width(), in_width)?;
+        Self::require_operand_width("widening_mul right", right.width(), in_width)?;
         let out_width = in_width * 2;
 
         // Extend both operands
@@ -42,8 +42,8 @@ impl VEXOps {
         signed: bool,
         ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
-        debug_assert_eq!(dividend.width(), 64);
-        debug_assert_eq!(divisor.width(), 32);
+        Self::require_operand_width("divmod_64_to_32 dividend", dividend.width(), 64)?;
+        Self::require_operand_width("divmod_64_to_32 divisor", divisor.width(), 32)?;
         Self::divmod_double_to_single(dividend, divisor, signed, ctx)
     }
 
@@ -55,8 +55,8 @@ impl VEXOps {
         signed: bool,
         ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
-        debug_assert_eq!(dividend.width(), 128);
-        debug_assert_eq!(divisor.width(), 64);
+        Self::require_operand_width("divmod_128_to_64 dividend", dividend.width(), 128)?;
+        Self::require_operand_width("divmod_128_to_64 divisor", divisor.width(), 64)?;
         Self::divmod_double_to_single(dividend, divisor, signed, ctx)
     }
 
@@ -78,7 +78,11 @@ impl VEXOps {
     ) -> Result<RustBV, OpError> {
         let dividend_w = dividend.width();
         let divisor_w = divisor.width();
-        debug_assert_eq!(dividend_w, divisor_w * 2);
+        Self::require_operand_width(
+            "divmod_double_to_single dividend",
+            dividend_w,
+            divisor_w * 2,
+        )?;
 
         if let (Some(dvd), Some(dvs)) = (dividend.as_u128(), divisor.as_u128()) {
             let dvd = dvd & Self::low_bit_mask_u128(dividend_w);

@@ -36,6 +36,26 @@ pub enum OpError {
     /// Unsupported vector operation.
     #[error("unsupported vector operation: {0}")]
     UnsupportedVectorOp(String),
+    /// An operand's width does not match the width the opcode implies.
+    ///
+    /// Built only by `VEXOps::require_operand_width` (module-private, so no
+    /// intra-doc link from this public variant), which every
+    /// operand-*width* precondition in this crate's op helpers — packed-vector
+    /// (angr-3fb7p) and scalar (angr-fs8kb.95) alike — routes through instead
+    /// of `debug_assert_eq!`. See that method's rustdoc for why the check has
+    /// to report in every profile rather than panic in dev only.
+    ///
+    /// `what` names the caller and the operand (`"vec_mull left"`,
+    /// `"binop add_into right"`), so the stringified error identifies the site.
+    /// Distinct from [`Self::UnsupportedVectorOp`], which the scalar family
+    /// would have had to borrow: "unsupported vector operation" is a wrong
+    /// description of a width-mismatched `Iop_Add64`.
+    #[error("{what}: operand width {actual} does not match expected {expected}")]
+    OperandWidthMismatch {
+        what: &'static str,
+        actual: u32,
+        expected: u32,
+    },
     /// NEON op that hasn't been implemented yet (angr-bkcs scaffold).
     ///
     /// Distinct from [`Self::UnsupportedVectorOp`] because the silent

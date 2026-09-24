@@ -149,8 +149,8 @@ impl VEXOps {
     ) -> Result<RustBV, OpError> {
         let prec = float_prec_of(ty).ok_or(OpError::InvalidFloatType(ty))?;
         let lane_bits = prec.bits();
-        debug_assert_eq!(left.width(), 128);
-        debug_assert_eq!(right.width(), 128);
+        Self::require_operand_width("vec_float_scalar_lane_cmp left", left.width(), 128)?;
+        Self::require_operand_width("vec_float_scalar_lane_cmp right", right.width(), 128)?;
         let l_lo = left.extract(lane_bits - 1, 0, ctx);
         let r_lo = right.extract(lane_bits - 1, 0, ctx);
         let upper = left.extract(127, lane_bits, ctx);
@@ -188,8 +188,8 @@ impl VEXOps {
     ) -> Result<RustBV, OpError> {
         let elem_width = elem.bits();
         let total_width = elem_width * count as u32;
-        debug_assert_eq!(left.width(), total_width);
-        debug_assert_eq!(right.width(), total_width);
+        Self::require_operand_width("vec_float_packed_cmp left", left.width(), total_width)?;
+        Self::require_operand_width("vec_float_packed_cmp right", right.width(), total_width)?;
 
         if elem_width != 32 && elem_width != 64 {
             return Err(OpError::InvalidFloatType(elem));

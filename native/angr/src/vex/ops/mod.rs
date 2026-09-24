@@ -10,9 +10,10 @@
 //! been hardened into typed errors for exactly that reason
 //! (`VEXOps::vec_float_lane_op` by angr-j60q0.2, `VEXOps::vec_int_lane_op`
 //! by angr-5mnx3.67). The same reasoning was swept across the whole `vec_*`
-//! family by angr-3fb7p: every operand-*width* precondition there now goes
-//! through `VEXOps::require_operand_width` (see its rustdoc for why a
-//! `debug_assert!` was the wrong tool), while the shape/arity ones stay
+//! family by angr-3fb7p, and across the *scalar* integer/float/conversion
+//! helpers by angr-fs8kb.95: every operand-*width* precondition in this module
+//! tree now goes through `VEXOps::require_operand_width` (see its rustdoc for
+//! why a `debug_assert!` was the wrong tool), while the shape/arity ones stay
 //! `debug_assert!`. The two
 //! remaining `expect` shapes are operand-*count* invariants fixed by the
 //! dispatch table, not by guest data:
@@ -48,19 +49,33 @@ use lane_traits::{
     build_float_expr, float_prec_of,
 };
 
-/// Compress same-width unary arms `assert width(arg) == ty.bits(); arg.$method(ctx)`.
+/// Compress same-width unary arms: `require_operand_width(width(arg), ty.bits())?;
+/// arg.$method(ctx)`.
 macro_rules! width_unop {
     ($arg:ident, $ty:expr, $method:ident, $ctx:expr) => {{
-        debug_assert_eq!($arg.width(), $ty.bits());
+        VEXOps::require_operand_width(
+            concat!("unop ", stringify!($method), " arg"),
+            $arg.width(),
+            $ty.bits(),
+        )?;
         Ok($arg.$method($ctx))
     }};
 }
 
-/// Compress same-width binary arms `assert width(left)==width(right)==ty.bits(); left.$method(right, ctx)`.
+/// Compress same-width binary arms: `require_operand_width` on each of `left`
+/// and `right` against `ty.bits()`, then `left.$method(right, ctx)`.
 macro_rules! width_binop {
     ($left:ident, $right:ident, $ty:expr, $method:ident, $ctx:expr) => {{
-        debug_assert_eq!($left.width(), $ty.bits());
-        debug_assert_eq!($right.width(), $ty.bits());
+        VEXOps::require_operand_width(
+            concat!("binop ", stringify!($method), " left"),
+            $left.width(),
+            $ty.bits(),
+        )?;
+        VEXOps::require_operand_width(
+            concat!("binop ", stringify!($method), " right"),
+            $right.width(),
+            $ty.bits(),
+        )?;
         Ok($left.$method($right, $ctx))
     }};
 }
@@ -117,8 +132,9 @@ mod classify;
 pub use classify::iropclass;
 
 impl VEXOps {
-    /// Reject an operand whose width disagrees with the lane geometry the
-    /// dispatch table handed the op.
+    /// Reject an operand whose width disagrees with the width the opcode
+    /// implies — the lane geometry for a packed-vector helper, the scalar
+    /// `IRType` for everything else.
     ///
     /// The packed-vector helpers in the `vec_*` sibling modules derive every
     /// lane offset from `elem.bits()` and `count` — both opcode-table
@@ -133,16 +149,30 @@ impl VEXOps {
     /// profile rather than panicking in dev and silently miscomputing in
     /// release — the `NativeMprotectSyscall` shape, not `assert!`.
     ///
-    /// `what` names the caller and operand (`"vec_mull left"`) so the
-    /// stringified error identifies the site. Reported as
-    /// [`OpError::UnsupportedVectorOp`], mirroring
-    /// `VEXOps::vec_int_lane_op`'s over-arity guard, so the interpreter
-    /// degrades the block to the Python VEX engine instead of aborting.
+    /// The *scalar* families share both properties (angr-fs8kb.95):
+    /// `VEXOps::binop`/`unop` match on the opcode alone and never check an
+    /// operand against the `IRType` it carries, and `RustBV`'s own guard —
+    /// `define_binop_pair!` in `symbolic/value_ops.rs` — is itself a
+    /// `debug_assert_eq!`, so in release a mismatched `Iop_Add64` folds a
+    /// `left.width()`-wide wrong constant on the `as_u128` path (or builds an
+    /// `Expression` whose operands disagree, which Z3 rejects at
+    /// `to_z3_ast` time). So the `width_binop!`/`width_unop!` macros above,
+    /// the hand-rolled extend/truncate/shift/concat arms that do not use them,
+    /// and the helpers in `int_arith.rs` / `conversions.rs` / `float_cmp.rs`
+    /// all route here too.
+    ///
+    /// `what` names the caller and operand (`"vec_mull left"`,
+    /// `"binop add_into right"`) so the stringified error identifies the site.
+    /// Reported as [`OpError::OperandWidthMismatch`] — an ordinary `OpError`,
+    /// like `VEXOps::vec_int_lane_op`'s over-arity guard, so the interpreter
+    /// degrades the block to the Python VEX engine (symbolic operands) or
+    /// surfaces a typed error (concrete ones) instead of aborting.
     ///
     /// Shape/arity preconditions on the *same* helpers (`count` even,
     /// `args.len() == op.arity()`, `elem_width % sub_width == 0`) stay
     /// `debug_assert!`: those operands are opcode-table constants or
     /// fixed-size array literals at the call site, never guest data.
+    #[inline]
     pub(super) fn require_operand_width(
         what: &'static str,
         actual: u32,
@@ -151,9 +181,11 @@ impl VEXOps {
         if actual == expected {
             return Ok(());
         }
-        Err(OpError::UnsupportedVectorOp(format!(
-            "{what}: operand width {actual} does not match expected {expected}"
-        )))
+        Err(OpError::OperandWidthMismatch {
+            what,
+            actual,
+            expected,
+        })
     }
 
     // =========================================================================
@@ -171,24 +203,24 @@ impl VEXOps {
 
             // Sign/Zero extension
             IROp::SignExtend { from, to } => {
-                debug_assert_eq!(arg.width(), from.bits());
+                Self::require_operand_width("unop SignExtend arg", arg.width(), from.bits())?;
                 Ok(arg.sign_extend_into(to.bits(), ctx))
             }
 
             IROp::ZeroExtend { from, to } => {
-                debug_assert_eq!(arg.width(), from.bits());
+                Self::require_operand_width("unop ZeroExtend arg", arg.width(), from.bits())?;
                 Ok(arg.zero_extend_into(to.bits(), ctx))
             }
 
             // Truncation
             IROp::Truncate { from, to } => {
-                debug_assert_eq!(arg.width(), from.bits());
+                Self::require_operand_width("unop Truncate arg", arg.width(), from.bits())?;
                 Ok(arg.truncate_into(to.bits(), ctx))
             }
 
             // Extraction (unary form - low_bit is encoded in opcode)
             IROp::Extract { from, to, low_bit } => {
-                debug_assert_eq!(arg.width(), from.bits());
+                Self::require_operand_width("unop Extract arg", arg.width(), from.bits())?;
                 let hi = low_bit as u32 + to.bits() - 1;
                 let lo = low_bit as u32;
                 Ok(arg.extract_into(hi, lo, ctx))
@@ -224,7 +256,7 @@ impl VEXOps {
 
             // Reinterpret (just changes type, not bits)
             IROp::Reinterpret { from, to } => {
-                debug_assert_eq!(arg.width(), from.bits());
+                Self::require_operand_width("unop Reinterpret arg", arg.width(), from.bits())?;
                 if from.bits() == to.bits() {
                     Ok(arg)
                 } else if to.bits() > from.bits() {
@@ -533,17 +565,17 @@ impl VEXOps {
 
             // Shifts — normalize shift amount width to match operand.
             IROp::Shl(ty) => {
-                debug_assert_eq!(left.width(), ty.bits());
+                Self::require_operand_width("binop Shl left", left.width(), ty.bits())?;
                 let amt = Self::normalize_shift_amount(right, left.width(), ctx);
                 Ok(left.shl_into(amt, ctx))
             }
             IROp::Shr(ty) => {
-                debug_assert_eq!(left.width(), ty.bits());
+                Self::require_operand_width("binop Shr left", left.width(), ty.bits())?;
                 let amt = Self::normalize_shift_amount(right, left.width(), ctx);
                 Ok(left.lshr_into(amt, ctx))
             }
             IROp::Sar(ty) => {
-                debug_assert_eq!(left.width(), ty.bits());
+                Self::require_operand_width("binop Sar left", left.width(), ty.bits())?;
                 let amt = Self::normalize_shift_amount(right, left.width(), ctx);
                 Ok(left.ashr_into(amt, ctx))
             }
@@ -641,8 +673,11 @@ impl VEXOps {
             // example" in each grouping independently rather than assuming
             // one implies the other.
             IROp::Concat { ty } => {
+                // Postcondition rather than a precondition: `Concat`'s operand
+                // widths are not individually fixed by the opcode, only their
+                // sum is, so the check has to see the joined result.
                 let result = left.concat_into(right, ctx);
-                debug_assert_eq!(result.width(), ty.bits());
+                Self::require_operand_width("binop Concat result", result.width(), ty.bits())?;
                 Ok(result)
             }
 
@@ -1387,5 +1422,7 @@ test_submod!(tests_vec_compare);
 test_submod!(tests_vec_dispatch);
 
 test_submod!(tests_vec_operand_width);
+
+test_submod!(tests_scalar_operand_width);
 
 test_submod!(property_tests);

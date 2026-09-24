@@ -63,10 +63,15 @@ fn op_error_to_typed(err: OpError, arch: &str) -> RustExecError {
             op_name,
             arch: arch.to_string(),
         },
+        // angr-fs8kb.95: a width-mismatched operand is malformed IR, not an
+        // op the engine lacks — `RustExecError::UnsupportedVexOp` would name
+        // the whole rejection message as the "op name". `Other` carries the
+        // `what: actual vs expected` text `VEXOps::require_operand_width` built.
         e @ (OpError::NotUnary(_)
         | OpError::NotBinary(_)
         | OpError::NotQuaternary(_)
         | OpError::TypeMismatch { .. }
+        | OpError::OperandWidthMismatch { .. }
         | OpError::InvalidFloatType(_)
         | OpError::RawOpcode(_)) => RustExecError::Other(e.to_string()),
     }

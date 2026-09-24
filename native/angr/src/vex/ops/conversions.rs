@@ -82,7 +82,7 @@ impl VEXOps {
         dst_prec: FloatPrec,
         concrete: fn(u128) -> u128,
     ) -> Result<RustBV, OpError> {
-        debug_assert_eq!(arg.width(), src_bits);
+        Self::require_operand_width("int_to_float arg", arg.width(), src_bits)?;
         if let Some(v) = arg.as_u128() {
             return Ok(RustBV::concrete(concrete(v), dst_prec.bits()));
         }
@@ -105,7 +105,7 @@ impl VEXOps {
         signed: bool,
         concrete: fn(u128) -> u128,
     ) -> Result<RustBV, OpError> {
-        debug_assert_eq!(arg.width(), src_prec.bits());
+        Self::require_operand_width("float_to_int arg", arg.width(), src_prec.bits())?;
         if let Some(v) = arg.as_u128() {
             return Ok(RustBV::concrete(concrete(v), dst_bits));
         }
@@ -127,7 +127,7 @@ impl VEXOps {
         dst_prec: FloatPrec,
         concrete: fn(u128) -> u128,
     ) -> Result<RustBV, OpError> {
-        debug_assert_eq!(arg.width(), src_prec.bits());
+        Self::require_operand_width("float_to_float arg", arg.width(), src_prec.bits())?;
         if let Some(v) = arg.as_u128() {
             return Ok(RustBV::concrete(concrete(v), dst_prec.bits()));
         }
@@ -230,7 +230,7 @@ impl VEXOps {
         signed: bool,
         concrete: fn(u128, u32) -> u128,
     ) -> Result<RustBV, OpError> {
-        debug_assert_eq!(arg.width(), src_prec.bits());
+        Self::require_operand_width("float_to_int_rm arg", arg.width(), src_prec.bits())?;
         if let (Some(rm_val), Some(v)) = (rm.as_u128(), arg.as_u128()) {
             return Ok(RustBV::concrete(concrete(v, rm_val as u32), dst_bits));
         }
@@ -253,7 +253,7 @@ impl VEXOps {
         dst_prec: FloatPrec,
         concrete: fn(u128, u32) -> u128,
     ) -> Result<RustBV, OpError> {
-        debug_assert_eq!(arg.width(), src_prec.bits());
+        Self::require_operand_width("float_to_float_rm arg", arg.width(), src_prec.bits())?;
         if let (Some(rm_val), Some(v)) = (rm.as_u128(), arg.as_u128()) {
             return Ok(RustBV::concrete(
                 concrete(v, rm_val as u32),
