@@ -24,9 +24,14 @@
 //!
 //! Crate-wide `pub(crate)` (not scoped under `memory`/`state`/etc.) because
 //! call sites span `memory`, `state::filesystem`, `syscalls`, `procedures`,
-//! `interpreter`, and `symbolic` — no single existing module is an
-//! appropriate home, and CLAUDE.md's Harness-6 sequencing note calls for one
-//! table reused everywhere rather than a per-module copy.
+//! `interpreter`, `symbolic` and `segmentlist` — no single existing module is
+//! an appropriate home, and CLAUDE.md's Harness-6 sequencing note calls for
+//! one table reused everywhere rather than a per-module copy.
+//!
+//! Nothing here depends on the `vex-engine` feature, and `lib.rs` deliberately
+//! declares the module under a bare `#[cfg(test)]` so `segmentlist`'s
+//! unconditionally-built tests can reach it too — keep it that way (see the
+//! declaration's doc comment for why).
 
 /// Addresses/offsets worth sweeping at any guest-controlled `u64`
 /// address-or-offset call site: `0`/`1` (degenerate), a couple of

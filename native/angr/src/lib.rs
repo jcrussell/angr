@@ -349,10 +349,17 @@ pub(crate) mod z3_ast_extract;
 /// Shared boundary-value tables for the integer-overflow/wraparound proactive
 /// test sweep (Harness 6, see the module doc for the full rationale). Not
 /// tied to any one subsystem — call sites span `memory`, `state::filesystem`,
-/// `syscalls`, `procedures`, `interpreter` and `symbolic`, all of which sit
-/// behind `vex-engine` — so it is declared once here at the crate root
-/// rather than nested under any of them.
-#[cfg(all(test, feature = "vex-engine"))]
+/// `syscalls`, `procedures`, `interpreter`, `symbolic` and `segmentlist` — so
+/// it is declared once here at the crate root rather than nested under any of
+/// them.
+///
+/// Gated on `test` alone, *not* on `vex-engine`: the tables are two `Vec`
+/// literals with no engine dependency, and `segmentlist`'s own tests (which
+/// build unconditionally, so CFGFast-style consumers work standalone) sweep
+/// `boundary_addresses` over `SegmentList::{occupy,release}` (angr-fs8kb.87).
+/// Re-adding a `feature = "vex-engine"` here would break the
+/// `--no-default-features` test build rather than merely narrow coverage.
+#[cfg(test)]
 pub(crate) mod test_boundary_values;
 
 use pyo3::prelude::*;

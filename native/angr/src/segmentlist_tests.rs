@@ -157,41 +157,76 @@ fn full_and_partial_release() {
 // `rangemap::RangeMap::{insert,remove}` assert `range.start < range.end`, and this
 // crate builds with panic="abort", so an address+size that wraps u64 would take the
 // whole process down rather than raise. Both entry points must no-op instead.
+//
+// The three tests below sweep `test_boundary_values::boundary_addresses()` rather
+// than the `u64::MAX - 4` / `u64::MAX - 16` values the original bug report happened
+// to use, so they track that shared table as it grows; see its module doc for why
+// one table reused everywhere beats a per-bug pin.
+
+/// The smallest `size` for which `addr + size` wraps `u64`, or `None` when no
+/// `u64` size can wrap it — true only for `addr == 0`, where the largest
+/// representable size is the exact fit `0 + u64::MAX`.
+fn smallest_overflowing_size(addr: u64) -> Option<u64> {
+    // overflow-ok: `u64::MAX - addr` cannot underflow for any `u64` addr; the
+    // `checked_add` is what detects the `addr == 0` no-wrap-possible case.
+    (u64::MAX - addr).checked_add(1)
+}
+
 #[test]
 fn overflowing_release_is_a_noop() {
-    let mut sl = SegmentList::new();
-    sl.occupy(0x1000, 0x100, Some("code".into()));
-    assert_eq!(sl.occupied_size(), 0x100);
+    for addr in crate::test_boundary_values::boundary_addresses() {
+        let Some(min_overflow) = smallest_overflowing_size(addr) else {
+            continue; // addr == 0: no u64 size can wrap past the top
+        };
+        let mut sl = SegmentList::new();
+        sl.occupy(0x1000, 0x100, Some("code".into()));
+        assert_eq!(sl.occupied_size(), 0x100);
 
-    // address + size wraps: u64::MAX - 4 + 16
-    sl.release(u64::MAX - 4, 16);
-    sl.release(u64::MAX, u64::MAX);
-    sl.release(1, u64::MAX);
-
-    // The pre-existing segment is untouched.
-    assert_eq!(sl.occupied_size(), 0x100);
-    assert!(sl.is_occupied(0x1000));
+        for size in [min_overflow, u64::MAX] {
+            sl.release(addr, size);
+            // The pre-existing segment is untouched.
+            let ctx = format!("release({addr:#x}, {size:#x})");
+            assert_eq!(sl.occupied_size(), 0x100, "{ctx}");
+            assert!(sl.is_occupied(0x1000), "{ctx}");
+        }
+    }
 }
 
 #[test]
 fn overflowing_occupy_is_a_noop() {
-    let mut sl = SegmentList::new();
-    sl.occupy(u64::MAX - 4, 16, Some("code".into()));
-    sl.occupy(1, u64::MAX, None);
-    assert_eq!(sl.occupied_size(), 0);
-    assert!(sl.is_empty());
+    for addr in crate::test_boundary_values::boundary_addresses() {
+        let Some(min_overflow) = smallest_overflowing_size(addr) else {
+            continue; // addr == 0: no u64 size can wrap past the top
+        };
+        for size in [min_overflow, u64::MAX] {
+            let mut sl = SegmentList::new();
+            sl.occupy(addr, size, Some("code".into()));
+            let ctx = format!("occupy({addr:#x}, {size:#x})");
+            assert_eq!(sl.occupied_size(), 0, "{ctx}");
+            assert!(sl.is_empty(), "{ctx}");
+        }
+    }
 }
 
 // The exact-fit boundary case must still work: address + size == u64::MAX + 1 is an
-// overflow, but address + size == u64::MAX is not.
+// overflow, but address + size == u64::MAX is not. Every boundary address gets the
+// largest size that still fits below the wrap.
 #[test]
 fn release_at_top_of_address_space() {
-    let mut sl = SegmentList::new();
-    sl.occupy(u64::MAX - 16, 16, Some("code".into()));
-    assert_eq!(sl.occupied_size(), 16);
-    sl.release(u64::MAX - 16, 16);
-    assert_eq!(sl.occupied_size(), 0);
-    assert!(sl.is_empty());
+    for addr in crate::test_boundary_values::boundary_addresses() {
+        // overflow-ok: exact fit — `addr + size == u64::MAX`, one short of the wrap.
+        let size = u64::MAX - addr;
+        if size == 0 {
+            continue; // addr == u64::MAX: a zero size is a documented no-op
+        }
+        let ctx = format!("({addr:#x}, {size:#x})");
+        let mut sl = SegmentList::new();
+        sl.occupy(addr, size, Some("code".into()));
+        assert_eq!(sl.occupied_size(), size, "occupy{ctx}");
+        sl.release(addr, size);
+        assert_eq!(sl.occupied_size(), 0, "release{ctx}");
+        assert!(sl.is_empty(), "release{ctx}");
+    }
 }
 
 // `Segment::size()` subtracts without a guard and the release profile has
