@@ -375,7 +375,7 @@ inspect_dispatch! {
         result: Option<Vec<u64>>,
     ) -> PyResult<()> {
         self.with_slot((), |py, cb| {
-                let addr_obj = addr_ast.clone_ref(py);
+            let addr_obj = addr_ast.clone_ref(py);
             let result_obj: Py<PyAny> = match result {
                 Some(addrs) => pyo3::types::PyList::new(py, addrs)?.into_any().unbind(),
                 None => py.None(),

@@ -554,8 +554,9 @@ pub struct PythonCallbacks {
         std::sync::Arc<std::sync::RwLock<Option<std::collections::HashSet<u64>>>>,
 }
 
-// The 30 `set_<slot>` PyO3 setters, generated from the one `with_callback_fields!`
-// list so a setter cannot write a slot other than the one it is named for
+// Every `set_<slot>` PyO3 setter, one per entry of the `with_callback_fields!`
+// list, generated from that one list so a setter cannot write a slot other than
+// the one it is named for
 // (angr-0jh0j.6). It expands to its own `#[pymethods] impl` block — see
 // `angr_macros::callback_setters` for why it cannot live inside the hand-written
 // one below. Per-slot prose belongs on the struct field's doc comment.
