@@ -46,6 +46,20 @@
 //! and never need libm. Iop_PRem*F64 (FP remainder) is also out of
 //! scope.
 //!
+//! ## Rounding mode
+//!
+//! Every entry point here takes the VEX rounding mode as its first operand
+//! and discards it. CLAUDE.md's rounding-mode-threading convention requires
+//! that discard to carry an `rm-ignored: <why>` comment, and this module is
+//! the case that convention was written for: the results come from Rust's
+//! libm bindings (`f64::sin`, `f64::log2`, `f64::atan2`, `f64::exp2`), which
+//! expose round-to-nearest-even only — there is no rounding-mode-parameterized
+//! form to thread `rm` into. The x87 default of rm=0 (RNE) is the common case,
+//! so the discard is faithful there and off by at most one ulp otherwise.
+//! `try_concrete_binop_rm` and `try_concrete_triop_rm` carry the marker; the
+//! two `try_concretize_*` wrappers do not need one because they forward `rm`
+//! unchanged to those two.
+//!
 //! Opcode values: libvex_ir.h Iop_* enum, base 0x1400. Validated against
 //! pyvex.const.enums_to_ints (2026-05-07). Since angr-9ke6b.233 the only
 //! producer is the *string* router `parse_transcendental`, so these are
@@ -69,6 +83,11 @@ pub const IOP_RECPEXP_F32: u32 = 0x14fb;
 /// Returns None if any value operand is symbolic or the opcode is unknown.
 /// `rm` (rounding mode) is consumed but ignored — Rust libm always uses
 /// round-to-nearest-even, which matches the typical x87 rm=0 case.
+// See the module doc's "Rounding mode" section: sin/cos/tan/exp2 are
+// libm-backed and Rust exposes no rounding-mode-parameterized form of them,
+// while `recip_exp_f32`/`recip_exp_f64` are exact exponent arithmetic that
+// never rounds.
+// rm-ignored: nothing to thread the VEX rounding mode into.
 pub fn try_concrete_binop_rm(opcode: u32, _rm: &RustBV, x: &RustBV) -> Option<RustBV> {
     if opcode == IOP_RECPEXP_F32 {
         let xv = x.as_u128()? as u32;
@@ -91,6 +110,11 @@ pub fn try_concrete_binop_rm(opcode: u32, _rm: &RustBV, x: &RustBV) -> Option<Ru
 
 /// Concrete Triop transcendental: (rm, a, b) → result.
 /// Returns None if any value operand is symbolic or the opcode is unknown.
+/// `rm` is consumed but ignored, for the same reason as
+/// `try_concrete_binop_rm`.
+// See the module doc's "Rounding mode" section: log2/atan2/exp2 are
+// libm-backed and Rust exposes no rounding-mode-parameterized form of them.
+// rm-ignored: nothing to thread the VEX rounding mode into.
 pub fn try_concrete_triop_rm(opcode: u32, _rm: &RustBV, a: &RustBV, b: &RustBV) -> Option<RustBV> {
     let av = a.as_u128()? as u64;
     let bv = b.as_u128()? as u64;
