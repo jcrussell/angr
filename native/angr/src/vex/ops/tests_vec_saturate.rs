@@ -285,6 +285,59 @@ fn test_vqnarrow_un_symbolic_dest_min_passthrough() {
     );
 }
 
+/// angr-fs8kb.14 regression: an UNSIGNED source narrowing into a SIGNED
+/// destination must never take the lower clamp. `saturate_lane_symbolic` used
+/// to compare `lane.ult(min_bv)` for an unsigned source, and `min_bv` holds the
+/// two's-complement pattern of the destination minimum (0xF8 for from_width=8,
+/// to_width=4) — read unsigned that is 248, so every lane below it was clamped
+/// to -8 while the concrete `saturate_lane` returned the lane unchanged.
+///
+/// No mapped VEX opcode reaches `(src_signed, dst_signed) = (false, true)`
+/// today (see the comment in `saturate_lane_symbolic`), so this drives the
+/// `pub(super)` helper directly.
+#[test]
+fn test_saturate_lane_symbolic_unsigned_src_signed_dst_concrete() {
+    let ctx = SymContext::new_mock();
+    for lane in 0u128..=0xFF {
+        let got = VEXOps::saturate_lane_symbolic(
+            RustBV::concrete(lane, 8),
+            8,
+            4,
+            false,
+            true,
+            &ctx,
+        )
+        .as_u128()
+        .expect("a concrete lane must fold to a concrete result");
+        // Concrete reference: clamp(lane as unsigned, -8, 7), truncated to 4
+        // bits. An unsigned lane is never below -8, so only the upper clamp
+        // can fire.
+        let expected = if lane > 7 { 7 } else { lane };
+        assert_eq!(got, expected, "lane {lane:#04x}");
+    }
+}
+
+/// Symbolic half of the angr-fs8kb.14 regression: with a symbolic lane pinned
+/// to 5, the result must be 5 and must *not* be the destination minimum
+/// (0x8 = -8 in 4-bit two's complement) that the buggy unsigned compare
+/// produced.
+#[test]
+fn test_saturate_lane_symbolic_unsigned_src_signed_dst_symbolic() {
+    let ctx = SymContext::new_mock();
+    let lane = RustBV::symbolic(&ctx, "sat_us_sd_lane", 8);
+    let res = VEXOps::saturate_lane_symbolic(lane.clone(), 8, 4, false, true, &ctx);
+    ctx.add_constraint(lane.to_z3_ast().eq(RustBV::concrete(5, 8).to_z3_ast()));
+    ctx.push();
+    ctx.add_constraint(res.to_z3_ast().eq(RustBV::concrete(5, 4).to_z3_ast()));
+    assert!(ctx.is_sat(), "unsigned 5 into a signed 4-bit dest stays 5");
+    ctx.pop();
+    ctx.add_constraint(res.to_z3_ast().eq(RustBV::concrete(0x8, 4).to_z3_ast()));
+    assert!(
+        !ctx.is_sat(),
+        "unsigned 5 must NOT be clamped to the signed destination minimum"
+    );
+}
+
 // =========================================================================
 // angr-tukg.1 — NEON saturating add/sub (VQAdd / VQSub).
 // =========================================================================

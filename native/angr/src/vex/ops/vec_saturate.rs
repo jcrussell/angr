@@ -177,7 +177,6 @@ impl VEXOps {
         };
 
         let max_bv = RustBV::concrete(max_val, from_width);
-        let min_bv = RustBV::concrete(min_val, from_width);
 
         // gt_max: compare with src_signed semantics
         let gt_max = if src_signed {
@@ -186,23 +185,32 @@ impl VEXOps {
             lane.ugt(&max_bv, ctx)
         };
 
-        // lt_min: only meaningful when min could be < lane. If src is unsigned
-        // and dst is unsigned, min == 0 so lt_min is always false; skip to
-        // truncate the upper-clamped value.
         let truncated = lane.extract(to_width - 1, 0, ctx);
         let max_truncated = max_bv.extract(to_width - 1, 0, ctx);
 
         let upper_clamped = gt_max.ite(&max_truncated, &truncated, ctx);
 
-        if !src_signed && !dst_signed {
+        // The lower clamp can only ever fire for a signed source: an unsigned
+        // lane is >= 0, and the destination minimum is 0 (unsigned dst) or
+        // negative (signed dst), so no unsigned lane is ever below it. The
+        // early return is load-bearing, not an optimization — for
+        // `src_signed = false, dst_signed = true` the comparison below would be
+        // an *unsigned* `ult` against `min_val`, which is a two's-complement
+        // bit pattern (0xF8 for from_width=8, to_width=4). Read unsigned that
+        // is 248, so nearly every lane would test "below the minimum" and be
+        // clamped to the destination minimum, diverging from the concrete
+        // `saturate_lane` (angr-fs8kb.14). That combination is latent — the
+        // `vec_qnarrow_arms!` tables in `opcode_map` only produce
+        // `(src_signed, dst_signed)` of `(true, true)`, `(true, false)` and
+        // `(false, false)`, and `vec_qdmull` hardcodes both signed — but this
+        // helper is a general-purpose `pub(super)` clamp, so it must be correct
+        // for a future opcode mapping that does reach it.
+        if !src_signed {
             return upper_clamped;
         }
 
-        let lt_min = if src_signed {
-            lane.slt(&min_bv, ctx)
-        } else {
-            lane.ult(&min_bv, ctx)
-        };
+        let min_bv = RustBV::concrete(min_val, from_width);
+        let lt_min = lane.slt(&min_bv, ctx);
         let min_truncated = min_bv.extract(to_width - 1, 0, ctx);
 
         lt_min.ite(&min_truncated, &upper_clamped, ctx)
