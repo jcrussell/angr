@@ -442,9 +442,17 @@ impl RustExplorationManager {
         // in a fresh `StashManager`; we keep ours), so each discarded id gets
         // the same unindex + remove_root treatment as the dropped actives
         // above — otherwise `stash_of` would keep answering for a dead id, the
-        // angr-ph300.26 bug in a different bucket. No `on_state_removed`: a
-        // parked state already left STASH_ACTIVE through `policy.select`,
-        // which notifies. `found_state_id` is skipped because a parked bounce
+        // angr-ph300.26 bug in a different bucket. No `on_state_removed`:
+        // every id in both buckets was already notified on its way out of
+        // STASH_ACTIVE, but by two different mechanisms. A `pending_callbacks`
+        // state went through `policy.select`, which notifies
+        // (`run_loop_single.rs` selects it immediately before parking it). A
+        // `pending_parallel_bounces` state did NOT: the parallel-migration
+        // drains (`run_loop_wave.rs`'s migration seed and
+        // `run_loop_steady.rs::seed_steady_session_from_active`) empty
+        // STASH_ACTIVE directly, bypassing `policy.select` by design, and call
+        // `policy.on_state_removed` themselves instead (angr-3xk63).
+        // `found_state_id` is skipped because a parked bounce
         // may legitimately duplicate a state that is also stash-resident, and
         // the kept state's bookkeeping must survive.
         let discarded: Vec<u64> = self
