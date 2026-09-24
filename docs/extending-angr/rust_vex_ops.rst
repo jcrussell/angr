@@ -33,15 +33,23 @@ head as you read the worked examples below:
        ``native/angr/src/vex/ir/mod.rs``. A new op gets a variant here.
    * - ``native/angr/src/vex/opcode_map.rs``
      - Translates pyvex's string opcodes (``"Iop_Add32"``) into
-       ``IROp`` variants in ``parse_opcode`` and its
-       ``parse_arithmetic`` / ``parse_bitwise`` / ``parse_shift`` /
-       ``parse_comparison`` / ``parse_conversion`` / ``parse_float`` /
-       ``parse_transcendental`` / ``parse_vector`` / ``parse_vreverse`` /
-       ``parse_special`` /
-       ``parse_neon_unimplemented`` sub-routers. Both lifter paths —
+       ``IROp`` variants in ``parse_opcode``, which consults one
+       ``parse_*`` sub-router per opcode family. This file holds the
+       dispatcher, the width-family ``*_arms!`` macros, the integer
+       families (``parse_arithmetic`` / ``parse_bitwise`` /
+       ``parse_shift`` / ``parse_comparison`` / ``parse_conversion``)
+       and ``parse_special``. Both lifter paths —
        pyvex strings and the native libVEX FFI — funnel through this
        one string-based ``parse_opcode``; there is no separate numeric
        mapping.
+   * - ``native/angr/src/vex/opcode_map_float.rs``
+     - Sibling module holding the FP sub-routers ``parse_float`` and
+       ``parse_transcendental`` (angr-fs8kb.20).
+   * - ``native/angr/src/vex/opcode_map_vector.rs``
+     - Sibling module holding the SIMD sub-routers ``parse_vector``,
+       ``parse_vreverse`` and ``parse_neon_unimplemented``
+       (angr-fs8kb.20). ``parse_vector`` is by far the largest of the
+       family, which is what motivated the split.
    * - ``native/angr/src/vex/ops/mod.rs``
      - Implements the op. ``VEXOps::unop`` / ``binop`` / ``qop`` and the
        rounding-mode-aware ``VEXOps::unop_with_rm`` / ``binop_with_rm``
@@ -348,8 +356,10 @@ doesn't know it yet. The end-to-end recipe:
    parameterization (``IRType`` for width, or a struct field for
    things like ``Extract { from, to, low_bit }``).
 
-3. **Map the string opcode.** Find the right ``parse_*`` sub-router in
-   ``opcode_map.rs`` and add the ``"Iop_FooN" => Some(IROp::Foo(...))``
+3. **Map the string opcode.** Find the right ``parse_*`` sub-router — in
+   ``opcode_map.rs`` for the integer and special families, in
+   ``opcode_map_float.rs`` or ``opcode_map_vector.rs`` for the FP and
+   SIMD ones — and add the ``"Iop_FooN" => Some(IROp::Foo(...))``
    entries for every width pyvex actually emits. If you don't know
    which widths are real, run pyvex against a sample binary and grep
    the lifted IRSB.
@@ -449,7 +459,7 @@ counted (``vex_bypass_fabricate_count``, angr-s6miz), and the three
 known families (``Perm*`` / ``Pclmul*`` / ``Crc32C``) route to Python
 fallback instead of fabricating.
 
-Source of truth: ``native/angr/src/vex/opcode_map.rs``
+Source of truth: ``native/angr/src/vex/opcode_map_vector.rs``
 (``parse_neon_unimplemented`` is the remaining placeholder list) and
 ``native/angr/src/vex/ops/mod.rs`` (the dispatch arms). Refresh this
 table whenever a campaign child closes — the bead column makes the
@@ -829,20 +839,23 @@ on a new workload:
 1. ``grep "Iop_<name>"`` under ``native/angr/src/vex/`` to confirm
    it has no parse arm. (If it does, the missing piece is a dispatch
    arm in ``ops/mod.rs`` — see the "Pipeline overview" section above.)
-2. If it has no parse arm, decide which sub-router in ``opcode_map.rs``
-   it belongs in (``parse_float`` / ``parse_vector`` / etc.) and add
-   it there.
+2. If it has no parse arm, decide which sub-router it belongs in
+   (``parse_float`` in ``opcode_map_float.rs``, ``parse_vector`` in
+   ``opcode_map_vector.rs``, the integer families in ``opcode_map.rs``)
+   and add it there.
 3. Add a row to the matrix above with status ``Placeholder`` and a
    pointer to whichever bead tracks the implementation work.
 
 .. note::
 
-   *Last verified against commit* ``f2587c065`` *on 2026-08-28*
-   (angr-5mnx3.64 — documented the sixth dispatch entry point,
-   ``VEXOps::qop_with_rm``, absent from this guide since
-   angr-03vl4.30 introduced it; there is still no
+   *Last verified against commit* ``0a289d7cc`` *on 2026-09-24*
+   (angr-fs8kb.20 — ``opcode_map.rs`` split its FP and SIMD sub-routers
+   into ``opcode_map_float.rs`` / ``opcode_map_vector.rs``; the sixth
+   dispatch entry point ``VEXOps::qop_with_rm`` was documented in
+   angr-5mnx3.64, and there is still no
    ``VEXOps::triop``/``ternop``). When you touch
-   ``native/angr/src/vex/opcode_map.rs`` or
+   ``native/angr/src/vex/opcode_map.rs``, its ``opcode_map_float.rs`` /
+   ``opcode_map_vector.rs`` siblings, or
    ``native/angr/src/vex/ops/mod.rs``, re-read the *Pipeline overview*,
    *parse_\* family pattern*, and *Unsupported op coverage matrix*
    sections and bump this footer to the new commit hash.
