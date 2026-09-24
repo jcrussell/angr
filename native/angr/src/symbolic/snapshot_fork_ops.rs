@@ -1104,19 +1104,24 @@ impl SymContext {
             all_z3_conditions.push(cond_bool);
 
             // Collect all Z3 assertions and assumed pairs from this context.
-            let shared = Arc::clone(&ctx.z3_assertions_shared.lock());
+            // The shared prefix is read ONLY on the slow path below, so bind it
+            // lazily — the fast path would otherwise pay a mutex lock plus an
+            // Arc refcount bump/drop per merge arm for a vector it never reads
+            // (angr-fs8kb.34). Same `.then(|| ..)` shape as `arm_assumed_shared`
+            // further down this loop.
+            let shared =
+                (!use_prefix_fast_path).then(|| Arc::clone(&ctx.z3_assertions_shared.lock()));
             let ctx_local = ctx.local_constraints.lock();
 
             // On the shared-prefix fast path guard ONLY the divergent local
             // suffix (the prefix was asserted unguarded above); otherwise guard
             // every assertion of the arm (shared prefix + local suffix).
-            let to_guard: Vec<&z3::ast::Bool> = if use_prefix_fast_path {
-                ctx_local.z3_assertions.iter().collect()
-            } else {
-                shared
+            let to_guard: Vec<&z3::ast::Bool> = match &shared {
+                None => ctx_local.z3_assertions.iter().collect(),
+                Some(shared) => shared
                     .iter()
                     .chain(ctx_local.z3_assertions.iter())
-                    .collect()
+                    .collect(),
             };
 
             // For each constraint c_j guarded for context i:
