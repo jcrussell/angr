@@ -571,41 +571,44 @@ use super::super::native_proc_dispatch::{
     NativeProcCounters, NativeProcDisposition, dispatch_native_proc,
 };
 
-/// Classify a `RunResult::SimProcedure` — the interpreter stopped on a hook it
-/// was handed by `run_interpreter_step_core` (native fast path, native sub-call
-/// resume sentinel, else a Python bounce). Both step paths land here through
-/// `run_post_step_core`, so this is not a parallel-only arm.
+/// What a `RunResult::SimProcedure` resolves to once the native-dispatch
+/// decision and the resulting [`NativeProcDisposition`] have been applied to the
+/// state.
 ///
-/// Its serial sibling is the pre-step block in `run_loop_single.rs`'s
-/// `step_one`, which catches the case where the state's *entry* pc is already
-/// hooked and so never reaches the interpreter. The two share the dispatch
-/// decision (`dispatch_native_proc`) but deliberately not the return-address
-/// landing — see `NativeProcDisposition` in `native_proc_dispatch.rs`.
-pub(super) fn handle_simprocedure_core(
+/// `dispatch_native_proc` has four dispositions, but the tail of
+/// [`handle_simprocedure_core`] only distinguishes three outcomes — and two of
+/// the four (`Fallback`, and a `SubCall` whose setup failed) collapse onto the
+/// same Python bounce. Naming those three here keeps the tail a flat match
+/// instead of an `Option<bool>` plus an early `CoreOutcome` return from inside
+/// the disposition match.
+enum SimProcResolution {
+    /// A native proc ran to completion in-line and the state is already landed
+    /// at its return site. `no_return` deadends the main state rather than
+    /// continuing it.
+    RanNatively { no_return: bool },
+    /// Bounce this call to Python: either no native proc was preferred/found,
+    /// or one ran but its guest sub-call setup failed.
+    PythonFallback,
+    /// A native proc faulted on an unmapped page under STRICT_PAGE_ACCESS; the
+    /// state is landed at the proc address and must be terminal-errored with
+    /// this message rather than bounced.
+    Segfault(String),
+}
+
+/// Decide whether this hook may run natively and, if so, run it.
+///
+/// Every reason the native path is declined — not preferred for this address, a
+/// find/avoid target, no proc registered under `name` — as well as a proc that
+/// declines the call itself, comes back as `NativeProcDisposition::Fallback`.
+fn dispatch_simproc_natively(
     cc: &CoreCtx,
     counters: &mut CoreCounters,
-    mut state: RustSimState,
-    call: SimProcCall,
-    payload: ForkPayload,
-    root_hint: u64,
-) -> CoreOutcome {
+    state: &mut RustSimState,
+    addr: u64,
+    name: &str,
+    num_args: usize,
+) -> NativeProcDisposition {
     let ctx = cc.ctx;
-    let native_procs = cc.native_procs;
-    let SimProcCall {
-        addr,
-        name,
-        num_args,
-        return_addr,
-    } = call;
-    // Native sub-call resume sentinel: a guest routine returns here.
-    if name == NATIVE_RESUME_SENTINEL_NAME {
-        return handle_native_resume_core(cc, state, payload, std::mem::take(counters), root_hint);
-    }
-
-    // Captured before the `NativeProcDisposition::SubCall` arm below can push a
-    // continuation frame the block's deferred branches predate.
-    let resume_stack = resume_stack_for_forks(&state, &payload.deferred_forks);
-
     let prefer_native = crate::exploration::execution_env::prefer_native_dispatch(
         &ctx.binary_regions,
         ctx.main_object_range,
@@ -624,60 +627,71 @@ pub(super) fn handle_simprocedure_core(
     // native path needs no such guard: its pre-step find/avoid check on `pc`
     // already runs before the hook block.
     let is_find_or_avoid = ctx.find_addrs.contains(&addr) || ctx.avoid_addrs.contains(&addr);
+    if !prefer_native || is_find_or_avoid {
+        return NativeProcDisposition::Fallback;
+    }
 
-    let disposition: NativeProcDisposition = if prefer_native && !is_find_or_avoid {
-        if let Some(native_proc) = native_procs.get(&name) {
-            let proc_no_return = native_proc.no_return();
-            // `num_args` is the Python SimProcedure's FIXED-arg count (variadics
-            // excluded). Native procs consuming variadic pointers (scanf family)
-            // declare a larger `num_args()`; use the max so the full arg window
-            // is read. Truncating made the scanf family a no-op (angr-8onrp).
-            let native_num_args = num_args.max(native_proc.num_args());
-            let args = ctx.cc.extract_procedure_args(&state, native_num_args);
-            // The sub-call's native_call / fallback bump is deferred to the
-            // `SubCall` arm below so it agrees with `step_one`: a native call
-            // is booked only once `setup_native_subcall` succeeds; a setup
-            // failure books a Python fallback instead.
-            dispatch_native_proc(
-                native_proc.as_ref(),
-                &mut state,
-                &name,
-                proc_no_return,
-                args,
-                // This path terminal-errors a strict-page-access fault natively
-                // rather than bouncing to Python just to raise.
-                true,
-                &mut NativeProcCounters {
-                    native_calls: &mut counters.native_calls,
-                    python_fallbacks: &mut counters.native_python_fallbacks,
-                    call_counts: &mut counters.call_counts,
-                    symbolic_fallbacks_by_name: &mut counters.symbolic_fallbacks_by_name,
-                    not_implemented_fallbacks_by_name: &mut counters
-                        .not_implemented_fallbacks_by_name,
-                    other_fallbacks_by_name: &mut counters.other_fallbacks_by_name,
-                },
-            )
-        } else {
-            NativeProcDisposition::Fallback
-        }
-    } else {
-        NativeProcDisposition::Fallback
+    let Some(native_proc) = cc.native_procs.get(name) else {
+        return NativeProcDisposition::Fallback;
     };
+    let proc_no_return = native_proc.no_return();
+    // `num_args` is the Python SimProcedure's FIXED-arg count (variadics
+    // excluded). Native procs consuming variadic pointers (scanf family)
+    // declare a larger `num_args()`; use the max so the full arg window
+    // is read. Truncating made the scanf family a no-op (angr-8onrp).
+    let native_num_args = num_args.max(native_proc.num_args());
+    let args = ctx.cc.extract_procedure_args(state, native_num_args);
+    // The sub-call's native_call / fallback bump is deferred to the
+    // `SubCall` arm of `apply_native_disposition` so it agrees with
+    // `step_one`: a native call is booked only once `setup_native_subcall`
+    // succeeds; a setup failure books a Python fallback instead.
+    dispatch_native_proc(
+        native_proc.as_ref(),
+        state,
+        name,
+        proc_no_return,
+        args,
+        // This path terminal-errors a strict-page-access fault natively
+        // rather than bouncing to Python just to raise.
+        true,
+        &mut NativeProcCounters {
+            native_calls: &mut counters.native_calls,
+            python_fallbacks: &mut counters.native_python_fallbacks,
+            call_counts: &mut counters.call_counts,
+            symbolic_fallbacks_by_name: &mut counters.symbolic_fallbacks_by_name,
+            not_implemented_fallbacks_by_name: &mut counters.not_implemented_fallbacks_by_name,
+            other_fallbacks_by_name: &mut counters.other_fallbacks_by_name,
+        },
+    )
+}
 
-    let fall_back_to_python = match disposition {
+/// Land `state` per `disposition` and book the disposition-specific counters,
+/// collapsing the four dispositions onto the three outcomes the caller's tail
+/// distinguishes.
+fn apply_native_disposition(
+    cc: &CoreCtx,
+    counters: &mut CoreCounters,
+    state: &mut RustSimState,
+    addr: u64,
+    name: &str,
+    return_addr: u64,
+    disposition: NativeProcDisposition,
+) -> SimProcResolution {
+    let ctx = cc.ctx;
+    match disposition {
         NativeProcDisposition::Returned { no_return, ret_val } => {
             if !no_return {
                 if let Some(rv) = ret_val {
-                    ctx.cc.write_proc_return(&mut state, rv);
+                    ctx.cc.write_proc_return(state, rv);
                 }
                 state.set_pc(return_addr);
                 // Only stack-return ABIs (x86/AMD64) pop the return address, so
                 // only they advance SP here; the shared helper gates that and
                 // is what keeps this site and `step_one`'s inline native path
                 // in `run_loop_single.rs` from drifting (angr-c7xno.29).
-                advance_sp_past_return_addr(&mut state, ctx.cc.pops_return_addr);
+                advance_sp_past_return_addr(state, ctx.cc.pops_return_addr);
             }
-            Some(no_return)
+            SimProcResolution::RanNatively { no_return }
         }
         NativeProcDisposition::SubCall {
             proc_name,
@@ -686,7 +700,7 @@ pub(super) fn handle_simprocedure_core(
             sub_args,
             resume_tag,
         } => match ctx.cc.setup_native_subcall(
-            &mut state,
+            state,
             NativeSubcall {
                 proc_name,
                 saved_args,
@@ -700,8 +714,8 @@ pub(super) fn handle_simprocedure_core(
                 // The native proc ran and its guest sub-call was set up:
                 // book it as a native call (mirrors `step_one`).
                 counters.native_calls += 1;
-                *counters.call_counts.entry(name.clone()).or_insert(0) += 1;
-                Some(false)
+                *counters.call_counts.entry(name.to_owned()).or_insert(0) += 1;
+                SimProcResolution::RanNatively { no_return: false }
             }
             Err(e) => {
                 // Setup failed (symbolic SP / unmapped slot); we bounce to
@@ -714,88 +728,165 @@ pub(super) fn handle_simprocedure_core(
                 counters.native_python_fallbacks += 1;
                 *counters
                     .other_fallbacks_by_name
-                    .entry(name.clone())
+                    .entry(name.to_owned())
                     .or_insert(0) += 1;
-                None
+                SimProcResolution::PythonFallback
             }
         },
-        NativeProcDisposition::Fallback => None,
+        NativeProcDisposition::Fallback => SimProcResolution::PythonFallback,
         NativeProcDisposition::Segfault(msg) => {
             // Python would have re-run the proc only to raise SimSegfaultException
             // out of it; land the state at the proc address like the Python bounce
-            // does and terminal-error it here. Pending forks are dropped, matching
-            // the interpreter's own `RunResult::Error` arm.
+            // does so the caller can terminal-error it here.
             state.set_pc(addr);
-            return CoreOutcome {
+            SimProcResolution::Segfault(msg)
+        }
+    }
+}
+
+/// Materialize the forks a natively-completed proc deferred, then build the
+/// continue outcome: the main state continues alongside them, unless the proc
+/// was `no_return`, in which case it deadends and only the forks carry on.
+fn continue_after_native_proc(
+    cc: &CoreCtx,
+    counters: &mut CoreCounters,
+    mut state: RustSimState,
+    resume_stack: Option<Vec<crate::state::NativeResumeFrame>>,
+    payload: ForkPayload,
+    root_hint: u64,
+    no_return: bool,
+) -> CoreOutcome {
+    let mut forks_out = Vec::new();
+    let mut pruned = Vec::new();
+    let mut fork_ids = Vec::new();
+    process_deferred_forks_rewound(
+        cc,
+        &mut state,
+        resume_stack,
+        payload,
+        root_hint,
+        ForkSink {
+            forks: &mut forks_out,
+            pruned: &mut pruned,
+            fork_ids: &mut fork_ids,
+        },
+    );
+    if no_return {
+        // Deadend the main state; surviving forks continue.
+        CoreOutcome {
+            ret: CoreReturn::Continue(forks_out),
+            pruned,
+            fork_ids,
+            terminal_pushes: vec![(state, STASH_DEADENDED)],
+            counters: std::mem::take(counters),
+            root_hint,
+        }
+    } else {
+        let mut succ = Vec::with_capacity(forks_out.len() + 1);
+        succ.push((state, RoutingTag::main()));
+        succ.extend(forks_out);
+        CoreOutcome {
+            ret: CoreReturn::Continue(succ),
+            pruned,
+            fork_ids,
+            terminal_pushes: Vec::new(),
+            counters: std::mem::take(counters),
+            root_hint,
+        }
+    }
+}
+
+/// Classify a `RunResult::SimProcedure` — the interpreter stopped on a hook it
+/// was handed by `run_interpreter_step_core` (native fast path, native sub-call
+/// resume sentinel, else a Python bounce). Both step paths land here through
+/// `run_post_step_core`, so this is not a parallel-only arm.
+///
+/// Its serial sibling is the pre-step block in `run_loop_single.rs`'s
+/// `step_one`, which catches the case where the state's *entry* pc is already
+/// hooked and so never reaches the interpreter. The two share the dispatch
+/// decision (`dispatch_native_proc`) but deliberately not the return-address
+/// landing — see `NativeProcDisposition` in `native_proc_dispatch.rs`.
+///
+/// The three phases each live in their own helper —
+/// [`dispatch_simproc_natively`] (may this run natively, and run it),
+/// [`apply_native_disposition`] (land the state, book the counters) and
+/// [`continue_after_native_proc`] (materialize deferred forks) — leaving this
+/// fn the sentinel short-circuit plus the three-way outcome tail.
+pub(super) fn handle_simprocedure_core(
+    cc: &CoreCtx,
+    counters: &mut CoreCounters,
+    mut state: RustSimState,
+    call: SimProcCall,
+    payload: ForkPayload,
+    root_hint: u64,
+) -> CoreOutcome {
+    let SimProcCall {
+        addr,
+        name,
+        num_args,
+        return_addr,
+    } = call;
+    // Native sub-call resume sentinel: a guest routine returns here.
+    if name == NATIVE_RESUME_SENTINEL_NAME {
+        return handle_native_resume_core(cc, state, payload, std::mem::take(counters), root_hint);
+    }
+
+    // Captured before the `NativeProcDisposition::SubCall` arm can push a
+    // continuation frame the block's deferred branches predate.
+    let resume_stack = resume_stack_for_forks(&state, &payload.deferred_forks);
+
+    let disposition = dispatch_simproc_natively(cc, counters, &mut state, addr, &name, num_args);
+    match apply_native_disposition(
+        cc,
+        counters,
+        &mut state,
+        addr,
+        &name,
+        return_addr,
+        disposition,
+    ) {
+        SimProcResolution::RanNatively { no_return } => continue_after_native_proc(
+            cc,
+            counters,
+            state,
+            resume_stack,
+            payload,
+            root_hint,
+            no_return,
+        ),
+        SimProcResolution::PythonFallback => {
+            // Python SimProcedure fallback (counters recorded; bounce builds the
+            // PendingCallback after set_pc(addr)+add_to_history(addr)).
+            counters.simprocedure_python_fallback_count += 1;
+            *counters
+                .simprocedure_fallback_by_name
+                .entry(name.clone())
+                .or_insert(0) += 1;
+            bounce(
+                BounceKind::SimProcedurePython {
+                    addr,
+                    name,
+                    num_args,
+                    return_addr,
+                },
+                state,
+                payload,
+                std::mem::take(counters),
+                root_hint,
+            )
+        }
+        SimProcResolution::Segfault(msg) => {
+            // Pending forks are dropped, matching the interpreter's own
+            // `RunResult::Error` arm.
+            CoreOutcome {
                 ret: CoreReturn::Errored(state, msg),
                 pruned: Vec::new(),
                 fork_ids: Vec::new(),
                 terminal_pushes: Vec::new(),
                 counters: std::mem::take(counters),
                 root_hint,
-            };
-        }
-    };
-
-    if let Some(no_return) = fall_back_to_python {
-        let mut forks_out = Vec::new();
-        let mut pruned = Vec::new();
-        let mut fork_ids = Vec::new();
-        process_deferred_forks_rewound(
-            cc,
-            &mut state,
-            resume_stack,
-            payload,
-            root_hint,
-            ForkSink {
-                forks: &mut forks_out,
-                pruned: &mut pruned,
-                fork_ids: &mut fork_ids,
-            },
-        );
-        if no_return {
-            // Deadend the main state; surviving forks continue.
-            CoreOutcome {
-                ret: CoreReturn::Continue(forks_out),
-                pruned,
-                fork_ids,
-                terminal_pushes: vec![(state, STASH_DEADENDED)],
-                counters: std::mem::take(counters),
-                root_hint,
-            }
-        } else {
-            let mut succ = Vec::with_capacity(forks_out.len() + 1);
-            succ.push((state, RoutingTag::main()));
-            succ.extend(forks_out);
-            CoreOutcome {
-                ret: CoreReturn::Continue(succ),
-                pruned,
-                fork_ids,
-                terminal_pushes: Vec::new(),
-                counters: std::mem::take(counters),
-                root_hint,
             }
         }
-    } else {
-        // Python SimProcedure fallback (counters recorded; bounce builds the
-        // PendingCallback after set_pc(addr)+add_to_history(addr)).
-        counters.simprocedure_python_fallback_count += 1;
-        *counters
-            .simprocedure_fallback_by_name
-            .entry(name.clone())
-            .or_insert(0) += 1;
-        bounce(
-            BounceKind::SimProcedurePython {
-                addr,
-                name,
-                num_args,
-                return_addr,
-            },
-            state,
-            payload,
-            std::mem::take(counters),
-            root_hint,
-        )
     }
 }
 
