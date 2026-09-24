@@ -49,8 +49,12 @@
 //! the file they hang off: `sizes_tests.rs` here (the `StepError` /
 //! `PendingCallback` size probe backing the `result_large_err` suppression) and
 //! `subcall_tests.rs` under `stepping_subcall.rs` (`setup_native_subcall` /
-//! `handle_native_resume_core`, which stand in for the guest `ret` instead of
-//! lifting one). The lift-free routing prefix of the *caller* — `step_one`'s find/avoid and SimProcedure-fallback arms — is
+//! `handle_native_resume` — the `#[cfg(test)]`-only twin defined in
+//! `stepping_subcall.rs` itself, which stands in for the guest `ret` instead of
+//! lifting one; the production `handle_native_resume_core` in
+//! `core_outcome_handlers.rs` is covered by
+//! `core_outcome_tests/native_resume.rs`). The lift-free routing prefix of the
+//! *caller* — `step_one`'s find/avoid and SimProcedure-fallback arms — is
 //! covered in `run_loop_single_tests.rs`.
 
 use super::core_outcome::{
