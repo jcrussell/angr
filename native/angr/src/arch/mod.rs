@@ -507,6 +507,22 @@ impl From<Option<u64>> for AddrOrSymbolic {
 /// (x86's `eax` inside `rax`, both at offset 16) is a *view* of the wider
 /// register's bytes, and mirroring has to happen relative to the storage unit
 /// the whole register occupies.
+///
+/// # Not a general register-geometry oracle
+///
+/// Despite looking like one, this is not an offset -> register-width lookup
+/// the rest of the engine can consult: both construction sites build it only
+/// when the arch is big-endian (`RegisterFile::new` and `ArchDescriptor`'s
+/// `register_be` flag), so on amd64/AArch64 it is `None` and answers nothing.
+/// The other place that needs a register's true width — widening a narrow
+/// native SimProcedure return so the upper half of `RAX`/`X0` cannot keep
+/// stale bits — deliberately reads it off the ABI instead
+/// (`CallingConvention::pointer_size`, applied in
+/// `exploration::helpers::write_proc_return_with_abi`). Keep it that way: if
+/// this table is ever extended to little-endian arches, it still must not
+/// become a second, divergent source of register width, because a canonical
+/// entry describes the *storage unit* a register occupies, which is not the
+/// same question as how wide a value the ABI says that register returns.
 fn build_containment(arch: &dyn Arch) -> Arc<Vec<(u32, u32)>> {
     let mut table = vec![(0u32, 0u32); arch.state_size()];
     for &(_, base, size) in arch.canonical_registers() {
