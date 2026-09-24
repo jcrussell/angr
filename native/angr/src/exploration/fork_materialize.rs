@@ -217,6 +217,33 @@ impl PriorGuards {
     }
 }
 
+/// Charge one fork operation (`build_unexplored_fork` on the normal-condition
+/// path, `fork_base.fork()` on the conservative-fork path) to the fork-op
+/// profiling counters.
+///
+/// `start` is `Some` iff profiling is on — every caller mints it with
+/// `stats.is_some().then(Instant::now)`, so the pair is never half-populated.
+/// Both arms of [`materialize_deferred_forks`] must charge: the batch-level
+/// `deferred_fork_count` counts *every* fork, so a branch that skips these
+/// leaves the per-fork averages derived from them overstated (angr-fs8kb.11).
+#[inline]
+fn charge_fork_op(stats: Option<&mut ExecutionStats>, start: Option<std::time::Instant>) {
+    if let (Some(s), Some(start)) = (stats, start) {
+        s.solver_fork_time_ns += crate::elapsed_ns(start);
+        s.solver_fork_count += 1;
+    }
+}
+
+/// Charge one `survives_sat_prune` call to the SAT-check profiling counters.
+/// Companion to [`charge_fork_op`]; same both-arms obligation.
+#[inline]
+fn charge_sat_op(stats: Option<&mut ExecutionStats>, start: Option<std::time::Instant>) {
+    if let (Some(s), Some(start)) = (stats, start) {
+        s.solver_sat_time_ns += crate::elapsed_ns(start);
+        s.solver_sat_count += 1;
+    }
+}
+
 /// SAT / UNSAT split produced by [`materialize_deferred_forks`], in fork
 /// dispatch order. Neither vector has had `set_root` applied — lineage needs
 /// `&mut StateManager`, which the callers own; they register both vectors
@@ -316,10 +343,7 @@ pub(crate) fn materialize_deferred_forks(
             let fork_start = stats.is_some().then(std::time::Instant::now);
             let forked = build_unexplored_fork(fork_base, &fork, cond, snapshots, &prior_guards);
             prior_guards.record(cond.clone(), fork.path_taken);
-            if let (Some(s), Some(start)) = (stats.as_deref_mut(), fork_start) {
-                s.solver_fork_time_ns += crate::elapsed_ns(start);
-                s.solver_fork_count += 1;
-            }
+            charge_fork_op(stats.as_deref_mut(), fork_start);
             if reconstructed.is_some() {
                 log::debug!(
                     "Reconstructed condition from condition_ast for fork at 0x{:x}",
@@ -328,10 +352,7 @@ pub(crate) fn materialize_deferred_forks(
             }
             let sat_start = stats.is_some().then(std::time::Instant::now);
             let sat = forked.survives_sat_prune(lazy_solves);
-            if let (Some(s), Some(start)) = (stats.as_deref_mut(), sat_start) {
-                s.solver_sat_time_ns += crate::elapsed_ns(start);
-                s.solver_sat_count += 1;
-            }
+            charge_sat_op(stats.as_deref_mut(), sat_start);
             if sat {
                 out.sat.push(forked);
             } else {
@@ -351,10 +372,15 @@ pub(crate) fn materialize_deferred_forks(
                 fork.branch_addr,
                 fork.condition_id
             );
+            let fork_start = stats.is_some().then(std::time::Instant::now);
             let mut forked = fork_base.fork();
             prior_guards.replay_onto(&forked);
             forked.set_pc(fork.unexplored_target);
-            if forked.survives_sat_prune(lazy_solves) {
+            charge_fork_op(stats.as_deref_mut(), fork_start);
+            let sat_start = stats.is_some().then(std::time::Instant::now);
+            let sat = forked.survives_sat_prune(lazy_solves);
+            charge_sat_op(stats.as_deref_mut(), sat_start);
+            if sat {
                 out.sat.push(forked);
             } else {
                 log::debug!(

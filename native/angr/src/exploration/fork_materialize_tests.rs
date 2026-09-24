@@ -188,6 +188,43 @@ fn materialize_deferred_forks_stats_are_opt_in() {
     assert_eq!(stats.solver_sat_count, 2);
 }
 
+/// angr-fs8kb.11: the conservative-fork arm (no condition from either source)
+/// still performs a fork and a SAT check, so it must charge `solver_fork_*` /
+/// `solver_sat_*` just like the normal-condition arm — otherwise the
+/// batch-level `deferred_fork_count`, which counts every fork unconditionally,
+/// outruns them and skews any per-fork average derived from the pair.
+#[test]
+fn materialize_deferred_forks_conservative_fork_charges_solver_stats() {
+    Python::initialize();
+    let (base, _cond) = state_with_x_eq_zero();
+    let stored = FxHashMap::default();
+    let mut snapshots = FxHashMap::default();
+    let mut stats = ExecutionStats::default();
+
+    let out = materialize_deferred_forks(
+        vec![deferred_fork(99, true)], // condition_id 99 is not in `stored`
+        MaterializeForkCtx {
+            fork_base: &base,
+            stored_conditions: &stored,
+            snapshots: &mut snapshots,
+            lazy_solves: false,
+            guard_sink: None,
+            stats: Some(&mut stats),
+        },
+    );
+
+    assert_eq!(out.sat.len(), 1);
+    assert_eq!(stats.deferred_fork_count, 1);
+    assert_eq!(
+        stats.solver_fork_count, 1,
+        "conservative fork must charge the fork-op counter"
+    );
+    assert_eq!(
+        stats.solver_sat_count, 1,
+        "conservative fork's SAT check must charge the SAT counter"
+    );
+}
+
 /// Two symbolic vars, so a fork of the *second* branch can be checked for the
 /// *first* branch's taken-path guard.
 fn state_with_two_conds() -> (RustSimState, RustBV, RustBV) {
