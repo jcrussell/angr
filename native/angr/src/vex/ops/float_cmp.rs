@@ -8,7 +8,9 @@
 //! by `ops` — and `Self::concat_le_elements`) stay visible by the
 //! descendant-module rule.
 //!
-//! Covers scalar FP compares (Iop_FCmp{EQ,LT,LE}, Iop_CmpF{32,64}), the
+//! Covers the 1-bit scalar FP compares (`IROp::FCmp{EQ,LT,LE}` — evaluator
+//! scaffolding with no libVEX producer, see [`crate::vex::ir::IROp::FCmpLE`]),
+//! the three-way IEEE comparison (Iop_CmpF{32,64}), the
 //! SSE scalar-lane compare (Iop_Cmp*32F0x4/64F0x2), and the packed FP
 //! compare (Iop_Cmp*{32Fx2,32Fx4,64Fx2}). The `FCmpKind` enum deliberately
 //! stays in `ops` and the `build_float_expr`/`float_prec_of` free fns in
@@ -79,7 +81,8 @@ impl VEXOps {
         }
     }
 
-    /// Scalar FP compare shared by Iop_FCmp{EQ,LT,LE}. The three only differ in
+    /// Scalar FP compare shared by the `IROp::FCmp{EQ,LT,LE}` arms (no libVEX
+    /// opcode produces them — see [`crate::vex::ir::IROp::FCmpLE`]). The three only differ in
     /// the concrete predicate and the symbolic `FloatOpKind`; everything else
     /// (the F32/F64 split, 1-bit concrete result, and `build_float_expr`
     /// symbolic fallback) is identical. The concrete path delegates to the

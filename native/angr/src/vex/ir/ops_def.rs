@@ -38,8 +38,26 @@ pub enum IROp {
     MullU(IRType), // Unsigned widening multiply
     DivS(IRType),  // Signed division
     DivU(IRType),  // Unsigned division
-    ModS(IRType),  // Signed modulo
-    ModU(IRType),  // Unsigned modulo
+    /// Signed modulo. **No libVEX producer** — see [`IROp::ModU`].
+    ModS(IRType),
+    /// Unsigned modulo. **No libVEX producer**: the vendored `pyvex_ffi.h`
+    /// opcode enum defines no `Iop_Mod*` at all, so `parse_opcode` never
+    /// constructs `ModS`/`ModU` and no real lift can reach the
+    /// `width_binop!(.., urem_into/srem_into, ..)` arms in
+    /// `VEXOps::binop_arith`. Guests get their remainder from the combined
+    /// `Iop_DivMod*` opcodes instead, and those do not route through here
+    /// either — `VEXOps::divmod_double_to_single` calls `RustBV::urem`/`srem`
+    /// directly and packs the remainder into the result's high half.
+    ///
+    /// Both variants are kept (with a `result_type` arm, a `classify.rs`
+    /// category and the `ops/property_tests.rs` coverage that pins
+    /// `urem`/`srem` divide-by-zero totals) as parameterized-width evaluator
+    /// scaffolding: a future `Iop_Mod*`-emitting lifter, or a synthesis path
+    /// that wants a standalone remainder, has the arm ready. Treat a missing
+    /// `opcode_map.rs` producer as intentional, not as a dispatch gap —
+    /// per `invariant-opcode-map-ground-truth-is-vendored-header`, the
+    /// vendored header is the ground truth for what a lift can emit.
+    ModU(IRType),
 
     /// DivMod: 64-bit dividend / 32-bit divisor -> 64-bit (low=quotient, high=remainder)
     DivModU64to32, // Unsigned
@@ -126,8 +144,35 @@ pub enum IROp {
     FMinNum(IRType),
 
     // Float comparisons
+    /// Scalar FP equality producing a 1-bit result. **No libVEX producer** —
+    /// see [`IROp::FCmpLE`].
     FCmpEQ(IRType),
+    /// Scalar FP less-than producing a 1-bit result. **No libVEX producer** —
+    /// see [`IROp::FCmpLE`].
     FCmpLT(IRType),
+    /// Scalar FP less-or-equal producing a 1-bit result. **No libVEX
+    /// producer**: every float compare in the vendored `pyvex_ffi.h` opcode
+    /// enum carries a width/lane suffix, so `parse_opcode` only ever builds
+    /// the lane-shaped variants — `Iop_Cmp{EQ,LT,LE,UN}{32F0x4,64F0x2}` ->
+    /// [`IROp::FCmpScalarLane`] and `Iop_Cmp{EQ,LT,LE,GT,GE,UN}{32Fx2,32Fx4,
+    /// 64Fx2}` -> [`IROp::FCmpVecPacked`]. The suffix-free `Iop_CmpEQ8/16/32/64`
+    /// and `Iop_CmpL{T,E}{32,64}{S,U}` are *integer* compares ([`IROp::CmpEQ`],
+    /// [`IROp::CmpLT`]/[`IROp::CmpLE`] signed, [`IROp::CmpLTU`]/[`IROp::CmpLEU`]
+    /// unsigned), and the suffix-free float form
+    /// `Iop_CmpF{32,64}` is the three-way IEEE comparison returning
+    /// VEX's 0x40/0x01/0x00/0x45 condition code -> [`IROp::FComCC`], not a
+    /// 1-bit predicate (its `Iop_CmpF128` sibling is deliberately unmapped
+    /// with the rest of the quad-float family — see the `QUAD_FLOAT` group in
+    /// `opcode_map_tests.rs`).
+    ///
+    /// All three variants are kept (with a `result_type` arm, a `classify.rs`
+    /// category and the `ops/tests_float_cmp.rs` concrete+symbolic coverage)
+    /// as evaluator scaffolding: `VEXOps::float_cmp_scalar` is the only place
+    /// the 1-bit FP predicate shape exists, and the lane paths reuse its
+    /// `fcmp_truth` / `fcmp_predicate_1bit` siblings rather than it. Treat a
+    /// missing `opcode_map.rs` producer as intentional, not as a dispatch gap
+    /// — per `invariant-opcode-map-ground-truth-is-vendored-header`, the
+    /// vendored header is the ground truth for what a lift can emit.
     FCmpLE(IRType),
 
     /// SSE scalar-lane FP compare (Iop_Cmp{EQ,LT,LE,UN}{32F0x4,64F0x2}).
