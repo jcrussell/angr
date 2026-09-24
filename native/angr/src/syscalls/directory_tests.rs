@@ -157,3 +157,112 @@ fn chdir_symbolic_path_pointer_falls_back() {
         other => panic!("expected SymbolicArgument, got {other:?}"),
     }
 }
+
+/// `getcwd` into a buffer that is not mapped at all: the very first
+/// `memory_store` faults, so nothing is written and the handler reports
+/// `-EFAULT` rather than propagating a `SyscallError`.
+#[test]
+fn getcwd_unmapped_buf_returns_efault() {
+    let mut state = RustSimState::new("amd64").expect("state");
+    let outcome = NativeGetcwdSyscall
+        .call(
+            &mut state,
+            &[RustBV::concrete(0x5000, 64), RustBV::concrete(64, 64)],
+        )
+        .unwrap();
+    match outcome {
+        SyscallOutcome::Continue { ret } => assert_eq!(ret, NEG_EFAULT),
+        other => panic!("getcwd unmapped buf: expected Continue, got {other:?}"),
+    }
+    assert!(
+        state.memory_load(0x5000, 1).is_err(),
+        "faulting store must not have mapped the page"
+    );
+}
+
+/// Pins the deliberately non-atomic write loop documented on
+/// [`NativeGetcwdSyscall`]: when the payload runs off the end of the
+/// mapped region, the bytes that landed before the fault stay committed.
+/// A change to all-or-nothing semantics should update that doc and this
+/// test together.
+#[test]
+fn getcwd_partial_write_is_not_rolled_back() {
+    use crate::memory::Permission;
+    let mut state = RustSimState::new("amd64").expect("state");
+    // Exactly one writable page: [0x1000, 0x2000).
+    state.map_memory_data(0x1000, &[0u8; 0x1000], Permission::RW);
+    state.file_system().set_cwd(b"/abc".to_vec());
+
+    // payload is b"/abc\0" (5 bytes); only 2 of them fit before 0x2000.
+    let buf = 0x1000u64 + 0x1000 - 2;
+    let outcome = NativeGetcwdSyscall
+        .call(
+            &mut state,
+            &[RustBV::concrete(buf as u128, 64), RustBV::concrete(64, 64)],
+        )
+        .unwrap();
+    match outcome {
+        SyscallOutcome::Continue { ret } => assert_eq!(ret, NEG_EFAULT),
+        other => panic!("getcwd spanning buf: expected Continue, got {other:?}"),
+    }
+
+    for (i, &b) in b"/a".iter().enumerate() {
+        let got = state.memory_load(buf + i as u64, 1).unwrap().as_u64();
+        assert_eq!(got, Some(b as u64), "byte {i} written before the fault");
+    }
+}
+
+/// Either `getcwd` argument being symbolic falls back to Python via
+/// `SyscallError::SymbolicArgument` — the proc's `solver.eval_one(size)`
+/// path handles the unique-but-symbolic case we cannot.
+#[test]
+fn getcwd_symbolic_args_fall_back() {
+    let mut state = RustSimState::new("amd64").expect("state");
+    let bits = state.arch().bits();
+    let sym = {
+        let ctx = state.solver().borrow();
+        RustBV::symbolic(&ctx, "sym_getcwd_arg", bits)
+    };
+    for (label, args) in [
+        ("buf", [sym.clone(), RustBV::concrete(64, bits)]),
+        ("size", [RustBV::concrete(0x1000, bits), sym.clone()]),
+    ] {
+        let err = NativeGetcwdSyscall.call(&mut state, &args).unwrap_err();
+        match err {
+            SyscallError::SymbolicArgument(_) => (),
+            other => panic!("symbolic {label}: expected SymbolicArgument, got {other:?}"),
+        }
+    }
+}
+
+/// `chdir` on a *concrete* pointer whose path has a symbolic byte before
+/// the NUL exercises `read_concrete_cstring`'s mid-string fallback — a
+/// different branch from the fully-symbolic pointer covered by
+/// `chdir_symbolic_path_pointer_falls_back`.
+#[test]
+fn chdir_symbolic_byte_mid_path_falls_back() {
+    use crate::memory::Permission;
+    let mut state = RustSimState::new("amd64").expect("state");
+    state.map_memory_data(0x1000, &[0u8; 0x1000], Permission::RW);
+
+    state
+        .memory_store(0x1000, RustBV::concrete(b'/' as u128, 8))
+        .unwrap();
+    let sym_byte = {
+        let ctx = state.solver().borrow();
+        RustBV::symbolic(&ctx, "sym_path_byte", 8)
+    };
+    state.memory_store(0x1001, sym_byte).unwrap();
+
+    let err = NativeChdirSyscall
+        .call(&mut state, &[RustBV::concrete(0x1000, 64)])
+        .unwrap_err();
+    match err {
+        SyscallError::SymbolicArgument(msg) => {
+            assert!(msg.contains("offset 1"), "message names the offset: {msg}");
+        }
+        other => panic!("expected SymbolicArgument, got {other:?}"),
+    }
+    // cwd must be untouched by the aborted chdir.
+    assert_eq!(state.file_system_ref().cwd(), b"/");
+}

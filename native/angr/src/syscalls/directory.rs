@@ -158,6 +158,15 @@ impl NativeSyscall for NativeChdirSyscall {
 /// terminator to `buf`. Returns the byte count (cwd len + 1), or
 /// `-ERANGE` if `size` is too small to hold it. Matches
 /// `procedures/linux_kernel/cwd.py::getcwd`.
+///
+/// The write loop is deliberately **not** all-or-nothing: a fault part
+/// way through `buf` leaves the bytes stored by earlier iterations
+/// committed and returns `-EFAULT`. That matches both halves of what we
+/// mirror — the kernel's `copy_to_user` keeps whatever it copied before
+/// the fault, and the Python proc's single `state.memory.store` commits
+/// page by page before `SimSegfaultException` unwinds. A caller that
+/// sees `-EFAULT` must treat `buf` as clobbered, not preserved.
+/// `directory_tests.rs::getcwd_partial_write_is_not_rolled_back` pins it.
 pub(crate) struct NativeGetcwdSyscall;
 
 impl NativeSyscall for NativeGetcwdSyscall {
