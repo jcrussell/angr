@@ -1,6 +1,7 @@
 //! Tests for the sprintf/snprintf SimProcedure (extracted from sprintf.rs).
 use super::*;
 use crate::memory::Permission;
+use crate::procedures::strings::MAX_STRING_SCAN;
 
 fn setup_state() -> RustSimState {
     // Map destination buffer.

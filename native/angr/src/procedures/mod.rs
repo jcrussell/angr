@@ -131,6 +131,8 @@ pub(crate) mod read;
 pub(crate) mod scanf;
 pub(crate) mod sleep;
 pub(crate) mod sprintf;
+pub(crate) mod sprintf_conv;
+pub(crate) mod sprintf_spec;
 pub(crate) mod stdin_common;
 pub(crate) mod stdio;
 pub(crate) mod strcat;

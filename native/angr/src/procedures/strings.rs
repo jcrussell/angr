@@ -29,7 +29,7 @@ use crate::symbolic::{RustBV, SymContext};
 /// str-family procedures (strcpy/strncpy/strcat/strncat, strstr, strpbrk,
 /// memset-of-string, strchr/memchr, strlen/strnlen, …) and for the other
 /// procedures that scan a C string argument: `getopt` (optstring and argv
-/// elements), `perror`, `getenv`/`setenv`/`putenv`, and `sprintf.rs`'s `%s`
+/// elements), `perror`, `getenv`/`setenv`/`putenv`, and `sprintf_conv.rs`'s `%s`
 /// conversion argument. Hitting this without a null terminator bails to Python
 /// via [`ProcedureError::MaxIterations`] — except in
 /// `getenv.rs::read_cstring_tolerant`, which documents at its own definition
@@ -41,7 +41,7 @@ use crate::symbolic::{RustBV, SymContext};
 /// angr-03vl4.45, for strchr/strlen in angr-03vl4.49, and for the
 /// `puts`/`fputs` pair — neither takes a length argument, so both are string
 /// scans rather than payload-size caps — in angr-0jh0j.45, and for
-/// `sprintf.rs`'s `%s` *conversion argument* — a plain C string, unlike the
+/// `sprintf_conv.rs`'s `%s` *conversion argument* — a plain C string, unlike the
 /// format string itself — in angr-0jh0j.44). Importers alias it
 /// locally (`MAX_STRING_SCAN as MAX_SCAN`) where the file already had its own
 /// vocabulary. `strcmp`/`memcmp` share their own equivalent

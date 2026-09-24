@@ -20,13 +20,20 @@
 //! * a symbolic format string or argument.
 
 use super::arch_word;
-use super::format_common::{parse_length_modifier, parse_width_digits, read_format_string};
-use super::strings::{MAX_STRING_SCAN, scan_concrete_bounded, write_cstr};
+use super::format_common::read_format_string;
+use super::sprintf_conv::render_conversion;
+use super::sprintf_spec::parse_conversion_spec;
+use super::strings::write_cstr;
 use super::{NativeSimProcedure, ProcedureError, extract_concrete_arg};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
-const MAX_OUTPUT_LEN: usize = 4096;
+/// Cap on the bytes a single `format_string` call may produce.
+///
+/// Also clamps a specifier's parsed width in
+/// [`parse_conversion_spec`],
+/// which is why it is visible to the sibling modules.
+pub(super) const MAX_OUTPUT_LEN: usize = 4096;
 
 /// Max variadic args the sprintf/snprintf family requests from the caller.
 ///
@@ -42,42 +49,13 @@ pub(crate) const MAX_VARARGS: usize = 6;
 /// Format arguments according to a printf-style format string.
 ///
 /// `args` is the slice of variadic arguments (after dest/format/size).
-/// Returns the formatted output bytes and the number of variadic args consumed.
-/// Python's `FormatSpecifier.signed` is buggy — `getattr(ty, "size", False)`
-/// returns the truthy size int even for unsigned specs — so
-/// format_parser.py::FormatString.replace sign-folds EVERY int conversion
-/// (`if c_val >= 2^(bits-1): c_val -= 2^bits`). For unsigned specs
-/// (%u/%x/%X/%o) with the high bit clear the fold is a no-op and native output
-/// matches; with the high bit set Python renders a negative value that native
-/// can't cheaply reproduce (Rust `{:x}` prints two's-complement bits, Python
-/// prints `-<abs hex>`), so those must defer to Python. `masked` is already
-/// masked to `bits` (angr-3i88a).
-fn unsigned_high_bit_set(masked: u64, bits: u32) -> bool {
-    masked >> (bits - 1) != 0
-}
-
-/// Mask `val` to `bits` then sign-extend to i64, mirroring Python's mask
-/// (`c_val &= (1<<size*8)-1`) followed by the signed fold (`if signed and
-/// high bit set: c_val -= 1<<size*8`) for `d`/`i` specs.
-fn signed_at_width(val: u64, bits: u32) -> i64 {
-    match bits {
-        8 => val as i8 as i64,
-        16 => val as i16 as i64,
-        32 => val as i32 as i64,
-        _ => val as i64,
-    }
-}
-
-/// Mask `val` to `bits` (zero-extended), mirroring Python's `c_val &=
-/// (1<<size*8)-1` for the unsigned `u`/`x`/`X`/`o` specs.
-fn unsigned_at_width(val: u64, bits: u32) -> u64 {
-    if bits >= 64 {
-        val
-    } else {
-        val & ((1u64 << bits) - 1)
-    }
-}
-
+/// Returns the formatted output bytes.
+///
+/// The two halves of the per-specifier work live in sibling modules:
+/// [`parse_conversion_spec`]
+/// decides what a `%...` means and
+/// [`render_conversion`] emits it.
+/// This loop owns only the literal bytes, `%%`, and the output-length cap.
 fn format_string(
     state: &mut RustSimState,
     fmt: &[u8],
@@ -100,12 +78,6 @@ fn format_string(
         if i >= fmt.len() {
             break;
         }
-        // Index of the first byte after '%', i.e. the start of the "nugget"
-        // `format_parser.py::_match_spec` is handed. Its `.*` arm only fires
-        // when the nugget *starts* with `.*`, so any flag or width digit ahead
-        // of the precision changes Python's decision — see the `.*` block below.
-        let nugget_start = i;
-
         // Handle %%
         if fmt[i] == b'%' {
             output.push(b'%');
@@ -113,327 +85,13 @@ fn format_string(
             continue;
         }
 
-        // Parse flags
-        let mut left_align = false;
-        let mut zero_pad = false;
-        let mut plus_sign = false;
-        let mut space_sign = false;
-        let mut hash_flag = false;
-        loop {
-            if i >= fmt.len() {
-                break;
-            }
-            match fmt[i] {
-                b'-' => left_align = true,
-                b'0' => zero_pad = true,
-                b'+' => plus_sign = true,
-                b' ' => space_sign = true,
-                b'#' => hash_flag = true,
-                _ => break,
-            }
-            i += 1;
-        }
-        if left_align {
-            zero_pad = false; // '-' overrides '0'
-        }
-
-        // Parity defer: Python's format_parser.py only recognizes the bare '0'
-        // (zero-pad) flag. Its _match_spec has no arm for '-', '+', ' ', or '#',
-        // so it fails to match the specifier entirely, emits a literal '%', and
-        // does NOT consume the corresponding variadic arg. Native honoring these
-        // flags would therefore produce different bytes AND a different
-        // arg-consumption count than vanilla angr — a real cross-engine parity
-        // gap (angr-1yge9.2). Defer to Python so both engines agree. Bare
-        // '0'+width ("%05d") is matched by both parsers and stays native. The
-        // downstream flag handling below is retained (unreachable while this
-        // guard stands) so a future format_parser.py fix can drop just this
-        // block. See `format-string-parity-defers`; do NOT "fix" by changing
-        // Python's parser — that alters vanilla angr semantics for all users.
-        if left_align || plus_sign || space_sign || hash_flag {
-            return Err(ProcedureError::Other(
-                "'-'/'+'/' '/'#' conversion flags defer to Python".to_string(),
-            ));
-        }
-
-        // Parse width. '*' dynamic width diverges from Python: format_parser.py's
-        // _match_spec has no '*' arm, so extract_components swallows the '%*'
-        // without consuming a width arg, shifting every later variadic arg by
-        // one. Native can't cheaply reproduce that arg-shift; defer to Python for
-        // faithful parity (angr-3i88a).
-        if i < fmt.len() && fmt[i] == b'*' {
-            return Err(ProcedureError::Other(
-                "'*' dynamic width defers to Python".to_string(),
-            ));
-        }
-        // Clamp against MAX_OUTPUT_LEN here, before `width` is used as
-        // pad_and_push's padding-loop bound: parse_width_digits only
-        // saturates to usize::MAX on overflow, which does not stop a short
-        // digit run like "%9999999999d" from encoding a near-MAX width. The
-        // `output.len() > MAX_OUTPUT_LEN` check below only fires AFTER
-        // pad_and_push's loop returns, so it can't bound the loop itself —
-        // unclamped this is an unbounded-allocation / OOM loop (angr-mi56k).
-        let (width, advanced) = parse_width_digits(fmt, i);
-        let width = width.min(MAX_OUTPUT_LEN);
-        i += advanced;
-
-        // Parse precision.
-        let mut precision: Option<usize> = None;
-        if i < fmt.len() && fmt[i] == b'.' {
-            i += 1;
-            if i < fmt.len() && fmt[i] == b'*' {
-                // '.*' precision (arg-supplied). Python's
-                // `format_parser.py::_match_spec` only recognizes it when the
-                // nugget *starts* with `.*` — a preceding '0' flag or width
-                // digit sends it down the digit-scanning path, which leaves
-                // nugget == ".*<spec>" and matches no entry of `all_spec`, so
-                // the whole specifier fails to match, a literal '%' is emitted
-                // and NO variadic arg is consumed. Native cannot cheaply
-                // reproduce that arg-shift; defer, as the '*' dynamic-width
-                // guard above does (angr-6cp06.8).
-                //
-                // overflow-ok: `dot_pos` is `i - 1` where `i > 0` — the '.' was
-                // just consumed above, so the subtraction cannot underflow.
-                let dot_pos = i - 1;
-                if dot_pos != nugget_start {
-                    return Err(ProcedureError::Other(
-                        "'.*' precision after a flag/width defers to Python".to_string(),
-                    ));
-                }
-                // Even when matched, Python only reads a *separate* precision
-                // vararg for '%s': `FormatString.replace` does
-                // `va_arg("size_t") if fmt_spec.length_spec == b".*"` inside the
-                // `spec_type == b"s"` arm only. Every other conversion falls to
-                // the `else` branch, reads exactly one `va_arg("void*")`, and
-                // ignores `length_spec` entirely (the `rjust` below it is gated
-                // on `isinstance(length_spec, int)`, and b".*" is not an int).
-                // Consuming a precision arg for `%.*d` therefore shifted every
-                // later vararg by one. Mirror Python: consume only for '%s',
-                // and otherwise drop the precision (angr-6cp06.8).
-                //
-                // overflow-ok: both indices are positions inside an in-memory
-                // format string, nowhere near usize::MAX.
-                let (_, peek_adv) = parse_length_modifier(fmt, i + 1);
-                let conv = fmt.get(i + 1 + peek_adv).copied();
-                if conv == Some(b's') {
-                    if arg_idx >= args.len() {
-                        return Err(ProcedureError::SymbolicArgument(
-                            "precision arg".to_string(),
-                        ));
-                    }
-                    let p = extract_concrete_arg(&args[arg_idx], "precision")?;
-                    precision = Some(p as usize);
-                    arg_idx += 1;
-                }
-                i += 1;
-            } else {
-                // '.N' digit precision diverges: format_parser.py's _match_spec
-                // mis-slices the consumed '.', dropping the actual conversion
-                // letter, so FormatString.replace raises SimProcedureError and
-                // the state errors. Native previously truncated/ignored the
-                // precision and continued — succeeding where Python errors.
-                // Defer for parity (angr-3i88a).
-                return Err(ProcedureError::Other(
-                    "'.N' digit precision defers to Python".to_string(),
-                ));
-            }
-        }
-
-        // Parse length modifier
-        let (modifier, m_adv) = parse_length_modifier(fmt, i);
-        i += m_adv;
-
-        if i >= fmt.len() {
+        // A format string that ends inside a specifier yields no spec; stop
+        // formatting and keep what was built, as the `i >= fmt.len()` break
+        // above does.
+        let Some(cspec) = parse_conversion_spec(fmt, &mut i, args, &mut arg_idx)? else {
             break;
-        }
-
-        // Parse conversion specifier
-        let spec = fmt[i];
-        i += 1;
-
-        match spec {
-            b'd' | b'i' => {
-                if arg_idx >= args.len() {
-                    return Err(ProcedureError::SymbolicArgument("int arg".to_string()));
-                }
-                let val = extract_concrete_arg(&args[arg_idx], &format!("arg{arg_idx}"))?;
-                arg_idx += 1;
-                // Interpret as signed, narrowed to the modifier's width.
-                let signed_val = signed_at_width(val, modifier.int_conv_bits(arch_bits));
-                let formatted = if plus_sign && signed_val >= 0 {
-                    format!("+{signed_val}")
-                } else if space_sign && signed_val >= 0 {
-                    format!(" {signed_val}")
-                } else {
-                    format!("{signed_val}")
-                };
-                pad_and_push(
-                    &mut output,
-                    formatted.as_bytes(),
-                    width,
-                    left_align,
-                    zero_pad,
-                    signed_val < 0,
-                );
-            }
-            b'u' => {
-                if arg_idx >= args.len() {
-                    return Err(ProcedureError::SymbolicArgument("uint arg".to_string()));
-                }
-                let val = extract_concrete_arg(&args[arg_idx], &format!("arg{arg_idx}"))?;
-                arg_idx += 1;
-                let bits = modifier.int_conv_bits(arch_bits);
-                let unsigned_val = unsigned_at_width(val, bits);
-                if unsigned_high_bit_set(unsigned_val, bits) {
-                    return Err(ProcedureError::Other(
-                        "unsigned high-bit value defers to Python".to_string(),
-                    ));
-                }
-                let formatted = format!("{unsigned_val}");
-                pad_and_push(
-                    &mut output,
-                    formatted.as_bytes(),
-                    width,
-                    left_align,
-                    zero_pad,
-                    false,
-                );
-            }
-            b'x' | b'X' => {
-                if arg_idx >= args.len() {
-                    return Err(ProcedureError::SymbolicArgument("hex arg".to_string()));
-                }
-                let val = extract_concrete_arg(&args[arg_idx], &format!("arg{arg_idx}"))?;
-                arg_idx += 1;
-                let bits = modifier.int_conv_bits(arch_bits);
-                let unsigned_val = unsigned_at_width(val, bits);
-                if unsigned_high_bit_set(unsigned_val, bits) {
-                    return Err(ProcedureError::Other(
-                        "unsigned high-bit value defers to Python".to_string(),
-                    ));
-                }
-                let mut formatted = if spec == b'x' {
-                    format!("{unsigned_val:x}")
-                } else {
-                    format!("{unsigned_val:X}")
-                };
-                if hash_flag && unsigned_val != 0 {
-                    let prefix = if spec == b'x' { "0x" } else { "0X" };
-                    formatted = format!("{prefix}{formatted}");
-                }
-                pad_and_push(
-                    &mut output,
-                    formatted.as_bytes(),
-                    width,
-                    left_align,
-                    zero_pad,
-                    false,
-                );
-            }
-            b'o' => {
-                if arg_idx >= args.len() {
-                    return Err(ProcedureError::SymbolicArgument("octal arg".to_string()));
-                }
-                let val = extract_concrete_arg(&args[arg_idx], &format!("arg{arg_idx}"))?;
-                arg_idx += 1;
-                let bits = modifier.int_conv_bits(arch_bits);
-                let unsigned_val = unsigned_at_width(val, bits);
-                if unsigned_high_bit_set(unsigned_val, bits) {
-                    return Err(ProcedureError::Other(
-                        "unsigned high-bit value defers to Python".to_string(),
-                    ));
-                }
-                let mut formatted = format!("{unsigned_val:o}");
-                if hash_flag && unsigned_val != 0 {
-                    formatted = format!("0{formatted}");
-                }
-                pad_and_push(
-                    &mut output,
-                    formatted.as_bytes(),
-                    width,
-                    left_align,
-                    zero_pad,
-                    false,
-                );
-            }
-            b'c' => {
-                if arg_idx >= args.len() {
-                    return Err(ProcedureError::SymbolicArgument("char arg".to_string()));
-                }
-                let val = extract_concrete_arg(&args[arg_idx], &format!("arg{arg_idx}"))?;
-                arg_idx += 1;
-                let ch = [val as u8];
-                pad_and_push(&mut output, &ch, width, left_align, false, false);
-            }
-            b's' => {
-                if arg_idx >= args.len() {
-                    return Err(ProcedureError::SymbolicArgument("string arg".to_string()));
-                }
-                let str_addr = extract_concrete_arg(&args[arg_idx], &format!("arg{arg_idx}"))?;
-                arg_idx += 1;
-                // Deliberately `MAX_STRING_SCAN`, not the enclosing format
-                // string's `format_common::MAX_FORMAT_LEN`: a `%s` conversion
-                // *argument* is a plain C string with no length bound, so it
-                // belongs to the str-family cap per the deciding test in bd
-                // memory `invariant-syscall-byte-cap-shared`. The two constants
-                // are independently defined and only happen to be equal today —
-                // a future security-driven reduction of one is expected to move
-                // this scan without moving the format-string scan, and vice
-                // versa. Pinned behaviourally by
-                // `sprintf_tests::test_sprintf_percent_s_scan_bounded_by_max_string_scan`.
-                let (s, null_found) =
-                    scan_concrete_bounded(state, str_addr, MAX_STRING_SCAN, "string")?;
-                // Cap-without-null is an error here, unlike in
-                // `format_common::read_format_string` where it is explicitly
-                // tolerated for the format string itself. Python's
-                // `format_parser.py::FormatString._get_str_at` measures a `%s`
-                // argument with the `strlen` SimProcedure, which keeps doubling
-                // its search window past `libc.max_str_len` and raises
-                // `SimMemoryLimitError` at 0x10000 rather than truncating — so a
-                // 4096-byte prefix would be a silently wrong render both for an
-                // unterminated argument (Python errors) and for a merely long
-                // one whose terminator sits between 4096 and 0x10000 (Python
-                // renders it in full). Defer instead, as the sibling
-                // strcpy/strcat/getopt/perror scans do (angr-6fg46).
-                if !null_found {
-                    return Err(ProcedureError::MaxIterations(MAX_STRING_SCAN));
-                }
-                let s = if let Some(prec) = precision {
-                    if prec < s.len() { &s[..prec] } else { &s }
-                } else {
-                    &s
-                };
-                pad_and_push(&mut output, s, width, left_align, false, false);
-            }
-            b'p' => {
-                // %p always diverges from Python: native emitted a "0x" prefix
-                // (format!("0x{val:x}")) while format_parser.py emits bare hex
-                // (f"{c_val:x}"), and Python additionally sign-folds bit-63-set
-                // pointers. Defer for parity (angr-3i88a).
-                return Err(ProcedureError::Other("%p defers to Python".to_string()));
-            }
-            b'n' => {
-                // %n writes the number of chars written so far to an int pointer.
-                // Deliberately NOT implemented natively: deferring to Python is
-                // the faithful behavior. Python's format_parser.py::FormatString
-                // .replace has no %n arm and falls through to
-                // `raise SimProcedureError("Unimplemented format specifier 'n'")`.
-                // A native write of the count would succeed where Python errors,
-                // diverging from the engine we mirror. The fallback reproduces
-                // Python exactly for free.
-                return Err(ProcedureError::Other("%n not supported".to_string()));
-            }
-            _ => {
-                // Unknown specifier — fall back to Python. This includes the
-                // float specifiers %f/%e/%g: Python's format_parser.py::
-                // FormatString.replace raises SimProcedureError on them, so a
-                // native float formatter would diverge (succeed where Python
-                // errors). Faithful behavior is to defer.
-                return Err(ProcedureError::Other(format!(
-                    "unsupported format specifier '%{}'",
-                    spec as char
-                )));
-            }
-        }
+        };
+        render_conversion(state, &cspec, args, &mut arg_idx, arch_bits, &mut output)?;
 
         if output.len() > MAX_OUTPUT_LEN {
             return Err(ProcedureError::MaxIterations(MAX_OUTPUT_LEN));
@@ -441,43 +99,6 @@ fn format_string(
     }
 
     Ok(output)
-}
-
-/// Pad a formatted value and push to output.
-fn pad_and_push(
-    output: &mut Vec<u8>,
-    value: &[u8],
-    width: usize,
-    left_align: bool,
-    zero_pad: bool,
-    is_negative: bool,
-) {
-    if width <= value.len() {
-        output.extend_from_slice(value);
-        return;
-    }
-    // overflow-ok: width > value.len() is guaranteed by the early return above.
-    let pad_count = width - value.len();
-    let pad_char = if zero_pad { b'0' } else { b' ' };
-
-    if left_align {
-        output.extend_from_slice(value);
-        for _ in 0..pad_count {
-            output.push(b' ');
-        }
-    } else if zero_pad && is_negative {
-        // For negative numbers with zero-pad: "-007" not "00-7"
-        output.push(b'-');
-        for _ in 0..pad_count {
-            output.push(b'0');
-        }
-        output.extend_from_slice(&value[1..]); // skip the '-' already in value
-    } else {
-        for _ in 0..pad_count {
-            output.push(pad_char);
-        }
-        output.extend_from_slice(value);
-    }
 }
 
 /// Native sprintf implementation.

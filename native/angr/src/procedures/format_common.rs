@@ -14,7 +14,7 @@
 //! The top-level state machine in each consumer still drives its own
 //! logic — these helpers only cover the leaves.
 //!
-//! See `procedures/sprintf.rs::format_string` and
+//! See `procedures/sprintf_spec.rs::parse_conversion_spec` and
 //! `procedures/scanf.rs::parse_scanf_format` for the callers.
 
 use super::ProcedureError;
@@ -25,7 +25,7 @@ use crate::state::RustSimState;
 /// scanf family. One home so a future reduction is applied everywhere at once
 /// rather than silently missing a consumer that kept its own local `4096`
 /// (angr-myzjx.7). The str-family shares [`super::strings::MAX_STRING_SCAN`] —
-/// and so, deliberately, does `sprintf.rs::format_string`'s own `%s`
+/// and so, deliberately, does `sprintf_conv.rs::render_conversion`'s own `%s`
 /// *conversion argument*, which is a plain C string rather than a format
 /// string; the two constants are independent and are not expected to move
 /// together.
