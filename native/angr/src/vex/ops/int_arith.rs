@@ -12,7 +12,8 @@ use crate::symbolic::{RustBV, SymContext};
 use crate::vex::ir::IRType;
 
 impl VEXOps {
-    /// Widening multiply.
+    /// Widening multiply: both operands must be `ty`-width; the result is
+    /// double that width.
     #[inline]
     pub(super) fn widening_mul(
         left: RustBV,
@@ -22,6 +23,8 @@ impl VEXOps {
         ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         let in_width = ty.bits();
+        debug_assert_eq!(left.width(), in_width);
+        debug_assert_eq!(right.width(), in_width);
         let out_width = in_width * 2;
 
         // Extend both operands
