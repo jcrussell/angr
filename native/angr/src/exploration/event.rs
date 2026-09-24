@@ -44,7 +44,14 @@ pub struct ExplorationEvent {
     /// State ID for callback (if need_callback).
     #[pyo3(get)]
     pub callback_state_id: Option<u64>,
-    /// Callback reason string.
+    /// Callback reason string — but overloaded, so branch on `event_type`
+    /// before reading it. For `"need_callback"` events it is a short fixed
+    /// tag naming the callback kind: `"simprocedure"`, `"syscall"`,
+    /// `"symbolic_branch"`, `"python_vex_fallback"`, or the caller-supplied
+    /// predicate tag passed to `ExplorationEvent::need_predicate`
+    /// (`"find_predicate"` / `"avoid_predicate"`). For `"errored"` events
+    /// `ExplorationEvent::error` reuses this same field to carry an arbitrary
+    /// free-text error message, which belongs to no tag set at all.
     #[pyo3(get)]
     pub callback_reason: Option<String>,
     /// Callback address.
