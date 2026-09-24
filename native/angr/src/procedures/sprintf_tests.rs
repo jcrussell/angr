@@ -7,6 +7,22 @@ fn setup_state() -> RustSimState {
     crate::procedures::test_util::amd64_state_with_regions(&[(0x2000, 0x1000)])
 }
 
+/// `setup_state()` plus a fully symbolic byte planted at `0x1000`, the address
+/// every test below passes as the format-string pointer. A format read from
+/// there hits `scan_concrete_bounded`'s symbolic-byte bail-out inside
+/// [`read_format_string`], which is the shared fallback path for the whole
+/// sprintf family.
+fn state_with_symbolic_format_byte() -> RustSimState {
+    let mut state = setup_state();
+    state.map_memory_data(0x1000, b"\x00\x00\x00\x00", Permission::RWX);
+    let sym = {
+        let ctx = state.solver().borrow();
+        RustBV::symbolic(&ctx, "fmt_byte", 8)
+    };
+    state.memory_store(0x1000, sym).unwrap();
+    state
+}
+
 #[test]
 fn test_sprintf_simple_string() {
     let mut state = setup_state();
@@ -689,13 +705,7 @@ fn test_asprintf_percent_d() {
 fn test_asprintf_symbolic_format_falls_back() {
     // A symbolic format string must defer to Python (read_format_string errors on a
     // symbolic byte), matching sprintf's fallback semantics.
-    let mut state = setup_state();
-    state.map_memory_data(0x1000, b"\x00\x00\x00\x00", Permission::RWX);
-    let sym = {
-        let ctx = state.solver().borrow();
-        RustBV::symbolic(&ctx, "fmt_byte", 8)
-    };
-    state.memory_store(0x1000, sym).unwrap();
+    let mut state = state_with_symbolic_format_byte();
 
     let result = NativeAsprintf.call(
         &mut state,
@@ -1066,4 +1076,112 @@ fn test_sprintf_star_precision_after_width_or_flag_falls_back() {
             String::from_utf8_lossy(fmt)
         );
     }
+}
+
+// --- Symbolic format byte, per sprintf-family entry point (angr-fs8kb.43) ---
+//
+// `read_format_string` is shared, so these are transitively covered by
+// `test_asprintf_symbolic_format_falls_back`. They exist so a reader auditing
+// one entry point in isolation finds direct evidence of its behavior — and
+// because `vsnprintf` is the one member that does *not* share the path.
+
+#[test]
+fn test_sprintf_symbolic_format_falls_back() {
+    let mut state = state_with_symbolic_format_byte();
+
+    let result = NativeSprintf.call(
+        &mut state,
+        &[
+            RustBV::concrete(0x2000, 64), // dest
+            RustBV::concrete(0x1000, 64), // format (symbolic first byte)
+            RustBV::concrete(0, 64),
+            RustBV::concrete(0, 64),
+            RustBV::concrete(0, 64),
+            RustBV::concrete(0, 64),
+            RustBV::concrete(0, 64),
+            RustBV::concrete(0, 64),
+        ],
+    );
+    // Match the *reason*, not just `is_err()`: a bare `is_err()` would also
+    // pass if the call failed on an unrelated argument.
+    assert!(
+        matches!(&result, Err(ProcedureError::SymbolicArgument(msg))
+                 if msg.contains("format string byte")),
+        "symbolic format in sprintf should fall back to Python, got {result:?}"
+    );
+}
+
+#[test]
+fn test_snprintf_symbolic_format_falls_back() {
+    let mut state = state_with_symbolic_format_byte();
+
+    let result = NativeSnprintf.call(
+        &mut state,
+        &[
+            RustBV::concrete(0x2000, 64), // dest
+            RustBV::concrete(16, 64),     // size != 0, so the format is read
+            RustBV::concrete(0x1000, 64), // format (symbolic first byte)
+            RustBV::concrete(0, 64),
+            RustBV::concrete(0, 64),
+            RustBV::concrete(0, 64),
+            RustBV::concrete(0, 64),
+            RustBV::concrete(0, 64),
+            RustBV::concrete(0, 64),
+        ],
+    );
+    // Match the *reason*, not just `is_err()`: a bare `is_err()` would also
+    // pass if the call failed on an unrelated argument.
+    assert!(
+        matches!(&result, Err(ProcedureError::SymbolicArgument(msg))
+                 if msg.contains("format string byte")),
+        "symbolic format in snprintf should fall back to Python, got {result:?}"
+    );
+}
+
+#[test]
+fn test_vsprintf_symbolic_format_falls_back() {
+    // vsprintf does no %-substitution, but it still *copies* the raw format
+    // string, so a symbolic byte is unreadable and must defer to Python.
+    let mut state = state_with_symbolic_format_byte();
+
+    let result = NativeVsprintf.call(
+        &mut state,
+        &[
+            RustBV::concrete(0x2000, 64), // str
+            RustBV::concrete(0x1000, 64), // format (symbolic first byte)
+            RustBV::concrete(0, 64),      // va_list (ignored)
+        ],
+    );
+    // Match the *reason*, not just `is_err()`: a bare `is_err()` would also
+    // pass if the call failed on an unrelated argument.
+    assert!(
+        matches!(&result, Err(ProcedureError::SymbolicArgument(msg))
+                 if msg.contains("format string byte")),
+        "symbolic format in vsprintf should fall back to Python, got {result:?}"
+    );
+}
+
+#[test]
+fn test_vsnprintf_symbolic_format_is_ignored() {
+    // The odd one out: `NativeVsnprintf` never calls `read_format_string` at
+    // all — it mirrors Python's no-op `vsnprintf` stub (one NUL, return 1), so
+    // a symbolic format byte is simply never read and the call still succeeds.
+    // Deferring here would diverge from the engine we mirror.
+    let mut state = state_with_symbolic_format_byte();
+    state.map_memory_data(0x2000, b"XXXX\x00", Permission::RWX);
+
+    let result = NativeVsnprintf
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x2000, 64), // str
+                RustBV::concrete(16, 64),     // size != 0
+                RustBV::concrete(0x1000, 64), // format (symbolic first byte)
+                RustBV::concrete(0, 64),      // va_list (ignored)
+            ],
+        )
+        .unwrap();
+
+    assert_eq!(result.unwrap().as_u64(), Some(1));
+    assert_eq!(state.memory_load(0x2000, 1).unwrap().as_u64().unwrap(), 0);
 }
