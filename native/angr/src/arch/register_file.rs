@@ -589,6 +589,24 @@ impl RegisterFile {
         // same cleanup `put` does when a wide symbolic write lands.
         let mut widened: Vec<(u32, u32)> = Vec::new();
 
+        // Both paths below that merge a *span* rather than a single overlay —
+        // the width-mismatch arm of the symbolic loop, and the `inner_symbolic`
+        // arm of the concrete-chunk loop — do the same three things: compose
+        // each file's own value for the span through `get_storage`, stage the
+        // ITE at that common width, and record the span so overlays strictly
+        // inside it are subsumed after the loops. `this` is passed rather than
+        // captured so the closure holds no borrow of `self`.
+        let stage_widened_ite = |this: &Self,
+                                 offset: u32,
+                                 size: u32,
+                                 updates: &mut Vec<(u32, RustBV)>,
+                                 widened: &mut Vec<(u32, u32)>| {
+            let self_full = this.get_storage(offset, size, ctx);
+            let other_full = other.get_storage(offset, size, ctx);
+            updates.push((offset, merge_cond_other.ite(&other_full, &self_full, ctx)));
+            widened.push((offset, size));
+        };
+
         // Merge symbolic registers
         for &offset in &all_offsets {
             let self_val = self.symbolic.get(&offset);
@@ -612,11 +630,7 @@ impl RegisterFile {
                             && end <= self.data.len()
                             && end <= other.data.len()
                         {
-                            let self_full = self.get_storage(offset, size, ctx);
-                            let other_full = other.get_storage(offset, size, ctx);
-                            updates
-                                .push((offset, merge_cond_other.ite(&other_full, &self_full, ctx)));
-                            widened.push((offset, size));
+                            stage_widened_ite(self, offset, size, &mut updates, &mut widened);
                         } else {
                             // SILENT(cat-c): the wider value runs past the guest
                             // state buffer (or is not byte-sized), so there is no
@@ -698,16 +712,14 @@ impl RegisterFile {
                     // insert a concrete-only ITE at the aligned offset that
                     // shadows the already-merged sub-register on the next
                     // full-width read (angr-c7xno.1). Compose both sides
-                    // through `get` instead, exactly as the width-mismatch arm
-                    // above does.
+                    // through `get_storage` instead, via the same
+                    // `stage_widened_ite` helper the width-mismatch arm above
+                    // uses.
                     let inner_symbolic =
                         (off + 1..off + reg_bytes).any(|k| all_offsets.contains(&(k as u32)));
                     if inner_symbolic {
                         let size = reg_bytes as u32;
-                        let self_full = self.get_storage(u32_off, size, ctx);
-                        let other_full = other.get_storage(u32_off, size, ctx);
-                        updates.push((u32_off, merge_cond_other.ite(&other_full, &self_full, ctx)));
-                        widened.push((u32_off, size));
+                        stage_widened_ite(self, u32_off, size, &mut updates, &mut widened);
                     } else {
                         // Concrete values differ — create ITE
                         let width = (reg_bytes * 8) as u32;
