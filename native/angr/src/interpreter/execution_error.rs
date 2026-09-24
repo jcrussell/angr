@@ -79,9 +79,9 @@ pub(crate) enum FallbackStrategy {
 
 /// Errors during callback-based VEX execution.
 ///
-/// Each variant has a documented [`FallbackStrategy`]. The dispatcher in
-/// `execution.rs::run` consults [`Self::strategy`] to decide whether the
-/// error becomes `RunResult::NeedPythonVEX` (recoverable) or
+/// Each variant has a documented [`FallbackStrategy`]. The dispatcher —
+/// `VEXInterpreter::run_until_event` — consults [`Self::strategy`] to decide
+/// whether the error becomes `RunResult::NeedPythonVEX` (recoverable) or
 /// `RunResult::Error` (terminal).
 #[derive(Debug, Clone, thiserror::Error)]
 pub(crate) enum CbExecutionError {

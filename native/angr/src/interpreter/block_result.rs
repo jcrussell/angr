@@ -1,8 +1,9 @@
 //! Interpreter control-flow result types.
 //!
 //! Split out of `interpreter/mod.rs` (angr-9ke6b.91). [`BlockResult`] is what
-//! `execution.rs::run` hands back to the exploration manager; [`StmtResult`]
-//! and [`ConcretizedJump`] are the interpreter-internal steps that produce it.
+//! `VEXInterpreter::run_until_event` hands back to the exploration manager;
+//! [`StmtResult`] and [`ConcretizedJump`] are the interpreter-internal steps
+//! that produce it.
 
 use crate::symbolic::RustBV;
 use crate::vex::ir::JumpKind;
