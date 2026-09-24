@@ -745,6 +745,14 @@ fn reverse_bytes(bv: &RustBV, ctx: &SymContext) -> Result<RustBV, BridgeError> {
     } else {
         // Symbolic case: build concatenation of reversed byte extracts
         let num_bytes = width / 8;
+        if num_bytes == 0 {
+            // The empty bitvector has no bytes to reverse, and is its own
+            // reversal. The concrete branch above handles this implicitly (its
+            // loop body never runs); mirror that here rather than letting the
+            // unconditional `extract(7, 0)` below run out of range on a
+            // width-0 value (angr-fs8kb.82).
+            return Ok(bv.clone());
+        }
         let mut result = bv.extract(7, 0, ctx);
         for i in 1..num_bytes {
             let byte = bv.extract((i + 1) * 8 - 1, i * 8, ctx);

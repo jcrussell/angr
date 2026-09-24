@@ -8,7 +8,7 @@
 
 use super::*;
 
-use crate::symbolic::global_registry;
+use crate::symbolic::{BVOp, global_registry};
 
 /// The canonical name wins over the name the incoming claripy AST carries.
 ///
@@ -311,4 +311,30 @@ fn test_bool_fold_refuses_mismatched_operand_widths() {
             assert_eq!(bv.as_u64(), Some(want), "{op}");
         }
     });
+}
+
+/// A width-0 non-concrete value byte-reverses to itself.
+///
+/// `reverse_bytes`'s concrete branch handles the empty bitvector implicitly
+/// (its loop body never runs), but its symbolic branch used to run an
+/// unconditional `extract(7, 0)` before consulting the byte count — an
+/// out-of-range extract on a width-0 value (angr-fs8kb.82). `Symbolic` itself
+/// can no longer be width 0 (`RustBV::from_parts` degenerates it to
+/// `Concrete { 0, 0 }`, angr-fs8kb.28), so the reachable shape is an
+/// `Expression`: `as_u128` returns `None` for it, sending it down the same
+/// branch.
+#[test]
+fn test_reverse_bytes_width_zero_expression_is_identity() {
+    let ctx = SymContext::new_mock();
+    let empty = RustBV::Expression {
+        id: RustBV::EXPRESSION_ID,
+        width: 0,
+        op: BVOp::Concat,
+        operands: std::sync::Arc::from(Vec::new()),
+        memo: Default::default(),
+    };
+    assert_eq!(empty.as_u128(), None, "must take the non-concrete branch");
+
+    let reversed = reverse_bytes(&empty, &ctx).expect("width 0 is byte-aligned");
+    assert_eq!(reversed.width(), 0, "the empty bitvector reverses to itself");
 }
