@@ -907,9 +907,26 @@ impl SymContext {
     /// parts IS the unsigned minimum of the reassembled value — the witness rule
     /// `eval` uses in this mode (angr-op0dn.10.2).
     ///
-    /// `None` when the constraint set is unsat.
+    /// `None` when the constraint set is unsat, when Z3 times out mid-search,
+    /// or when `parts` is empty.
     #[cfg(feature = "vex-engine-z3")]
     fn lex_min_witness(&self, parts: &[(z3::ast::BV, u32)]) -> Option<Vec<u128>> {
+        // `parts` is empty only for a width-0 bv: `min_wide`'s `while hi > 0`
+        // loop never pushes a chunk, and the other caller (`eval_many`'s
+        // deterministic path) guards `symbolic.is_empty()` itself. Falling
+        // through would skip the per-part loop entirely and pin
+        // `sat_cache = Some(true)` at the bottom without ever running a check —
+        // a wrong answer for a genuinely-unsat context. Report "no witness"
+        // and leave the cache untouched instead (angr-fs8kb.30). Not reachable
+        // today: a width-0 symbolic `RustBV` crashes in `min_wide`'s
+        // `to_z3_ast` first (angr-fs8kb.28).
+        debug_assert!(
+            !parts.is_empty(),
+            "lex_min_witness requires a non-empty parts vec"
+        );
+        if parts.is_empty() {
+            return None;
+        }
         self.with_z3_solver(|solver| {
             solver.push();
             let mut values = Vec::with_capacity(parts.len());
@@ -1158,7 +1175,16 @@ impl SymContext {
         // plus the low-128-truncated witness returned a wrong value. Report
         // unknown rather than a truncated extremum (angr-cxw7). 128-bit BVs are
         // fine: their range is exactly [0, u128::MAX].
-        if width > 128 {
+        //
+        // Width 0 is rejected by the same guard: it has no bit to extremize,
+        // and the signed branch below computes `1u128 << (width - 1)`, whose
+        // subtraction wraps to `u32::MAX` under `[profile.release]` (which sets
+        // no `overflow-checks`). The shift then masks that to 127 and yields a
+        // sign_bit of `1u128 << 127` — a wrong answer rather than a crash. Not
+        // reachable today, because a width-0 symbolic `RustBV` crashes in the
+        // `to_z3_ast` above (angr-fs8kb.28); the guard is what keeps fixing
+        // that crash from silently promoting this one to live (angr-fs8kb.29).
+        if width == 0 || width > 128 {
             return None;
         }
 
