@@ -542,7 +542,11 @@ fn reserve_admission(t: &WorkTransport, limit: usize, want: usize) -> usize {
 ///   per starving sibling (never below one local state) so each starving sibling
 ///   has work to steal. This mirrors the `record_migration_sample` imbalance
 ///   model (helpers.rs), which likewise counts ONE steal per dispatch event, so
-///   the measured steal fraction lines up with the gate's `f_model`.
+///   the measured steal fraction lines up with the gate's `f_model`. "Per
+///   starving sibling" nets out what is *already* queued for them: the loop
+///   stops once `injector.len() >= idle_workers`, so concurrent producers see
+///   each other's pushes instead of each independently shedding a full
+///   `idle_workers`-worth (angr-fs8kb.5).
 ///
 ///   It used to shed HALF the backlog per production event, which is what made
 ///   CADET_00001_partial collapse ~19x at `W=2` (angr-faorh): a chronically
@@ -575,13 +579,27 @@ pub(super) fn offload_surplus(
 ) {
     // Trigger A: idle-gated load sharing. Offload the COLDEST states (whichever
     // end `policy.select_for_offload` names), keeping our hot end; at most one
-    // state per starving sibling, so the volume
-    // of Z3 serde is bounded by the idle count and not by the frontier width.
-    let idle = idle_workers.load(Ordering::SeqCst);
-    if idle > 0 && local.len() >= 2 && offload_is_affordable(counters) {
-        let to_offload = idle.min(local.len() - 1);
-        for _ in 0..to_offload {
-            if local.len() <= 1 {
+    // state per *unserved* starving sibling, so the volume of Z3 serde is
+    // bounded by the idle count and not by the frontier width.
+    if local.len() >= 2 && offload_is_affordable(counters) {
+        while local.len() >= 2 {
+            // Re-read both sides of the gate every round rather than computing
+            // a `to_offload` count up front (angr-fs8kb.5). `idle_workers` is a
+            // gauge maintained by the starving siblings themselves
+            // (`steal_from_injector`), so a producer cannot decrement it to
+            // reserve a slot the way `reserve_admission` reserves against
+            // `pending` — a stray decrement would be double-counted when the
+            // woken sibling does its own `fetch_sub`. Netting the injector's
+            // outstanding depth against the idle count is the reservation
+            // instead: every state we shed is immediately visible there, so a
+            // concurrent producer reading the same `idle == k` sees our pushes
+            // and stops rather than shedding its own full `k`. `W` busy workers
+            // used to be able to collectively ship `W * k` states for `k`
+            // starving siblings, all of it paid for in detach/reattach serde.
+            let idle = idle_workers.load(Ordering::SeqCst);
+            // Covers the `idle == 0` case too: an unsigned `len >= 0` is always
+            // true, so no starving sibling means no Trigger-A offload.
+            if injector.len() >= idle {
                 break;
             }
             if !offload_one(local, injector, policy, counters) {

@@ -221,6 +221,44 @@ fn test_offload_surplus_notifies_policy_on_trigger_a_offload() {
     );
 }
 
+// Two busy workers sharing one injector, both seeing the SAME `idle == 2`
+// snapshot (angr-fs8kb.5). Trigger A used to read the idle gauge once and shed
+// `min(idle, len - 1)` unconditionally, so each producer independently shipped a
+// full `idle`-worth — `W * idle` states of detach/reattach serde for `idle`
+// starving siblings. The second producer must now see the first one's states
+// still outstanding on the injector and shed nothing.
+#[test]
+fn test_trigger_a_nets_out_states_already_queued_for_idle_siblings() {
+    let policy: Arc<dyn SelectionPolicy> = Arc::new(Lifo);
+    let injector: Injector<StateMigrationPayload> = Injector::new();
+    let idle_workers = AtomicUsize::new(2);
+    let counters = SchedulerCounters::default();
+    // Keep the serde budget wide open for BOTH calls: the detaches the first
+    // producer pays charge `serde_ns`, and with the default `step_ns == 0` that
+    // alone would shut Trigger A off for the second producer — the test would
+    // then pass without exercising the idle-netting it exists to pin.
+    counters.step_ns.store(u64::MAX / 8, Ordering::Relaxed);
+
+    let mut worker_a: VecDeque<RustSimState> = (0..4).map(|_| plain_state()).collect();
+    offload_surplus(&mut worker_a, &injector, &idle_workers, &counters, &policy);
+    assert_eq!(worker_a.len(), 2, "first producer serves both idle siblings");
+    assert_eq!(counters.surplus_offloaded.load(Ordering::SeqCst), 2);
+
+    // Same gauge, same instant: nobody has claimed the two queued states yet.
+    let mut worker_b: VecDeque<RustSimState> = (0..4).map(|_| plain_state()).collect();
+    offload_surplus(&mut worker_b, &injector, &idle_workers, &counters, &policy);
+    assert_eq!(
+        worker_b.len(),
+        4,
+        "the idle siblings are already served; the second producer pays no serde",
+    );
+    assert_eq!(
+        counters.surplus_offloaded.load(Ordering::SeqCst),
+        2,
+        "two starving siblings cost exactly two migrations in total",
+    );
+}
+
 // Trigger B (HWM cap): same contract, but for the memory-cap path, which is
 // independent of the serde budget / idle-sibling gates Trigger A uses.
 #[test]
