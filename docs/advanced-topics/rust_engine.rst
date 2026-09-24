@@ -1262,7 +1262,7 @@ zero-cost when not read. They reset alongside the Z3 counters via
 ``mgr.reset_solver_stats()``.
 
 * **VEX op dispatch** (bumped at the ``IRExpr::{Unop,Binop,Triop,Qop}``
-  dispatch in ``interpreter/expressions.rs``):
+  dispatch in ``interpreter/expressions_arith.rs``):
 
   * ``vex_unop_total`` / ``vex_binop_total`` / ``vex_triop_total`` /
     ``vex_qop_total`` — count per arity.

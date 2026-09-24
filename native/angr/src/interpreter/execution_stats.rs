@@ -103,11 +103,12 @@ define_execution_stats! {
     /// Time spent lifting blocks (nanoseconds).
     lift_time_ns: sum,
     /// Number of loads served by the Rust-native memory layer — the
-    /// `try_rust_memory_load` branch of `expressions::VEXInterpreter::load_layered`
+    /// `try_rust_memory_load` branch of
+    /// `expressions_loads::VEXInterpreter::load_layered`
     /// returning `Some`. Zero when `use_rust_memory` is off.
     rust_memory_load_count: sum,
     /// Number of loads that did NOT come from the Rust-native memory layer, i.e.
-    /// the tail of `expressions::VEXInterpreter::load_layered`. Note this is
+    /// the tail of `expressions_loads::VEXInterpreter::load_layered`. Note this is
     /// wider than "Python callback": it also covers pending-store buffer hits,
     /// prefetch-cache hits and `concrete_memory` hits, which are the same
     /// layers `record_mem_load` is bumped for there. Together with

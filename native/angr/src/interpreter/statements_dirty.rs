@@ -23,7 +23,7 @@
 //! shared with `Exit`, `StoreG` and `LoadG`.
 
 use super::bv_utils::bytes_to_bv;
-use super::expressions::fabricate_unsupported_irop;
+use super::expressions_arith::fabricate_unsupported_irop;
 use super::statements::GuardClass;
 use super::*;
 

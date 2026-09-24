@@ -3,7 +3,7 @@
 // Historical bug shapes:
 //   * angr-c7xno.85: `f64_to_f32_rm`'s concrete path ignored the VEX
 //     rounding mode — a bug *inside* a `_with_rm`-family implementation.
-//   * angr-03vl4.30: `eval_qop` (interpreter/expressions.rs) dropped the
+//   * angr-03vl4.30: `eval_qop` (interpreter/expressions_arith.rs) dropped the
 //     Qop's rm and called the rm-less `VEXOps::qop` instead of
 //     `VEXOps::qop_with_rm` — a bug in the CALLER's dispatch choice, not in
 //     `qop_with_rm` itself.
@@ -34,7 +34,7 @@
 // 2. `test_dispatcher_selection_routes_through_rm_threaded_sibling` —
 //    Family B only. Drives evaluation through the REAL interpreter-level
 //    dispatch entry points (`VEXInterpreter::eval_binop`/`eval_triop`/
-//    `eval_qop` in `interpreter/expressions.rs`) — the layer the
+//    `eval_qop` in `interpreter/expressions_arith.rs`) — the layer the
 //    angr-03vl4.30 bug actually lived in — for one representative op per
 //    Family-B kind, and asserts the interpreter's answer matches the
 //    correctly-rm-threaded `*_with_rm` sibling and NOT the rm-less
@@ -90,7 +90,7 @@ type Operand = (u128, u32);
 
 /// Which real VEX-encoded shape an entry's op arrives as, and — for Family
 /// B — which interpreter-level `eval_*` dispatcher (`interpreter/
-/// expressions.rs`) is responsible for picking its `VEXOps` method. Drives
+/// expressions_arith.rs`) is responsible for picking its `VEXOps` method. Drives
 /// sections 2 and 3 (see module doc comment): both are Family-B only,
 /// because Family A is reached via plain `VEXOps::binop` with no separate
 /// rm-less sibling to mis-route to, and no rm-concreteness branch to
@@ -539,7 +539,7 @@ fn irconst_for(bits: u128, width: u32) -> crate::vex::ir::IRConst {
 
 /// Evaluate one Family-B op through the REAL interpreter-level dispatch
 /// entry point (`VEXInterpreter::eval_binop`/`eval_triop`/`eval_qop` in
-/// `interpreter/expressions.rs`) — the layer the angr-03vl4.30 bug actually
+/// `interpreter/expressions_arith.rs`) — the layer the angr-03vl4.30 bug actually
 /// lived in (the caller picked `VEXOps::qop` instead of `qop_with_rm`),
 /// as opposed to the rest of this file, which calls
 /// `VEXOps::binop_with_rm`/`unop_with_rm`/`qop_with_rm` directly and so
@@ -550,7 +550,7 @@ fn irconst_for(bits: u128, width: u32) -> crate::vex::ir::IRConst {
 /// is module-private to `interpreter` and unreachable from this file, but
 /// `eval_binop`/`eval_triop`/`eval_qop` themselves are `pub(crate)`
 /// specifically so this sweep can call them (see their doc comments in
-/// `interpreter/expressions.rs`).
+/// `interpreter/expressions_arith.rs`).
 fn eval_through_interpreter(
     kind: RmDispatchKind,
     op: IROp,

@@ -1,7 +1,10 @@
-//! Tests for `expressions.rs` — VEX expression evaluation (eval_const, eval_expr, ops).
+//! Tests for `expressions.rs` and its `expressions_loads.rs` /
+//! `expressions_arith.rs` siblings — VEX expression evaluation (eval_const,
+//! eval_expr, the load ladder, the op dispatchers).
 
 use super::*;
-use crate::vex::ir::{Endness, IRType};
+use crate::interpreter::expressions_arith::fabricated_result_width;
+use crate::vex::ir::{Endness, IRCallee, IRType};
 
 fn new_interp(ctx: &SymContext) -> VEXInterpreter<'_> {
     VEXInterpreter::new(VexArch::AMD64, ctx)

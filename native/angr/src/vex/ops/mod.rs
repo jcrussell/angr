@@ -1059,7 +1059,7 @@ impl VEXOps {
         ctx: &SymContext,
     ) -> Result<RustBV, OpError> {
         // Iop_SetElem* is a VEX Triop but does NOT carry a rounding mode.
-        // The Triop dispatch in expressions.rs passes (rm, left, right) as
+        // The Triop dispatch in expressions_arith.rs passes (rm, left, right) as
         // the raw three operands (vec, idx, val); reinterpret accordingly.
         if let IROp::VSetElem { elem, count } = op {
             return Self::vec_set_elem(rm, left, right, elem, count, ctx);
@@ -1076,7 +1076,7 @@ impl VEXOps {
                 // for symbolic inputs, fall back to the concretize-and-pin
                 // path (angr-i5lj.1, angr-i5lj.2). Out-of-scope triops fall
                 // through to the fresh-symbolic fallback in
-                // expressions.rs::IRExpr::Triop.
+                // expressions_arith.rs::IRExpr::Triop.
                 if let Some(result) =
                     transcendentals::try_concrete_triop_rm(code, &rm, &left, &right)
                 {

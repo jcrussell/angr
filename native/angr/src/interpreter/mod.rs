@@ -120,7 +120,9 @@ mod execution_error;
 mod execution_stats;
 mod exits;
 mod expressions;
+mod expressions_arith;
 mod expressions_inspect;
+mod expressions_loads;
 mod fork_state;
 mod pending_store;
 mod prefetch;
@@ -597,7 +599,7 @@ impl<'a> VEXInterpreter<'a> {
     /// This handles the common case of loading from a concrete address.
     ///
     /// Bottom rung of the load-resolution ladder: every caller arrives here
-    /// through `load_concrete_addr` in `expressions.rs`, which has already
+    /// through `load_concrete_addr` in `expressions_loads.rs`, which has already
     /// missed the pending/flushed store buffers and the prefetch and
     /// concrete-memory caches. `synthesize_unservable_load` above gets the
     /// last word before the GIL crossing.

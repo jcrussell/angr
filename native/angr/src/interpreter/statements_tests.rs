@@ -286,7 +286,7 @@ fn store_to_concrete_addr_buffers_pending_store() {
     assert_eq!(data, &[0xef, 0xbe, 0xad, 0xde]);
 }
 
-/// angr-1c88c gap 3/7: drive `expressions.rs::build_ite_store_from_callbacks`.
+/// angr-1c88c gap 3/7: drive `expressions_loads.rs::build_ite_store_from_callbacks`.
 ///
 /// This site is only reachable when `use_rust_memory == false` — during normal
 /// exploration the manager always installs `rust_memory` (stepping.rs

@@ -276,7 +276,7 @@ fn extract_int_value(obj: Bound<'_, PyAny>) -> Result<u128, BridgeError> {
 /// SILENT(cat-a): a `hasattr` that itself errors (a `__getattr__` that raises)
 /// is treated as "attribute absent", i.e. "not an AST". This is a dispatch
 /// gate only — both call sites (`load_from_callback` in `interpreter/mod.rs`
-/// and `try_convert_symbolic_value` in `interpreter/expressions.rs`) answer
+/// and `try_convert_symbolic_value` in `interpreter/expressions_loads.rs`) answer
 /// `false` by falling through to a fresh symbolic BV, which is exactly what a
 /// failed
 /// `claripy_to_rustbv` on such an object would have produced anyway. Nothing

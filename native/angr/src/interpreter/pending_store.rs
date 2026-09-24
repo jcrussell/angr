@@ -37,7 +37,7 @@ pub(crate) struct PendingStoreBuffer {
 /// load below the store's base wraps to a huge offset and so fails the bounds
 /// check, which is what the old `s_addr <= addr` guard did.
 ///
-/// Shared with `VEXInterpreter::symbolic_overlap_load` (expressions.rs), which
+/// Shared with `VEXInterpreter::symbolic_overlap_load` (expressions_loads.rs), which
 /// asks the same fully-covers question of the symbolic-store maps.
 pub(super) fn covering_range(
     s_addr: u64,

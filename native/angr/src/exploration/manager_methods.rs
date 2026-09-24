@@ -39,7 +39,7 @@ use super::*;
 /// new boolean flag through here rather than hand-rolling a third rule.
 ///
 /// Not used for `ANGR_RUST_FABRICATE_UNSUPPORTED_IROP` (see
-/// `interpreter::expressions::fabricate_unsupported_irop`): that escape hatch
+/// `interpreter::expressions_arith::fabricate_unsupported_irop`): that escape hatch
 /// deliberately treats *any* non-empty, non-`0` value as on, and narrowing it
 /// to this rule would turn documented spellings off.
 fn env_flag(name: &str) -> bool {

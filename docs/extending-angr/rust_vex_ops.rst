@@ -62,10 +62,14 @@ head as you read the worked examples below:
        which delegates to ``qop`` only for a concrete
        round-to-nearest-ties-to-even rm. Concrete fast paths live next
        to their Z3 symbolic fallbacks.
-   * - ``native/angr/src/interpreter/expressions.rs``
-     - The interpreter site that calls ``VEXOps::*``. You only edit
-       this file for *non-op* IR features (``IRExpr::Load``,
-       ``IRStmt::Store``, etc. — see examples 3 and 4).
+   * - ``native/angr/src/interpreter/expressions_arith.rs``
+     - The interpreter site that calls ``VEXOps::*`` (``eval_unop`` /
+       ``eval_binop`` / ``eval_triop`` / ``eval_qop`` / ``eval_ccall``,
+       plus the ``vex_op_fallback`` unsupported-op path). The dispatch
+       entry point that routes to them stays in
+       ``expressions.rs``, and the ``IRExpr::Load`` ladder you edit for
+       *non-op* IR features (see examples 3 and 4) lives in
+       ``expressions_loads.rs``.
 
 The parameterization (``IROp::Add(IRType::I32)`` rather than 200
 separate variants ``Iop_Add8`` / ``Iop_Add16`` / …) is deliberate; a
@@ -284,7 +288,7 @@ plane, which ``VEXOps`` deliberately does not have (its inputs are
 The dispatch site is in
 ``native/angr/src/interpreter/expressions.rs`` (search
 ``IRExpr::Load {``); the arm itself only delegates to the
-``eval_load`` helper in the same file, which does the work:
+``eval_load`` helper in ``expressions_loads.rs``, which does the work:
 
 .. code-block:: rust
 
@@ -711,7 +715,7 @@ dispatch arm** in ``ops/mod.rs``. They fall through the per-family
 sub-router to its catch-all (``OpError::NotUnary`` /
 ``NotBinary`` / ``NotQuaternary`` — there is no ``NotTernary``,
 matching the absence of a ``triop`` entry point), and
-``interpreter/expressions.rs`` (``eval_unop`` / ``eval_binop``) then
+``interpreter/expressions_arith.rs`` (``eval_unop`` / ``eval_binop``) then
 splits on operand concreteness:
 
 - **Concrete args** → the typed ``OpError`` propagates and surfaces as

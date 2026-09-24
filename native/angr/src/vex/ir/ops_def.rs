@@ -397,7 +397,7 @@ pub enum IROp {
     /// `count` is the lane count, so the result width is `elem * count`
     /// (64 for `Perm8x8`, 128 for `Perm8x16`/`Perm32x4`, 256 for `Perm32x8`).
     /// No native dispatch arm — see `is_dispatch_fabricate_family`
-    /// (`interpreter/expressions.rs`); the whole family routes to Python.
+    /// (`interpreter/expressions_arith.rs`); the whole family routes to Python.
     VPerm {
         elem: IRType,
         count: u8,
@@ -1229,7 +1229,7 @@ impl IROp {
             // NEON ops are scaffolded — dispatch returns
             // OpError::UnsupportedNeon before result_type is consulted in a
             // hot path. Returning None here means callers that *do* peek at
-            // the result type (e.g. fallback width guess in expressions.rs)
+            // the result type (e.g. fallback width guess in expressions_arith.rs)
             // get no answer rather than a wrong one, but in practice the
             // dispatch error fires first.
             IROp::NeonUnimplemented(_) => None,

@@ -2,7 +2,7 @@
 //! expression paths.
 //!
 //! Nothing here touches [`VEXInterpreter`] state — these are pure functions
-//! over a bitvector, kept out of `expressions.rs`/`statements.rs` so both can
+//! over a bitvector, kept out of the `expressions*.rs`/`statements*.rs` files so both can
 //! reach them without one depending on the other. Beyond the two byte
 //! conversions, the file holds [`extract_ite_targets`] (harvest the concrete
 //! leaves of a nested ITE jump target), [`build_ite_chain`] (the near-inverse:
@@ -180,7 +180,7 @@ pub(super) fn bytes_to_bv(bytes: &[u8], width: u32) -> RustBV {
 /// would drop) is rebuilt as a `Concat` of per-byte lanes, taking the
 /// un-overlaid lanes from `base` via `Extract`.
 ///
-/// The caller is `expressions.rs::load_concrete_addr`, splicing
+/// The caller is `expressions_loads.rs::load_concrete_addr`, splicing
 /// partially-covering pending-store bytes over whatever the layers below
 /// answered with (angr-6cp06.88). Lanes past `base`'s width are ignored, and a
 /// ragged top lane (a `base` width that is not a whole number of bytes) keeps

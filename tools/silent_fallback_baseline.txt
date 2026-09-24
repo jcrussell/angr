@@ -7,7 +7,7 @@ callbacks/inspect.rs	return-ok-none	None => return Ok(None),
 engine.rs	return-ok-none	return Ok(None);
 exploration/pending_api.rs	ok-swallow	.ok();
 exploration/state_api.rs	return-ok-none	None => return Ok(None),
-interpreter/expressions.rs	return-ok-none	None => return Ok(None),
+interpreter/expressions_loads.rs	return-ok-none	None => return Ok(None),
 procedures/mem_common.rs	return-ok-none	return Ok(None);
 procedures/python_proc.rs	return-ok-none	return Ok(None);
 solver.rs	return-ok-none	None => return Ok(None),

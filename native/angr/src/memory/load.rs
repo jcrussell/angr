@@ -135,7 +135,7 @@ impl SymbolicMemory {
     /// memory-side callers ([`SymbolicMemory::load_symbolic`] /
     /// [`SymbolicMemory::load_symbolic_unified`]) run `check_access_size`
     /// ahead of their AVOID_MULTIVALUED_READS short-circuit, and the
-    /// interpreter-side ones (`interpreter/expressions.rs`,
+    /// interpreter-side ones (`interpreter/expressions_loads.rs`,
     /// `interpreter/concretize_cache.rs`) pass a VEX type width, so the clamp
     /// is defense-in-depth on both (angr-0jh0j.35).
     pub(crate) fn unconstrained_read_value(&self, size: u32, ctx: &SymContext) -> RustBV {
