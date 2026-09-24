@@ -11,6 +11,7 @@
 //!
 //! [`mint_stdin_bytes`] is the one place that does it.
 
+use super::ProcedureError;
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
@@ -89,8 +90,27 @@ pub(crate) fn stdin_seed_unconsumed(state: &RustSimState) -> bool {
 /// Callers must bounce to Python rather than mint fresh symbolic bytes when
 /// this is true (angr-qmrrp): `is_open(0)` alone can't distinguish the two
 /// cases, since fd 0 is unconditionally open from process start.
-pub(crate) fn fd0_is_dup2d_tracked_file(state: &RustSimState) -> bool {
+fn fd0_is_dup2d_tracked_file(state: &RustSimState) -> bool {
     state.file_system_ref().fd0_is_dup2d()
+}
+
+/// The one spelling of the fd-0 `dup2` guard every native stdin reader owes
+/// [`fd0_is_dup2d_tracked_file`], returning the `Err` the caller propagates.
+///
+/// `proc_name` is the only thing that differed between the call sites that
+/// used to hand-write this block (`read`, `fgets`, `fgetc`, `getchar`, `gets`,
+/// `scanf`, `fscanf`), so the message text and the predicate cannot drift
+/// apart per-reader.
+pub(crate) fn bounce_if_fd0_dup2d(
+    state: &RustSimState,
+    proc_name: &str,
+) -> Result<(), ProcedureError> {
+    if fd0_is_dup2d_tracked_file(state) {
+        return Err(ProcedureError::Other(format!(
+            "{proc_name} from fd=0 (dup2'd to a tracked Rust FileSystem file) falls back to Python"
+        )));
+    }
+    Ok(())
 }
 
 test_submod!("stdin_common_tests.rs" => tests);

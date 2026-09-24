@@ -33,7 +33,7 @@
 //!   symbolic `_fileno` also falls back to Python.
 
 use super::arch_word;
-use super::stdin_common::{fd0_is_dup2d_tracked_file, mint_stdin_bytes};
+use super::stdin_common::{bounce_if_fd0_dup2d, mint_stdin_bytes};
 use super::{ProcedureError, symbol_counter};
 use crate::memory::MemoryError;
 use crate::procedures::fileops::read_fileno;
@@ -235,12 +235,7 @@ crate::declare_proc! {
         // angr-qmrrp: a prior dup2(real_fd, 0) means fd 0 carries real
         // tracked content, not pristine/harness-seeded stdin -- defer to
         // Python rather than mint fresh unconstrained bytes over it.
-        if fd0_is_dup2d_tracked_file(state) {
-            return Err(ProcedureError::Other(
-                "fgets from fd=0 (dup2'd to a tracked Rust FileSystem file) falls back to Python"
-                    .to_string(),
-            ));
-        }
+        bounce_if_fd0_dup2d(state, "fgets")?;
 
         // overflow-ok: size == 0 returned above, so size >= 1 here.
         let read_count = size - 1; // fgets reads at most size-1 bytes
@@ -385,12 +380,7 @@ crate::declare_proc! {
         // angr-qmrrp: a prior dup2(real_fd, 0) means fd 0 carries real
         // tracked content, not pristine/harness-seeded stdin -- defer to
         // Python rather than mint fresh unconstrained bytes over it.
-        if fd0_is_dup2d_tracked_file(state) {
-            return Err(ProcedureError::Other(
-                "fgetc from fd=0 (dup2'd to a tracked Rust FileSystem file) falls back to Python"
-                    .to_string(),
-            ));
-        }
+        bounce_if_fd0_dup2d(state, "fgetc")?;
         Ok(Some(read_stdin_char(state, "fgetc")))
     }
 }
@@ -414,12 +404,7 @@ crate::declare_proc! {
         // angr-qmrrp: a prior dup2(real_fd, 0) means fd 0 carries real
         // tracked content, not pristine/harness-seeded stdin -- defer to
         // Python rather than mint fresh unconstrained bytes over it.
-        if fd0_is_dup2d_tracked_file(state) {
-            return Err(ProcedureError::Other(
-                "getchar from fd=0 (dup2'd to a tracked Rust FileSystem file) falls back to Python"
-                    .to_string(),
-            ));
-        }
+        bounce_if_fd0_dup2d(state, "getchar")?;
         Ok(Some(read_stdin_char(state, "getchar")))
     }
 }
@@ -457,12 +442,7 @@ crate::declare_proc! {
         // angr-qmrrp: a prior dup2(real_fd, 0) means fd 0 carries real
         // tracked content, not pristine/harness-seeded stdin -- defer to
         // Python rather than mint fresh unconstrained bytes over it.
-        if fd0_is_dup2d_tracked_file(state) {
-            return Err(ProcedureError::Other(
-                "gets from fd=0 (dup2'd to a tracked Rust FileSystem file) falls back to Python"
-                    .to_string(),
-            ));
-        }
+        bounce_if_fd0_dup2d(state, "gets")?;
 
         let read_count = MAX_GETS_SIZE - 1;
         let read_id = symbol_counter("gets");
