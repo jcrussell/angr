@@ -87,7 +87,7 @@ crate::declare_proc! {
     args = [stream: concrete, fmt_addr: concrete],
     aliases = ["vfprintf"],
     call |state| {
-        let fd = crate::procedures::fileops::read_fileno_or_demote_all(state, stream)?;
+        let fd = crate::procedures::stream_ops::read_fileno_or_demote_all(state, stream)?;
         if fd < 0 {
             return Ok(Some(RustBV::concrete((-1i64 as u64) as u128, 32)));
         }

@@ -535,7 +535,7 @@ fn do_fscanf(
     fmt_addr: u64,
     ptr_args: &[RustBV],
 ) -> Result<Option<RustBV>, ProcedureError> {
-    let fd = crate::procedures::fileops::read_fileno(state, file_ptr)?;
+    let fd = crate::procedures::stream_ops::read_fileno(state, file_ptr)?;
     if fd < 0 {
         return Ok(Some(arch_word(state, -1i64 as u64)));
     }

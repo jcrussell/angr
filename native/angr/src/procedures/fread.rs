@@ -39,7 +39,7 @@
 
 use super::strings::{write_bv_bytes, write_concrete_bytes};
 use super::{ProcedureError, arch_word};
-use crate::procedures::fileops::read_fileno;
+use crate::procedures::stream_ops::read_fileno;
 use crate::state::MAX_SYMFILE_SERVE_SIZE;
 use crate::syscalls::MAX_IO_SIZE as MAX_FREAD_SIZE;
 

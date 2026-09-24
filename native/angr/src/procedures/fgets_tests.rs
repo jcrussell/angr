@@ -9,7 +9,7 @@ use crate::procedures::test_util::{
 };
 use crate::state::RustSimState;
 
-/// AMD64 `_IO_FILE._fileno` byte offset (see `io_file_for_arch` in fileops.rs).
+/// AMD64 `_IO_FILE._fileno` byte offset (see `io_file_for_arch` in stream_ops.rs).
 const AMD64_FD_OFFSET: u64 = 112;
 
 /// Map a FILE struct at `file_ptr` whose `_fileno` field holds `fd`. fgets/fgetc

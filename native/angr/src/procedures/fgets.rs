@@ -36,7 +36,7 @@ use super::arch_word;
 use super::stdin_common::{bounce_if_fd0_dup2d, mint_stdin_bytes};
 use super::{ProcedureError, symbol_counter};
 use crate::memory::MemoryError;
-use crate::procedures::fileops::read_fileno;
+use crate::procedures::stream_ops::read_fileno;
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 use crate::syscalls::MAX_IO_SIZE as MAX_FGETS_SIZE;
@@ -132,12 +132,12 @@ pub(crate) fn store_symbolic_line(
 ///
 /// The `_or_<fallback>` suffix names what happens when [`read_fileno`] fails,
 /// the same way the write-side
-/// [`read_fileno_or_demote_all`](super::fileops::read_fileno_or_demote_all)
+/// [`read_fileno_or_demote_all`](super::stream_ops::read_fileno_or_demote_all)
 /// does — but the two are not interchangeable. This one answers a *different
 /// fd* and takes `&state`; the write-side one still propagates the error, and
 /// takes `&mut state` so it can demote bounded symbolic content first.
 /// `fileops` also exposes
-/// [`resolve_stream_fd_or_demote_all`](super::fileops::resolve_stream_fd_or_demote_all),
+/// [`resolve_stream_fd_or_demote_all`](super::stream_ops::resolve_stream_fd_or_demote_all),
 /// whose distinct `resolve_stream_fd` prefix marks the `stream: &RustBV`
 /// (not-yet-concretized `FILE *`) entry point into that same write-side
 /// protocol. This module's procs declare `args = [stream: concrete]`, so the

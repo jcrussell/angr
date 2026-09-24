@@ -7,7 +7,7 @@ use crate::procedures::test_util::{arch_ret_bits, assert_over_limit, assert_ret_
 use crate::state::{FdFlags, RustSimState};
 use crate::symbolic::RustBV;
 
-// AMD64 _IO_FILE._fileno offset (mirrors io_file_for_arch in fileops.rs).
+// AMD64 _IO_FILE._fileno offset (mirrors io_file_for_arch in stream_ops.rs).
 const AMD64_FILENO_OFF: u64 = 112;
 
 /// Build a FILE struct at `file_ptr` whose `_fileno` field holds `fd`.

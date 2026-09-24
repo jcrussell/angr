@@ -31,7 +31,7 @@ use crate::state::RustSimState;
 /// returned as-is). A symbolic byte or out-of-bounds read propagates as an `Err`
 /// and falls back to Python.
 ///
-/// The `_tolerant` suffix distinguishes this from `fileops.rs`'s
+/// The `_tolerant` suffix distinguishes this from `stream_ops.rs`'s
 /// `read_cstring_strict`, which errors out on an unterminated buffer instead
 /// (angr-03vl4.47): the two used to share the bare name `read_cstring` with
 /// silently opposite cap-exhaustion contracts.

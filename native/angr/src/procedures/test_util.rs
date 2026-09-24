@@ -28,7 +28,7 @@ pub(crate) fn amd64_state_with_regions(regions: &[(u64, u64)]) -> RustSimState {
 
 /// Build a FILE struct at `file_ptr` whose `_fileno` field holds `fd`, laid
 /// out per the running arch's `_IO_FILE` offsets
-/// ([`crate::procedures::fileops::io_file_for_arch`]). The page holding
+/// ([`crate::procedures::stream_ops::io_file_for_arch`]). The page holding
 /// `file_ptr` is mapped RWX first, with room for the struct plus its buffer.
 ///
 /// Shared by every stdio-family test module, since all of those procedures
@@ -36,7 +36,7 @@ pub(crate) fn amd64_state_with_regions(regions: &[(u64, u64)]) -> RustSimState {
 pub(crate) fn setup_file_struct(state: &mut RustSimState, file_ptr: u64, fd: i32) {
     let arch_name = state.arch().name();
     let (off, _size) =
-        crate::procedures::fileops::io_file_for_arch(arch_name).expect("test arch supported");
+        crate::procedures::stream_ops::io_file_for_arch(arch_name).expect("test arch supported");
     state.map_memory_data(file_ptr & !PAGE_MASK, &vec![0u8; 0x4000], Permission::RWX);
     let fd_bv = RustBV::concrete(fd as u32 as u128, 32);
     // This helper is `#[cfg(test)]` but lives outside a `*_tests.rs` file, so

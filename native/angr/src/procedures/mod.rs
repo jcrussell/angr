@@ -137,6 +137,7 @@ pub(crate) mod strcat;
 pub(crate) mod strchr;
 pub(crate) mod strcmp;
 pub(crate) mod strcpy;
+pub(crate) mod stream_ops;
 pub(crate) mod strings;
 pub(crate) mod strlen;
 pub(crate) mod strstr;
@@ -685,12 +686,12 @@ impl NativeProcedureRegistry {
                 // stdio file ops (angr-karp): allocate _IO_FILE structs and dispatch
                 // through the FILE._fileno field. fopen/fdopen heap-allocate, fclose/
                 // fseek/ftell/rewind read fileno back out.
-                fileops::NativeFopen,
-                fileops::NativeFdopen,
-                fileops::NativeFclose,
-                fileops::NativeFseek,
-                fileops::NativeFtell,
-                fileops::NativeRewind,
+                stream_ops::NativeFopen,
+                stream_ops::NativeFdopen,
+                stream_ops::NativeFclose,
+                stream_ops::NativeFseek,
+                stream_ops::NativeFtell,
+                stream_ops::NativeRewind,
                 // __libc_start_main: handles the after_main continuation by
                 // deadending. Python init (rust_manager._step_python_to_main) covers
                 // the entry/run path before Rust takes over, so the only invocation

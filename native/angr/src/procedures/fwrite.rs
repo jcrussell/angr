@@ -16,7 +16,7 @@
 //! (`feof` / `ferror` / `fputs`) live in [`super::stdio`].
 
 use super::arch_word;
-use super::fileops::resolve_stream_fd_or_demote_all;
+use super::stream_ops::resolve_stream_fd_or_demote_all;
 use super::{NativeSimProcedure, ProcedureError, extract_concrete_arg};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;

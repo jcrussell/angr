@@ -20,7 +20,7 @@
 //! use `arch_word`, correctly — it returns `size_t`. Pinned by
 //! `test_stdio_return_widths`.
 
-use super::fileops::{read_fileno, resolve_stream_fd_or_demote_all};
+use super::stream_ops::{read_fileno, resolve_stream_fd_or_demote_all};
 use super::{NativeSimProcedure, ProcedureError, extract_concrete_arg};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
