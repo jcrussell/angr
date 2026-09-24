@@ -91,6 +91,11 @@ use handlers::{
     bounce, handle_simprocedure_core, handle_symbolic_branch_core,
     handle_symbolic_jump_target_core, handle_syscall_core, materialize_deferred_forks_core,
 };
+// Shared with the `#[cfg(test)]` `RustExplorationManager::handle_native_resume`
+// twin in `stepping_subcall.rs`, so both spellings of the resume path decide
+// "does this fork base need a resume-stack rewind?" the same way (angr-fs8kb.6).
+#[cfg(test)]
+pub(super) use handlers::resume_stack_for_forks;
 
 /// `Send + Sync` atomic mirror of the `accumulated_stats` solver-timing fields
 /// the extracted post-step arms increment. The coordinator folds these into

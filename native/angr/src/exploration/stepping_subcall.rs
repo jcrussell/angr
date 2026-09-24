@@ -164,6 +164,13 @@ impl RustExplorationManager {
     /// has its own direct coverage in `core_outcome_tests/`
     /// (`native_resume_core_*`, angr-c7xno.32), so the two can no longer drift
     /// unobserved.
+    ///
+    /// Including the resume-stack rewind around fork materialization: this twin
+    /// shares `core_outcome::resume_stack_for_forks` with the
+    /// production handler and mirrors
+    /// `core_outcome_handlers::process_deferred_forks_rewound` inline, because
+    /// `RustSimState::fork_with` copies `native_resume_stack` verbatim from the
+    /// fork base and no `BranchSnapshot` covers it (angr-fs8kb.6).
     #[cfg(test)]
     fn handle_native_resume(
         &mut self,
@@ -172,6 +179,9 @@ impl RustExplorationManager {
         stored_conditions: FxHashMap<u64, RustBV>,
         fork_snapshots: FxHashMap<u64, BranchSnapshot>,
     ) -> Result<Vec<RustSimState>, StepError> {
+        // Captured before the pop below: the deferred branches rode out of the
+        // sub-call *body*, where this frame was still live.
+        let resume_stack = super::core_outcome::resume_stack_for_forks(&state, &deferred_forks);
         let frame = match state.pop_native_resume_frame() {
             Some(f) => f,
             None => {
@@ -239,14 +249,20 @@ impl RustExplorationManager {
             }
         }
 
-        // Deferred-fork handling identical to the native return path.
+        // Deferred-fork handling identical to the native return path, with the
+        // fork base's resume stack rewound to its in-sub-call value for the
+        // duration (see this fn's doc).
         let mut successors = vec![state];
+        let post = resume_stack.map(|stack| successors[0].replace_native_resume_stack(stack));
         self.process_deferred_forks_into(
             &mut successors,
             deferred_forks,
             &stored_conditions,
             fork_snapshots,
         );
+        if let Some(post) = post {
+            successors[0].replace_native_resume_stack(post);
+        }
         Ok(successors)
     }
 }

@@ -393,3 +393,78 @@ fn resume_sentinel_name_and_address_are_stable() {
     assert_eq!(native_resume_sentinel(8), 0xFFFF_FFFF_FFFF_FFF0);
     assert_eq!(native_resume_sentinel(4), 0xFFFF_FFF0);
 }
+
+/// angr-fs8kb.6: the test twin must rewind the fork base's resume stack, same
+/// as `handle_native_resume_core` does via `process_deferred_forks_rewound`.
+///
+/// A branch taken inside the sub-call *body* defers a fork that is materialized
+/// only after the sentinel is reached and the frame popped. `fork_with` copies
+/// `native_resume_stack` verbatim from the base and no `BranchSnapshot` covers
+/// it, so without the rewind the sibling — which has not reached the sentinel
+/// yet — would inherit the emptied stack and deadend when it does. Mirrors
+/// `core_outcome_tests::native_resume::native_resume_fork_keeps_the_frame_the_main_successor_popped`.
+#[test]
+fn twin_resume_fork_keeps_the_frame_the_main_successor_popped() {
+    Python::initialize();
+    Python::attach(|_py| {
+        let mut mgr = RustExplorationManager::new("amd64", None).unwrap();
+        Arc::make_mut(&mut mgr.native_procedures).register(Arc::new(SubcallTestProc));
+
+        let sp = 0x7fff_0000u64;
+        let caller_ret = 0x0040_0123u64;
+        let mut state = state_with_stack(sp, caller_ret);
+
+        mgr.setup_native_subcall(
+            &mut state,
+            NativeSubcall {
+                proc_name: "subcall_test".into(),
+                saved_args: vec![RustBV::concrete(41, 64)],
+                caller_return_addr: caller_ret,
+                target: SubcallTestProc::GUEST_TARGET,
+                sub_args: vec![],
+                resume_tag: SubcallTestProc::RESUME_TAG,
+            },
+        )
+        .unwrap();
+
+        // A branch inside the guest routine deferred a fork, then the routine
+        // `ret`-ed to the sentinel (amd64: pops [sp], jumps there).
+        const COND_ID: u64 = 77;
+        let unexplored = SubcallTestProc::GUEST_TARGET + 0x20;
+        let mut stored_conditions = FxHashMap::default();
+        stored_conditions.insert(
+            COND_ID,
+            RustBV::symbolic(&state.solver().borrow(), "subcall_guard", 1),
+        );
+        let deferred = vec![crate::callbacks::DeferredFork {
+            branch_addr: SubcallTestProc::GUEST_TARGET + 4,
+            path_taken: true,
+            unexplored_target: unexplored,
+            condition_id: COND_ID,
+            condition_ast: None,
+        }];
+        state.set_sp(RustBV::concrete((sp + 8) as u128, 64));
+        state.set_pc(native_resume_sentinel(8));
+
+        let succ = mgr
+            .handle_native_resume(state, deferred, stored_conditions, FxHashMap::default())
+            .unwrap_or_else(|_| panic!("handle_native_resume returned a StepError"));
+
+        assert_eq!(succ.len(), 2, "main successor plus the sibling");
+        assert_eq!(succ[0].pc(), caller_ret);
+        assert!(
+            succ[0].native_resume_stack().is_empty(),
+            "main successor consumed the frame"
+        );
+        assert_eq!(succ[1].pc(), unexplored);
+        assert_eq!(
+            succ[1].native_resume_stack().len(),
+            1,
+            "sibling never reached the sentinel, so it keeps the frame"
+        );
+        assert_eq!(
+            succ[1].native_resume_stack()[0].caller_return_addr,
+            caller_ret
+        );
+    });
+}

@@ -225,16 +225,19 @@ fn process_deferred_forks_into_core(
 }
 
 /// The native sub-call resume stack a fork base has to be rewound to, or
-/// `None` when `payload` has nothing to materialize (the common case — skips
-/// the clone).
+/// `None` when `deferred_forks` has nothing to materialize (the common case —
+/// skips the clone).
 ///
 /// Call this *before* the handler mutates the stack; see
-/// [`process_deferred_forks_rewound`] for why.
-fn resume_stack_for_forks(
+/// [`process_deferred_forks_rewound`] for why. Takes the fork slice rather
+/// than a whole [`ForkPayload`] so the single-threaded
+/// `RustExplorationManager::handle_native_resume` twin, which carries its
+/// deferred forks loose, can share the same predicate.
+pub(crate) fn resume_stack_for_forks(
     state: &RustSimState,
-    payload: &ForkPayload,
+    deferred_forks: &[DeferredFork],
 ) -> Option<Vec<crate::state::NativeResumeFrame>> {
-    (!payload.deferred_forks.is_empty()).then(|| state.native_resume_stack().to_vec())
+    (!deferred_forks.is_empty()).then(|| state.native_resume_stack().to_vec())
 }
 
 /// [`process_deferred_forks_into_core`] with `state`'s native sub-call resume
@@ -601,7 +604,7 @@ pub(super) fn handle_simprocedure_core(
 
     // Captured before the `NativeProcDisposition::SubCall` arm below can push a
     // continuation frame the block's deferred branches predate.
-    let resume_stack = resume_stack_for_forks(&state, &payload);
+    let resume_stack = resume_stack_for_forks(&state, &payload.deferred_forks);
 
     let prefer_native = crate::exploration::execution_env::prefer_native_dispatch(
         &ctx.binary_regions,
@@ -808,7 +811,7 @@ fn handle_native_resume_core(
     let native_procs = cc.native_procs;
     // Captured before the pop below: the deferred branches rode out of the
     // sub-call *body*, where this frame was still live.
-    let resume_stack = resume_stack_for_forks(&state, &payload);
+    let resume_stack = resume_stack_for_forks(&state, &payload.deferred_forks);
     let frame = match state.pop_native_resume_frame() {
         Some(f) => f,
         None => {
