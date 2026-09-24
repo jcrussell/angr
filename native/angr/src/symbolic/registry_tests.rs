@@ -211,6 +211,27 @@ fn register_tracks_live_count_for_the_growth_warning() {
 }
 
 #[test]
+fn register_by_id_populates_only_the_id_to_ast_map() {
+    // angr-fs8kb.33: this method is test-only, and the test it exists for
+    // (`claripy_bridge::import_tests`'s torn-registry fixture) is built out of
+    // exactly this asymmetry. A well-meaning refactor that routed it through
+    // `register` would defeat that fixture silently rather than fail it, so
+    // pin the one-map contract here.
+    let registry = SymbolicIdentityRegistry::new();
+
+    Python::initialize();
+    Python::attach(|py| {
+        registry.register_by_id(0x5F18_0033, py.None());
+
+        assert!(registry.has_original(0x5F18_0033));
+        // `len` counts `rust_id_to_py`, the map the growth warning tracks.
+        assert_eq!(registry.len(), 1);
+        assert!(registry.lookup_name_by_id(0x5F18_0033).is_none());
+        assert_eq!(registry.lookup_by_hash(0x5F18_0033), None);
+    });
+}
+
+#[test]
 fn bvs_width_1_and_bools_of_the_same_name_get_distinct_slots() {
     // angr-9ke6b.38: `BVS("flag", 1)` and `BoolS("flag")` are both width-1
     // Symbolics on the Rust side. Keyed on name+width alone they collided, and

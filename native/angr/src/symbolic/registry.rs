@@ -393,12 +393,32 @@ impl SymbolicIdentityRegistry {
         result
     }
 
-    /// Register a Python AST with just its Rust symbol ID.
+    /// Register a Python AST against a Rust symbol id, and nothing else.
     ///
-    /// This is a simplified registration that doesn't require hash or name info.
-    /// Used when storing claripy ASTs during conversion.
+    /// Unlike [`Self::register`] this writes only `rust_id_to_py`, leaving the
+    /// hash, name and id-to-name maps untouched — so an id registered this way
+    /// resolves on export but is invisible to every lookup path.
+    ///
+    /// Has no production callers — the only caller is
+    /// `claripy_bridge::import_tests`, which pairs it with
+    /// [`Self::update_hash_mapping`] to construct the two-maps-disagree "torn
+    /// state" that `import_symbolic_leaf`'s `SILENT(cat-b)` fallback handles.
+    /// `symbolic` is a `pub mod` so `dead_code` cannot flag it (see the
+    /// `lib.rs` header). Real conversion paths call [`Self::register`]; do not
+    /// wire this one in, because a caller that populated only this map would
+    /// leave the registry permanently torn.
+    ///
+    /// It still reports its insert to `maybe_warn_growth`, because
+    /// `rust_id_to_py` is the map whose unbounded growth that warning tracks
+    /// and a second insert path that skipped it would silently under-count the
+    /// live set (angr-fs8kb.33).
     pub fn register_by_id(&self, rust_id: u64, py_ast: Py<PyAny>) {
-        write_ordered(&self.rust_id_to_py, RegistryMap::IdToPy).insert(rust_id, py_ast);
+        let live = {
+            let mut id_to_py = write_ordered(&self.rust_id_to_py, RegistryMap::IdToPy);
+            id_to_py.insert(rust_id, py_ast);
+            id_to_py.len()
+        };
+        self.maybe_warn_growth(live);
     }
 
     /// Check if a symbol ID has a registered Python AST.
