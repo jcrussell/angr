@@ -335,3 +335,5 @@ enum DirtyGuard {
     /// statement is done.
     Skipped,
 }
+
+test_submod!("statements_dirty_tests.rs" => statements_dirty_tests);

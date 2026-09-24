@@ -377,3 +377,5 @@ impl<'a> VEXInterpreter<'a> {
         Ok(())
     }
 }
+
+test_submod!("statements_cas_tests.rs" => statements_cas_tests);

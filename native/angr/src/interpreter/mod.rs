@@ -133,6 +133,13 @@ mod statements_dirty;
 mod statements_inspect;
 mod statements_store;
 
+// Shared test helpers for the `statements*` test modules. Registered here
+// rather than from a prod file because its consumers are children of three
+// DIFFERENT prod modules (`statements.rs`, `statements_cas.rs`,
+// `statements_dirty.rs`), so no `super::` path reaches across them
+// (angr-fs8kb.96).
+test_submod!("statements_tests_support.rs" => statements_tests_support);
+
 use block_result::{ConcretizedJump, StmtResult};
 use bv_utils::bytes_to_bv;
 use pending_store::PendingStoreBuffer;
