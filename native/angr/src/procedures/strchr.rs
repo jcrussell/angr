@@ -31,7 +31,66 @@ fn forward_match_is_conclusive(result: &Option<RustBV>) -> bool {
     matches!(result.as_ref().and_then(RustBV::as_u64), Some(a) if a != 0)
 }
 
-/// Build the symbolic ITE chain for strchr/memchr starting at `start_i`.
+/// Per-position loader every scan in this module hands to
+/// [`scan_concrete_then_collect`]: one byte at `base + i`.
+fn load_byte(state: &mut RustSimState, base: u64, i: u64) -> Result<RustBV, ProcedureError> {
+    Ok(state.memory_load(base.wrapping_add(i), 1)?)
+}
+
+/// `collect_stop` predicate shared by [`scan_for_byte`] and
+/// [`scan_for_byte_last`]: for the null-terminated flavors (strchr family,
+/// strrchr) a concrete null ends the collect window, because positions past
+/// the terminator can never affect the ITE chain. The counted flavors
+/// (memchr, memrchr) scan their whole `n` window regardless.
+fn null_stops_collect(stop_at_null: bool, byte_val: &RustBV) -> bool {
+    stop_at_null && byte_val.as_u64().map(|b| (b as u8) == 0).unwrap_or(false)
+}
+
+/// Rebase collected `(position, byte)` entries onto absolute addresses.
+///
+/// [`scan_concrete_then_collect`] reports positions relative to the scan
+/// start; every chain builder here wants `(byte_addr, byte)`.
+fn loads_to_addrs(loads: Vec<(u64, RustBV)>, addr: u64) -> Vec<(u64, RustBV)> {
+    loads
+        .into_iter()
+        .map(|(i, bv)| (addr.wrapping_add(i), bv))
+        .collect()
+}
+
+/// Symbolic-target tail shared by [`scan_for_byte`] and
+/// [`scan_for_byte_last`].
+///
+/// A symbolic target rules no byte out concretely, so there is no fast path:
+/// collect every position in the window and hand the loads to `build`, which
+/// supplies the direction-specific chain builder ([`build_ite_chain`] for the
+/// first-match scans, [`build_ite_chain_forward`] for the last-match ones).
+fn collect_all_then_build(
+    state: &mut RustSimState,
+    addr: u64,
+    target_arg: &RustBV,
+    max_scan: u64,
+    stop_at_null: bool,
+    build: impl FnOnce(&[(u64, RustBV)], &RustBV, &SymContext) -> RustBV,
+) -> Result<Option<RustBV>, ProcedureError> {
+    let result = scan_concrete_then_collect(
+        state,
+        max_scan,
+        |st, i| load_byte(st, addr, i),
+        |_byte_val, _i| ConcreteStep::<RustBV>::BeginCollect,
+        |byte_val| null_stops_collect(stop_at_null, byte_val),
+    )?;
+    let byte_loads = match result {
+        ScanResult::Collected(v) => loads_to_addrs(v, addr),
+        ScanResult::Exhausted => Vec::new(), // max_scan == 0
+        ScanResult::Stopped(_) => unreachable!("symbolic target never stops in concrete mode"),
+    };
+
+    let ctx = state.solver().borrow();
+    let target_byte_bv = target_arg.extract(7, 0, &ctx);
+    Ok(Some(build(&byte_loads, &target_byte_bv, &ctx)))
+}
+
+/// Build the symbolic ITE chain for strchr/memchr over `byte_loads`.
 ///
 /// `byte_loads`: list of (byte_addr, byte_val_8bit) already collected. The
 /// chain is built backward from the last load so that earlier matches take
@@ -92,13 +151,6 @@ fn scan_for_byte(
 ) -> Result<Option<RustBV>, ProcedureError> {
     let arch_bits = state.arch().bits();
 
-    // `collect_stop` for both target flavors: in symbolic-collect mode, stop
-    // (for strchr) once a concrete null is seen since later positions are
-    // unreachable.
-    let collect_stop = |byte_val: &RustBV| {
-        stop_at_null && byte_val.as_u64().map(|b| (b as u8) == 0).unwrap_or(false)
-    };
-
     // Concrete fast path: target is concrete. Walk byte by byte with the
     // existing short-circuiting semantics. If a symbolic byte is encountered
     // mid-scan we hand the rest off to the ITE-chain path.
@@ -107,7 +159,7 @@ fn scan_for_byte(
         let result = scan_concrete_then_collect(
             state,
             max_scan,
-            |st, i| Ok(st.memory_load(addr.wrapping_add(i), 1)?),
+            |st, i| load_byte(st, addr, i),
             |byte_val, i| {
                 let byte_addr = addr.wrapping_add(i);
                 match byte_val.as_u64() {
@@ -129,7 +181,7 @@ fn scan_for_byte(
                     None => ConcreteStep::BeginCollect,
                 }
             },
-            collect_stop,
+            |byte_val| null_stops_collect(stop_at_null, byte_val),
         )?;
 
         return Ok(Some(match result {
@@ -144,10 +196,7 @@ fn scan_for_byte(
                 RustBV::concrete(0u128, arch_bits)
             }
             ScanResult::Collected(byte_loads) => {
-                let byte_loads: Vec<(u64, RustBV)> = byte_loads
-                    .into_iter()
-                    .map(|(i, bv)| (addr.wrapping_add(i), bv))
-                    .collect();
+                let byte_loads = loads_to_addrs(byte_loads, addr);
                 let ctx = state.solver().borrow();
                 let target_byte_bv = RustBV::concrete(target_byte as u128, 8);
                 build_ite_chain(
@@ -164,33 +213,23 @@ fn scan_for_byte(
 
     // Symbolic target: collect bytes up to max_scan (or first concrete null
     // for strchr) and build a full ITE chain.
-    let result = scan_concrete_then_collect(
+    collect_all_then_build(
         state,
+        addr,
+        target_arg,
         max_scan,
-        |st, i| Ok(st.memory_load(addr.wrapping_add(i), 1)?),
-        |_byte_val, _i| ConcreteStep::<RustBV>::BeginCollect,
-        collect_stop,
-    )?;
-    let byte_loads: Vec<(u64, RustBV)> = match result {
-        ScanResult::Collected(v) => v
-            .into_iter()
-            .map(|(i, bv)| (addr.wrapping_add(i), bv))
-            .collect(),
-        ScanResult::Exhausted => Vec::new(), // max_scan == 0
-        ScanResult::Stopped(_) => unreachable!("symbolic target never stops in concrete mode"),
-    };
-
-    let ctx = state.solver().borrow();
-    let target_byte_bv = target_arg.extract(7, 0, &ctx);
-    let chain = build_ite_chain(
-        &byte_loads,
-        &target_byte_bv,
-        arch_bits,
         stop_at_null,
-        nul_returns_addr,
-        &ctx,
-    );
-    Ok(Some(chain))
+        |byte_loads, target_byte_bv, ctx| {
+            build_ite_chain(
+                byte_loads,
+                target_byte_bv,
+                arch_bits,
+                stop_at_null,
+                nul_returns_addr,
+                ctx,
+            )
+        },
+    )
 }
 
 crate::declare_proc! {
@@ -282,18 +321,13 @@ fn scan_for_byte_last(
     let arch_bits = state.arch().bits();
     let null_addr = RustBV::concrete(0u128, arch_bits);
 
-    // Stop collecting once a concrete null is seen (strrchr end-of-string only).
-    let collect_stop = |byte_val: &RustBV| {
-        stop_at_null && byte_val.as_u64().map(|b| (b as u8) == 0).unwrap_or(false)
-    };
-
     if let Some(target) = target_arg.as_u64() {
         let target_byte = target as u8;
         let mut last_match: Option<u64> = None;
         let result = scan_concrete_then_collect(
             state,
             max_scan,
-            |st, i| Ok(st.memory_load(addr.wrapping_add(i), 1)?),
+            |st, i| load_byte(st, addr, i),
             |byte_val, i| {
                 let byte_addr = addr.wrapping_add(i);
                 match byte_val.as_u64() {
@@ -315,7 +349,7 @@ fn scan_for_byte_last(
                     None => ConcreteStep::BeginCollect,
                 }
             },
-            collect_stop,
+            |byte_val| null_stops_collect(stop_at_null, byte_val),
         )?;
 
         return Ok(Some(match result {
@@ -330,10 +364,7 @@ fn scan_for_byte_last(
                 RustBV::concrete(last_match.unwrap_or(0) as u128, arch_bits)
             }
             ScanResult::Collected(byte_loads) => {
-                let byte_loads: Vec<(u64, RustBV)> = byte_loads
-                    .into_iter()
-                    .map(|(i, bv)| (addr.wrapping_add(i), bv))
-                    .collect();
+                let byte_loads = loads_to_addrs(byte_loads, addr);
                 let ctx = state.solver().borrow();
                 let target_byte_bv = RustBV::concrete(target_byte as u128, 8);
                 // Build forward so later matches override earlier ones.
@@ -347,26 +378,16 @@ fn scan_for_byte_last(
     }
 
     // Symbolic target: collect bytes up to (and including) concrete null.
-    let result = scan_concrete_then_collect(
+    collect_all_then_build(
         state,
+        addr,
+        target_arg,
         max_scan,
-        |st, i| Ok(st.memory_load(addr.wrapping_add(i), 1)?),
-        |_byte_val, _i| ConcreteStep::<RustBV>::BeginCollect,
-        collect_stop,
-    )?;
-    let byte_loads: Vec<(u64, RustBV)> = match result {
-        ScanResult::Collected(v) => v
-            .into_iter()
-            .map(|(i, bv)| (addr.wrapping_add(i), bv))
-            .collect(),
-        ScanResult::Exhausted => Vec::new(), // max_scan == 0
-        ScanResult::Stopped(_) => unreachable!("symbolic target never stops in concrete mode"),
-    };
-
-    let ctx = state.solver().borrow();
-    let target_byte_bv = target_arg.extract(7, 0, &ctx);
-    let chain = build_ite_chain_forward(&byte_loads, &target_byte_bv, arch_bits, &null_addr, &ctx);
-    Ok(Some(chain))
+        stop_at_null,
+        |byte_loads, target_byte_bv, ctx| {
+            build_ite_chain_forward(byte_loads, target_byte_bv, arch_bits, &null_addr, ctx)
+        },
+    )
 }
 
 /// Forward variant of [`build_ite_chain`]: later matches override earlier
