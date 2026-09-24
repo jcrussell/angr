@@ -124,8 +124,10 @@
 //! pool-construction path, so propagating would ripple a `Result` through the
 //! parallel driver, and the obvious local degradation — carry on with fewer
 //! workers — silently returns an empty wave if *zero* threads came up, trading
-//! a loud abort for lost states. Falling back to serial exploration instead is
-//! a real feature, not a lint cleanup; tracked on angr-9ke6b.212.
+//! a loud abort for lost states. Falling back to serial exploration instead
+//! would be a real feature — the run loop would need a spawn-failure path that
+//! tears the pool down and re-drives the wave through the single-threaded
+//! stepper — not a lint cleanup, and no such path exists today.
 //!
 //! **Enforcement (angr-qwyti.11):** this module carries
 //! `#![deny(clippy::unwrap_used, clippy::expect_used)]`; each function holding

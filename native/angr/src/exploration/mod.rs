@@ -396,8 +396,8 @@ pub struct RustExplorationManager {
     /// angr-vh834 steady-state redesign (Phase 1) — duplex-protocol accounting,
     /// folded from `SchedulerStats` after each wave. `parallel_reattaches` counts
     /// injector-steal reattaches (observability of the migration path);
-    /// `parallel_bounce_roundtrips` and `parallel_resume_reinjects` are wired in
-    /// later phases and stay 0 for now.
+    /// `parallel_bounce_roundtrips` and `parallel_resume_reinjects` are wired by
+    /// the steady-state coordinator (angr-nkoct) and stay 0 in wave mode.
     pub(crate) parallel_reattaches: u64,
     pub(crate) parallel_bounce_roundtrips: u64,
     pub(crate) parallel_resume_reinjects: u64,
