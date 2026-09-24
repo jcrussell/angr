@@ -137,8 +137,11 @@ fn stat_lookup_follow(fs: &crate::state::FileSystem, path: &str) -> Option<(u64,
             // Not a symlink — it must be a known regular file.
             return stat_lookup_nofollow(fs, &cur);
         };
-        // Symlink targets are raw bytes; a non-UTF-8 target cannot name
-        // a path in the `String`-keyed known-path set, so it dangles.
+        // SILENT(cat-a): symlink targets are raw bytes; a non-UTF-8
+        // target cannot name a path in the `String`-keyed known-path
+        // set, so it dangles. Returning `None` here is exactly the
+        // dangling-link outcome this fn already documents, not a
+        // degraded answer, so it needs no log.
         cur = String::from_utf8(target.to_vec()).ok()?;
     }
     None
