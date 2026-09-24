@@ -295,8 +295,6 @@ pub mod fuzz_api {
 // Conditional compilation for fuzzer module (requires optional deps)
 #[cfg(feature = "fuzzer")]
 pub(crate) mod fuzzer;
-#[cfg(feature = "fuzzer")]
-pub(crate) mod icicle;
 
 #[cfg(feature = "automaton")]
 pub mod automaton;
@@ -421,7 +419,7 @@ fn rustylib(m: &Bound<'_, PyModule>) -> PyResult<()> {
     #[cfg(feature = "fuzzer")]
     {
         import_submodule(m, "fuzzer", fuzzer::fuzzer)?;
-        import_submodule(m, "icicle", icicle::icicle)?;
+        import_submodule(m, "icicle", fuzzer::icicle::icicle)?;
     }
 
     // Segmentlist (always available)

@@ -25,12 +25,10 @@ docs/advanced-topics/rust_engine.rst	(see ``z3-rs 0.19+`` note at ``native/angr/
 docs/advanced-topics/rust_engine.rst	* ``check_branch_feasibility`` (``context.rs:2304–2383``) — outer
 docs/advanced-topics/rust_engine.rst	**1. ``Rc<RefCell<SymContext>>`` in ``RustSimState`` (state.rs:960).**
 docs/advanced-topics/rust_engine.rst	- ``Fuzzer`` (``native/angr/src/fuzzer.rs:59``) — libafl state machine;
-docs/advanced-topics/rust_engine.rst	- ``Icicle`` (``native/angr/src/icicle.rs:230``) — icicle VM owns
 docs/advanced-topics/rust_engine.rst	- ``PyOnDiskCorpus`` (``native/angr/src/fuzzer/corpus.rs:146``) — libafl
 docs/advanced-topics/rust_engine.rst	- ``RustBVHandle`` (``native/angr/src/symbolic/handle.rs:28``) — three
 docs/advanced-topics/rust_engine.rst	- ``RustSolverContext`` (``native/angr/src/solver.rs:102``) — holds
 docs/advanced-topics/rust_engine.rst	- ``SymContext`` itself (``native/angr/src/symbolic/context.rs:1325``)
-docs/advanced-topics/rust_engine.rst	- ``VmExit``, ``ExceptionCode`` (``native/angr/src/icicle.rs:47,97``) —
 docs/advanced-topics/rust_engine.rst	- ``rust_manager.py:1417``, ``:3896`` (re-checked at ``explore()`` time)
 docs/advanced-topics/rust_engine.rst	- ``rust_manager.py:1420``
 docs/advanced-topics/rust_engine.rst	- ``rust_manager.py:1424`` (consumed at ``:1443``)

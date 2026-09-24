@@ -5636,7 +5636,7 @@ state:
   closures). Out of scope for the symex engine's parallel story.
 - ``PyOnDiskCorpus`` (``native/angr/src/fuzzer/corpus.rs:146``) — libafl
   on-disk handle; same scope as ``Fuzzer``.
-- ``Icicle`` (``native/angr/src/icicle.rs:230``) — icicle VM owns
+- ``Icicle`` (``native/angr/src/fuzzer/icicle.rs``) — icicle VM owns
   thread-local JIT state; ``unsendable`` is correct.
 
 The plain ``#[pyclass]`` types (without ``unsendable``) are all
@@ -5661,7 +5661,7 @@ GIL controls actual dereference). No refactor needed for these:
   type** (see Recommendation below).
 - ``Segment``, ``SegmentList``, ``SegmentListIter``
   (``native/angr/src/segmentlist.rs``) — pure value types, Send+Sync.
-- ``VmExit``, ``ExceptionCode`` (``native/angr/src/icicle.rs:47,97``) —
+- ``VmExit``, ``ExceptionCode`` (``native/angr/src/fuzzer/icicle.rs``) —
   C-like enums.
 - ``PyState``, ``PySymbol``, ``PyEpsilon``, ``PyEpsilonNFA``, ``PyDFA``
   (``native/angr/src/automaton/python_bindings.rs``) — automaton API;

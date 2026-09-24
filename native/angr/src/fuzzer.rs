@@ -1,6 +1,7 @@
 pub(crate) mod corpus;
 pub(crate) mod delegate;
 pub(crate) mod executor;
+pub(crate) mod icicle;
 pub(crate) mod monitor;
 pub(crate) mod mutator;
 
