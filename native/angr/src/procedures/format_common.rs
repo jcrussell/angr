@@ -36,8 +36,8 @@ pub(crate) const MAX_FORMAT_LEN: usize = 4096;
 ///
 /// The single entry point for the family: `sprintf.rs`'s
 /// `NativeSprintf`/`NativeSnprintf`/`NativeVsnprintf`/`NativeVsprintf` and
-/// `scanf.rs::parse_scanf_format`'s caller all pull their format string
-/// through here (they used to hold one near-identical private wrapper each —
+/// `scanf.rs::do_scanf` (the caller of `scanf_spec.rs::parse_scanf_format`)
+/// all pull their format string through here (they used to hold one near-identical private wrapper each —
 /// `sprintf::read_string` and `scanf::read_format_string` — which is the
 /// duplication angr-0jh0j.44 folded away). A `%s` *conversion argument* is a
 /// plain C string with no length bound, so it scans against

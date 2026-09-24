@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::memory::Permission;
+use crate::procedures::scanf_spec::{MAX_SCANF_STR_LEN, digit_range_bound};
 use crate::procedures::NativeProcedureRegistry;
 use crate::state::FdFlags;
 

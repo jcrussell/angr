@@ -129,6 +129,7 @@ pub(crate) mod python_proc;
 pub(crate) mod rand;
 pub(crate) mod read;
 pub(crate) mod scanf;
+pub(crate) mod scanf_spec;
 pub(crate) mod sleep;
 pub(crate) mod sprintf;
 pub(crate) mod sprintf_conv;
