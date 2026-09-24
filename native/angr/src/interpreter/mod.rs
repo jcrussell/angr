@@ -127,6 +127,7 @@ mod prefetch;
 mod simprocedures;
 mod statements;
 mod statements_cas;
+mod statements_dirty;
 mod statements_inspect;
 mod statements_store;
 
