@@ -251,9 +251,14 @@ fn parse_arithmetic(op_str: &str) -> Option<IROp> {
     tuple_arms!(op_str; "Iop_MullU" => MullU { "8" => I8, "16" => I16, "32" => I32, "64" => I64 });
     tuple_arms!(op_str; "Iop_DivS"  => DivS  { "32" => I32, "64" => I64 });
     tuple_arms!(op_str; "Iop_DivU"  => DivU  { "32" => I32, "64" => I64 });
-    // No scalar-integer Iop_Neg arm: real VEX only defines the float
-    // Iop_Neg{F16,F32,F64,F128} (mapped in parse_float) and the vector
-    // Iop_Neg<w>Fx<n> forms. Integer negation lifts as `0 - x` via Iop_Sub.
+    // No scalar-integer Iop_Neg arm: real VEX only defines float negates.
+    // `vendor/pyvex_ffi.h` declares exactly Iop_NegF32, Iop_NegF64,
+    // Iop_NegF128 and the vector Iop_Neg32Fx2 / Iop_Neg32Fx4 / Iop_Neg64Fx2 —
+    // all mapped in `parse_float` except Iop_NegF128, which `IRType` has no
+    // F128 variant to map to. There is no Iop_NegF16 (the header's only F16
+    // entries are Ity_F16 and the F16<->F32/F64 conversions), so an
+    // `Iop_Neg{F16,...}` brace-enumeration would name an opcode that never
+    // existed. Integer negation lifts as `0 - x` via Iop_Sub.
 
     match op_str {
         // DivMod - combined division and modulo

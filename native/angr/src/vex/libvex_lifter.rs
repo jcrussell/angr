@@ -560,10 +560,15 @@ fn dirty_fx(fx: ffi::IREffect) -> DirtyFx {
     }
 }
 
-fn mbe_event(ev: ffi::IRMBusEvent) -> MBusEvent {
-    // VEX only emits Imbe_Fence / Imbe_CancelReservation; both map to Fence
-    // here (the Rust engine treats every barrier as a full fence).
-    let _ = ev;
+fn mbe_event(_ev: ffi::IRMBusEvent) -> MBusEvent {
+    // SILENT(cat-a): the payload is inert. VEX only emits Imbe_Fence /
+    // Imbe_CancelReservation, and `Interpreter`'s `IRStmt::MBE` arm discards
+    // the event anyway (`statements.rs`, `IRStmt::MBE(_) => Continue`) — this
+    // engine treats every barrier as a full fence. The pyvex sibling
+    // `pyvex_bridge::parse_mbe_event` keeps the SFence/LFence/MFence
+    // discriminants only because the string form carries them for free; both
+    // collapse every unrecognized tag to `Fence`. Logging here would warn
+    // about a value nothing reads.
     MBusEvent::Fence
 }
 
