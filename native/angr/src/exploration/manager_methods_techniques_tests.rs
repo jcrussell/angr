@@ -71,6 +71,55 @@ fn timeout_and_merge_point_declare_their_destinations() {
     assert_eq!(mgr.native_technique_count(), 3);
 }
 
+/// A second `register_merge_point` at an address that already has one updates
+/// that entry instead of appending a duplicate. Both entries would derive the
+/// same wait stash from the address, and the first one's `apply_merge_point`
+/// drains it every round, so the duplicate's own `wait_counter` would never be
+/// consulted (angr-fs8kb.2).
+#[test]
+fn merge_point_reregistration_updates_in_place_instead_of_duplicating() {
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+
+    mgr.register_merge_point(0x40_1000, 10);
+    // Pretend a few post-step rounds already ticked against the old limit.
+    match &mut mgr.native_techniques[0] {
+        NativeTechnique::MergePoint { counter, .. } => *counter = 7,
+        other => panic!("expected a MergePoint, got {other:?}"),
+    }
+
+    mgr.register_merge_point(0x40_1000, 3);
+
+    assert_eq!(
+        mgr.native_technique_count(),
+        1,
+        "the duplicate registration must not append a second entry sharing \
+         the first one's wait stash",
+    );
+    match &mgr.native_techniques[0] {
+        NativeTechnique::MergePoint {
+            address,
+            wait_counter_limit,
+            counter,
+            wait_stash,
+        } => {
+            assert_eq!(*address, 0x40_1000);
+            assert_eq!(
+                *wait_counter_limit, 3,
+                "the last call's wait_counter wins; silently keeping 10 is the \
+                 bug the dedup guard exists to prevent",
+            );
+            assert_eq!(*counter, 0, "a re-registration restarts the wait window");
+            assert_eq!(wait_stash, "merge_waiting_0x401000");
+        }
+        other => panic!("expected a MergePoint, got {other:?}"),
+    }
+
+    // A different address still gets its own entry and its own waiting room.
+    mgr.register_merge_point(0x40_2000, 3);
+    assert_eq!(mgr.native_technique_count(), 2);
+    assert!(mgr.sm.get("merge_waiting_0x402000").is_some());
+}
+
 /// `clear_native_techniques` empties the technique list but deliberately leaves
 /// the stashes it declared behind — dropping them would strand any state a
 /// technique had already parked there.

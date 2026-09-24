@@ -99,9 +99,46 @@ impl RustExplorationManager {
     /// without a fresh arrival) the waiters are grouped by callstack and each
     /// ≥2 group is merged in-Rust via `_merge_states`. A lone waiter is
     /// released back to active unmerged (count preserved, no stall).
+    ///
+    /// Re-registering an address that already has a `MergePoint` **updates
+    /// that entry in place** (last call wins) rather than appending a second
+    /// one. Two entries would derive the same `merge_waiting_{address:#x}`
+    /// stash from `address` and both drain the same active stash, so the
+    /// first entry's `apply_merge_point` always parks and then merges/releases
+    /// every waiter before the second entry's turn comes round; the second
+    /// would observe `wait_len == 0` and return above its own counter tick,
+    /// leaving its `wait_counter` silently dead (angr-fs8kb.2).
     #[pyo3(signature = (address, wait_counter=10))]
     #[angr_macros::steady_guarded]
     pub fn register_merge_point(&mut self, address: u64, wait_counter: usize) {
+        let existing = self
+            .native_techniques
+            .iter_mut()
+            .find_map(|tech| match tech {
+                NativeTechnique::MergePoint {
+                    address: registered,
+                    wait_counter_limit,
+                    counter,
+                    ..
+                } if *registered == address => Some((wait_counter_limit, counter)),
+                _ => None,
+            });
+        if let Some((wait_counter_limit, counter)) = existing {
+            if *wait_counter_limit != wait_counter {
+                log::warn!(
+                    "register_merge_point({address:#x}, {wait_counter}) replaces the \
+                     wait_counter of an existing merge point at the same address \
+                     ({old}); a duplicate entry would be a silent no-op",
+                    old = *wait_counter_limit,
+                );
+            }
+            *wait_counter_limit = wait_counter;
+            // A re-registration restarts the wait window, so the updated entry
+            // behaves exactly like a fresh one modulo any already-parked waiters.
+            *counter = 0;
+            return;
+        }
+
         let wait_stash = format!("merge_waiting_{address:#x}");
         self.sm.declare_stash(&wait_stash);
         self.native_techniques.push(NativeTechnique::MergePoint {
