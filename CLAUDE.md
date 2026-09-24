@@ -242,10 +242,13 @@ empty-baseline directory. Detector 2 keys on the destination only (in `a += b`
 the LHS is the accumulator, so `total += buf_len` wraps a total, not an
 address) and drops `count` because `self.stats.*_count += 1` is 60+ sites of
 cosmetic-stat noise. Both run over
-`native/angr/src/{memory,interpreter,symbolic,state,syscalls,procedures,exploration}/`
+`native/angr/src/{arch,memory,interpreter,symbolic,state,syscalls,procedures,exploration}/`
 (`exploration/` added in bd `angr-goev1` — it is where the SP/return-address
 arithmetic family kept recurring, and the `AddrOrSymbolic` newtype only closed
-the `.unwrap_or(0)` half of it).
+the `.unwrap_or(0)` half of it; `arch/` in bd `angr-fs8kb.94`, where
+`register_file.rs`'s 26 range-arithmetic sites were converted to
+`saturating_*`/`checked_*` rather than annotated — see that file's
+"Range arithmetic" module doc).
 Every safe spelling is a *method call*, so no exclusion list for already-fixed
 sites is needed — the operator scan simply never matches them. Its operand
 grammar sees through **one** level of parenthesization (`(base & !PAGE_MASK)

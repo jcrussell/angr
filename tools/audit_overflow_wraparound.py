@@ -17,7 +17,10 @@ double-digit count of P2/P3s across memory/, interpreter/, symbolic/,
 state/, syscalls/ and procedures/, all now fixed by hand but with nothing
 stopping the same shape from being reintroduced. exploration/ joined them in
 bd angr-goev1, after the SP/return-address half of the family recurred there
-four more times (see :data:`SUBSYSTEMS`). Every fixed site uses a
+four more times, and arch/ in bd angr-fs8kb.94 -- the register-file offset
+arithmetic had zero automated coverage, and a malformed IRSB reaches it with
+an unbounded ``u32`` offset via ``regarray_offset`` (see :data:`SUBSYSTEMS`).
+Every fixed site uses a
 ``.wrapping_*()``/``.saturating_*()``/``.checked_*()`` *method call* rather
 than a bare operator, so this script's heuristic is simple: flag a bare
 ``+``/``-`` binary operator where at least one operand's name looks like an
@@ -30,7 +33,7 @@ and ``tools/audit_sp_default_zero.py`` do: a heuristic detector plus a
 checked-in baseline of already-triaged sites. Only *new* sites fail.
 
 Two detectors, over any non-test ``.rs`` file under
-``native/angr/src/{memory,interpreter,symbolic,state,syscalls,procedures,exploration}/``:
+``native/angr/src/{arch,memory,interpreter,symbolic,state,syscalls,procedures,exploration}/``:
 
 1. :data:`BINOP_RE` -- a bare ``+`` or ``-`` (not ``+=``/``-=``/``->``, not
    unary) whose left or right operand is a simple identifier / dotted field
@@ -90,7 +93,7 @@ SRC_DIR = REPO_ROOT / "native" / "angr" / "src"
 # half at compile time, but the bare `sp + ptr_size` half had nothing.
 # vex/ has its own written convention (invariant-rust-concrete-arith-must-wrap)
 # and can be folded in as a later extension.
-SUBSYSTEMS = ("memory", "interpreter", "symbolic", "state", "syscalls", "procedures", "exploration")
+SUBSYSTEMS = ("arch", "memory", "interpreter", "symbolic", "state", "syscalls", "procedures", "exploration")
 SCAN_DIRS = tuple(SRC_DIR / s for s in SUBSYSTEMS)
 BASELINE_PATH = REPO_ROOT / "tools" / "overflow_baseline.txt"
 

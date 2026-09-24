@@ -5,6 +5,25 @@
 //! per-offset lookup helpers. Extracted in angr-5mnx3.1: `get`/`put`/`merge`
 //! carry the densest regression history in `arch/` and sat interleaved with
 //! the unrelated architecture registry (now `registry.rs`).
+//!
+//! # Range arithmetic
+//!
+//! Every `[offset, offset + size)` in this file is a pair of `u32` VEX
+//! guest-state coordinates, and nothing on the way in bounds them:
+//! `VEXInterpreter::regarray_offset` (`interpreter/expressions.rs`) rejects
+//! only a *wrapping* `base + idx * elem_size`, so a malformed or hand-crafted
+//! IRSB can reach [`RegisterFile::get`]/[`RegisterFile::put`] with an offset
+//! near `u32::MAX`. `[profile.release]` sets no `overflow-checks`, so a bare
+//! `+` there would wrap the range end back *under* its start and silently name
+//! a different register span. Hence the house style throughout: range ends and
+//! their comparisons use `saturating_add`/`saturating_sub`, which leaves every
+//! in-range access bit-identical and turns an out-of-range one into a value
+//! that fails the `<= self.data.len()` guards instead of passing them. The one
+//! place saturation would be wrong — [`RegisterFile::compose_range`], whose
+//! `while pos < end` loop would then run to `u32::MAX` — uses `checked_add`
+//! and refuses. This is what lets `arch/` sit in
+//! `tools/audit_overflow_wraparound.py`'s scan set with an empty baseline
+//! (angr-fs8kb.94).
 
 use super::*;
 
@@ -123,21 +142,29 @@ impl RegisterFile {
         size: u32,
         ctx: &crate::symbolic::SymContext,
     ) -> RustBV {
-        let end = offset + size;
+        // A `[offset, offset + size)` range whose end does not fit in `u32`
+        // names no byte range at all. `regarray_offset` (interpreter/expressions.rs)
+        // rejects only a *wrapping* `base + idx * elem_size`, so a malformed IRSB
+        // can still hand `get` an offset near `u32::MAX`; refuse here with the
+        // same zeros the out-of-range concrete path in `get_storage` returns,
+        // rather than wrap the end back under `offset`.
+        let Some(end) = offset.checked_add(size) else {
+            return RustBV::zero(size.saturating_mul(8));
+        };
         let mut parts: Vec<RustBV> = Vec::new();
         let mut pos = offset;
         while pos < end {
             if let Some(sub_sym) = self.symbolic.get(&pos) {
                 let sub_size = sub_sym.width() / 8;
                 if sub_size > 0 {
-                    if pos + sub_size <= end {
+                    if pos.saturating_add(sub_size) <= end {
                         parts.push(sub_sym.clone());
                         pos += sub_size;
                         continue;
                     }
                     // Overlay runs past the end of the read — take the low bytes
                     // that do fit rather than falling back to stale concrete.
-                    parts.push(sub_sym.extract((end - pos) * 8 - 1, 0, ctx));
+                    parts.push(sub_sym.extract(end.saturating_sub(pos) * 8 - 1, 0, ctx));
                     break;
                 }
             }
@@ -227,9 +254,11 @@ impl RegisterFile {
         // Already handled above. But also check for sub-register reads at higher offsets
         // E.g., reading ah (offset=17, size=1) when rax (offset=16, size=8) is symbolic
         for (&sym_offset, sym_val) in &self.symbolic {
-            if sym_offset < offset && offset + size <= sym_offset + sym_val.width() / 8 {
-                let bit_lo = (offset - sym_offset) * 8;
-                let bit_hi = bit_lo + size * 8 - 1;
+            if sym_offset < offset
+                && offset.saturating_add(size) <= sym_offset.saturating_add(sym_val.width() / 8)
+            {
+                let bit_lo = offset.saturating_sub(sym_offset) * 8;
+                let bit_hi = bit_lo.saturating_add(size * 8) - 1;
                 return sym_val.extract(bit_hi, bit_lo, ctx);
             }
         }
@@ -241,7 +270,9 @@ impl RegisterFile {
         // the top of this function short-circuits; see the comment there.
         for (&sym_offset, sym_val) in &self.symbolic {
             let sym_size = sym_val.width() / 8;
-            if sym_offset >= offset && sym_offset + sym_size <= offset + size {
+            if sym_offset >= offset
+                && sym_offset.saturating_add(sym_size) <= offset.saturating_add(size)
+            {
                 // This symbolic sub-register is contained within our read range
                 return self.compose_range(offset, size, ctx);
             }
@@ -249,7 +280,7 @@ impl RegisterFile {
 
         // Read concrete value
         let start = offset as usize;
-        let end = start + size as usize;
+        let end = start.saturating_add(size as usize);
 
         if end > self.data.len() {
             return RustBV::zero(size * 8);
@@ -310,8 +341,9 @@ impl RegisterFile {
         let len = self.data.len();
         let data = Arc::make_mut(&mut self.data);
         for i in 0..size {
-            if start + i < len {
-                data[start + i] = u128_le_byte(v, i);
+            let idx = start.saturating_add(i);
+            if idx < len {
+                data[idx] = u128_le_byte(v, i);
             }
         }
     }
@@ -351,10 +383,12 @@ impl RegisterFile {
         // E.g., writing ch (8-bit at offset 13) when ecx (32-bit at offset 12) is symbolic.
         for (&sym_offset, sym_val) in &self.symbolic {
             let sym_size = sym_val.width() / 8;
-            if sym_offset < offset && offset + size <= sym_offset + sym_size {
+            if sym_offset < offset
+                && offset.saturating_add(size) <= sym_offset.saturating_add(sym_size)
+            {
                 // Our write is fully contained within a wider symbolic at a lower offset
                 let sym_val = sym_val.clone();
-                let bit_lo = (offset - sym_offset) * 8;
+                let bit_lo = offset.saturating_sub(sym_offset) * 8;
                 let bit_hi = bit_lo + write_bits;
                 let sym_bits = sym_val.width();
 
@@ -388,7 +422,7 @@ impl RegisterFile {
             let overlapping: Vec<u32> = self
                 .symbolic
                 .keys()
-                .filter(|&&k| k >= offset && k < offset + size && k != offset)
+                .filter(|&&k| k >= offset && k < offset.saturating_add(size) && k != offset)
                 .copied()
                 .collect();
             for k in overlapping {
@@ -409,12 +443,12 @@ impl RegisterFile {
         // zero-extended.
         if let Some(v) = value.as_u128() {
             let start = offset as usize;
-            let end = start + size as usize;
+            let end = start.saturating_add(size as usize);
 
             if end <= self.data.len() {
                 let data = Arc::make_mut(&mut self.data);
-                for i in 0..size as usize {
-                    data[start + i] = u128_le_byte(v, i);
+                for (i, slot) in data[start..end].iter_mut().enumerate() {
+                    *slot = u128_le_byte(v, i);
                 }
                 // Clear any symbolic overlay at this offset
                 self.symbolic.remove(&offset);
@@ -422,7 +456,7 @@ impl RegisterFile {
                 let overlapping: Vec<u32> = self
                     .symbolic
                     .keys()
-                    .filter(|&&k| k >= offset && k < offset + size)
+                    .filter(|&&k| k >= offset && k < offset.saturating_add(size))
                     .copied()
                     .collect();
                 for k in overlapping {
@@ -476,12 +510,13 @@ impl RegisterFile {
     pub(crate) fn get_sp_value(&self) -> Option<u64> {
         let offset = self.arch.sp_offset() as usize;
         let size = self.arch.bytes() as usize;
-        if offset + size > self.data.len() {
+        let end = offset.saturating_add(size);
+        if end > self.data.len() {
             return None;
         }
         let mut value: u64 = 0;
-        for i in 0..size.min(8) {
-            value |= (self.data[offset + i] as u64) << (i * 8);
+        for (i, &byte) in self.data[offset..end].iter().take(8).enumerate() {
+            value |= (byte as u64) << (i * 8);
         }
         Some(value)
     }
@@ -639,7 +674,7 @@ impl RegisterFile {
                         // reachable value is lost.
                         let width = sv.width().max(ov.width());
                         let size = width / 8;
-                        let end = offset as usize + size as usize;
+                        let end = (offset as usize).saturating_add(size as usize);
                         if width % 8 == 0
                             && size > 0
                             && end <= self.data.len()
@@ -673,7 +708,9 @@ impl RegisterFile {
                     // reading the backing array would silently substitute stale
                     // concrete for it (angr-49v03).
                     let size = sv.width() / 8;
-                    if size > 0 && offset as usize + size as usize <= other.data.len() {
+                    if size > 0
+                        && (offset as usize).saturating_add(size as usize) <= other.data.len()
+                    {
                         let other_full = other.get_storage(offset, size, ctx);
                         updates.push((offset, merge_cond_other.ite(&other_full, sv, ctx)));
                     }
@@ -682,7 +719,9 @@ impl RegisterFile {
                     // self has no overlay at this exact offset, other is
                     // symbolic — same reasoning as above, mirrored.
                     let size = ov.width() / 8;
-                    if size > 0 && offset as usize + size as usize <= self.data.len() {
+                    if size > 0
+                        && (offset as usize).saturating_add(size as usize) <= self.data.len()
+                    {
                         let self_full = self.get_storage(offset, size, ctx);
                         updates.push((offset, merge_cond_other.ite(ov, &self_full, ctx)));
                     }
@@ -712,7 +751,7 @@ impl RegisterFile {
         let len = self.data.len().min(other.data.len());
         let mut off = 0;
         while off < len {
-            let reg_bytes = reg_bytes.min(len - off);
+            let reg_bytes = reg_bytes.min(len.saturating_sub(off));
             let u32_off = off as u32;
             // Skip offsets that are already handled by symbolic merge
             if !all_offsets.contains(&u32_off) {
@@ -758,7 +797,7 @@ impl RegisterFile {
         // in the wide value at `offset`.
         for (offset, size) in widened {
             self.symbolic
-                .retain(|&k, _| !(k > offset && k < offset + size));
+                .retain(|&k, _| !(k > offset && k < offset.saturating_add(size)));
         }
 
         merged
