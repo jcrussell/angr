@@ -101,7 +101,7 @@ mod stepping;
 // one of its consumers: `unsat_state_at` drives `add_constraint`.
 test_submod!(z3 test_support);
 
-use self::constraints::{ConstraintSolver, ConstraintTracker, import_python_constraints};
+use self::constraints::{ConstraintSolver, ConstraintTracker, import_constraints_and_recheck};
 use self::execution_env::ExecutionEnvironment;
 use self::memory_config::MemoryConfiguration;
 use self::profiling::ProfilingCollector;

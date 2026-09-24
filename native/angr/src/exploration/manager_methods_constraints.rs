@@ -191,6 +191,11 @@ impl RustExplorationManager {
     ///
     /// Args:
     ///     constraints: List of claripy AST constraints to add
+    ///
+    /// Returns the state's satisfiability after the import in the same
+    /// decided-only form as `add_constraints_to_state`: `True`/`False` when
+    /// the solver decided, `None` when it gave up (which is *not* "unsat", so
+    /// a caller must not prune on it).
     /// See `pending_api::_add_constraints_to_pending` for the body.
     #[angr_macros::steady_guard_exempt(
         reason = "syncs constraints onto one state_id-scoped state's solver; does not mutate \
@@ -201,7 +206,7 @@ impl RustExplorationManager {
         py: Python<'_>,
         state_id: u64,
         constraints: &Bound<'_, pyo3::types::PyList>,
-    ) -> PyResult<()> {
+    ) -> PyResult<Option<bool>> {
         self._add_constraints_to_pending(py, state_id, constraints)
     }
 

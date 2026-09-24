@@ -12,8 +12,10 @@
 //! the strict-deterministic flag — `apply_state_deterministic` and
 //! `state_is_deterministic` — both inert on a non-`vex-engine-z3` build, plus
 //! the claripy constraint-import seam: `import_one_constraint` (the single
-//! per-constraint body, shared with `constraint_sync.rs`) and the
-//! `import_python_constraints` list wrapper over it.
+//! per-constraint body, shared with `constraint_sync.rs`), the
+//! `import_python_constraints` list wrapper over it, and
+//! `import_constraints_and_recheck`, the import-plus-SAT-recheck body both
+//! `_add_constraints_to_state` and `_add_constraints_to_pending` call.
 //!
 //! Same pattern as `ProfilingCollector`: `pub(crate)` direct field access by
 //! design — callers read/write the inner fields through a thin delegation.
@@ -312,6 +314,33 @@ pub(crate) fn import_one_constraint(
     }
 }
 
+/// How an [`import_python_constraints`] list walk disposed of the list.
+///
+/// `failed > 0` means the Rust solver is now *weaker* than claripy's, which is
+/// why the count is returned rather than only logged: the caller owes the state
+/// a satisfiability re-check (see [`import_constraints_and_recheck`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ConstraintImportSummary {
+    /// Constraints asserted on the solver, by either tier.
+    pub(crate) added: u32,
+    /// Constraints neither tier could convert; dropped with a warning.
+    pub(crate) failed: u32,
+}
+
+impl ConstraintImportSummary {
+    /// Whether any constraint was dropped.
+    pub(crate) fn is_partial(&self) -> bool {
+        self.failed > 0
+    }
+
+    /// Length of the walked list — every item lands in exactly one tally.
+    pub(crate) fn total(&self) -> u32 {
+        // overflow-ok: both are per-item tallies over the one Python list
+        // `import_python_constraints` walks, so the sum is that list's length.
+        self.added + self.failed
+    }
+}
+
 /// Import a Python list of claripy constraints into one solver context.
 ///
 /// Single body shared by `_add_constraints_to_state` (state_api.rs) and
@@ -325,20 +354,21 @@ pub(crate) fn import_one_constraint(
 /// initial constraint.
 ///
 /// `kind` is the noun used in the per-constraint failure log ("initial" /
-/// "pending"); the caller emits its own summary line. Returns the number of
-/// constraints successfully asserted — unconvertible ones are skipped, matching
-/// the pre-existing behavior of both call sites.
+/// "pending"); the caller emits its own summary line. Unconvertible
+/// constraints are skipped rather than raised, matching the pre-existing
+/// behavior of both call sites — see [`ConstraintImportSummary`] for what the
+/// caller owes a partial import.
 pub(crate) fn import_python_constraints(
     py: pyo3::Python<'_>,
     ctx: &crate::symbolic::SymContext,
     constraints: &pyo3::Bound<'_, pyo3::types::PyList>,
     kind: &str,
-) -> u32 {
+) -> ConstraintImportSummary {
     use pyo3::types::PyListMethods;
 
     let z3_backend = resolve_claripy_z3_backend(py);
 
-    let mut added = 0u32;
+    let mut summary = ConstraintImportSummary::default();
     for item in constraints.iter() {
         match import_one_constraint(
             py,
@@ -347,13 +377,66 @@ pub(crate) fn import_python_constraints(
             z3_backend.as_ref(),
             ConstraintTier::Z3PtrFirst,
         ) {
-            ConstraintImport::Assumed | ConstraintImport::RawOnly(_) => added += 1,
+            ConstraintImport::Assumed | ConstraintImport::RawOnly(_) => summary.added += 1,
             ConstraintImport::Failed(e) => {
-                log::debug!("Could not convert {kind} constraint: {e}");
+                // SILENT(cat-c): neither tier converted this constraint, so it
+                // is dropped and the Rust solver ends up *weaker* than
+                // claripy's — a path Python holds infeasible can look SAT
+                // here, and `eval` can hand back a witness the Python side
+                // forbids. There is no third tier to fall back to, so the
+                // mitigation is loudness plus a re-check: warn here, and
+                // `import_constraints_and_recheck` re-derives satisfiability
+                // from whatever did land. Matches
+                // `sync_constraints_from_python`'s handling of the identical
+                // arm, whose severity this one used to undercut at debug level
+                // (angr-fs8kb.12).
+                summary.failed += 1;
+                log::warn!("Could not convert {kind} constraint: {e}. Solver state may diverge.");
             }
         }
     }
-    added
+    summary
+}
+
+/// Import a Python constraint list onto one state's solver and re-derive that
+/// state's satisfiability.
+///
+/// Single body shared by `_add_constraints_to_state` (state_api.rs) and
+/// `_add_constraints_to_pending` (pending_api.rs). The SAT re-check is the
+/// mitigation for [`import_python_constraints`]'s dropped-constraint arm; the
+/// pending call site had none at all until angr-fs8kb.12, so a dropped
+/// constraint there left a state nothing downstream would ever re-examine.
+///
+/// Reports satisfiability in decided-only form: `None` is "Z3 gave up", not
+/// "unsat" (`invariant-z3-unknown-not-unsat`), so a caller must not prune on
+/// it.
+pub(crate) fn import_constraints_and_recheck(
+    py: pyo3::Python<'_>,
+    state: &crate::state::RustSimState,
+    constraints: &pyo3::Bound<'_, pyo3::types::PyList>,
+    kind: &str,
+    state_id: u64,
+) -> Option<bool> {
+    let summary = {
+        let solver_ref = state.solver();
+        let sym_ctx = solver_ref.borrow();
+        import_python_constraints(py, &sym_ctx, constraints, kind)
+    };
+    if summary.is_partial() {
+        log::warn!(
+            "Added {}/{} {kind} constraints to state {state_id}; {} could not be converted, \
+             leaving the Rust solver weaker than claripy's",
+            summary.added,
+            summary.total(),
+            summary.failed
+        );
+    } else {
+        log::debug!(
+            "Added {} {kind} constraints to state {state_id}",
+            summary.added
+        );
+    }
+    state.satisfiable_checked()
 }
 
 /// Per-run tracking sets used by uniqueness filtering and the find/avoid

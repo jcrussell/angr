@@ -176,7 +176,10 @@ fn import_slow_path_boolean_is_assumed_as_is() {
         let list = constraint_list(py, &[duck_bvv(py, 1, 1)]);
         assert_eq!(
             import_python_constraints(py, &ctx, &list, "test"),
-            1,
+            ConstraintImportSummary {
+                added: 1,
+                failed: 0
+            },
             "a convertible constraint counts as added"
         );
         assert!(ctx.is_sat(), "assuming true keeps the context satisfiable");
@@ -184,7 +187,7 @@ fn import_slow_path_boolean_is_assumed_as_is() {
         let false_ctx = crate::symbolic::SymContext::new();
         let false_list = constraint_list(py, &[duck_bvv(py, 0, 1)]);
         assert_eq!(
-            import_python_constraints(py, &false_ctx, &false_list, "test"),
+            import_python_constraints(py, &false_ctx, &false_list, "test").added,
             1
         );
         assert!(
@@ -205,7 +208,7 @@ fn import_slow_path_widens_non_boolean_to_nonzero() {
         let ctx = crate::symbolic::SymContext::new();
         let before = ctx.assumed_local_len();
         let list = constraint_list(py, &[duck_bvv(py, 2, 64)]);
-        assert_eq!(import_python_constraints(py, &ctx, &list, "test"), 1);
+        assert_eq!(import_python_constraints(py, &ctx, &list, "test").added, 1);
         assert!(
             ctx.is_sat(),
             "2 != 0 holds -- the widening is `!= 0`, not a low-bit truncation"
@@ -225,7 +228,7 @@ fn import_slow_path_widens_non_boolean_to_nonzero() {
         let zero_ctx = crate::symbolic::SymContext::new();
         let zero_list = constraint_list(py, &[duck_bvv(py, 0, 64)]);
         assert_eq!(
-            import_python_constraints(py, &zero_ctx, &zero_list, "test"),
+            import_python_constraints(py, &zero_ctx, &zero_list, "test").added,
             1
         );
         assert!(
@@ -251,8 +254,62 @@ fn import_skips_unconvertible_items_without_aborting_siblings() {
         let list = constraint_list(py, &[junk, duck_bvv(py, 1, 1)]);
         assert_eq!(
             import_python_constraints(py, &ctx, &list, "test"),
-            1,
-            "only the convertible sibling counts; the junk item is skipped, not raised"
+            ConstraintImportSummary {
+                added: 1,
+                failed: 1
+            },
+            "only the convertible sibling counts as added; the junk item is skipped \
+             rather than raised, but it is tallied so the caller knows the import \
+             was partial"
+        );
+    });
+}
+
+// ---------------------------------------------------------------------------
+// import_constraints_and_recheck
+// ---------------------------------------------------------------------------
+
+/// The dropped-constraint mitigation (angr-fs8kb.12): a partial import must
+/// still re-derive satisfiability from whatever *did* land. The junk item is
+/// dropped, the width-1 `0` that survives is contradictory, so the re-check
+/// has to report `Some(false)` — `_add_constraints_to_pending`, which did no
+/// check at all before this seam existed, could only ever have reported
+/// "nothing".
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn import_constraints_and_recheck_reports_unsat_after_a_partial_import() {
+    Python::initialize();
+    Python::attach(|py| {
+        let state = RustSimState::new("amd64").expect("state");
+        let junk = py
+            .import("builtins")
+            .expect("builtins")
+            .call_method0("object")
+            .expect("object()");
+        let list = constraint_list(py, &[junk, duck_bvv(py, 0, 1)]);
+        assert_eq!(
+            import_constraints_and_recheck(py, &state, &list, "pending", 42),
+            Some(false),
+            "assuming a width-1 `0` is UNSAT, and a dropped sibling must not keep \
+             the re-check from seeing it"
+        );
+    });
+}
+
+/// Control for the test above: a fully convertible, consistent import reports
+/// SAT. Without it, a body that returned `Some(false)` unconditionally would
+/// pass the partial-import test.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn import_constraints_and_recheck_reports_sat_for_a_clean_import() {
+    Python::initialize();
+    Python::attach(|py| {
+        let state = RustSimState::new("amd64").expect("state");
+        let list = constraint_list(py, &[duck_bvv(py, 1, 1)]);
+        assert_eq!(
+            import_constraints_and_recheck(py, &state, &list, "initial", 7),
+            Some(true),
+            "a consistent import leaves the state satisfiable"
         );
     });
 }
@@ -302,7 +359,7 @@ fn import_fast_path_asserts_and_records_convertible_constraint() {
 
         let before = ctx.assumed_local_len();
         let list = constraint_list(py, &[c]);
-        assert_eq!(import_python_constraints(py, &ctx, &list, "initial"), 1);
+        assert_eq!(import_python_constraints(py, &ctx, &list, "initial").added, 1);
         assert_eq!(
             ctx.assumed_local_len() - before,
             1,
@@ -356,7 +413,7 @@ fn import_fast_path_raw_only_for_unconvertible_constraint() {
 
         let before = ctx.assumed_local_len();
         assert_eq!(
-            import_python_constraints(py, &ctx, &constraint_list(py, &[gt]), "pending"),
+            import_python_constraints(py, &ctx, &constraint_list(py, &[gt]), "pending").added,
             1
         );
         assert_eq!(
@@ -368,7 +425,7 @@ fn import_fast_path_raw_only_for_unconvertible_constraint() {
 
         let lt = f.call_method1("__lt__", (&zero,)).expect("f < 0.0");
         assert_eq!(
-            import_python_constraints(py, &ctx, &constraint_list(py, &[lt]), "pending"),
+            import_python_constraints(py, &ctx, &constraint_list(py, &[lt]), "pending").added,
             1
         );
         assert!(

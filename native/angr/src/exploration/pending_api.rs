@@ -619,24 +619,34 @@ impl RustExplorationManager {
         })
     }
 
+    /// Import Python constraints onto a parked callback state's solver,
+    /// reporting the resulting satisfiability in the same decided-only form as
+    /// `_add_constraints_to_state` — `None` is "Z3 gave up", not "unsat".
+    ///
+    /// The re-check is not cosmetic: `import_python_constraints` drops a
+    /// constraint neither conversion tier can handle, and until angr-fs8kb.12
+    /// this path did nothing about it, so a pending state could sit UNSAT-on-
+    /// the-Python-side with nothing downstream ever re-deriving its
+    /// feasibility.
     pub(crate) fn _add_constraints_to_pending(
         &mut self,
         py: Python<'_>,
         state_id: u64,
         constraints: &Bound<'_, pyo3::types::PyList>,
-    ) -> PyResult<()> {
+    ) -> PyResult<Option<bool>> {
         self.with_pending_mut(state_id, |pending| {
-            let solver_ref = pending.state.solver();
-            // Shares `import_python_constraints` with `_add_constraints_to_state`
-            // so the raw-pointer fast path (which keeps an unconvertible-but-live
-            // AST bound instead of silently vanishing — angr-ph300.20) can only
-            // ever be fixed in one place (angr-9ke6b.71).
-            let added = {
-                let sym_ctx = solver_ref.borrow();
-                import_python_constraints(py, &sym_ctx, constraints, "pending")
-            };
-            log::debug!("Added {added} constraints to pending state {state_id}");
-            Ok(())
+            // Shares `import_constraints_and_recheck` with
+            // `_add_constraints_to_state` so the raw-pointer fast path (which
+            // keeps an unconvertible-but-live AST bound instead of silently
+            // vanishing — angr-ph300.20) and the dropped-constraint re-check
+            // can only ever be fixed in one place (angr-9ke6b.71).
+            Ok(import_constraints_and_recheck(
+                py,
+                &pending.state,
+                constraints,
+                "pending",
+                state_id,
+            ))
         })
     }
 

@@ -165,13 +165,13 @@ impl RustExplorationManager {
         constraints: &Bound<'_, pyo3::types::PyList>,
     ) -> PyResult<Option<bool>> {
         self.with_state_mut(state_id, |state| {
-            let solver_ref = state.solver();
-            let added = {
-                let sym_ctx = solver_ref.borrow();
-                import_python_constraints(py, &sym_ctx, constraints, "initial")
-            };
-            log::debug!("Added {added} initial constraints to state {state_id}");
-            Ok(state.satisfiable_checked())
+            Ok(import_constraints_and_recheck(
+                py,
+                state,
+                constraints,
+                "initial",
+                state_id,
+            ))
         })
     }
 
