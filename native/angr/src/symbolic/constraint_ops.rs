@@ -539,6 +539,10 @@ impl SymContext {
         let mut still_valid = true;
         if let Some(model) = cache.as_ref() {
             for constraint in constraints {
+                // SILENT(cat-a): an eval/extraction failure means the cached
+                // model cannot be shown to satisfy this constraint, which is
+                // exactly the `false` case — the model is dropped and the next
+                // query re-solves. Never a wrong answer, only a lost cache hit.
                 let ok = model
                     .eval(constraint, true)
                     .and_then(|b| b.as_bool())
@@ -654,6 +658,10 @@ impl SymContext {
         if cache.is_none() {
             return;
         }
+        // SILENT(cat-a): same as in `invalidate_model_if_inconsistent_batch` —
+        // an eval/extraction failure collapses to "cannot show the cached model
+        // still satisfies this", which drops the cache and forces a fresh
+        // solver check. Never a wrong answer, only a lost cache hit.
         let still_valid = cache
             .as_ref()
             .and_then(|m| m.eval(constraint, true))
