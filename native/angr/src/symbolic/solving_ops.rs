@@ -204,6 +204,69 @@ fn bsearch_max(
     Some(lo)
 }
 
+/// Which end of the feasible range an extremum search is looking for.
+///
+/// [`SymContext::min`] and [`SymContext::max`] are mirror images — same fast
+/// path, same width guard, same witness peek, same signed sign-probe — so they
+/// share one body, [`SymContext::extremum`], and this is the only thing that
+/// differs between the two calls (angr-fs8kb.32). Keeping them fused is what
+/// stops a future bound-selection fix from landing on one and missing the
+/// other.
+#[cfg(feature = "vex-engine-z3")]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Extremum {
+    Min,
+    Max,
+}
+
+#[cfg(feature = "vex-engine-z3")]
+impl Extremum {
+    /// Solver-stats site for the signed sign probe.
+    fn init_site(self) -> CheckSite {
+        match self {
+            Extremum::Min => CheckSite::MinInit,
+            Extremum::Max => CheckSite::MaxInit,
+        }
+    }
+
+    /// The signed half this search would rather land in: the negative half
+    /// `[sign_bit, max_val]` for a minimum, the non-negative half
+    /// `[0, max_positive]` for a maximum. The sign probe (or a witness already
+    /// sitting in that half) decides whether it is reachable; when it is not,
+    /// the extremum is in the other half.
+    fn preferred_half_is_negative(self) -> bool {
+        self == Extremum::Min
+    }
+
+    /// The signed probe assertion whose satisfiability means "the preferred
+    /// half is reachable": `bv < 0` for a minimum, `bv >= 0` for a maximum.
+    fn sign_probe(self, ast: &z3::ast::BV, zero: &z3::ast::BV) -> z3::ast::Bool {
+        match self {
+            Extremum::Min => ast.bvslt(zero),
+            Extremum::Max => ast.bvsge(zero),
+        }
+    }
+
+    /// Run the bisection over `[lo, hi]` with the signed/unsigned comparison
+    /// this direction needs.
+    fn search(
+        self,
+        solver: &z3::Solver,
+        ast: &z3::ast::BV,
+        width: u32,
+        lo: u128,
+        hi: u128,
+        signed: bool,
+    ) -> Option<u128> {
+        match (self, signed) {
+            (Extremum::Min, true) => bsearch_min(solver, ast, width, lo, hi, |a, m| a.bvsle(m)),
+            (Extremum::Min, false) => bsearch_min(solver, ast, width, lo, hi, |a, m| a.bvule(m)),
+            (Extremum::Max, true) => bsearch_max(solver, ast, width, lo, hi, |a, m| a.bvsge(m)),
+            (Extremum::Max, false) => bsearch_max(solver, ast, width, lo, hi, |a, m| a.bvuge(m)),
+        }
+    }
+}
+
 impl SymContext {
     /// Debug: dump solver state as string for comparison.
     #[cfg(feature = "vex-engine-z3")]
@@ -1051,6 +1114,33 @@ impl SymContext {
     /// pre-check (we know a negative value exists).
     #[cfg(feature = "vex-engine-z3")]
     pub fn min(&self, bv: &RustBV, signed: bool) -> Option<u128> {
+        self.extremum(bv, signed, Extremum::Min)
+    }
+
+    /// Get the maximum value of a bitvector using binary search (O(log N)).
+    ///
+    /// The mirror of [`SymContext::min`] — see it for the algorithm and the
+    /// shared body. Optimization: when a parent model is cached, `M(bv)` is a
+    /// feasible witness `w` and `max >= w` always holds, used to tighten the
+    /// initial `lo` bound. For the signed case, if `w` is non-negative we
+    /// additionally skip the MaxInit pre-check (we know a non-negative value
+    /// exists).
+    #[cfg(feature = "vex-engine-z3")]
+    pub fn max(&self, bv: &RustBV, signed: bool) -> Option<u128> {
+        self.extremum(bv, signed, Extremum::Max)
+    }
+
+    /// Shared body of [`SymContext::min`] and [`SymContext::max`].
+    ///
+    /// The two were ~90-line mirror images: same concrete fast path, same
+    /// `is_sat` gate, same >128-bit width guard, same cached-witness peek, same
+    /// signed sign-probe-then-half-select, differing only in which end of the
+    /// chosen range the witness tightens and which comparison the bisection
+    /// uses. [`Extremum`] carries that difference so a future fix to the bound
+    /// selection cannot land on one direction and miss the other
+    /// (angr-fs8kb.32).
+    #[cfg(feature = "vex-engine-z3")]
+    fn extremum(&self, bv: &RustBV, signed: bool, dir: Extremum) -> Option<u128> {
         // Fast path for concrete values
         if let Some(v) = bv.as_u128() {
             return Some(v);
@@ -1094,35 +1184,43 @@ impl SymContext {
         self.with_z3_solver(|solver| {
             solver.push();
 
-            let (lo, hi): (u128, u128) = if signed {
+            let max_val = max_val_for_width(width);
+            let (half_lo, half_hi): (u128, u128) = if signed {
                 let sign_bit = 1u128 << (width - 1);
-                let max_val = max_val_for_width(width);
-                let max_positive = sign_bit - 1;
+                let negative_half = (sign_bit, max_val);
+                let non_negative_half = (0, sign_bit - 1);
+                let (preferred, fallback) = if dir.preferred_half_is_negative() {
+                    (negative_half, non_negative_half)
+                } else {
+                    (non_negative_half, negative_half)
+                };
 
-                // Witness's signed interpretation: negative iff sign bit set.
-                let witness_is_negative = witness.map(|v| (v & sign_bit) != 0).unwrap_or(false);
+                // A witness already sitting in the preferred half proves that
+                // half reachable without a Z3 check.
+                let witness_in_preferred = witness
+                    .map(|v| ((v & sign_bit) != 0) == dir.preferred_half_is_negative())
+                    .unwrap_or(false);
 
-                // has_negative is true if some satisfying assignment is signed
-                // negative. A negative witness proves it without a Z3 check.
-                let has_negative = if witness_is_negative {
+                let preferred_reachable = if witness_in_preferred {
                     true
                 } else {
                     solver.push();
                     let zero = make_bv_const(0, width);
-                    solver.assert(ast.bvslt(&zero)); // bv < 0 (signed)
-                    let check = timed_check(solver, CheckSite::MinInit);
+                    solver.assert(dir.sign_probe(&ast, &zero));
+                    let check = timed_check(solver, dir.init_site());
                     solver.pop(1);
                     match check.decided() {
-                        // Some(true)=has_negative, Some(false)=no negative value.
+                        // Some(true)=preferred half reachable, Some(false)=the
+                        // extremum is in the other half.
                         Some(v) => v,
-                        // The sign probe timed out (None): whether the feasible
-                        // set reaches below zero is undetermined. Collapsing
-                        // Unknown to false (has_negative=false) would confine the
-                        // search to [0, max_positive] and converge on a fabricated
-                        // non-negative minimum even when the true minimum is
-                        // negative. Propagate the unknown instead — the same rule
-                        // bsearch_min already follows on a mid-bisection Unknown
-                        // (angr-n0irt.1, invariant-z3-unknown-not-unsat).
+                        // The sign probe timed out (None): which half the
+                        // extremum lies in is undetermined. Collapsing Unknown
+                        // to false would confine the search to the fallback
+                        // half and converge on a fabricated extremum of the
+                        // wrong sign. Propagate the unknown instead — the same
+                        // rule bsearch_min/bsearch_max already follow on a
+                        // mid-bisection Unknown (angr-n0irt.1,
+                        // invariant-z3-unknown-not-unsat).
                         None => {
                             solver.pop(1); // balance the outer push() before abort
                             return None;
@@ -1130,164 +1228,31 @@ impl SymContext {
                     }
                 };
 
-                if has_negative {
-                    // Minimum is negative, search in [sign_bit, max_val] range.
-                    // Binding the witness in the arm that requires it keeps
-                    // `witness_is_negative` (itself `witness.map(..)`-derived)
-                    // from being re-proved with an unwrap.
-                    let hi_seed = match witness {
-                        // Witness is in [sign_bit, max_val] and feasible.
-                        Some(w) if witness_is_negative => w.min(max_val),
-                        _ => max_val,
-                    };
-                    (sign_bit, hi_seed)
+                if preferred_reachable {
+                    preferred
                 } else {
-                    // Minimum is non-negative. Witness, if any, is non-negative
-                    // (otherwise has_negative would be true), so it's in
-                    // [0, max_positive] and tightens the upper bound.
-                    let hi_seed = witness.map(|v| v.min(max_positive)).unwrap_or(max_positive);
-                    (0, hi_seed)
+                    fallback
                 }
             } else {
-                let max_val = max_val_for_width(width);
-                let hi_seed = witness.map(|v| v.min(max_val)).unwrap_or(max_val);
-                (0, hi_seed)
+                (0, max_val)
             };
 
-            // Common binary search loop. The signed and unsigned variants only
-            // differ in the comparison operator (bvsle vs bvule).
-            let result = if signed {
-                bsearch_min(solver, &ast, width, lo, hi, |a, m| a.bvsle(m))
-            } else {
-                bsearch_min(solver, &ast, width, lo, hi, |a, m| a.bvule(m))
+            // The witness is a feasible value, so it tightens the search from
+            // the far end: `min <= w` caps `hi`, `max >= w` raises `lo`. Only
+            // usable when it lies inside the half actually being searched — a
+            // Z3 sign probe can prove the preferred half reachable while the
+            // cached witness sits in the other one.
+            let seed = witness.filter(|w| (half_lo..=half_hi).contains(w));
+            let (lo, hi) = match dir {
+                Extremum::Min => (half_lo, seed.unwrap_or(half_hi)),
+                Extremum::Max => (seed.unwrap_or(half_lo), half_hi),
             };
+
+            let result = dir.search(solver, &ast, width, lo, hi, signed);
 
             solver.pop(1);
             // `result` is None on a mid-bisection Z3 timeout (angr-ph300.43):
             // propagate the unknown rather than a fabricated extremum.
-            result
-        })
-    }
-
-    /// Get the maximum value of a bitvector using binary search (O(log N)).
-    ///
-    /// This implementation uses pure SAT checks without model value extraction,
-    /// which allows it to work with bitvectors of any width (including >64 bits).
-    /// Based on claripy's _extrema algorithm.
-    ///
-    /// Optimization: when a parent model is cached, `M(bv)` is a feasible
-    /// witness `w` and `max >= w` always holds — used to tighten the initial
-    /// `lo` bound. For the signed case, if `w` is non-negative we additionally
-    /// skip the MaxInit pre-check (we know a non-negative value exists).
-    #[cfg(feature = "vex-engine-z3")]
-    pub fn max(&self, bv: &RustBV, signed: bool) -> Option<u128> {
-        // Fast path for concrete values
-        if let Some(v) = bv.as_u128() {
-            return Some(v);
-        }
-
-        if !self.is_sat() {
-            return None;
-        }
-
-        let ast = bv.to_z3_ast();
-        let width = bv.width();
-
-        // See min(): widths above 128 cannot be represented in the u128 binary
-        // search bounds, so a truncated extremum would be returned. Report
-        // unknown instead (angr-cxw7).
-        if width > 128 {
-            return None;
-        }
-
-        let _class = query_class::scope(|| {
-            query_class::classify_extrema(bv, &self.get_assumed_constraints())
-        });
-        let witness = self.cached_model_eval(&ast);
-        if witness.is_some() {
-            Z3_EXTREMA_MODEL_HIT_COUNT.fetch_add(1, Ordering::Relaxed);
-        } else {
-            Z3_EXTREMA_MODEL_MISS_COUNT.fetch_add(1, Ordering::Relaxed);
-        }
-
-        // All push/check/pop work shares one solver lock acquisition via
-        // with_z3_solver. The outer push/pop pair and the per-iteration
-        // push/check/pop pairs are all balanced inside the closure, so the
-        // Z3 scope stack returns to its pre-closure depth before f returns
-        // — safe for both the None (per-context) and Some (shared-lineage)
-        // dispatch paths.
-        self.with_z3_solver(|solver| {
-            solver.push();
-
-            let (lo, hi): (u128, u128) = if signed {
-                let sign_bit = 1u128 << (width - 1);
-                let max_val = max_val_for_width(width);
-                let max_positive = sign_bit - 1;
-
-                // Witness's signed interpretation: non-negative iff sign bit clear.
-                let witness_is_non_negative = witness.map(|v| (v & sign_bit) == 0).unwrap_or(false);
-
-                // A non-negative witness proves has_non_negative without a Z3 check.
-                let has_non_negative = if witness_is_non_negative {
-                    true
-                } else {
-                    solver.push();
-                    let zero = make_bv_const(0, width);
-                    solver.assert(ast.bvsge(&zero)); // bv >= 0 (signed)
-                    let check = timed_check(solver, CheckSite::MaxInit);
-                    solver.pop(1);
-                    match check.decided() {
-                        // Some(true)=has_non_negative, Some(false)=all negative.
-                        Some(v) => v,
-                        // The sign probe timed out (None): whether the feasible
-                        // set reaches at or above zero is undetermined. Collapsing
-                        // Unknown to false (has_non_negative=false) would confine
-                        // the search to [sign_bit, max_val] and converge on a
-                        // fabricated negative maximum even when the true maximum
-                        // is non-negative. Propagate the unknown instead — the
-                        // same rule bsearch_max follows on a mid-bisection Unknown
-                        // (angr-n0irt.1, invariant-z3-unknown-not-unsat).
-                        None => {
-                            solver.pop(1); // balance the outer push() before abort
-                            return None;
-                        }
-                    }
-                };
-
-                if has_non_negative {
-                    // Maximum is non-negative, search in [0, max_positive] range.
-                    // Witness, when non-negative, gives a tight lower bound.
-                    // Same shape as `bsearch_min`'s `hi_seed`: bind the
-                    // witness in the arm that needs it rather than unwrapping.
-                    let lo_seed = match witness {
-                        Some(w) if witness_is_non_negative => w.min(max_positive),
-                        _ => 0,
-                    };
-                    (lo_seed, max_positive)
-                } else {
-                    // Maximum is negative. Witness, if any, is negative (otherwise
-                    // has_non_negative would be true), so it's in [sign_bit, max_val].
-                    let lo_seed = witness
-                        .map(|v| v.max(sign_bit).min(max_val))
-                        .unwrap_or(sign_bit);
-                    (lo_seed, max_val)
-                }
-            } else {
-                let max_val = max_val_for_width(width);
-                let lo_seed = witness.map(|v| v.min(max_val)).unwrap_or(0);
-                (lo_seed, max_val)
-            };
-
-            // Common binary search loop. The signed and unsigned variants only
-            // differ in the comparison operator (bvsge vs bvuge).
-            let result = if signed {
-                bsearch_max(solver, &ast, width, lo, hi, |a, m| a.bvsge(m))
-            } else {
-                bsearch_max(solver, &ast, width, lo, hi, |a, m| a.bvuge(m))
-            };
-
-            solver.pop(1);
-            // None on a mid-bisection Z3 timeout (angr-ph300.43).
             result
         })
     }
