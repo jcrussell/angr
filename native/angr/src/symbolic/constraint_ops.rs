@@ -25,7 +25,7 @@ use super::RustBV;
 use super::SymContext;
 
 #[cfg(feature = "vex-engine-z3")]
-use super::context::LocalConstraints;
+use super::local_constraints::LocalConstraints;
 #[cfg(feature = "vex-engine-z3")]
 use super::solver_build::*;
 #[cfg(feature = "vex-engine-z3")]

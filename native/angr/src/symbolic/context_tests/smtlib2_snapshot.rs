@@ -1,5 +1,9 @@
 #![allow(clippy::arc_with_non_send_sync)]
 use super::*;
+// angr-fs8kb.35: `SymContextSnapshot` moved out of `context.rs` into
+// `context_snapshot.rs`, so `use super::*` (which reaches `context`) no longer
+// brings it in — import it through the `symbolic` re-export instead.
+use crate::symbolic::SymContextSnapshot;
 #[cfg(feature = "vex-engine-z3")]
 use crate::symbolic::Z3AstPtr;
 

@@ -19,7 +19,7 @@
 //! (== `pub(in crate::symbolic)`). See bead angr-a2br.2.4
 //! for the slice plan.
 
-use super::context::{LocalConstraints, freeze_into_shared};
+use super::local_constraints::LocalConstraints;
 use super::{RustBV, SymContext, SymContextSnapshot};
 
 use std::sync::Arc;
@@ -1265,4 +1265,57 @@ impl SymContext {
 
         merged
     }
+}
+
+// =============================================================================
+// Fork freeze helper
+//
+// angr-fs8kb.35: moved here from `context.rs`. `fork` and `merge` below are
+// its only callers.
+// =============================================================================
+
+/// Freeze a local additions vector into the shared `Arc<Vec<T>>`.
+///
+/// Outside an open push/pop scope (when `scope_open` is false) this drains
+/// `local` into `shared` in place — when shared has unique ownership the move
+/// avoids the per-element clones (e.g. each `z3::ast::Bool::clone` is a
+/// `Z3_inc_ref` FFI call). When `scope_open` is true we must preserve
+/// `local` so a later `pop()` can truncate it; in that case we fall back to
+/// allocating a fresh Vec by cloning shared and copying local's elements.
+///
+/// The returned Arc is the child's constraint set either way, so a fork taken
+/// *inside* an open scope still sees the in-scope constraints — only the
+/// parent's ability to retract them later is preserved. Callers derive
+/// `scope_open` from `bare_local_savepoints` (see `SymContext::fork`); the
+/// pre-angr-c7xno.75 gate read the long-dead `push_level` instead, which made
+/// the preserve branch unreachable and let in-scope constraints leak
+/// permanently into `shared`.
+fn freeze_into_shared<T: Clone>(
+    shared: &Mutex<Arc<Vec<T>>>,
+    local: &mut Vec<T>,
+    scope_open: bool,
+) -> Arc<Vec<T>> {
+    if local.is_empty() {
+        return Arc::clone(&shared.lock());
+    }
+    let mut shared_guard = shared.lock();
+    if scope_open {
+        // Cannot mutate local — the matching `pop()` expects it intact.
+        let mut merged = Vec::with_capacity(shared_guard.len() + local.len());
+        merged.extend_from_slice(&shared_guard);
+        merged.extend_from_slice(local);
+        return Arc::new(merged);
+    }
+    if let Some(inner) = Arc::get_mut(&mut *shared_guard) {
+        // Unique ownership: in-place append, no element clones either side.
+        inner.reserve(local.len());
+        inner.append(local);
+    } else {
+        // Aliased: allocate new Vec, but move local's elements (no local clones).
+        let mut merged = Vec::with_capacity(shared_guard.len() + local.len());
+        merged.extend_from_slice(&shared_guard);
+        merged.append(local);
+        *shared_guard = Arc::new(merged);
+    }
+    Arc::clone(&shared_guard)
 }

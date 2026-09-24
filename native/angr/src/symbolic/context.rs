@@ -11,8 +11,10 @@
 //! introduces several cross-cutting invariants that cut across the slice files
 //! this module was split into (angr-a2br: `bv_id_ops.rs`, `constraint_ops.rs`,
 //! `solving_ops.rs`, `transaction_ops.rs`, `snapshot_fork_ops.rs`,
-//! `lineage_ops.rs` — see the file index in `symbolic/mod.rs` for what landed
-//! where). The split preserved all of them, and any further refactor must too;
+//! `lineage_ops.rs`; angr-fs8kb.35: `context_snapshot.rs`,
+//! `local_constraints.rs`, `context_mock.rs`, `merge_instrument.rs` — see the
+//! file index in `symbolic/mod.rs` for what landed where). The splits preserved
+//! all of them, and any further refactor must too;
 //! because no single slice owns them, they stay documented here beside the
 //! struct definition. Invariants that have a bd memory carrying the long-form
 //! rationale cite its key (recall via `bd recall <key>`); the rest are
@@ -88,24 +90,22 @@
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
 // The Z3-only half of the std imports: every consumer of `Cell`/`RefCell`
-// (`sat_cache`, `model_cache`), `HashSet` (`LocalConstraints::dedup_set`),
-// `AtomicU32` (`timeout_ms`) and `Ordering` is itself behind
-// `#[cfg(feature = "vex-engine-z3")]`, so importing them unconditionally warns
-// in the no-z3 combos `make check-no-z3` gates (angr-sqfj8.139).
+// (`sat_cache`, `model_cache`), `AtomicU32` (`timeout_ms`) and `Ordering` is
+// itself behind `#[cfg(feature = "vex-engine-z3")]`, so importing them
+// unconditionally warns in the no-z3 combos `make check-no-z3` gates
+// (angr-sqfj8.139).
 #[cfg(feature = "vex-engine-z3")]
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-#[cfg(feature = "vex-engine-z3")]
-use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 #[cfg(feature = "vex-engine-z3")]
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use parking_lot::Mutex;
-use serde::{Deserialize, Serialize};
 
 use super::RustBV;
+use super::local_constraints::LocalConstraints;
 // Constraint-sharing analysis types live in `sharing.rs` (angr-a2br.2 slice 3).
 // `fold_sharing_walk` below takes a `&mut ConstraintSharingWalk`.
 // Solver/engine profiling counters live in `stats.rs` (angr-ugc2). The glob
@@ -123,222 +123,12 @@ use super::stats::*;
 #[cfg(feature = "vex-engine-z3")]
 use super::solver_build::*;
 
-/// Snapshot of a [`SymContext`]'s path-constraint state.
-///
-/// Two-class capture (angr-t3l5o Phase 1):
-///
-/// * The **assume class** is captured as context-free [`RustBV`] IR in
-///   `assumed_constraints`. On restore it is rebuilt by re-asserting each
-///   pair through `assume_true`/`assume_false` — no SMT-LIB2 text emit or
-///   parse. This is the common, hot path (path constraints from branch
-///   forking) and is what makes cross-Z3-context migration cheap.
-/// * The **residual class** is the set of solver assertions that have no
-///   [`RustBV`] form and so are not reconstructible from `assumed_constraints`
-///   — the raw entries from [`SymContext::add_constraint_raw`] (Python
-///   claripy-sync fallback + cross-process pointer import), the
-///   address-concretization equalities from [`SymContext::add_bv_constraint`],
-///   and the `merge()` guard/`Or` disjunctions. These are carried as an
-///   SMT-LIB2 text dump in `residual_smtlib2`, which is **empty** in the
-///   common case (no raw/bv/merge constraints) — the win path that collapses
-///   the old full-solver text round-trip.
-///
-/// Per-Z3-context cache state (solver, model_cache, sat_cache, lineage
-/// scope_path, push stacks) is NOT included — these are runtime caches that
-/// the loader rebuilds on first query against the restored constraints.
-///
-/// # Quiescence precondition (angr-9ke6b.135)
-///
-/// Because the push stacks are dropped, capture and restore are only valid at
-/// a point with **no open push/pop scope**: `bare_z3_push_depth == 0`,
-/// `scope_savepoints` empty, `scope_path` at its base. All real callers
-/// ([`RustSimState::to_snapshot`](crate::state::RustSimState::to_snapshot) and
-/// the stash-manager round-trip) are top-level state-persistence points that
-/// satisfy this, and restore always runs against a freshly-constructed
-/// [`SymContext`] whose depth is 0 by construction.
-///
-/// A snapshot taken mid-scope would silently reset `bare_z3_push_depth` to 0
-/// on restore, which would let a later [`fork`](SymContext::fork) mint a
-/// `SharedLineageSolver` frame in exactly the situation that counter's gate
-/// exists to prevent (the parent's unbalanced bare pushes leaking into the
-/// child's base — see bd memory `invariant-bare-z3-push-depth`).
-/// `to_snapshot` / `restore_from_snapshot` carry a `debug_assert!` for this.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SymContextSnapshot {
-    /// `(constraint, is_assumed_true)` pairs in insertion order.
-    pub assumed_constraints: Vec<(RustBV, bool)>,
-    /// Residual Z3 solver state as an SMT-LIB2 dump (angr-t3l5o Phase 1,
-    /// renamed from `solver_smtlib2`).
-    ///
-    /// Carries ONLY the residual class — the solver assertions with no
-    /// [`RustBV`] form (raw / bv-eq / merge-guard). Empty in the common
-    /// assume-only case, so no `format!` text emit happens on the hot path.
-    ///
-    /// When `reassert_assumed` is false (a merged context, see that field)
-    /// this instead carries the **full** solver dump and the `assumed`
-    /// pairs are NOT re-asserted on restore.
-    ///
-    /// `#[serde(default)]` keeps deserialization tolerant of a missing field
-    /// (empty residual → assume-only replay).
-    #[serde(default)]
-    pub residual_smtlib2: String,
-    /// Whether `assumed_constraints` should be re-asserted on the solver at
-    /// restore time (angr-t3l5o Phase 1).
-    ///
-    /// `true` (the common case): the assume class was directly asserted, so
-    /// restore rebuilds the solver by re-asserting each pair via
-    /// `assume_true`/`assume_false`, then replays `residual_smtlib2` (the
-    /// raw/bv residual). `false`: the context came from a `merge()`, whose
-    /// `assumed` pairs are export-only (the solver holds the guarded `Or`
-    /// disjunctions, not the unconditional pairs). For those, restore replays
-    /// the full `residual_smtlib2` dump and pushes the pairs to the BV-export
-    /// log WITHOUT asserting — re-asserting would over-constrain the merged
-    /// state. `#[serde(default = "default_true")]` keeps a missing field
-    /// (legacy / mock) on the common re-assert path.
-    #[serde(default = "default_true")]
-    pub reassert_assumed: bool,
-    /// The source context's authoritative `constraint_count` at capture time
-    /// (angr-kenpr). Restore pins `constraint_count` back to this after the
-    /// assume-class IR replay so `state_constraint_count` round-trips exactly —
-    /// the replay can re-assert `assumed`-log entries that were live-deduped
-    /// away on the source solver, inflating the counter otherwise.
-    ///
-    /// `#[serde(default)]` yields `0` for legacy snapshots, which restore reads
-    /// as "not captured" and skips the pin (keeps the replayed count).
-    #[serde(default)]
-    pub constraint_count: usize,
-    /// The source context's `next_id` watermark at capture time
-    /// (angr-op0dn.13.14).
-    ///
-    /// Every `RustBV::Symbolic` / `Constrained` leaf carries an id minted from
-    /// this counter. A restored state builds a **fresh** `SymContext`, whose
-    /// counter would otherwise start at 0 — so the first symbol minted during
-    /// the resume re-uses an id a restored leaf already owns, and every
-    /// id-keyed lookup (the claripy export registry in
-    /// [`SymbolicIdentityRegistry`](super::SymbolicIdentityRegistry),
-    /// `stored_conditions`, the symbol table) silently aliases the two.
-    /// Restore seeds the counter back to this watermark.
-    ///
-    /// `#[serde(default)]` yields `0` for legacy snapshots — restore reads that
-    /// as "not captured" and falls back to the max leaf id seen in
-    /// `assumed_constraints`.
-    #[serde(default)]
-    pub next_id: u64,
-    /// Whether the source context was in deterministic (unsigned-minimum
-    /// witness) `eval` mode at capture time (angr-ph300.46).
-    ///
-    /// A whole lineage stays in one witness-selection mode (`fork` inherits
-    /// it), so a snapshot must round-trip it too — otherwise a restored
-    /// deterministic state silently reverts to arbitrary-Z3-model witnesses
-    /// and run-to-run nondeterminism reappears. `#[serde(default)]` yields
-    /// `false` for legacy snapshots (the historical default).
-    #[serde(default)]
-    pub deterministic: bool,
-    /// Whether the source context had the `SharedLineageSolver`
-    /// materialization opt-in set at capture time (angr-ph300.46).
-    ///
-    /// Inherited across `fork` like `deterministic`; round-tripped so a
-    /// restored descendant keeps minting shared lineages. `#[serde(default)]`
-    /// yields `false` for legacy snapshots.
-    #[serde(default)]
-    pub use_shared_lineage_solver: bool,
-}
-
-/// serde default for [`SymContextSnapshot::reassert_assumed`] — the common
-/// assume-reconstructible path.
-fn default_true() -> bool {
-    true
-}
-
 /// Default Z3 solver timeout in milliseconds.
 ///
 /// 30 seconds — chosen to match claripy's historical default and to cap the
 /// occasional Z3 outlier on bimodal-SAT benches. Overridable per-state via
 /// `RustExplorationManager::set_solver_timeout`.
 pub const DEFAULT_SOLVER_TIMEOUT_MS: u32 = 30_000;
-
-/// Local-only constraint state added after fork.
-///
-/// Combines `assumed` (RustBV pairs for Python export) and `z3_assertions`
-/// (cached Z3 Bool nodes for fast fork replay) under a single Mutex so that
-/// the hot path (`assume_true`/`assume_false`/`add_constraint_raw`) only
-/// acquires one lock instead of two.
-///
-/// Also carries a `dedup_set` side-table of Z3_ast ptrs (angr-sfp9) used
-/// by [`SymContext::add_constraint_raw`] to skip the push+assert work when
-/// the incoming constraint is already asserted on the current solver. Z3's
-/// hash-cons gives `ptr-equality == structural-equality` for live ASTs, so
-/// the raw ptr is a valid identity key. The set is lazily seeded on first
-/// access from `z3_assertions_shared` + `z3_assertions`, then maintained
-/// incrementally by every path that pushes into `z3_assertions`.
-pub(super) struct LocalConstraints {
-    /// Local assumed (RustBV, is_assumed_true) pairs added after fork.
-    /// `pub(super)` for the constraint-mutation methods in `constraint_ops.rs`
-    /// (slice 9, angr-a2br.2.7).
-    pub(super) assumed: Vec<(RustBV, bool)>,
-    /// Local Z3 Bool assertions added after fork — only these are cloned on fork.
-    #[cfg(feature = "vex-engine-z3")]
-    pub(super) z3_assertions: Vec<z3::ast::Bool>,
-    /// Local residual (no-[`RustBV`]) Z3 Bool assertions added after fork
-    /// (angr-t3l5o Phase 1). A strict subset of `z3_assertions`: the entries
-    /// pushed by the three residual sinks — `add_constraint_raw` (non-dup),
-    /// `add_bv_constraint`, and the `merge` guard/`Or` asserts. Mirrors the
-    /// `z3_assertions` shared/local lifecycle so `fork`'s `freeze_into_shared`
-    /// and `merge` carry it without new logic. Dumped to `residual_smtlib2`
-    /// in `to_snapshot`; the assume class is reconstructed from
-    /// `assumed_constraints` IR instead.
-    #[cfg(feature = "vex-engine-z3")]
-    pub(super) non_bv_assertions: Vec<z3::ast::Bool>,
-    /// HashSet of Z3_ast ptrs for O(1) dedup in `add_constraint_raw`.
-    /// Holds ptrs for every assertion known to be currently asserted on the
-    /// solver (i.e. everything in `z3_assertions_shared` + `z3_assertions`).
-    /// Lazily seeded — `dedup_set_seeded == false` means the set is stale
-    /// and must be rebuilt from the shared+local vecs before consultation.
-    #[cfg(feature = "vex-engine-z3")]
-    pub(super) dedup_set: HashSet<usize>,
-    /// True once `dedup_set` has been populated from shared+local for this
-    /// context. Reset to false by `fork()`, `merge()` (via `new()`), and a
-    /// bare `pop()` that closes a scope which added assertions
-    /// (`scope_savepoint_pop`, angr-ph300.41) — all of which truncate
-    /// `z3_assertions`.
-    #[cfg(feature = "vex-engine-z3")]
-    pub(super) dedup_set_seeded: bool,
-}
-
-impl LocalConstraints {
-    pub(super) fn new() -> Self {
-        LocalConstraints {
-            assumed: Vec::new(),
-            #[cfg(feature = "vex-engine-z3")]
-            z3_assertions: Vec::new(),
-            #[cfg(feature = "vex-engine-z3")]
-            non_bv_assertions: Vec::new(),
-            #[cfg(feature = "vex-engine-z3")]
-            dedup_set: HashSet::new(),
-            #[cfg(feature = "vex-engine-z3")]
-            dedup_set_seeded: false,
-        }
-    }
-
-    /// Insert a Z3 Bool into `z3_assertions` and, when the dedup set is
-    /// already seeded, record its ptr too.
-    ///
-    /// Callers must already know `b` is not present: this records the ptr
-    /// but never *consults* the set. There is deliberately no bulk sibling —
-    /// the one that existed (`extend_assertions`) was the whole of
-    /// angr-5mnx3.43, letting `add_constraints_raw_batch` re-push and
-    /// re-assert already-asserted constraints. A bulk caller wanting dedup
-    /// should loop over [`SymContext::seed_and_check_z3_dedup`], which
-    /// pushes on a miss, exactly as `add_constraints_raw_batch` now does.
-    #[cfg(feature = "vex-engine-z3")]
-    pub(super) fn push_assertion(&mut self, b: z3::ast::Bool) {
-        if self.dedup_set_seeded {
-            use z3::ast::Ast;
-            let ptr = b.get_z3_ast().as_ptr() as usize;
-            self.dedup_set.insert(ptr);
-        }
-        self.z3_assertions.push(b);
-    }
-}
 
 /// Solver context for symbolic execution.
 ///
@@ -583,25 +373,6 @@ pub struct SymContext {
 }
 
 impl SymContext {
-    /// Create a new mock solver context (without Z3).
-    #[cfg(not(feature = "vex-engine-z3"))]
-    pub fn new_mock() -> Self {
-        SymContext {
-            constraint_count: AtomicUsize::new(0),
-            symbol_table: Arc::new(HashMap::new()),
-            assumed_constraints_shared: Mutex::new(Arc::new(Vec::new())),
-            assume_class_reconstructible: AtomicBool::new(true),
-            local_constraints: Mutex::new(LocalConstraints::new()),
-            mock_scope_savepoints: Mutex::new(Vec::new()),
-        }
-    }
-
-    /// Alias for new_mock when Z3 is not available.
-    #[cfg(not(feature = "vex-engine-z3"))]
-    pub fn new() -> Self {
-        Self::new_mock()
-    }
-
     /// Create a new solver context with Z3.
     ///
     /// With z3-rs 0.19+, the Z3 context is thread-local.
@@ -764,44 +535,6 @@ impl SymContext {
     // commit/rollback lifecycle was removed in angr-ph300.44.
 
     // =========================================================================
-    // Mock implementations when Z3 is not available
-    // =========================================================================
-
-    #[cfg(not(feature = "vex-engine-z3"))]
-    pub fn assume_true(&self, cond: &RustBV) {
-        self.assume(cond, true);
-    }
-
-    #[cfg(not(feature = "vex-engine-z3"))]
-    pub fn assume_false(&self, cond: &RustBV) {
-        self.assume(cond, false);
-    }
-
-    /// Non-Z3 mirror of `constraint_ops.rs::assume` (angr-12jjk.11): the two
-    /// polarities share one body here too, so a change to the export contract
-    /// can't land in one twin and miss the other.
-    #[cfg(not(feature = "vex-engine-z3"))]
-    fn assume(&self, cond: &RustBV, want_true: bool) {
-        debug_assert_eq!(cond.width(), 1);
-        // Track for export to Python; no Z3 to assert against.
-        self.local_constraints
-            .lock()
-            .assumed
-            .push((cond.clone(), want_true));
-    }
-
-    #[cfg(not(feature = "vex-engine-z3"))]
-    pub fn check_branch_feasibility(&self, cond: &RustBV) -> (bool, bool) {
-        debug_assert_eq!(cond.width(), 1);
-        if let Some(v) = cond.as_u128() {
-            return (v != 0, v == 0);
-        }
-        // Without Z3, assume both directions are feasible — matches the
-        // can_be_true/can_be_false stubs.
-        (true, true)
-    }
-
-    // =========================================================================
     // Constraint Export
     // =========================================================================
 
@@ -831,56 +564,6 @@ impl Clone for SymContext {
     }
 }
 
-// =============================================================================
-// Fork freeze helpers
-// =============================================================================
-
-/// Freeze a local additions vector into the shared `Arc<Vec<T>>`.
-///
-/// Outside an open push/pop scope (when `scope_open` is false) this drains
-/// `local` into `shared` in place — when shared has unique ownership the move
-/// avoids the per-element clones (e.g. each `z3::ast::Bool::clone` is a
-/// `Z3_inc_ref` FFI call). When `scope_open` is true we must preserve
-/// `local` so a later `pop()` can truncate it; in that case we fall back to
-/// allocating a fresh Vec by cloning shared and copying local's elements.
-///
-/// The returned Arc is the child's constraint set either way, so a fork taken
-/// *inside* an open scope still sees the in-scope constraints — only the
-/// parent's ability to retract them later is preserved. Callers derive
-/// `scope_open` from `bare_local_savepoints` (see `SymContext::fork`); the
-/// pre-angr-c7xno.75 gate read the long-dead `push_level` instead, which made
-/// the preserve branch unreachable and let in-scope constraints leak
-/// permanently into `shared`.
-pub(super) fn freeze_into_shared<T: Clone>(
-    shared: &Mutex<Arc<Vec<T>>>,
-    local: &mut Vec<T>,
-    scope_open: bool,
-) -> Arc<Vec<T>> {
-    if local.is_empty() {
-        return Arc::clone(&shared.lock());
-    }
-    let mut shared_guard = shared.lock();
-    if scope_open {
-        // Cannot mutate local — the matching `pop()` expects it intact.
-        let mut merged = Vec::with_capacity(shared_guard.len() + local.len());
-        merged.extend_from_slice(&shared_guard);
-        merged.extend_from_slice(local);
-        return Arc::new(merged);
-    }
-    if let Some(inner) = Arc::get_mut(&mut *shared_guard) {
-        // Unique ownership: in-place append, no element clones either side.
-        inner.reserve(local.len());
-        inner.append(local);
-    } else {
-        // Aliased: allocate new Vec, but move local's elements (no local clones).
-        let mut merged = Vec::with_capacity(shared_guard.len() + local.len());
-        merged.extend_from_slice(&shared_guard);
-        merged.append(local);
-        *shared_guard = Arc::new(merged);
-    }
-    Arc::clone(&shared_guard)
-}
-
 impl Default for SymContext {
     fn default() -> Self {
         Self::new()
@@ -891,36 +574,14 @@ impl Default for SymContext {
 // monolithic `context_tests.rs` (2340 lines) to keep each file under the
 // <2000-line epic acceptance criterion. Declared as direct children of
 // `context` so `use super::*` reaches `context`'s private items.
-/// Test-only instrumentation for `SymContext::merge`'s guarded-assertion count
-/// (angr-op0dn.11.3). The production merge increments this for every guarded
-/// `Or(!cond, c)` it emits plus the final `Or` of merge flags. On the
-/// shared-prefix (CoW) path the guarded count collapses to the divergent
-/// (local) constraint count + 1; on the fallback path it stays the total
-/// constraint count + 1. Tests reset it, run a merge, and assert the count.
+//
+// angr-fs8kb.35: `merge_instrument` — the guarded-assertion counter
+// `SymContext::merge` bumps and `context_tests_merge_prefix` reads — moved to
+// its own file but stays a child module of `context` via `#[path]`, so every
+// caller's path is unchanged.
 #[cfg(test)]
-pub(crate) mod merge_instrument {
-    use std::cell::Cell;
-
-    thread_local! {
-        static GUARDED_EMITTED: Cell<u64> = const { Cell::new(0) };
-    }
-
-    /// Called from `SymContext::merge` for each guarded `Or` (and the flag `Or`).
-    #[inline]
-    pub(crate) fn note_guarded() {
-        GUARDED_EMITTED.with(|c| c.set(c.get() + 1));
-    }
-
-    /// Reset the counter to zero before a measured merge.
-    pub(crate) fn reset() {
-        GUARDED_EMITTED.with(|c| c.set(0));
-    }
-
-    /// Read the number of guarded `Or`s emitted since the last [`reset`].
-    pub(crate) fn emitted() -> u64 {
-        GUARDED_EMITTED.with(|c| c.get())
-    }
-}
+#[path = "merge_instrument.rs"]
+pub(crate) mod merge_instrument;
 
 // Gated on vex-engine-z3 (bd angr-cagbn): every test here drives
 // `SymContext::add_constraint` / Z3AstPtr, which only exist with z3. Keeps the

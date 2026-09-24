@@ -36,12 +36,16 @@
 //!
 //! | File | Holds |
 //! |------|-------|
-//! | `context.rs` | The `SymContext` struct and `SymContextSnapshot`, `new` / `with_timeout` / `new_mock` / `Default` / `Clone`, `DEFAULT_SOLVER_TIMEOUT_MS`, and the `#[path]` wiring for `context_tests/`. Plus the unsliced `&self` surface: the lazily-materializing `solver()` accessor, the assumed-constraint export log (`assumed_constraints_push`, `assumed_local_len`, `truncate_assumed_local`, `get_assumed_constraints`, `assumed_constraint_count`, `export_z3_assertion_ptrs`), the **non-z3** mock twins of `assume_true` / `assume_false` / `check_branch_feasibility` (their z3 halves live in `constraint_ops.rs` / `solving_ops.rs`), the `LocalConstraints` type, and the `freeze_into_shared` helper. |
+//! | `context.rs` | The `SymContext` struct, its Z3 construction (`new` / `with_timeout` / `new_mock` / `Default` / `Clone`), `DEFAULT_SOLVER_TIMEOUT_MS`, and the `#[path]` wiring for `merge_instrument.rs` + `context_tests/`. Plus the unsliced `&self` surface: the lazily-materializing `solver()` accessor and the assumed-constraint export log (`assumed_constraints_push`, `assumed_local_len`, `truncate_assumed_local`, `get_assumed_constraints`, `assumed_constraint_count`, `export_z3_assertion_ptrs`). |
+//! | `context_snapshot.rs` | `SymContextSnapshot` — the serde capture of a context's path constraints, plus its `serde(default)` helper. Data only; `to_snapshot` / `restore_from_snapshot` live in `snapshot_fork_ops.rs`. |
+//! | `local_constraints.rs` | `LocalConstraints` — the post-fork local additions (`assumed`, `z3_assertions`, `non_bv_assertions`, `dedup_set`) that share `SymContext`'s one hot-path Mutex. |
+//! | `context_mock.rs` | The no-Z3 half of `SymContext`: the mock constructors and the mock twins of `assume_true` / `assume_false` / `check_branch_feasibility` (their z3 halves are in `constraint_ops.rs` / `solving_ops.rs`). `#[cfg(not(feature = "vex-engine-z3"))]` — the inverse of the **(z3)** marker. |
+//! | `merge_instrument.rs` | `#[cfg(test)]` guarded-assertion counter `SymContext::merge` bumps and `context_tests_merge_prefix` reads. Declared from `context.rs` via `#[path]`, so its module path is still `context::merge_instrument`. |
 //! | `bv_id_ops.rs` | Slice 8: unique-id allocation (`next_id`), the symbolic-BV factories, `num_constraints`, and the `SymbolIdRebase` watermark helpers. |
 //! | `constraint_ops.rs` | Slice 9: constraint mutation — `add_constraint*`, `add_bv_constraint`, `assume_true`. **(z3)** |
 //! | `solving_ops.rs` | Slice 7: the read path — `is_sat`, branch feasibility, `eval*` / `eval_upto*`, extrema queries. |
 //! | `transaction_ops.rs` | Slice 10: solver scoping (`push` / `pop` / `try_pop`), timeout accessors, SAT-cache primer. |
-//! | `snapshot_fork_ops.rs` | Slice 11: lifecycle — `fork`, `merge`, `to_snapshot` / `restore_from_snapshot`. |
+//! | `snapshot_fork_ops.rs` | Slice 11: lifecycle — `fork`, `merge`, `to_snapshot` / `restore_from_snapshot`, and the `freeze_into_shared` helper those three share. |
 //! | `lineage_ops.rs` | Slice 6: the accessors over the shared-lineage cells (`lineage`, `scope_path`, savepoints). Not purely lineage-scoped: `fold_sharing_walk` reads the assumed-constraint log, and the savepoint push/pop pair records/truncates `local_constraints` — see the module doc. |
 //! | `solver_build.rs` | Slice 2: Z3 `Solver` construction and the per-check timing / sampling wrappers. Free functions, no `&self`. **(z3)** |
 //! | `parse.rs` | Slice 4: parsers turning Z3's hex / binary / decimal numeral strings into concrete values. **(z3)** |
@@ -83,10 +87,14 @@ pub use bv_id_ops::{
 #[cfg(feature = "vex-engine-z3")]
 mod constraint_ops;
 mod context;
+#[cfg(not(feature = "vex-engine-z3"))]
+mod context_mock;
+mod context_snapshot;
 mod handle;
 #[cfg(feature = "vex-engine-z3")]
 pub mod lineage;
 mod lineage_ops;
+mod local_constraints;
 #[cfg(feature = "vex-engine-z3")]
 mod parse;
 /// Dev-only re-export of the pure Z3-numeral-string decoders for cargo-fuzz
@@ -137,7 +145,8 @@ pub use bv_chunk::{
     MAX_CONCRETE_CHUNK, MAX_CONCRETE_LOAD_BYTES, check_concrete_load_size,
     load_concrete_bytes_chunked, store_concrete_bytes_chunked, u128_le_byte, u128_to_le_bytes,
 };
-pub use context::{DEFAULT_SOLVER_TIMEOUT_MS, SymContext, SymContextSnapshot};
+pub use context::{DEFAULT_SOLVER_TIMEOUT_MS, SymContext};
+pub use context_snapshot::SymContextSnapshot;
 pub use handle::RustBVHandle;
 #[cfg(test)]
 pub use registry::clear_global_registry;
