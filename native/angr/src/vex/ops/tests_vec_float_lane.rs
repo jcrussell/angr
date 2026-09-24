@@ -320,3 +320,164 @@ fn test_vec_float_lane_over_arity_returns_error() {
         other => panic!("expected UnsupportedVectorOp, got {other:?}"),
     }
 }
+
+// =========================================================================
+// AVX2 256-bit packed FP (angr-fs8kb.15)
+// =========================================================================
+//
+// `opcode_map` routes Iop_{Add,Sub,Mul,Div,Sqrt,Min,Max}{32Fx8,64Fx4} into
+// `vec_float_lane_op` with a 256-bit total width. That is past its
+// `total_width <= 128` concrete fast path, so these exercise the per-lane
+// `extract` + symbolic FP + `concat_le_elements` fallback instead — the same
+// tier every sibling lane dispatcher (`vec_int_lane_op`, `vec_saturate`,
+// `vec_permute_mul`, `vec_pairwise`, `vec_compare`, `vec_shift`) already
+// covers. 256 bits is also past the 16-byte concrete backing store, so the
+// operands are built as a `Concat` of two 128-bit concretes and the result is
+// read back one lane at a time (bd `invariant-concrete-bv-u128-16-byte-limit`).
+
+/// Pack 8 f32 lanes (lane 0 first) into a 256-bit `Concat` of two 128-bit
+/// concrete halves.
+#[cfg(feature = "vex-engine-z3")]
+fn pack_v256_f32x8(lanes: &[f32; 8], ctx: &SymContext) -> RustBV {
+    let mut halves = [0u128; 2];
+    for (i, lane) in lanes.iter().enumerate() {
+        halves[i / 4] |= u128::from(lane.to_bits()) << ((i % 4) * 32);
+    }
+    RustBV::concrete(halves[1], 128).concat_into(RustBV::concrete(halves[0], 128), ctx)
+}
+
+/// Pack 4 f64 lanes (lane 0 first) into a 256-bit `Concat` of two 128-bit
+/// concrete halves.
+#[cfg(feature = "vex-engine-z3")]
+fn pack_v256_f64x4(lanes: &[f64; 4], ctx: &SymContext) -> RustBV {
+    let mut halves = [0u128; 2];
+    for (i, lane) in lanes.iter().enumerate() {
+        halves[i / 2] |= u128::from(lane.to_bits()) << ((i % 2) * 64);
+    }
+    RustBV::concrete(halves[1], 128).concat_into(RustBV::concrete(halves[0], 128), ctx)
+}
+
+/// Read lane `i` of a 256-bit result back as f32 via `extract` + model eval.
+#[cfg(feature = "vex-engine-z3")]
+fn eval_v256_lane_f32(ctx: &SymContext, result: &RustBV, i: u32) -> f32 {
+    let lane = result.extract(i * 32 + 31, i * 32, ctx);
+    f32::from_bits(ctx.eval(&lane).expect("eval(lane) returned None") as u32)
+}
+
+/// Read lane `i` of a 256-bit result back as f64 via `extract` + model eval.
+#[cfg(feature = "vex-engine-z3")]
+fn eval_v256_lane_f64(ctx: &SymContext, result: &RustBV, i: u32) -> f64 {
+    let lane = result.extract(i * 64 + 63, i * 64, ctx);
+    f64::from_bits(ctx.eval(&lane).expect("eval(lane) returned None") as u64)
+}
+
+/// VADDPS/VSUBPS/VMULPS/VDIVPS-style: the four AVX2 f32x8 arithmetic opcodes.
+/// Lane values are exactly representable in binary32, so the expected value is
+/// the plain Rust `f32` op — no tolerance needed, and a lane-indexing slip
+/// shows up as a mismatch rather than a rounding wobble.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_vec_float_binops_avx2_256_bit_f32x8() {
+    let ctx = SymContext::new_mock();
+
+    // Lane 0 first. Distinct per lane so a swapped/duplicated lane is visible;
+    // no zeros on the right so the same table can drive the divide.
+    let l: [f32; 8] = [1.0, 2.5, -3.0, 0.5, 16.0, -0.25, 7.5, 1024.0];
+    let r: [f32; 8] = [10.0, -2.5, 3.0, 8.0, 0.5, 4.0, -1.5, 2.0];
+
+    for op in [
+        IROp::VFAdd {
+            elem: IRType::F32,
+            count: 8,
+        },
+        IROp::VFSub {
+            elem: IRType::F32,
+            count: 8,
+        },
+        IROp::VFMul {
+            elem: IRType::F32,
+            count: 8,
+        },
+        IROp::VFDiv {
+            elem: IRType::F32,
+            count: 8,
+        },
+    ] {
+        let result = VEXOps::binop(
+            op,
+            pack_v256_f32x8(&l, &ctx),
+            pack_v256_f32x8(&r, &ctx),
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(result.width(), 256, "{op:?} result width");
+
+        for i in 0..8usize {
+            let expected = match op {
+                IROp::VFAdd { .. } => l[i] + r[i],
+                IROp::VFSub { .. } => l[i] - r[i],
+                IROp::VFMul { .. } => l[i] * r[i],
+                _ => l[i] / r[i],
+            };
+            let got = eval_v256_lane_f32(&ctx, &result, i as u32);
+            assert_eq!(got, expected, "{op:?} lane {i}");
+        }
+    }
+}
+
+/// VMINPD/VMAXPD/VSQRTPD-style: the AVX2 f64x4 tier, covering both a binary
+/// (`VFMin`/`VFMax`) and a unary (`VFSqrt`) `FloatLaneOp` above 128 bits —
+/// `vec_float_lane_op`'s arity-1 path never saw a 256-bit operand before.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_vec_float_min_max_sqrt_avx2_256_bit_f64x4() {
+    let ctx = SymContext::new_mock();
+
+    let l: [f64; 4] = [1.0, -8.0, 3.5, 0.0];
+    let r: [f64; 4] = [2.0, -16.0, 3.5, -1.0];
+
+    for op in [
+        IROp::VFMin {
+            elem: IRType::F64,
+            count: 4,
+        },
+        IROp::VFMax {
+            elem: IRType::F64,
+            count: 4,
+        },
+    ] {
+        let result = VEXOps::binop(
+            op,
+            pack_v256_f64x4(&l, &ctx),
+            pack_v256_f64x4(&r, &ctx),
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(result.width(), 256, "{op:?} result width");
+
+        for i in 0..4usize {
+            let expected = match op {
+                IROp::VFMin { .. } => l[i].min(r[i]),
+                _ => l[i].max(r[i]),
+            };
+            let got = eval_v256_lane_f64(&ctx, &result, i as u32);
+            assert_eq!(got, expected, "{op:?} lane {i}");
+        }
+    }
+
+    let sqrt_in: [f64; 4] = [4.0, 9.0, 16.0, 0.25];
+    let result = VEXOps::unop(
+        IROp::VFSqrt {
+            elem: IRType::F64,
+            count: 4,
+        },
+        pack_v256_f64x4(&sqrt_in, &ctx),
+        &ctx,
+    )
+    .unwrap();
+    assert_eq!(result.width(), 256);
+    for (i, v) in sqrt_in.iter().enumerate() {
+        let got = eval_v256_lane_f64(&ctx, &result, i as u32);
+        assert_eq!(got, v.sqrt(), "VFSqrt lane {i}");
+    }
+}
