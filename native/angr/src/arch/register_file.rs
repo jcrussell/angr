@@ -90,6 +90,11 @@ impl RegisterFile {
         if end > base.saturating_add(reg_size) {
             return offset;
         }
+        // `build_containment` writes `(base, reg_size)` only into the table
+        // slots `base..base + reg_size` covers, so `base <= offset`; with the
+        // `end <= base + reg_size` check just above, that bounds every
+        // intermediate below to `[base, base + reg_size]`.
+        // overflow-ok: bounded by the containment invariant stated above.
         base + reg_size - (offset - base) - size
     }
 
@@ -321,6 +326,16 @@ impl RegisterFile {
         // E.g., writing cl (8-bit at offset 12) when ecx (32-bit at offset 12)
         // is symbolic. We must compose the new value with the remaining symbolic
         // bits to preserve them.
+        //
+        // Unlike `get_storage`'s same-offset arm — a pure O(1) short-circuit
+        // past a scan that would reach the same answer anyway — this arm is
+        // load-bearing: the middle/upper-portion scan below tests `sym_offset <
+        // offset` strictly, so an overlay starting at exactly `offset` is
+        // invisible to it and the write would fall through to the plain
+        // insert/store at the bottom, dropping the overlay's upper bits instead
+        // of composing with them. It is also the cheap path for the common
+        // case, since x86 sub-registers alias a *shared* offset (rax/eax/ax/al
+        // are all offset 16).
         if let Some(wider_sym) = self.symbolic.get(&offset).cloned()
             && wider_sym.width() > write_bits
         {
