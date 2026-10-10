@@ -417,6 +417,43 @@ adding an op whose pyvex name is *not* a simple
 engine receives an already-lifted ``IRSB`` from C-side libVEX (raw
 bindings in ``vex/libvex_ffi.rs``).
 
+Symbolic universality tests
+---------------------------
+
+Concrete unit tests cover one input; a ``#[cfg(feature = "vex-engine-z3")]``
+*universality* test proves the symbolic encoding correct for all inputs by
+asserting ``got != reference`` is UNSAT (``ctx.push()``,
+``ctx.add_constraint(got.to_z3_ast().eq(reference.to_z3_ast()).not())``,
+``assert!(!ctx.is_sat())``, ``ctx.pop()``). Pick the reference by this ladder:
+
+1. **Python parity.** If ``angr/engines/vex/claripy/irop.py`` defines
+   ``_op_Iop_X`` / ``_op_generic_X``, rebuild that exact pattern from
+   ``RustBV::extract`` + ``VEXOps::concat_le_elements``. Claripy's ``arg[127:96]``
+   maps to ``extract(127, 96, &ctx)``; ``concat_le_elements`` index 0 is the
+   LSB, so push slices LSB to MSB.
+2. **Sibling-op identity** (preferred when the op is algebraically related to
+   ops already covered). Assert an identity tying it to two or more existing
+   dispatch arms, e.g. ``VMull_lane == concat(VMulHi_lane, VMul_lane)``
+   (``test_vec_mulhi_symbolic_matches_mull_split``). The reference shares no
+   index arithmetic with the code under test. Look for hi/lo splits,
+   widen-then-narrow round trips, add/sub inverses.
+3. **Spec replay.** Otherwise inline a reference built from the same ``RustBV``
+   primitives. It catches wrong caps, swapped then/else, off-by-one extracts and
+   sign confusion, but not a bug in the spec itself.
+4. **Opposite-numbering ISA replay.** When a vendor manual specifies the op in
+   a different bit/byte numbering (PPC: bit 0 = MSB), write the reference in the
+   manual's numbering so the two derivations share no index arithmetic
+   (``vgbbd_be_reference``). If the permutation is an involution (transposes,
+   full reversals), the numbering choice provably cannot change the result.
+
+For IR rewrite rules in ``symbolic::value`` with both a construction-time and a
+Z3-emission hook, pin every symbolic to concrete values and compare
+``ctx.eval()`` results; structural tree assertions miss byte-order bugs.
+
+Always mutation-check identity and replay tests: temporarily break the op and
+confirm the test fails, since an identity that also holds for the buggy version
+is vacuous.
+
 What *not* to do
 ----------------
 

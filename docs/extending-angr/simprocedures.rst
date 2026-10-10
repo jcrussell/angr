@@ -1198,8 +1198,9 @@ Syscalls
 
 The native syscall set is currently focused on the AMD64 baseline
 plus the per-arch tables in ``register_<arch>`` (X86, ARM, ARM64,
-MIPS32 in ``syscalls/mod.rs``; MIPS64 has no syscall table yet —
-``angr-smtv``). Every numbered handler below is registered for AMD64;
+MIPS32 and MIPS64 in ``syscalls/mod.rs``; MIPS64 leaves the stat family
+unregistered because ``write_stat_for_arch`` has no MIPS64 ``struct stat``
+writer). Every numbered handler below is registered for AMD64;
 other arches re-register the same handler under each arch's syscall
 number from its ``unistd_*.h``. The ``angr-0hif`` campaign expanded
 the baseline I/O / memory / exit handlers with file-path, directory,
