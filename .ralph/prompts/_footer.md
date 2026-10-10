@@ -74,7 +74,7 @@ Otherwise, for each task follow this loop:
 
 ## Key files
 
-See the **Key Files** section in `CLAUDE.md` (already in your context).
+See the **Key Files** section in `AGENTS.md` (already in your context).
 
 ## Rules
 
@@ -107,7 +107,7 @@ See the **Key Files** section in `CLAUDE.md` (already in your context).
 - **Log handling:** do NOT cat full logs or test outputs. Pipe through
   `tail -200`, `head -200`, or `grep -C3 PATTERN`. Tests:
   `pytest -q --tb=short`, never `-v --tb=long` in this loop.
-- **Don't re-read injected context:** CLAUDE.md, _footer.md, and session.md
+- **Don't re-read injected context:** AGENTS.md (imported by CLAUDE.md), _footer.md, and session.md
   were injected at iter start. Do not re-open them mid-iteration.
 - **Output discipline:** no recap of completed steps, no narrative summaries
   between tool calls. End-of-turn: ≤2 sentences (what changed, what's next).

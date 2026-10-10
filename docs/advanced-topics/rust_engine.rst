@@ -5,7 +5,7 @@ angr ships an experimental Rust-native symbolic-execution engine
 (``RustExplorationManager``) that runs the VEX interpreter, memory
 model, and Z3 solver in Rust while still cooperating with the Python
 project, claripy ASTs, and SimProcedures via PyO3. It is the same
-engine documented in the repository's ``CLAUDE.md`` and is enabled by
+engine documented in the repository's ``AGENTS.md`` and is enabled by
 passing ``use_rust_engine=True`` to ``proj.factory.simulation_manager()``.
 
 This page collects the limitations and performance characteristics that

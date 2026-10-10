@@ -244,7 +244,7 @@ def self_test() -> int:
 
     A lint that has never been seen to fire is indistinguishable from one that
     cannot — this repo has been bitten by that before (see the valgrind gate's
-    ``--self-test`` note in CLAUDE.md).
+    ``--self-test`` note in AGENTS.md).
     """
     got = [(fn, params, drops, exempt) for _, _, fn, params, drops, exempt in scan_text("<self-test>", _SELF_TEST_SRC)]
     if got != _SELF_TEST_EXPECTED:

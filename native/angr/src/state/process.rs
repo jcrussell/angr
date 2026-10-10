@@ -445,7 +445,7 @@ fn round_alloc_size(size: u64) -> u64 {
 /// Advance the heap bump pointer by `delta`, saturating at `u64::MAX`.
 ///
 /// The bump pointer is an *identity* allocator — every value it hands out
-/// names a distinct live object — so per CLAUDE.md's "Integer overflow /
+/// names a distinct live object — so per AGENTS.md's "Integer overflow /
 /// wraparound" rules it must not wrap: a wrapped `heap_brk` lands *below*
 /// where it started and the next `heap_alloc` aliases memory that is already
 /// mapped (the binary's own text/data), silently corrupting it. Saturating

@@ -220,7 +220,7 @@ impl RustSymbolTable {
     // macros generate them from a table of `(method_name, RustBV-method)` rows;
     // the rows below are the authoritative list -- deliberately not restated as
     // a count here, since a count silently goes stale the moment a row is
-    // appended (see CLAUDE.md's cardinality-claim rule).
+    // appended (see AGENTS.md's cardinality-claim rule).
     //
     // To add a new operation, append one row to the appropriate macro call
     // below and implement the matching RustBV method.

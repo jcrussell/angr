@@ -180,7 +180,7 @@ macro_rules! test_submod {
 /// Take a fallible value's success payload, or log the failure and fall back to
 /// `$default` — the one-line spelling of the `SILENT(cat-x)` convention.
 ///
-/// CLAUDE.md's silent-fallback rules say a site that discards an error and
+/// AGENTS.md's silent-fallback rules say a site that discards an error and
 /// continues with a degraded result must carry a `// SILENT(cat-a|b|c)` tag,
 /// and that `cat-c` (wrong-answer risk) must *also* `log::warn!`. Writing that
 /// out by hand is four lines of `unwrap_or_else` boilerplate, so the tempting
@@ -239,7 +239,7 @@ macro_rules! silent_default {
         }
     };
     // Internal: the category selects the log level. Keep in sync with the
-    // cat-a/b/c definitions in CLAUDE.md's "Silent-fallback tagging" section.
+    // cat-a/b/c definitions in AGENTS.md's "Silent-fallback tagging" section.
     (@log cat_b, $($msg:tt)+) => { log::debug!($($msg)+) };
     (@log cat_c, $($msg:tt)+) => { log::warn!($($msg)+) };
 }
@@ -255,7 +255,7 @@ test_submod!("silent_default_tests.rs" => silent_default_tests);
 /// span past `u64::MAX` ns would report a near-zero duration rather than a huge
 /// one. Saturating keeps the impossible case implausible-looking instead of
 /// wrong, and gives the narrowing one documented home rather than one
-/// undocumented cast per timer (angr-0jh0j.80). Per CLAUDE.md's "Integer
+/// undocumented cast per timer (angr-0jh0j.80). Per AGENTS.md's "Integer
 /// overflow / wraparound" rules a *size*-like quantity must refuse rather than
 /// saturate; a monotonic timer has no such identity to corrupt, and a pinned
 /// `u64::MAX` is the loudest thing a counter can say.

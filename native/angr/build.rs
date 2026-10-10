@@ -41,7 +41,7 @@ fn main() {
     // locations (venv, pkg-config, /usr/include, brew, MacPorts) and sets
     // Z3_SYS_Z3_HEADER before cargo runs. When invoking cargo directly
     // (outside `pip install`), z3-sys falls back to pkg-config on its own.
-    // See CLAUDE.md "Common Issues" for troubleshooting.
+    // See AGENTS.md "Common Issues" for troubleshooting.
     if let Some(lib_dir) = find_z3_lib_dir() {
         println!("cargo:rustc-link-search=native={}", lib_dir.display());
         emit_rpath(&lib_dir);

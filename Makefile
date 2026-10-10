@@ -8,7 +8,7 @@
 #   - PY points at the venv interpreter so `make` works without an active
 #     `source .venv/bin/activate` (handy from IDE tasks).
 #   - Cargo is invoked through ~/.cargo/bin/cargo if PATH does not already
-#     carry it (matches the build-rust documentation in CLAUDE.md).
+#     carry it (matches the build-rust documentation in AGENTS.md).
 #   - Long-running targets (profile-bench, test-full, bench-regression) are
 #     not wired into `make` (no PHONY 'all') so `make` with no args prints
 #     help instead of churning the box.

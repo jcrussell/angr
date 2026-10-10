@@ -41,7 +41,7 @@ expect_used = "warn"
 # `let _ = <fallible expr>;` — so plain must_use never caught them. This lint
 # flags exactly that shape. A discard that really is expected control flow
 # stays legal by spelling itself `drop(expr)` with a `SILENT(cat-a)` rationale
-# comment; a lossy one uses `silent_default!` (see CLAUDE.md). When the
+# comment; a lossy one uses `silent_default!` (see AGENTS.md). When the
 # discarded value is `Copy` (e.g. `compare_exchange`'s `Result<u64, u64>`),
 # `drop` is a no-op that clippy rejects in turn — those keep `let _ =` under an
 # `#[expect(clippy::let_underscore_must_use, reason = "SILENT(cat-a): ...")]`.

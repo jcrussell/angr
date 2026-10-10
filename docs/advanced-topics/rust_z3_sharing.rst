@@ -78,7 +78,7 @@ the venv, point ``LD_LIBRARY_PATH`` at the venv's ``z3/lib`` or set
 
 Header discovery (``Z3_SYS_Z3_HEADER``) is a separate concern handled
 by ``setup.py::_resolve_z3_header`` and ``z3-sys``'s own pkg-config
-probe — see the "Common Issues" section of ``CLAUDE.md`` for
+probe — see the "Common Issues" section of ``AGENTS.md`` for
 troubleshooting. The runtime sharing documented here is independent
 of header discovery and applies to any working build.
 
@@ -374,4 +374,4 @@ Process-level Z3 telemetry beyond these counters (per-tactic time,
 formula simplification stats) is not exposed today. Use
 ``Z3_LOG_*`` environment variables or attach ``perf`` /
 ``cargo flamegraph`` per :doc:`rust_engine` (the "Profiling Rust
-Benches" section in ``CLAUDE.md``) if you need finer attribution.
+Benches" section in ``AGENTS.md``) if you need finer attribution.

@@ -1,6 +1,6 @@
 //! Behavioural tests for the `silent_default!` macro (`lib.rs`).
 //!
-//! The macro is the one-line spelling of CLAUDE.md's `SILENT(cat-x)` +
+//! The macro is the one-line spelling of AGENTS.md's `SILENT(cat-x)` +
 //! `log::warn!` convention (angr-91vj9.6). These lock in the two things a
 //! caller relies on: the success payload passes through untouched, and the
 //! failure arm yields exactly `$default` rather than panicking or diverging.

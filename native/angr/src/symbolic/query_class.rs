@@ -61,7 +61,7 @@ const CONSTRAINT_BUDGET: usize = 64;
 /// list, so a new bucket cannot be added without its stats-key suffix.
 ///
 /// Hand-syncing `NUM_QUERY_CLASSES`, the counter array and the name table
-/// against the enum is the cardinality-rot shape CLAUDE.md warns about, but
+/// against the enum is the cardinality-rot shape AGENTS.md warns about, but
 /// here the consequence is worse than stale prose: [`record_check`] indexes
 /// `Z3_CHECK_CLASS_COUNT` by `QueryClass as usize`, so an 8th variant with a
 /// 7-entry array panics out of bounds the first time it is classified

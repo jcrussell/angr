@@ -1201,7 +1201,7 @@ fn wide_div_by_zero_declines_the_concrete_fold() {
 /// Harness 6: the shared `test_boundary_values::boundary_widths()` table
 /// agrees with this file's own, hand-picked `BOUNDARY_WIDTHS`/`WIDE_WIDTHS`
 /// sweep above for rotl/rotr/reverse. This is the DRY cross-check the shared
-/// helper exists for (CLAUDE.md Harness 6), not a replacement for the
+/// helper exists for (AGENTS.md Harness 6), not a replacement for the
 /// file-local tables' much finer-grained coverage — and it does add one new
 /// data point neither hand-picked list has: `255` (odd, `>128`, not a
 /// multiple of 8), which lands in a third code path (declines the rotate

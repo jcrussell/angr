@@ -25,7 +25,7 @@
 //! Crate-wide `pub(crate)` (not scoped under `memory`/`state`/etc.) because
 //! call sites span `memory`, `state::filesystem`, `syscalls`, `procedures`,
 //! `interpreter`, `symbolic` and `segmentlist` — no single existing module is
-//! an appropriate home, and CLAUDE.md's Harness-6 sequencing note calls for
+//! an appropriate home, and AGENTS.md's Harness-6 sequencing note calls for
 //! one table reused everywhere rather than a per-module copy.
 //!
 //! Nothing here depends on the `vex-engine` feature, and `lib.rs` deliberately
