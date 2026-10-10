@@ -201,7 +201,7 @@ Use this shape when an op needs custom logic the ``width_binop!``
 macro can't express. Widening multiply is the canonical example: the
 result is double the operand width.
 
-**ir.rs** — ``MullU(IRType)`` / ``MullS(IRType)`` in the same
+**vex/ir/ops_def.rs** — ``MullU(IRType)`` / ``MullS(IRType)`` in the same
 arithmetic group of ``IROp``.
 
 **opcode_map.rs** — entries inside ``parse_arithmetic``:
@@ -621,15 +621,16 @@ tokens — they only have to agree with the ``IOP_*`` consts in
 
    This used to be a **two-path** arrangement: only the numeric FFI
    lifter path produced ``IROp::Raw``, and the string path fell through
-   to ``IROp::Unmapped``. When ``angr-h0ur`` deleted the native-lift
-   feature it took the last caller of ``parse_opcode_from_u32`` with
-   it, leaving ``IROp::Raw`` with no producer at all — so every one of
-   these ops was ``Unmapped`` and ``transcendentals.rs`` was dead
-   outside its own unit tests. ``angr-9ke6b.233`` re-wired them onto
-   the string router.
+   to ``IROp::Unmapped``. When ``angr-h0ur`` deleted the *numeric*
+   native-lift path of the time (not the libVEX FFI lifter that ships
+   today, which goes through the string router) it took the last caller
+   of ``parse_opcode_from_u32`` with it, leaving ``IROp::Raw`` with no
+   producer at all — so every one of these ops was ``Unmapped`` and
+   ``transcendentals.rs`` was dead outside its own unit tests.
+   ``angr-9ke6b.233`` re-wired them onto the string router.
 
 Opcode names below are libvex (matches what pyvex's numeric-to-string
-table emits). Verified 2026-06-01 (angr-uprs).
+table emits).
 
 .. list-table::
    :header-rows: 1
@@ -667,8 +668,7 @@ Wide / decimal / fixed-point FP conversions that pyvex emits for
 x86 SSE / AVX, PowerPC DFP, and ARM SIMD scalar conversions but
 that ``parse_float`` / ``parse_conversion`` do not yet handle.
 All route to ``IROp::Unmapped(name)`` →
-``RustUnsupportedVexOpError`` on dispatch. Verified 2026-06-01
-(angr-uprs).
+``RustUnsupportedVexOpError`` on dispatch.
 
 .. list-table::
    :header-rows: 1
@@ -708,7 +708,7 @@ Crypto and polynomial multiply
 
 ARM AES / SHA / NEON polynomial-multiply-accumulate ops. Same
 provenance as the FP-conversion family — no parse arm, so they
-route to ``IROp::Unmapped(name)``. Verified 2026-06-01 (angr-uprs).
+route to ``IROp::Unmapped(name)``.
 
 .. list-table::
    :header-rows: 1
@@ -859,15 +859,11 @@ The error reason carries the shared ``VECRET_GSPTR_REASON`` marker
 from ``native/angr/src/interpreter/execution_error.rs``; the manager scans
 fallback reasons in ``exploration::run_loop_single::callback_event`` and bumps
 ``vecret_gsptr_fallback_count`` so future regressions are
-visible via ``mgr.stats()`` / ``mgr.get_fallback_stats()``.
+visible via ``mgr.stats`` / ``mgr._rust_mgr.get_fallback_stats()``.
 
-Prevalence (angr-2iow, 2026-06-06): zero across all
-fast-tier benches plus ``mma_howtouse``, ``securityfest_fairlight``,
-``google2016_unbreakable_1`` — the entire corpus reports
-``vecret_gsptr_fallback_count == 0`` and ``vex_fallback_count ==
-0``. The path is reachable in principle but inert under our
-workloads, so it stays a documented fallback rather than a
-native handler. Watch the counter on any new
+On the benchmark corpus the counter reads zero (``angr-2iow``): the path
+is reachable in principle but inert under those workloads, so it stays
+a documented fallback rather than a native handler. Watch the counter on any new
 SIMD-call-heavy or kernel-helper bench (e.g. NEON intrinsic
 code, ARM TLS helpers) — non-zero readings re-open this work.
 
@@ -886,18 +882,3 @@ on a new workload:
    and add it there.
 3. Add a row to the matrix above with status ``Placeholder`` and a
    pointer to whichever bead tracks the implementation work.
-
-.. note::
-
-   *Last verified against commit* ``0a289d7cc`` *on 2026-09-24*
-   (angr-fs8kb.20 — ``opcode_map.rs`` split its FP and SIMD sub-routers
-   into ``opcode_map_float.rs`` / ``opcode_map_vector.rs``; the sixth
-   dispatch entry point ``VEXOps::qop_with_rm`` was documented in
-   angr-5mnx3.64, and there is still no
-   ``VEXOps::triop``/``ternop``). When you touch
-   ``native/angr/src/vex/opcode_map.rs``, its ``opcode_map_float.rs`` /
-   ``opcode_map_vector.rs`` siblings, or
-   ``native/angr/src/vex/ops/mod.rs``, re-read the *Pipeline overview*,
-   *parse_\* family pattern*, and *Unsupported op coverage matrix*
-   sections and bump this footer to the new commit hash.
-

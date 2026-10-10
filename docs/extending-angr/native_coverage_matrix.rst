@@ -18,12 +18,12 @@ This page is a **what's covered** index, not a contributor guide.
 Cross-list it when answering *"is X supported natively, or does it
 fall back to Python on the Rust engine?"*
 
-For empirical fallback frequencies see *Bench fallback distribution*
-below; the data is reproducible via the per-bench counters returned
-by ``RustExplorationManager.stats``
+To see what a given workload actually bounces to Python, read the
+per-bench counters on ``RustExplorationManager.stats``
 (``simprocedure_python_fallback_count``,
 ``simprocedure_fallback_by_name``, ``native_proc_stats.*_by_name``,
-``syscall_python_fallback_count``).
+``syscall_python_fallback_count``) or run
+``tests/benchmarks/run_single.py <bench> --dump-counters``.
 
 Native SimProcedure coverage
 ----------------------------
@@ -32,304 +32,199 @@ Every entry below is registered in ``NativeProcedureRegistry::new``
 (``native/angr/src/procedures/mod.rs``). The registry is **name-keyed**
 across all architectures — the calling-convention layer extracts
 arguments from the right registers, so a single handler serves every
-arch where the C ABI matches.
+arch where the C ABI matches. Rows are grouped by function family and
+list every name the registry answers to, **including aliases** (an
+alias reuses the same impl — see ``NativeProcedureRegistry::register``).
 
-Status legend:
-
-* **Native** — full Rust implementation; falls back to Python only on
-  ``ProcedureError`` (typically a symbolic argument).
-* **Native (stub)** — Rust handler returns the same constant as the
-  Python proc (e.g. ``setvbuf`` always returns 0) without modeling
-  side-effects beyond what angr's Python stub does.
-* **Native (forced Python)** — registered to claim the name, but
-  ``set_python_override`` routes execution back through the angr
-  Python proc. Currently used by ``__libc_start_main`` to keep angr's
-  Python init path while still claiming the name.
-
-String and memory
-~~~~~~~~~~~~~~~~~
+The ``Native`` column is a fraction ``M / N`` rather than a status enum:
+every member has a Python fallback, so the meaningful axis is how many
+of the named members are on the fast path. A member marked ✗ is
+registered (or deliberately not) but always takes the Python path; the
+provenance column says why. ``__libc_start_main`` is registered to
+claim the name but routed back to Python through
+``set_python_override`` so angr's init path still runs.
 
 .. list-table::
    :header-rows: 1
-   :widths: 22 18 60
+   :widths: 25 35 15 25
 
-   * - Name
-     - Status
-     - Notes
-   * - ``strlen``, ``strnlen``
+   * - Group
+     - Members
      - Native
-     - ``MAX_STRLEN`` cap on the symbolic-byte ITE chain.
-   * - ``strcmp``, ``strncmp``, ``strcasecmp``
-     - Native
-     - ``declare_proc!`` concrete-args fast path.
-   * - ``strcpy``, ``strncpy``, ``strdup``
-     - Native
-     - ``strdup`` allocates via ``NativeMalloc``.
-   * - ``strcat``, ``strncat``
-     - Native
-     -
-   * - ``strchr``, ``strrchr``, ``memchr``
-     - Native
-     - Includes the byte-by-byte ITE for symbolic haystacks.
-   * - ``strstr``
-     - Native
-     -
-   * - ``strpbrk``, ``strspn``, ``strcspn``
-     - Native
-     - Byte-set search (angr-f16h.5).
-   * - ``memcpy``, ``memmove``, ``memset``, ``memcmp``
-     - Native
-     - ``memmove`` shares ``NativeMemcpy``'s loop with reverse-copy
-       support.
-
-Character classification (``ctype.h``)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-.. list-table::
-   :header-rows: 1
-   :widths: 30 70
-
-   * - Names
-     - Status
-   * - ``isdigit``, ``isalpha``, ``isspace``, ``isalnum``,
+     - Provenance
+   * - String length / copy / concat
+     - ``strlen``, ``strnlen``, ``strcpy``, ``strncpy``, ``stpcpy``,
+       ``stpncpy``, ``strdup``, ``strndup``, ``strxfrm``,
+       ``strcat``, ``strncat``
+     - 11 / 11
+     - ``strlen.rs``, ``strcpy.rs``, ``strcat.rs``
+   * - String / memory compare
+     - ``strcmp`` (alias ``strcoll``), ``strncmp``, ``strcasecmp``,
+       ``strncasecmp``, ``memcmp``
+     - 5 / 5
+     - ``strcmp.rs``, ``memcmp.rs``
+   * - Search
+     - ``strchr``, ``strchrnul``, ``strrchr``, ``memchr``,
+       ``rawmemchr``, ``memrchr``, ``strstr``, ``strpbrk``,
+       ``strspn``, ``strcspn``, ``strtok`` ✗
+     - 10 / 11
+     - ``strchr.rs``, ``strstr.rs``, ``byteset.rs`` (angr-f16h.5).
+       ``strtok`` intentionally left on the Python fallback path
+       (angr-4c65 wontfix): a 14-bench fallback profile shows zero
+       ``strtok`` appearances, so the stateful ``state.globals`` save
+       pointer + ``strtok_r`` symbolic-write plumbing is not justified.
+   * - Bulk memory
+     - ``memcpy``, ``memmove``, ``mempcpy``, ``memset``, ``bzero``
+     - 5 / 5
+     - ``memcpy.rs``, ``memset.rs``
+   * - Fortify-source ``_chk`` wrappers
+     - ``__memcpy_chk``, ``__memmove_chk``, ``__mempcpy_chk``,
+       ``__memset_chk``, ``__strcpy_chk``, ``__strncpy_chk``,
+       ``__stpcpy_chk``, ``__strcat_chk``, ``__strncat_chk``,
+       ``__printf_chk``, ``__sprintf_chk``, ``__snprintf_chk``,
+       ``__fprintf_chk``, ``__vsnprintf_chk``
+     - 14 / 14
+     - ``fortify_mem.rs``, ``fortify_str.rs``, ``fortify_printf.rs``.
+       Each wrapper only drops the injected ``destlen``/``flag``/``slen``
+       args and then **calls the base native procedure** — it never
+       reimplements the copy/format logic. Note it deliberately does
+       **not** emulate glibc's destination-size bound check: matching
+       Python angr (whose ``__*_chk`` classes subclass the base and drop
+       the extra args), a check would prune paths angr otherwise
+       explores. See each file's module docs for the parity rationale.
+   * - Character classification (ctype.h)
+     - ``isdigit``, ``isalpha``, ``isspace``, ``isalnum``,
        ``isupper``, ``islower``, ``isxdigit``, ``isprint``,
-       ``tolower``, ``toupper``
-     - Native (``declare_proc!`` ITE over the symbolic char).
-
-String → numeric conversion
-~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-.. list-table::
-   :header-rows: 1
-   :widths: 30 70
-
-   * - Names
-     - Status
-   * - ``strtol``, ``strtoul``, ``strtoll``, ``strtoull``,
-       ``atoi``, ``atol``
-     - Native — concrete buffer, base 0/8/10/16.
-   * - ``strtod``
-     - Native (amd64 ``xmm0`` / AArch64 ``v0`` FP-return slot; other
-       arches defer to Python).
-
-Heap
-~~~~
-
-.. list-table::
-   :header-rows: 1
-   :widths: 22 18 60
-
-   * - Name
-     - Status
-     - Notes
-   * - ``malloc``, ``calloc``, ``realloc``, ``memalign``,
+       ``isascii``, ``isblank``, ``iscntrl``, ``isgraph``,
+       ``ispunct``, ``tolower``, ``toupper``, ``__ctype_b_loc``,
+       ``__ctype_tolower_loc``, ``__ctype_toupper_loc``
+     - 18 / 18
+     - ``ctype.rs`` (symbolic-aware helper pattern lives in the file;
+       the ``*_loc`` accessors return the tables Python's
+       ``__libc_start_main`` built — see ``CtypeLocPtrs``)
+   * - String → numeric
+     - ``strtol``, ``strtoul``, ``strtoll``, ``strtoull``, ``atoi``,
+       ``atol``, ``strtod``
+     - 7 / 7
+     - ``strtol.rs``, ``strtod.rs`` (angr-f16h.3; ``strtod`` is
+       amd64 xmm0 / AArch64 v0 FP-return)
+   * - Heap
+     - ``malloc``, ``free``, ``calloc``, ``realloc``, ``memalign``,
        ``posix_memalign``
-     - Native
-     - Bump allocator backed by ``state.heap`` (matches
-       ``SimHeapBrk``).
-   * - ``free``
-     - Native (stub)
-     - No-op (consistent with ``SimHeapBrk``).
+     - 6 / 6
+     - ``malloc.rs`` (bump allocator, matches ``SimHeapBrk``);
+       the extended four are angr-f16h.2
+   * - Input (stdin)
+     - ``read``, ``fgets``, ``fgetc``, ``getchar``, ``getc``,
+       ``gets``, ``scanf`` (alias ``__isoc99_scanf``), ``fscanf``
+       (alias ``__isoc99_fscanf``), ``sscanf`` ✗ — plus the
+       ``*_unlocked`` aliases of the ``fgets`` family
+     - 8 / 9
+     - ``read.rs``, ``fgets.rs``, ``scanf.rs``. ``sscanf`` is
+       registered (``scanf.rs::NativeSscanf``) but its ``call`` body
+       unconditionally returns ``ProcedureError::Other``, so every
+       invocation pays the full Python round-trip and it does not
+       count toward the native speed-up. Deliberate: only Python
+       parses the concrete source region and constrains the outputs,
+       and a native free-BVS mint would explore impossible paths
+       (angr-8onrp).
+   * - Output (stdout / formatted)
+     - ``write``, ``puts``, ``putchar``, ``fputc`` (aliases ``putc``,
+       ``*_unlocked``), ``perror``, ``printf`` (alias ``vprintf``),
+       ``fprintf`` (alias ``vfprintf``), ``sprintf``, ``asprintf``,
+       ``snprintf``, ``vsnprintf``, ``vsprintf``
+     - 12 / 12
+     - ``write.rs``, ``puts.rs``, ``perror.rs``, ``printf.rs``,
+       ``sprintf.rs``
+   * - C stdio ``FILE`` I/O
+     - ``fopen``, ``fdopen``, ``fclose``, ``feof``, ``ferror``,
+       ``fflush``, ``fputs``, ``fwrite``, ``fread``
+       (``fread_unlocked``), ``ftell`` (alias ``ftello``), ``fseek``
+       (alias ``fseeko``), ``rewind``, ``setvbuf``, ``setbuf``
+     - 14 / 14
+     - angr-f16h.1 / angr-karp / angr-70no / angr-m674p —
+       ``stdio.rs``, ``stream_ops.rs``, ``fread.rs``, ``fwrite.rs``.
+       ``fopen``/``fdopen``
+       heap-allocate an ``_IO_FILE``; the rest dispatch off
+       ``FILE._fileno``.
+   * - Low-level file ops
+     - ``open``, ``close``, ``lseek``, ``dup``, ``dup2``, ``pipe``
+     - 6 / 6
+     - ``fileops.rs`` (fd-tracking through ``FileSystem``)
+   * - Process / exit / RNG
+     - ``exit``, ``_exit``, ``abort``, ``__stack_chk_fail``,
+       ``rand``, ``srand``, ``system``, ``__libc_start_main``
+     - 8 / 8
+     - ``exit.rs``, ``rand.rs``, ``system.rs`` (angr-ae54t.16 —
+       models the exit status as an unconstrained 8-bit code),
+       ``libc_start_main.rs``
+   * - Environment / identity / args
+     - ``getenv``, ``setenv``, ``putenv``, ``unsetenv``,
+       ``clearenv``, ``getopt``, ``getuid``, ``geteuid``, ``getgid``,
+       ``getegid``
+     - 10 / 10
+     - ``getenv.rs`` (mutators are angr-f16h.4), ``getopt.rs``,
+       ``getid.rs`` (angr-ae54t.9 — the four id getters return the
+       constant 1000, mirroring ``syscalls/identity.rs``)
+   * - Time / sleep / logging no-ops
+     - ``time``, ``sleep``, ``usleep``, ``openlog``, ``closelog``,
+       ``access``
+     - 6 / 6
+     - ``time.rs`` (angr-ae54t.21 — forwards to
+       ``syscalls::sim_time::fresh_monotonic_time``, so the libc entry
+       and the syscall share one model), ``sleep.rs`` (angr-ae54t.15),
+       ``syslog.rs`` (angr-ae54t.20 — void no-ops; ``syslog(3)`` itself
+       stays on Python), ``access.rs``
+   * - Threads
+     - ``pthread_mutex_lock``, ``pthread_mutex_unlock``,
+       ``pthread_once``
+     - 3 / 3
+     - ``pthread.rs`` — single-path symex means locks always succeed;
+       ``pthread_once`` is the worked example of the native sub-call
+       (``CallAndResume``) dispatcher
+   * - Byte order
+     - ``htonl`` (alias ``ntohl``), ``htons`` (alias ``ntohs``)
+     - 2 / 2
+     - ``byteorder.rs``
 
-Stdio output
-~~~~~~~~~~~~
-
-.. list-table::
-   :header-rows: 1
-   :widths: 22 18 60
-
-   * - Name
-     - Status
-     - Notes
-   * - ``puts``, ``putchar``, ``fputs``, ``fputc``, ``putc``
-     - Native
-     - Resolve fd via ``state.posix.fd``.
-   * - ``printf``
-     - Native
-     - Concrete-format fast path; symbolic format string falls back.
-   * - ``fprintf``
-     - Native
-     - Stream variant of ``printf``: resolves ``stream->_fileno`` and
-       writes the raw format string to that fd; symbolic FILE*/format
-       falls back (angr-884yn).
-   * - ``sprintf``, ``snprintf``
-     - Native
-     - Bounded buffer write.
-   * - ``fwrite``, ``fflush``, ``setvbuf``, ``feof``, ``ferror``
-     - Native (stub)
-     - ``fflush``/``setvbuf`` always return 0; ``feof``/``ferror``
-       return concrete flags (angr-70no, angr-f16h.1).
-
-Stdio input
-~~~~~~~~~~~
-
-.. list-table::
-   :header-rows: 1
-   :widths: 22 18 60
-
-   * - Name
-     - Status
-     - Notes
-   * - ``fgets``, ``fgetc``, ``getchar``, ``getc``
-     - Native
-     - Mints symbolic stdin bytes; tracked in
-       ``state.stdin_symbols`` for ``posix.dumps(0)`` export.
-   * - ``scanf``, ``__isoc99_scanf``, ``sscanf``
-     - Native
-     - Concrete format string; ``%d``/``%s``/``%c``/``%x`` conversions.
-
-File ops
-~~~~~~~~
-
-.. list-table::
-   :header-rows: 1
-   :widths: 22 18 60
-
-   * - Name
-     - Status
-     - Notes
-   * - ``open``, ``close``, ``lseek``, ``dup``, ``dup2``, ``pipe``
-     - Native
-     - Updates angr's ``FileSystem`` fd table.
-   * - ``read``, ``write``
-     - Native
-     - Re-enabled by angr-3tek.2; Python-side cache is replayed per
-       dirty page on callback creation.
-   * - ``fopen``, ``fdopen``, ``fclose``, ``fseek``, ``ftell``,
-       ``rewind``
-     - Native
-     - Allocates ``_IO_FILE`` struct, dispatches through
-       ``FILE._fileno`` (angr-karp). The heap range
-       ``[0xC0000000, 0xC1000000)`` is registered as a lazy region and
-       ``RustSimState::memory_store`` auto-maps lazy pages, so the write of
-       ``_fileno`` into a freshly ``heap_alloc``-ed struct succeeds natively
-       instead of erroring ``Unmapped`` and falling back to Python. Reads of
-       never-written heap stay unmapped (fall back to Python, preserving
-       symbolic-fill). Before this fix every ``fseek``/``fputc``/``fopen``/
-       ``fclose`` on a fresh FILE fell back to Python (e.g. sharif7_rev50:
-       175 -> 44 SimProcedure fallbacks, 0.9s -> 0.32s).
-
-Environment
-~~~~~~~~~~~
-
-.. list-table::
-   :header-rows: 1
-   :widths: 30 70
-
-   * - Names
-     - Status
-   * - ``getenv``, ``setenv``, ``unsetenv``, ``putenv``,
-       ``clearenv``
-     - Native
-
-Termination / init / misc
-~~~~~~~~~~~~~~~~~~~~~~~~~
-
-.. list-table::
-   :header-rows: 1
-   :widths: 22 22 56
-
-   * - Name
-     - Status
-     - Notes
-   * - ``exit``, ``_exit``, ``exit_group``
-     - Native (``no_return``)
-     - Routes the state to ``STASH_DEADENDED``.
-   * - ``abort``
-     - Native (``no_return``)
-     -
-   * - ``__stack_chk_fail``
-     - Native (``no_return``)
-     - Top fallback name on ``defcon2016quals_baby-re`` before the
-       native handler landed (14 calls/run).
-   * - ``rand``, ``srand``
-     - Native
-     - Deterministic PRNG state in ``state.globals``.
-   * - ``__libc_start_main``
-     - Native (forced Python)
-     - Python init path (``rust_manager._step_python_to_main``) is
-       canonical; native registration claims the name so dispatch
-       cannot accidentally take the Python proc twice.
+Not in the table: **unconstrained stubs**. ``procedures/stub.rs``'s
+``NativeReturnUnconstrained`` is the native counterpart of angr's
+``ReturnUnconstrained`` SimProcedure, and it is not keyed on a fixed
+libc name — the dispatch name is whatever symbol the *binary* left
+unresolved (``get_flag``, some unmodelled import). Instances are
+registered dynamically at setup time by
+``RustExplorationManager::register_unconstrained_stubs``
+(``exploration/manager_methods_procedures.rs``), which walks
+``project._sim_procedures`` from the Python side and registers one
+stub per display name and return width. So a given binary's native
+coverage is the static table above *plus* a per-binary set of stubs.
 
 What is **not** registered
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The following are intentionally not in the registry; they always go
-through the Python SimProcedure:
+The following always go through the Python SimProcedure:
 
 * User-placed in-binary hooks (``proj.hook(addr, MyProc())``) — the
-  dispatcher's ``is_in_binary`` check bypasses the registry before
-  any name lookup. See the *Dispatch priority* section of
-  :doc:`simprocedures`.
+  dispatcher's main-object check bypasses the registry before any name
+  lookup. See the *Dispatch priority* section of :doc:`simprocedures`.
 * C++ runtime (``operator new``, ``operator delete``,
-  ``std::operator<<``, ``std::string`` ctors / destructors) — top
-  fallback group on ``csaw_wyvern`` (~25 calls/run), already at
-  16.9x speedup, so a native port would not move the bench.
-* App-specific CTF hooks (``my_scanf``, ``get_flag``, ``UserHook``,
-  ``CallReturn``) — Python-only by construction.
+  ``std::operator<<``, ``std::string`` ctors / destructors) — the
+  native registry claims no C++ symbol; ``operator new`` / ``delete``
+  resolve to angr's ``malloc`` / ``free`` procs and inherit their
+  parity.
+* App-specific CTF hooks the ``solve.py`` installs (``my_scanf``,
+  ``UserHook``, …) — Python by definition. An *unresolved* import such
+  as ``get_flag`` is different: it gets a native ``ReturnUnconstrained``
+  stub, as described above.
 
-Bench fallback distribution
----------------------------
+Maintaining the matrix
+~~~~~~~~~~~~~~~~~~~~~~
 
-Snapshot from ``bench-simprocedure-fallback-distribution`` (bd memory
-``angr-twyr``, 2026-06-02). 17 benches surveyed across the fast tier;
-74 total ``simprocedure_python_fallback`` calls.
-
-**Zero-fallback benches (7/17 — fully native-covered):**
-``ais3_crackme``, ``codegate_2017-angrybird``, ``csgames2018``,
-``defcamp_r100``, ``flareon2015_2``, ``strcpy_find``, ``sym-write``.
-
-**Top fallback names (aggregate):**
-
-.. list-table::
-   :header-rows: 1
-   :widths: 30 12 58
-
-   * - Name
-     - Calls
-     - Where
-   * - ``__stack_chk_fail``
-     - 14
-     - ``defcon2016quals_baby-re`` (now covered natively;
-       counter is pre-native data)
-   * - ``my_scanf``
-     - 13
-     - ``defcon2016quals_baby-re`` — app-specific user proc
-   * - ``std::operator<<<...>``
-     - 7
-     - ``csaw_wyvern`` only — C++ stdlib
-   * - ``operator new(unsigned long)``
-     - 6
-     - ``csaw_wyvern`` only — C++ stdlib
-   * - ``UserHook``
-     - 6
-     - ``flareon2015_5``/``_10``, ``whitehatvn_re400``
-   * - ``memmove``
-     - 5
-     - ``csaw_wyvern`` — all symbolic-arg fallbacks
-   * - ``operator delete(void*)``
-     - 5
-     - ``csaw_wyvern`` only
-   * - ``CallReturn``
-     - 2
-     - ``mma_howtouse``, ``flareon2015_10``
-   * - ``strncpy``
-     - 2
-     - 1 symbolic, 1 other
-   * - ``open``, ``strncmp``, ``get_flag`` (CTF), plus a handful
-       of one-shot C++ ``std::string`` names
-     - 1 each
-     -
-
-**Symbolic-arg gap (native handler tried, gave up on a symbolic
-argument):** ``memmove`` (5), ``open`` (1), ``strncpy`` (1) — total 7
-calls across all 17 benches. Tracked under
-``native_proc_stats.symbolic_fallbacks_by_name`` for future tuning of
-each handler's symbolic-input acceptance.
-
-Implication: native SimProcedure coverage is **not** a current bench
-bottleneck. The counter remains a diagnostic surface so new workloads
-that hit unregistered hot procs show up immediately.
+When a procedure gains or loses a native path, flip the member's mark
+and the ``M / N`` count in the same commit, and keep the provenance
+column pointing at the file (and the bead, when the reason is not
+obvious from the code). A brand-new family gets a new row. The two
+``mod.rs`` registries are the source of truth; this page is the index.
 
 Native syscall coverage
 -----------------------
@@ -337,7 +232,13 @@ Native syscall coverage
 Every entry below is registered in ``NativeSyscallRegistry::new``
 (``native/angr/src/syscalls/mod.rs``). Handlers themselves are
 arch-agnostic; the per-arch table maps Linux ABI numbers from
-``<asm/unistd_*.h>`` to the same handler set.
+``<asm/unistd_*.h>`` to the same handler set. The native syscall set covers the AMD64 baseline plus per-arch tables
+(``register_<arch>`` for X86, ARM, ARM64, MIPS32 and MIPS64 in
+``syscalls/mod.rs``); MIPS64 leaves the stat family unregistered because
+``write_stat_for_arch`` has no MIPS64 ``struct stat`` writer. A symbolic
+syscall number, and any unregistered concrete number, falls through
+``core_outcome_handlers.rs::handle_syscall_core`` to Python's
+``engines/successors.py::_resolve_syscall``.
 
 Coverage shorthand:
 
@@ -650,29 +551,14 @@ Per-arch matrix
      - —
      - —
 
-Counts (``register_syscalls!`` entries per dispatch key, as of
-2026-08-09):
-
-* AMD64: ~83 ``(arch, num)`` entries.
-* X86: ~91 entries.
-* ARM: ~89 entries.
-* ARM64: ~63 entries (asm-generic ABI drops legacy variants).
-* MIPS32: ~82 entries.
-* MIPS64: ~75 entries.
-* CGC: 7 entries (the complete CGC syscall set — this one *is* exact).
-
-Treat the Linux numbers as an order of magnitude, not a checksum —
-``syscalls/mod.rs``'s own module doc says the same, and every round of
-new handlers drifts them. The registry itself is authoritative; to
-re-derive a count, count the ``(num, ...)`` tuples inside the relevant
-``register_syscalls!`` block in ``syscalls/mod.rs``.
-
-Bench fallback rate: **zero**. Across the 19 baseline benchmarks
-measured 2026-06-02 (bd memory ``bench-syscall-fallback-zero-coverage``,
-``angr-0wam``), ``syscall_python_fallback_count == 0`` on every bench.
-The existing handler set fully covers the CTF-heavy bench corpus; new
-syscall handlers cannot move bench numbers until a workload that hits
-an unregistered ``(arch, num)`` arrives.
+The registry itself is authoritative for how many ``(arch, num)``
+entries each arch carries: count the tuples inside the relevant
+``register_syscalls!`` block in ``syscalls/mod.rs`` rather than trusting
+a number written here. ``syscall_python_fallback_count`` on
+``RustExplorationManager.stats`` says whether a workload reaches an
+unregistered ``(arch, num)`` at all; on the CTF benchmark corpus it does
+not, so a new handler only pays off once a workload that needs it
+arrives.
 
 Stubbed / incomplete
 ~~~~~~~~~~~~~~~~~~~~
@@ -770,6 +656,6 @@ See also
   SimProcedures* contributor guide and the dispatch-priority chain.
 * :doc:`/advanced-topics/rust_engine` — the engine's behavioral
   contract, architecture support matrix, and pipeline counters.
-* ``RustExplorationManager.stats`` (``get_solver_stats`` /
-  ``get_simprocedure_stats``) — runtime introspection for fallback
-  counters used to refresh this page after registry changes.
+* ``RustExplorationManager.stats`` (and ``mgr._rust_mgr.get_fallback_stats()``
+  for the per-address breakdown) — runtime introspection for the
+  fallback counters used to check this page after registry changes.

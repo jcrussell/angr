@@ -333,8 +333,9 @@ Add one only if all of these are true:
 
 * The function is called *frequently* under the Rust engine — typically a
   libc primitive that shows up in callback-frequency profiles
-  (see the ``z3_check_count`` / fallback counters in the *Z3 solver
-  profiling counters* section of :doc:`../advanced-topics/rust_engine`).
+  (see the ``simprocedure_fallback_by_name`` counter and its siblings in
+  the *Pipeline instrumentation counters* section of
+  :doc:`../advanced-topics/rust_engine`).
 * It has a well-defined contract that you can implement byte-for-byte
   against ``RustSimState`` (or you have an explicit, documented
   approximation, like ``strlen``'s ``MAX_STRLEN`` cap).
@@ -415,8 +416,8 @@ every ``match`` on it needs a wildcard arm.
 If your procedure caps how many bytes it will walk or copy, express the
 bail-out as ``check_max(n, MAX_WHATEVER)?`` (``procedures/mod.rs``) rather
 than hand-rolling the compare: it fixes the variant at ``MaxIterations``
-and the payload at the *offending* value, the two things the ~19 call sites
-had started to disagree about before angr-12jjk.24. Only bail-outs that
+and the payload at the *offending* value, the two things the hand-rolled
+call sites had started to disagree about before angr-12jjk.24. Only bail-outs that
 aren't a plain ``n > max`` compare — a scan that ran to exhaustion, a
 "is this prefix result conclusive?" check — should build the error
 directly.
@@ -613,13 +614,15 @@ both invoked except when native fails):
    return ``None`` so dispatch falls through to the Python
    SimProcedure. Used internally by
    ``NativeLibcStartMain`` and available to user code via
-   ``mgr.set_python_override(name)``.
+   ``mgr._rust_mgr.set_python_override(name)`` (the Python wrapper does
+   not forward it).
 3. **Per-name disable skips native.** ``registry.disable("strlen")``
    has the same runtime effect as a Python override; semantically it
    says "the Rust implementation is not trustworthy right now"
    rather than "Python is canonical for this name".
 4. **Global disable.** ``registry.disable_all()`` /
-   ``mgr.disable_native_procedures()`` skips native for every name.
+   ``mgr._rust_mgr.disable_native_procedures()`` skips native for every
+   name.
 5. **Native runs; on error, Python takes over.** If steps 1–4 do
    not bypass it, the dispatcher calls ``native_proc.call_ex(...)``
    (**not** ``call`` directly — the default ``call_ex`` wraps
@@ -921,7 +924,7 @@ Terminal procedures: ``no_return``
 ``exit`` and ``abort`` are tiny but instructive — see
 ``native/angr/src/procedures/exit.rs``. They override
 ``fn no_return(&self) -> bool { true }`` and return ``Ok(None)``. The
-dispatcher in ``stepping.rs`` / ``exploration/mod.rs`` recognizes
+dispatcher (``exploration/native_proc_dispatch.rs``) recognizes
 ``no_return`` and stashes the state in ``STASH_DEADENDED`` instead of
 advancing PC past the call. Forgetting the flag will cause the engine
 to re-execute the call site — in fauxware that turns into an
@@ -945,8 +948,8 @@ with ``use super::*;``. The macro expands to a ``#[cfg(test)] #[path =
 while staying out of the source file. It also attaches the
 ``#[allow(clippy::unwrap_used, clippy::expect_used)]`` that test code
 needs — the crate denies both, and a hand-rolled ``mod tests`` would have
-to repeat that opt-out. Roughly 46 of the ``procedures/*.rs`` modules
-already follow this shape; a new procedure should too.
+to repeat that opt-out. Most of the ``procedures/*.rs`` modules already
+follow this shape; a new procedure should too.
 
 ``strlen`` is the most complete reference and covers every shape worth
 testing:
@@ -975,9 +978,10 @@ User-attached Python procedures
 
 The procedure registry has an escape hatch for users who want to
 attach a custom Python callable to a hot symbol *without* compiling
-Rust. ``RustExplorationManager.register_python_procedure(name,
-num_args, no_return, callable)`` (defined in
-``native/angr/src/exploration/mod.rs``) wraps a Python callable so it
+Rust. ``register_python_procedure(name, num_args, no_return, callable)``
+(``native/angr/src/exploration/manager_methods_procedures.rs``, a method
+of the inner Rust manager, so it is reached as
+``mgr._rust_mgr.register_python_procedure``) wraps a Python callable so it
 fronts the procedure registry just like a Rust-side ``NativeStrlen``
 would:
 
@@ -988,7 +992,7 @@ would:
        # Return Optional[int]: None = no return, int = arch-bits BV.
        return 0
 
-   mgr.register_python_procedure(
+   mgr._rust_mgr.register_python_procedure(
        "custom_widget_init",
        num_args=0,
        no_return=False,
@@ -1009,346 +1013,11 @@ recipe above.
 Native coverage matrix
 ----------------------
 
-At-a-glance status for which libc procedures and Linux syscalls have
-native fast paths today. *Native* means a handler is registered in
-``native/angr/src/procedures/mod.rs`` (procedures) or
-``native/angr/src/syscalls/mod.rs`` (syscalls). Every row also has a
-Python fallback — angr's regular ``SimProcedure`` registry — that runs
-when a native handler is missing, disabled, or returns
-``ProcedureError`` for a symbolic argument it cannot handle. The
-fallback is what guarantees correctness; the native path is the speed
-optimization.
-
-Source of truth: the two ``mod.rs`` files above plus the campaign
-beads (``angr-f16h.*`` for procedures, ``angr-0hif.*`` for syscalls).
-Refresh this matrix whenever a campaign child closes — the bead
-column makes the provenance scannable, parallel to the
-``Unsupported op coverage matrix`` in
-:doc:`rust_vex_ops`.
-
-SimProcedures
-^^^^^^^^^^^^^
-
-The original pre-campaign set covered the highest-frequency string,
-memory, I/O, and process primitives; the ``angr-f16h`` campaign
-expanded coverage into stdio file I/O, the extended allocator family,
-the string-to-numeric family, env mutation, and extended string ops,
-and ``angr-ae54t`` added the remaining PLT-visible no-op / stub-shaped
-libc entries. Rows are grouped by function family and list every name
-the registry answers to, **including aliases** (an alias reuses the
-same impl — see ``NativeProcedureRegistry::register``).
-
-.. list-table::
-   :header-rows: 1
-   :widths: 25 35 15 25
-
-   * - Group
-     - Members
-     - Native
-     - Provenance
-   * - String length / copy / concat
-     - ``strlen``, ``strnlen``, ``strcpy``, ``strncpy``, ``stpcpy``,
-       ``stpncpy``, ``strdup``, ``strndup``, ``strxfrm``,
-       ``strcat``, ``strncat``
-     - 11 / 11
-     - ``strlen.rs``, ``strcpy.rs``, ``strcat.rs``
-   * - String / memory compare
-     - ``strcmp`` (alias ``strcoll``), ``strncmp``, ``strcasecmp``,
-       ``strncasecmp``, ``memcmp``
-     - 5 / 5
-     - ``strcmp.rs``, ``memcmp.rs``
-   * - Search
-     - ``strchr``, ``strchrnul``, ``strrchr``, ``memchr``,
-       ``rawmemchr``, ``memrchr``, ``strstr``, ``strpbrk``,
-       ``strspn``, ``strcspn``, ``strtok`` ✗
-     - 10 / 11
-     - ``strchr.rs``, ``strstr.rs``, ``byteset.rs`` (angr-f16h.5).
-       ``strtok`` intentionally left on the Python fallback path
-       (angr-4c65 wontfix): a 14-bench fallback profile shows zero
-       ``strtok`` appearances, so the stateful ``state.globals`` save
-       pointer + ``strtok_r`` symbolic-write plumbing is not justified.
-   * - Bulk memory
-     - ``memcpy``, ``memmove``, ``mempcpy``, ``memset``, ``bzero``
-     - 5 / 5
-     - ``memcpy.rs``, ``memset.rs``
-   * - Fortify-source ``_chk`` wrappers
-     - ``__memcpy_chk``, ``__memmove_chk``, ``__mempcpy_chk``,
-       ``__memset_chk``, ``__strcpy_chk``, ``__strncpy_chk``,
-       ``__stpcpy_chk``, ``__strcat_chk``, ``__strncat_chk``,
-       ``__printf_chk``, ``__sprintf_chk``, ``__snprintf_chk``,
-       ``__fprintf_chk``, ``__vsnprintf_chk``
-     - 14 / 14
-     - ``fortify_mem.rs``, ``fortify_str.rs``, ``fortify_printf.rs``.
-       Each wrapper only drops the injected ``destlen``/``flag``/``slen``
-       args and then **calls the base native procedure** — it never
-       reimplements the copy/format logic. Note it deliberately does
-       **not** emulate glibc's destination-size bound check: matching
-       Python angr (whose ``__*_chk`` classes subclass the base and drop
-       the extra args), a check would prune paths angr otherwise
-       explores. See each file's module docs for the parity rationale.
-   * - Character classification (ctype.h)
-     - ``isdigit``, ``isalpha``, ``isspace``, ``isalnum``,
-       ``isupper``, ``islower``, ``isxdigit``, ``isprint``,
-       ``isascii``, ``isblank``, ``iscntrl``, ``isgraph``,
-       ``ispunct``, ``tolower``, ``toupper``, ``__ctype_b_loc``,
-       ``__ctype_tolower_loc``, ``__ctype_toupper_loc``
-     - 18 / 18
-     - ``ctype.rs`` (symbolic-aware helper pattern lives in the file;
-       the ``*_loc`` accessors return the tables Python's
-       ``__libc_start_main`` built — see ``CtypeLocPtrs``)
-   * - String → numeric
-     - ``strtol``, ``strtoul``, ``strtoll``, ``strtoull``, ``atoi``,
-       ``atol``, ``strtod``
-     - 7 / 7
-     - ``strtol.rs``, ``strtod.rs`` (angr-f16h.3; ``strtod`` is
-       amd64 xmm0 / AArch64 v0 FP-return)
-   * - Heap
-     - ``malloc``, ``free``, ``calloc``, ``realloc``, ``memalign``,
-       ``posix_memalign``
-     - 6 / 6
-     - ``malloc.rs`` (bump allocator, matches ``SimHeapBrk``);
-       the extended four are angr-f16h.2
-   * - Input (stdin)
-     - ``read``, ``fgets``, ``fgetc``, ``getchar``, ``getc``,
-       ``gets``, ``scanf`` (alias ``__isoc99_scanf``), ``fscanf``
-       (alias ``__isoc99_fscanf``), ``sscanf`` ✗ — plus the
-       ``*_unlocked`` aliases of the ``fgets`` family
-     - 8 / 9
-     - ``read.rs``, ``fgets.rs``, ``scanf.rs``. ``sscanf`` is
-       registered (``scanf.rs::NativeSscanf``) but its ``call`` body
-       unconditionally returns ``ProcedureError::Other``, so every
-       invocation pays the full Python round-trip and it does not
-       count toward the native speed-up. Deliberate: only Python
-       parses the concrete source region and constrains the outputs,
-       and a native free-BVS mint would explore impossible paths
-       (angr-8onrp).
-   * - Output (stdout / formatted)
-     - ``write``, ``puts``, ``putchar``, ``fputc`` (aliases ``putc``,
-       ``*_unlocked``), ``perror``, ``printf`` (alias ``vprintf``),
-       ``fprintf`` (alias ``vfprintf``), ``sprintf``, ``asprintf``,
-       ``snprintf``, ``vsnprintf``, ``vsprintf``
-     - 12 / 12
-     - ``write.rs``, ``puts.rs``, ``perror.rs``, ``printf.rs``,
-       ``sprintf.rs``
-   * - C stdio ``FILE`` I/O
-     - ``fopen``, ``fdopen``, ``fclose``, ``feof``, ``ferror``,
-       ``fflush``, ``fputs``, ``fwrite``, ``fread``
-       (``fread_unlocked``), ``ftell`` (alias ``ftello``), ``fseek``
-       (alias ``fseeko``), ``rewind``, ``setvbuf``, ``setbuf``
-     - 14 / 14
-     - angr-f16h.1 / angr-karp / angr-70no / angr-m674p —
-       ``stdio.rs``, ``stream_ops.rs``, ``fread.rs``, ``fwrite.rs``.
-       ``fopen``/``fdopen``
-       heap-allocate an ``_IO_FILE``; the rest dispatch off
-       ``FILE._fileno``.
-   * - Low-level file ops
-     - ``open``, ``close``, ``lseek``, ``dup``, ``dup2``, ``pipe``
-     - 6 / 6
-     - ``fileops.rs`` (fd-tracking through ``FileSystem``)
-   * - Process / exit / RNG
-     - ``exit``, ``_exit``, ``abort``, ``__stack_chk_fail``,
-       ``rand``, ``srand``, ``system``, ``__libc_start_main``
-     - 8 / 8
-     - ``exit.rs``, ``rand.rs``, ``system.rs`` (angr-ae54t.16 —
-       models the exit status as an unconstrained 8-bit code),
-       ``libc_start_main.rs``
-   * - Environment / identity / args
-     - ``getenv``, ``setenv``, ``putenv``, ``unsetenv``,
-       ``clearenv``, ``getopt``, ``getuid``, ``geteuid``, ``getgid``,
-       ``getegid``
-     - 10 / 10
-     - ``getenv.rs`` (mutators are angr-f16h.4), ``getopt.rs``,
-       ``getid.rs`` (angr-ae54t.9 — the four id getters return the
-       constant 1000, mirroring ``syscalls/identity.rs``)
-   * - Time / sleep / logging no-ops
-     - ``time``, ``sleep``, ``usleep``, ``openlog``, ``closelog``,
-       ``access``
-     - 6 / 6
-     - ``time.rs`` (angr-ae54t.21 — forwards to
-       ``syscalls::sim_time::fresh_monotonic_time``, so the libc entry
-       and the syscall share one model), ``sleep.rs`` (angr-ae54t.15),
-       ``syslog.rs`` (angr-ae54t.20 — void no-ops; ``syslog(3)`` itself
-       stays on Python), ``access.rs``
-   * - Threads
-     - ``pthread_mutex_lock``, ``pthread_mutex_unlock``,
-       ``pthread_once``
-     - 3 / 3
-     - ``pthread.rs`` — single-path symex means locks always succeed;
-       ``pthread_once`` is the worked example of the native sub-call
-       (``CallAndResume``) dispatcher
-   * - Byte order
-     - ``htonl`` (alias ``ntohl``), ``htons`` (alias ``ntohs``)
-     - 2 / 2
-     - ``byteorder.rs``
-
-Not in the table: **unconstrained stubs**. ``procedures/stub.rs``'s
-``NativeReturnUnconstrained`` is the native counterpart of angr's
-``ReturnUnconstrained`` SimProcedure, and it is not keyed on a fixed
-libc name — the dispatch name is whatever symbol the *binary* left
-unresolved (``get_flag``, some unmodelled import). Instances are
-registered dynamically at setup time by
-``RustExplorationManager::register_unconstrained_stubs``
-(``exploration/manager_methods_procedures.rs``), which walks
-``project._sim_procedures`` from the Python side and registers one
-stub per display name and return width. So a given binary's native
-coverage is the static table above *plus* a per-binary set of stubs.
-
-Syscalls
-^^^^^^^^
-
-The native syscall set is currently focused on the AMD64 baseline
-plus the per-arch tables in ``register_<arch>`` (X86, ARM, ARM64,
-MIPS32 and MIPS64 in ``syscalls/mod.rs``; MIPS64 leaves the stat family
-unregistered because ``write_stat_for_arch`` has no MIPS64 ``struct stat``
-writer). Every numbered handler below is registered for AMD64;
-other arches re-register the same handler under each arch's syscall
-number from its ``unistd_*.h``. The ``angr-0hif`` campaign expanded
-the baseline I/O / memory / exit handlers with file-path, directory,
-identity, memory-extras, fd-control, signals, and rlimit/concurrency
-families. Symbolic-num dispatches and any unregistered concrete-num
-still fall through ``stepping.rs::RunResult::Syscall`` to Python's
-``engines/successors.py::_resolve_syscall``.
-
-.. list-table::
-   :header-rows: 1
-   :widths: 25 35 15 25
-
-   * - Group
-     - Members
-     - Native
-     - Provenance
-   * - I/O (baseline)
-     - ``read``, ``write``
-     - 2 / 2
-     - ``read.rs``, ``write.rs`` — symbolic fd → Python fallback
-   * - Memory (baseline)
-     - ``brk``, ``mmap``, ``mprotect``, ``munmap``
-     - 4 / 4
-     - ``brk.rs``, ``mmap.rs`` (anonymous concrete-args fast path;
-       MAP_FIXED collisions resolved natively by an unmap-then-map),
-       ``mprotect.rs``, ``munmap.rs``
-   * - Process exit (baseline)
-     - ``exit``, ``exit_group``
-     - 2 / 2
-     - ``exit.rs`` — terminal, routes state to ``STASH_DEADENDED``
-   * - Time (baseline)
-     - ``time``, ``gettimeofday``, ``clock_gettime``
-     - 3 / 3
-     - ``sim_time.rs`` — fresh-symbolic ``time_t``; CLOCK_REALTIME
-       only (other clocks → Python)
-   * - Signals (baseline, partial)
-     - ``rt_sigaction``
-     - 1 / 1
-     - ``sigaction.rs`` — no-op return 0 (matches Python proc)
-   * - amd64 TLS (baseline)
-     - ``arch_prctl``
-     - 1 / 1
-     - ``arch_prctl.rs`` — fs_const / gs_const set/get
-   * - File path (angr-0hif.1)
-     - ``open``, ``close``, ``stat``, ``fstat``, ``lstat``, ``access``,
-       ``readlink``, ``openat``, ``newfstatat``, ``readlinkat``,
-       ``faccessat``
-     - 11 / 11
-     - angr-0hif.1 — ``file_path/`` (AMD64 numbers 2/3/4/5/6/21/89/
-       257/262/267/269; re-registered under per-arch numbers for
-       i386 / ARM / ARM64 / MIPS32)
-   * - Directory (angr-0hif.2)
-     - ``chdir``, ``fchdir``, ``getcwd``, ``mkdir``, ``rmdir``,
-       ``unlink``, ``rename``, ``mkdirat``, ``unlinkat``, ``renameat``,
-       ``renameat2``
-     - 11 / 11
-     - angr-0hif.2 — ``directory.rs`` (AMD64 numbers 79/80/81/82/83/
-       84/87/258/263/264/316; per-arch tables alias each handler under
-       the matching unistd number)
-   * - Process identity (angr-0hif.3)
-     - ``getpid``, ``getppid``, ``gettid``, ``getuid``, ``geteuid``,
-       ``getgid``, ``getegid``, ``setuid``, ``setgid``
-     - 9 / 9
-     - ``identity.rs`` — getters return angr defaults (pid=1337,
-       ppid=1336, uid/gid=1000). ``setuid``/``setgid`` (angr-pqgu)
-       mirror Python's ``syscall_stub`` and emit a fresh symbolic BV
-       via ``SyscallOutcome::ContinueSymbolic`` (no Python
-       ``SimProcedure`` exists for them)
-   * - Memory extras (angr-0hif.4)
-     - ``madvise``, ``mremap``, ``msync``, ``mlock``, ``munlock``,
-       ``mlockall``, ``munlockall``
-     - 7 / 7
-     - ``memory_extras.rs`` — none have a dedicated Python
-       ``SimProcedure``; native handlers mirror ``syscall_stub`` and
-       emit a fresh symbolic BV via
-       ``SyscallOutcome::ContinueSymbolic``. ``mremap`` is a parity
-       stub (does not update page tables — neither does Python angr)
-   * - FD control (angr-0hif.5)
-     - ``fcntl`` ✓, ``ioctl`` ✓, ``pipe`` ✓, ``pipe2`` ✓,
-       ``dup`` ✓, ``dup2`` ✓, ``dup3`` ✓
-     - 7 / 7
-     - ``file_descriptor.rs``. ``fcntl``/``ioctl``/``pipe``/``pipe2``
-       have no Python ``SimProcedure`` bound in the kernel library
-       (``posix/fcntl.py`` is libc-side only), so native handlers
-       mirror ``syscall_stub`` and emit a fresh symbolic BV via
-       ``SyscallOutcome::ContinueSymbolic``. ``dup``/``dup2``/``dup3``
-       are now wired natively (AMD64 numbers 32/33/292; per-arch
-       tables register them under the matching unistd number)
-   * - Signals + process control (angr-0hif.6)
-     - ``kill``, ``tgkill``, ``rt_sigprocmask``, ``rt_sigaction``,
-       ``rt_sigreturn``, ``pause``, ``alarm``
-     - 6 / 7
-     - ``signals.rs`` — ``kill`` / ``rt_sigreturn`` / ``pause`` /
-       ``alarm`` mirror ``syscall_stub`` and emit a fresh symbolic BV
-       via ``SyscallOutcome::ContinueSymbolic`` (no Python
-       ``SimProcedure`` exists for them); ``tgkill`` returns concrete
-       0 to match ``procedures/linux_kernel/tgkill.py``;
-       ``rt_sigaction`` is the baseline ``sigaction.rs`` handler.
-       ``rt_sigprocmask`` is NOT native — its Python impl mutates
-       ``state.posix.sigmask`` which ``RustSimState`` does not carry,
-       so it falls back to Python for parity
-   * - Resource limits + concurrency (angr-0hif.7)
-     - ``getrlimit``, ``setrlimit``, ``prlimit64``, ``futex``,
-       ``eventfd``, ``eventfd2``, ``epoll_create``, ``epoll_create1``,
-       ``epoll_ctl``, ``epoll_wait``
-     - 10 / 10
-     - ``rlimit.rs``, ``concurrency.rs`` — ``getrlimit`` mirrors
-       ``procedures/linux_kernel/getrlimit.py`` (RLIMIT_STACK writes
-       8388608 + symbolic ``rlim_max`` and returns 0; other
-       resources return a fresh symbolic). ``futex`` mirrors
-       ``procedures/linux_kernel/futex.py`` (FUTEX_WAKE family
-       returns 0, else fresh symbolic). The remaining seven have no
-       dedicated Python ``SimProcedure`` and mirror ``syscall_stub``
-       with a fresh symbolic via ``SyscallOutcome::ContinueSymbolic``.
-       angr is single-threaded symex; blocking on ``futex(FUTEX_WAIT)``
-       or ``epoll_wait`` is never modeled. x86 / ARM also alias
-       ``ugetrlimit (191)`` to ``getrlimit`` per
-       ``procedures/linux_kernel/getrlimit.py::ugetrlimit``
-
-Per-arch coverage of the baseline handlers (X86, ARM, ARM64, MIPS32)
-is summarised in the ``register_<arch>`` blocks of
-``syscalls/mod.rs``; the omitted entries (e.g. legacy ``mmap`` /
-``mmap2`` on X86 / ARM / MIPS32) are documented inline above each
-table.
-
-Maintaining the matrix
-^^^^^^^^^^^^^^^^^^^^^^
-
-When you close an ``angr-f16h.*`` or ``angr-0hif.*`` child, flip the
-``Native`` column for the affected procedure(s) and bump the
-``M / N`` count, mirroring the pattern in
-:doc:`rust_vex_ops` →
-*Unsupported op coverage matrix*. When you add a brand-new family
-(no campaign child yet), append a new row and open a tracking bead so
-the provenance column has somewhere to point.
-
-The ``Native`` count is intentionally fractional (``M / N``) rather
-than a Status enum like the VEX matrix — every row already has a
-Python fallback, so the meaningful axis is "how many of the named
-members are on the fast path", not "implemented / placeholder /
-stubbed". A row at ``0 / N`` means all members fall through to
-Python; a row at ``N / N`` means none of its members enter the
-Python fallback path under concrete arguments.
-
-.. note::
-
-   The *Native (Rust) SimProcedures* section (above, from
-   *Native coverage matrix* through this paragraph) was last verified
-   against commit ``4215fe99b`` on 2026-06-03 (angr-1cnv). When you
-   close an ``angr-f16h.*`` or ``angr-0hif.*`` child, flip the matching
-   row and bump this footer to the new commit hash.
+Which libc procedures and Linux syscalls have native fast paths is
+indexed in :doc:`native_coverage_matrix`, the single source of truth
+for that question. Every row there also has a Python fallback — angr's
+regular ``SimProcedure`` registry — that runs when a native handler is
+missing, disabled, or returns ``ProcedureError`` for a symbolic argument
+it cannot handle; the fallback guarantees correctness and the native
+path is the speed optimization. When you add or change a native
+procedure or syscall, update that page in the same commit.
