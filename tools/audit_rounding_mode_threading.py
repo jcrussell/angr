@@ -34,7 +34,7 @@ convention (``|v, rm|``, ``|a, b, rm|``). A closure is a gap when:
 **Detector 2 (discarded rm binding)** — a ``let`` binding whose name is
 underscore-prefixed and ends in ``rm`` (``_rm``, ``_vex_rm``, ``_rm_bv``): the
 rounding-mode operand was evaluated and then thrown away. That is the shape
-``interpreter/expressions.rs::eval_qop`` carried — it evaluated the Qop's rm
+``interpreter/expressions_arith.rs::eval_qop`` carried — it evaluated the Qop's rm
 operand into ``_rm`` and called the rm-less ``VEXOps::qop``, so FMAdd/FMSub
 always computed RNE (angr-03vl4.30). Detector 1 could not see it: ``eval_qop``
 lives outside ``vex/``, is not named ``*_rm`` and uses no closure.
@@ -244,7 +244,7 @@ def self_test() -> int:
 
     A lint that has never been seen to fire is indistinguishable from one that
     cannot — this repo has been bitten by that before (see the valgrind gate's
-    ``--self-test`` note in AGENTS.md).
+    ``--self-test``: a gate never seen to fail is indistinguishable from one that cannot).
     """
     got = [(fn, params, drops, exempt) for _, _, fn, params, drops, exempt in scan_text("<self-test>", _SELF_TEST_SRC)]
     if got != _SELF_TEST_EXPECTED:

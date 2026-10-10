@@ -374,7 +374,7 @@ jobs:
     # (1.3x vs 1.5x) because warmup happens entirely in iter1; iters 2-3
     # should be flat on healthy main. Steady-state variance still belongs
     # to the nightly N=10 run. See bd memory `invariant-ci-gate-hygiene`
-    # rule (1) and AGENTS.md "Nightly RSS leak check" for threshold notes.
+    # rule (1) and the run_leak_check.py docstring for threshold notes.
     name: RSS Leak Check (PR smoke)
     runs-on: ubuntu-latest
     timeout-minutes: 15  # Rust build dominates (~5-7m cold); leak step capped at 5m below

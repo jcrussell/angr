@@ -11,6 +11,31 @@ Runs fast-tier benchmarks with both engines and checks:
    warns below 1.0x). Uses cached python_time from baseline when this run
    skipped Python (e.g. rust_only entries).
 
+How a timing failure is decided (this docstring is the authority; the docs
+point here):
+
+* A bench fails only when it is both more than ``--threshold`` slower than
+  ``baseline_timings.json`` *and* more than ``--regression-floor`` slower in
+  absolute terms. At a sub-second baseline the relative bar alone sits
+  inside host noise; benches well above the floor are unaffected. A
+  suppressed excursion prints a ``noise-floor:`` line.
+* Before any ``--retry-failures`` retry, timing failures are re-checked
+  against a baseline scaled by the suite-median ``current/baseline`` ratio,
+  so a uniformly slow host does not red the gate on whichever bench it hit
+  hardest. Normalization is inert inside a small dead-band and refuses to
+  engage past ``--host-factor-cap``, where a uniform shift is equally
+  consistent with a global regression; that case prints
+  ``SUITE-WIDE SLOWDOWN`` and keeps the failures. ``--no-host-normalize``
+  restores the raw comparison.
+* ``--update`` never overwrites a ``PINNED_RUST_TIMES`` entry (see that
+  table): those pins are deliberately pessimistic and a single refresh run
+  must not demote them. A held-back pin prints ``pinned baseline kept:``.
+* ``--skip-bimodal`` drops ``BIMODAL_BENCHMARKS`` (the PR-time gate); the
+  nightly run keeps them and runs ``--full`` so ``MEDIUM_SUITE`` is covered.
+* On a timing regression the gate emits a ``bench_diff`` table against
+  ``baseline_counters.json`` (refresh with ``--update-counters``); a missing
+  file just suppresses the diff.
+
 Usage:
     python tests/benchmarks/run_regression.py              # Run all fast benchmarks
     python tests/benchmarks/run_regression.py --update      # Update baseline timings

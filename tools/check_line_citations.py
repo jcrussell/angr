@@ -8,8 +8,8 @@ part of an invariant, cross-reference, or "see also" note -- including a
 widespread and otherwise-valuable convention of citing the upstream Python
 implementation's line numbers (``engines/successors.py:203``) to document
 behavior parity. Those citations drift silently as the cited code moves --
-AGENTS.md's bd-memory "symbol-anchor convention" exists for exactly this
-failure mode, but only covers bd memory authoring, not in-source comments.
+AGENTS.md's symbol-anchor rule exists for exactly this
+failure mode; it covers bd memories, in-source comments and ``docs/**/*.rst``.
 
 Mirrors tools/audit_silent_fallback.py's shape rather than diffing against a
 base ref: a diff-scoped version would need to pick a base branch, and this
@@ -156,7 +156,7 @@ def main() -> int:
     print(
         "\nCite the function/struct/const name instead of a line number -- line "
         "citations drift silently as code moves (same symbol-anchor convention "
-        "AGENTS.md documents for bd memories, applied to in-source comments). "
+        "AGENTS.md's hygiene rules require for bd memories, comments and docs). "
         "If this is intentional pre-existing debt, run --update-baseline."
     )
     return 1

@@ -1,5 +1,5 @@
 // Unit tests for concretize.rs (AddressConcretizer).
-// Split out of the parent module; see AGENTS.md test-split recipe.
+// Split out of the parent module; see the `test_submod!` doc in `lib.rs`.
 use super::*;
 
 #[test]

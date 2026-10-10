@@ -88,8 +88,8 @@
 //! `Option<RustSimState>`, and `None` from a non-empty deque is the run loop's
 //! signal that the active stash is exhausted — it would end exploration early
 //! and silently drop states. A loud panic on a broken index invariant is the
-//! correct trade here (AGENTS.md: never trade a loud panic for a silent wrong
-//! answer).
+//! correct trade here (the crate-wide rule: never trade a loud panic for a
+//! silent wrong answer).
 //!
 //! **Enforcement (angr-qwyti.11):** this module carries
 //! `#![deny(clippy::unwrap_used, clippy::expect_used)]`; each function holding

@@ -49,7 +49,8 @@
 //! ## Rounding mode
 //!
 //! Every entry point here takes the VEX rounding mode as its first operand
-//! and discards it. AGENTS.md's rounding-mode-threading convention requires
+//! and discards it. The rounding-mode-threading gate
+//! (`tools/audit_rounding_mode_threading.py`) requires
 //! that discard to carry an `rm-ignored: <why>` comment, and this module is
 //! the case that convention was written for: the results come from Rust's
 //! libm bindings (`f64::sin`, `f64::log2`, `f64::atan2`, `f64::exp2`), which

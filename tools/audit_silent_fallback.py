@@ -16,7 +16,7 @@ The convention: every such site that can affect *state correctness* carries a
 comment within a small window above the site. cat-a/b are annotation-only;
 cat-c additionally demands a warn.
 
-This is an AUDIT tool, NOT a hard CI gate (see the bead): the detected shapes
+This runs as a CI gate (``ci.yml::rust_check``) against a checked-in baseline: the detected shapes
 have real false positives (plenty of legitimate self-only-by-design early
 returns exist), so precision is proven against a checked-in *baseline* of the
 currently-known-untagged sites. The script reports only sites that are neither

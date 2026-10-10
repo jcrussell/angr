@@ -1,5 +1,5 @@
 // Unit tests for strtod.rs (strtod / floating_prefix_len SimProcedure helpers).
-// Split out of the parent module; see AGENTS.md test-split recipe.
+// Split out of the parent module; see the `test_submod!` doc in `lib.rs`.
 use super::*;
 use crate::memory::Permission;
 use crate::procedures::NativeSimProcedure;

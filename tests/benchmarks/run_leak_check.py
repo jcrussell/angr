@@ -19,6 +19,18 @@ Usage:
     python tests/benchmarks/run_leak_check.py --example flareon2015_10
     python tests/benchmarks/run_leak_check.py --json                # machine-readable
 
+Threshold tuning (this docstring is the authority; the docs point here):
+
+* A healthy ratio sits just above 1.0 — Z3 and claripy caches warm up but
+  do not grow without bound. The default 1.5x is large enough to absorb
+  that warmup and small enough to catch a roughly 2x regression on the
+  first nightly after it lands.
+* If a legitimate change pushes the healthy ratio up (a larger steady-state
+  cache), raise the threshold incrementally; do not lower it below ~1.2x
+  without first ruling out warmup variance.
+* Other examples have different baselines; run N=10 once locally before
+  picking a threshold for one.
+
 Exit codes:
     0 — pass
     1 — leak detected (ratio above threshold) or iteration failure

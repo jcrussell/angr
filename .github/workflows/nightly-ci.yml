@@ -302,7 +302,7 @@ jobs:
         # Codifies the 9maq bisection method into a nightly gate. The pre-fix
         # mma_howtouse leak was 286 MB -> 1888 MB (~6.6x); current main is
         # within 0.5%. Threshold 1.5x flags any new >=2x regression with margin.
-        # See AGENTS.md "Nightly RSS leak check" for threshold tuning notes.
+        # See the run_leak_check.py docstring for threshold tuning notes.
         run: |
           uv run python tests/benchmarks/run_leak_check.py \
             --iters 10 --threshold 1.5 \

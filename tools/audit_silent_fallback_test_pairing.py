@@ -7,10 +7,8 @@ uses the `silent_default!` macro). It is a whole-tree-vs-baseline scan and
 deliberately does not look at test coverage -- adding the tag is enough to
 satisfy it.
 
-This script is a narrower, diff-based companion closing the next gap up. Per
-the analysis in `/home/ubuntu/.claude/plans/we-keep-finding-bugs-optimized-acorn.md`
-("What NOT to chase with more tests"), the two *logged* silent-fallback
-categories --
+This script is a narrower, diff-based companion closing the next gap up. The
+two *logged* silent-fallback categories --
 
     cat_b   fallback with loss (degrades silently, `log::debug!`)
     cat_c   wrong-answer risk (MUST also `log::warn!`)
@@ -23,7 +21,7 @@ the discipline of shipping a same-commit regression test proving the
 fallback's chosen value is *correct* for the edge case, not merely "doesn't
 crash". `cat_a` (expected control flow) is deliberately exempt -- there is no
 "wrong answer" for it to get right, so a test would be vacuous busywork
-(AGENTS.md's "Silent-fallback tagging (Rust)" section).
+(the `silent_default!` doc in native/angr/src/lib.rs).
 
 The rule this script enforces: a diff that adds a new `silent_default!(cat_b`
 or `silent_default!(cat_c` invocation, or a new `// SILENT(cat-b):` /
@@ -39,7 +37,7 @@ than an import: the two scripts scan fundamentally different things (whole
 tree vs. a diff) and have no shared runtime state, so importing one from the
 other would just be action-at-a-distance coupling for a four-line regex. Keep
 both in sync by hand if the tagging convention's syntax ever changes (both are
-anchored in AGENTS.md's "Silent-fallback tagging (Rust)" section, which is the
+anchored in the `silent_default!` doc in native/angr/src/lib.rs, which is the
 actual source of truth). `silent_default!(` alone is enough to flag the macro
 form without also checking which category follows: the macro (`lib.rs`) has
 no `cat_a` arm, so *any* invocation is inherently cat_b or cat_c already, and
@@ -293,7 +291,7 @@ def evaluate(diff_text: str, touched: list[str]) -> tuple[int, str]:
     lines.append(
         "\ncat_b/cat_c mark a fallback that silently degrades or risks a wrong answer -- "
         "exactly the shape this repo's audits keep re-finding (39 historical instances,\n"
-        'see AGENTS.md\'s "Silent-fallback tagging (Rust)" section). Add a regression test '
+        'see the `silent_default!` doc in native/angr/src/lib.rs). Add a regression test '
         "in the same change proving the fallback's chosen default is *correct* for this\n"
         "edge case (not just that it doesn't panic), touching a file matching `*_tests.rs` "
         "or under a `tests/` directory. If this really is `cat_a` (expected control flow,\n"
@@ -305,7 +303,7 @@ def evaluate(diff_text: str, touched: list[str]) -> tuple[int, str]:
 # ---------------------------------------------------------------------------
 # --self-test: synthetic diffs proving the check can both pass and fail.
 # A lint that has never been seen to fire is indistinguishable from one that
-# cannot (same reasoning as the valgrind gate's --self-test, AGENTS.md).
+# cannot (same reasoning as the valgrind gate's --self-test).
 # ---------------------------------------------------------------------------
 
 

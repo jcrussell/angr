@@ -215,7 +215,7 @@ def self_test() -> int:
 
     A lint that has never been seen to fire is indistinguishable from one that
     cannot — this repo has been bitten by that before (see the valgrind gate's
-    `--self-test` note in AGENTS.md). With an empty baseline the real check
+    `--self-test`: a gate never seen to fail is indistinguishable from one that cannot). With an empty baseline the real check
     passes vacuously, so this runs ahead of it in CI.
     """
     got = [(fn, shape, exempt) for _, _, fn, shape, exempt in scan_text("<self-test>", _SELF_TEST_SRC)]

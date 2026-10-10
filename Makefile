@@ -8,7 +8,7 @@
 #   - PY points at the venv interpreter so `make` works without an active
 #     `source .venv/bin/activate` (handy from IDE tasks).
 #   - Cargo is invoked through ~/.cargo/bin/cargo if PATH does not already
-#     carry it (matches the build-rust documentation in AGENTS.md).
+#     carry it (matches docs/advanced-topics/rust_build.rst).
 #   - Long-running targets (profile-bench, test-full, bench-regression) are
 #     not wired into `make` (no PHONY 'all') so `make` with no args prints
 #     help instead of churning the box.
@@ -140,7 +140,7 @@ test-python-baseline:  ## Run a fast (~5min) vanilla angr Python-engine regressi
 # --- Benchmarks ----------------------------------------------------------
 
 .PHONY: bench-regression
-bench-regression:  ## Fast-tier benchmark regression check (7 examples, subprocess-bounded).
+bench-regression:  ## Fast-tier benchmark regression check (FAST_SUITE in run_regression.py, subprocess-bounded).
 	$(PY) $(REPO_ROOT)/tests/benchmarks/run_regression.py
 
 .PHONY: bench-single

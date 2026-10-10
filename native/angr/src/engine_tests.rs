@@ -29,7 +29,8 @@ fn build_filter_accepts_a_bare_level() {
 
 #[test]
 fn build_filter_honors_a_per_module_spec() {
-    // The spec documented in AGENTS.md: raise one module, silence everything else.
+    // The spec documented in docs/advanced-topics/rust_build.rst ("Debugging
+    // Rust-side logs"): raise one module, silence everything else.
     let f = build_filter("rustylib::stash=warn,off");
     assert!(f.enabled(&metadata("rustylib::stash", Level::Warn)));
     assert!(!f.enabled(&metadata("rustylib::stash", Level::Info)));

@@ -7,7 +7,7 @@ Prebuilt wheel distribution for the Rust engine
    for how a prebuilt manylinux wheel of the Rust engine *must* link against
    Z3, why the obvious ``auditwheel`` default is wrong here, and what remains to
    be verified in CI. The build-from-source path documented in the repo
-   ``AGENTS.md`` ("Building the Rust Extension") stays the supported install
+   :doc:`rust_build` stays the supported install
    method until the wheel job below is verified green.
 
 Problem
@@ -215,7 +215,7 @@ Build-from-source fallback
 --------------------------
 
 Until the wheel job is verified, source build remains the supported path. It is
-documented in ``AGENTS.md`` → "Building the Rust Extension" (prerequisites,
+documented in :doc:`rust_build` (prerequisites,
 bootstrap-from-clean, and the ``tools/rebuild-rust.sh`` recovery flow). No change
 needed there; this memo only adds the *binary-distribution* option on top.
 
