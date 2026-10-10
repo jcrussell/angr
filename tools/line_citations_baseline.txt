@@ -6,22 +6,8 @@ docs/advanced-topics/debug_var.rst	# Find the addr before executing printf("%d\n
 docs/advanced-topics/debug_var.rst	# Get a state before executing printf(%d\n", *b) (line 7)
 docs/advanced-topics/debug_var.rst	# Resolve 'a' in state before execute line 10
 docs/advanced-topics/debug_var.rst	# the addr to line 7 is 0x401193 you can search for it with
-docs/advanced-topics/rust_engine_characterization.rst	(``angr/factory.py:164``, 5.4 s cumulative), which builds a *fresh*
-docs/advanced-topics/rust_engine_characterization.rst	(``page_backer_mixins.py:240``), which linearly scans the
-docs/advanced-topics/rust_engine_characterization.rst	``angr/callable.py:88 (Callable.__call__)`` is 88 % of cProfile
-docs/advanced-topics/rust_engine_flame_comparison.rst	(``factory.py:164``, 5.4 s cumulative), which builds a fresh state
-docs/advanced-topics/rust_engine_flame_comparison.rst	(``page_backer_mixins.py:240``) per-page backer scan come from
-docs/advanced-topics/rust_engine_flame_comparison.rst	``solve.py`` — ``callable.py:88 (Callable.__call__)`` is 88 % of
-docs/advanced-topics/rust_parallel_design.rst	* z3-patched Translate trait: ``native/z3-patched/src/translate/mod.rs:23-31``.
 docs/advanced-topics/rust_parallel_design.rst	``native/z3-patched/src/translate/mod.rs:23-31`` —
 docs/advanced-topics/rust_proxy_writes_design.rst	(``rust_state_proxy.py:240-425``), with ``memory.store`` raising
-docs/advanced-topics/rust_proxy_writes_design.rst	* ``angr/exploration/rust_callback_dispatch.py:960-1040`` —
-docs/advanced-topics/rust_proxy_writes_design.rst	* ``angr/exploration/rust_callback_dispatch.py:960-1040`` — the
-docs/advanced-topics/rust_proxy_writes_design.rst	* ``angr/exploration/rust_state_proxy.py:240-425`` —
-docs/advanced-topics/rust_proxy_writes_design.rst	* ``angr/exploration/rust_state_sync.py:1143-1400`` —
-docs/advanced-topics/rust_proxy_writes_design.rst	* ``angr/exploration/rust_state_sync.py:1143`` —
-docs/advanced-topics/rust_proxy_writes_design.rst	* ``angr/exploration/rust_state_sync.py:1202`` —
-docs/advanced-topics/rust_proxy_writes_design.rst	* ``angr/exploration/rust_state_sync.py:1328`` —
 docs/advanced-topics/rust_proxy_writes_design.rst	``NotImplementedError`` at ``rust_state_proxy.py:422``. The
 docs/advanced-topics/rust_proxy_writes_design.rst	``rust_callback_dispatch.py:1025-1035`` are battle-tested.
 docs/advanced-topics/rust_proxy_writes_design.rst	``rust_callback_dispatch.py:989-997``).

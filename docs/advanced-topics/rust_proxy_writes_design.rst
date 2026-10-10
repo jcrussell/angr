@@ -3,7 +3,7 @@ Rust engine: proxy-backed SimState writes — design comparison
 
 .. note::
 
-   **Status: partially superseded (angr-j28e, 2026-06-02).**
+   **Status: partially superseded (angr-j28e).**
 
    ``RustStateProxy`` writes (``proxy.regs.<name> = value`` and
    ``proxy.memory.store(addr, data)``) are now implemented as direct
@@ -12,8 +12,7 @@ Rust engine: proxy-backed SimState writes — design comparison
    :doc:`rust_engine` "RustStateProxy write-through contract" for the
    shipped behavior.
 
-   **Further superseded for memory (angr-grji4, 2026-07-15,
-   commit 2d9bb6598).** At the **SimProcedure callback boundary**
+   **Further superseded for memory (angr-grji4).** At the **SimProcedure callback boundary**
    (Python full ``SimState`` mutates → Rust syncs back on return),
    the diff-and-push path described below now governs only
    **registers and constraints**. The **memory** half is proxy
@@ -33,9 +32,7 @@ Rust engine: proxy-backed SimState writes — design comparison
 
 This document is the design-phase deliverable for the parking bead
 ``angr-g7ug`` ("Proxy-backed SimState writes — eliminate
-_compute_register_changes diff-and-push"). The measured sync-back
-numbers were captured on this machine via
-``run_single.py --dump-counters`` at HEAD ``5ad385aef``.
+_compute_register_changes diff-and-push").
 
 Audience: contributors deciding whether to replace the existing
 SimProcedure callback boundary with a proxy-plugin design.
@@ -78,140 +75,32 @@ synchronously, on every store.
 
 
 Empirical input: per-callback sync-back cost
----------------------------------------------
+--------------------------------------------
 
-Measured at HEAD ``5ad385aef`` on this machine, via
-``tests/benchmarks/run_single.py <bench> --dump-counters``:
-
-.. list-table::
-   :header-rows: 1
-   :widths: 22 11 13 13 13 14 14
-
-   * - Bench
-     - callbacks
-     - total ms
-     - state_create ms
-     - execute ms
-     - sync_back ms
-     - per-cb sync ms
-   * - fauxware
-     - 1
-     - 57.8
-     - 2.8
-     - 41.0
-     - 13.9
-     - 13.9
-   * - mma_howtouse
-     - 1
-     - 8.4
-     - 1.1
-     - 0.0
-     - 7.2
-     - 7.2
-   * - google2016_unbreakable_0
-     - 1
-     - 195.6
-     - 19.4
-     - 167.5
-     - 7.7
-     - 7.7
-   * - flareon2015_10
-     - 2
-     - 23.0
-     - 7.2
-     - 9.8
-     - 4.8
-     - 2.4
-   * - csaw_wyvern
-     - 30
-     - 2063.2
-     - 1962.7
-     - 71.5
-     - 26.7
-     - 0.89
-
-Two patterns stand out:
-
-#. **The diff-and-push pass costs ~1–14 ms per callback.** The variance
-   tracks the cost of ``state.memory.changed_bytes()`` on the pages the
-   procedure touched plus per-symbolic-register AST re-export. The
-   fauxware ``open`` callback hits the upper end (a register snapshot
-   plus a concrete-memory write); ``CallReturn`` and ``ReturnUnconstrained``
-   sit near the bottom because they touch only the return register.
-#. **Sync-back is rarely the dominant phase.** It is at most 24 % of
-   per-callback time on benches with substantial ``execute`` cost
-   (fauxware ``open``), 86 % on procedures that do almost nothing
-   (mma_howtouse ``CallReturn``), and 1.3 % on callback-heavy benches
-   where ``state_create`` dominates (csaw_wyvern).
-
-**Implication.** Aggregate sync-back time across a whole bench is on
-the order of **tens of milliseconds**:
-
-* fauxware: 13.9 ms sync-back vs ~190 ms wall = ~7 % upper bound.
-* csaw_wyvern: 26.7 ms sync-back vs ~16.4 s wall = ~0.16 % of wall.
-* mma_howtouse: 7.2 ms sync-back vs ~6 s wall = ~0.12 % of wall.
-
-A proxy-backed write path that ran at zero overhead could only
-recover those numbers. The eye-watering "per-Callable" cost on
-mma_howtouse is in ``state_create`` (the SimState rebuild and the
-solver materialize), not in sync-back — different bead (``angr-9maq``).
+Measured with ``run_single.py --dump-counters`` across the benchmark
+corpus (``angr-g7ug`` holds the numbers): per-callback sync-back costs
+on the order of a millisecond, and even on the callback-densest bench
+the aggregate is a single-digit percentage of wall time; on most
+benches it is well under one percent. The dominant cost on
+callback-heavy benches is state creation, not sync-back
+(``angr-9maq``).
 
 
 Current diff-and-push model
 ---------------------------
 
-Reference points in the live code:
-
-* ``angr/exploration/rust_state_sync.py:1143`` —
-  ``_snapshot_registers``: builds a ``reg_name → (is_symbolic,
-  concrete, offset, size)`` dict in ~0.1 ms (vs ~1 ms for
-  ``state.copy()``).
-* ``angr/exploration/rust_state_sync.py:1202`` —
-  ``_extract_register_changes``: walks the architecture register
-  map, compares to the snapshot or old state, emits a list of
-  ``(offset, size, data_bytes)`` tuples. Symbolic return registers
-  route through ``_sync_symbolic_register_to_rust``, which calls
-  ``set_pending_register_symbolic_ast``.
-* ``angr/exploration/rust_state_sync.py:1328`` —
-  ``_extract_memory_changes``: uses
-  ``new_state.memory.changed_bytes(old_state.memory)``, groups
-  consecutive bytes into regions, and emits concrete + symbolic
-  region tuples. Symbolic regions are byte-emitted (up to 128 B) or
-  whole-emitted with handle registration for restoration.
-* ``angr/exploration/rust_callback_dispatch.py:960-1040`` — the
-  call site. After the SimProcedure returns,
-  ``_extract_register_changes`` and ``_extract_memory_changes`` are
-  invoked sequentially; ``_extract_new_constraints`` runs
-  against the constraint-list-length delta; everything is bundled
-  into ``resume_after_simprocedure(new_pc, reg_changes, mem_changes,
-  new_constraints)``.
-
-What the manager already exposes to a state_id-keyed write path:
-
-* ``set_state_register_symbolic_ast(state_id, name, ast)`` —
-  ``#[pymethods]`` wrapper in
-  ``native/angr/src/exploration/manager_methods_export.rs``, body in
-  ``state_api.rs::_set_state_register_symbolic_ast`` (symbolic
-  registers).
-* ``state_memory_store_symbolic_multi(state_id, addr, data)`` —
-  wrapper in ``manager_methods_export.rs``, body in
-  ``state_api.rs::_state_memory_store_symbolic_multi`` (symbolic
-  memory regions).
-* Concrete-register write by state_id: **does not exist**. Rust
-  has ``RustSimState::set_register`` and a manager-scoped
-  ``set_register`` (current state only); a state-id-keyed shim
-  would be net-new.
-* Concrete-memory write by state_id: **does not exist** for the
-  proxy path. The diff-and-push side uses
-  ``resume_after_simprocedure``'s ``mem_changes`` payload, which
-  the engine applies in batch.
-* Solver-add by state_id: ``_rust_add`` interceptor monkey-patches
-  ``state.solver.add`` and writes through immediately. **Already a
-  proxy-style path.**
-
-So the bead's framing — "switch to proxy-backed writes" — is
-half-true today: solver writes are already proxy-shaped; register
-and memory writes are still diff-shaped.
+At the SimProcedure callback boundary the Python ``SimState`` is
+mutated freely and Rust syncs back on return. For registers and
+constraints that is still the diff-and-push path:
+``rust_state_sync.py::_snapshot_registers`` records a cheap
+``reg_name → (is_symbolic, concrete, offset, size)`` snapshot before the
+callback, ``_extract_register_changes`` diffs it afterwards and emits
+``(offset, size, bytes)`` tuples, with symbolic return registers routed
+through ``_sync_symbolic_register_to_rust`` /
+``set_pending_register_symbolic_ast``. Memory no longer takes this path:
+it is proxy write-through by default (see the status note above), so
+``rust_callback_dispatch.py`` discards the ``CallbackMemoryTracker`` write
+lists instead of replaying them.
 
 
 Option A — Proxy-backed plugins for callback SimStates
@@ -479,10 +368,10 @@ Comparison
      - None.
 
 
-Recommendation
---------------
+Recommendation at design time, and what shipped
+-----------------------------------------------
 
-**Defer both Option A and Option B. Keep Option C.**
+**At design time: defer both Option A and Option B, keep Option C.**
 
 Rationale:
 
@@ -520,36 +409,18 @@ Rationale:
   dependency rather than an optimization, and the risk surface
   is paid down by the larger refactor.
 * The mma_howtouse / hackcon residual gaps turn out to be in
-  the diff-and-push path (not the case today — both are in
-  ``state_create`` or Z3-shape mismatches per bd memory
-  ``9maq-bisect-method`` / the hackcon :doc:`rust_engine` notes).
+  the diff-and-push path (not the case at design time — both were in
+  ``state_create`` or Z3-shape mismatches, ``9maq-bisect-method``).
 
-
-Open questions (if reopened)
------------------------------
-
-* **PyO3 per-write microbenchmark.** Confirm the 200–500 ns
-  per-call cost on this hardware against the actual write
-  granularity of representative SimProcedures (memcpy with N=64,
-  strncpy with N=1000, etc.). A 1 KB memcpy at 200 ns/call =
-  200 µs of boundary overhead, against ~1 ms of diff-and-push
-  cost — could swing either way.
-* **Inspect-event interaction.** The MVP inspect path
-  (``angr-uq4n.2``) emits events at the proxy boundary today.
-  Option A would emit events at every write — verify the event
-  count stays bounded for SimProcedures that do many writes.
-* **Conditional write semantics.** Audit which SimProcedures use
-  ``claripy.If(cond, val1, val2)`` writes and what Option A's
-  symbolic-store path produces compared to today's diff-and-push
-  output. If results differ on any path, Option A is a
-  regression on that path.
-* **Tracked-writes coverage.** For Option B specifically: enumerate
-  every register-write callsite in angr's plugin internals that
-  bypasses ``state.regs.__setattr__`` (e.g. the register-rename
-  paths on x86). Each bypass needs explicit tracked-log emission.
-* **Plugin-restoration alignment.** If ``angr-2k64`` revives,
-  re-evaluate Option A in the larger context — the implementation
-  cost is shared and the risk is amortized across both rewrites.
+**What shipped** reversed the recommendation on the write side without
+adopting either option's machinery: ``RustStateProxy`` register and
+memory writes became direct write-through (``angr-j28e``), and at the
+callback boundary memory moved to the proxy by default
+(``angr-grji4``) once re-syncing whole pages per callback was measured
+to cost more than the proxy writes do. Registers and constraints keep
+diff-and-push, whose debug history is exactly the risk argument above.
+The shipped contract is in :doc:`rust_engine` ("RustStateProxy
+write-through contract").
 
 
 References
@@ -566,19 +437,18 @@ References
   each write.
 * Code under audit:
 
-  * ``angr/exploration/rust_state_sync.py:1143-1400`` —
-    diff-and-push implementation.
-  * ``angr/exploration/rust_callback_dispatch.py:960-1040`` —
-    sync_back call site.
-  * ``angr/exploration/rust_state_proxy.py:240-425`` —
-    read-only proxies that would extend to write paths.
+  * ``angr/exploration/rust_state_sync.py`` (``_snapshot_registers``,
+    ``_extract_register_changes``) — diff-and-push implementation.
+  * ``angr/exploration/rust_callback_dispatch.py`` — sync_back call site.
+  * ``angr/exploration/rust_state_proxy.py`` (``RustRegisterProxy``,
+    ``RustMemoryProxy``) — the proxies that now write through.
   * ``native/angr/src/exploration/state_api.rs`` —
     ``_set_state_register_symbolic_ast`` and
     ``_state_memory_store_symbolic_multi``, the existing
     symbolic-write FFI shims that the proxy would reuse.
 
-* Measurements: ``run_single.py --dump-counters`` per-bench
-  output captured at HEAD ``5ad385aef`` during this design pass.
+* Measurements: ``run_single.py --dump-counters`` per-bench output,
+  recorded on ``angr-g7ug``.
 * Prior cautionary memory: ``avoid-state-copy-optimization`` — a
   similar attempt to skip state.copy() broke register sync silently
   on ais3 (3 s → 11 s).

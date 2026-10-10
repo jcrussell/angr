@@ -12,8 +12,6 @@ Advanced Topics
    rust_engine_decisions
    rust_build
    rust_bimodal_variance
-   rust_engine_characterization
-   rust_engine_flame_comparison
    rust_lazy_memory_design
    rust_libvex_ffi
    rust_parallel_design

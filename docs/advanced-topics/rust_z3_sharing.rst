@@ -111,7 +111,7 @@ and a constraint:
 
 The fork side of this is what makes :ref:`rust-z3-sharing-fork-lazy`
 correct: the child can copy the parent's ``z3_assertions_shared``
-``Arc<Vec<Bool>>`` by ``Arc::clone`` and replay assertions lazily
+(a ``Mutex<Arc<Vec<Bool>>>``) by ``Arc::clone`` and replay assertions lazily
 without ever asking Z3 to translate them, because both contexts ARE
 the same context.
 
@@ -124,8 +124,9 @@ single-state solver wrapper. Each ``RustSimState`` owns one;
 states travel through three phases:
 
 1. **Construction.** ``SymContext::new()`` allocates a
-   ``z3::Solver`` configured by ``build_solver(timeout_ms)`` with the
-   ``QF_BV``/``QF_ABV`` tactic pipeline. The solver is wrapped in
+   ``z3::Solver`` configured by ``build_solver(timeout_ms)`` — a plain
+   ``z3::Solver::new()`` unless ``ANGR_Z3_TACTIC`` selects a tactic
+   pipeline (see :doc:`rust_engine`). The solver is wrapped in
    ``Mutex<Option<Solver>>`` so it can be lazily dropped/rebuilt on
    fork. ``timeout_ms`` defaults to 30000 (30 s) per query.
 2. **Constraint accumulation.** ``add_constraint_raw`` / ``assume_*``
@@ -281,11 +282,11 @@ Memory limits and bounded structures
 
 Z3 itself takes its memory limit from process resource limits; the
 benchmarking harness sets ``RLIMIT_AS = 4 GB`` per subprocess in
-``tests/benchmarks/run_single.py`` to keep the 8 GB CI box safe.
+``tests/benchmarks/run_single.py`` to keep the CI box safe.
 Inside that envelope, two engine-side structures grow with
 exploration and need a mental model:
 
-* **``z3_assertions_shared`` ``Arc<Vec<Bool>>``** holds every
+* **``z3_assertions_shared`` (``Mutex<Arc<Vec<Bool>>>``)** holds every
   constraint ever asserted on the lineage of forks leading to this
   state. Each entry is a refcounted Z3 AST handle (``Z3_inc_ref``).
   Memory growth is linear in constraint count and shared across

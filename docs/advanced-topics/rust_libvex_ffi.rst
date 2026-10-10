@@ -1,24 +1,24 @@
-libVEX FFI native lifting (Stage-1 feasibility)
-===============================================
+libVEX FFI native lifting
+=========================
 
 .. note::
 
-   This documents the **Stage-1 feasibility verdict** for binding libVEX
-   directly from Rust (bd ``angr-z087y``, the long pole of the zero-Python
-   exploration epic ``angr-gorvf``). Stages 2 (flag-gated engine use) and 3
-   (AMD64 default) are tracked separately and are gated on a bench win, not on
-   feasibility. The runnable probe that produced this verdict is
-   ``tools/probe-libvex-ffi.py``.
+   **Status: shipped and on by default** (feasibility ``angr-z087y``,
+   default flip ``angr-3trr7``). This page keeps the feasibility argument
+   (why binding pyvex's own libVEX is parity-safe), the build and link
+   recipe, where the native lifter gets its bytes, how to run the parity
+   gate, and the hazards a default-on build had to answer. The runnable
+   probe behind the feasibility verdict is ``tools/probe-libvex-ffi.py``.
 
 Motivation
 ----------
 
 Cold VEX block lifts currently go
 Rust → Python callback → pyvex (libVEX) → serialize ``IRSB`` to JSON → Rust
-deserialize (``native/angr/src/vex/pyvex_bridge.rs``). At ~390 µs/lift corpus
-average this is *mostly* GIL-acquire + JSON round-trip; libVEX itself is tens of
-µs. ``lift_block`` is 86 % of all Rust→Python callbacks by count (3921/4584
-across 32 corpus benches). It is a **per-unique-block warmup cost** — the warm
+deserialize (``native/angr/src/vex/pyvex_bridge.rs``). Most of that time is
+GIL acquisition and the JSON round-trip; libVEX itself is a small fraction.
+``lift_block`` is by far the most frequent Rust→Python callback on the
+benchmark corpus. It is a **per-unique-block warmup cost** — the warm
 per-worker block cache already amortizes repeat lifts — so the ROI is
 warmup-bounded and only matters for a long/wide workload where lift warmup
 dominates, and for parallel warmup (it removes a GIL serialization point).
@@ -29,10 +29,10 @@ correctness-risky — an earlier from-scratch ``NativeVEXLifter`` stub never got
 past returning ``LiftError::Unsupported``, and was deleted in Stage-1 close-out
 for exactly that reason). Same libVEX, same configuration ⇒ same ``IRSB``.
 
-Verdict: GO on feasibility
---------------------------
+Why binding pyvex's libVEX is parity-safe
+-----------------------------------------
 
-All three Stage-1 unknowns resolve GO against the *installed* pyvex wheel
+All three feasibility unknowns resolve GO against the *installed* pyvex wheel
 (``tools/probe-libvex-ffi.py`` asserts each and exits non-zero on any NO-GO):
 
 1. **Link seam.** ``pyvex/lib/libpyvex.so`` (the shared object pyvex loads via
@@ -95,32 +95,13 @@ prints the resolved recipe for the current environment; the shape is:
    cargo:rustc-link-lib=dylib=pyvex
    cargo:rustc-link-arg=-Wl,-rpath,<venv>/site-packages/pyvex/lib
 
-This **must be gated behind a non-default cargo feature** (e.g.
-``libvex-ffi``) so the default build — and therefore the bench-regression gate,
-which builds default features — takes on no new runtime dependency on
-``libpyvex.so``'s rpath. ``setup.py`` gains a ``_resolve_pyvex_libdir`` helper
-mirroring ``_resolve_z3_header`` to feed the search path when the feature is on.
-
-Implementation plan (Stage-1 remainder)
----------------------------------------
-
-The seam is the existing ``VEXLifter`` trait (``native/angr/src/vex/lifter.rs``);
-a ``NativeLibVEXLifter`` slots in beside the pyvex-callback path. Steps:
-
-1. Add the ``libvex-ffi`` cargo feature + ``build.rs`` link logic (above).
-2. Declare the FFI surface (``vex_init``, ``vex_lift``, ``VEXLiftResult``,
-   ``IRSB`` and its ``IRStmt``/``IRExpr`` reachable structs) from the vendored
-   ``ffi_str`` cdef — prefer ``bindgen`` over the committed ``.h``.
-3. Marshal the C ``VEXLiftResult->irsb`` into Rust ``vex::ir::IRSB`` — the same
-   target shape ``pyvex_bridge.rs::PyVexIRSB`` documents, but read from the C
-   struct instead of JSON (no serde round-trip).
-4. AMD64 only for Stage 1 (ARM, ARM64, MIPS32 and MIPS64 were added later —
-   see ``ffi_vex_arch`` for the current accepted set); call ``vex_init()``
-   once per process (it is idempotent / guarded — see ``vex_initdone``).
-5. **Parity harness:** dump the corpus unique-block set from the warm LRU cache
-   and replay each block through both ``NativeLibVEXLifter`` and the
-   pyvex-serialized path, asserting structural ``IRSB`` equality. Gate:
-   100 % structural parity on the corpus block set.
+The link lives behind the ``libvex-ffi`` cargo feature. It is **default-off
+in** ``Cargo.toml`` so a bare ``cargo build`` / ``cargo test`` takes on no
+runtime dependency on ``libpyvex.so``'s rpath (which is why ``make
+test-libvex`` passes the feature explicitly), and **default-on in**
+``setup.py``: ``_rust_features`` appends it to the extension unless
+``ANGR_LIBVEX_FFI=0``, with ``_resolve_pyvex_libdir`` (mirroring
+``_resolve_z3_header``) feeding the search path. See *Shipping status*.
 
 Running the parity gate
 -----------------------
@@ -142,8 +123,8 @@ directory with ``PYVEX_FFI_LIB_DIR``. In CI this runs nightly as the
 than PR-time because of the pyvex install + link cost); PR-time
 ``cargo clippy --all-features`` compiles the module but does not execute it.
 
-Open risks (all inherited, none new after this verdict)
--------------------------------------------------------
+Open risks
+----------
 
 * **Struct ABI drift:** the vendored cdef must track the pinned pyvex
   (``==9.2.209``); a pyvex bump can change ``VEXLiftResult`` array sizes or
@@ -158,73 +139,23 @@ Open risks (all inherited, none new after this verdict)
   re-entrant; a parallel backend needs a per-worker lift lock or one lifter
   thread. Relevant to the parallel epic, not to single-threaded Stage-1.
 
-Stage-3 verdict: AMD64 default-on (measured)
---------------------------------------------
+Default-on on AMD64
+-------------------
 
-``RustExplorationManager(use_native_lift=...)`` defaults to **True** as of bd
-``angr-op0dn.2.2``. The flag is still double-guarded: it only reaches
-``set_native_lift_enabled(True)`` when ``libvex_ffi_enabled()`` is true (i.e.
-the ``.so`` was built ``--features libvex-ffi``) *and*
-``project.arch.name == "AMD64"``. As of bd ``angr-3trr7`` (human GO
-2026-07-15) that feature is built **by default** on ELF/Mach-O platforms, so
-on a stock AMD64 build the native lifter is now live — see "Shipping status"
-below.
-
-Evidence (feature-on cargo build, ``run_single.py --native-lift`` vs
-``--no-native-lift``, wall-clock over 3 reps unless noted):
-
-.. list-table::
-   :header-rows: 1
-
-   * - bench
-     - off (s)
-     - on (s)
-     - native / fallback lifts
-     - GIL work
-   * - ``codegate_2017-angrybird``
-     - 4.33 / 4.39 / 4.42
-     - 3.68 / 3.90 / 3.94
-     - all native, 0 fallback
-     - —
-   * - ``ekopartyctf2016_rev250``
-     - 2.53 / 2.63 / 2.75
-     - 2.40 / 2.44 / 2.47
-     - 221 / 0
-     - 356 ms → 198 ms
-   * - ``xmllint_getenv``
-     - 3.83 / 3.84 / 3.86
-     - 3.79 / 3.79 / 3.81
-     - 135 / 0
-     - 96 ms → 65 ms
-   * - ``fauxware``
-     - 0.24
-     - 0.23–0.24
-     - 14 / 0
-     - 3.0 ms → 0
-   * - ``mma_howtouse`` (callback-heavy)
-     - 4.81–4.84
-     - 4.81–4.93
-     - —
-     - —
-   * - ``cow_fork_scaling`` (5 reps, min)
-     - 2.62
-     - 2.60
-     - **21 / 256**
-     - 193 ms → 182 ms
-   * - ``google2016_unbreakable_1`` (bimodal)
-     - 2.03–10.63
-     - 2.27–3.16
-     - —
-     - within bimodal noise
-
-Reading: the two lift-warmup-heavy real binaries win (``angrybird`` ≈ 13 %,
-``rev250`` ≈ 7 %); everything else is flat; **nothing regresses**; ``found`` is
-unchanged everywhere. The GIL-work drop (30–45 %) is the durable result and the
-original ROI thesis — it removes a serialization point that matters for parallel
-warmup even where it does not move single-threaded wall-clock.
+``RustExplorationManager(use_native_lift=...)`` defaults to **True**
+(``angr-op0dn.2.2``) and is double-guarded: it only reaches
+``set_native_lift_enabled(True)`` when ``libvex_ffi_enabled()`` is true
+(the ``.so`` was built with the feature) *and* the project arch is one
+``ffi_vex_arch`` accepts. Measured on the benchmark corpus
+(``angr-op0dn.2.2``), the lift-warmup-heavy real binaries gain a
+noticeable fraction of wall time, everything else is flat, nothing
+regresses and ``found`` is unchanged everywhere; the durable result is
+the drop in GIL-held work, which removes a serialization point that
+matters for parallel warmup even where single-threaded wall time does
+not move.
 
 Where native lift gets its bytes
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 ``native_lift_source_bytes`` tries the memory sidecar first
 (``read_concrete_bytes_for_lift``): the sidecar reflects stores, so
@@ -251,8 +182,8 @@ genuinely-lost misses are ``fallback_count - deadend_probe_count``, and that is
 Shipping status: on by default (opt-OUT via ``ANGR_LIBVEX_FFI=0``)
 ------------------------------------------------------------------
 
-As of bd ``angr-3trr7`` (human GO 2026-07-15) the ``libvex-ffi`` cargo feature
-is built **by default**: a stock ``pip install angr`` / ``pip install -e .`` on
+As of bd ``angr-3trr7`` the ``libvex-ffi`` cargo feature is built **by
+default** by ``setup.py``: a stock ``pip install angr`` / ``pip install -e .`` on
 an ELF (Linux) or Mach-O (macOS) platform links the native libVEX lifter, so the
 wins measured above reach every stock AMD64 build. ``use_native_lift`` defaults
 to True and is double-guarded on ``libvex_ffi_enabled()`` — now satisfied on a

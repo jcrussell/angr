@@ -6,8 +6,8 @@ run into.
 
 .. note::
 
-   The experimental Rust symex engine has its own set of gotchas around
-   ``state.inspect`` and ``angr.sim_options`` coverage. See
+   The Rust symex engine has its own set of gotchas around
+   ``angr.sim_options`` coverage and exploration-technique dispatch. See
    :doc:`rust_engine` if you are running with ``use_rust_engine=True``.
 
 SimProcedure inaccuracy
