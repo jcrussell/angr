@@ -7,9 +7,15 @@ Run `bd prime` for workflow context, or install hooks (`bd hooks install`) for a
 
 **Quick reference:**
 - `bd ready` - Find unblocked work
-- `bd create "Title" --type task --priority 2` - Create issue
+- `bd create "Title" --type <type> --priority <P>` - Create issue
 - `bd close <id>` - Complete work
 - `bd dolt push` - Push beads to remote
+
+**Filing issues:** type and priority follow [`TRIAGE.md`](TRIAGE.md)
+(P1 = silently wrong and reachable; crashes and omissions are P2 or lower;
+chores are never P1). Every bug ends with a `Why P<n>:` line, and a re-rating
+is recorded with `bd note`, not a silent edit. Read it before `bd create` or
+`bd update --priority`.
 
 For full workflow details: `bd prime`
 
@@ -336,6 +342,7 @@ bd memories cover the per-decision detail.
 | Parallel/Send-Sync design      | docs/advanced-topics/rust_parallel_design.rst              | rust-python-boundary-audit          |
 | VEX op contribution            | docs/extending-angr/rust_vex_ops.rst                       | invariant-syscall-arg-extraction    |
 | Native SimProcedures           | docs/extending-angr/simprocedures.rst                      | —                                   |
+| Bead priority / type rubric    | TRIAGE.md (repo root)                                      | triage-rubric                       |
 
 ### Quick keys (durable entry points)
 

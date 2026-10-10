@@ -37,7 +37,8 @@ Rules:
   1. Decompose a ready epic into concrete leaf tasks
      (`bd create ... --parent <epic>`).
   2. Fill missing template sections flagged by `bd lint` on high-priority beads.
-  3. Refresh stale beads (`bd stale`) — re-scope / reprioritize drifted ones.
+  3. Refresh stale beads (`bd stale`) — re-scope / reprioritize drifted ones
+     per `TRIAGE.md`, recording any band change with `bd note`.
   4. Verify blockers — drop stale links with `bd dep remove` so blocked work
      becomes ready.
   5. Flag duplicates (`bd find-duplicates` / `bd duplicates`) — prefer a

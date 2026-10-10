@@ -15,8 +15,9 @@ There are {{.Review.OpenFindings}} open findings against
 `review:{{.Review.Branch}}`. Last gate result: `{{.GateResult}}`.
 Working tree is {{if .GitDirty}}dirty{{else}}clean{{end}}.
 
-**Ingest.** New issues from review came in. Read each, decide
-priority, and either fix in this branch or defer with a clear note.
+**Ingest.** New issues from review came in. Read each, decide type and
+priority per `TRIAGE.md`, and either fix in this branch or defer with a
+clear note.
 Do not let the queue accumulate uncategorized findings.
 
 **Fix.** Pick one finding (`bd ready -l review:{{.Review.Branch}}`),

@@ -67,7 +67,9 @@ Otherwise, for each task follow this loop:
     10-600 lines across refactors while symbol anchors stay resolvable (see
     `refactor-memory-sweep-rule`).
 11. If you discover new work needed: `bd create --title="<title>"
-    --description="<desc>" --type=task`
+    --description="<desc>" --type=<type> --priority=<P>`, with type and
+    priority chosen per `TRIAGE.md` (a bug's description ends with a
+    `Why P<n>:` line).
 12. Append a one-paragraph entry to `.ralph/state/session.md` describing what
     you did, what you learned, and what's next. This is the human's morning
     briefing and the next iteration's handoff note.
