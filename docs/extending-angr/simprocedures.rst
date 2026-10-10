@@ -453,6 +453,20 @@ directly.
    in ``_NATIVE_SIMOPTIONS`` (``angr/exploration/rust_manager.py``) so the
    Python→Rust mirror actually threads it.
 
+   **Exposing a SimOption to native code.** ``RustSimState::has_option``
+   reads the state's ``sim_options`` set, mirrored from Python by
+   ``_add_rust_state`` for every name in ``_NATIVE_SIMOPTIONS``; that
+   same list feeds ``_apply_state_metadata``'s allow-list, so adding a
+   name there is the one change needed. Pick the Rust-side *default* in
+   the fail-open direction: ``has_option`` cannot tell "option absent"
+   from "mirror never ran", so an option whose absent branch prunes paths
+   (returns a concrete value where Python would mint a symbol) is seeded
+   **on** at state construction and explicitly cleared by the mirror,
+   which is why the mirror sets both directions rather than only
+   present names. ``SYMBOLIC_INITIAL_VALUES`` is the worked example — and
+   it is *not* off by default: every mode bundle ships it, so the
+   ``BVV(0)`` branch only fires for an explicit ``remove_options``.
+
 Sub-calls (``ProcOutcome::CallAndResume``)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 

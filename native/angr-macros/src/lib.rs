@@ -4,8 +4,91 @@
 //! Written in response to the angr-9ke6b / angr-sqfj8 audit pattern: the same
 //! invariant (steady-config guarding, Multi-cell flushing, per-field merge
 //! reconciliation) kept getting upheld at some call sites and silently
-//! skipped at others. See the plan at
-//! `/home/ubuntu/.claude/plans/review-the-last-two-effervescent-starlight.md`.
+//! skipped at others. This crate doc is the design record; the bd memory
+//! `angr-macros-call-site-invariants` keeps only the process lessons.
+//!
+//! # The macros
+//!
+//! - `#[steady_guarded]` (attribute): injects `self.steady_config_guard();`
+//!   as a method's first statement. Applied to the `RustExplorationManager`
+//!   mutators in `manager_methods*.rs` so a new mutator cannot forget it.
+//! - `#[steady_guard_checked]` (attribute, on the `impl` block): requires
+//!   **every** `pub fn … &mut self` in the block — no name filter — to carry
+//!   `#[steady_guarded]` or `#[steady_guard_exempt(reason = "…")]`, else
+//!   `compile_error!`. The exempt form (an inert attribute this macro
+//!   consumes) is for the methods where the guard must not be the
+//!   unconditional first statement (`load_snapshot_bytes` guards after a
+//!   fallible parse) and for the routine per-step / per-callback bookkeeping
+//!   the Python driver calls on every batch (stash moves, group merges,
+//!   per-callback forks): guarding those finalizes a steady session on every
+//!   routine call, so nothing stays resident long enough for the
+//!   bounce/resume protocol to reinject into. Only methods tied to a genuine
+//!   session/stage boundary or to a rare explicit state injection are
+//!   guarded.
+//! - `#[derive(MergePolicy)]` (derive): requires every field of the struct to
+//!   carry `#[merge_policy = "…"]` naming one of
+//!   `self_wins`/`union`/`max`/`min`/`warn_on_diverge` (mechanical),
+//!   `delegate`/`computed`/`joint` (hand-written) or `in_place_self` (merges
+//!   that mutate `self`). For the mechanical policies it also *generates*
+//!   `merge_field_<name>(&self, others: &[&Self])`, which the hand-written
+//!   `merge` must call; a generated method nobody calls is dead code, which
+//!   CI's clippy `-D warnings` rejects, so the label and the merge line
+//!   cannot drift apart. A mechanical field whose type does not fit the
+//!   generated body opts out with `#[merge_manual = "<why>"]`. A `delegate`
+//!   label marks exactly where the compile-time guarantee *ends*, which is
+//!   where the bug class recurs, so every delegate target with its own
+//!   hand-written merge (`SymbolicMemory`, `RegisterFile`, `HeapMetadata`)
+//!   carries the derive too; the one exception is `solver`, a single shared
+//!   `SymContext` both merge arms already point at. Expect a first-time
+//!   derive application to find real bugs, not just add annotations.
+//! - `callback_setters!`, `inspect_test_entries!`, `inspect_dispatch!`
+//!   (function-like, over `callbacks/`): generate the `set_<slot>` PyO3
+//!   setters, the `call_inspect_*` test entry points and the
+//!   `call_inspect_<event>` dispatch methods from one event list, closing the
+//!   "copy-pasted wrapper names the sibling slot and still compiles" shape.
+//!   Both event-driven macros take ordinary `fn <event>(..) { .. }` entries
+//!   and rewrite a placeholder (`self.forward(..)` / `self.with_slot(..)`) to
+//!   the derived target — `with_slot` also *injects* the derived field as a
+//!   leading argument — rejecting a body that never calls the placeholder or
+//!   that names a `call_inspect_*` / `inspect_*` ident directly.
+//!
+//! # Constraints every future PyO3-surface generator inherits
+//!
+//! - An attribute proc macro expands outer-first, so `#[pymethods]` on a
+//!   hand-written impl block cannot see through an unexpanded macro
+//!   invocation inside it: the generated fns never reach Python. A generator
+//!   of `#[pymethods]` items must live at module level and emit its own
+//!   `#[pymethods] impl Type { .. }` block (the `multiple-pymethods` feature is
+//!   on), which is why the function-like macros take the type name.
+//! - `macro_rules!` cannot concatenate idents (no `paste` in the vendored
+//!   registry), so anything deriving `set_<field>` / `call_inspect_<event>`
+//!   from a list has to be a proc macro here. Raw idents stringify *with*
+//!   their `r#` prefix; strip it before `format_ident!`.
+//!
+//! # Which enforcement shape to reach for
+//!
+//! Strongest first: make the unchecked value **unrepresentable**
+//! (`syscalls::support::BoundedArg`, `arch::AddrOrSymbolic` — the refusal arm
+//! must be written before the code compiles); then an attribute macro that
+//! checks a whole impl/struct (`steady_guard_checked`, `MergePolicy`), which
+//! is opt-out and catches every site structurally; then a baseline-gated
+//! script (`tools/audit_*.py`), which only catches what a text heuristic can
+//! name — reach for it only when no structural wrapper is expressible, e.g.
+//! cross-file prose citations. Pairing an opt-in macro with a coverage script
+//! was tried (`audit_steady_guard_coverage.py`) and retired: its name-prefix
+//! heuristic missed a real mutator under another name.
+//!
+//! # Test surface
+//!
+//! Each public entry point is a one-line shim over a `proc_macro2` twin
+//! (`*_impl`), because `proc_macro` types only exist inside a real macro
+//! invocation and are unreachable from `#[test]`; unit tests assert on the
+//! expansion's `to_string()`, whitespace-stripped for anything about a
+//! generated body. `tests/ui/*.rs` + `.stderr` snapshots (trybuild,
+//! regenerate with `TRYBUILD=overwrite`) prove each `compile_error!` stops
+//! rustc, and each snapshot is exactly one error — the payoff of emitting
+//! the diagnostic *next to* the item rather than in place of it. A new ui
+//! case whose snapshot has extra errors means that design was broken.
 
 use proc_macro::TokenStream;
 use quote::{ToTokens, format_ident, quote, quote_spanned};
