@@ -363,8 +363,8 @@ Decisions:
 - ``rust_time`` baseline left at **3.5s** — it covers the fast mode and
   the bulk of the distribution; the rare 5.21s tail is exactly the kind
   of Z3-nondeterministic spike ``--skip-bimodal`` exists to absorb.
-- See :doc:`rust_engine` ("Other benchmarks below 1.0x") for the full
-  per-bench table entry.
+- See :doc:`rust_engine` ("Benchmarks slower than Python") for how
+  the slow-bench classes are handled.
 
 2026-06-02 — hackcon2016_angry-reverser joins the bimodal set
 -------------------------------------------------------------

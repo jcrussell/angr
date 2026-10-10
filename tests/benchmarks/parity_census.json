@@ -4,8 +4,6 @@
     "TRACK_CONSTRAINT_ACTIONS": "Its only observable effect is the SimActionConstraint stream (state_plugins/solver.py SimSolver.add), and the Rust engine emits no SimActions. Reading `state.history.actions` on a Rust-owned state warns once per process via `_RustOwnedSimStateHistory` (angr/exploration/rust_state_export.py) \u2014 so the empty stream is attributable at the point the user actually consumes it. Ships in the `symbolic` bundle, hence excluded from _RAISE_OPTION_NAMES / _REJECTED_OPTION_NAMES by construction. (angr-op0dn.14.7)"
   },
   "exonerated_options": {
-    "AVOID_MULTIVALUED_READS": "Honored (angr-tfic): read from state.options and forwarded to `configure_concretization_strategies` (rust_manager.py `_init_states`), which sets `AddressConcretizer::avoid_multivalued_reads` (native/angr/src/concretize.rs). Every native load site checks `should_avoid_multivalued_read` and returns an unconstrained value instead of enumerating (memory/load.rs, interpreter/expressions.rs) \u2014 the same early return Python takes in `address_concretization_mixin._load_one`. (angr-op0dn.14.9)",
-    "AVOID_MULTIVALUED_WRITES": "Honored (angr-tfic): same plumbing as the READS sibling. Native store sites check `should_avoid_multivalued_write` and drop the store (memory/store.rs, interpreter/statements_store.rs), mirroring Python's `not completed` early return in `address_concretization_mixin._store_one`. (angr-op0dn.14.9)",
     "BYPASS_UNSUPPORTED_IRCCALL": "Same UnsupportedFeature -> Python fallback path.",
     "BYPASS_UNSUPPORTED_IRDIRTY": "Same UnsupportedFeature -> Python fallback path.",
     "BYPASS_UNSUPPORTED_IROP": "Honored transparently: the Rust interpreter's UnsupportedFeature FallbackStrategy defers the op to Python, where the bypass fires normally (see the _RAISE_OPTION_NAMES comment block, rust_manager.py).",
@@ -83,34 +81,18 @@
     ]
   },
   "matrix_counts": {
-    "divergence": 44,
-    "honored": 10,
+    "divergence": 42,
+    "honored": 12,
     "inherited": 16,
     "noop": 35
   },
   "option_tier_counts": {
-    "exonerated": 16,
+    "exonerated": 14,
     "raise": 15,
     "silent": 2,
     "warn": 11
   },
   "options": [
-    {
-      "in_default_modes": [
-        "fastpath"
-      ],
-      "option": "AVOID_MULTIVALUED_READS",
-      "py_consumer_modules": 5,
-      "tier": "exonerated"
-    },
-    {
-      "in_default_modes": [
-        "fastpath"
-      ],
-      "option": "AVOID_MULTIVALUED_WRITES",
-      "py_consumer_modules": 3,
-      "tier": "exonerated"
-    },
     {
       "in_default_modes": [
         "fastpath",

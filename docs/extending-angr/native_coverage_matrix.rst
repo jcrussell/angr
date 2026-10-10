@@ -724,7 +724,7 @@ Documented divergences
 ----------------------
 
 Every fallback name the census
-(:ref:`rust-engine-fallback-census`) observed is proven
+(``tests/benchmarks/fallback_census.py``) observed is proven
 observationally silent by a differential parity assertion in
 ``tests/engines/rust/test_fallback_parity.py``: the same call is run on
 ``RustExplorationManager`` and on the pure-Python engine, and the two

@@ -12,10 +12,9 @@ respect, and the counters exposed for inspecting the resulting solver
 state.
 
 This page is companion to :doc:`rust_engine` (overview, options,
-benchmarks). See also the "Shared-lineage Z3 solver — rejected"
-section in :doc:`rust_engine` for why a cross-state shared *solver*
-(distinct from the shared *context* documented here) was investigated
-and ultimately landed as opt-in only.
+benchmarks). See :doc:`rust_engine_decisions` for why a cross-state
+shared *solver* (distinct from the shared *context* documented here)
+was investigated and ultimately landed as opt-in only.
 
 Why a single libz3.so is mandatory
 ----------------------------------
@@ -274,9 +273,8 @@ The counter is consulted in three places:
 (``symbolic/context_tests/smtlib2_snapshot.rs``) exercises the
 fork-time guard.
 
-See the "Shared-lineage Z3 solver — rejected" section of
-:doc:`rust_engine` for the full design verdict, BFS-thrash measurements,
-and why the kwarg ships default-off.
+See :doc:`rust_engine_decisions` for the design verdict and why the
+kwarg ships default-off.
 
 Memory limits and bounded structures
 ------------------------------------

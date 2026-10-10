@@ -6,58 +6,6 @@ docs/advanced-topics/debug_var.rst	# Find the addr before executing printf("%d\n
 docs/advanced-topics/debug_var.rst	# Get a state before executing printf(%d\n", *b) (line 7)
 docs/advanced-topics/debug_var.rst	# Resolve 'a' in state before execute line 10
 docs/advanced-topics/debug_var.rst	# the addr to line 7 is 0x401193 you can search for it with
-docs/advanced-topics/rust_engine.rst	(``angr/exploration/rust_state_proxy.py:2574-2596``), which raises the
-docs/advanced-topics/rust_engine.rst	(``angr/exploration/rust_state_proxy.py:2702-2706``). A
-docs/advanced-topics/rust_engine.rst	(``angr/state_plugins/posix.py:684``). There is no companion
-docs/advanced-topics/rust_engine.rst	(``cfg_emulated.py:1552-1554`` / ``:1760-1761``), which is
-docs/advanced-topics/rust_engine.rst	(``context.rs:1058``) sets ``bv_extract_prop=true`` and
-docs/advanced-topics/rust_engine.rst	(``context.rs:2073``) reached only via
-docs/advanced-topics/rust_engine.rst	(``context.rs:989``), which runs every 64th call across
-docs/advanced-topics/rust_engine.rst	(``identifier/identify.py:315``) and the per-call replay path
-docs/advanced-topics/rust_engine.rst	(``identifier/runner.py:72`` / ``:82``) build internal
-docs/advanced-topics/rust_engine.rst	(``native/angr/src/memory/load.rs:384-394``) already falls back to a
-docs/advanced-topics/rust_engine.rst	(``native/angr/src/memory/load.rs:384-394``) returns a fresh
-docs/advanced-topics/rust_engine.rst	(``native/angr/src/symbolic/context.rs:360``) applies when the env var
-docs/advanced-topics/rust_engine.rst	(``rust_state_sync.py:235``) returns ``False``. Each manager then
-docs/advanced-topics/rust_engine.rst	(``veritesting.py:256``) against the Python engine, so a
-docs/advanced-topics/rust_engine.rst	(line 466). Per-Callable ``map_loader`` dropped from several ms
-docs/advanced-topics/rust_engine.rst	(see ``z3-rs 0.19+`` note at ``native/angr/src/solver.rs:99``).
-docs/advanced-topics/rust_engine.rst	* ``check_branch_feasibility`` (``context.rs:2304–2383``) — outer
-docs/advanced-topics/rust_engine.rst	**1. ``Rc<RefCell<SymContext>>`` in ``RustSimState`` (state.rs:960).**
-docs/advanced-topics/rust_engine.rst	- ``Fuzzer`` (``native/angr/src/fuzzer.rs:59``) — libafl state machine;
-docs/advanced-topics/rust_engine.rst	- ``PyOnDiskCorpus`` (``native/angr/src/fuzzer/corpus.rs:146``) — libafl
-docs/advanced-topics/rust_engine.rst	- ``RustBVHandle`` (``native/angr/src/symbolic/handle.rs:28``) — three
-docs/advanced-topics/rust_engine.rst	- ``RustSolverContext`` (``native/angr/src/solver.rs:102``) — holds
-docs/advanced-topics/rust_engine.rst	- ``SymContext`` itself (``native/angr/src/symbolic/context.rs:1325``)
-docs/advanced-topics/rust_engine.rst	- ``rust_manager.py:1417``, ``:3896`` (re-checked at ``explore()`` time)
-docs/advanced-topics/rust_engine.rst	- ``rust_manager.py:1420``
-docs/advanced-topics/rust_engine.rst	- ``rust_manager.py:1424`` (consumed at ``:1443``)
-docs/advanced-topics/rust_engine.rst	- ``rust_manager.py:1425`` (consumed at ``:1443``)
-docs/advanced-topics/rust_engine.rst	- ``rust_manager.py:3517`` (per-state, also propagated through
-docs/advanced-topics/rust_engine.rst	Matches Python's ``engines/successors.py:232-237`` (early elif
-docs/advanced-topics/rust_engine.rst	``RustBV::Symbolic`` (``symbolic/value.rs:425``) and
-docs/advanced-topics/rust_engine.rst	``RustBVHandle`` (``symbolic/handle.rs:28``) is a pure value type:
-docs/advanced-topics/rust_engine.rst	``SymContext::z3_assertions_shared`` (``symbolic/context.rs:1357``)
-docs/advanced-topics/rust_engine.rst	``_map_loader_pages`` (line 375) and ``_add_loader_lazy_regions``
-docs/advanced-topics/rust_engine.rst	``angr/exploration/rust_manager.py``: lines 1413–1449 (per-state
-docs/advanced-topics/rust_engine.rst	``engines/successors.py:201`` where ``state._inspect("fork",
-docs/advanced-topics/rust_engine.rst	``engines/successors.py:290-294`` behavior
-docs/advanced-topics/rust_engine.rst	``engines/successors.py:295-304,325-326``.
-docs/advanced-topics/rust_engine.rst	``fastpath`` mode bundle (``sim_options.py:412``); fastpath users
-docs/advanced-topics/rust_engine.rst	``jumptable.py:1053`` with ``resilience=True`` and steps via
-docs/advanced-topics/rust_engine.rst	``model_cache: RefCell<Option<z3::Model>>`` (line 1375). These would
-docs/advanced-topics/rust_engine.rst	``native/angr/src/symbolic/value.rs:415``:
-docs/advanced-topics/rust_engine.rst	``rust_state_sync.py:348`` is consumed by both
-docs/advanced-topics/rust_engine.rst	``sat_cache: Cell<Option<bool>>`` (line 1372) and
-docs/advanced-topics/rust_engine.rst	``state.scratch`` directly (``runner.py:93``), which is deep
-docs/advanced-topics/rust_engine.rst	boundary. It takes an explicit ``z3::Context`` clone (line 35) so
-docs/advanced-topics/rust_engine.rst	call inside ``veritesting.py:215``. ``RustStateProxy.copy()``
-docs/advanced-topics/rust_engine.rst	call site with ``do_nothing`` (lines 95–107 of the example), so the
-docs/advanced-topics/rust_engine.rst	claripy's z3 backend (``solver.rs:38``) and so are safe by
-docs/advanced-topics/rust_engine.rst	jump resolution (``cfg_emulated.py:2615`` / ``:2747`` /
-docs/advanced-topics/rust_engine.rst	repeatedly (``identifier/identify.py:482`` / ``:493`` / ``:500``
-docs/advanced-topics/rust_engine.rst	syscalls or routes to the unknown-syscall stub (line 352). Before
-docs/advanced-topics/rust_engine.rst	the default ``symbolic`` mode bundle (``sim_options.py:392``,
 docs/advanced-topics/rust_engine_characterization.rst	(``angr/factory.py:164``, 5.4 s cumulative), which builds a *fresh*
 docs/advanced-topics/rust_engine_characterization.rst	(``page_backer_mixins.py:240``), which linearly scans the
 docs/advanced-topics/rust_engine_characterization.rst	``angr/callable.py:88 (Callable.__call__)`` is 88 % of cProfile

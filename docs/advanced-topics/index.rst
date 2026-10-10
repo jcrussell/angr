@@ -9,6 +9,8 @@ Advanced Topics
    mixins
    speed
    rust_engine
+   rust_engine_decisions
+   rust_build
    rust_bimodal_variance
    rust_engine_characterization
    rust_engine_flame_comparison
