@@ -12,10 +12,7 @@
 //!         └── RustOomError
 //! ```
 //!
-//! See angr-tkbr.3. tkbr.1/tkbr.2 land the remaining panic→typed-error
-//! conversions across syscalls/ and vex/ops/mod.rs.
-//!
-//! The new public types are `#[non_exhaustive]` per angr-irwe so future
+//! The public types are `#[non_exhaustive]` (angr-irwe) so future
 //! variants can land in minor versions without breaking downstream code.
 //!
 //! # Test-only taxonomy vs. the live exploration path (angr-ghwsd.3)
@@ -72,11 +69,13 @@
 //!    `From<RustExecError> for PyErr` map below are the two sanctioned
 //!    collapse points.
 //!
-//! `interpreter/` and `exploration/` already follow this end-to-end (no
-//! `Result<_, String>`, no `anyhow`); new code in those subsystems — and
-//! ideally the rest of the crate — should keep to it. The mirror of this
-//! note for doc readers lives in the "Internal error convention"
-//! subsection of `docs/advanced-topics/rust_engine.rst`.
+//! `interpreter/` and `exploration/` follow this end-to-end (the one
+//! `Result<u64, String>` left is the channel payload in
+//! `exploration/shadow_probe.rs`, a thread-boundary message rather than a
+//! branching error); new code in those subsystems — and ideally the rest of
+//! the crate — should keep to it. This note is the source of truth; the
+//! "Internal error convention" subsection of
+//! `docs/advanced-topics/rust_engine.rst` points here.
 
 use pyo3::create_exception;
 use pyo3::exceptions::PyException;

@@ -10,77 +10,30 @@
 //! - Symbolic arguments trigger fallback to Python
 //! - `NativeProcedureRegistry` manages procedure lookup
 //!
-//! # Performance
-//!
-//! Native procedures provide significant speedup by:
-//! - Eliminating Python callback overhead (~100μs per call)
-//! - Direct memory access without serialization
-//! - Keeping state entirely in Rust
-//!
 //! # Dispatch priority
 //!
-//! When PC reaches a hooked address that is registered as a SimProcedure
-//! (via `register_simprocedure(addr, name, ...)`), the run-loop and the
-//! stepping path decide between **native** and **Python** dispatch using
-//! the following ordered checks. The first rule that matches wins; the
-//! dispatcher does NOT chain native then Python in sequence except when
-//! native execution returns a fallback error.
+//! Whether a hooked address runs the native or the Python implementation is
+//! decided by the ordered chain documented in
+//! `docs/extending-angr/simprocedures.rst` ("Dispatch priority (native vs
+//! Python)"); at most one of the two runs per dispatch. What this module
+//! contributes to that chain:
 //!
-//! 1. **Main-object hooks always go to Python.** If the hook PC falls
-//!    inside the main object's code span
-//!    (`environment.main_object_range`), the native registry is skipped
-//!    entirely and the Python SimProcedure fires. This matches the
-//!    `proj.hook(addr, MyProc())` workflow: the user explicitly
-//!    overrode a binary instruction, so we honor their Python
-//!    implementation regardless of name. Hooks *outside* every loaded
-//!    object (the extern-object PLT stubs angr synthesizes) always
-//!    prefer native; hooks inside a **non-main** loaded object (libc &c.
-//!    from `use_sim_procedures=True`) prefer native only when
-//!    `prefer_native_library_hooks` is on — which it is by default. The
-//!    gate is `execution_env::prefer_native_dispatch`, called from
-//!    `run_loop_single.rs` and `core_outcome_handlers.rs`.
-//!
-//! 2. **Per-name Python override skips native.** If
-//!    [`NativeProcedureRegistry::set_python_override`] has been called
-//!    for `name`, [`NativeProcedureRegistry::get`] returns `None` and
-//!    the dispatcher falls through to the Python SimProcedure path —
-//!    even when the procedure is otherwise registered. Used internally
-//!    by [`libc_start_main::NativeLibcStartMain`] to force the entry
-//!    path through angr's Python machinery while still claiming the
-//!    name in the registry.
-//!
-//! 3. **Per-name disable skips native.** If
-//!    [`NativeProcedureRegistry::disable`] has been called for `name`,
-//!    `get()` returns `None`. Same effect as a Python override but
-//!    semantically labels the procedure as "not implemented in Rust
-//!    yet" rather than "Python wins".
-//!
-//! 4. **Global disable skips native.** If
-//!    [`NativeProcedureRegistry::disable_all`] has been called,
-//!    `get()` returns `None` for every name. Used by differential
-//!    tests that need to force the Python path end-to-end.
-//!
-//! 5. **Native runs; on error, Python takes over.** If a native
-//!    implementation is registered and none of (1)–(4) bypass it, the
-//!    dispatcher calls `native_proc.call(state, args)`. On `Ok` it
-//!    advances PC to the return address and bumps `native_calls`. On
-//!    `Err(ProcedureError::SymbolicArgument | NotImplemented | Other |
-//!    MaxIterations | Memory)` it bumps `python_fallbacks` (bucketed
-//!    by error variant in `*_fallbacks_by_name`) and emits a
-//!    `need_simprocedure` event so Python can handle it. **The
-//!    Python implementation is never invoked while a native
-//!    implementation is being attempted — only on its failure.**
-//!
-//! 6. **No native implementation → Python.** If `name` is not in the
-//!    `procedures` map, the dispatcher proceeds directly to the
-//!    Python fallback path. The fallback is recorded under
-//!    `simprocedure_python_fallback_count` and
-//!    `simprocedure_fallback_by_name` but **not** under
-//!    `native_proc_stats.python_fallbacks` (which only counts cases
-//!    where native was tried and lost).
-//!
-//! Two SimProcedures are **never** chained or merged: at most one of
-//! native-or-Python runs per dispatch, and the choice is taken once.
+//! * `NativeProcedureRegistry::get` returns `None` for a name under
+//!   `set_python_override` (Python is canonical for it — used by
+//!   `libc_start_main::NativeLibcStartMain`), under `disable` (the Rust
+//!   implementation is not trusted right now), or after `disable_all`
+//!   (differential tests forcing the Python path).
+//! * The dispatcher (`exploration/native_proc_dispatch.rs`) calls
+//!   `call_ex`, whose default body wraps `call`'s result into
+//!   `ProcOutcome::Return`. `Ok(Return)` advances PC to the return address and
+//!   bumps `native_calls`; `Ok(CallAndResume)` enters the sub-call protocol;
+//!   any `Err(ProcedureError)` bumps `python_fallbacks` (bucketed by variant
+//!   in `*_fallbacks_by_name`) and emits a `need_simprocedure` event.
+//! * A name with no native implementation goes straight to Python and is
+//!   counted under `simprocedure_python_fallback_count` /
+//!   `simprocedure_fallback_by_name`, **not** under
+//!   `native_proc_stats.python_fallbacks` (which only counts attempts that
+//!   lost).
 //!
 //! **Panic policy / enforcement (angr-qwyti.11, angr-9ke6b.212):** every
 //! procedure argument here is guest data, so this module carries

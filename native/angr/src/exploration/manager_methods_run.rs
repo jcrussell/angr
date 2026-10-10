@@ -3,19 +3,13 @@
 //! One of several `#[pymethods]` blocks for the pyclass; see the
 //! `manager_methods` module doc for the split rationale (angr-9ke6b.50).
 //!
-//! This is a Python-boundary module; `unwrap`/`expect` are denied here so a
-//! future panic-on-input landmine cannot be reintroduced without a reviewed,
-//! reasoned `#[allow]` (angr-qwyti.11 enforcement layer).
+//! Python-boundary module: `unwrap`/`expect` are denied here (angr-qwyti.11);
+//! see the crate-level panic policy in `lib.rs`.
 //!
-//! **No `test_submod!` here, by design** (angr-03vl4.13). Every method in this
-//! file is a delegation to `run_loop`/`resume`, and both of those carry their
-//! own test modules (`run_loop_tests.rs`, `resume_tests.rs`) covering the
-//! bodies. The residue at this layer is `run`'s two `gil_profile` park calls,
-//! which are observable only through a real GIL round-trip — the Python
-//! `tests/engines/rust/` suite is the level that exercises them. Sibling
-//! `manager_methods_{procedures,techniques,state}.rs` do have test modules
-//! because their methods carry filtering / stash-declaration logic of their
-//! own rather than delegating outright.
+//! **No `test_submod!` here, by design** (angr-03vl4.13): every method here
+//! delegates to a sibling module that carries the test coverage; see the
+//! `manager_methods_constraints.rs` module doc for the rationale shared by
+//! the delegating blocks.
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 use super::*;
 

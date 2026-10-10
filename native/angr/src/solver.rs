@@ -25,9 +25,8 @@
 //! Both submodules add their items to *this* type, so the split is purely
 //! about where the source lives — the Python-visible surface is unchanged.
 //!
-//! This is a Python-boundary module; `unwrap`/`expect` are denied here so a
-//! future panic-on-input landmine cannot be reintroduced without a reviewed,
-//! reasoned `#[allow]` (angr-qwyti.11 enforcement layer). The `deny` covers
+//! Python-boundary module: `unwrap`/`expect` are denied here (angr-qwyti.11);
+//! see the crate-level panic policy in `lib.rs`. The `deny` covers
 //! the submodules below too, since lint levels propagate into nested modules.
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 // The "every `unsafe` in the solver surface lives in `z3_ast_extract`" claim

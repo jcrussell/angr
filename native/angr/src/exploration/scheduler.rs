@@ -3,137 +3,61 @@
 //!
 //! # What this is
 //!
-//! This module holds the *threading + migration + cancellation* machinery for
-//! a multi-worker exploration pool, running on real `std::thread::scope`
-//! workers. It **is** wired into the run loop:
-//! [`run_loop`](super::run_loop) builds a [`PersistentPool`] from this module
-//! and drives each wave via `py.detach(|| pool.run_wave(job))` when
-//! `RUST_PARALLEL_WORKERS > 1`, and the nightly `run_findall_gate.py` CI lane
-//! exercises it for worker-count invariance.
+//! The threading, migration and cancellation machinery for a multi-worker
+//! exploration pool on real `std::thread::scope` workers, driven by
+//! `run_loop` (`run_loop_wave.rs` / `run_loop_steady.rs`) with the GIL
+//! released around the Rust-pure inner work and re-acquired for Python
+//! callbacks. Why it is shaped this way — and what each increment on the way
+//! here measured — is in `docs/advanced-topics/rust_parallel_design.rst`
+//! ("Where it landed"); the nightly `run_findall_gate.py` lane is its
+//! correctness contract (same found-set across worker counts).
 //!
-//! The design originally landed as an isolated increment (angr-1ilq.3) because
-//! stepping is pervasively GIL-coupled: [`RustExplorationManager::
-//! step_state_with_skip`](super::stepping) takes a live `Python<'_>` token and
-//! yields back to Python at seven callback points (find/avoid predicates,
-//! SimProcedures, syscalls, symbolic branches, Python-VEX fallback, errors). A
-//! worker thread cannot run a real engine step without holding the GIL, so the
-//! GIL is released only around the Rust-pure inner work and re-acquired for
-//! callbacks (the callback-dispatch half was angr-1ilq.4). The scheduler's own
-//! contract is pure thread-safety: worker-local live states are explored in a
-//! private Z3 context, with cross-worker transport happening *only* on an
-//! actual imbalance steal — all under genuine concurrency, with zero `unsafe`.
+//! # Transport invariant (anti-migration)
 //!
-//! # Transport invariant (angr-729vn — anti-migration)
-//!
-//! The pivot from `angr-t3l5o` (2026-06-30): the parallel blocker is migration
-//! *count*, not per-state transport cost. The residual ~14.5 ms/state migration
-//! tax on `codegate` is ~60% an irreducible Z3-AST-rebuild floor that exceeds
-//! the per-state work budget, so per-state migration cannot pay off **if every
-//! state migrates**. The lever is therefore to migrate as *few* states as
-//! possible. This scheduler is built around that:
+//! Migration *count*, not per-state transport cost, is what decides whether
+//! parallel exploration pays off, so the scheduler is built to migrate as few
+//! states as possible:
 //!
 //! * Each worker keeps its live successors in a thread-private
-//!   `VecDeque<RustSimState>` (the *home-context fast path*). These states stay
-//!   in the worker's own Z3 context and are **never serialized**.
-//! * The only cross-thread channel is a shared [`Injector`] of
-//!   [`StateMigrationPayload`]s (`Send` by construction). A state is detached
-//!   into a payload — paying the serde + Z3-AST-rebuild tax — **only** when:
-//!   1. it is *surplus* offered for stealing on imbalance (see
-//!      [`worker::offload_surplus`]), or
-//!   2. it is a *materialized* terminal the caller must recover across the
-//!      `thread::scope` join (found/matched states).
-//! * Deadended/errored terminals are returned as a lightweight
-//!   [`TerminalSummary`] built in the worker's context and dropped there — they
-//!   pay **no** serde at all. (This is a selective `drop_terminal_states`: the
-//!   full symbolic state of dead paths is not recoverable through the parallel
-//!   path.)
-//! * A stealing worker [`reattach`](StateMigrationPayload::reattach)es a payload
-//!   into *its own* thread-local context (every AST minted locally; the source
-//!   context is never read cross-thread — this is what makes the design sound
-//!   where the rejected `translate_state`-on-steal was not; hazard C on the
-//!   bead).
+//!   `VecDeque<RustSimState>` in its own Z3 context; they are **never
+//!   serialized**.
+//! * The only cross-thread channel is the shared `Injector` of
+//!   `StateMigrationPayload`s. A state is detached into a payload — paying the
+//!   serde + Z3-AST-rebuild tax — **only** as surplus offered for stealing on
+//!   imbalance (`worker::offload_surplus`), or as a *materialized* terminal
+//!   the caller must recover across the `thread::scope` join.
+//! * Deadended/errored terminals come back as a lightweight `TerminalSummary`
+//!   built and dropped in the worker's context: no serde at all (the full
+//!   symbolic state of a dead path is not recoverable through the parallel
+//!   path).
+//! * A stealing worker `reattach`es a payload into *its own* context, minting
+//!   every AST locally; the source context is never read cross-thread, which
+//!   is what makes this sound where translate-on-steal was not.
 //!
-//! The fraction of dispatched states that get serialized — `surplus_offloaded +
-//! materialized_terminals` over total dispatches — is the *honest steal
-//! fraction* the overhead gate's break-even `f*` bounds. See
-//! [`SchedulerStats`] and `tests/benchmarks/run_parallel_overhead_gate.py`.
+//! `SchedulerStats::honest_steal_fraction` — serialized states over
+//! dispatches — is the number the overhead gate's break-even bounds
+//! (`tests/benchmarks/run_parallel_overhead_gate.py`).
 //!
-//! # Panic policy: why the `.expect` sites are invariant guards, not error paths
+//! # Panic policy
 //!
-//! **Scope: everything in this section is about the shipped `.so`**, which is
-//! built with `[profile.release] panic = "abort"` (workspace `Cargo.toml`,
-//! angr-1cue). `cargo test` is the documented exception — see *Under `cargo
-//! test`* below. For the shipped build that single fact settles the
-//! panic-hardening audit (CQ .8) for this module:
-//!
-//! * **Mutex poisoning cannot happen.** A `Mutex` is only poisoned when a
-//!   thread *unwinds* out of a live `MutexGuard`. Under `panic = "abort"` there
-//!   is no unwind: a panic while a guard is held aborts the process at the panic
-//!   site, before the guard's `Drop` could ever flag the lock. Every
-//!   `.lock().expect("… poisoned")` here (results/summaries/done_rx) is
-//!   therefore *provably unreachable in that build* — the message names a state
-//!   the shipped profile can never produce.
-//! * **A worker cannot "die" mid-wave into a live-pool disconnect.** A worker
-//!   thread leaves [`worker_thread`](pool::worker_thread) only on `Shutdown`/closed-channel (clean
-//!   teardown) or by panicking — and a panic aborts the whole process. So while
-//!   a wave is in flight every worker is alive; the coordinator's
-//!   `.send(...).expect("persistent worker died …")` and
-//!   `.recv().expect("… WaveDone")` can only observe disconnect at pool
-//!   teardown, never during [`run_wave`](PersistentPool::run_wave).
-//!
-//! Consequently there is **no fallible site here to propagate** and **no
-//! "surface as a Python exception" path to build**: under `panic = "abort"` a
-//! genuine bug in a worker surfaces as a process abort (SIGABRT), by design —
-//! the same constraint `symbolic::value_z3::fresh_unconstrained_raw` documents
-//! for its own `catch_unwind`-is-useless reasoning. The `.expect` messages are
-//! kept as invariant labels: if one ever *did* fire it would mean the
-//! panic-strategy assumption changed, which is exactly the signal a future
-//! reader wants. A forced-poison test is deliberately **not** added — under the
-//! shipped profile it cannot observe a Python exception, only an abort, and
-//! under `cargo test` it would assert nothing but the cascade described next.
-//!
-//! ## Under `cargo test` the argument does *not* hold (and that is expected)
-//!
-//! Cargo forces `panic = "unwind"` on test/bench harness binaries regardless of
-//! the profile's `panic` setting — libtest needs to unwind to report a failing
-//! test — and no `[profile.test]` override can opt back into abort. So
-//! `cargo test --release --lib`, which is what runs this module's
-//! `scheduler_tests.rs` / `scheduler_worker_tests.rs`, executes the code under
-//! unwind semantics, where poisoning *is* reachable:
-//!
-//! * A worker that panics while holding the `job.results` / `job.summaries`
-//!   guard ([`worker::worker_loop`]'s terminal and summary drains,
-//!   `worker::drain_local_into_results`) unwinds out of the live guard and
-//!   poisons that lock.
-//! * The coordinator then trips the poison on its next lock —
-//!   [`WaveJob::take_results`], `WaveJob::into_results`, or the `done_rx`
-//!   guard in [`run_wave`](PersistentPool::run_wave) — so the `.expect("…
-//!   poisoned")` fires and the test fails with a *second*, cascaded panic.
-//!
-//! That cascade is acceptable rather than a violated invariant: the poison guard
-//! is faithfully reporting a real prior panic, and the shipped build would have
-//! aborted at the first one anyway. When debugging such a failure, ignore the
-//! `… mutex poisoned` panic and look for the *earliest* panic in the test
-//! output — that one is the actual bug.
-//!
-//! The one site the argument above does *not* cover is
+//! The crate-level policy in `lib.rs` covers every `.lock().expect("… poisoned")`
+//! and `.send(..)`/`.recv()` `expect` here: the shipped build aborts instead of
+//! unwinding, so poison and a mid-wave worker death are unreachable, and under
+//! `cargo test` a cascaded `… poisoned` panic after a real test panic is
+//! expected noise. The one site that argument does *not* cover is
 //! `Builder::spawn(..).expect("failed to spawn persistent worker thread")` in
-//! [`PersistentPool::new`], which is genuinely fallible (thread spawn can fail
-//! with `EAGAIN` under thread/memory exhaustion). It stays a panic
-//! deliberately: `new` returns `Self` and is called from the run loop's
-//! pool-construction path, so propagating would ripple a `Result` through the
-//! parallel driver, and the obvious local degradation — carry on with fewer
-//! workers — silently returns an empty wave if *zero* threads came up, trading
-//! a loud abort for lost states. Falling back to serial exploration instead
-//! would be a real feature — the run loop would need a spawn-failure path that
-//! tears the pool down and re-drives the wave through the single-threaded
-//! stepper — not a lint cleanup, and no such path exists today.
+//! `PersistentPool::new`, which is genuinely fallible (`EAGAIN` under
+//! thread/memory exhaustion). It stays a panic deliberately: the obvious local
+//! degradation — carry on with fewer workers — silently returns an empty wave
+//! when *zero* threads came up, trading a loud abort for lost states. Falling
+//! back to serial exploration would be a real feature (a spawn-failure path
+//! that tears the pool down and re-drives the wave through the single-threaded
+//! stepper), not a lint cleanup.
 //!
 //! **Enforcement (angr-qwyti.11):** this module carries
 //! `#![deny(clippy::unwrap_used, clippy::expect_used)]`; each function holding
 //! one of the guards above carries a narrow
-//! `#[allow(clippy::expect_used, reason = ...)]` pointing back at this Panic
-//! policy, so a new panic cannot slip in unreviewed.
+//! `#[allow(clippy::expect_used, reason = ...)]` pointing back here.
 //!
 //! # Module layout (angr-9ke6b.59)
 //!

@@ -275,7 +275,7 @@ impl RustSimState {
     /// See module-level `state-id-never-reused` (child gets a fresh
     /// monotonic ID, parent's ID is preserved on the parent),
     /// `arc-make-mut-cow` (registers/memory/hooks/environment/fs share Arc
-    /// or persistent backing with the parent), and `state-metadata-dataclass`
+    /// or persistent backing with the parent), and `state-metadata-rust-owned`
     /// (the three `Py<PyAny>` metadata maps are cloned under the GIL).
     ///
     /// # Returns

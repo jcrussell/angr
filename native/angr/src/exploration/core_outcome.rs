@@ -9,11 +9,8 @@
 //! must apply itself.
 //!
 //! **Panic policy (angr-9ke6b.212):** the three `expect`s in
-//! [`ParallelProfiling`] are `step_stats` mutex poison guards. The crate ships
-//! with `[profile.release] panic = "abort"` (workspace `Cargo.toml`,
-//! angr-1cue), so no thread can unwind out of a live `MutexGuard` to flag the
-//! lock — the same argument the [`scheduler`](super::scheduler) Panic policy
-//! spells out in full.
+//! [`ParallelProfiling`] are `step_stats` mutex poison guards, unreachable in
+//! the shipped build — see the crate-level panic policy in `lib.rs`.
 //!
 //! This is the load-bearing foundation for a parallel wave loop: each worker
 //! must be able to drive the post-step phase from an owned / `Arc`-shared

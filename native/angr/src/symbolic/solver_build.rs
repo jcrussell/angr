@@ -216,36 +216,21 @@ impl SatOutcome for z3::SatResult {
 ///
 /// Two knobs enabled (Z3 disables both by default):
 /// - `bv_extract_prop`: propagates Extract inward through arithmetic.
-/// - `mul2concat`: rewrites `x * 2^k` -> `concat(x, 0^k)`. Added in
-///   angr-ya00.1 (free bv_* sweep, 2026-05-19) — drops fairlight's bimodal
-///   slow-mode median from 21.66s to 14.46s (-33%) without regressing
-///   8 other Z3-heavy benches measured (max delta +0.8% on flareon2015_2).
+/// - `mul2concat`: rewrites `x * 2^k` -> `concat(x, 0^k)`. Added by the
+///   angr-ya00.1 bv_* sweep for a large win on the bimodal hash-cracker
+///   benches with no regression elsewhere.
 ///
-/// Three sweep knobs left disabled: `bv_not_simpl`, `bv_ite2id`,
-/// `blast_eq_value` (no measurable effect across matrix). `bv_sort_ac`
-/// rejected: looked like a fairlight winner combined with mul2concat
-/// (median 8.10s) but blows up defcon2016quals_baby-re by 7x (0.50s ->
-/// 3.71s) and adds +25% to flareon2015_2.
+/// Sweep knobs left disabled: `bv_not_simpl`, `bv_ite2id`, `blast_eq_value`
+/// had no measurable effect; `bv_sort_ac` helped one bench and badly
+/// regressed two others, so it stays off.
 ///
-/// Seed pinning attempted and rejected (angr-iaol.1, 2026-05-25): three
-/// param-name forms tried with the z3-0.19.7 `Params::set_u32` route:
-/// - `smt.random_seed`: corrupts the solver. `eval()` returns models
-///   that **violate the asserted constraints** (eg `x=0` for `x>=100`).
-/// - `sat.random_seed`: same corruption mode.
-/// - `random_seed` (the in-descriptor short name): is accepted without
-///   corruption but does **not** stabilize models across two fresh
-///   `RustSolverContext` instances with identical asserted constraints
-///   (eval witnesses differ run-to-run by >10^6). The order-stability
-///   test that *passed* without any seed pin now fails when this form
-///   is set.
-///
-/// So Z3 4.13 model determinism across solver instances is not
-/// reachable through `Z3_solver_set_params` for these keys; pinning
-/// must instead happen via `Z3_global_param_set` *before* the first
-/// `Solver::new` — and even that does not eliminate variable /
-/// restart heuristic latitude. Tracked in iaol.1 close-out memory
-/// `iaol1-seed-pin-empirically-broken`. AVOID `parallel.enable=true`
-/// (`avoid-z3-parallel-enable`).
+/// Seed pinning through `Z3_solver_set_params` (`smt.random_seed`,
+/// `sat.random_seed`, bare `random_seed`) either corrupts models or makes
+/// them *less* stable, and `parallel.enable` is correctness-breaking — see
+/// `docs/advanced-topics/rust_engine_decisions.rst`. The supported
+/// determinism knob (`deterministic=True`) pins seeds via
+/// `Z3_global_param_set` before the first `Solver::new`, which still leaves
+/// Z3's variable / restart heuristic latitude unbound.
 #[cfg(feature = "vex-engine-z3")]
 pub(crate) fn build_solver_params(timeout_ms: u32) -> z3::Params {
     let mut params = z3::Params::new();

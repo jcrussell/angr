@@ -7,16 +7,13 @@
 //! # Scope
 //!
 //! This is not a two-syscall fast path — it is the bulk of the kernel
-//! surface the engine executes without ever entering Python. As of
-//! angr-9ke6b.153 the registry holds roughly 90 distinct `NativeSyscall`
-//! implementations spread over ~490 registration rows in seven
-//! `register_syscalls!` tables, one per dispatch key: `AMD64`, `X86`,
-//! `ARM`, `ARM64`, `MIPS32`, `MIPS64`, and `CGC`. Per-arch Linux ABIs
-//! assign different numbers to the same syscall, so the tables are
-//! deliberately not merged; the same handler type is simply registered
-//! under each arch's number. Treat those counts as an order of
-//! magnitude, not a checksum — `NativeSyscallRegistry::new` is the
-//! authoritative list.
+//! surface the engine executes without ever entering Python. The registry
+//! holds one `register_syscalls!` table per dispatch key: `AMD64`, `X86`,
+//! `ARM`, `ARM64`, `MIPS32`, `MIPS64`, and `CGC`. Per-arch Linux ABIs assign
+//! different numbers to the same syscall, so the tables are deliberately not
+//! merged; the same handler type is simply registered under each arch's
+//! number. `NativeSyscallRegistry::new` is the authoritative list; do not
+//! copy counts out of it into prose.
 //!
 //! Coverage spans process exit (`exit`, `exit_group`), IO (`read`,
 //! `write`, `readv`/`writev`), the file namespace (`open`/`openat`/`close`,
@@ -155,131 +152,16 @@ impl NativeSyscallRegistry {
         };
 
         // ===== amd64 (asm/unistd_64.h) =====
-        // read (0): stdin (fd=0) only; symbolic bytes mirror NativeRead.
-        // write (1): stdout (fd=1) and stderr (fd=2); concrete bytes only.
-        // lseek (8), readv (19), writev (20): FD I/O (angr-6ylm). lseek
-        //   mirrors NativeLseek; readv/writev walk a struct iovec[] and
-        //   reuse the read/write logic (writev is glibc stdio's flush
-        //   path). See `syscalls/fd_io.rs`.
-        // pread64 (17), pwrite64 (18): positioned I/O (angr-dbb1) that does
-        //   not move the fd position. pread64 serves concrete content via
-        //   FileSystem::read_at; pwrite64 overwrites at the offset via
-        //   FileSystem::write_at (offset-honoring, unlike append-only write).
-        //   Symbolic offset / data fall back to Python.
-        // uname (63), set_tid_address (218), set_robust_list (273),
-        //   getrandom (318): libc/loader startup stubs (angr-6ylm). See
-        //   `syscalls/startup.rs`; uname/set_tid_address mirror the
-        //   linux_kernel procs, getrandom fills buf with symbolic bytes.
-        // exit (60), exit_group (231): deadend.
-        // mprotect (10): set page perms; -1 on misalign / unmapped.
-        // brk (12): grow/query the program break.
-        // munmap (11): Python implementation is a no-op return 0.
-        // mmap (9): anonymous concrete-args fast path; falls back to Python
-        //   for symbolic / file-backed / collision cases.
-        // rt_sigaction (13): Python is essentially a no-op return 0 (with
-        //   -EINVAL for signum 33).
-        // gettimeofday (96): writes fresh symbolic timeval; -1 on null.
-        // arch_prctl (158): fs_const/gs_const set/get (amd64-only).
-        // time (201): fresh symbolic time_t in rax; monotonic via
-        //   state.last_time; stores at *pointer if non-null.
-        // clock_gettime (228): CLOCK_REALTIME-only; -1 on null; other clocks
-        //   fall back to Python's SimProcedureError path.
-        // getpid (39), getppid (110), gettid (186): identity getters
-        //   returning angr's posix defaults (pid=1337, ppid=1336).
-        // getuid (102), geteuid (107), getgid (104), getegid (108): return
-        //   1000 (matches angr Python proc default).
-        // setuid (105), setgid (106): return fresh symbolic BV (matches
-        //   Python `syscall_stub.py::syscall` ReturnUnconstrained fallback —
-        //   angr has no dedicated SimProcedure for these).
-        // mremap (25), msync (26), madvise (28), mlock (149), munlock (150),
-        //   mlockall (151), munlockall (152): same stub-symbolic semantics —
-        //   no Python SimProcedure, falls through to syscall_stub.
-        // rt_sigreturn (15), pause (34), alarm (37), kill (62), tgkill (234):
-        //   signals + process control (angr-0hif.6). kill/rt_sigreturn/pause/
-        //   alarm have no Python SimProcedure and mirror syscall_stub;
-        //   tgkill returns concrete 0 (matches procedures/linux_kernel/
-        //   tgkill.py exactly). rt_sigprocmask (14) is intentionally NOT
-        //   registered — its Python impl mutates state.posix.sigmask which
-        //   RustSimState does not carry; falls back to Python for parity.
-        // getrlimit (97), setrlimit (160), prlimit64 (302): resource limits
-        //   (angr-0hif.7). getrlimit mirrors procedures/linux_kernel/
-        //   getrlimit.py — RLIMIT_STACK writes 8388608 + symbolic rlim_max,
-        //   other resources return fresh symbolic. setrlimit / prlimit64
-        //   have no Python SimProcedure and mirror syscall_stub.
-        // futex (202): mirrors procedures/linux_kernel/futex.py — op&1
-        //   (FUTEX_WAKE family) returns 0, else fresh symbolic.
-        // eventfd (284), eventfd2 (290), epoll_create (213), epoll_create1
-        //   (291), epoll_ctl (233), epoll_wait (232): concurrency primitives
-        //   with no Python SimProcedure; native handlers mirror syscall_stub.
-        //   angr is single-threaded symex so blocking is never modeled.
-        //   epoll_ctl_old (214) / epoll_wait_old (215) intentionally NOT
-        //   registered — pre-2.6 legacy that no current binary uses.
-        // readlink (89), readlinkat (267): consult the FileSystem symlink
-        //   table (angr-wv38, angr-11djq.6.2). A path registered via
-        //   FileSystem::add_symlink writes min(target_len, bufsiz) target
-        //   bytes (no NUL) and returns that count; anything else returns
-        //   -1 with the buffer untouched. The table is empty by default,
-        //   so an unconfigured state sees -1 for every path. readlinkat
-        //   reads the dirfd and applies the openat policy. See
-        //   the `file_path::readlink` module doc.
-        // faccessat (269): native FileSystem::is_path_known query
-        //   (angr-6009). Clone of NativeAccessSyscall with dirfd
-        //   handling. Absolute paths and AT_FDCWD return 0/-1 from
-        //   the FileSystem; relative paths with non-AT_FDCWD dirfd
-        //   return -1 (we do not model directory fds — matches
-        //   NativeOpenatSyscall's policy).
-        // lstat (6), newfstatat (262): stat()-shaped clones promoted
-        //   from stubs in angr-poao. See the `file_path::stat` module doc.
-        // open (2), openat (257), close (3): FD-allocating syscalls
-        //   (angr-k3ol.1). Mutate `RustSimState::file_system()` directly,
-        //   mirroring the existing `procedures/fileops::NativeOpen` /
-        //   `NativeClose` libc procs. Python `state.posix.fd` / `state.fs`
-        //   are NOT mirrored — same trade-off as the libc procs and
-        //   `dup`/`dup2`.
-        // access (21): file-existence check (angr-k3ol.2). Queries the
-        //   `FileSystem::known_paths` set populated by `open` /
-        //   `openat` / `open_with_content`. Pre-populated Python
-        //   `state.fs._files` entries are NOT mirrored — same trade-off
-        //   as the FD-allocating handlers.
-        // fstat (5): native struct-stat write (angr-k3ol.3). Reads
-        //   content_len from FileSystem::effective_size(fd) and writes a
-        //   per-arch `struct stat` (AMD64/ARM64 use the 64-bit struct;
-        //   i386/ARM/MIPS32 use the LFS struct stat64 via the `*64` numbers,
-        //   mirroring `fstat64.py`). st_mode is the concrete S_IFREG|0o755
-        //   instead of a fresh symbolic BVS (Python's `fstat_with_result`
-        //   mints one) — except MIPS32, whose `_store_mips32` omits st_mode.
-        // stat (4): native path-keyed struct-stat write (angr-k3ol.4).
-        //   Resolves pathname via read_path, returns -1 for empty /
-        //   unknown paths, otherwise reuses `write_amd64_stat` with
-        //   `FileSystem::content_size_for_path(path)` as the size
-        //   field. AMD64 only — ARM64's asm-generic ABI dropped legacy
-        //   `stat` (only newfstatat 79, already a stub). Diverges from
-        //   `procedures/linux_kernel/stat.py`'s open→fstat→close in
-        //   that the Rust path never mutates the fd table.
-        // fcntl (72), ioctl (16), pipe (22), pipe2 (293): FD-control
-        //   syscalls that fall through to syscall_stub (angr-0hif.5
-        //   stub-fallthrough subset). posix/fcntl.py defines a fcntl
-        //   SimProcedure but linux_kernel.py does NOT bind it into the
-        //   kernel library — so the syscall path is pure stub.
-        // dup (32), dup2 (33), dup3 (292): FD-table syscalls
-        //   (angr-vp19). Mutate `RustSimState::file_system()` directly,
-        //   matching the precedent set by `procedures/fileops::
-        //   NativeDup` / `NativeDup2`. Python `state.posix.fd` is NOT
-        //   kept in sync — same as the libc procs — so any callback
-        //   reading `state.posix.fd` after a Rust dup will not see the
-        //   newly allocated slot. See `syscalls/file_descriptor.rs`
-        //   doc comment for the lowest-free-vs-monotonic divergence.
-        // chdir (80), fchdir (81), getcwd (79), mkdir (83), mkdirat (258),
-        //   rmdir (84), unlink (87), unlinkat (263), rename (82),
-        //   renameat (264), renameat2 (316): directory syscalls
-        //   (angr-0hif.2). chdir / getcwd back the per-state
-        //   `FileSystem::cwd` field added for this subset; the rest
-        //   mirror `procedures/stubs/syscall_stub.py::syscall` — no
-        //   Python `SimProcedure` exists for fchdir/mkdir/rmdir/rename
-        //   etc., and unlink's Python proc needs the path → SimFile
-        //   plumbing not yet in `RustSimState` (same trade-off as
-        //   angr-k3ol for open/close). See `syscalls/directory.rs` doc
-        //   comment for the rationale on the stub subset.
+        // Keep this manifest to numbers and names. Each family's semantics
+        // and its divergences from the Python SimProcedure it mirrors are
+        // documented in that family's module doc (`syscalls/<family>.rs`),
+        // and the per-arch coverage is indexed in
+        // docs/extending-angr/native_coverage_matrix.rst.
+        //
+        // Deliberately NOT registered: rt_sigprocmask (14) — its Python impl
+        // mutates state.posix.sigmask, which RustSimState does not carry, so
+        // it falls back for parity; epoll_ctl_old (214) / epoll_wait_old
+        // (215) — pre-2.6 legacy that no current binary uses.
         register_syscalls!(
             r,
             "AMD64",

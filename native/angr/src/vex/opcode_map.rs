@@ -6,8 +6,8 @@
 //! **Panic policy (angr-9ke6b.212):** opcode strings arrive from pyvex, so an
 //! unrecognized name must never panic — it interns into
 //! `IROp::Unmapped(&'static str)` and surfaces as a typed error downstream. The
-//! one `expect` is the intern-set mutex poison guard, unreachable under the
-//! crate's `panic = "abort"` profile (workspace `Cargo.toml`, angr-1cue).
+//! one `expect` is the intern-set mutex poison guard, unreachable in the
+//! shipped build — see the crate-level panic policy in `lib.rs`.
 //!
 //! **Enforcement (angr-qwyti.11):** this module carries
 //! `#![deny(clippy::unwrap_used, clippy::expect_used)]`.

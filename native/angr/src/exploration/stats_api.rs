@@ -11,17 +11,13 @@
 //! module doc.)
 //!
 //! The extension-impl split here predates PyO3's `multiple-pymethods`
-//! feature, which is now enabled (angr-9ke6b.50, see
-//! `invariant-pyo3-multiple-pymethods-enabled`), so the single-block rule no
-//! longer forces it. It is kept as a style choice: thin `#[pyo3]` wrappers
-//! stay next to their siblings while the substantial bodies live here. This
+//! feature (now enabled, angr-9ke6b.50) and is kept as a style choice. This
 //! module mirrors the `helpers.rs` / `stepping.rs` / `run_loop.rs` /
 //! `resume.rs` / `pending_api.rs` / `state_api.rs` extension-impl pattern used
 //! elsewhere in `exploration/`.
 //!
-//! This is a Python-boundary module; `unwrap`/`expect` are denied here so a
-//! future panic-on-input landmine cannot be reintroduced without a reviewed,
-//! reasoned `#[allow]` (angr-qwyti.11 enforcement layer).
+//! Python-boundary module: `unwrap`/`expect` are denied here (angr-qwyti.11);
+//! see the crate-level panic policy in `lib.rs`.
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use super::*;

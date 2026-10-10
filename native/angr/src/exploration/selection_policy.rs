@@ -1,16 +1,22 @@
 //! Pluggable state-selection / scheduling policy seam (angr-a32jl.1).
 //!
-//! The exploration loop makes two ordering decisions about the `active`
-//! stash on every step:
-//!   1. *select* — which active state to step next (the pop side), and
+//! The exploration loop makes its ordering decisions about the `active`
+//! stash through the `SelectionPolicy` trait's four hooks:
+//!   1. *select* — which active state to step next (the pop side),
 //!   2. *on_fork* — where a freshly-forked successor lands in the active
-//!      deque (the push side).
+//!      deque (the push side),
+//!   3. *select_for_offload* — which end of a worker's local deque the
+//!      parallel scheduler detaches for the shared `Injector`, and
+//!   4. *on_state_removed* — the bookkeeping mirror for every departure from
+//!      `active` that does not go through *select*.
 //!
-//! Historically these were a single `use_lifo: bool` open-coded as
-//! `pop_front`/`pop_back` in `run_loop_single.rs`, with an unconditional `push_back`
-//! at every fork site. This trait factors that decision behind two hooks so
-//! richer policies (random-path, coverage-guided, CFG-distance directed —
-//! angr-a32jl.2+) can slot in without touching the run loop.
+//! Historically the first two were a single `use_lifo: bool` open-coded as
+//! `pop_front`/`pop_back` in `run_loop_single.rs`, with an unconditional
+//! `push_back` at every fork site. The trait factors the decision out so
+//! richer policies (random-path, coverage-guided, CFG-distance directed) slot
+//! in without touching the run loop; the design is in
+//! `docs/advanced-topics/rust_parallel_design.rst` ("State-selection policy
+//! seam").
 //!
 //! The two built-ins reproduce the pre-refactor behavior exactly. `Fifo`
 //! (BFS, the default) selects the front; `Lifo` (DFS) selects the back.
@@ -54,11 +60,11 @@
 //! full here because it is std's type, unrelated to this module's
 //! `RandomSelection` policy),
 //! so a single `for (k, v) in map` in a `select` path would make the dispatch
-//! order vary between runs *within the same process*. The
-//! `test_<policy>_selection_trace_deterministic` guards below drive a scripted
-//! fork program through each policy three times over freshly-built maps and
-//! assert an identical dispatch trace, which is what makes such a refactor fail
-//! loudly. (`LoopHeadRoundRobin::bucket_key` does build a local `HashMap` of
+//! order vary between runs *within the same process*. The table-driven
+//! `test_selection_trace_deterministic_across_runs` guard in
+//! `selection_policy_tests.rs` drives a scripted fork program through each
+//! policy three times over freshly-built maps and asserts an identical
+//! dispatch trace, which is what makes such a refactor fail loudly. (`LoopHeadRoundRobin::bucket_key` does build a local `HashMap` of
 //! history-address counts, but it iterates the history *slice*, not the map.)
 //!
 //! This contract is single-worker only. Parallel steal order is
@@ -72,12 +78,8 @@
 //! `.expect` is one of exactly two invariant shapes:
 //!
 //!   * **Mutex poison guards** on the per-policy `Mutex` fields (`rng`, `seen`,
-//!     `key_cache`, `dispatched`). The crate ships with `[profile.release]
-//!     panic = "abort"` (workspace `Cargo.toml`, angr-1cue), so no thread can
-//!     unwind out of a live `MutexGuard` to flag the lock; poison is
-//!     unreachable in this build. Same argument as the
-//!     [`scheduler`](super::scheduler) Panic policy, which spells it out in
-//!     full.
+//!     `key_cache`, `dispatched`) — unreachable in the shipped build; see the
+//!     crate-level panic policy in `lib.rs`.
 //!   * **Index-after-`is_empty()` guards** — `active.remove(pick)` and the
 //!     `min_by_key(..)` picks. Every `select` returns early on an empty deque,
 //!     and each `pick` is an index *into* that deque produced by a `position` /

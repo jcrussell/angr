@@ -169,7 +169,7 @@ class RustSolverFallback:
     on the next call.
 
     INVARIANT (``invariant-rust-solver-fallback-class``; mirrored in
-    ``callbacks.rs`` module invariant 5): this class owns the per-state
+    ``callbacks/mod.rs`` module invariant 5): this class owns the per-state
     Rust solver fallback wiring — cached forked context, original method
     handles, constraint sync counter. Use
     ``RustSolverFallback(state, state_id, rust_mgr).attach()`` instead of
@@ -593,7 +593,7 @@ class RustStateExportMixin:
         Always finishes with ``rust_fully_synced = True``, stdin content
         restore, and a posix weakref fix.
 
-        INVARIANT (mirrored in ``callbacks.rs`` module invariant 4,
+        INVARIANT (mirrored in ``callbacks/mod.rs`` module invariant 4,
         "Per-state sync helpers must reach all four export paths"): every
         per-state sync helper — memory, registers, callstack, mmap_base, posix_brk —
         MUST be wired into ALL FOUR paths below. Path 1 routes through

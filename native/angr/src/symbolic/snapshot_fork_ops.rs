@@ -605,8 +605,9 @@ impl SymContext {
     /// When self.shared is uniquely owned, this avoids cloning every Bool
     /// (each Bool::clone is a Z3_inc_ref FFI call).
     ///
-    /// **Cross-cutting invariants enforced here** (see module-level
-    /// "Lineage + solver invariants" for the full set):
+    /// **Cross-cutting invariants enforced here.** This rustdoc is the home
+    /// of the two invariants below; the `context.rs` module doc and
+    /// `lineage.rs` point here rather than restating them.
     ///
     /// - **fork-freeze under push** (angr-c7xno.75): freeze only fires when
     ///   `bare_local_savepoints` is empty. Inside an open bare `push()`
@@ -615,11 +616,21 @@ impl SymContext {
     ///   would outlive the pop forever and make a later fork spuriously
     ///   UNSAT. The child forked inside the scope still receives them (the
     ///   preserve branch returns shared+local merged); only the parent keeps
-    ///   the right to retract.
-    /// - **Three-gate mint semantics**: the three-gate check
-    ///   (`use_shared_lineage_solver` opt-in, zero bare pushes, not
-    ///   dismantled) is load-bearing. Each gate guards a different failure
-    ///   mode — see inline comments below.
+    ///   the right to retract. Regression guard:
+    ///   `context_tests_constraints::test_fork_under_bare_push_does_not_freeze_popped_constraints`.
+    /// - **Three-gate mint semantics**: a fresh `SharedLineageSolver` is
+    ///   minted for the child only when (a) the parent opted in via
+    ///   `set_use_shared_lineage_solver`, (b) the parent's
+    ///   `bare_z3_push_depth` is zero, and (c) the runtime thrash detector
+    ///   (`lineage::is_lineage_dismantled`) has not fired. Each gate guards a
+    ///   different failure mode — see the inline comments below. Regression
+    ///   guards, one per gate:
+    ///   `context_tests_smtlib2_snapshot::test_fork_skips_mint_when_flag_off`
+    ///   (a), `::test_fork_skips_mint_when_bare_push_outstanding` (b),
+    ///   `lineage_tests::test_fork_drops_lineage_when_dismantled` (c — it
+    ///   mutates the global dismantle flag and must hold the sampler tests'
+    ///   serializing lock); the passing case is
+    ///   `context_tests_smtlib2_snapshot::test_fork_mints_lineage_when_gate_passes`.
     /// - `invariant-bare-z3-push-depth`: gate (b) reads the **parent's**
     ///   counter. The child's is reset to 0 (angr-c7xno.75) — it starts with
     ///   an empty `bare_local_savepoints` and a `None` solver whose cold-start

@@ -1,72 +1,20 @@
-//! S5b — constraint-merge cost-shape spike (angr-op0dn.11.1.2).
+//! Constraint-merge cost-shape oracle (origin: spike angr-op0dn.11.1.2, S5b).
 //!
-//! Contingent moonshot spike (parent angr-op0dn.11.1, human-GO 2026-07-15,
-//! decoupled from S6). Prototype/measurement code — may be throwaway; it exists
-//! to answer the M3 merge GO/NO-GO's *constraint* cost-shape question and to
-//! prototype the CoW-cheap merge, not to ship an impl (that is
-//! angr-op0dn.11.2.x). Sibling of the memory-side spike
-//! `memory/tests/merge_cost_shape.rs` (S5a).
-//!
-//! Question: on a diamond CFG, does `SymContext::merge`
-//! (`snapshot_fork_ops.rs::merge`) cost scale with the *divergence* between the
-//! arms, or with their *total* constraint count?
-//!
-//! Answer, established here against the merge as it stood in 2026-07 — the
-//! rewrite this spike argued for has since SHIPPED, see "Status" below:
-//!   * That merge guarded EVERY constraint of EVERY arm: it walked
-//!     `shared.iter().chain(ctx_local.z3_assertions.iter())` and emitted one
-//!     `Or(not merge_cond, assertion)` per constraint. So the guarded-`Or`
-//!     count was the TOTAL constraint count (Σ over arms of shared+local),
-//!     even though every arm's `shared` prefix is byte-for-byte identical.
-//!   * The primitive for a divergence-proportional merge ALREADY SHIPS: the
-//!     fork-freeze invariant. `fork()` drains self's local constraints
-//!     into `z3_assertions_shared` via `freeze_into_shared` and then hands the
-//!     SAME `Arc<Vec<Bool>>` to the child, so two arms forked from one base
-//!     hold a **ptr-equal** frozen prefix Arc all the way to the merge point;
-//!     each arm's post-fork divergence lives only in `local.z3_assertions`.
-//!   * Because every diamond arm descends from the fork point, the shared
-//!     prefix holds on EVERY path reaching the merge — so it can be asserted
-//!     ONCE, UNGUARDED, guarding only the local (divergent) suffixes. The
-//!     prototype below does exactly that and emits guarded assertions ==
-//!     divergent-constraint count + 1 `Or` of the merge flags, while producing
-//!     the identical SAT/eval answers as the production merge.
-//!
-//! Soundness input for angr-op0dn.11.3's kill clause: the unguarded-prefix
-//! rewrite is sound ONLY because `local.z3_assertions` is strictly ADDITIVE to
-//! the frozen `shared` prefix — a fork never lets an arm retract or shadow a
-//! shared constraint (the Arc is frozen; new constraints only append to local).
+//! `SymContext::merge` (`snapshot_fork_ops.rs::merge`) asserts the arms'
+//! ptr-equal frozen `z3_assertions_shared` prefix once, **unguarded**, and
+//! guards only each arm's divergent local suffix — so its cost scales with the
+//! *divergence* between arms, not their total constraint count
+//! (`context_tests/merge_prefix.rs::test_shared_prefix_merge_guards_divergence_only`
+//! pins the guarded count at divergent+1). That shape is sound only because
+//! `local.z3_assertions` is strictly *additive* to the frozen `shared` prefix:
+//! a fork never lets an arm retract or shadow a shared constraint (the Arc is
+//! frozen; new constraints only append to local).
 //! `test_local_never_shadows_shared` checks that invariant directly.
 //!
-//! ## Status: the prototyped rewrite shipped (angr-op0dn.11.3)
-//! `SymContext::merge` now takes exactly this shape: when every input arm's
-//! `z3_assertions_shared` Arc is ptr-equal it asserts that prefix once,
-//! UNGUARDED, and guards only each arm's divergent local suffix, falling back
-//! to guard-every-constraint when the arms share no frozen ancestor.
-//! `context_tests/merge_prefix.rs::test_shared_prefix_merge_guards_divergence_only`
-//! pins the live count at divergent+1 rather than total+1.
-//!
-//! So this module is now a historical record: the pre-11.3 baseline shape, the
-//! feasibility/soundness argument for replacing it, and a standalone
-//! reimplementation (`cow_merge`) kept as an independent oracle that the
-//! shipped merge is checked against
-//! (`test_cow_merge_matches_production_semantics`). It is NOT a description of
-//! work still to be done.
-//!
-//! ## Fidelity gaps NOT covered by this constraint-only prototype
-//! (enumerated per the S5b acceptance; these were the M3-2b impl surface, not
-//! feasibility blockers — the first two are settled by the shipped merge):
-//!   * `assumed` export pairs — the merge marks itself non-reconstructible
-//!     (`assume_class_reconstructible = false`) so `to_snapshot` dumps the full
-//!     solver. The shipped unguarded-prefix path keeps that flag; the prefix
-//!     pairs are still export-only and not re-asserted on restore.
-//!   * `non_bv_assertions` residual log — the guarded `Or`s have no RustBV form
-//!     (angr-t3l5o residual sink #3); the unguarded prefix DOES have one and
-//!     could in principle stay reconstructible, but the shipped merge records
-//!     it in the residual log too, so the whole merged context stays
-//!     full-solver on snapshot.
-//!   * Memory-side fidelity (un-merged `multi_objects`, concatenated
-//!     `pending_writes`, longest-stdout heuristic) is the S5a/memory spike's
-//!     domain, not the constraint solver's.
+//! `cow_merge` below is a standalone reimplementation of that merge kept as an
+//! independent oracle; `test_cow_merge_matches_production_semantics` checks the
+//! shipped merge against it. The prototype predates the production rewrite and
+//! is test-only code: it describes nothing still to be done.
 
 #![cfg(feature = "vex-engine-z3")]
 

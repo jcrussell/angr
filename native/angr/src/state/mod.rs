@@ -6,79 +6,31 @@
 //! - Minimizes Python-Rust state transfer overhead
 //! - Enables Rust-native exploration loops
 //!
-//! # Cross-mixin invariants (I1–I8)
+//! # Cross-mixin invariants
 //!
-//! The Python `RustExplorationManager` composes several mixins
-//! (RustStateCacheMixin, RustStateExportMixin, RustStateSyncMixin,
-//! RustCallbackDispatchMixin); the cross-mixin invariants are documented as
-//! the source-of-truth header in the `Cross-mixin invariants` section of
-//! the `angr/exploration/rust_manager.py` module docstring. Most of those
-//! concerns are
-//! Python-orchestration only, but the ones that cross the FFI boundary
-//! manifest on the Rust side. The list below mirrors I1–I8 with the Rust
-//! enforcement site (or "Python-only" when no Rust code participates).
-//! Keep this section in sync with the Python header — divergence between
-//! the two has produced silent correctness bugs (cache poisoning, lost
-//! states, infinite loops) historically; see angr-a2br for the docs-before-
-//! split rationale.
+//! The Python `RustExplorationManager` composes several mixins; their
+//! cross-mixin invariants (I1–I10) are documented once, in the
+//! `angr/exploration/rust_manager.py` module docstring, and are not repeated
+//! here. The ones with a Rust enforcement site:
 //!
-//! - **I1. Disk-cache key axes** — Python-only. The cache key mixes
-//!   `(binary_path, _RUST_CACHE_VERSION, _PYTHON_METADATA_VERSION, arch)`
-//!   in `rust_manager.py::_disk_cache_key`. The Rust side only consumes
-//!   the deserialized state via the bulk-setters in this module; it never
-//!   inspects the cache key. Bumps of `_RUST_CACHE_VERSION` must accompany
-//!   any change to fields pickled here (registers, memory, heap metadata).
-//! - **I2. Init pipeline phases** — Python-only. Phases `_load_init_pickle`
-//!   → `_deserialize_init_state` → `_apply_init_side_effects` are the
-//!   single orchestrator. Rust receives the result; no Rust-side state
-//!   machine participates.
-//! - **I3. Init-cache user-symbolic gate** — Python-only. `blank_state`
-//!   round-trips lose user-created BVS identity, so caching is suppressed
-//!   on user-symbolic states. The Rust side has no way to detect a user
-//!   symbolic AST after the fact; the gate must hold on the Python side
-//!   before any FFI call happens.
-//! - **I4. `_apply_state_metadata` allow-list** — Python-only. Only
-//!   `LAZY_SOLVES` + `STRICT_PAGE_ACCESS` SimOptions transfer across the
-//!   cache-hit path. The Rust engine reads SimOptions through the
-//!   `engine.options` snapshot taken at `__init__`; later option changes
-//!   on the cached state do NOT propagate. To check user-set options
-//!   reliably, inspect the user-supplied state in Python's `__init__`
-//!   BEFORE `_run_python_init_if_needed` runs.
 //! - **I5. Register filter at the FFI boundary** — enforced by
 //!   `set_registers_bulk` (this module). The disk init cache pickles
-//!   `arch.register_names.values()` including registers the Rust engine
-//!   does not model (cr0..8, ymm0..15, fs_seg, ds_seg, cmstart, cmlen,
-//!   fpreg, ...). Python's `rust_state_sync.py` filters to
-//!   `_supported_register_names` BEFORE calling into Rust; the Rust setter
-//!   returns `PyValueError("unknown register: ...")` if an unsupported
-//!   name leaks through. Do not "fix" by extending `arch/amd64.rs` etc.;
-//!   the interpreter does not consume those registers.
-//! - **I6. State-cache pinning + manager-vs-mixin override** — Python
-//!   orchestrates pinning of `_state_roots ∪ {_current_callback_state_id,
-//!   _current_stepping_state_id}` in `_cleanup_state_cache`. Rust side
-//!   participates by owning the per-state `RustSimState` (Drop runs on
-//!   eviction) and by maintaining the `state_roots` table inside
-//!   `stash.rs::StashManager`. When `StashManager::remove_state` runs,
-//!   `state_roots` and `state_index` move together — see stash.rs for
-//!   the localized invariant.
-//! - **I7. Rust ↔ Python field sync uses `max()`, not overwrite** — Rust
-//!   owns `mmap_base` and `posix_brk` (this module). The Python export
-//!   path computes `max(rust_value, python_value)` so a Python-side
-//!   advance (e.g. user-set `state.heap.mmap_base` or a fallback
-//!   SimProcedure mutation) is never clobbered by a stale Rust value.
-//!   Rust setters here accept any value; the directionality is enforced
-//!   at the Python export site. Regression tests:
+//!   `arch.register_names.values()` including registers the Rust engine does
+//!   not model; Python's `rust_state_sync.py` filters to
+//!   `_supported_register_names` before calling in, and the setter returns
+//!   `PyValueError("unknown register: ...")` if an unsupported name leaks
+//!   through. Do not "fix" by extending `arch/amd64.rs` etc.; the interpreter
+//!   does not consume those registers.
+//! - **I7. Rust ↔ Python field sync uses `max()`, not overwrite** — Rust owns
+//!   `mmap_base` and `posix_brk` (this module); the Python export path takes
+//!   `max(rust_value, python_value)` so a Python-side advance is never
+//!   clobbered by a stale Rust value. The setters here accept any value; the
+//!   directionality is enforced at the export site. Regression tests:
 //!   `TestMmapBaseSync.test_export_path_does_not_clobber_higher_python_mmap_base`,
 //!   `TestPosixBrkSync.test_export_path_syncs_rust_posix_brk_into_state_posix`.
 //! - **I8. Exploration-loop termination** — enforced in
-//!   `exploration/run_loop.rs`. The Rust loop terminates on EITHER (a)
-//!   `found_count() >= num_find`, OR (b) the active stash returning
-//!   `None` from `pop_front`/`pop_back` (→ `active_empty` event). Both
-//!   paths are covered by `found_count()`, which includes both
-//!   Rust-native finds and Python-predicate-derived finds added via the
-//!   need_callback resume path. Earlier code only checked Python
-//!   predicate flags and infinite-looped when `find=int` was combined
-//!   with a non-predicate technique like DFS.
+//!   `exploration/run_loop_single.rs`: the loop ends on `found_count() >=
+//!   num_find` *or* on the active stash returning `None`.
 //!
 //! # State metadata + fork invariants
 //!
@@ -104,17 +56,13 @@
 //!   `from_snapshot` calls `reserve_state_id()` to lift the local counter
 //!   above every restored ID — otherwise a resumed manager re-mints live
 //!   IDs and the collisions silently clobber the stash index.
-//! - **`state-metadata-dataclass`** — Per-state Python AST metadata
+//! - **`state-metadata-rust-owned`** — Per-state Python AST metadata
 //!   (`symbolic_pages`, `hook_symbolic_memory`, `addr_to_ast`) is owned by
-//!   `RustSimState` on the Rust side; the Python `RustStateCacheMixin`
-//!   keeps a parallel `StateMetadata` dataclass (replacing three earlier
-//!   per-state dicts) at `angr/exploration/_state_metadata.py`. Eviction
-//!   on the Python side drops the dataclass entry; eviction on the Rust
-//!   side runs `RustSimState::Drop`, which decrements the Py-refcounts in
-//!   the maps below. The two sides do not have to agree on contents at
-//!   every callback boundary — Python may have a stale dataclass entry
-//!   while Rust has already mutated, and vice versa; what they MUST agree
-//!   on is the set of *live* state IDs (`state-id-never-reused`).
+//!   `RustSimState`; there is no Python-side mirror any more
+//!   (`rust_state_cache.py` keeps only a no-op shim). The maps hold
+//!   `Py<PyAny>` refs: fork clones them under the GIL and `RustSimState::Drop`
+//!   decrements the refcounts, so the only thing the two sides must agree on
+//!   is the set of *live* state IDs (`state-id-never-reused`).
 //! - **`arc-make-mut-cow`** — Fields that are read on every fork but
 //!   mutated rarely are wrapped in `Arc<T>` and use `Arc::make_mut` for
 //!   copy-on-write. Mutators must peek the read path first to skip the
@@ -130,17 +78,13 @@
 //!   `for x in self.field.iter()`. Compiler errors are obvious (E0277
 //!   "is not an iterator") but easy to miss in review.
 //! - **`invariant-apply-state-metadata-option-allowlist`** (also a live bd
-//!   memory key) — `RustExplorationManager.
-//!   _apply_state_metadata` (Python) copies ONLY `LAZY_SOLVES` and
-//!   `STRICT_PAGE_ACCESS` from the source state to a cached/disk-loaded
-//!   init state. The boolean SimOption mirrors held below
-//!   (`no_ip_concretization`, `no_symbolic_jump_resolution`,
-//!   `keep_ip_symbolic`) are NOT in the allow-list, so any code that
-//!   reads `angr_state.options` from inside `_add_rust_state` on a
-//!   cached-init path may not see options the user originally set. Set
-//!   these flags from `__init__` on the user-supplied state BEFORE
-//!   `_run_python_init_if_needed` runs — not in `_add_rust_state` on the
-//!   post-init state.
+//!   memory key) — `RustExplorationManager._apply_state_metadata` (Python)
+//!   copies only an allow-list of SimOptions (its docstring enumerates them)
+//!   from the source state to a cached/disk-loaded init state. Code that reads
+//!   `angr_state.options` from inside `_add_rust_state` on a cached-init path
+//!   therefore may not see an option the user set unless it is on that list;
+//!   read user-set options from `__init__` on the user-supplied state, before
+//!   `_run_python_init_if_needed` runs.
 //! - **`arc-make-mut-fresh-context`** — On a freshly constructed
 //!   `SymContext` (no other Arc refs yet), `Arc::make_mut(&mut field)`
 //!   returns a unique `&mut` without cloning (refcount==1). `merge()`
@@ -533,22 +477,22 @@ pub struct RustSimState {
     /// claripy AST; cleared automatically when the state is dropped.
     /// Cloned on fork — see [`SharedPyAst`] for why the `Arc` is load-bearing.
     ///
-    /// See module-level `state-metadata-dataclass`: the Python side keeps a
-    /// parallel `StateMetadata` dataclass; Rust drops decrement Py-refcounts.
+    /// See module-level `state-metadata-rust-owned`: Rust owns this map and
+    /// its drop decrements the Py-refcounts.
     #[merge_policy = "joint"]
     symbolic_pages: HashMap<u64, SharedPyAst>,
     /// Per-state hook symbolic memory: `addr -> (claripy AST, byte size)`.
     /// Tracks symbolic writes performed inside Python hooks so Rust can replay
     /// them on resume. Cloned on fork.
     ///
-    /// See module-level `state-metadata-dataclass`.
+    /// See module-level `state-metadata-rust-owned`.
     #[merge_policy = "joint"]
     hook_symbolic_memory: HashMap<u64, (SharedPyAst, u32)>,
     /// Per-state addr -> (AST, byte size) recorded by handle registration so
     /// state export can recover the original symbol instead of a fresh BVS.
     /// Cloned on fork.
     ///
-    /// See module-level `state-metadata-dataclass`.
+    /// See module-level `state-metadata-rust-owned`.
     #[merge_policy = "joint"]
     addr_to_ast: HashMap<u64, (SharedPyAst, u32)>,
     /// Most recent symbolic value returned by the time(2) syscall — mirrors

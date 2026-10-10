@@ -3,9 +3,8 @@
 //! One of several `#[pymethods]` blocks for the pyclass; see the
 //! `manager_methods` module doc for the split rationale (angr-9ke6b.50).
 //!
-//! This is a Python-boundary module; `unwrap`/`expect` are denied here so a
-//! future panic-on-input landmine cannot be reintroduced without a reviewed,
-//! reasoned `#[allow]` (angr-qwyti.11 enforcement layer).
+//! Python-boundary module: `unwrap`/`expect` are denied here (angr-qwyti.11);
+//! see the crate-level panic policy in `lib.rs`.
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 use super::*;
 

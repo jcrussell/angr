@@ -29,10 +29,8 @@
 //! **Panic policy (angr-9ke6b.212):** the guest bytes handed to
 //! [`NativeLibVEXLifter::lift`] are untrusted and every marshalling failure
 //! returns a [`LiftError`], which the caller turns into a Python-lift fallback.
-//! The one `expect` is the `LIFT_LOCK` poison guard: poison requires a thread
-//! to unwind out of a live `MutexGuard`, and the crate ships with
-//! `panic = "abort"` (workspace `Cargo.toml`, angr-1cue), so no unwind is
-//! possible.
+//! The one `expect` is the `LIFT_LOCK` poison guard, unreachable in the
+//! shipped build — see the crate-level panic policy in `lib.rs`.
 //!
 //! **Enforcement (angr-qwyti.11):** this module carries
 //! `#![deny(clippy::unwrap_used, clippy::expect_used)]`.

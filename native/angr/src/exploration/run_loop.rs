@@ -12,65 +12,35 @@
 //! [`TerminalStep`] vocabulary, `bounce_target_addr`, and
 //! `flush_parked_bounces_to_active`.
 //!
-//! `RustExplorationManager::run_loop` is a thin **driver**: it owns the loop
-//! frame (pop a state from the active stash, the I8 termination checks, and the
-//! post-step bookkeeping) and delegates the entire per-state body to
-//! `step_one`, matching on the `StepOutcome` it returns to route results.
+//! `RustExplorationManager::run_loop` is a **dispatcher**: it picks the
+//! single-threaded loop, the steady parallel loop or the wave parallel loop
+//! from `must_run_serial` / `steady_state_eligible`. `run_loop_single.rs::step_one`
+//! is the **single stepping decision point** every driver shares: it
+//! evaluates find/avoid predicates, dispatches SimProcedures (native fast path
+//! or Python fallback), steps the interpreter, handles deferred forks at
+//! find/avoid addresses, and classifies the result into a `StepOutcome`.
 //!
-//! `step_one` is the **single stepping decision point**: it evaluates find/avoid
-//! predicates, dispatches SimProcedures (native fast path or Python fallback),
-//! steps the interpreter, handles deferred forks at find/avoid addresses, and
-//! classifies the result into a `StepOutcome`. Extracting it (bead 1ilq.6) gives
-//! the work-stealing scheduler (`scheduler.rs`) one place to share, and keeps the
-//! driver small. It is a pure refactor — behavior is byte-identical to the former
-//! monolithic `run_loop`.
+//! The pyclass-facing `run` wrapper lives in `manager_methods_run.rs`; the
+//! bodies here are `pub(crate)` methods on `RustExplorationManager`. That
+//! extension-impl split predates PyO3's `multiple-pymethods` feature (now
+//! enabled, angr-9ke6b.50) and is kept as a style choice.
 //!
-//! Note: `step_one` is `&mut self` (it mutates stashes, counters, profiling, and
-//! `pending_callback`), so a `Send + Sync` scheduler worker cannot call it
-//! directly — reconciling that is the 1ilq.7 GIL-strategy spike. This bead only
-//! lands the seam.
+//! **Invariant I8 (exploration-loop termination)** is owned by the
+//! `angr/exploration/rust_manager.py` module docstring and enforced in
+//! `run_loop_single.rs`: the loop ends on `found_count() >= num_find` *or* on
+//! the active stash returning `None` (`active_empty` event).
 //!
-//! The pyclass-facing `run` thin wrapper lives in `mod.rs` and just calls
-//! `self.run_loop(py, n)`; the body is extracted here as `pub(crate)` methods
-//! on `RustExplorationManager`, mirroring the `helpers.rs` / `stepping.rs`
-//! extension-impl pattern used elsewhere in `exploration/`. That split
-//! predates PyO3's `multiple-pymethods` feature, which is now enabled
-//! (angr-9ke6b.50, see `invariant-pyo3-multiple-pymethods-enabled`) — it is
-//! kept as a style choice, not a constraint.
-//!
-//! **Invariant I8 (cross-mixin termination, mirror of the
-//! `I8. Exploration-loop termination conditions` entry in the
-//! `angr/exploration/rust_manager.py` module docstring):** the run loop
-//! must terminate on EITHER (a)
-//! `found_count() >= num_find` (checked at the top of every iteration),
-//! OR (b) the active stash exhausting itself (`pop_*` returns `None`,
-//! emitting an `active_empty` event). `found_count()` covers both
-//! Rust-native finds (forks routed to the found stash by the address
-//! check) and Python-predicate-derived finds (added via the need_callback
-//! resume path). The earlier predicate-only termination check infinite-
-//! looped when `find=int` was combined with a non-predicate technique
-//! like DFS — the technique made `_active_techniques` non-empty, routing
-//! through the Python predicate path, which never saw the Rust find.
-//! See the `Cross-mixin invariants` module-doc header in `state/mod.rs`,
-//! bullet I8.
-//!
-//! **Panic policy (CQ .8):** the parallel-driver half of this module locks the
-//! `ParallelShared` mutexes (`root_map`, `kind_map`, `counters`, `up_rx`) via
-//! `.lock().expect("… poisoned")`. Those poison messages are invariant guards,
-//! not error paths: the crate ships with `panic = "abort"`, so a thread can
-//! never unwind out of a held `MutexGuard` to poison a lock (it aborts at the
-//! panic site first), and the `expect("session live"/"pool set")` sites guard
-//! state-machine invariants the driver upholds locally. See the "Panic policy"
-//! section of [`scheduler`] for the full argument — the same
-//! reasoning covers every `.expect` in this file and in the four sibling
-//! modules, so there is no fallible site to propagate and no Python-exception
-//! path to build under this profile.
+//! **Panic policy:** the parallel-driver half locks the `ParallelShared`
+//! mutexes via `.lock().expect("… poisoned")` and reads `expect("session
+//! live"/"pool set")` state-machine invariants it upholds locally; the
+//! crate-level policy in `lib.rs` explains why those are invariant labels,
+//! not error paths.
 //!
 //! **Enforcement (qwyti.15):** this module carries
 //! `#![deny(clippy::unwrap_used, clippy::expect_used)]` so any *new* fallible
 //! unwrap must be justified (each sibling module re-states the same deny). The
-//! ~35 pre-existing `.expect()` sites are all the
-//! poison / session-live / pool-set invariant guards described above; each
+//! pre-existing `.expect()` sites are all the poison / session-live /
+//! pool-set invariant guards described above; each
 //! function that holds them carries a narrow
 //! `#[allow(clippy::expect_used, reason = ...)]` pointing back at this Panic
 //! policy, and the `mod tests;` decl is exempted (the deny propagates into

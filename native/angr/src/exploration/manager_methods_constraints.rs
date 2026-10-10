@@ -26,18 +26,18 @@
 //! - **Stats dicts**: `stats`, `get_fallback_stats`.
 //!
 //! The line against `manager_methods_state.rs` is *granularity*, not subject
-//! matter: that module works on a single state's identity and contents
-//! (create/add/fork/merge, registers, memory, files, stash membership
-//! queries), whereas the stash-level mutators — moving states between
+//! matter: that module works on a single state's identity (create/add/fork/
+//! merge, stash membership queries) — its register, memory and stdout
+//! accessors sit in `manager_methods_export.rs` — whereas the stash-level
+//! mutators — moving states between
 //! stashes, emptying a stash, resetting for the next `find` stage — live
 //! here. Both boundaries are inherited from the monolith's section banners
 //! rather than derived from a taxonomy, so a few members sit on either side
 //! for historical reasons only. When adding a method, match the banner group
 //! above; do not re-derive the split from first principles.
 //!
-//! This is a Python-boundary module; `unwrap`/`expect` are denied here so a
-//! future panic-on-input landmine cannot be reintroduced without a reviewed,
-//! reasoned `#[allow]` (angr-qwyti.11 enforcement layer).
+//! Python-boundary module: `unwrap`/`expect` are denied here (angr-qwyti.11);
+//! see the crate-level panic policy in `lib.rs`.
 //!
 //! **No `test_submod!` here, by design** (angr-03vl4.13). Every method in this
 //! file forwards to a `_`-prefixed body in a sibling module — see the

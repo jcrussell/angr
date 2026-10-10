@@ -545,61 +545,24 @@ pub(super) fn parse_vreverse(op_str: &str) -> Option<IROp> {
 /// `Err(OpError::UnsupportedNeon { name })` carrying the original opcode name
 /// instead of silently returning a fresh-symbolic value.
 ///
-/// Implementations are added one-at-a-time in angr-bkcs.2 by:
-///   1. Removing the opcode's entry from this function.
-///   2. Adding it to `parse_vector` (or `parse_float`) with a real IROp variant.
-///   3. Wiring that variant into `VEXOps::unop` / `binop`.
+/// To graduate an opcode:
+///   1. Remove the opcode's entry from this function.
+///   2. Add it to `parse_vector` (or `parse_float`) with a real IROp variant.
+///   3. Wire that variant into `VEXOps::unop` / `binop`.
 ///
 /// Scope: D-register (Ity_I64) and Q-register (Ity_V128) opcodes that pyvex
 /// emits for ARM/AArch64 NEON and that this engine currently has no handler
 /// for. Opcodes already handled by `parse_vector` (e.g. `Iop_Add8x8` ->
 /// `VAdd`) are deliberately excluded so we do not regress existing coverage.
 ///
-/// # Historical coverage
+/// # Coverage
 ///
-/// This function currently claims nothing — every NEON family that once
-/// routed here has graduated to a real handler, the last being
-/// `Iop_PwAdd32Fx2` -> `IROp::VFPwAdd` in angr-cudgw.6. The record below maps
-/// each family to the bead that implemented it and the parse fn it now routes
-/// through, so a future NEON gap can be checked against what was already
-/// covered:
-///
-/// - `Iop_GetElem*` / `Iop_SetElem*` (lane extract/insert) — angr-bkcs.2, via
-///   `parse_vector` to `IROp::VGetElem` / `VSetElem`.
-/// - `Iop_Dup*` / `Iop_Widen*` / `Iop_Narrow{Bin,Un}*` / `Iop_QNarrow{Bin,Un}*`
-///   — angr-hzs0, via `parse_vector` to `IROp::VDup` / `VWiden` /
-///   `VNarrow{Un,Bin}` / `VQNarrow{Un,Bin}`.
-/// - FP `RecipEst` / `RecipStep` / `RSqrtEst` / `RSqrtStep` (`{32,64}{F0,Fx}*`)
-///   — angr-iyon, via `parse_float` to `IROp::VFRecipEst{,S}` / `VFRecipStep` /
-///   `VFRSqrtEst{,S}` / `VFRSqrtStep`.
-/// - `Iop_RecipEst32Ux{2,4}` (URECPE) and `Iop_RSqrtEst32Ux{2,4}` (URSQRTE) —
-///   angr-tukg.5, via `parse_vector` to `IROp::VIRecipEst` / `VIRSqrtEst`
-///   (fresh-symbolic per lane).
-/// - `Iop_QAdd{N}{S/U}x{M}` / `Iop_QSub{N}{S/U}x{M}` (saturating integer
-///   add/sub) — angr-tukg.1, via `parse_vector` to `IROp::VQAdd` / `VQSub`.
-/// - `Iop_Avg{N}{S/U}x{M}` (rounding halving add) — angr-tukg.3, via
-///   `parse_vector` to `IROp::VAvg`.
-/// - `Iop_Reverse{N}sIn{M}_x{K}` (byte/halfword/word/bit reversal within lane)
-///   — angr-tukg.4, via `parse_vreverse` to `IROp::VReverse`.
-/// - Integer `Iop_PwAdd{N}x{M}`, `Iop_PwAddL{N}{S/U}x{M}`,
-///   `Iop_PwMin{N}{S/U}x{M}`, `Iop_PwMax{N}{S/U}x{M}` — angr-tukg.2, via
-///   `parse_vector` to `IROp::VPwAdd` / `VPwAddL` / `VPwMin` / `VPwMax`; the FP
-///   pairwise `Iop_PwAdd32Fx2` — angr-cudgw.6, via `parse_float` to
-///   `IROp::VFPwAdd`; the FP pairwise `Iop_PwMax32Fx{2,4}` /
-///   `Iop_PwMin32Fx{2,4}` — angr-sqfj8.116, via `parse_float` to
-///   `IROp::VFPwMax` / `VFPwMin`. The one non-NEON member of the family,
-///   `Iop_PwBitMtxXpose64x2` (PPC vgbbd bit-matrix transpose) — angr-sqfj8.143,
-///   via `parse_vector` to `IROp::VPwBitMtxXpose`. No `Pw*` op is unmapped.
-/// - `Iop_PolynomialMul8x{8,16}` / `Iop_PolynomialMull8x8` (GF(2) carry-less
-///   multiply) — angr-tukg.6, via `parse_vector` to `IROp::VPolynomialMul`.
-/// - `Iop_Cnt8x{8,16}` (per-byte popcount), `Iop_Clz{N}x{M}` and
-///   `Iop_Cls{N}x{M}` (per-lane count-leading-zeros / count-leading-sign-bits)
-///   — angr-tukg.6, via `parse_vector` to `IROp::VCnt` / `VClz` / `VCls`.
-/// - Vector shift by *vector* (`Shl`/`Shr`/`Sar`/`Sal{N}x{M}`) — angr-tukg.7,
-///   via `parse_vector` to `IROp::VShl` / `VShr` / `VSar` (`Sal` -> `VShl`).
-/// - `Iop_QShl{N}x{M}` / `Iop_QSal{N}x{M}` (saturating shift-left by vector) —
-///   angr-tukg.8, via `parse_vector` to `IROp::VQShlSat`. `QShlN`
-///   (shift-by-immediate) is still unimplemented.
+/// This function currently claims nothing: every NEON family that once routed
+/// here has graduated to a real handler. The "NEON op families" table in
+/// `docs/extending-angr/rust_vex_ops.rst` records which parse fn each family
+/// now routes through and the bead that implemented it, so a future NEON gap
+/// can be checked against what is already covered. `QShlN`
+/// (shift-by-immediate) is still unimplemented.
 pub(super) fn parse_neon_unimplemented(op_str: &str) -> Option<IROp> {
     // The `NeonUnimplemented` sentinel and this fn are kept as the scaffold
     // point for the next NEON op — add a match on `op_str` here returning

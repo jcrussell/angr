@@ -32,52 +32,19 @@
 //!   buys [`SharedLineageSolver::switch_to`](super::lineage::SharedLineageSolver::switch_to)
 //!   a cheap by-id prefix comparison while staying robust across fork
 //!   boundaries where RustBV identity can split.
-//! - **Three-gate materialization** (`invariant-bare-z3-push-depth`,
-//!   `invariant-v5ht-dismantle-child-none`):
-//!   [`fork`](SymContext::fork) only mints a fresh `SharedLineageSolver`
-//!   when (a) the parent opted in via
-//!   [`set_use_shared_lineage_solver`](SymContext::set_use_shared_lineage_solver),
-//!   (b) the parent's [`bare_z3_push_depth`](SymContext::bare_z3_push_depth)
-//!   is zero, and (c) the runtime thrash detector
-//!   ([`super::lineage::is_lineage_dismantled`]) has not fired. When (c) is
-//!   true `child_lineage` is set to `None` rather than `Arc::clone`'d —
-//!   `Arc::clone` would give the child a stale base. Regression guards, one
-//!   per gate: `context_tests_smtlib2_snapshot::test_fork_skips_mint_when_flag_off`
-//!   (a), `::test_fork_skips_mint_when_bare_push_outstanding` (b), and
-//!   `super::lineage_tests::test_fork_drops_lineage_when_dismantled` (c) —
-//!   the last lives beside the sampler tests because it mutates the global
-//!   dismantle flag and must hold their serializing lock. The passing case is
-//!   `context_tests_smtlib2_snapshot::test_fork_mints_lineage_when_gate_passes`.
-//! - **fork-freeze under push** (angr-c7xno.75):
-//!   [`fork`](SymContext::fork) only drains local→shared in place when NO
-//!   bare push scope is open (`bare_local_savepoints` is empty). Inside an
-//!   open scope a `pop()` truncates `local` back to its pre-push length;
-//!   draining would leak popped constraints into `shared`, which has no
-//!   removal path — a later fork then inherits a constraint the parent
-//!   itself no longer believes, and gets spuriously pruned as UNSAT. The
-//!   child still sees the in-scope constraints (freeze returns the merged
-//!   set either way); only the parent's ability to retract them survives.
-//!   Regression guard:
-//!   `context_tests_constraints::test_fork_under_bare_push_does_not_freeze_popped_constraints`.
+//! - **Three-gate materialization** and **fork-freeze under push** — owned
+//!   by `SymContext::fork`'s rustdoc in `snapshot_fork_ops.rs`, which names
+//!   the regression guard for each gate. Keys:
+//!   `invariant-bare-z3-push-depth`, `invariant-v5ht-dismantle-child-none`.
 //! - **Z3 construction canonicalization** (`invariant-z3-construction-canonicalization`):
 //!   Z3 hash-cons applies at construction time, but commutative operands
 //!   are NOT normalized (`mk_bvadd(x, y)` and `mk_bvadd(y, x)` produce
 //!   distinct AST pointers). Concrete numerals and named symbol leaves ARE
 //!   canonical. Regression guard:
 //!   `super::value::value_zext_cmp_tests::z3_already_dedupes_structurally_equal_rustbv_trees`.
-//! - **No `parallel.enable`** (`avoid-z3-parallel-enable`): setting
-//!   `parallel.enable=true` on solver params is correctness-breaking on
-//!   this codebase (downstream consumers do not handle Z3 `Unknown`
-//!   results). Do NOT re-enable in [`build_solver_params`].
-//! - **No full lineage teardown**: the
-//!   angr-0dgq teardown variant (walk all stashes, drop each state's
-//!   lineage Arc, invalidate per-context solvers) is a net loss vs the
-//!   v5ht simple variant. [`super::lineage::set_lineage_dismantled`] only
-//!   suppresses future mints; in-flight lineages keep working.
-//! - **No DFS-only opt-in**: do
-//!   NOT default `use_shared_lineage_solver` on for `strategy='dfs'`. Both
-//!   the canonical WIN (ais3_crackme) and LOSE (defcon2016quals_baby-re)
-//!   canaries run BFS — strategy is not the discriminator.
+//! - **Rejected alternatives** — no `parallel.enable`
+//!   (`avoid-z3-parallel-enable`), no full lineage teardown, no DFS-only
+//!   opt-in: `docs/advanced-topics/rust_engine_decisions.rst` records why.
 //!
 //! **Panic policy / enforcement (angr-qwyti.11, angr-9ke6b.212):** this module
 //! carries `#![deny(clippy::unwrap_used, clippy::expect_used)]`. It owns the Z3

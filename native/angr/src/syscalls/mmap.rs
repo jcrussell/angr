@@ -51,18 +51,17 @@
 //! Oversized-request fast path: a `length` above `MAX_MAP_SIZE` is
 //! rejected with -1 (MAP_FAILED) rather than mapped or bounced to
 //! Python. Host-safety bound, not Python parity — see `MAX_MAP_SIZE`
-//! in `syscalls::mod` and the check in `do_mmap` (angr-c7xno.80).
+//! in `syscalls::support` and the check in `do_mmap` (angr-c7xno.80).
 //!
 //! Bad-flags fast path: when `(flags & (MAP_SHARED|MAP_PRIVATE)) == 0`
 //! or both bits are set, Python returns -1 outright. Mirror that here
 //! so the syscall completes natively (still in the concrete-args path)
 //! instead of routing back to Python.
 //!
-//! Cross-engine sync: native `mmap_base` advances are NOT propagated
-//! back to Python's `state.heap.mmap_base` today (same drift risk as
-//! `posix_brk`). This is acceptable while syscall fallbacks rarely
-//! interleave with successful native calls; future cross-engine sync
-//! work (see angr-0z34 / state-cache sync) should address both.
+//! Cross-engine sync: native `mmap_base` advances reach Python's
+//! `state.heap.mmap_base` through the export path's `max()` merge
+//! (`rust_state_export.py::_sync_rust_mmap_base_to_state`; invariant I7 in the
+//! `rust_manager.py` module docstring), the same way `posix_brk` does.
 
 use super::page::{PAGE_MASK, PAGE_SIZE, linux_prot_to_permission};
 use super::require_syscall_args;

@@ -50,13 +50,48 @@
 //! - `fuzzer` — icicle/libafl backends; `fuzzing` — widen hostile-input parsers
 //!   to a crate-`pub` surface for the cargo-fuzz targets (see `fuzz_api`)
 //!
+//! # Panic policy
+//!
+//! The shipped `.so` is built with `[profile.release] panic = "abort"`
+//! (workspace `Cargo.toml`, angr-1cue), and every module that handles guest
+//! or Python-supplied data carries `#![deny(clippy::unwrap_used,
+//! clippy::expect_used)]`. Three consequences follow, and the per-module
+//! "Panic policy" notes point here rather than restating them:
+//!
+//! - **Mutex poisoning is unreachable in the shipped build.** A lock is
+//!   poisoned only when a thread *unwinds* out of a live `MutexGuard`; under
+//!   `panic = "abort"` there is no unwind, so every
+//!   `.lock().expect("… poisoned")` is an invariant label, not an error path.
+//!   For the same reason a worker thread cannot "die" mid-wave: a panic
+//!   aborts the whole process.
+//! - **A genuine bug surfaces as a process abort, by design.** There is no
+//!   "surface as a Python exception" path to build for those guards. A site
+//!   that *is* fallible on real input returns a domain error (`ProcedureError`,
+//!   `SyscallError`, `MemoryError`, …) and falls back to Python; see the
+//!   convention in `errors.rs`. Never trade a loud panic for a silent wrong
+//!   answer: a guard that would otherwise turn into an early `None` and drop
+//!   states stays a panic.
+//! - **Under `cargo test` the argument does not hold, and that is expected.**
+//!   Cargo forces `panic = "unwind"` on test binaries, so a panic inside a held
+//!   guard poisons the lock and a *second*, cascaded `… poisoned` panic
+//!   follows. Ignore the cascade and look for the earliest panic in the
+//!   output.
+//!
+//! Each surviving `expect` sits under a narrow
+//! `#[allow(clippy::expect_used, reason = "…")]` whose reason names the local
+//! guard that proves it; if no such reason can be written, the code needs a
+//! domain error instead.
+//!
 //! # Further reading
 //!
-//! `docs/advanced-topics/rust_engine.rst` is the authoritative architecture and
-//! usage overview (support matrix, `SimOption` coverage, known-slow benches).
-//! See also `rust_z3_sharing.rst`, `rust_lazy_memory_design.rst`,
+//! `docs/advanced-topics/rust_engine.rst` is the authoritative usage
+//! reference (SimOption coverage, inspect dispatch, techniques, errors);
+//! `rust_engine_decisions.rst` records rejected alternatives and
+//! `rust_build.rst` how to build, test and profile. See also
+//! `rust_z3_sharing.rst`, `rust_lazy_memory_design.rst`,
 //! `rust_parallel_design.rst` and `rust_libvex_ffi.rst` in the same directory,
-//! plus `docs/extending-angr/rust_vex_ops.rst` for adding a VEX op.
+//! plus `docs/extending-angr/rust_vex_ops.rst` for adding a VEX op and
+//! `docs/extending-angr/simprocedures.rst` for a native SimProcedure.
 
 // clippy::unwrap_used/expect_used (workspace lint, angr-9ke6b guardrail) is
 // scoped to production code. `cfg(test)` applies to the WHOLE crate when
@@ -128,10 +163,9 @@
 /// ones where the `allow` is load-bearing. The payload only bites under a host
 /// module's own `#![deny(clippy::unwrap_used, clippy::expect_used)]` (today:
 /// `exploration::shadow_probe`), so the hand-written spelling compiles fine
-/// everywhere else — which is exactly why three audit rounds each found a
-/// two-site subset of the same ~60-site divergence and called it fixed
-/// (angr-c7xno.48, angr-03vl4.8, angr-03vl4.89). The last of those swept the
-/// remainder, so the invariant a future audit checks is now a simple one:
+/// everywhere else — which is exactly why a partial sweep keeps looking
+/// complete (angr-c7xno.48, angr-03vl4.8, angr-03vl4.89). The invariant a
+/// future audit checks is therefore a simple one:
 /// outside this macro's own definition, `native/angr/src/**` contains no
 /// `#[cfg(test)] #[path = ...] mod ...;`.
 macro_rules! test_submod {

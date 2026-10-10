@@ -15,20 +15,18 @@ pub const PAGE_MASK: u64 = PAGE_SIZE - 1;
 
 /// A page *number* — `addr >> 12`, not a byte address.
 ///
-/// Both are bare `u64` otherwise, and every audit round has turned up a site
-/// that open-codes the shift (angr-c7xno.49 found `PAGE_SIZE` expressed three
-/// incompatible ways in `interpreter/` alone; angr-sqfj8.140 found
-/// `syscalls/page.rs` redefining the constants). The wrapper makes the two
+/// Both are bare `u64` otherwise, and an open-coded shift or page-size
+/// literal compiles silently. The wrapper makes the two
 /// layers distinct types wherever a *collection* is keyed by page number, so
 /// handing it an address — or a page number where an address belongs — stops
 /// compiling instead of silently addressing page 0x1000-ish.
 ///
 /// The `pages` / `dirty_pages` / `lazy_regions` structures inside `memory/`
-/// deliberately stay raw `u64`: see the `invariant-address-vs-page-number`
-/// note on `Address`. `PageIndex` is for callers *above* that layer, which
+/// deliberately stay raw `u64`: see the `memory/address.rs` module doc.
+/// `PageIndex` is for callers *above* that layer, which
 /// convert once at the boundary via [`PageIndex::get`].
 ///
-/// Since angr-fs8kb.91 the recurrence is also gated in CI:
+/// The recurrence is gated in CI (angr-fs8kb.91):
 /// `tools/audit_page_shift.py` flags an open-coded shift, or a bare
 /// `0x1000`/`0xFFF` standing in for [`PAGE_SIZE`]/[`PAGE_MASK`], anywhere
 /// under `native/angr/src/`.

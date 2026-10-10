@@ -23,9 +23,8 @@
 //! held solver-profiling counters, the constraint-sharing walk and the stash
 //! snapshot envelopes.
 //!
-//! This is a Python-boundary module; `unwrap`/`expect` are denied here so a
-//! future panic-on-input landmine cannot be reintroduced without a reviewed,
-//! reasoned `#[allow]` (angr-qwyti.11 enforcement layer).
+//! Python-boundary module: `unwrap`/`expect` are denied here (angr-qwyti.11);
+//! see the crate-level panic policy in `lib.rs`.
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 use super::*;
 

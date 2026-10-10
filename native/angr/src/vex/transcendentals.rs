@@ -1,7 +1,7 @@
-//! Concrete-only fast paths for x87 FPU transcendentals (Iop_SinF64,
-//! Iop_CosF64, Iop_TanF64, Iop_2xm1F64, Iop_AtanF64, Iop_Yl2xF64,
-//! Iop_Yl2xp1F64, Iop_ScaleF64) and ARM AArch64 FRECPX (Iop_RecpExpF64,
-//! Iop_RecpExpF32). We expose no named `IROp` variant for these, so
+//! Concrete-only fast paths for the x87 FPU transcendentals and ARM AArch64
+//! FRECPX. The per-op coverage matrix is the "x87 transcendental ops" table
+//! in `docs/extending-angr/rust_vex_ops.rst`; the `IOP_*` consts below are
+//! the complete list. We expose no named `IROp` variant for these, so
 //! `opcode_map_float::parse_transcendental` maps the pyvex name to
 //! `IROp::Raw(<one of the IOP_* consts below>)`, and the `IROp::Raw` arms
 //! of `VEXOps::binop` (in its private `binop_misc` helper) and
@@ -61,8 +61,8 @@
 //! two `try_concretize_*` wrappers do not need one because they forward `rm`
 //! unchanged to those two.
 //!
-//! Opcode values: libvex_ir.h Iop_* enum, base 0x1400. Validated against
-//! pyvex.const.enums_to_ints (2026-05-07). Since angr-9ke6b.233 the only
+//! Opcode values: libvex_ir.h Iop_* enum, base 0x1400, validated against
+//! pyvex.const.enums_to_ints. Since angr-9ke6b.233 the only
 //! producer is the *string* router `parse_transcendental`, so these are
 //! internal tags — they no longer have to track libVEX renumbering, they
 //! only have to stay distinct and agree with that router.

@@ -40,24 +40,13 @@
 //! method here reads or writes the contents of one already-existing state
 //! named by `state_id`.
 //!
-//! This is a Python-boundary module; `unwrap`/`expect` are denied here so a
-//! future panic-on-input landmine cannot be reintroduced without a reviewed,
-//! reasoned `#[allow]` (angr-qwyti.11 enforcement layer).
+//! Python-boundary module: `unwrap`/`expect` are denied here (angr-qwyti.11);
+//! see the crate-level panic policy in `lib.rs`.
 //!
-//! **No `test_submod!` here, by design** (angr-03vl4.13). Every method in this
-//! file forwards to a `_`-prefixed body in a sibling module — see the
-//! `See ... for the body` line on each — and those modules carry the test
-//! coverage (`state_api.rs`, `state_lifecycle.rs`,
-//! `stats_api.rs`). What is left at this
-//! layer is the PyO3 signature and the `#[angr_macros::steady_guarded]` /
-//! `#[angr_macros::steady_guard_exempt]` choice — the signature defaults
-//! only apply to a call made *from Python*, so no Rust-level unit test can
-//! observe those, but making *some* explicit choice (not necessarily the
-//! correct one) is a compile-time obligation enforced by
-//! `#[angr_macros::steady_guard_checked]` on the `impl` block below.
-//! Sibling `manager_methods_{procedures,techniques,state}.rs` do have test
-//! modules because their methods carry filtering / stash-declaration logic of
-//! their own rather than delegating outright.
+//! **No `test_submod!` here, by design** (angr-03vl4.13): every method here
+//! delegates to a sibling module that carries the test coverage; see the
+//! `manager_methods_constraints.rs` module doc for the rationale shared by
+//! the delegating blocks.
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 use super::*;
 

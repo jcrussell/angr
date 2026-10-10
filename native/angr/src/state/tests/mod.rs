@@ -37,11 +37,11 @@
 //!   removal tombstones.
 //! - `merge_property_mechanical`: the half of the census property test over
 //!   every `RustSimState` field carrying `#[merge_policy = "..."]` that
-//!   covers the 22 mechanical-policy fields, checked against their generated
+//!   covers the mechanical-policy fields, checked against their generated
 //!   `merge_field_<name>` method. Carries the rationale both census halves
 //!   share.
-//! - `merge_property_manual`: the other half — the 21 fields with no
-//!   generated method (`delegate`/`computed`/`joint`, plus the four
+//! - `merge_property_manual`: the other half — the fields with no
+//!   generated method (`delegate`/`computed`/`joint`, plus the
 //!   mechanical-policy fields that opt out via `#[merge_manual]`), checked
 //!   against a specific expected value reasoned from
 //!   `fork.rs::RustSimState::merge`. Both are additive to (not a replacement
@@ -50,6 +50,7 @@
 //!   `add_hook`/`remove_hook`/`set_option`/`setenv`/`unsetenv` calls must keep
 //!   sharing their `Arc` with a forked sibling.
 //! - `heap`: the heap and CGC allocators themselves (not their merge).
+//! - `environment`: the per-state environment map and its fork/merge rules.
 //! - `export`: `export_full`'s dump shape.
 //!
 //! Carved out of the former monolithic `state_tests.rs` (angr-c7xno.69), which

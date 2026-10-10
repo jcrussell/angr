@@ -59,36 +59,27 @@
 //!
 //! ## Cross-cutting design rules
 //!
-//! Entries carrying a key have long-form rationale in a bd memory; recall
-//! via `bd recall <key>`. The rest are stated in full here.
+//! The three-gate mint and fork-freeze invariants are owned by
+//! `SymContext::fork`'s rustdoc (`snapshot_fork_ops.rs`); the rejected
+//! alternatives — why Option A over solver-translate / fork-boundary push-pop
+//! / per-state contexts, why the full lineage teardown was reverted, why
+//! there is no DFS-only default and why `parallel.enable` stays off — are in
+//! `docs/advanced-topics/rust_engine_decisions.rst`. What is local to this
+//! module:
 //!
-//! - **Why Option A** (angr-hk7k) — shared-lineage push/pop tracking was
-//!   picked over solver-translate, fork-boundary push/pop, and
-//!   per-state-context strategies.
 //! - **FrameId, not pointer identity** — prefix matching uses a monotonic
-//!   [`FrameId`] minted at constraint-add time, not `Arc::ptr_eq` on the
+//!   `FrameId` minted at constraint-add time, not `Arc::ptr_eq` on the
 //!   underlying RustBV. Identity stays stable across fork boundaries.
 //! - **`SymContext.lineage` mutex shape** — typed
 //!   `Mutex<Option<Arc<Mutex<SharedLineageSolver>>>>`; the outer `Mutex`
 //!   is what makes `fork(&self)` legal (it installs a lineage through a
 //!   shared reference). See the field rustdoc on `SymContext::lineage`.
-//! - `avoid-z3-parallel-enable` — `parallel.enable=true` is
-//!   correctness-breaking; do NOT set it in `build_solver_params`.
-//! - **No full lineage teardown** — the angr-0dgq teardown variant (walk
-//!   all stashes, drop each state's lineage Arc, invalidate per-context
-//!   solvers) is a net loss vs the v5ht "simple" dismantle, which only
-//!   suppresses future mints. Do NOT retry without first making
-//!   per-context solver rebuild incremental.
-//! - **No DFS-only opt-in** — do NOT default `use_shared_lineage_solver`
-//!   on for `strategy='dfs'`. Workload shape, not strategy, predicts the
-//!   win; see the rule stated in full on
-//!   [`SymContext::set_use_shared_lineage_solver`](crate::symbolic::SymContext::set_use_shared_lineage_solver).
 //! - `v5ht-sampler-tick-bottleneck` — the sampler hook MUST be at the TOP
-//!   of `run_loop` (before any callback-path early-return) so
-//!   callback-heavy workloads still tick. See the comment at the call
-//!   site in `crate::exploration::run_loop`.
-//! - **Hot-threshold calibration** — the 35% hot threshold is
-//!   calibrated on N=4 workloads; widen the dataset before changing it.
+//!   of the single-threaded loop (before any callback-path early-return) so
+//!   callback-heavy workloads still tick. See the comment at the call site
+//!   in `crate::exploration::run_loop_single`.
+//! - **Hot-threshold calibration** — the dismantle threshold was calibrated
+//!   on a small workload set; widen the dataset before changing it.
 
 #![cfg(feature = "vex-engine-z3")]
 
