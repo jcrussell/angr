@@ -23,6 +23,58 @@ The module-level ``_extract_*`` functions are pure snapshot helpers over a
 SimState / loader — kept at module scope (not on the mixin) because they take
 no manager state and are independently testable. ``_restore_posix_entry_fields``
 is their read-side mirror, module-scope for the same reason.
+
+Invariants
+==========
+
+These cut across the mixin and its host; breaking one tends to produce
+silent cache poisoning rather than a loud failure. The ``rust_manager.py``
+module docstring's cross-mixin list (I1-I3) points here.
+
+I1. Disk-cache key axes
+    `_disk_cache_key` (now in the RustDiskCacheManager mixin,
+    `rust_disk_cache.py`, alongside `_save_init_to_disk_cache` and the
+    `_extract_*` snapshot helpers) mixes (binary path, `_RUST_CACHE_VERSION`,
+    `_PYTHON_METADATA_VERSION`, arch name, loader digest) into the filename
+    hash and memoizes on `(binary_path, arch_name, loader_digest)` in
+    `_disk_key_cache`. The loader digest (`_loader_identity_digest`) is not
+    optional: the payload embeds pages and post-relocation section patches
+    for EVERY `loader.all_objects` entry, so keying on the main binary alone
+    replays stale libc pages / GOT fixups after a library upgrade or an
+    `auto_load_libs` change (angr-uv7z5). Any future `_extract_*` helper that
+    snapshots more of the loader must be covered by that digest. When you
+    add a new dimension that affects the serialized init state, you must
+    bump the matching version constant AND extend the memo tuple — all
+    three (constant, hash, memo key) move together. Old-format pkls are
+    silently rejected by the outer `try/except Exception` in
+    `_load_init_pickle`.
+
+I2. Init pipeline phases (post angr-khth split)
+    `_run_python_init_if_needed` is the single orchestrator:
+    in-memory cache → disk cache → full Python init. The disk-load path
+    (now in the RustDiskCacheManager mixin, `rust_disk_cache.py`, alongside
+    the save path) is split so each phase owns a single concern:
+      * `_load_init_pickle`        — pure I/O.
+      * `_deserialize_init_state`  — pure SimState construction; no
+                                     manager-owned mutation.
+      * `_apply_init_side_effects` — populates `_pending_procedure_data`
+                                     and `_precomputed_regs` on self.
+      * `_load_init_from_disk_cache` — thin wrapper over the three.
+
+    When you save a NEW field to the disk cache, decide whether the pure
+    deserialization or the side-effect phase owns it. Don't mix the two —
+    that is the whole point of the split.
+
+I3. Init-cache user-symbolic gate
+    Disk and in-memory init caches are BOTH gated on
+    `_state_has_user_symbolic(state)`. `blank_state` round-trips lose
+    user-created BVS identity (e.g. `argv` symbols), so `_compute_disk_init_key`
+    and `_compute_mem_init_key` return `''` to suppress load AND save when
+    the input state holds user-symbolic data. Tests rely on this so user
+    stores from one test do not bleed into the next via the class-level
+    `_init_cache`. See the `_isolate_class_caches` autouse fixture in
+    `TestEdgeCases` (tests/engines/rust/test_annotations_edge.py) which
+    clears the cache between tests as defense-in-depth.
 """
 
 from __future__ import annotations

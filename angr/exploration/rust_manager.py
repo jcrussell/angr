@@ -1,11 +1,12 @@
 """Python wrapper for Rust-native exploration manager.
 
 This module provides `RustExplorationManager`, a Python-facing interface
-to the Rust exploration loop that achieves ~3x speedup by:
-- Managing states entirely in Rust (using RustSimState)
-- Processing symbolic branches with deferred forks
-- Only calling Python for SimProcedures and syscalls
-- Implementing find/avoid address checking in Rust
+to the Rust exploration loop. It keeps states entirely in Rust
+(`RustSimState`), processes symbolic branches with deferred forks,
+checks find/avoid addresses in Rust, and calls back into Python only for
+SimProcedures, syscalls and other Python-owned hooks. User-facing
+behaviour (SimOption coverage, inspect dispatch, techniques, errors) is
+documented in ``docs/advanced-topics/rust_engine.rst``.
 
 Cross-mixin invariants
 ======================
@@ -18,58 +19,24 @@ breaking any one of them tends to produce silent correctness bugs (cache
 poisoning, lost state, infinite loops) rather than loud failures, so they
 are documented here and pinned by the named regression tests.
 
-I1. Disk-cache key axes
-    `_disk_cache_key` (now in the RustDiskCacheManager mixin,
-    `rust_disk_cache.py`, alongside `_save_init_to_disk_cache` and the
-    `_extract_*` snapshot helpers) mixes (binary path, `_RUST_CACHE_VERSION`,
-    `_PYTHON_METADATA_VERSION`, arch name, loader digest) into the filename
-    hash and memoizes on `(binary_path, arch_name, loader_digest)` in
-    `_disk_key_cache`. The loader digest (`_loader_identity_digest`) is not
-    optional: the payload embeds pages and post-relocation section patches
-    for EVERY `loader.all_objects` entry, so keying on the main binary alone
-    replays stale libc pages / GOT fixups after a library upgrade or an
-    `auto_load_libs` change (angr-uv7z5). Any future `_extract_*` helper that
-    snapshots more of the loader must be covered by that digest. When you
-    add a new dimension that affects the serialized init state, you must
-    bump the matching version constant AND extend the memo tuple — all
-    three (constant, hash, memo key) move together. Old-format pkls are
-    silently rejected by the outer `try/except Exception` in
-    `_load_init_pickle`.
-
-I2. Init pipeline phases (post angr-khth split)
-    `_run_python_init_if_needed` is the single orchestrator:
-    in-memory cache → disk cache → full Python init. The disk-load path
-    (now in the RustDiskCacheManager mixin, `rust_disk_cache.py`, alongside
-    the save path) is split so each phase owns a single concern:
-      * `_load_init_pickle`        — pure I/O.
-      * `_deserialize_init_state`  — pure SimState construction; no
-                                     manager-owned mutation.
-      * `_apply_init_side_effects` — populates `_pending_procedure_data`
-                                     and `_precomputed_regs` on self.
-      * `_load_init_from_disk_cache` — thin wrapper over the three.
-    When you save a NEW field to the disk cache, decide whether the pure
-    deserialization or the side-effect phase owns it. Don't mix the two —
-    that is the whole point of the split.
-
-I3. Init-cache user-symbolic gate
-    Disk and in-memory init caches are BOTH gated on
-    `_state_has_user_symbolic(state)`. `blank_state` round-trips lose
-    user-created BVS identity (e.g. `argv` symbols), so `_compute_disk_init_key`
-    and `_compute_mem_init_key` return `''` to suppress load AND save when
-    the input state holds user-symbolic data. Tests rely on this so user
-    stores from one test do not bleed into the next via the class-level
-    `_init_cache`. See the `_isolate_class_caches` autouse fixture in
-    `TestEdgeCases` (tests/engines/rust/test_annotations_edge.py) which
-    clears the cache between tests as defense-in-depth.
+I1-I3. Disk-cache key axes, init pipeline phases, user-symbolic gate
+    Owned by the ``RustDiskCacheManager`` mixin; stated in full in the
+    ``rust_disk_cache.py`` module docstring ("Invariants"). In one line
+    each: the cache key's version constants, filename hash and memo tuple
+    move together; ``_run_python_init_if_needed`` is the single init
+    orchestrator and the disk-load phases do not mix I/O, construction
+    and side effects; both init caches are suppressed for states holding
+    user-symbolic data.
 
 I4. `_apply_state_metadata` is an allow-list
     On a cached/disk-loaded init state, `_apply_state_metadata` copies
-    constraints, globals, and only the `LAZY_SOLVES` + `STRICT_PAGE_ACCESS`
-    SimOptions from the source. Every other option (`TRACK_*`,
-    `CONCRETIZE`, `DO_RET_EMULATION`, ...) is silently dropped on the
-    cache-hit path. To check user-set options reliably, do it on the user-
-    supplied state in `__init__` BEFORE `_run_python_init_if_needed` runs,
-    not on the post-init state in `_add_rust_state`.
+    constraints, globals, and an allow-list of SimOptions from the source
+    (its own docstring enumerates them; the engine-flag mirrors and
+    `TRACK_ACTION_HISTORY` are on it, the raise-listed options are not).
+    Every other option is silently dropped on the cache-hit path. To check
+    user-set options reliably, do it on the user-supplied state in
+    `__init__` BEFORE `_run_python_init_if_needed` runs, not on the
+    post-init state in `_add_rust_state`.
 
 I5. Register filter at the FFI boundary
     The disk init cache pickles ALL archinfo registers (cr0..8, ymm0..15,
@@ -89,8 +56,10 @@ I6. State-cache pinning + manager-vs-mixin override
     LRU-evict non-pinned entries past `_max_state_cache_size`. Without
     those pins, a freshly-mutated state can race-evict between callbacks
     on the same state. Regression tests:
-    `TestStateCacheSizeBound.test_cleanup_state_cache_evicts_oldest_first`,
-    `..._drops_dead_states`, `..._skips_pinned` (lines 2017, 2064, 2096).
+    `test_cleanup_state_cache_evicts_oldest_first`,
+    `test_cleanup_state_cache_drops_dead_states` and
+    `test_cleanup_state_cache_skips_pinned` in
+    ``tests/engines/rust/test_state_sync.py``.
     Metadata-clear contract: cache eviction does NOT call
     `clear_state_metadata`. A state can be in `active`/`found` on Rust and
     still LRU-evicted from the Python mirror; in that case the Rust-side
@@ -105,7 +74,8 @@ I7. Rust ↔ Python field sync uses max(), not overwrite
     exploration, or a fallback SimProcedure mutation) must not be reverted
     to a smaller Rust value. Tests:
     `TestMmapBaseSync.test_export_path_does_not_clobber_higher_python_mmap_base`
-    (line 1629), `TestPosixBrkSync.test_export_path_syncs_rust_posix_brk_into_state_posix`.
+    and `TestPosixBrkSync.test_export_path_syncs_rust_posix_brk_into_state_posix`
+    in ``tests/engines/rust/test_state_sync.py``.
 
 I8. Exploration-loop termination conditions
     `_explore_with_predicates` and `_explore_with_addresses` must terminate
@@ -119,11 +89,10 @@ I8. Exploration-loop termination conditions
     Rust-native and Python-predicate finds.
 
 I9. `max_active_states` is enforced via a helper, not raw `push_back`
-    Every site that pushes into the active stash must go through
-    `push_to_active_or_drop` (in native/angr/src/exploration/helpers.rs).
-    The helper uses `sm.push()` which respects the cap; raw
-    `stashes_mut().entry(STASH_ACTIVE).push_back()` bypasses it and the
-    limit silently breaks again.
+    A Rust-side invariant, stated on `push_to_active_or_drop`'s rustdoc in
+    ``native/angr/src/exploration/helpers.rs``: every site that pushes
+    into the active stash goes through that helper, because a raw
+    `push_back` bypasses the cap.
 
 I10. RustExplorationManager exposes `stats` as a @property
      `mgr.stats()` raises TypeError — it is not callable. The inner

@@ -279,6 +279,12 @@ impl RustExplorationManager {
     /// If the limit is reached, the state is sent to the pruned stash (or
     /// dropped, if `drop_terminal_states` is enabled). Returns true if the
     /// state was added to the active stash, false if pruned.
+    ///
+    /// Invariant (I9 in the `rust_manager.py` module docstring): every site
+    /// that pushes a successor into the active stash goes through this helper
+    /// (or `push_to_stash` for caller-named stashes), because a raw
+    /// `stashes_mut().entry(STASH_ACTIVE).push_back()` bypasses the cap and
+    /// the limit silently breaks again.
     #[inline]
     pub(crate) fn push_to_active_or_drop(&mut self, state: RustSimState) -> bool {
         if let Some(limit) = self.max_active_states

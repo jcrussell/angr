@@ -1,4 +1,11 @@
-"""Mixin for Callback dispatch and SimProcedure handling for Rust exploration."""
+"""Mixin for Callback dispatch and SimProcedure handling for Rust exploration.
+
+At the SimProcedure callback boundary registers and constraints are
+diffed and pushed back to Rust, while memory writes land in Rust
+immediately through the callback-memory proxy (the tracked write lists
+are discarded on return); see ``docs/advanced-topics/rust_proxy_writes_design.rst``
+and the write-through contract in ``docs/advanced-topics/rust_engine.rst``.
+"""
 
 from __future__ import annotations
 

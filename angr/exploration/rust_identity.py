@@ -29,7 +29,8 @@ class CallbackMemoryTracker:
     execution, ensuring memory changes are properly synced back to Rust
     without relying on changed_bytes() comparison.
 
-    Usage:
+    Usage::
+
         with CallbackMemoryTracker(state) as tracker:
             # Execute SimProcedure
             proc.execute(state, successors)
