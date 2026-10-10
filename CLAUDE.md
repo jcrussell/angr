@@ -4,9 +4,10 @@
 
 Project memory lives in **bd**, not in Claude's per-project auto-memory
 markdown files. Run `bd memories | head -1` for the current count
-(1000 as of 2026-07-20, after the round-4 prune). Audit/cleanup tooling
-and pre-prune snapshots live at `~/angr-memories/` — see its README if
-you ever need to recover or re-run a prune.
+(963 as of 2026-10-10, after the R7 prune). Audit/cleanup tooling, the
+synced `memories.jsonl` archive, and per-round backups live in the sibling
+checkout `~/repos/angr-memories/` — see its README if you ever need to
+recover or re-run a prune.
 
 - **Recall** a specific memory: `bd recall <key>` (keys are kebab-case).
 - **Search** memories: `bd memories <keyword>` (no arg lists all).
