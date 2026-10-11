@@ -267,9 +267,12 @@ The counter is consulted in three places:
 * ``SymContext::try_pop`` (``transaction_ops.rs``) uses it as the
   under-pop guard described above.
 * ``bare_z3_push_depth()`` is exposed publicly for telemetry (read by
-  ``exploration/state_api.rs::_debug_solver_info``); the invariants on
-  the public reader are tracked in the
-  ``invariant-bare-z3-push-depth`` bd memory.
+  ``exploration/state_api.rs::_debug_solver_info``). A reader must know
+  that the counter covers only this context's per-context solver (it
+  stays 0 on the shared-lineage branch, which records on
+  ``scope_savepoints``), and that it is not the "is a scope open?"
+  indicator: ``bare_local_savepoints`` is, since it records on both
+  branches, and that is what ``fork()``'s freeze gate reads.
 
 ``test_fork_skips_mint_when_bare_push_outstanding``
 (``symbolic/context_tests/smtlib2_snapshot.rs``) exercises the

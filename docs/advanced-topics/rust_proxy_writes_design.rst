@@ -396,7 +396,7 @@ Rationale:
   is paid down by the larger refactor.
 * The mma_howtouse / hackcon residual gaps turn out to be in
   the diff-and-push path (not the case at design time — both were in
-  ``state_create`` or Z3-shape mismatches, ``9maq-bisect-method``).
+  ``state_create`` or Z3-shape mismatches, per the ``angr-9maq`` bisect).
 
 **What shipped** reversed the recommendation on the write side without
 adopting either option's machinery: ``RustStateProxy`` register and
