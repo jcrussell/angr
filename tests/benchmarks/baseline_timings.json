@@ -80,12 +80,12 @@
     "steps": 513
   },
   "csaw_wyvern": {
-    "callback_count": 12,
+    "callback_count": 14,
     "peak_memory_mb": 298.7,
     "python_time": 15.902,
     "rust_time": 1.424,
-    "state_creations": 12,
-    "steps": 21
+    "state_creations": 14,
+    "steps": 17
   },
   "csgames2018": {
     "callback_count": 207,
