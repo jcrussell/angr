@@ -10,9 +10,6 @@
 //! Split out of `run_loop.rs` (angr-9ke6b.49) — no behavior change.
 //!
 //! **Panic policy:** see the crate-level [Panic policy](crate#panic-policy).
-//! Every `.expect()` here is a poison / session-live / pool-set invariant
-//! guard under a narrow `#[allow(clippy::expect_used, reason = ...)]`; the
-//! deny below makes a *new* fallible unwrap justify itself.
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use super::*;
@@ -229,7 +226,7 @@ impl RustExplorationManager {
         // satisfies both conditions lands in FOUND, not AVOID. The same order
         // is used by every other find/avoid routing site — `route_successor`
         // (fresh successors), the SimProcedure-bounce arm below, the wave
-        // loop's bounce routing, and `run_loop_worker::execute_state_task` —
+        // loop's bounce routing, and `run_loop_worker::parallel_process_state` —
         // so an address present in BOTH `find_addrs` and `avoid_addrs` (never
         // rejected by `set_find_addrs`/`set_avoid_addrs`) routes identically
         // no matter which side of a step boundary the state is observed on

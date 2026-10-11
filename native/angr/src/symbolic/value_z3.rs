@@ -30,9 +30,8 @@
 //! clean process abort rather than a catchable unwind. Aborting loudly on OOM
 //! beats fabricating a wrong-width AST.
 //!
-//! **Enforcement (angr-qwyti.11):** this module carries
-//! `#![deny(clippy::unwrap_used, clippy::expect_used)]` so a new panic here has
-//! to come with a reviewed, reasoned `#[allow]`.
+//! The `deny` below follows the crate [Panic policy](crate#panic-policy)
+//! (angr-qwyti.11).
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use super::value::{BVOp, FloatOpKind, FloatPrec, RustBV};

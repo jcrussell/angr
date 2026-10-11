@@ -89,14 +89,8 @@
 //! The index guards are deliberately **not** softened to `?`. `select` returns
 //! `Option<RustSimState>`, and `None` from a non-empty deque is the run loop's
 //! signal that the active stash is exhausted — it would end exploration early
-//! and silently drop states. A loud panic on a broken index invariant is the
-//! correct trade here (the crate-wide rule: never trade a loud panic for a
-//! silent wrong answer).
-//!
-//! **Enforcement (angr-qwyti.11):** this module carries
-//! `#![deny(clippy::unwrap_used, clippy::expect_used)]`; each function holding
-//! one of the guards above carries a narrow
-//! `#[allow(clippy::expect_used, reason = ...)]` pointing back here.
+//! and silently drop states, so a broken index invariant stays a loud panic
+//! (see the crate-level [Panic policy](crate#panic-policy)).
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -220,9 +214,9 @@ impl SelectionPolicy for Lifo {
 /// active state, append new forks at the tail. Deterministic under a fixed
 /// `seed` so a run is byte-reproducible — the seed knob the bead calls for.
 ///
-/// This is the first-cut random searcher. True KLEE random-*path* weights
-/// selection by fork-subtree size; that refinement needs subtree bookkeeping
-/// on the `on_fork` side and is deferred to a follow-up. Uniform random over
+/// This picks uniformly; it is not KLEE random-*path*, which weights
+/// selection by fork-subtree size and would need subtree bookkeeping on the
+/// `on_fork` side. Uniform random over
 /// the active set is a legitimate baseline searcher and stays fully
 /// self-contained within the two-hook seam (no run-loop plumbing).
 ///

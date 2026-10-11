@@ -9,8 +9,8 @@
 //!
 //! The `transaction_begin` / `transaction_commit` / `transaction_rollback`
 //! lifecycle (plus `current_push_level` / `in_transaction`) was removed in
-//! angr-ph300.44 — it had zero callers and a latent corruption bug (commit
-//! popped only one of the three aux stacks and never released the Z3 frame).
+//! angr-ph300.44 — it had zero callers and a latent corruption bug
+//! (`transaction_commit` popped only one of the three aux stacks and never released the Z3 frame).
 //! Its last vestige here, the `push_level` counter, was deleted in
 //! angr-c7xno.75: nothing had incremented it since that removal, yet `fork()`
 //! still read it as its "is a scope open?" gate and so never took the preserve

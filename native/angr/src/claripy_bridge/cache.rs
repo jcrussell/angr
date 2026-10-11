@@ -8,10 +8,10 @@
 //!
 //! **Panic policy / enforcement (angr-qwyti.11, angr-9ke6b.212):** this is a
 //! Python-boundary module, so `unwrap`/`expect` are denied here — a claripy AST
-//! handed in from Python must never be able to reach a panic. The two
-//! cache-capacity conversions that used to `expect` are now `const`s
-//! ([`AST_CACHE_SIZE_NZ`], [`EXPRESSION_CACHE_SIZE_NZ`]), so their non-zero
-//! proof happens at compile time instead.
+//! handed in from Python must never be able to reach a panic. The
+//! cache-capacity conversions are `const`s ([`AST_CACHE_SIZE_NZ`],
+//! [`EXPRESSION_CACHE_SIZE_NZ`]), so their non-zero proof happens at compile
+//! time.
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use std::cell::RefCell;

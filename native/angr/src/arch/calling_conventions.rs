@@ -720,7 +720,7 @@ impl CallingConvention for MipsN64 {
 /// adding it to that table's row. Unknown arch names cause a panic so that
 /// mis-routed argument extraction (silently reading AMD64 RDI/RSI for a
 /// foreign arch) fails loudly instead of producing wrong-but-plausible
-/// values. See the latent x86 Cdecl return-register bug (commit 5329d8222)
+/// values. See the latent x86 Cdecl return-register bug (angr-4pkm)
 /// for the failure mode this guards against.
 pub(crate) fn default_cc_for_arch(arch_name: &str) -> Box<dyn CallingConvention> {
     cc_for_arch(arch_name).unwrap_or_else(|| {

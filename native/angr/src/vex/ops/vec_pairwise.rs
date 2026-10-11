@@ -1,13 +1,8 @@
 //! NEON/SIMD pairwise vector VEX op helpers.
 //!
-//! Extracted from the parent `ops` module (angr-cudgw.18) to shrink the
-//! VEXOps god-file. Declared as a child module of `ops` (via a plain `mod` decl in
-//! `ops/mod.rs`), so these `pub(super)` methods stay callable from the binop/unop
-//! dispatch in `ops`, and the shared sibling methods they call
-//! (`Self::concat_le_elements`, `Self::vec_float_lane_op`) stay visible by the
-//! descendant-module rule. `PwOp` (the per-pair combiner kind) lives in `ops`
-//! and the `FloatLaneOp` trait (with its `FAdd`/`FMin`/`FMax` markers) in
-//! `ops/lane_traits.rs`; both are reached via `super::`.
+//! `PwOp` (the per-pair combiner kind) lives in `ops` and the `FloatLaneOp`
+//! trait (with its `FAdd`/`FMin`/`FMax` markers) in `ops/lane_traits.rs`;
+//! both are reached via `super::`.
 //!
 //! Covers the pairwise widening add (Iop_PwAddL), the integer binary pairwise
 //! family (Iop_PwAdd/PwMin/PwMax), the FP pairwise family (Iop_PwAdd32Fx2,

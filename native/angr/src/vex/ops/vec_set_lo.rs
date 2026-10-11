@@ -1,10 +1,5 @@
 //! V128 low-lane insertion VEX op helpers.
 //!
-//! Extracted from the parent `ops` module (angr-cudgw.18) to shrink the
-//! VEXOps god-file. Declared as a child module of `ops` (via a plain `mod` decl in
-//! `ops/mod.rs`), so these `pub(super)` methods stay callable from the `binop`
-//! dispatch in `ops`.
-//!
 //! Covers the SSE scalar-into-V128 insertion family that overwrites the low
 //! 32 or 64 bits of a 128-bit vector while preserving the upper lanes
 //! (Iop_SetV128lo32 / Iop_SetV128lo64).

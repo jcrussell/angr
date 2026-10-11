@@ -8,29 +8,17 @@
 //!
 //! # Cross-mixin invariants
 //!
-//! The Python `RustExplorationManager` composes several mixins; their
-//! cross-mixin invariants (I1–I10) are documented once, in the
-//! `angr/exploration/rust_manager.py` module docstring, and are not repeated
-//! here. The ones with a Rust enforcement site:
+//! The cross-mixin invariants (I1–I10) are owned by the
+//! `angr/exploration/rust_manager.py` module docstring. Rust-local facts for
+//! the ones enforced here:
 //!
-//! - **I5. Register filter at the FFI boundary** — enforced by
-//!   `set_registers_bulk` (this module). The disk init cache pickles
-//!   `arch.register_names.values()` including registers the Rust engine does
-//!   not model; Python's `rust_state_sync.py` filters to
-//!   `_supported_register_names` before calling in, and the setter returns
-//!   `PyValueError("unknown register: ...")` if an unsupported name leaks
-//!   through. Do not "fix" by extending `arch/amd64.rs` etc.; the interpreter
-//!   does not consume those registers.
-//! - **I7. Rust ↔ Python field sync uses `max()`, not overwrite** — Rust owns
-//!   `mmap_base` and `posix_brk` (this module); the Python export path takes
-//!   `max(rust_value, python_value)` so a Python-side advance is never
-//!   clobbered by a stale Rust value. The setters here accept any value; the
-//!   directionality is enforced at the export site. Regression tests:
-//!   `TestMmapBaseSync.test_export_path_does_not_clobber_higher_python_mmap_base`,
-//!   `TestPosixBrkSync.test_export_path_syncs_rust_posix_brk_into_state_posix`.
-//! - **I8. Exploration-loop termination** — enforced in
-//!   `exploration/run_loop_single.rs`: the loop ends on `found_count() >=
-//!   num_find` *or* on the active stash returning `None`.
+//! - **I5 (register filter)** — `set_registers_bulk` (this module) returns
+//!   `PyValueError("unknown register: ...")` for a name the Rust arch does
+//!   not model; the Python caller filters first.
+//! - **I7 (`max()` field sync)** — Rust owns `mmap_base` and `posix_brk`
+//!   (this module); the setters here accept any value, and the
+//!   directionality is enforced at the Python export site.
+//! - **I8 (loop termination)** — enforced in `exploration/run_loop_single.rs`.
 //!
 //! # State metadata + fork invariants
 //!

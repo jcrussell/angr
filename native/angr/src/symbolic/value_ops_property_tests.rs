@@ -132,8 +132,8 @@ fn prop_neg_add_is_zero(a: u128, ws: u8) -> bool {
 // Division / remainder (udiv / sdiv / urem / srem)
 //
 // angr-n0irt.16: the div/rem family had two real production bugs land the same
-// week this suite was introduced — 169b171a2 (wrapping div/rem VEX fix) and
-// 12f946f5c (concrete div-by-zero fold fix) — yet the property suite covered
+// week this suite was introduced — angr-n0xru (wrapping div/rem VEX fix) and
+// angr-g2je6 (concrete div-by-zero fold fix) — yet the property suite covered
 // none of them. SMT-LIB div/rem are *total* (x/0 and x%0 are defined, bvsdiv
 // rounds toward zero, and MIN/-1 wraps rather than overflowing), so a
 // hand-rolled `u128` reference would risk re-encoding the very bug it means to
@@ -195,7 +195,7 @@ fn prop_srem_matches_z3(a: u128, b: u128, ws: u8) -> bool {
 }
 
 // Random operands almost never hit b == 0, so force the zero-divisor arm for
-// all four ops — this is the 12f946f5c fold-vs-Z3 divergence made into a gate.
+// all four ops — this is the angr-g2je6 fold-vs-Z3 divergence made into a gate.
 #[cfg(feature = "vex-engine-z3")]
 #[quickcheck]
 fn prop_div_rem_by_zero_matches_z3(a: u128, ws: u8) -> bool {

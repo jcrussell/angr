@@ -100,12 +100,12 @@
 // crate-wide. Production code still gets the lint's full force: `--all-targets`
 // also compiles the plain (non-test) lib target, where `cfg(test)` is false.
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
-// Test-support rot in the no-z3 combos (angr-c7xno.99). Dozens of `#[test]` fns
+// Test-support rot in the no-z3 combos (angr-c7xno.99). Many `#[test]` fns
 // are individually `#[cfg(feature = "vex-engine-z3")]`-gated because they drive
 // `add_constraint` / `to_z3_ast`; compiling the test harness *without* z3
 // therefore strands their shared helpers, fixture consts and imports as
 // unused. Those are not real rot — they are live in every build anyone ships
-// or benchmarks — so gating each helper individually would be ~30 `cfg`s that
+// or benchmarks — so gating each helper individually would scatter `cfg`s that
 // must be re-audited whenever a test moves. Scope the two lints off for
 // test-cfg no-z3 builds only: the default (z3) build, which is what CI's
 // `rust_check` clippy gate and `cargo test` run, keeps their full force over
@@ -118,8 +118,7 @@
 //
 // `[lib] crate-type = ["cdylib", "rlib"]` means rustc treats every `pub` item
 // reachable from the crate root as externally consumable, so `dead_code` stays
-// silent for all of them — it measured 0 hits across the whole tree while 468
-// `unreachable_pub` sites existed. Dropping `rlib` is not an option (`benches/`,
+// silent for all of them, however many `unreachable_pub` sites exist. Dropping `rlib` is not an option (`benches/`,
 // `examples/`, `tests/` and the `fuzz/` cargo-fuzz project all link it), so the
 // lever is the other direction: only the modules an external target actually
 // imports stay `pub mod` (`automaton`, `concretize`, `fuzz_api`, `memory`,
@@ -131,8 +130,7 @@
 //
 // Caveat (angr-9ke6b.50): pyo3's non-`multiple-pymethods` codegen *masked* this
 // lint on every `#[pymethods]` method and on the `#[pyclass]` structs those
-// blocks belong to. Turning `multiple-pymethods` on unmasks 391 such sites
-// crate-wide. Those items are reached from Python, not from Rust, so their Rust
+// blocks belong to; with `multiple-pymethods` on, the lint sees them. Those items are reached from Python, not from Rust, so their Rust
 // visibility is decorative — each affected `#[pymethods]`/`#[pyclass]` carries a
 // scoped `#[allow(unreachable_pub, reason = ...)]` that restores exactly the
 // pre-feature coverage rather than silencing the lint crate-wide.
@@ -219,8 +217,8 @@ macro_rules! test_submod {
 /// continues with a degraded result must carry a `// SILENT(cat-a|b|c)` tag,
 /// and that `cat-c` (wrong-answer risk) must *also* `log::warn!`. Writing that
 /// out by hand is four lines of `unwrap_or_else` boilerplate, so the tempting
-/// silent form (`.unwrap_or(0)`, `let _ = ...`) keeps winning — three fresh
-/// instances landed in one review round (angr-91vj9.6). This macro makes the
+/// silent form (`.unwrap_or(0)`, `let _ = ...`) keeps winning (angr-91vj9.6).
+/// This macro makes the
 /// correct form the shorter one: the category picks the log level, and the
 /// invocation itself is the greppable tag (`tools/audit_silent_fallback.py`
 /// accepts `silent_default!(cat_x, ...)` in place of the comment).

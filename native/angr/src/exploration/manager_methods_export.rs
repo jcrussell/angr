@@ -40,8 +40,8 @@
 //! method here reads or writes the contents of one already-existing state
 //! named by `state_id`.
 //!
-//! Python-boundary module: `unwrap`/`expect` are denied here (angr-qwyti.11);
-//! see the crate-level panic policy in `lib.rs`.
+//! Python-boundary module: `unwrap`/`expect` denied (angr-qwyti.11; panic
+//! policy in `lib.rs`).
 //!
 //! **No `test_submod!` here, by design** (angr-03vl4.13): every method here
 //! delegates to a sibling module that carries the test coverage; see the

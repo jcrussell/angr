@@ -1,12 +1,5 @@
 //! Vector element-wise comparison and interleave VEX op helpers.
 //!
-//! Extracted from the parent `ops` module (angr-cudgw.18) to shrink the
-//! VEXOps god-file. Declared as a child module of `ops` (via a plain `mod` decl in
-//! `ops/mod.rs`), so these `pub(super)` methods stay callable from the binop
-//! dispatch in `ops`, and the shared sibling they reference
-//! (`Self::concat_le_elements`, which stays in `ops/mod.rs`) stays visible via
-//! super/the descendant rule.
-//!
 //! Covers the low/high interleave (unpack) ops
 //! (Iop_Interleave{LO,HI}{N}x{M}). The element-wise compare family
 //! (Iop_Cmp{EQ,GT}{N}x{M}) moved to the generic `vec_int_lane_op` driver

@@ -50,7 +50,7 @@ const MAX_DIGITS: usize = 64;
 /// doubles while the byte it ended on could still continue the subject
 /// sequence, so any subject sequence up to this many bytes parses exactly.
 ///
-/// Past this ceiling the old truncation semantics remain, deliberately: the
+/// Past this ceiling the scan truncates the literal, deliberately: the
 /// scan is O(window) guest memory loads with no null in sight, and a 4 KiB
 /// numeric literal is not a shape real code produces. Pinned by
 /// `test_strtol_scan_window_ceiling_truncates`.
@@ -459,8 +459,9 @@ fn run_strtol(
     // atoi returns int-width bits (Python: `val[sizeof(int)*8 - 1 : 0]`).
     // Extract the low `w` bits then zero-extend back into the return register.
     // NOTE: the symbolic accumulator itself still wraps at `bits` (Python
-    // accumulates double-width and clamps at signed_max); replicating that
-    // clamp symbolically is deferred — see bd angr-vu1q4 (axis 1, symbolic).
+    // accumulates double-width and clamps at signed_max); the symbolic clamp
+    // is not implemented, so a symbolic result wraps at `bits` (angr-vu1q4,
+    // axis 1, symbolic).
     let result = match ret_int_bits {
         Some(w) if w < bits => result.extract(w - 1, 0, &ctx).zero_extend(bits, &ctx),
         _ => result,

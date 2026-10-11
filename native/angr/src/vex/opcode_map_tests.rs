@@ -835,8 +835,7 @@ fn test_parse_perm() {
     assert!(matches!(parse_opcode("Iop_Perm8x16x2"), IROp::Unmapped(_)));
 }
 
-/// Harness 5 (opcode-map completeness check, `plans/we-keep-finding-bugs-
-/// optimized-acorn.md`): every real `Iop_*` opcode name the pinned VEX
+/// Opcode-map completeness check: every real `Iop_*` opcode name the pinned VEX
 /// version declares must be either mapped by `parse_opcode` or named in
 /// `KNOWN_UNMAPPED_GROUPS` below with a reason. A new pyvex opcode silently
 /// falling through to `IROp::Unmapped` with no allowlist entry is the

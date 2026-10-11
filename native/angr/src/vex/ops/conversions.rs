@@ -1,12 +1,5 @@
 //! Float/int conversion VEX op helpers.
 //!
-//! Extracted from the parent `ops` module (angr-cudgw.18) to shrink the
-//! VEXOps god-file. Declared as a child module of `ops` (via a plain `mod` decl in
-//! `ops/mod.rs`), so these `pub(super)` methods stay callable from the unop/binop
-//! dispatch in `ops`, and the shared free fn they call (`build_float_expr`,
-//! which lives in `ops/lane_traits.rs` and is re-exported by `ops`) stays
-//! visible by the descendant-module rule.
-//!
 //! Covers: int↔float and float↔float conversions (RNE-implicit unops and the
 //! rounding-mode-aware binop variants), plus the round-to-int ops. The
 //! `define_*` codegen macros are private to this module since they are only

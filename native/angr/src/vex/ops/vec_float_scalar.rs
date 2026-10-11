@@ -1,13 +1,5 @@
 //! SSE scalar-in-vector floating-point VEX op helpers.
 //!
-//! Extracted from the parent `ops` module (angr-cudgw.18) to shrink the
-//! VEXOps god-file. Declared as a child module of `ops` (via a plain `mod` decl in
-//! `ops/mod.rs`), so these `pub(super)` methods stay callable from the binop/unop
-//! dispatch in `ops`, and the shared siblings they reference
-//! (`Self::concat_le_elements` in `ops/mod.rs`, the
-//! `build_float_expr`/`float_prec_of` free fns in `ops/lane_traits.rs`) stay
-//! visible via the descendant rule.
-//!
 //! Covers the SSE "scalar" forms that operate on lane 0 only and pass the
 //! upper lanes through from the left operand (ADDSS/SUBSS/MULSS/DIVSS and
 //! F64 variants, SQRTSS/SQRTSD, MAXSS/MINSS, RCPSS/RSQRTSS estimates) plus

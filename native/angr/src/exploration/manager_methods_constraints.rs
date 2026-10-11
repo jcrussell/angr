@@ -36,8 +36,8 @@
 //! for historical reasons only. When adding a method, match the banner group
 //! above; do not re-derive the split from first principles.
 //!
-//! Python-boundary module: `unwrap`/`expect` are denied here (angr-qwyti.11);
-//! see the crate-level panic policy in `lib.rs`.
+//! Python-boundary module: `unwrap`/`expect` denied (angr-qwyti.11; panic
+//! policy in `lib.rs`).
 //!
 //! **No `test_submod!` here, by design** (angr-03vl4.13). Every method in this
 //! file forwards to a `_`-prefixed body in a sibling module — see the

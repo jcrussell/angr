@@ -155,8 +155,7 @@ pub(crate) fn claripy_to_rustbv(
 /// This function is called directly from the main Python thread (via
 /// `solver.eval()`, constraint export, etc.), which runs on CPython's
 /// default OS stack — 8 MiB (`RLIMIT_STACK`), not covered by the 16 MiB
-/// worker-thread stack from the sibling fix (angr-h92bx, commit
-/// 4131a8e27) that only applies to `std::thread`-spawned parallel workers.
+/// worker-thread stack from the sibling fix (angr-h92bx) that only applies to `std::thread`-spawned parallel workers.
 /// Every recursion level here is a plain native Rust stack frame with no
 /// depth counter to catch, so an unbounded-depth AST (e.g. a long
 /// non-shared `Concat`/`Add` chain that gets zero benefit from the
@@ -183,8 +182,7 @@ pub(crate) fn claripy_to_rustbv(
 /// Targeting well inside the 8 MiB main-thread stack — not the full 8 MiB,
 /// since the interpreter/solver call chain that reaches this function
 /// carries its own (non-recursive) frames below it, and per the sibling
-/// worker-thread fix's own margin philosophy (angr-h92bx, commit
-/// 4131a8e27: 16 MiB "to clear the main thread by 2x rather than fall
+/// worker-thread fix's own margin philosophy (angr-h92bx: 16 MiB "to clear the main thread by 2x rather than fall
 /// short of it") — a **4096**-deep limit costs at most
 /// `4096 * 1024 B = 4 MiB`, leaving >2x headroom under the 8 MiB budget
 /// even at the padded per-frame estimate. 4096 is also far beyond any real

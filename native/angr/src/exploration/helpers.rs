@@ -744,12 +744,9 @@ impl RustExplorationManager {
 /// The ABI facts [`extract_args_with_abi`] needs, decoupled from where they
 /// came from.
 ///
-/// The single-threaded path reads them off the manager's
-/// `Box<dyn CallingConvention>`; the parallel post-step path reads them off the
-/// scalar `CcSnapshot` (the trait object is not `Clone`). Both funnel through
-/// this borrow so the extraction logic exists once (angr-sqfj8.145) — the same
-/// adapter shape [`SubcallAbi`](crate::exploration::stepping::SubcallAbi) uses
-/// for `setup_native_subcall_with_abi`.
+/// Same adapter shape, and same two sources, as
+/// [`SubcallAbi`](crate::exploration::stepping::SubcallAbi) (whose doc
+/// explains them), so the extraction logic exists once (angr-sqfj8.145).
 ///
 /// `arg_registers` is the *procedure* or *syscall* register window depending on
 /// which caller built it; on Linux amd64 those differ at the 4th argument

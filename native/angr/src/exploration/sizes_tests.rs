@@ -1,8 +1,7 @@
 use super::*;
 use std::mem::size_of;
 
-/// Documentation-grade size probe. Captured to validate the iter-61
-/// decision to suppress `clippy::result_large_err` / `large_enum_variant`
+/// Documentation-grade size probe. Backs the decision to suppress `clippy::result_large_err` / `large_enum_variant`
 /// instead of boxing the inline `RustSimState` / `PendingCallback`. Run
 /// with `cargo test --release -p angr -- --nocapture sizes::print`.
 #[test]

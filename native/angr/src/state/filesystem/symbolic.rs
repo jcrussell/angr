@@ -20,10 +20,8 @@
 //! fallible-on-input only because the forced re-borrow hides the preceding
 //! check.
 //!
-//! **Enforcement (angr-qwyti.11):** this module carries
-//! `#![deny(clippy::unwrap_used, clippy::expect_used)]` so a future
-//! panic-on-untrusted-fd landmine cannot be reintroduced without a reviewed,
-//! reasoned `#[allow]`.
+//! The `deny` below follows the crate [Panic policy](crate#panic-policy)
+//! (angr-qwyti.11).
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use super::*;

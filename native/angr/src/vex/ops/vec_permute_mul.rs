@@ -2,13 +2,6 @@
 //! op helpers. (The module name predates the latter two families; nothing here
 //! is a lane-shuffle-by-index permute.)
 //!
-//! Extracted from the parent `ops` module (angr-cudgw.18) to shrink the
-//! VEXOps god-file. Declared as a child module of `ops` (via a plain `mod` decl in
-//! `ops/mod.rs`), so these `pub(super)` methods stay callable from the unop/binop
-//! dispatch in `ops`, and the shared siblings they reference
-//! (`Self::concat_le_elements`, which stays in `ops/mod.rs`) stay visible via
-//! super/the descendant rule.
-//!
 //! Covers the ARM REV*/RBIT sub-unit reversal family
 //! (Iop_Reverse{n}sIn{m}_x{k}), the PPC vgbbd bit-matrix transpose
 //! (Iop_PwBitMtxXpose64x2), and the widening multiplies (Iop_Mull*/QDMull*,

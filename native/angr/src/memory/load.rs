@@ -68,9 +68,8 @@
 //! [`ConcretizationResult::as_symbolic_address_error`]), which the caller turns
 //! into a Python-memory-model fallback.
 //!
-//! **Enforcement (angr-qwyti.11):** this module carries
-//! `#![deny(clippy::unwrap_used, clippy::expect_used)]`, so a new panic on an
-//! untrusted address needs a reviewed, reasoned `#[allow]`.
+//! The `deny` below follows the crate [Panic policy](crate#panic-policy)
+//! (angr-qwyti.11).
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use crate::concretize::{AddressConcretizer, ConcretizationResult};

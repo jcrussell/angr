@@ -10,11 +10,11 @@
 //! [`STAT_LAYOUT_WRITERS`] is the table pairing each arch with its
 //! writer and [`write_stat_for_arch`] the single dispatch point; an arch
 //! absent from that table returns `Other` and falls through to Python.
-//! On i386 and MIPS32 the legacy pre-LFS numbers
-//! (106/107/108 and 4106/4107/4108, old 32-bit `struct stat`) are
-//! deliberately left unregistered: modern 32-bit glibc emits the `*64`
-//! variants, and angr's own Python map has no writer for the legacy
-//! layout either — see the registration-table comments in `mod.rs`.
+//! On i386, ARM and MIPS32 the legacy pre-LFS stat numbers (old 32-bit
+//! `struct stat`) are deliberately left unregistered and fall through to
+//! Python: modern 32-bit glibc emits the `*64` variants, whose layout
+//! differs. The registration-table comments in `syscalls/mod.rs` give the
+//! per-arch numbers and reasons.
 
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;

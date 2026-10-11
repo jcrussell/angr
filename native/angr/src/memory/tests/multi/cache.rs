@@ -288,8 +288,8 @@ fn test_phase4_wider_load_cache_skips_symbolic_bytes() {
     );
 }
 
-/// Forks start with a COLD wider-load cache (angr-6t8z3.2, commit
-/// 94c015db5): `fork()` deliberately does not deep-clone the parent's
+/// Forks start with a COLD wider-load cache (angr-6t8z3.2):
+/// `fork()` deliberately does not deep-clone the parent's
 /// cache — the child repopulates lazily on its first wider load, and a
 /// child-side rebuild must not disturb the parent's own cached entry.
 #[test]

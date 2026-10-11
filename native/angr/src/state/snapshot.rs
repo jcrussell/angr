@@ -8,8 +8,8 @@
 //! over a derived `Serialize` writing into a `Vec` has no reachable `Err`; it is
 //! documented at its `#[allow]`.
 //!
-//! **Enforcement (angr-qwyti.11):** this module carries
-//! `#![deny(clippy::unwrap_used, clippy::expect_used)]`.
+//! The `deny` below follows the crate [Panic policy](crate#panic-policy)
+//! (angr-qwyti.11).
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use super::*;

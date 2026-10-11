@@ -58,10 +58,8 @@ impl<'a> VEXInterpreter<'a> {
         self.get_return_addr_raw().into()
     }
 
-    /// [`Self::get_return_addr`]'s implementation, kept as a plain
-    /// `Option<u64>` internally since its early-return/`?`-heavy body reads
-    /// more naturally that way; the public method wraps the result in
-    /// [`AddrOrSymbolic`] so callers can't bypass the logged fallback.
+    /// [`Self::get_return_addr`]'s `Option<u64>` body; same raw/wrapped split
+    /// as `RustExplorationManager::get_return_addr_raw` (`exploration/helpers.rs`).
     fn get_return_addr_raw(&self) -> Option<u64> {
         let cc_fallback = || {
             self.calling_convention.get_return_addr(

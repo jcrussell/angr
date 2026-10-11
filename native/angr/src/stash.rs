@@ -6,22 +6,14 @@
 //! - State root tracking for fork lineage
 //! - Terminal state counters
 //!
-//! **Invariant I6 (cross-mixin, mirror of the `I6. State-cache pinning +
-//! manager-vs-mixin override` entry in the
-//! `angr/exploration/rust_manager.py` module docstring):** the
-//! Python-side `_cleanup_state_cache` orchestrates eviction with pinning
-//! over `_state_roots ∪ {_current_callback_state_id,
-//! _current_stepping_state_id}`. The Rust counterpart here owns the
-//! `state_index` and `state_roots` maps that back lineage tracking. Both
-//! maps must move together — every push/pop on a stash that participates
-//! in lineage must update both, and `remove_state` / `clear` / `insert` /
-//! `push_or_drop_terminal` are the chokepoints that enforce this.
-//! Without consistent maps, `_state_roots` drift produces orphaned roots
-//! and a freshly-mutated state can race-evict between callbacks on the
-//! same state. Regression tests:
-//! `TestStateCacheSizeBound.test_cleanup_state_cache_evicts_oldest_first`,
-//! `..._drops_dead_states`, `..._skips_pinned`
-//! (tests/engines/rust/test_plugins.py).
+//! **Invariant I6 (cross-mixin; owned by the `angr/exploration/rust_manager.py`
+//! module docstring, which names its regression tests):** the Python-side
+//! `_cleanup_state_cache` pins over `_state_roots`. The Rust counterpart here
+//! owns the `state_index` and `state_roots` maps that back lineage tracking.
+//! Both maps must move together — every push/pop on a stash that
+//! participates in lineage must update both, and `remove_state` / `clear` /
+//! `insert` / `push_or_drop_terminal` are the chokepoints that enforce this.
+//! Without consistent maps, `_state_roots` drift produces orphaned roots.
 //!
 //! **Panic policy (angr-9ke6b.212):** [`StashManager::load_snapshot`] takes
 //! untrusted bytes and is fully `Result`-typed ([`crate::state::SnapshotError`])
@@ -29,8 +21,8 @@
 //! through `SnapshotError::Decode` rather than a slice-conversion panic. The
 //! one surviving `expect` is on the *encode* side; see its `#[allow]`.
 //!
-//! **Enforcement (angr-qwyti.11):** this module carries
-//! `#![deny(clippy::unwrap_used, clippy::expect_used)]`.
+//! The `deny` below follows the crate [Panic policy](crate#panic-policy)
+//! (angr-qwyti.11).
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use rustc_hash::FxHashMap;

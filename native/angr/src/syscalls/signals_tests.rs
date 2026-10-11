@@ -1,11 +1,11 @@
 // Tests for syscalls/signals.rs (extracted from inline mod tests).
-// Covers rt_sigaction/rt_sigprocmask stub handlers and tgkill across arches.
+// Covers the kill/rt_sigreturn/pause/alarm stub handlers and tgkill across arches.
 use super::*;
 
-/// Sweep all five stub handlers across every supported arch and
-/// verify they return a fresh `RustBV::symbolic` of width
-/// `arch().bits()`. Successive invocations must yield distinct
-/// fresh symbols (different `RustBV::Symbolic.id`), matching
+/// Sweep the `stub_syscall!` handlers (kill, rt_sigreturn, pause, alarm)
+/// across every supported arch and verify they return a fresh
+/// `RustBV::symbolic` of width `arch().bits()`. Successive invocations
+/// must yield distinct fresh symbols (different `RustBV::Symbolic.id`), matching
 /// `syscall_stub.py::syscall` semantics where each call gets a
 /// new `Unconstrained` BV.
 #[test]

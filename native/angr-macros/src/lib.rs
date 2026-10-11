@@ -1,10 +1,9 @@
 //! Proc macros that turn "call this at every site" conventions into
 //! compile-time obligations, instead of relying on every author remembering.
 //!
-//! Written in response to the angr-9ke6b / angr-sqfj8 audit pattern: the same
-//! invariant (steady-config guarding, Multi-cell flushing, per-field merge
-//! reconciliation) kept getting upheld at some call sites and silently
-//! skipped at others. This crate doc is the design record; the bd memory
+//! The invariants they cover (steady-config guarding, Multi-cell flushing,
+//! per-field merge reconciliation) were each upheld at some call sites and
+//! silently skipped at others (angr-9ke6b, angr-sqfj8). This crate doc is the design record; the bd memory
 //! `angr-macros-call-site-invariants` keeps only the process lessons.
 //!
 //! # The macros
@@ -13,7 +12,8 @@
 //!   as a method's first statement. Applied to the `RustExplorationManager`
 //!   mutators in `manager_methods*.rs` so a new mutator cannot forget it.
 //! - `#[steady_guard_checked]` (attribute, on the `impl` block): requires
-//!   **every** `pub fn … &mut self` in the block — no name filter — to carry
+//!   **every** `&mut self` method in the block — no name or visibility
+//!   filter — to carry
 //!   `#[steady_guarded]` or `#[steady_guard_exempt(reason = "…")]`, else
 //!   `compile_error!`. The exempt form (an inert attribute this macro
 //!   consumes) is for the methods where the guard must not be the

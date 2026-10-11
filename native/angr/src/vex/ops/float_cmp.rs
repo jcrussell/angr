@@ -1,13 +1,5 @@
 //! Floating-point comparison VEX op helpers.
 //!
-//! Extracted from the parent `ops` module (angr-cudgw.18) to shrink the
-//! VEXOps god-file. Declared as a child module of `ops` (via a plain `mod` decl in
-//! `ops/mod.rs`), so these `pub(super)` methods stay callable from the binop
-//! dispatch in `ops`, and the shared free fns / sibling methods they call
-//! (`build_float_expr`, `float_prec_of` — in `ops/lane_traits.rs`, re-exported
-//! by `ops` — and `Self::concat_le_elements`) stay visible by the
-//! descendant-module rule.
-//!
 //! Covers the 1-bit scalar FP compares (`IROp::FCmp{EQ,LT,LE}` — evaluator
 //! scaffolding with no libVEX producer, see [`crate::vex::ir::IROp::FCmpLE`]),
 //! the three-way IEEE comparison (Iop_CmpF{32,64}), the

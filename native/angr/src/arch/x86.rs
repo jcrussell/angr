@@ -36,11 +36,8 @@ pub(crate) mod offsets {
     pub(crate) const EIP: u32 = 68;
 
     // FPU registers (before SSE in archinfo layout)
-    // VEX stores the x87 stack as `guest_FPREG[8]` of `ULong`, i.e. 8 x 8-byte
-    // slots (64 bytes total, ending where FPTAG starts) -- MMX-style 64-bit
-    // storage, not true 80-bit x87 extended precision. Per-index offset is
-    // therefore `FPREG + n * 8`. Same layout as AMD64's `offsets::FPREG`; the
-    // widths diverge only below it, where x86's FPROUND/FC3210/FTOP are `UInt`
+    // Same `guest_FPREG[8]` layout as AMD64's `offsets::FPREG` (see the comment
+    // there; per-index offset `FPREG + n * 8`); the widths diverge only below it, where x86's FPROUND/FC3210/FTOP are `UInt`
     // (4 bytes) against AMD64's `ULong` (VexGuestX86State,
     // libvex_guest_x86.h).
     pub(crate) const FPREG: u32 = 72;

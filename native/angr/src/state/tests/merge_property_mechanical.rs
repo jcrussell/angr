@@ -1,12 +1,11 @@
 //! Mechanical half of the census property test for `RustSimState::merge`'s
-//! field-level policy contract (Harness 1 of the
-//! `we-keep-finding-bugs-optimized-acorn.md` plan). The hand-written half is
+//! field-level policy contract. The hand-written half is
 //! [`super::merge_property_manual`]; this header carries the rationale both
 //! halves share.
 //!
 //! `#[derive(angr_macros::MergePolicy)]` on `RustSimState` (`state/mod.rs`)
 //! proves every field carries a `#[merge_policy = "..."]` label, and for the
-//! five mechanical policies (`self_wins`/`union`/`max`/`min`/
+//! mechanical policies (`self_wins`/`union`/`max`/`min`/
 //! `warn_on_diverge`, minus any field opted out via `#[merge_manual]`)
 //! generates a `merge_field_<name>` method whose body *is* the policy. But
 //! nothing before this file checked that `RustSimState::merge`'s actual
@@ -17,14 +16,12 @@
 //! intent. Nor did anything assert a *specific* value for the fields with no
 //! generated method at all; that gap is `merge_property_manual`'s.
 //!
-//! Of `RustSimState`'s 43 `#[merge_policy]` fields: **22** are mechanical
-//! (get a generated `merge_field_<name>`) and are covered here; **21** are
-//! hand-written in `state/fork.rs::RustSimState::merge` and are covered in
-//! `merge_property_manual`. (The originating plan estimated 26/17 — see the
-//! count-by-policy note in each file's section banner for the actual
-//! breakdown; the 17 there only counted `delegate` / `computed` / `joint`,
-//! not the 4 additional mechanical-policy fields that opt out via
-//! `#[merge_manual]`.)
+//! Of `RustSimState`'s `#[merge_policy]` fields, the mechanical ones (those
+//! that get a generated `merge_field_<name>`) are covered here; the
+//! hand-written ones in `state/fork.rs::RustSimState::merge` (the
+//! `delegate` / `computed` / `joint` fields, plus mechanical-policy fields
+//! that opt out via `#[merge_manual]`) are covered in
+//! `merge_property_manual`.
 //!
 //! Both halves complement — do not replace — the deeper per-family coverage
 //! in the sibling `merge_scalars.rs` / `merge_config.rs` / `merge_heap.rs` /

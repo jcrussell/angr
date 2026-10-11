@@ -234,9 +234,7 @@ impl NativeSimProcedure for NativeScanf {
         args: &[RustBV],
     ) -> Result<Option<RustBV>, ProcedureError> {
         let fmt_addr = extract_concrete_arg(&args[0], "format")?;
-        // angr-qmrrp: a prior dup2(real_fd, 0) means fd 0 carries real
-        // tracked content, not pristine/harness-seeded stdin -- defer to
-        // Python rather than mint fresh unconstrained bytes over it.
+        // angr-qmrrp: see `stdin_common::bounce_if_fd0_dup2d`.
         bounce_if_fd0_dup2d(state, "scanf")?;
         do_scanf(state, fmt_addr, &args[1..], "stdin", true)
     }

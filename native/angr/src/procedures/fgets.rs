@@ -227,9 +227,7 @@ crate::declare_proc! {
                 "fgets from fd={fd} (non-stdin) falls back to Python"
             )));
         }
-        // angr-qmrrp: a prior dup2(real_fd, 0) means fd 0 carries real
-        // tracked content, not pristine/harness-seeded stdin -- defer to
-        // Python rather than mint fresh unconstrained bytes over it.
+        // angr-qmrrp: see `stdin_common::bounce_if_fd0_dup2d`.
         bounce_if_fd0_dup2d(state, "fgets")?;
 
         // overflow-ok: size == 0 returned above, so size >= 1 here.
@@ -372,9 +370,7 @@ crate::declare_proc! {
                 "fgetc from fd={fd} (non-stdin) falls back to Python"
             )));
         }
-        // angr-qmrrp: a prior dup2(real_fd, 0) means fd 0 carries real
-        // tracked content, not pristine/harness-seeded stdin -- defer to
-        // Python rather than mint fresh unconstrained bytes over it.
+        // angr-qmrrp: see `stdin_common::bounce_if_fd0_dup2d`.
         bounce_if_fd0_dup2d(state, "fgetc")?;
         Ok(Some(read_stdin_char(state, "fgetc")))
     }
@@ -396,9 +392,7 @@ crate::declare_proc! {
     args = [],
     aliases = ["getchar_unlocked"],
     call |state| {
-        // angr-qmrrp: a prior dup2(real_fd, 0) means fd 0 carries real
-        // tracked content, not pristine/harness-seeded stdin -- defer to
-        // Python rather than mint fresh unconstrained bytes over it.
+        // angr-qmrrp: see `stdin_common::bounce_if_fd0_dup2d`.
         bounce_if_fd0_dup2d(state, "getchar")?;
         Ok(Some(read_stdin_char(state, "getchar")))
     }
@@ -434,9 +428,7 @@ crate::declare_proc! {
     struct = NativeGets,
     args = [buf: concrete],
     call |state| {
-        // angr-qmrrp: a prior dup2(real_fd, 0) means fd 0 carries real
-        // tracked content, not pristine/harness-seeded stdin -- defer to
-        // Python rather than mint fresh unconstrained bytes over it.
+        // angr-qmrrp: see `stdin_common::bounce_if_fd0_dup2d`.
         bounce_if_fd0_dup2d(state, "gets")?;
 
         let read_count = MAX_GETS_SIZE - 1;

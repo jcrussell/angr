@@ -9,9 +9,8 @@ use super::super::*;
 
 /// angr-0nme Phase 0: an eager symbolic store with N candidate addresses
 /// produces an ITE chain of depth N. `record_mem_ite_depth` must bump the
-/// `mem_ite_depth_max` watermark and add to the cumulative total. This is
-/// the baseline metric that Phase 1 (Multi cells, angr-czph) will be
-/// compared against.
+/// `mem_ite_depth_max` watermark and add to the cumulative total (the
+/// baseline metric for angr-czph).
 ///
 /// The two `mem_ite_depth_*` counters are process-global atomics shared
 /// with `cargo test` parallel runners, so this asserts on **deltas**

@@ -25,9 +25,9 @@
 //! Both submodules add their items to *this* type, so the split is purely
 //! about where the source lives — the Python-visible surface is unchanged.
 //!
-//! Python-boundary module: `unwrap`/`expect` are denied here (angr-qwyti.11);
-//! see the crate-level panic policy in `lib.rs`. The `deny` covers
-//! the submodules below too, since lint levels propagate into nested modules.
+//! Python-boundary module: `unwrap`/`expect` denied (angr-qwyti.11; panic
+//! policy in `lib.rs`). The `deny` covers the submodules below too, since
+//! lint levels propagate into nested modules.
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 // The "every `unsafe` in the solver surface lives in `z3_ast_extract`" claim
 // above was, until angr-5mnx3.10, only a doc comment — and
@@ -370,7 +370,7 @@ impl RustSolverContext {
     /// Add a constraint with unsat-core tracking enabled.
     ///
     /// Mirrors `add_constraint_ast` but routes through
-    /// `SymContext::add_constraint_tracked`, which uses
+    /// `SymContext::add_constraint_tracked_indexed`, which uses
     /// `solver.assert_and_track` so the constraint participates in
     /// `solver.get_unsat_core()`. The index of the constraint within the
     /// per-context tracker vector is returned and is what

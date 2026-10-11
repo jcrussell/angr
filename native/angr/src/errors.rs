@@ -17,25 +17,18 @@
 //!
 //! # Test-only taxonomy vs. the live exploration path (angr-ghwsd.3)
 //!
-//! The variant→subclass mapping in [`From<RustExecError> for PyErr`] is
-//! reached **only** from the test-only `#[pyfunction]` hooks
-//! `engine::execute_irsb_for_test` and `engine::_raise_typed_test_error`.
-//! Those are the only callers of `cb_execution_error_to_typed` /
-//! `op_error_to_typed`, so a `pytest.raises(RustUnsupportedVexOpError)`
-//! only matches when driving one of those test entry points.
-//!
-//! During real exploration the typed `CbExecutionError` is **stringified
-//! at the interpreter boundary** and never reaches this enum: a failing
-//! step produces `RunResult::Error { message: e.to_string(), addr }`
-//! (`interpreter/execution.rs`), which `stepping::try_step` collapses into
-//! `StepError::Error(state, String)` and `run_loop` pushes into the
-//! errored stash as a `(pc, message, state_id)` record. The concrete
-//! variant (UnsupportedVexOp vs Z3 vs Oom …) is therefore lost the moment
-//! a live step fails — only the formatted message survives, readable off
-//! the errored-stash record (`state.error`). The errored-stash string is
-//! the production contract; the typed subclasses are a test-harness
-//! affordance. Carrying the typed error through the live path is the
-//! deferred option (b) on angr-ghwsd.3.
+//! The user-facing contract (typed classes are a test-harness affordance;
+//! the errored-stash string is what a live run produces) is documented in
+//! the "User-facing error taxonomy" warning of
+//! `docs/advanced-topics/rust_engine.rst`. The code-local invariant: the
+//! variant→subclass mapping in `From<RustExecError> for PyErr` is reached
+//! only through `engine::cb_execution_error_to_typed` /
+//! `engine::op_error_to_typed`, whose sole callers are the test-only
+//! `#[pyfunction]` hooks `engine::execute_irsb_for_test` and
+//! `engine::_raise_typed_test_error`. The live path stringifies the error
+//! (`RunResult::Error` in `interpreter/execution.rs`), and
+//! `stepping::apply_core_outcome` turns it into `StepError::Error(state,
+//! String)`; the typed live path is not implemented.
 //!
 //! # Internal error-typing convention (angr-0mqkc.10)
 //!

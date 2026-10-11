@@ -25,25 +25,12 @@
 //! extension-impl module; see the [`exploration`](super) module doc).
 //!
 //! **Invariant I8 (exploration-loop termination)** is owned by the
-//! `angr/exploration/rust_manager.py` module docstring and enforced in
-//! `run_loop_single.rs`: the loop ends on `found_count() >= num_find` *or* on
-//! the active stash returning `None` (`active_empty` event).
+//! `angr/exploration/rust_manager.py` module docstring; its Rust enforcement
+//! site is the loop condition in `run_loop_single.rs`.
 //!
-//! **Panic policy:** the parallel-driver half locks the `ParallelShared`
-//! mutexes via `.lock().expect("… poisoned")` and reads `expect("session
-//! live"/"pool set")` state-machine invariants it upholds locally; the
-//! crate-level policy in `lib.rs` explains why those are invariant labels,
-//! not error paths.
-//!
-//! **Enforcement (qwyti.15):** this module carries
-//! `#![deny(clippy::unwrap_used, clippy::expect_used)]` so any *new* fallible
-//! unwrap must be justified (each sibling module re-states the same deny). The
-//! pre-existing `.expect()` sites are all the poison / session-live /
-//! pool-set invariant guards described above; each
-//! function that holds them carries a narrow
-//! `#[allow(clippy::expect_used, reason = ...)]` pointing back at this Panic
-//! policy, and the `mod tests;` decl is exempted (the deny propagates into
-//! `#[path]` test submodules — see bd `invariant-clippy-deny-propagates-to-test-submodule`).
+//! **Panic policy:** see the crate-level [Panic policy](crate#panic-policy).
+//! This module has no `expect` sites; the parallel drivers' guards live in
+//! the `run_loop_*` siblings, each with its own `deny` (angr-qwyti.15).
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use super::*;

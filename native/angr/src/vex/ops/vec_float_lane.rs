@@ -1,13 +1,4 @@
 //! Generic per-lane packed floating-point VEX op dispatcher.
-//!
-//! Extracted from the parent `ops` module (angr-cudgw.18) to shrink the
-//! VEXOps god-file. Declared as a child module of `ops` (via a plain `mod` decl in
-//! `ops/mod.rs`), so this `pub(super)` method stays callable from the binop/unop
-//! dispatch in `ops`, and the shared siblings it references
-//! (`Self::concat_le_elements`, which stays in `ops/mod.rs`; the
-//! `float_prec_of` free fn, the `FloatLaneOp` trait and the
-//! `FLOAT_LANE_OP_MAX_ARITY` const, which live in `ops/lane_traits.rs` and are
-//! re-exported by `ops`) stay visible via the descendant rule.
 
 use super::{FLOAT_LANE_OP_MAX_ARITY, FloatLaneOp, OpError, VEXOps, float_prec_of};
 use crate::symbolic::{RustBV, SymContext};

@@ -162,7 +162,7 @@ fn test_merge_does_not_resurrect_removed_hook_option_or_env_var() {
 }
 
 /// Removal-then-merge must not regress the addition-direction fix
-/// (`07f1f024e`): a hook/option/env-var added by `b` only, with `a` never
+/// (angr-9ke6b.121): a hook/option/env-var added by `b` only, with `a` never
 /// touching it, must still survive the merge.
 #[test]
 fn test_merge_still_unions_additions_alongside_removals() {

@@ -10,7 +10,7 @@
 //! `Concrete` node whose `as_u128()` is checked against an INDEPENDENT
 //! plain-`u128` reference — never against another VEX op.
 //!
-//! Style mirrors `value_ops_property_tests.rs` (commit 5a9528e6a): quickcheck
+//! Style mirrors `value_ops_property_tests.rs` (angr-qwyti.5): quickcheck
 //! properties for random coverage, plus deterministic `#[test]` sweeps over
 //! boundary widths/values so a regression fails on every run rather than
 //! probabilistically.

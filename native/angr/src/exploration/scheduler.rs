@@ -40,11 +40,9 @@
 //!
 //! # Panic policy
 //!
-//! The crate-level policy in `lib.rs` covers every `.lock().expect("… poisoned")`
-//! and `.send(..)`/`.recv()` `expect` here: the shipped build aborts instead of
-//! unwinding, so poison and a mid-wave worker death are unreachable, and under
-//! `cargo test` a cascaded `… poisoned` panic after a real test panic is
-//! expected noise. The one site that argument does *not* cover is
+//! The crate-level [Panic policy](crate#panic-policy) covers every
+//! `.lock().expect("… poisoned")` and `.send(..)`/`.recv()` `expect` here. The
+//! one site it does *not* cover is
 //! `Builder::spawn(..).expect("failed to spawn persistent worker thread")` in
 //! `PersistentPool::new`, which is genuinely fallible (`EAGAIN` under
 //! thread/memory exhaustion). It stays a panic deliberately: the obvious local
@@ -53,11 +51,6 @@
 //! back to serial exploration would be a real feature (a spawn-failure path
 //! that tears the pool down and re-drives the wave through the single-threaded
 //! stepper), not a lint cleanup.
-//!
-//! **Enforcement (angr-qwyti.11):** this module carries
-//! `#![deny(clippy::unwrap_used, clippy::expect_used)]`; each function holding
-//! one of the guards above carries a narrow
-//! `#[allow(clippy::expect_used, reason = ...)]` pointing back here.
 //!
 //! # Module layout (angr-9ke6b.59)
 //!

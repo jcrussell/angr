@@ -5,8 +5,8 @@
 //! constructor helpers live here; `register_exploration` in `mod.rs` still owns
 //! the `m.add_class::<ExplorationEvent>()` registration line.
 //!
-//! Python-boundary module: `unwrap`/`expect` are denied here (angr-qwyti.11);
-//! see the crate-level panic policy in `lib.rs`.
+//! Python-boundary module: `unwrap`/`expect` denied (angr-qwyti.11; panic
+//! policy in `lib.rs`).
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use super::callback_types::SimProcCall;

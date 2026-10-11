@@ -14,9 +14,9 @@ impl<'a> VEXInterpreter<'a> {
     /// Fire a `mem_write` inspect callback into Python for this store.
     ///
     /// Gated on `inspect_event_enabled(InspectBit::MemWrite)` so the common case
-    /// (no breakpoints) is a single bitmask test per Store. Symbolic
-    /// addresses are skipped for the MVP (uq4n.4) — only concrete
-    /// addresses dispatch; symbolic-address dispatch is a follow-up.
+    /// (no breakpoints) is a single bitmask test per Store. Only concrete
+    /// addresses dispatch; a symbolic address skips the breakpoint
+    /// (angr-uq4n.4).
     ///
     /// Fired twice per Store to mirror Python angr: `when='before'`
     /// (pre-commit) so a BP overriding `state.inspect.mem_write_expr`

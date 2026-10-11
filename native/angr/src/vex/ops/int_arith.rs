@@ -1,11 +1,4 @@
 //! Integer widening-multiply and divmod VEX op helpers.
-//!
-//! Extracted from the parent `ops` module (angr-cudgw.18) to shrink the
-//! VEXOps god-file. Declared as a child module of `ops` (via a plain `mod` decl in
-//! `ops/mod.rs`), so these `pub(super)` methods stay callable from the binop
-//! dispatch in `ops`, and the shared helpers they call that remain in
-//! `ops` (`Self::sign_extend_low_to_i128`) stay visible by the
-//! descendant-module rule.
 
 use super::{OpError, VEXOps};
 use crate::symbolic::{RustBV, SymContext};

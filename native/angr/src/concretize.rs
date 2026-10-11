@@ -253,11 +253,11 @@ impl AddressConcretizer {
 
     /// Configure from Python's full strategy configuration.
     ///
-    /// # Arguments
-    /// * `use_approximate` - Whether APPROXIMATE_MEMORY_INDICES is enabled
-    /// * `read_range_limit` - Range limit for read strategies (default: 1024)
-    /// * `write_range_limit` - Range limit for write strategies (default: 128)
-    /// * `symbolic_write_addresses` - Whether SYMBOLIC_WRITE_ADDRESSES is enabled
+    /// Backs the `RustExplorationManager::configure_concretization_strategies`
+    /// pymethod (`exploration/manager_methods.rs`), whose doc describes each
+    /// argument. A `None` range limit keeps the current value; under
+    /// `use_approximate` both limits are raised to at least
+    /// `APPROXIMATE_MIN_RANGE`.
     pub fn configure_strategies(
         &mut self,
         use_approximate: bool,

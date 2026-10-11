@@ -83,10 +83,10 @@ pub(crate) fn extract_concrete_arg(arg: &RustBV, name: &str) -> Result<u64, Sysc
 /// Handlers that size an allocation or a page-walk from a syscall argument get
 /// this instead of a bare `u64`, so the over-cap case cannot be forgotten: the
 /// value is only reachable through a `match`, which means a new bounded call
-/// site does not compile until its author writes the refusal arm. Six round-3
-/// findings (angr-c7xno.67/.80/.81/.92/.93/.94) shared one root cause — the
-/// extraction and the bound check were two separate, independently-forgettable
-/// steps (angr-91vj9.1).
+/// site does not compile until its author writes the refusal arm. Otherwise
+/// the extraction and the bound check are two separate,
+/// independently-forgettable steps (angr-91vj9.1; the bug family is
+/// angr-c7xno.67/.80/.81/.92/.93/.94).
 ///
 /// The cap itself is a host-safety bound, not a Python-parity rule: see
 /// [`MAX_MAP_SIZE`] for why refusing beats falling back to Python.

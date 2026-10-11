@@ -1,14 +1,8 @@
 //! NEON/SIMD integer saturation VEX op helpers.
 //!
-//! Extracted from the parent `ops` module (angr-cudgw.18) to shrink the
-//! VEXOps god-file. Declared as a child module of `ops` (via a plain `mod` decl in
-//! `ops/mod.rs`), so these `pub(super)` methods stay callable from the unop/binop
-//! dispatch in `ops`, and the shared sibling methods they call
-//! (`Self::sign_extend_low_to_i128`, `Self::concat_le_elements`, and the
-//! `narrow_lanes` driver in `vec_lane`) stay visible by the
-//! descendant-module rule. The concrete lane clamp helper (`saturate_lane`)
-//! is private to this module; `saturate_lane_symbolic` is `pub(super)` so the
-//! widening-multiply saturating family (`vec_qdmull`) can reuse it.
+//! The concrete lane clamp helper (`saturate_lane`) is private to this
+//! module; `saturate_lane_symbolic` is `pub(super)` so the widening-multiply
+//! saturating family (`vec_qdmull`) can reuse it.
 //!
 //! Covers the saturating narrow family (Iop_QNarrowUn/QNarrowBin), per-lane
 //! saturating add/sub (Iop_QAdd/QSub), and saturating shift-left

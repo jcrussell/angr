@@ -11,9 +11,6 @@
 //! Split out of `run_loop.rs` (angr-9ke6b.49) — no behavior change.
 //!
 //! **Panic policy:** see the crate-level [Panic policy](crate#panic-policy).
-//! Every `.expect()` here is a poison / session-live / pool-set invariant
-//! guard under a narrow `#[allow(clippy::expect_used, reason = ...)]`; the
-//! deny below makes a *new* fallible unwrap justify itself.
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use super::*;

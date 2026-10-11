@@ -26,8 +26,8 @@
 //!     a `for i in 0..count` loop over a vector lane count that the opcode
 //!     table fixes at >= 1.
 //!
-//! **Enforcement (angr-qwyti.11):** this module carries
-//! `#![deny(clippy::unwrap_used, clippy::expect_used)]`.
+//! The `deny` below follows the crate [Panic policy](crate#panic-policy)
+//! (angr-qwyti.11).
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use crate::symbolic::{FloatOpKind, RustBV, SymContext};

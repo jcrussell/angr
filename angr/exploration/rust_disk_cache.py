@@ -32,9 +32,7 @@ silent cache poisoning rather than a loud failure. The ``rust_manager.py``
 module docstring's cross-mixin list (I1-I3) points here.
 
 I1. Disk-cache key axes
-    `_disk_cache_key` (now in the RustDiskCacheManager mixin,
-    `rust_disk_cache.py`, alongside `_save_init_to_disk_cache` and the
-    `_extract_*` snapshot helpers) mixes (binary path, `_RUST_CACHE_VERSION`,
+    `_disk_cache_key` mixes (binary path, `_RUST_CACHE_VERSION`,
     `_PYTHON_METADATA_VERSION`, arch name, loader digest) into the filename
     hash and memoizes on `(binary_path, arch_name, loader_digest)` in
     `_disk_key_cache`. The loader digest (`_loader_identity_digest`) is not
@@ -49,11 +47,10 @@ I1. Disk-cache key axes
     silently rejected by the outer `try/except Exception` in
     `_load_init_pickle`.
 
-I2. Init pipeline phases (post angr-khth split)
+I2. Init pipeline phases (angr-khth)
     `_run_python_init_if_needed` is the single orchestrator:
-    in-memory cache → disk cache → full Python init. The disk-load path
-    (now in the RustDiskCacheManager mixin, `rust_disk_cache.py`, alongside
-    the save path) is split so each phase owns a single concern:
+    in-memory cache → disk cache → full Python init. The disk-load path is
+    split so each phase owns a single concern:
       * `_load_init_pickle`        — pure I/O.
       * `_deserialize_init_state`  — pure SimState construction; no
                                      manager-owned mutation.

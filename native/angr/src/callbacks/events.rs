@@ -126,8 +126,9 @@ pub(crate) enum RunResult {
         condition_id: u64,
         /// Jump kind (Ijk_Ret, Ijk_Call, etc.). Populated from the
         /// `BlockResult::SymbolicJumpTarget` produced by
-        /// `interpreter::exits::concretize_jump_target`, but no consumer reads
-        /// it: `core_outcome` destructures it as `jumpkind: _`. Retained as
+        /// `VEXInterpreter::handle_default_exit` (`interpreter/exits.rs`), but
+        /// no consumer reads it: `core_outcome` destructures it as
+        /// `jumpkind: _`. Retained as
         /// the wire contract (angr-9ke6b.218 item 5).
         #[allow(dead_code)]
         jumpkind: String,

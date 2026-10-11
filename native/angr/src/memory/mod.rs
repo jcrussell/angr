@@ -25,11 +25,9 @@
 //! you cannot write such a reason, the code needs a [`MemoryError`], not an
 //! `expect`.
 //!
-//! **Enforcement (angr-qwyti.11):** this module carries
-//! `#![deny(clippy::unwrap_used, clippy::expect_used)]`, which also reaches the
+//! The `deny` below (angr-qwyti.11) also reaches the
 //! `address`/`concretize_glue`/`ite_builder`/`merge`/`multi`/`page`/`store`/
-//! `load`/`symbolic_objects` child modules, so a new panic on an untrusted address
-//! anywhere under `memory/` needs a reviewed, reasoned `#[allow]`.
+//! `load`/`symbolic_objects` child modules.
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use std::cell::RefCell;

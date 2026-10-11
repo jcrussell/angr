@@ -6,25 +6,18 @@
 //! parent's imports, `pub(crate)` fields, and type aliases so the method
 //! bodies compile unchanged.
 //!
-//! This module used to hold the *entire* ~228-method surface in one block,
-//! because PyO3 without the `multiple-pymethods` feature allows exactly one
-//! `#[pymethods]` block per pyclass. That feature is now enabled
-//! (`native/angr/Cargo.toml`, angr-9ke6b.50), so the surface is split along
-//! its former section banners into sibling `manager_methods_*.rs` modules,
-//! each with its own `#[pymethods] impl RustExplorationManager` block:
-//! `_hooks`, `_state`, `_constraints`, `_procedures`, `_techniques`,
-//! `_export`, `_run`, `_diagnostics`, `_snapshot`. Adding a method means
-//! picking the module that matches its section — no need to grow any single
-//! file.
+//! The rest of the Python surface lives in sibling `manager_methods_*.rs`
+//! modules, each with its own `#[pymethods] impl RustExplorationManager`
+//! block: `_hooks`, `_state`, `_constraints`, `_procedures`, `_techniques`,
+//! `_export`, `_run`, `_diagnostics`, `_snapshot` (PyO3's
+//! `multiple-pymethods` feature, angr-9ke6b.50; see the `exploration` module
+//! doc). The split is by section so no single file grows: adding a method
+//! means picking the module that matches its section. `stats_api`'s
+//! wrappers live in `_constraints` and `_procedures`, not in a module of
+//! their own (angr-03vl4.25).
 //!
-//! The last two were one `_stats` module until angr-03vl4.25; the name read as
-//! the `#[pymethods]` half of `stats_api` — which it never was, `stats_api`'s
-//! wrappers live in `_constraints` and `_procedures` — while the file actually
-//! held solver-profiling counters, the constraint-sharing walk and the stash
-//! snapshot envelopes.
-//!
-//! Python-boundary module: `unwrap`/`expect` are denied here (angr-qwyti.11);
-//! see the crate-level panic policy in `lib.rs`.
+//! Python-boundary module: `unwrap`/`expect` denied (angr-qwyti.11; panic
+//! policy in `lib.rs`).
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 use super::*;
 

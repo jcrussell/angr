@@ -22,7 +22,7 @@
 //! `EXPRESSION_BY_OPERANDS_PTR`),
 //! plus the shared `SymbolicIdentityRegistry`. Per-cache ownership /
 //! invalidation / coherence is documented at each `thread_local!` block
-//! (see angr-a2br.3, commit 9e4108df0). The invariants below cut ACROSS
+//! (see angr-a2br.3). The invariants below cut ACROSS
 //! caches and pin how the caches interact as a group. Each is referenced
 //! from the per-cache docs by number so enforcement-site comments do not
 //! duplicate the rationale.
@@ -104,9 +104,9 @@
 //! `_state_cache`). Per-state metadata is NOT among them — it lives on
 //! the Rust `RustSimState` and is freed when Rust drops the state (see
 //! `RustStateCacheMixin::_cleanup_symbolic_pages_cache`). None of these
-//! are documented here; see the `state` module rustdoc invariants
-//! **I3**, **I4**, **I5**, **I6** for the cross-FFI rules and the bd
-//! memories
+//! are documented here; see the cross-mixin invariants **I3**, **I4**,
+//! **I5**, **I6** in the `angr/exploration/rust_manager.py` module
+//! docstring for the cross-FFI rules and the bd memories
 //! `invariant-init-cache-plugin-coverage` (what the init cache does and
 //! does not carry; the option allow-list is a *mirror*, not additive),
 //! `invariant-apply-state-metadata-option-allowlist` (value-changing

@@ -55,8 +55,7 @@ impl NativeSyscall for NativeMprotectSyscall {
         // Both page walks below visit one page at a time over the guest-named
         // range. The mapped-range check does bail at the first hole, so the walk is
         // bounded by the *contiguously mapped* prefix rather than by `length`
-        // itself — the round-3 finding's "O(requested pages)" framing is
-        // stronger than what the code does. The cap still earns its place:
+        // itself. The cap still earns its place:
         // it makes the bound independent of how much memory happens to be
         // mapped (successive anonymous `mmap`s are contiguous, so the prefix
         // is not structurally capped at `MAX_MAP_SIZE`), and it keeps the

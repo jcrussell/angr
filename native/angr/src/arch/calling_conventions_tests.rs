@@ -268,7 +268,7 @@ fn test_mips64be_is_not_a_registered_arch_name() {
 fn test_default_cc_for_arch_unknown_panics() {
     // Unknown archs must panic loudly, not silently fall back to
     // SystemV_AMD64 (which would mis-route argument extraction —
-    // see commit 5329d8222 for the x86 Cdecl variant of this bug).
+    // see angr-4pkm for the x86 Cdecl variant of this bug).
     let _ = default_cc_for_arch("ppc");
 }
 

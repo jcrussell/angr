@@ -1,16 +1,11 @@
 //! NEON/SIMD vector shift VEX op helpers.
 //!
-//! Extracted from the parent `ops` module (angr-cudgw.18) to shrink the
-//! VEXOps god-file. Declared as a child module of `ops` (via a plain `mod` decl in
-//! `ops/mod.rs`), so these `pub(super)` methods stay callable from the binop
-//! dispatch in `ops`, and the shared sibling method they call
-//! (`Self::concat_le_elements`) stays visible by the descendant-module rule.
-//! `VecShiftKind` likewise lives in `ops` and is reached via `super::`.
+//! `VecShiftKind` lives in `ops` and is reached via `super::`.
 //!
 //! Covers shift-by-immediate (Iop_ShlN/ShrN/SarN) and shift-by-vector
 //! (Iop_Shl/Shr/Sar{N}x{M}, the NEON USHL/SSHL family). The saturating
-//! shift (Iop_QShl*) deliberately stays in `ops` alongside the rest of the
-//! saturation helpers, and the scalar shift normaliser
+//! shift (Iop_QShl*) lives with the rest of the saturation helpers in
+//! `vec_saturate` (`vec_qshl_sat`), and the scalar shift normaliser
 //! (`normalize_shift_amount`) stays with the scalar shift dispatch.
 //!
 //! Both entry points — `vec_shift_n` (by immediate) and `vec_shift_vec` (by

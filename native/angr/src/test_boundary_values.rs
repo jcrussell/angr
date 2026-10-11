@@ -5,7 +5,7 @@
 //!
 //! ~18 call sites scattered across the crate do guest-controlled
 //! address/offset/fd/width arithmetic that must saturate, wrap, or reject
-//! rather than silently overflow — the angr-03vl4 audit round's
+//! rather than silently overflow — the angr-03vl4
 //! integer-overflow/wraparound bug family (e.g. angr-03vl4.34/.35/.36/.37/
 //! .44/.52/.54/.55/.59/.60/.65/.66/.67/.68/.88, plus angr-03vl4.4/.31 for the
 //! width-clamp half of the family). Every one of those historical fixes

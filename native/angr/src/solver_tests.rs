@@ -71,7 +71,7 @@ fn test_z3_available() {
 }
 
 /// Documentation-grade size probe for the `large_enum_variant` allow on
-/// `SolverCtxStorage`. Validates iter-61's decision: `Owned` exists
+/// `SolverCtxStorage`. Backs the decision not to box it: `Owned` exists
 /// precisely to skip the alloc that `Shared` (Rc) requires; boxing
 /// `Owned` defeats that. Run with
 /// `cargo test --release -p angr -- --nocapture print_solver_storage_sizes`.

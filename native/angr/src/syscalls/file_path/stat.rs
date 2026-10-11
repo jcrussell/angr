@@ -26,11 +26,8 @@
 //! `write_mips32_stat`). `write_stat_for_arch` is the single dispatch
 //! point and `stat_layouts::STAT_LAYOUT_WRITERS` the table it and every
 //! handler's `require_stat_arch` guard read; an arch absent from that
-//! table returns `Other` and falls through to Python. On i386 and MIPS32 the legacy pre-LFS numbers
-//! (106/107/108 and 4106/4107/4108, old 32-bit `struct stat`) are
-//! deliberately left unregistered: modern 32-bit glibc emits the `*64`
-//! variants, and angr's own Python map has no writer for the legacy
-//! layout either — see the registration-table comments in `mod.rs`.
+//! table returns `Other` and falls through to Python. The legacy pre-LFS
+//! stat numbers are unregistered; see the `stat_layouts` module doc.
 //!
 //! Unknown fd → `-1` with no buffer write (matches
 //! `fstat_with_result`'s `result = -1` branch).

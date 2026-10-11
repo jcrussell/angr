@@ -42,10 +42,6 @@
 //!
 //! * Only `store_concrete` bumps the `mem_store` volume counter (mirror of the
 //!   load-side `invariant-mem-counter-two-paths` rule).
-//! * There used to be a `store_concrete_automap` that notably did *not*
-//!   auto-map — the name was historical; angr-5mnx3.27 removed it as a
-//!   body-identical duplicate of `store_concrete_lazy`, mirroring what
-//!   angr-sqfj8.75 did to the load-side `load_concrete_automap`.
 //! * `store_concrete` uses an **inclusive** end-page range
 //!   (`end_page_inclusive`); `store_concrete_lazy` (via
 //!   `check_pages_mapped_lazy`) and `store_concrete_automap_internal` (via its
@@ -72,9 +68,8 @@
 //! [`ConcretizationResult::as_symbolic_address_error`]), which the caller turns
 //! into a Python-memory-model fallback.
 //!
-//! **Enforcement (angr-qwyti.11):** this module carries
-//! `#![deny(clippy::unwrap_used, clippy::expect_used)]`, so a new panic on an
-//! untrusted address needs a reviewed, reasoned `#[allow]`.
+//! The `deny` below follows the crate [Panic policy](crate#panic-policy)
+//! (angr-qwyti.11).
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use crate::concretize::{AddressConcretizer, ConcretizationResult, strided_addrs};

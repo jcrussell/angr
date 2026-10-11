@@ -1,27 +1,24 @@
-//! Send + Sync interpreter-step driver (angr-1ilq.3, sub-increment 2b-i).
+//! Send + Sync interpreter-step driver (angr-1ilq.3).
 //!
 //! This module isolates the read-only configuration the VEX interpreter step
 //! consumes into a self-contained [`StepContext`] bundle, plus a free function
-//! [`run_interpreter_step_core`] parameterized over it. The existing
-//! single-threaded path
-//! (`RustExplorationManager::step_state_inner` in `stepping.rs`) becomes a
+//! [`run_interpreter_step_core`] parameterized over it. The single-threaded
+//! path (`RustExplorationManager::step_state_inner` in `stepping.rs`) is a
 //! thin wrapper that builds a `StepContext` from `&self` and calls this
-//! function, so the run-loop behavior is unchanged.
+//! function; the work-stealing worker (`parallel_process_state` in
+//! `run_loop_worker.rs`) calls it with a shared snapshot.
 //!
-//! The point of the extraction is to PROVE — via the compile-time
-//! `Send + Sync` assertion below and the full test suite staying green — that a
-//! single owned/`Arc`-shared config bundle can drive one interpreter step
-//! without borrowing `&mut self`. That de-risks the future work-stealing worker
-//! path, where each worker must own (or `Arc`-share) the config rather than
-//! reach back into the manager.
+//! A single owned/`Arc`-shared config bundle drives one interpreter step
+//! without borrowing `&mut self`, so each worker owns (or `Arc`-shares) the
+//! config rather than reaching back into the manager. The compile-time
+//! `Send + Sync` assertion below keeps that true.
 //!
 //! Scope note: this carries only the fields `run_interpreter_step_core`
-//! actually reads (see the inventory in the bead). The post-interpreter handlers
-//! (`run_post_step_core`, simproc / syscall / symbolic-jump dispatch) and the
-//! native registries / `PythonCallbacks` they consume are intentionally NOT
-//! bundled yet — that is sub-increment 2b-ii. `PythonCallbacks` stays an
-//! explicit parameter (it is already `Send + Sync` and already threaded through
-//! the call site), and the mutable block cache is passed by `&mut` because the
+//! actually reads. The post-interpreter handlers (simproc / syscall /
+//! symbolic-jump dispatch) take their own context in
+//! `core_outcome::run_post_step_core`. `PythonCallbacks` stays an explicit
+//! parameter (it is already `Send + Sync` and already threaded through the
+//! call site), and the mutable block cache is passed by `&mut` because the
 //! step swaps it in and out rather than reading it.
 
 use std::collections::{HashMap, HashSet};
@@ -113,8 +110,8 @@ pub(crate) struct StepContext {
 }
 
 // Compile-time proof that the config bundle is `Send + Sync` — the property the
-// future work-stealing worker path depends on. If a non-`Send`/`Sync` field is
-// ever added, this fails to compile.
+// work-stealing worker path (`run_loop_worker.rs`) depends on. If a
+// non-`Send`/`Sync` field is ever added, this fails to compile.
 const _: fn() = || {
     fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<StepContext>();

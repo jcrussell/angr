@@ -24,12 +24,8 @@
 //!   [`SymContext::fork`](crate::symbolic::SymContext::fork)
 //!   (`snapshot_fork_ops.rs`) mints a fresh `SharedLineageSolver` for the
 //!   child, seeded by [`SharedLineageSolver::assert_base`] with the
-//!   parent's frozen shared constraints, under a **three-gate check**:
-//!   the `use_shared_lineage_solver` opt-in is on, the parent's
-//!   `bare_z3_push_depth` is zero, and [`is_lineage_dismantled`] is
-//!   false. Fail any gate and the child either inherits the parent's Arc
-//!   or (when dismantled) gets `None`; see that fn's rustdoc for what
-//!   each gate guards.
+//!   parent's frozen shared constraints. Its rustdoc owns the mint gates
+//!   and what happens when one fails.
 //! - **Dispatch** — every solver-touching path branches on
 //!   `self.lineage`: `None` uses the per-context bare Z3 solver, `Some`
 //!   mints a [`ScopeFrame`] and routes through
@@ -279,12 +275,12 @@ pub fn tick_and_sample_for_thrash(
 // Per-lineage-tree census (angr-g1fev)
 // =============================================================================
 // The v5ht sampler decides ONCE, GLOBALLY, from a >=20-switch window
-// summed over every tree. The follow-up proposal is to decide per tree
-// instead. That is only buildable if individual trees actually accumulate
-// enough switches to support a decision window — these counters measure
-// exactly that, and whether a tree's early hot ratio predicts its later
-// one (the rev250 mispredict from tools/decisions/solver_pool_design.md
-// sec 7).
+// summed over every tree. Deciding per tree instead would only be
+// buildable if individual trees accumulated enough switches to support a
+// decision window — these counters measure exactly that, and whether a
+// tree's early hot ratio predicts its later one (the rev250 mispredict
+// from tools/decisions/solver_pool_design.md sec 7). The census answered
+// no: the per-tree sampler is rejected in sec 7b of that file.
 //
 // A "tree" is one `SharedLineageSolver` (one Arc minted by a fork-gate
 // hit; see `SymContext::fork`). Windows are counted in switches ON THAT

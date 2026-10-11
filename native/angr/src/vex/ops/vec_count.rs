@@ -1,12 +1,7 @@
 //! NEON/SIMD per-lane bit-counting VEX op helpers.
 //!
-//! Extracted from the parent `ops` module (angr-cudgw.18) to shrink the
-//! VEXOps god-file. Declared as a child module of `ops` (via a plain `mod` decl in
-//! `ops/mod.rs`), so these `pub(super)` methods stay callable from the unop
-//! dispatch in `ops`, and the shared siblings they reference
-//! (`Self::concat_le_elements`, the `LaneCountKind` enum — both stay in
-//! `ops/mod.rs`) stay visible via super/the descendant rule. The per-lane
-//! ITE-chain builders (`clz_chain`, `cls_chain`) are private to this module.
+//! The per-lane ITE-chain builders (`clz_chain`, `cls_chain`) are private
+//! to this module.
 //!
 //! Covers per-byte popcount (Iop_Cnt8x{8,16}) and per-lane count-leading-
 //! zeros / count-leading-sign-bits (Iop_Clz{N}x{M} / Iop_Cls{N}x{M}).

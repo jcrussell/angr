@@ -1,8 +1,8 @@
 //! Native libVEX lifter (`libvex-ffi` feature).
 //!
 //! Accepted guest arches are whatever `ffi_vex_arch` maps: AMD64, ARM, ARM64,
-//! MIPS32 and MIPS64 (AMD64 landed in Stage-1; the other four in angr-qwyti.20,
-//! which also extended the corpus parity gate to them). X86, PPC32, PPC64 and
+//! MIPS32 and MIPS64 (all covered by the corpus parity gate; angr-qwyti.20
+//! added the non-AMD64 arches). X86, PPC32, PPC64 and
 //! S390X still return [`LiftError::InvalidArch`] so the caller falls back to
 //! the pyvex-callback path.
 //!
@@ -32,8 +32,8 @@
 //! The one `expect` is the `LIFT_LOCK` poison guard, unreachable in the
 //! shipped build — see the crate-level panic policy in `lib.rs`.
 //!
-//! **Enforcement (angr-qwyti.11):** this module carries
-//! `#![deny(clippy::unwrap_used, clippy::expect_used)]`.
+//! The `deny` below follows the crate [Panic policy](crate#panic-policy)
+//! (angr-qwyti.11).
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 // Every marshalling helper below is an `unsafe fn` whose entire body walks the
 // libVEX arena. Wrapping each individual deref in its own `unsafe {}` block adds
@@ -732,5 +732,5 @@ unsafe fn marshal_irsb(irsb: *const ffi::IRSB, addr: u64, arch: VexArch) -> IRSB
 
 test_submod!("libvex_lifter_tests.rs" => tests);
 
-// Corpus IRSB parity gate (native vs pyvex-serialized) — the real Stage-1 gate.
+// Corpus IRSB parity gate (native vs pyvex-serialized).
 test_submod!("libvex_corpus_tests.rs" => corpus_tests);

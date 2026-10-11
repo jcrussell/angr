@@ -57,9 +57,7 @@ crate::declare_proc! {
         }
 
         if fd == 0 {
-            // angr-qmrrp: a prior dup2(real_fd, 0) means fd 0 carries real
-            // tracked content, not pristine/harness-seeded stdin -- defer to
-            // Python rather than mint fresh unconstrained bytes over it.
+            // angr-qmrrp: see `stdin_common::bounce_if_fd0_dup2d`.
             bounce_if_fd0_dup2d(state, "read")?;
             if count > MAX_READ_SIZE {
                 return Err(ProcedureError::Other(format!(

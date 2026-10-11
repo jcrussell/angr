@@ -1,7 +1,7 @@
 //! Signals + process-control syscall handlers (angr-0hif.6).
 //!
-//! Covers `kill`, `tgkill`, `rt_sigreturn`, `pause`, `alarm` — all five
-//! mirror Python angr's behavior bit-for-bit:
+//! Covers `kill`, `tgkill`, `rt_sigreturn`, `pause`, `alarm` — each
+//! mirrors Python angr's behavior bit-for-bit:
 //!
 //! * `kill`, `rt_sigreturn`, `pause`, `alarm` — no dedicated
 //!   `SimProcedure`; fall through to
@@ -26,8 +26,8 @@
 //!   `state.posix.sigmask` and stores at the `oldset` pointer.
 //!   `RustSimState` does not currently carry a posix plugin (per
 //!   `identity.rs`'s pid hardcoding), so exact native parity would
-//!   require plumbing sigmask into the Rust state. Deferred — the
-//!   unhandled-syscall path continues to dispatch to the Python
+//!   require plumbing sigmask into the Rust state. It has no native
+//!   handler: the unhandled-syscall path dispatches to the Python
 //!   `_handle_syscall_callback`, preserving full sigmask semantics.
 
 use super::{NativeSyscall, SyscallError, SyscallOutcome, stub_syscall};

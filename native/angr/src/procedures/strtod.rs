@@ -47,9 +47,8 @@ const MAX_LEN: usize = 256;
 /// whitespace ahead of a short literal — got a mantissa truncated mid-run and
 /// an `*endptr` landing mid-literal (bd angr-fs8kb.92).
 ///
-/// Past this ceiling the old truncation semantics remain, deliberately: the
-/// scan is O(window) guest memory loads with no null in sight, and a 4 KiB
-/// numeric literal is not a shape real code produces. Pinned by
+/// Past this ceiling the scan truncates the literal, deliberately, for the
+/// reason given on `strtol::MAX_SCAN_BYTES`. Pinned by
 /// `test_strtod_scan_window_ceiling_truncates`.
 const MAX_SCAN_BYTES: usize = 4096;
 

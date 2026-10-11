@@ -363,8 +363,7 @@ pub struct RegisterFile {
 /// wrong-but-plausible. Rejecting matches how the rest of this subsystem
 /// handles an unknown arch name — `RustSimState::from_snapshot` returns
 /// `SnapshotError::UnknownArch`, and [`arch_from_vex`] panics (which
-/// `impl Clone for Box<dyn Arch>` inherits, since commit 91b9f82ca replaced its
-/// own AMD64 fallback with that panic).
+/// `impl Clone for Box<dyn Arch>` inherits in place of an AMD64 fallback).
 ///
 /// `data` is right-padded / truncated to the rebuilt architecture's
 /// `state_size()` so a snapshot taken at one arch is structurally usable even

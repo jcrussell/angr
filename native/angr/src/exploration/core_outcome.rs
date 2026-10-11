@@ -5,10 +5,9 @@
 //! `match step.result` arms used to do inline, but WITHOUT touching `&mut self`,
 //! `self.sm`, `self.profiling` (directly), the GIL, or constructing Python
 //! objects. It returns a [`CoreOutcome`] carrying every deferred mutation the
-//! single-threaded coordinator (or, later, a parallel worker's coordinator)
-//! must apply itself.
+//! coordinator (single-threaded or parallel) must apply itself.
 //!
-//! **Panic policy (angr-9ke6b.212):** the three `expect`s in
+//! **Panic policy (angr-9ke6b.212):** the `expect`s in
 //! [`ParallelProfiling`] are `step_stats` mutex poison guards, unreachable in
 //! the shipped build — see the crate-level panic policy in `lib.rs`.
 //!
@@ -46,10 +45,8 @@
 //! calls `sm.set_root(child_id, root_hint)`. This equals the inline value the
 //! legacy `materialize_deferred_forks` computed.
 //!
-//! **Enforcement (angr-qwyti.11, angr-c7xno.36):** `exploration/mod.rs`
-//! deliberately carries no module-level deny, so this module re-states
-//! `#![deny(clippy::unwrap_used, clippy::expect_used)]` itself — placed last,
-//! after the whole doc block, as in every sibling here.
+//! `exploration/mod.rs` carries no module-level deny, so this module states
+//! its own (angr-qwyti.11, angr-c7xno.36).
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use std::collections::HashMap;
@@ -240,9 +237,8 @@ pub(crate) struct CoreCounters {
     pub(crate) deferred_forks_dropped: u64,
 }
 
-/// Classification of a routed state (informational for the future parallel
-/// coordinator; the single-threaded coordinator routes via the existing run
-/// loop). `is_fork` and `root_hint` drive `sm.set_root`.
+/// Classification of a routed state (informational; the single-threaded
+/// coordinator routes via the run loop). `is_fork` and `root_hint` drive `sm.set_root`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[allow(dead_code)] // only `Continue` is constructed: the parallel coordinators
 // route by `TaskOutcome` (`run_loop_worker`), so the other variants are the
@@ -364,7 +360,8 @@ pub(crate) struct CoreOutcome {
 }
 
 // Compile-time proof that the captured-context references the core fn takes are
-// `Send + Sync` — the property the future work-stealing worker path depends on.
+// `Send + Sync` — the property the work-stealing worker path
+// (`run_loop_worker.rs`) depends on.
 const _: fn() = || {
     assert_send_sync::<ParallelProfiling>();
     assert_send_sync::<&NativeProcedureRegistry>();

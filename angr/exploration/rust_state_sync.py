@@ -236,8 +236,7 @@ class RustStateSyncMixin:
                     except Exception as e:
                         # cat-(c) WRONG-ANSWER RISK: symbolic register not
                         # synced; Rust will see stale/uninit BVS for this
-                        # register. Already logged at warn (commit
-                        # 4f16e3792 / angr-i1wg).
+                        # register. Already logged at warn (angr-i1wg).
                         l.warning(
                             "Symbolic register %s not synced to Rust "
                             "(Z3 conversion failed: %s) — Rust will "

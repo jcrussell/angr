@@ -48,24 +48,15 @@ I5. Register filter at the FFI boundary
     Do not "fix" by adding cr0 etc. to amd64.rs unless the interpreter
     actually consumes them — it doesn't, and the slow path skips them too.
 
-I6. State-cache pinning + manager-vs-mixin override
-    `_cleanup_state_cache` runs three steps: (1) drop entries whose state
-    is no longer in active/found, (2) pin every root in `_state_roots`,
-    plus `_current_callback_state_id` (and its effective id via
-    `_get_effective_state_id`) and `_current_stepping_state_id`, (3)
-    LRU-evict non-pinned entries past `_max_state_cache_size`. Without
-    those pins, a freshly-mutated state can race-evict between callbacks
-    on the same state. Regression tests:
+I6. State-cache pinning and the metadata-clear contract
+    Owned by `_cleanup_state_cache`'s docstring (what is pinned, the LRU
+    eviction order, and why eviction never calls `clear_state_metadata`).
+    Without the pins, a freshly-mutated state can race-evict between
+    callbacks on the same state. Regression tests:
     `test_cleanup_state_cache_evicts_oldest_first`,
     `test_cleanup_state_cache_drops_dead_states` and
     `test_cleanup_state_cache_skips_pinned` in
     ``tests/engines/rust/test_state_sync.py``.
-    Metadata-clear contract: cache eviction does NOT call
-    `clear_state_metadata`. A state can be in `active`/`found` on Rust and
-    still LRU-evicted from the Python mirror; in that case the Rust-side
-    metadata must remain. Per-state Rust metadata is freed when the
-    underlying `RustSimState` drops naturally (i.e. once the state leaves
-    every Rust stash).
 
 I7. Rust ↔ Python field sync uses max(), not overwrite
     Fields that both sides can mutate (`mmap_base`, `posix_brk`, ...) sync
@@ -81,12 +72,12 @@ I8. Exploration-loop termination conditions
     `_explore_with_predicates` and `_explore_with_addresses` must terminate
     on EITHER (a) Python predicate match, OR (b) Rust-native find_addr hit
     (`event_type == 'found'`), OR (c) all paths exhausted
-    (`active_empty` / `has_active_states == false`). Earlier code only
-    checked Python predicate flags, which infinite-looped when `find=int`
-    was combined with a non-predicate technique like DFS (technique made
-    `_active_techniques` non-empty, routing through the predicate path).
-    Fixed by switching the check to `_found_count()` which covers both
-    Rust-native and Python-predicate finds.
+    (`active_empty` / `has_active_states == false`). The find check uses
+    `_found_count()`, which covers both Rust-native and Python-predicate
+    finds: checking only Python predicate flags infinite-loops when
+    `find=int` is combined with a non-predicate technique like DFS (the
+    technique makes `_active_techniques` non-empty, routing through the
+    predicate path).
 
 I9. `max_active_states` is enforced via a helper, not raw `push_back`
     A Rust-side invariant, stated on `push_to_active_or_drop`'s rustdoc in
@@ -1510,16 +1501,17 @@ class RustExplorationManager(
         if max_history != 1000:
             self._rust_mgr.set_max_history(max_history)
 
-        # z087y Stage-3: native (in-process) libVEX cold-block lifting. Only
+        # Native (in-process) libVEX cold-block lifting (angr-z087y). Only
         # flip the flag when the .so was compiled with the `libvex-ffi`
-        # feature (probed via `libvex_ffi_enabled()`) AND the target is AMD64
-        # — the only arch the native lifter marshals today. On by default
-        # since angr-op0dn.2.2 (rationale in
-        # docs/advanced-topics/rust_libvex_ffi.rst): no bench regressed, and
-        # any block the native lifter cannot serve falls back
-        # to the pyvex callback with an identical IRSB. `libvex-ffi` is still
-        # a non-default cargo feature, so on a stock build the probe is False
-        # and this is inert.
+        # feature (probed via `libvex_ffi_enabled()`) AND the target is AMD64.
+        # The AMD64 restriction is this Python gate's alone: the Rust lifter
+        # marshals more arches (`ffi_vex_arch` in vex/libvex_lifter.rs). On by
+        # default (angr-op0dn.2.2; rationale in
+        # docs/advanced-topics/rust_libvex_ffi.rst): any block the native
+        # lifter cannot serve falls back to the pyvex callback with an
+        # identical IRSB. setup.py appends `libvex-ffi` to a stock build, so
+        # the probe is False only on a build without it (ANGR_LIBVEX_FFI=0, no
+        # libpyvex.so found, or a direct cargo build without the feature).
         self._use_native_lift = bool(use_native_lift)
         if self._use_native_lift:
             try:
@@ -1664,7 +1656,7 @@ class RustExplorationManager(
         # those hooks too; main-object hooks still go to Python, preserving
         # ``proj.hook()`` overrides. It was off while the native string procs
         # scanned a wider symbolic window than angr's Python ones and could
-        # fork-storm on symbolic data; ``MAX_SYMBOLIC_SCAN_BYTES`` (c94941fff)
+        # fork-storm on symbolic data; ``MAX_SYMBOLIC_SCAN_BYTES`` (angr-gorvf.5)
         # closed that gap. ``ANGR_RUST_PREFER_NATIVE_LIBRARY_HOOKS=0`` forces the
         # old Python-dispatch behavior back.
         self._prefer_native_library_hooks = _resolve_env_flag(
@@ -7204,8 +7196,8 @@ class RustExplorationManager(
         ``claripy_bridge/cache.rs``). Those caches
         outlive a single manager because they are thread-local, so without
         a flush they accumulate O(n) across managers in Callable-heavy
-        workloads — see ``docs/advanced-topics/rust_engine.rst`` for the
-        mma_howtouse case study.
+        workloads — see "Where memory accumulates" in
+        ``docs/advanced-topics/rust_engine.rst``.
 
         Safe to call multiple times. Does NOT touch the global symbolic
         identity registry (shared across managers, so a clear from one

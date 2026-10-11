@@ -1,11 +1,5 @@
 //! NEON/SIMD vector lane access and width-conversion VEX op helpers.
 //!
-//! Extracted from the parent `ops` module (angr-cudgw.18) to shrink the
-//! VEXOps god-file. Declared as a child module of `ops` (via a plain `mod` decl in
-//! `ops/mod.rs`), so these `pub(super)` methods stay callable from the unop/binop
-//! dispatch in `ops`, and the shared sibling method they call
-//! (`Self::concat_le_elements`) stays visible by the descendant-module rule.
-//!
 //! Covers lane extract/insert (Iop_GetElem/SetElem), broadcast (Iop_Dup),
 //! and per-lane widen/narrow (Iop_Widen*, Iop_NarrowUn/NarrowBin). The
 //! saturating narrow (Iop_QNarrow*) family and `saturate_lane` live in the

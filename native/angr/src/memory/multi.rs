@@ -25,9 +25,8 @@
 //! wrong-width-value failure mode from the producer side, and the constructor
 //! has no error channel to report through.
 //!
-//! **Enforcement (angr-qwyti.11):** the parent [`memory`](super) module's
-//! `#![deny(clippy::unwrap_used, clippy::expect_used)]` reaches this file; it is
-//! restated below so the guarantee is visible when reading this file alone.
+//! The parent [`memory`](super) module's `deny` (angr-qwyti.11) reaches this
+//! file; it is restated below so it is visible when reading this file alone.
 //!
 //! This module defines the data structures only. Load-time collapse lives in
 //! `memory/load.rs` (Phase 1.2, bead angr-n082); store helpers that emit

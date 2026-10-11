@@ -1,12 +1,5 @@
 //! NEON/SSE packed-integer arithmetic VEX op helpers.
 //!
-//! Extracted from the parent `ops` module (angr-cudgw.18) to shrink the
-//! VEXOps god-file. Declared as a child module of `ops` (via a plain `mod` decl in
-//! `ops/mod.rs`), so these `pub(super)` methods stay callable from the unop/binop
-//! dispatch in `ops`, and the shared sibling they reference
-//! (`Self::concat_le_elements`, which stays in `ops/mod.rs`) stays visible via the
-//! descendant rule.
-//!
 //! Covers GF(2) carry-less polynomial multiply (Iop_PolynomialMul/Mull8x{8,16}).
 //! The per-lane signed/unsigned min-max (Iop_Min/Max{U,S}{N}x{M}) and packed
 //! absolute value (Iop_Abs{N}x{M} / PABS*) families moved to the generic
