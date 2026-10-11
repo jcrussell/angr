@@ -481,7 +481,8 @@ fn install_multi_for_candidates_boundary_sweep_rejects_wrapping_candidates() {
 /// `flush_multi_cells` must collapse every Multi byte into a per-byte
 /// symbolic_objects entry and mark the page-level symbolic bit so the
 /// state export pipeline picks it up. This is the export-correctness
-/// invariant called out in `rust_lazy_memory_design.rst` Phase 2.
+/// invariant `MultiFlushed` certifies (see `SymbolicMemory::flush_multi_cells`
+/// in `memory/multi.rs`).
 #[cfg(feature = "vex-engine-z3")]
 #[test]
 fn test_phase2_flush_multi_to_symbolic_objects() {

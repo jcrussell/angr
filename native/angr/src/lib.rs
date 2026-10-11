@@ -145,8 +145,8 @@
 /// re-`allow` the two test-only clippy lints, because each test module's own
 /// `deny` overrides the crate-wide `cfg_attr(test, allow(..))` at the top of
 /// this file. That is four attributes of identical boilerplate per site,
-/// repeated ~120 times crate-wide (bd angr-12jjk.16); this macro is the single
-/// place the justification wording lives.
+/// repeated at every out-of-line test module (angr-12jjk.16); this macro is
+/// the single place the justification wording lives.
 ///
 /// ```ignore
 /// test_submod!("stash_tests.rs" => tests);        // explicit `#[path]`
@@ -161,8 +161,8 @@
 ///
 /// It is the convention for **every** out-of-line test submodule, not just the
 /// ones where the `allow` is load-bearing. The payload only bites under a host
-/// module's own `#![deny(clippy::unwrap_used, clippy::expect_used)]` (today:
-/// `exploration::shadow_probe`), so the hand-written spelling compiles fine
+/// module's own `#![deny(clippy::unwrap_used, clippy::expect_used)]` (for
+/// example `exploration::shadow_probe`), so the hand-written spelling compiles fine
 /// everywhere else — which is exactly why a partial sweep keeps looking
 /// complete (angr-c7xno.48, angr-03vl4.8, angr-03vl4.89). The invariant a
 /// future audit checks is therefore a simple one:

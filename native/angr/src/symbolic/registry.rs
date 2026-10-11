@@ -50,7 +50,7 @@ mod registry_lock;
 /// today; warning once per order of magnitude makes it loud instead of
 /// silently degrading, and gives a future GC a metric to gate on.
 ///
-/// **Measured cost per entry ≈ 1.7 KB** (angr-9ke6b.224, 2026-08-01): ~1.44 KB
+/// **Measured cost per entry ≈ 1.7 KB** (angr-9ke6b.224): ~1.44 KB
 /// is the pinned claripy leaf (RSS delta over 100k `BVS(.., 32,
 /// explicit_name=True)` leaves), the remaining ~0.3 KB the four Rust maps. So
 /// these thresholds are ~170 MB and ~1.7 GB of resident memory. A third
@@ -558,16 +558,13 @@ impl SymbolicIdentityRegistry {
     /// rather than collected. Wiring this up is a memory/fidelity trade now, no
     /// longer a correctness one.
     ///
-    /// That trade was measured and declined (angr-9ke6b.224, 2026-08-01). Ten
-    /// `mma_howtouse` iterations in one process (450 Callable invocations,
-    /// `tests/benchmarks/run_leak_check.py`, which now reports the
-    /// `symbol_registry_size` series) grow the registry perfectly linearly at
-    /// 810 entries/iteration to 8100, ≈ 13.8 MB at the ~1.7 KB/entry measured
-    /// for `GROWTH_WARN_THRESHOLDS` — 3.5% of the 394 MB peak RSS, about a
-    /// third of that soak's total RSS growth, and the gate still passes at
-    /// 1.09x against a 1.5x threshold. Two things a future GC should know:
+    /// That trade was measured and declined (angr-9ke6b.224; the bead holds
+    /// the numbers). `tests/benchmarks/run_leak_check.py` reports the
+    /// `symbol_registry_size` series: the registry grows linearly per
+    /// `mma_howtouse` iteration but stays a small share of peak RSS, and the
+    /// leak gate passes. Two things a future GC should know:
     ///
-    /// - 84% of an entry is the pinned claripy AST, not the Rust maps. Dropping
+    /// - Most of an entry is the pinned claripy AST, not the Rust maps. Dropping
     ///   only `name_to_info` / `py_hash_to_rust_id` (the cheap, purely-Rust
     ///   half) would recover almost nothing; `rust_id_to_py` is the one that
     ///   matters.

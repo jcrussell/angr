@@ -1386,7 +1386,7 @@ class RustStateExportMixin:
         AST *on demand* via ``get_state_register_ast`` (identity-preserving).
         States with no symbolic register keep the plain register file untouched,
         so the common hot path pays nothing — an eager full-AST recovery of
-        every symbolic register here regressed flareon2015_2 ~38% (see
+        every symbolic register here measurably regressed flareon2015_2 (see
         ``avoid-eager-symbolic-register-export``).
         """
         try:
@@ -1495,7 +1495,7 @@ class RustStateExportMixin:
                 continue
 
             # Fallback for symbols created in Rust without a tracked AST.
-            # angr-4o7d (2026-05-22): instrumented to measure fire rate.
+            # angr-4o7d: instrumented to measure fire rate.
             # Snapshot-export path, not hot exploration loop — distinct
             # threat model from rust_manager.py's mem_thunk_/sym_load_full_fail_
             # fallbacks (which counter angr-ymoe showed are dead in practice).

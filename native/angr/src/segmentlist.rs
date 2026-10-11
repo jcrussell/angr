@@ -19,9 +19,9 @@
 //!   (`angr/storage/memory_mixins/paged_memory/pages/history_tracking_mixin.py`)
 //!   uses sort-less lists to record which offsets of a page changed.
 //!
-//! See the "pure value types" entry for this file in
-//! `docs/advanced-topics/rust_engine.rst` for how it fits the Send+Sync
-//! export surface.
+//! It is a pure value type (no Z3 or Python handles), which is what lets it
+//! ride inside an `ExplorationStateSnapshot`; see
+//! `docs/advanced-topics/rust_engine.rst` "Scope and threading model".
 
 use std::cmp::{max, min};
 use std::collections::HashSet;

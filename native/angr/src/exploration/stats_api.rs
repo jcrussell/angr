@@ -10,11 +10,7 @@
 //! was split out of it per angr-nbim4.1 / angr-9ke6b.50; see `mod.rs`'s own
 //! module doc.)
 //!
-//! The extension-impl split here predates PyO3's `multiple-pymethods`
-//! feature (now enabled, angr-9ke6b.50) and is kept as a style choice. This
-//! module mirrors the `helpers.rs` / `stepping.rs` / `run_loop.rs` /
-//! `resume.rs` / `pending_api.rs` / `state_api.rs` extension-impl pattern used
-//! elsewhere in `exploration/`.
+//! Extension-impl module; see the [`exploration`](super) module doc.
 //!
 //! Python-boundary module: `unwrap`/`expect` are denied here (angr-qwyti.11);
 //! see the crate-level panic policy in `lib.rs`.

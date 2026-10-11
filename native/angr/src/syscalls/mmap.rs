@@ -152,7 +152,7 @@ fn do_mmap(
     // is itself O(pages) and would hang long before the OOM. Linux rejects
     // oversized requests too, with MAP_FAILED/-ENOMEM; return -1 rather than
     // falling back, since Python's `map_region` would allocate just as
-    // eagerly. See `MAX_MAP_SIZE` in `syscalls::mod` (angr-c7xno.80). All
+    // eagerly. See `MAX_MAP_SIZE` in `syscalls::support` (angr-c7xno.80). All
     // three flavors funnel through here, and `old_mmap` reads its length out
     // of a guest struct rather than a register, so the check goes through
     // `bounded_value` on the already-extracted length; the `BoundedArg` match

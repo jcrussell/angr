@@ -689,8 +689,8 @@ impl SymContext {
         // is `None` by default in production today.
         //
         // The two-gate check is load-bearing. Condition (a) keeps the
-        // v5a5-spike BFS-thrash regression (defcon2016quals_baby-re ~10x)
-        // out of the default CI gate by holding minting OFF until a caller
+        // v5a5-spike BFS-thrash regression (rust_engine_decisions.rst,
+        // "Shared-lineage Z3 solver stays opt-in") out of the default CI gate by holding minting OFF until a caller
         // explicitly opts in via the kwarg on `RustExplorationManager`.
         // Condition (b) protects the per-context solver's bare-push frames
         // from being clobbered by a sibling that takes over Z3 stack

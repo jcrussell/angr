@@ -240,7 +240,7 @@ _REJECTED_OPTION_NAMES = frozenset(
         # Outside Veritesting, BYPASS_VERITESTING_EXCEPTIONS is a
         # no-op — `resilience` bundle users carry it implicitly. Reject with
         # a warn-once rather than raise so adding `angr.options.resilience`
-        # to a non-Veritesting state does not crash. (angr-6rz8 2026-06-03)
+        # to a non-Veritesting state does not crash. (angr-6rz8)
         "BYPASS_VERITESTING_EXCEPTIONS",
         # USE_SYSTEM_TIMES tells Python's posix sim_time procedures
         # (procedures/posix/sim_time.py) to return the host's real
@@ -252,7 +252,7 @@ _REJECTED_OPTION_NAMES = frozenset(
         # Warn-once so a user who opted into concrete host times learns the
         # native syscalls are ignoring it rather than silently exploring a
         # symbolic-time path. Not in any default mode bundle, so this only
-        # fires on explicit opt-in. (angr-0y0v 2026-06-15)
+        # fires on explicit opt-in. (angr-0y0v)
         "USE_SYSTEM_TIMES",
     }
 )
@@ -271,22 +271,21 @@ _REJECTED_OPTION_NAMES = frozenset(
 # sim_options.py + SimSolver.BatchedConcretizationBacker). Silent ignore
 # under Rust would totally change semantics — symbol-driven solver tests
 # would behave like concrete tests but without the speedup. Promoted to
-# raise (angr-gmrc, 2026-05-16).
+# raise (angr-gmrc).
 #
 # CONSERVATIVE_WRITE_STRATEGY tells SimMemory to refuse symbolic-write
 # address concretization on range-check failure (Python: storage/
 # memory_mixins/address_concretization_mixin.py concretize_write_addr). Rust's
 # SymbolicMemory always concretizes within strategy limits, so silently
 # accepting this would mask the user's intent to keep an analysis
-# conservative. Promoted to raise (angr-csmm, 2026-05-16).
+# conservative. Promoted to raise (angr-csmm).
 #
 # DO_RET_EMULATION asks the engine to add an emulated successor at every
 # ret site (Python: SimEngineVEX returns the ret successor with a guard
 # that's true unless TRUE_RET_EMULATION_GUARD is also set). Rust does
 # not emulate rets at all, so the emulated successor is silently missing
 # under Rust; that's a divergence in the successor set that Callable
-# workflows (the typical caller) depend on. Promoted to raise (angr-cf9h,
-# 2026-05-16). TRUE_RET_EMULATION_GUARD stays in _REJECTED_OPTION_NAMES
+# workflows (the typical caller) depend on. Promoted to raise (angr-cf9h). TRUE_RET_EMULATION_GUARD stays in _REJECTED_OPTION_NAMES
 # because alone it's just a guard tweak with no effect.
 #
 # CALLLESS replaces every call with an unconstraining of the return
@@ -294,12 +293,12 @@ _REJECTED_OPTION_NAMES = frozenset(
 # no equivalent path, so calls execute normally; silently accepting the
 # option means Callable workflows would step into the callee instead of
 # skipping it — a structural divergence, not a precision one. Promoted
-# to raise (angr-cf9h, 2026-05-16).
+# to raise (angr-cf9h).
 #
 # EFFICIENT_STATE_MERGING asks SimStateHistory to retain a strong
 # reference to each ancestor state so state.merge() can find a common
 # ancestor for plugin merging (Python: state_plugins/history.py
-# set_strongref_state). It was raise-listed (angr-n129, 2026-05-16)
+# set_strongref_state). It was raise-listed (angr-n129)
 # while the Rust engine merged only through the Python export path,
 # which needs that common-ancestor walk. DEMOTED (angr-op0dn.11.6):
 # merge is now native. RustExplorationManager.merge() runs the M3-4
@@ -327,7 +326,7 @@ _REJECTED_OPTION_NAMES = frozenset(
 # Silently accepting the option means a user who opted into symbolic-fill
 # would get concrete-zero registers and never know — paths that depend
 # on unconstrained initial register values would simply not be explored.
-# Promoted to raise (angr-apre, 2026-05-17). The MEMORY variant
+# Promoted to raise (angr-apre). The MEMORY variant
 # SYMBOL_FILL_UNCONSTRAINED_MEMORY is NOT promoted because Rust's
 # load_concrete_lazy (native/angr/src/memory/load.rs fn load_concrete_lazy) falls back
 # to a fresh `unc_mem_*` symbolic BVS when zero_fill_unconstrained is
@@ -343,8 +342,7 @@ _REJECTED_OPTION_NAMES = frozenset(
 # move the state to the errored stash without ever giving Python a chance
 # to substitute. The "ERRORED" bypasses therefore silently do nothing
 # under Rust when Rust hits a Panic-strategy variant — a divergence the
-# user paid into resilience for. Promoted to raise (angr-6rz8,
-# 2026-06-03). The "UNSUPPORTED" siblings (BYPASS_UNSUPPORTED_IROP /
+# user paid into resilience for. Promoted to raise (angr-6rz8). The "UNSUPPORTED" siblings (BYPASS_UNSUPPORTED_IROP /
 # IRDIRTY / IRCCALL / SYSCALL) are honored transparently via the
 # UnsupportedFeature -> Python fallback path and therefore stay out of
 # both _RAISE and _REJECTED. BYPASS_UNSUPPORTED_IREXPR and
@@ -383,8 +381,7 @@ _REJECTED_OPTION_NAMES = frozenset(
 # Python when the option is unset — where the Python proc's
 # unconstrained ready bits are produced. Honored in both directions.
 #
-# TRACK_ACTION_HISTORY is NOT in _RAISE_OPTION_NAMES (demoted angr-fkvt,
-# 2026-06-06). Unlike its TRACK_*_ACTIONS siblings, it does not gate
+# TRACK_ACTION_HISTORY is NOT in _RAISE_OPTION_NAMES (demoted angr-fkvt). Unlike its TRACK_*_ACTIONS siblings, it does not gate
 # action recording — angr's heavy/actions.py only consults
 # TRACK_REGISTER_ACTIONS / TRACK_MEMORY_ACTIONS to populate
 # state.history.recent_events. TRACK_ACTION_HISTORY's only consumer in
@@ -1260,7 +1257,7 @@ class RustExplorationManager(
                 / stores route directly into Rust instead of going through
                 the cached state's claripy SimMemory + ``CallbackMemoryTracker``
                 diff-and-push (angr-4scu step 3). When ``None`` (default), the
-                proxy is ON (angr-grji4 human-GO flip 2026-07-15); the env var
+                proxy is ON (angr-grji4 human-GO flip); the env var
                 ``ANGR_RUST_USE_CALLBACK_MEMORY_PROXY=0`` is the opt-OUT escape
                 hatch that forces the existing tracker path back on.
             use_callback_register_proxy: If True, install ``RustRegisterProxy``
@@ -1517,9 +1514,9 @@ class RustExplorationManager(
         # flip the flag when the .so was compiled with the `libvex-ffi`
         # feature (probed via `libvex_ffi_enabled()`) AND the target is AMD64
         # — the only arch the native lifter marshals today. On by default
-        # since angr-op0dn.2.2 (bench evidence in
-        # docs/advanced-topics/rust_libvex_ffi.rst): no bench regressed, wins
-        # up to 13%, and any block the native lifter cannot serve falls back
+        # since angr-op0dn.2.2 (rationale in
+        # docs/advanced-topics/rust_libvex_ffi.rst): no bench regressed, and
+        # any block the native lifter cannot serve falls back
         # to the pyvex callback with an identical IRSB. `libvex-ffi` is still
         # a non-default cargo feature, so on a stock build the probe is False
         # and this is inert.
@@ -1564,8 +1561,8 @@ class RustExplorationManager(
         # on, ``_create_state_for_callback`` swaps ``state.memory`` with a
         # ``RustMemoryProxy``, so loads/stores during the SimProc route
         # directly into Rust and the post-callback tracked-writes replay is
-        # skipped (writes already landed in Rust). Default ON as of the
-        # angr-grji4 human-GO flip (2026-07-15); env var
+        # skipped (writes already landed in Rust). Default ON since the
+        # angr-grji4 human-GO flip; env var
         # ``ANGR_RUST_USE_CALLBACK_MEMORY_PROXY=0`` is the opt-OUT escape
         # hatch that forces the legacy CallbackMemoryTracker path back on
         # when the kwarg is left at its default ``None``. Multi-session epic
@@ -2408,7 +2405,7 @@ class RustExplorationManager(
                         # cat-(b) FALLBACK WITH LOSS: thunk in memory failed to resolve;
                         # replace with a fresh BVS so the load proceeds. Caller pays a
                         # downstream symbolic constraint instead of a hard error.
-                        # angr-ymoe (2026-05-22): measured 0 fires across 21 fast-tier
+                        # angr-ymoe: no fires across the fast-tier
                         # benches. Path is dead in practice; counter acts as a watchdog
                         # — if it ever goes non-zero, escalate to a Rust-side fresh
                         # symbol (see angr-4pm1's _set_state_register_symbolic_ast
@@ -2979,7 +2976,7 @@ class RustExplorationManager(
             # cat-(c) WRONG-ANSWER RISK: symbolic-address load failed; returns
             # a fresh BVS that has no relationship to the actual symbolic value
             # in memory — downstream constraint sync will diverge. Debug-logs.
-            # angr-ymoe (2026-05-22): measured 0 fires across 21 fast-tier
+            # angr-ymoe: no fires across the fast-tier
             # benches. Path is dead in practice; counter acts as a watchdog.
             # `test_cb_memory_load_symbolic_full_swallows_sim_memory_error`
             # locks in the swallowing behavior (Rust upstream wraps the AST
@@ -3779,7 +3776,7 @@ class RustExplorationManager(
         `set_no_ip_concretization(True)`, NO_SYMBOLIC_JUMP_RESOLUTION →
         `set_no_symbolic_jump_resolution(True)`, and KEEP_IP_SYMBOLIC →
         `set_keep_ip_symbolic(True)`. TRACK_ACTION_HISTORY is mirrored
-        for preconstrainer.py compatibility (angr-fkvt, 2026-06-06) — it
+        for preconstrainer.py compatibility (angr-fkvt) — it
         is a metadata flag consulted by preconstrainer's clear/restore
         pattern and must survive the init cache round-trip so AEG
         workloads see it on the seed state.

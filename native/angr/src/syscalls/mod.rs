@@ -47,7 +47,7 @@
 //! # Layout
 //!
 //! This file is the registration manifest: `NativeSyscallRegistry`, the
-//! `register_syscalls!` macro that spells its rows, and `new`'s seven
+//! `register_syscalls!` macro that spells its rows, and `new`'s
 //! per-arch tables. The shared vocabulary those handlers are written
 //! against — `SyscallError`, `SyscallOutcome`, the `NativeSyscall` trait,
 //! the arg-extraction / bounding / fresh-symbolic helpers and the
@@ -823,7 +823,7 @@ impl NativeSyscallRegistry {
         // 2=fork/transmit, ...). `dispatch_bounce` (`stepping_bounce.rs`) selects
         // this table by checking `ExecutionEnvironment::os_name == "cgc"`
         // and using "CGC" as the registry key instead of the arch name.
-        // All seven CGC syscalls land natively in `syscalls/cgc.rs`;
+        // Every CGC syscall lands natively in `syscalls/cgc.rs`;
         // `allocate` / `deallocate` carry their own freelist / bump
         // allocator on the new `RustSimState::cgc_*` fields (added in
         // angr-rdgs).

@@ -12,10 +12,7 @@
 //! `#[pymethods]` surface was split out of it per angr-nbim4.1 /
 //! angr-9ke6b.50; see `mod.rs`'s own module doc.)
 //!
-//! The extension-impl split here predates PyO3's `multiple-pymethods`
-//! feature (now enabled, angr-9ke6b.50) and is kept as a style choice. This module mirrors the
-//! `helpers.rs` / `stepping.rs` / `run_loop.rs` / `resume.rs` /
-//! `pending_api.rs` extension-impl pattern used elsewhere in `exploration/`.
+//! Extension-impl module; see the [`exploration`](super) module doc.
 //!
 //! Python-boundary module: `unwrap`/`expect` are denied here (angr-qwyti.11);
 //! see the crate-level panic policy in `lib.rs`.
@@ -198,7 +195,7 @@ impl RustExplorationManager {
         // pointer, so truly garbage values may still segfault before Z3 has a
         // chance to signal an error. The SAFETY contract in `add_constraint_raw`
         // is unchanged; this check just rejects the cheap-to-detect failures.
-        // See PyO3 trust-model audit in docs/advanced-topics/rust_engine.rst.
+        // See "PyO3 API trust model" in docs/advanced-topics/rust_engine.rst.
         use z3_sys::{SortKind, Z3_get_sort, Z3_get_sort_kind};
         let z3_ctx_handle = z3::Context::thread_local();
         let raw_ctx = z3_ctx_handle.get_z3_context();

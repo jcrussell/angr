@@ -66,7 +66,7 @@
 //!    callstack, mmap_base, posix_brk) must be wired into all four
 //!    Python export paths in `_materialize_single_state`
 //!    (cached / parent-root / stepping / snapshot fallback). The
-//!    callstack sync added 2026-05-07 follows that pattern. If a new
+//!    callstack sync follows that pattern. If a new
 //!    FFI sync method is exposed here without updating all four paths,
 //!    some stash configurations will silently miss the sync.
 //!

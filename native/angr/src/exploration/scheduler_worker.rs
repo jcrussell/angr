@@ -549,7 +549,7 @@ fn reserve_admission(t: &WorkTransport, limit: usize, want: usize) -> usize {
 ///   `idle_workers`-worth (angr-fs8kb.5).
 ///
 ///   It used to shed HALF the backlog per production event, which is what made
-///   CADET_00001_partial collapse ~19x at `W=2` (angr-faorh): a chronically
+///   CADET_00001_partial collapse at `W=2` (angr-faorh): a chronically
 ///   imbalanced divergent frontier round-tripped a large fraction of the growing
 ///   frontier through full Z3 detach/reattach serde, and serde swamped compute.
 ///   One-per-idle-sibling is the smallest offload that still un-starves everyone

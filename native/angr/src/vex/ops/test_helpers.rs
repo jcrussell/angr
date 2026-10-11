@@ -15,7 +15,7 @@ use super::*;
 // ONLY that mechanical pack/unpack/assert skeleton out of the individual
 // tests. Expected-value arrays stay inline at each call site — they are
 // independent reference constants, never derived from the code under test
-// (vacuous-test audit, 2026-06-12), and the helpers must preserve that
+// (vacuous-test audit), and the helpers must preserve that
 // property (they never compute an expected value).
 // =========================================================================
 

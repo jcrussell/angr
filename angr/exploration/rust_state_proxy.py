@@ -1429,7 +1429,7 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
     # ---------------------------------------------------------------
     # SimMemoryMixin gap stubs (angr-8dop.2)
     #
-    # Step 4 parity validation (2026-06-04) found three benches failing
+    # Step 4 parity validation found three benches failing
     # with AttributeError on ``state.memory.permissions(...)`` /
     # ``.merge(...)`` and similar when the callback-install gate is on.
     # These stubs let bench code that calls into mprotect / merge logic

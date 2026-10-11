@@ -484,9 +484,8 @@ impl PyRustSimState {
     ///
     /// Inherited by every descendant via `fork()` so a single call on a
     /// seed state suffices. Default off — the slice-1c materialization
-    /// gate stays inert on plain `RustExplorationManager` runs to keep
-    /// the v5a5-spike BFS-thrash regression (defcon2016quals_baby-re ~10x
-    /// slowdown under default BFS) out of CI.
+    /// gate stays inert on plain `RustExplorationManager` runs (why:
+    /// `rust_engine_decisions.rst`, "Shared-lineage Z3 solver stays opt-in").
     #[cfg(feature = "vex-engine-z3")]
     #[pyo3(name = "set_use_shared_lineage_solver")]
     pub fn py_set_use_shared_lineage_solver(&self, enabled: bool) {

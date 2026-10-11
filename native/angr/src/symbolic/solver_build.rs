@@ -372,8 +372,8 @@ fn tactic_spec() -> &'static TacticSpec {
 /// `num-consts > N` threshold used by `qfbv_smart`. Override via
 /// `ANGR_Z3_QFBV_THRESHOLD`. 20 is the empirical pivot between bimodal
 /// hash-cracker problems (winners) and CTF-style small-problem benches
-/// (regressers) — see angr-ya00 measurements in
-/// `docs/advanced-topics/rust_engine.rst`.
+/// (regressers), per the angr-ya00 sweep; `rust_engine.rst` documents the
+/// `qfbv_smart` tactic.
 #[cfg(feature = "vex-engine-z3")]
 fn qfbv_smart_threshold() -> f64 {
     static THRESHOLD: std::sync::OnceLock<f64> = std::sync::OnceLock::new();

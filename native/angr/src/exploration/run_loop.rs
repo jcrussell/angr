@@ -21,9 +21,8 @@
 //! find/avoid addresses, and classifies the result into a `StepOutcome`.
 //!
 //! The pyclass-facing `run` wrapper lives in `manager_methods_run.rs`; the
-//! bodies here are `pub(crate)` methods on `RustExplorationManager`. That
-//! extension-impl split predates PyO3's `multiple-pymethods` feature (now
-//! enabled, angr-9ke6b.50) and is kept as a style choice.
+//! bodies here are `pub(crate)` methods on `RustExplorationManager` (an
+//! extension-impl module; see the [`exploration`](super) module doc).
 //!
 //! **Invariant I8 (exploration-loop termination)** is owned by the
 //! `angr/exploration/rust_manager.py` module docstring and enforced in

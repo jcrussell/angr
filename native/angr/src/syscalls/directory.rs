@@ -38,8 +38,8 @@
 //! yet (the FD content in `FileDescriptor::content` is a `Vec<u8>`,
 //! not a `SimFile`). Wiring the directory table without that
 //! foundation would let the Rust state report "deleted" when the
-//! Python proc would still find the file via `state.fs.get(path)`.
-//! Tracked as a follow-up bd alongside `angr-k3ol`.
+//! Python proc would still find the file via `state.fs.get(path)`
+//! (angr-k3ol).
 
 use super::{NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg, stub_syscall};
 use crate::state::RustSimState;

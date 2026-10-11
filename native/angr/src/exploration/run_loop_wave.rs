@@ -10,13 +10,10 @@
 //!
 //! Split out of `run_loop.rs` (angr-9ke6b.49) — no behavior change.
 //!
-//! **Panic policy / lint enforcement:** identical to [`run_loop`]
-//! — the crate ships with `panic = "abort"`, so a `MutexGuard` can never be
-//! poisoned by an unwind, and every `.expect()` here is a poison /
-//! session-live / pool-set invariant guard carrying a narrow
-//! `#[allow(clippy::expect_used, reason = ...)]`. This module re-states the
-//! `#![deny(clippy::unwrap_used, clippy::expect_used)]` so a *new* fallible
-//! unwrap must still be justified.
+//! **Panic policy:** see the crate-level [Panic policy](crate#panic-policy).
+//! Every `.expect()` here is a poison / session-live / pool-set invariant
+//! guard under a narrow `#[allow(clippy::expect_used, reason = ...)]`; the
+//! deny below makes a *new* fallible unwrap justify itself.
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use super::*;
@@ -106,9 +103,9 @@ impl RustExplorationManager {
         //
         // Measured on the 8-leaf pbounce synthetic
         // (`tests/engines/rust/test_parallel_wave.py`), `mgr.run(n=4096)`,
-        // same found/steps at every worker count: serial 0.19s / 0 drains vs
-        // workers=2 2.92s / 178 drains and workers=4 2.60s / 169 drains — a
-        // ~15x step-mode penalty for zero parallelism. The single-threaded loop
+        // same found/steps at every worker count, but the parallel runs pay a
+        // drain per wave and run an order of magnitude slower — a step-mode
+        // penalty for zero parallelism. The single-threaded loop
         // honors the same budget exactly and leaves the frontier in
         // `STASH_ACTIVE` by construction, so route there instead. It also
         // flushes `pending_parallel_bounces` on entry, so a queue a prior

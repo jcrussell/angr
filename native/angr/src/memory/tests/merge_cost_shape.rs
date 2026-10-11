@@ -10,7 +10,7 @@
 //! Question it answered: on a diamond CFG, does `SymbolicMemory::merge` cost
 //! scale with the *divergence* between the two arms, or with their *total* size?
 //!
-//! Answer, established here (state of the world as of 2026-07-15):
+//! Answer, established here against the pre-fix merge:
 //!   * The merge *then* walked EVERY shared page: it
 //!     `load_concrete(0, PAGE_SIZE)`d both sides (materializing 4 KB each) and
 //!     byte-compared all `PAGE_SIZE` bytes, even for pages neither arm touched

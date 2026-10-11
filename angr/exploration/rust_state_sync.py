@@ -1901,7 +1901,7 @@ class RustStateSyncMixin:
 
         Loads the SP page in a single bulk FFI call (pending_memory_load_page)
         then writes non-zero pointer-sized values to the Python state.
-        This is ~30x faster than 64 individual pending_memory_load calls.
+        This is much faster than one pending_memory_load call per slot.
 
         angr-ryf6: skip when the callback-memory-proxy gate is on and the
         proxy is already installed on ``state.memory`` — the writes would
@@ -2014,10 +2014,10 @@ class RustStateSyncMixin:
     def _apply_bundle_registers(self, state, registers: dict, reg_map: dict):
         """Fast-apply the callback bundle's concrete register values.
 
-        angr-gorvf.19: the export_callback_bundle register-apply loop was
-        ~98% of the ``sc_bundle`` phase — each concrete register went through
-        ``state.registers.store()``, a full memory-mixin traversal (~37us x
-        17 AMD64 registers = ~0.63ms/crossing). This applies the gorvf.10
+        angr-gorvf.19: the export_callback_bundle register-apply loop dominated
+        the ``sc_bundle`` phase — each concrete register went through
+        ``state.registers.store()``, a full memory-mixin traversal, on every
+        crossing. This applies the gorvf.10
         acquire-once lever to the register file: acquire the backing
         UltraPage(s) once and blit each concrete register straight into
         ``concrete_data`` (clearing ``symbolic_bitmap`` over the range, exactly

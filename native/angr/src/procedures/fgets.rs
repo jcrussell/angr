@@ -153,12 +153,10 @@ pub(crate) fn store_symbolic_line(
 /// regressed after the native fd-resolution landed, which is what motivated
 /// the carve-out).
 ///
-/// Measured (angr-42g67) by replacing the `Ok(0)` arm below with a
-/// propagating `Err`: a bench with a single stdin `fgets` loses a large
-/// fraction of its wall time to that one fallback, but the price is a
-/// *first*-fallback one dominated by one-time Python state-sync warmup, not a
-/// steady-state per-call cost — the write-side sibling amortizes to a few ms
-/// per call (bd memory `write-side-fileno-fallback-correct`).
+/// The cost of the fallback this avoids is a *first*-fallback one, dominated by
+/// one-time Python state-sync warmup rather than a steady-state per-call cost
+/// (angr-42g67; numbers in bd memory `fallback-cost-first-call-vs-amortized`,
+/// write-side sibling `write-side-fileno-fallback-correct`).
 ///
 /// A `FILE *` whose struct is unmapped in Rust can only be a cle standard
 /// stream — `fopen`'d files allocate their `_IO_FILE` in Rust memory (native

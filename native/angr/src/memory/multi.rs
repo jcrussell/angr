@@ -243,8 +243,7 @@ impl MultiPayload {
 /// argument cannot be called without the caller having flushed first — turning
 /// "a read path forgot to flush Multi cells before looking at
 /// `symbolic_objects`" (the angr-9ke6b.96/.83/.101 and angr-sqfj8.26/.27/.52/.71
-/// bug family) from a discipline lapse into a compile error. See the plan at
-/// `/home/ubuntu/.claude/plans/review-the-last-two-effervescent-starlight.md`.
+/// bug family) from a discipline lapse into a compile error.
 #[derive(Debug)]
 pub struct MultiFlushed(());
 

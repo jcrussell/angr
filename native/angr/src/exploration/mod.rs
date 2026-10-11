@@ -6,8 +6,17 @@
 //! - Only returns to Python for SimProcedures and syscalls
 //! - Implements find/avoid address checking in Rust
 //!
-//! This achieves ~3x speedup by keeping state management in Rust and
-//! minimizing Python callback overhead.
+//! Keeping state management in Rust and returning to Python only at those
+//! boundaries is where the engine's speed comes from; live timings are in
+//! `tests/benchmarks/baseline_timings.json`.
+//!
+//! # Extension-impl modules
+//!
+//! Several submodules (`helpers`, `stepping`, `run_loop`, `resume`,
+//! `pending_api`, `state_api`, `state_lifecycle`, `stats_api`) each hold a
+//! plain `impl RustExplorationManager` block rather than a `#[pymethods]`
+//! one. The split predates PyO3's `multiple-pymethods` feature (now enabled,
+//! angr-9ke6b.50) and is kept as a style choice.
 
 use crate::stash::{
     STASH_ACTIVE, STASH_AVOID, STASH_DEADENDED, STASH_ERRORED, STASH_FOUND, STASH_PRUNED,

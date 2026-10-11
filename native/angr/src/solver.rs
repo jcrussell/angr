@@ -263,7 +263,7 @@ impl RustSolverContext {
         // Fast path: try to extract raw Z3 AST from claripy's z3 backend.
         // This preserves the original AST structure (Python's claripy creates
         // different Z3 trees than our build_z3_ast_cached), avoiding the structural
-        // divergence that causes 3-7x slower Z3 solving.
+        // divergence that makes Z3 solving several times slower.
         #[cfg(feature = "vex-engine-z3")]
         {
             // angr-58ks: `add_constraint_raw` Bool-wraps its input by

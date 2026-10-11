@@ -474,7 +474,7 @@ fn test_neon_unimplemented_scaffold_is_empty() {
     // IROp::NeonUnimplemented(name) so dispatch returns
     // OpError::UnsupportedNeon carrying the original opcode name instead of
     // silently producing a fresh-symbolic value.
-    // As of angr-cudgw.6 no NEON op routes there anymore — the last
+    // No NEON op routes there anymore (angr-cudgw.6) — the last
     // placeholder, Iop_PwAdd32Fx2 (FP pairwise add), graduated to
     // IROp::VFPwAdd. This test guards that graduation: if Iop_PwAdd32Fx2
     // ever regresses back to the sentinel, this fails. When a future NEON

@@ -31,10 +31,9 @@
 //! ⊆ global_registry") and **C6** ("`CLARIPY_AST_CACHE` uses `std::HashMap`")
 //! both described the `CLARIPY_AST_CACHE` thread-local, which was dropped as
 //! dead in angr-4xaga.2. The survivors kept their original numbers so that the
-//! existing `C3`/`C4`/`C5` citations — in `cache.rs`, `export.rs` and
-//! `cache_tests.rs`, plus `C3` in `docs/advanced-topics/rust_engine.rst` —
-//! stayed valid;
-//! renumber only if every one of those is swept in the same commit.
+//! existing `C3`/`C4`/`C5` citations in `cache.rs`, `export.rs` and
+//! `cache_tests.rs` stayed valid; renumber only if every one of those is
+//! swept in the same commit.
 //!
 //! - **C1. EXPRESSION_ID sentinel boundary.** The `SymbolicIdentityRegistry`
 //!   leaf-AST keys are real leaf-symbol ids allocated by `SymContext::next_id`

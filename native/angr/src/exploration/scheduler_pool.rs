@@ -496,13 +496,11 @@ pub(super) fn worker_thread(
     //      `Z3_del_context` runs from `ContextInternal::drop` only once the LAST
     //      handle drops, so a cached `RustBV` outliving the `z3ctx` local keeps
     //      the underlying context alive rather than dangling. Drop order is
-    //      irrelevant. (The pre-Rc z3-rs lifetime model that motivated the
-    //      original wording was superseded by commit d604c1f04.)
+    //      irrelevant.
     //   2. The "a panic unwinds past this call and destructors run later against
     //      a freed context" sequence needs unwinding, and the shipped build has
-    //      none: root Cargo.toml sets `panic = "abort"` (angr-1cue) — the same
-    //      property the "Panic policy" header at the top of this module relies
-    //      on. A panic aborts the process at the panic site.
+    //      none (crate-level "Panic policy"): a panic aborts the process at
+    //      the panic site.
     crate::claripy_bridge::clear_worker_local_caches();
     // Shutdown / channel closed / coordinator gone: `z3ctx` drops here.
 }

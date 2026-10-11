@@ -35,7 +35,7 @@
 //! # State metadata + fork invariants
 //!
 //! The invariants below cross the FFI boundary in addition to (or instead
-//! of) I1–I8 above. Each bullet is stated in full here and its backticked
+//! of) the I-bullets above. Each bullet is stated in full here and its backticked
 //! label is an anchor for this file only — not a bd memory key — except
 //! where the bullet says otherwise. Enforcement-site comments below
 //! cross-reference back to this header rather than duplicating the prose.

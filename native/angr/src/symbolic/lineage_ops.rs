@@ -21,8 +21,8 @@
 //! - The test-only `local_z3_assertions_len` reads `local_constraints`.
 //!
 //! See bead angr-a2br.2.4 for the slice plan and
-//! `rust_z3_sharing.rst` for the fork/merge atomic-snapshot invariant that
-//! gates which methods stay in `context.rs`.
+//! `rust_z3_sharing.rst` "Interaction with `SharedLineageSolver`" for the
+//! lineage invariants that gate which methods stay in `context.rs`.
 //!
 //! Lives as a second `impl SymContext` block in a child module of `symbolic`;
 //! `pub(super)` (== `pub(in crate::symbolic)`) keeps the promoted fields
@@ -149,8 +149,8 @@ impl SymContext {
     ///
     /// **Do NOT default this on for any single exploration strategy.** The
     /// angr-ua1i proposal — flip default-on for `strategy='dfs'` — is
-    /// the wrong direction: both the canonical WIN canary (ais3_crackme
-    /// 1.24x) and LOSE canary (defcon2016quals_baby-re 6.79x slower) run
+    /// the wrong direction: both the canonical WIN canary (ais3_crackme)
+    /// and LOSE canary (defcon2016quals_baby-re) run
     /// BFS in the bench harness, so strategy is not the discriminator.
     /// The replacement is runtime thrash detection in
     /// [`super::lineage::sample_for_thrash`], which is strategy-agnostic

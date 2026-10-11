@@ -316,12 +316,9 @@ pub struct SymContext {
     /// Opt-in flag for fork-time `SharedLineageSolver` materialization
     /// (angr-3ms1 step 1b) — the master switch for the whole feature.
     ///
-    /// When `true`, [`fork`](Self::fork) mints a fresh
-    /// `SharedLineageSolver` on every fork, subject to two further gates:
-    /// `bare_z3_push_depth == 0` (step 1a's correctness gate) and the
-    /// lineage-dismantle detector not having fired. When `false` (the
-    /// default), `fork()` propagates the parent's lineage Arc unchanged —
-    /// `None` unless something opted in upstream, so no lineage is
+    /// The gates [`fork`](Self::fork) applies on top of this flag are
+    /// documented on `fork` itself. When `false` (the default), `fork()`
+    /// propagates the parent's lineage Arc unchanged, so no lineage is
     /// installed and the per-context solver path is used throughout.
     ///
     /// Set per-state via [`set_use_shared_lineage_solver`](Self::set_use_shared_lineage_solver)
@@ -329,12 +326,8 @@ pub struct SymContext {
     /// lineage opt-in on a seed state propagates to every descendant
     /// without per-fork plumbing on the Python side.
     ///
-    /// Kept default-off because the v5a5 spike found that
-    /// unconditional fork-time materialization regresses
-    /// defcon2016quals_baby-re ~10x under default BFS exploration. The
-    /// opt-in lets the slice-2 canary measure the lineage win on
-    /// DFS/per-state-batched workloads without touching the default CI
-    /// gate.
+    /// Why it stays default-off: `docs/advanced-topics/rust_engine_decisions.rst`,
+    /// "Shared-lineage Z3 solver stays opt-in".
     #[cfg(feature = "vex-engine-z3")]
     pub(super) use_shared_lineage_solver: AtomicBool,
 }

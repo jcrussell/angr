@@ -9,13 +9,10 @@
 //!
 //! Split out of `run_loop.rs` (angr-9ke6b.49) — no behavior change.
 //!
-//! **Panic policy / lint enforcement:** identical to [`run_loop`]
-//! — the crate ships with `panic = "abort"`, so a `MutexGuard` can never be
-//! poisoned by an unwind, and every `.expect()` here is a poison /
-//! session-live / pool-set invariant guard carrying a narrow
-//! `#[allow(clippy::expect_used, reason = ...)]`. This module re-states the
-//! `#![deny(clippy::unwrap_used, clippy::expect_used)]` so a *new* fallible
-//! unwrap must still be justified.
+//! **Panic policy:** see the crate-level [Panic policy](crate#panic-policy).
+//! Every `.expect()` here is a poison / session-live / pool-set invariant
+//! guard under a narrow `#[allow(clippy::expect_used, reason = ...)]`; the
+//! deny below makes a *new* fallible unwrap justify itself.
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use super::*;
