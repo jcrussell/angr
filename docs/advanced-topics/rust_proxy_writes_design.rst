@@ -30,9 +30,8 @@ Rust engine: proxy-backed SimState writes — design comparison
    model, not the queued-mutation plugin substitution this doc
    compared against.
 
-This document is the design-phase deliverable for the parking bead
-``angr-g7ug`` ("Proxy-backed SimState writes — eliminate
-_compute_register_changes diff-and-push").
+This document compares designs for eliminating the callback-boundary
+diff-and-push (``angr-g7ug``).
 
 Audience: contributors deciding whether to replace the existing
 SimProcedure callback boundary with a proxy-plugin design.
@@ -46,7 +45,7 @@ control across the PyO3 boundary and the SimProcedure mutates an
 angr ``SimState`` via the standard plugin API (``state.regs.rax = …``,
 ``state.memory.store(…)``, ``state.solver.add(…)``). When the
 SimProcedure returns, those mutations have to be reflected in the
-Rust canonical state. Today's mechanism is a diff-and-push pass:
+Rust canonical state. The design-time mechanism was a diff-and-push pass:
 
 #. **Before** the callback runs, the manager snapshots register
    values into a lightweight dict (or, for memory-writing procedures,
@@ -68,7 +67,7 @@ This works (Rust stays canonical because every delta is reliably
 reflected) but is O(num_registers) per callback plus the changed-bytes
 scan over any modified pages, plus per-symbolic-value AST re-export.
 
-The parking bead's hypothesis is that we could eliminate the
+The hypothesis under test was that we could eliminate the
 diff-and-push pass by giving the callback ``SimState`` proxy-backed
 ``regs`` / ``memory`` / ``solver`` plugins that mutate Rust
 synchronously, on every store.
@@ -146,10 +145,9 @@ Pros
 * **Aligns with the already-proxy solver path.** Constraints
   already write through immediately via ``_rust_add``. Registers
   and memory becoming write-through closes the asymmetry.
-* **Plugin restoration may be unblockable.** The bead description
-  notes the interaction with ``angr-2k64`` (per-state-id plugin
-  cache); if posix.stdin reads/writes go directly to Rust, the
-  cache may be redundant.
+* **Plugin restoration may be unblockable.** Option A interacts with
+  the per-state-id plugin cache (``angr-2k64``): if posix.stdin
+  reads/writes go directly to Rust, the cache may be redundant.
 * **Inspect wiring is more straightforward.** Each write fires an
   inspect event at the proxy call site, no diff-scanning needed to
   reconstruct what changed.
@@ -410,16 +408,14 @@ write-through contract").
 References
 ----------
 
-* Parent bead: ``angr-g7ug`` (parking) — proxy-backed SimState
-  writes design.
-* Adjacent bead: ``angr-2k64`` (per-state-id plugin restoration)
-  — would interact with Option A's plugin substitution.
-* Adjacent bead: ``angr-9maq`` (mma_howtouse state_create cost) —
-  the dominant cost on Callable-heavy benches is *not* sync-back.
-* Adjacent bead: ``angr-uq4n.2`` (inspect marshalling MVP) —
-  emits events at the boundary today; Option A would emit at
-  each write.
-* Code under audit:
+* Provenance: ``angr-g7ug`` (this comparison and its measurements).
+* Per-state-id plugin restoration (``angr-2k64``) would interact with
+  Option A's plugin substitution.
+* On Callable-heavy benches the dominant cost is state creation, not
+  sync-back (``angr-9maq``).
+* Inspect marshalling (``angr-uq4n.2``) emits events at the callback
+  boundary; Option A would emit at each write.
+* Code involved:
 
   * ``angr/exploration/rust_state_sync.py`` (``_snapshot_registers``,
     ``_extract_register_changes``) — diff-and-push implementation.

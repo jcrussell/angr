@@ -36,8 +36,9 @@ extract the raw ``Z3_ast`` out of claripy's ``z3`` backend via
 build pipeline guarantees both sides resolve ``libz3.so`` to the same
 on-disk file at process startup.
 
-The solver surface is split across three files (angr-9ke6b.205), two of
-which contribute ``#[pymethods]`` to the same ``RustSolverContext``:
+The solver surface is split across the files below (angr-9ke6b.205);
+``solver.rs`` and ``handle_api.rs`` both contribute ``#[pymethods]`` to the
+same ``RustSolverContext``:
 
 * ``native/angr/src/solver.rs`` — the Python-boundary error mapping and
   the claripy-AST API (``add_constraint_ast``, ``eval*``, ``min``,
@@ -47,7 +48,7 @@ which contribute ``#[pymethods]`` to the same ``RustSolverContext``:
   arithmetic wrappers), which never builds a claripy AST at all.
 * ``native/angr/src/solver/z3_ast_extract.rs`` — raw ``Z3_ast``-pointer
   extraction, sort-checked wrapping and evaluation; every ``unsafe`` on
-  this surface lives here. Unlike the other two it exports *no*
+  this surface lives here. Unlike its siblings it exports *no*
   ``#[pymethods]``: ``Z3AstPtr`` owns a Z3 refcount and is not
   PyO3-bridgeable, so these are internal helpers the claripy-AST API in
   ``solver.rs`` calls.

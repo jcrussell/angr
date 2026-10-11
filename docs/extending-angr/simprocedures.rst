@@ -628,7 +628,14 @@ both invoked except when native fails):
    ``ANGR_RUST_PREFER_NATIVE_LIBRARY_HOOKS=0``) sends them to Python
    instead. The gate is
    ``prefer_native_dispatch`` in
-   ``native/angr/src/exploration/execution_env.rs``.
+   ``native/angr/src/exploration/execution_env.rs``. Serving libc hooks
+   natively is safe on symbolic input because the native string
+   procedures cap their symbolic scan window at Python's
+   ``buf_symbolic_bytes`` (``MAX_SYMBOLIC_SCAN_BYTES`` in
+   ``procedures::strings``); the residual divergences are conservative
+   (Python swaps in a fresh BVS past a recursion depth of 3, and searches
+   a narrower concrete window), so a native proc cannot kill a state
+   that Python would keep.
 2. **Per-name Python override skips native.**
    ``set_python_override("strlen")`` makes ``registry.get("strlen")``
    return ``None`` so dispatch falls through to the Python
@@ -764,7 +771,7 @@ falling back to Python only when a tier's work budget is blown. Source:
        }
    }
 
-The three tiers, from cheapest to most expensive:
+The tiers, from cheapest to most expensive:
 
 1. **All concrete** — ``copy_forward`` moves the bytes in 8-byte
    chunks. ``check_max(size, MAX_COPY_SIZE)`` (1MB) rejects

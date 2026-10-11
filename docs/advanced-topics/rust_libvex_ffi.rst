@@ -7,13 +7,13 @@ libVEX FFI native lifting
    default flip ``angr-3trr7``). This page keeps the feasibility argument
    (why binding pyvex's own libVEX is parity-safe), the build and link
    recipe, where the native lifter gets its bytes, how to run the parity
-   gate, and the hazards a default-on build had to answer. The runnable
+   gate, and the hazards that apply to a default-on build. The runnable
    probe behind the feasibility verdict is ``tools/probe-libvex-ffi.py``.
 
 Motivation
 ----------
 
-Cold VEX block lifts currently go
+Without native lifting, cold VEX block lifts go
 Rust → Python callback → pyvex (libVEX) → serialize ``IRSB`` to JSON → Rust
 deserialize (``native/angr/src/vex/pyvex_bridge.rs``). Most of that time is
 GIL acquisition and the JSON round-trip; libVEX itself is a small fraction.
@@ -50,7 +50,7 @@ All three feasibility unknowns resolve GO against the *installed* pyvex wheel
 
 3. **Parity.** The link target is the *same object file* pyvex loads in-process,
    so a native lift through ``vex_lift`` is byte-for-byte what the Python
-   callback path produces today — no divergence risk from opt-levels, arch/endness
+   callback path produces — no divergence risk from opt-levels, arch/endness
    options, or VEX guest/host setup, because those live inside ``vex_lift``.
 
 The exact-config shim, from ``pyvex.vex_ffi.ffi_str``:
@@ -143,10 +143,14 @@ Default-on on AMD64
 -------------------
 
 ``RustExplorationManager(use_native_lift=...)`` defaults to **True**
-(``angr-op0dn.2.2``) and is double-guarded: it only reaches
-``set_native_lift_enabled(True)`` when ``libvex_ffi_enabled()`` is true
-(the ``.so`` was built with the feature) *and* the project arch is one
-``ffi_vex_arch`` accepts.
+(``angr-op0dn.2.2``) and is double-guarded: ``RustExplorationManager.__init__``
+in ``rust_manager.py`` only calls ``set_native_lift_enabled(True)`` when
+``libvex_ffi_enabled()`` is true (the ``.so`` was built with the feature)
+*and* ``project.arch.name == "AMD64"``. That Python check is the gate that
+makes native lift AMD64-only. The Rust lifter itself is wider:
+``ffi_vex_arch`` in ``vex/libvex_lifter.rs`` maps AMD64, ARM, ARM64, MIPS32
+and MIPS64 to a libVEX guest and returns ``None`` for X86, PPC32, PPC64 and
+S390X.
 
 It is on by default because it is parity-safe and never a loss: it binds
 the same libVEX with the same configuration as pyvex (see *Why binding
@@ -189,9 +193,10 @@ The ``libvex-ffi`` cargo feature is built **by default** by ``setup.py``
 (``angr-3trr7``): a stock ``pip install angr`` / ``pip install -e .`` on
 an ELF (Linux) or Mach-O (macOS) platform links the native libVEX lifter, so the
 default above reaches every stock AMD64 build. ``use_native_lift`` defaults
-to True and is double-guarded on ``libvex_ffi_enabled()`` — now satisfied on a
-stock ``.so`` — so cold blocks go out through the native lifter, falling back to
-the pyvex callback only on a lift error or a non-AMD64 arch.
+to True and is double-guarded on ``libvex_ffi_enabled()`` (satisfied on a
+stock ``.so``) and the AMD64 arch check, so cold blocks go out through the
+native lifter, falling back to the pyvex callback on a lift miss; on any
+other arch every cold block uses the callback.
 
 To opt **out** (the escape hatch) and restore the pyvex-callback lift path:
 
@@ -208,26 +213,31 @@ table cannot express a conditional feature, so the append happens in the
 (e.g. Windows, where pyvex ships no shared object), the feature is dropped and
 the build falls back to the callback path rather than failing.
 
-The three hazards a default-flip had to answer (bd ``angr-x5kmr``), and how each
-is resolved:
+Hazards that apply to the default-on build, and how each is handled
+(``angr-x5kmr``):
 
-1. **Wheels would double-vendor libVEX.** ``build.rs`` emits
-   ``-Wl,-rpath,<venv>/site-packages/pyvex/lib``. Under ``cibuildwheel`` the
-   repair step would copy ``libpyvex.so`` into the wheel — the process would then
-   hold *two* copies of libVEX with independent ``vex_control`` and arena
-   globals, voiding the same-``.so`` parity argument. **Resolved:**
-   ``.github/workflows/wheels.yml`` now excludes ``libpyvex.so`` from the repair
-   step (``auditwheel --exclude libpyvex.so`` on Linux, ``delocate --exclude
-   libpyvex`` on macOS) and relativizes the runpath to ``$ORIGIN/../pyvex/lib``
-   (``@loader_path/../pyvex/lib`` on macOS), exactly mirroring the ``libz3``
-   handling. The wheel therefore resolves the *user's* installed pyvex at
-   runtime. Windows ships no ``libpyvex.so``, so that leg auto-degrades to the
-   callback path and needs no repair change.
-2. **The bench baselines were measured on the callback lift path.**
-   **Resolved:** ``baseline_timings.json`` is refreshed in the same commit as the
-   default flip, so the fast-tier gate measures against native-lift timings.
-3. **New build-time dependency.** The feature pulls ``dep:bindgen``, i.e.
-   libclang, on anyone building from source. **Accepted:** libclang is now a
-   documented build-time dependency for source installs (the CI Linux/macOS
-   legs already provide it for ``z3-sys`` bindgen). Set ``ANGR_LIBVEX_FFI=0`` to
-   build without it.
+1. **Wheels must not double-vendor libVEX.** ``build.rs`` emits
+   ``-Wl,-rpath,<venv>/site-packages/pyvex/lib``. Left alone, the
+   ``cibuildwheel`` repair step would copy ``libpyvex.so`` into the wheel, and
+   the process would then hold *two* copies of libVEX with independent
+   ``vex_control`` and arena globals, voiding the same-``.so`` parity argument.
+   ``.github/workflows/wheels.yml`` therefore excludes ``libpyvex`` alongside
+   ``libz3`` in the repair step (``auditwheel repair --exclude libz3.so
+   --exclude libpyvex.so`` on Linux, ``delocate-wheel --exclude libz3 --exclude
+   libpyvex`` on macOS) and sets the extension's runpath to
+   ``$ORIGIN/../z3/lib:$ORIGIN/../pyvex/lib`` (``@loader_path/../z3/lib`` and
+   ``@loader_path/../pyvex/lib`` on macOS). The wheel resolves the *user's*
+   installed z3-solver and pyvex at runtime. Windows ships no ``libpyvex.so``,
+   so that leg auto-degrades to the callback path and needs no repair change.
+   :doc:`rust_wheel_distribution` covers the full repair recipe.
+2. **Bench baselines must be measured on the native lift path.**
+   ``baseline_timings.json`` is recorded with the stock (feature-on) build, so
+   the fast-tier gate measures against native-lift timings; a baseline
+   refreshed from an ``ANGR_LIBVEX_FFI=0`` build would hide a native-lift
+   regression.
+3. **Build-time dependency on libclang.** The feature pulls ``dep:bindgen``,
+   i.e. libclang, on anyone building from source. libclang is a documented
+   build-time dependency for source installs regardless of this feature:
+   ``z3-sys`` also generates its bindings with bindgen, so an
+   ``ANGR_LIBVEX_FFI=0`` build still needs it (see the *Prerequisites* in
+   :doc:`rust_build`).

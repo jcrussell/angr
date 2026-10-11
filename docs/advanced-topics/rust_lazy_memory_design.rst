@@ -24,16 +24,14 @@ Rust engine: lazy symbolic memory — design
      ``multi_objects`` has an entry; ``set_multi_alternatives`` is the
      only installer.
 
-This document is the design phase deliverable for the lazy symbolic
-memory work tracked by ``angr-pogf``. It captured the state before any
-of the children landed — at the time of writing, the Rust engine still
-used eager concretization for symbolic-address stores. The implementation
-children were ``angr-czph`` (lazy LOAD) and ``angr-qh5u`` (lazy STORE).
+The body below is the design as proposed (``angr-pogf``), written against
+an engine that still concretized symbolic-address stores eagerly. Lazy LOAD
+(``angr-czph``) and lazy STORE (``angr-qh5u``) implemented it, with the
+deviations listed in the note above.
 
-Audience: contributors implementing the children, and reviewers
-deciding whether to land the design or push back on it.
-
-Status (historical): **proposed, not implemented** at time of writing.
+Audience: contributors changing the lazy-memory path who need the
+reasoning behind the shipped shape and the alternatives it was weighed
+against.
 
 
 Why this work
@@ -118,7 +116,7 @@ Two pieces in Python make the same workloads cheap:
    ``MultiValues``. The annotation just widens the candidate set
    beyond a single Max solution.
 
-So the "MultiwriteAnnotation pattern" in the bead description is
+So the "MultiwriteAnnotation pattern" (``angr-pogf``) is
 really shorthand for the combined behavior: concretize to a range of
 addresses, but record alternative values per byte instead of folding
 into an ITE.
@@ -336,9 +334,8 @@ Open questions
 References
 ----------
 
-* Parent bead: ``angr-pogf`` — this design.
-* Children: ``angr-czph`` (Phase 1, LOAD), ``angr-qh5u`` (Phase 2,
-  STORE).
+* Provenance: ``angr-pogf`` (this design), ``angr-czph`` (Phase 1,
+  LOAD), ``angr-qh5u`` (Phase 2, STORE).
 * Existing user-facing engine doc: :doc:`rust_engine` ("Benchmarks
   slower than Python").
 * Python comparator: ``angr/storage/memory_mixins/address_concretization_mixin.py``

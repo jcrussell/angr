@@ -44,9 +44,19 @@ latitude that these keys do not bind. The supported determinism knob is
 :doc:`rust_engine`.
 
 **``sat-preprocess`` tactic pipelines are unsafe** (``angr-ya00``). An
-``ANGR_Z3_TACTIC`` pipeline beginning with ``sat-preprocess`` produced
-incorrect results on two benches; ``qfbv`` alone is the only non-default
-tactic that has been validated.
+``ANGR_Z3_TACTIC`` pipeline beginning with ``sat-preprocess``
+(``sat-preprocess:qfbv`` was the one tried) produced incorrect results on
+``csgames2018`` and ``securityfest_fairlight``, surfacing as
+``IndexError: list index out of range`` from the post-solve goal unwrap;
+``qfbv`` alone is the only non-default tactic that has been validated.
+
+**Z3-bound benchmarks are a solver floor, not engine work**
+(``angr-9w6ad``, ``angr-34w``). The benches that stay slower than Python
+spend their wall time in ``solver.check()`` / ``eval_upto``; two
+independent spikes (deterministic seeding, a lazy-solving engagement
+audit) found no engine-side lever. They are tracked as bimodal
+(:doc:`rust_bimodal_variance`) and are not re-triaged as optimization
+candidates.
 
 Memory and allocation
 ---------------------
@@ -60,10 +70,12 @@ hot path.
 
 **Lazy memory shipped as a sidecar, not a ``Multi`` byte-cell variant**
 (:doc:`rust_lazy_memory_design`). The design memo recommended a new
-page-cell variant; what shipped keeps the page store untouched and
-tracks symbolic objects in a side index, because that left every
-concrete fast path byte-identical and merge semantics expressible per
-field.
+page-cell variant; what shipped keeps each page's byte array concrete
+and stores the alternatives in a ``multi_objects`` sidecar on
+``SymbolicMemory``, with only a per-page ``multi_bitmap`` (parallel to
+``symbolic_bitmap`` on ``MemoryPage`` in ``memory/page.rs``) marking which
+bytes are Multi. That left every concrete fast path byte-identical and
+merge semantics expressible per field.
 
 Parallelism
 -----------
@@ -105,20 +117,16 @@ network transport moves it the wrong way:
   on those benches is large; the migration count is already over
   break-even between threads, so a slower hop cannot win it back.
 
-**Z3-bound benchmarks are a solver floor, not engine work**
-(``angr-9w6ad``, ``angr-34w``). The benches that stay slower than Python
-spend their wall time in ``solver.check()`` / ``eval_upto``; two
-independent spikes (deterministic seeding, a lazy-solving engagement
-audit) found no engine-side lever. They are tracked as bimodal
-(:doc:`rust_bimodal_variance`) and are not re-triaged as optimization
-candidates.
-
 State proxy
 -----------
 
-**Diff-and-push proxies (Option B) rejected; write-through shipped**
-(:doc:`rust_proxy_writes_design`). The memo chose to keep the
-read-mostly proxy with an explicit diff-and-push at callback exit; the
-measured cost of re-syncing whole pages per callback reversed that, and
-``RustStateProxy`` writes now go straight to the Rust state. The
-write-through contract is in :doc:`rust_engine`.
+**Diff-and-push (Option C) kept at design time; write-through shipped
+anyway** (:doc:`rust_proxy_writes_design`). The memo chose to keep the
+read-mostly proxy with an explicit diff-and-push at callback exit
+(Option C, the status quo) over proxy-backed plugins (Option A) and a
+tracked-writes log (Option B). Write-through to the Rust state then
+shipped for ``RustStateProxy`` register and memory writes, and the
+measured cost of re-syncing whole pages per callback moved callback
+memory onto the proxy by default; registers and constraints keep
+diff-and-push at the callback boundary. The write-through contract is
+in :doc:`rust_engine`.

@@ -35,20 +35,19 @@ Overview
   concretization-strategy family, and a handful honored transparently
   because their only consumer runs in Python). Everything else is
   either inherited from Python or silently ignored — see the matrix.
-* **Full** ``state.inspect`` **dispatch.** The Rust engine dispatches all
-  ``state.inspect`` events to Python BPs: ``mem_read``, ``mem_write``,
-  ``reg_read``, ``reg_write``, ``instruction``, ``irsb``, ``exit``,
-  ``call``, ``return``, ``simprocedure``, ``syscall``, ``dirty``,
-  ``tmp_read``, ``tmp_write``, ``statement``, ``expr``,
+* ``state.inspect`` **dispatch.** The Rust engine dispatches every
+  *engine* ``state.inspect`` event to Python BPs: ``mem_read``,
+  ``mem_write``, ``reg_read``, ``reg_write``, ``instruction``, ``irsb``,
+  ``exit``, ``call``, ``return``, ``simprocedure``, ``syscall``,
+  ``dirty``, ``tmp_read``, ``tmp_write``, ``statement``, ``expr``,
   ``address_concretization``, ``symbolic_variable``, ``fork``,
-  ``constraints``, and ``vex_lift``. The last pair each fire from two
-  origins: ``constraints`` from the Python proxy solver
-  (``state.solver.add`` in a SimProcedure) *and* from the fork-guard
-  constraints the engine adds natively; ``vex_lift`` from the Python lift
-  callback (Rust block-cache miss → ``_cb_lift_block``) *and* from the
-  feature-gated native in-process libVEX lift. On the native origin of
-  each, a ``BP_BEFORE`` mutation of the staged attrs is not honored — the
-  guard is already a Rust BV, and the block's bytes are already lifted.
+  ``constraints``, and ``vex_lift``. Events that fire from angr
+  components outside the engine (``engine_process``,
+  ``memory_page_map``, the ``cfg_*`` / ``vfg_*`` events) raise
+  ``NotImplementedError`` at registration. See
+  :ref:`state.inspect dispatch <advanced-topics/rust_engine:state.inspect dispatch>`
+  for the attribute table, the write-back rules, and the two-origin
+  caveats on ``constraints`` and ``vex_lift``.
 * **Performance:** faster than Python on most benchmarks, with a small
   number of known slower cases driven by Python-side callback pressure
   or bimodal Z3 solver nondeterminism — see *Benchmarks slower than
@@ -156,8 +155,10 @@ diverging. The routing decision is always readable afterwards on
 ``mgr.dispatch_reason``.
 
 A workload is ineligible (and so routes to Python) when any of these
-hold: the Rust extension is not built; the architecture is not one of
-the six the Rust interpreter implements; a seeding state carries a
+hold: the Rust extension is not built; the architecture is not one
+the Rust interpreter implements (the ``ALL_ARCHES`` registry in
+``native/angr/src/arch/registry.rs``: X86, AMD64, ARM, ARM64, MIPS32,
+MIPS64); a seeding state carries a
 raise-listed SimOption (``_RAISE_OPTION_NAMES`` — the ``TRACK_*_ACTIONS``
 family, the eager-solve options, …) or lacks a required one
 (``_REQUIRED_OPTION_NAMES``); the caller passed a
@@ -170,7 +171,7 @@ its option sets with the manager's own construction guard, so the two
 cannot drift. The decision is logged at debug level and recorded on the
 returned manager as ``mgr.dispatch_reason``.
 
-Auto mode is **opt-in**. There are three doors, in increasing scope:
+Auto mode is **opt-in**. The doors, in increasing scope:
 
 .. code-block:: python
 
@@ -197,8 +198,9 @@ plain Python ``SimulationManager``, exactly as it always has.
 
 .. note::
 
-   Timing under auto dispatch is not comparable run-to-run for the five
-   bimodal-Z3 benchmarks — the Rust engine inherits their solver-path
+   Timing under auto dispatch is not comparable run-to-run for the
+   bimodal-Z3 benchmarks (``BIMODAL_BENCHMARKS`` in
+   ``tests/benchmarks/run_regression.py``) — the Rust engine inherits their solver-path
    variance, which is a permanent property of the workloads, not a
    regression. See :doc:`rust_bimodal_variance`.
 
@@ -225,7 +227,7 @@ O(1) per state, no ``SimState`` plugin chain, no cache sync:
    for proxy in mgr.found_proxies():
        print(hex(proxy.solver.eval(stdin_var)))
 
-The five accessors are ``mgr.found_proxies()``,
+The accessors are ``mgr.found_proxies()``,
 ``mgr.active_proxies()``, ``mgr.avoid_proxies()``,
 ``mgr.deadended_proxies()``, and ``mgr.unconstrained_proxies()``. They
 are direct shortcuts to ``mgr.proxy.<stash>`` for callers who do not
@@ -297,11 +299,11 @@ Implementation notes:
   later ``proxy.solver.add(reg == K)`` constraints land on the live
   symbol Rust is tracking.
 
-If the diff-and-push cost surfaced in earlier benchmarks becomes a
-concern again, the queueing strategy in the ``angr-j28e`` design
-(flush only on actually-written proxies at the next safe boundary) is
-available as a follow-up optimization. The fast-tier benchmark gate
-catches any regression > 15 %.
+Write-through costs one PyO3 call per write; the fast-tier benchmark
+gate (see :doc:`rust_build`) catches a regression in that cost. The
+alternatives that were weighed against it, including deferring the flush
+to the next safe boundary, are compared in
+:doc:`rust_proxy_writes_design`.
 
 Architecture
 ------------
@@ -347,7 +349,7 @@ definition, with a ``#[merge_policy = "..."]`` attribute that
 Adding a field without a policy — or with a mistyped one — is a
 ``compile_error!``, so "the struct literal in ``merge`` silently reused
 ``self.x.clone()`` and nobody decided that was correct" cannot hide
-among the other forty labels.
+among the other labels.
 
 The vocabulary (see ``VALID_MERGE_POLICIES`` in
 ``native/angr-macros/src/lib.rs`` for the authoritative list):
@@ -396,7 +398,7 @@ The vocabulary (see ``VALID_MERGE_POLICIES`` in
        longest-stdout scan; ``hooks``, which has to read its
        ``removed_hooks`` sibling).
 
-For the five *generated* policies the derive emits a private
+For each *generated* policy (``Generated?`` = yes above) the derive emits a private
 ``fn merge_field_<name>(&self, others: &[&Self]) -> FieldTy`` whose
 body **is** the policy, and ``merge`` must call it: an uncalled private
 method is ``dead_code``, which CI's ``-D warnings`` turns into a build
@@ -481,65 +483,60 @@ each independently grew a raw dispatch before the helper existed.
 Architecture support matrix
 ---------------------------
 
-Only AMD64 is exercised end-to-end. Other architectures have register
-and state plumbing wired up, and (mostly) calling-convention
-definitions, but limited or no binary-driven coverage. Treat anything
-below "Supported" as experimental.
+Every architecture in the table below is driven end-to-end through
+both cle loaders by the ``test_explore_solves_for_42`` sweep in
+``tests/engines/rust/test_multiarch.py`` (one row per
+``tests/engines/rust/arch_specs.py::ARCH_SPECS`` entry) and has at least
+one benchmark in ``tests/benchmarks/baseline_timings.json``. AMD64 is by
+far the most deeply exercised: it carries the fauxware integration suite
+and most of the benchmark corpus. The other architectures are covered by
+the multi-arch sweep plus the per-arch tests and benchmarks named below,
+so a workload that leans on rarely-used instructions is more likely to
+hit an unimplemented op there (see :doc:`../extending-angr/rust_vex_ops`).
+Architectures not in the table run only on the Python engine.
 
 .. list-table::
    :header-rows: 1
-   :widths: 15 12 22 12 22 17
+   :widths: 13 32 25 12 18
 
    * - Arch
-     - Unit tests
-     - Integration tests
+     - Integration tests (beyond the multi-arch sweep)
      - Benchmarks
      - Calling conv
      - Status
    * - AMD64
-     - ~110+
-     - ~268 (fauxware)
-     - 16
-     - SystemV, MS x64
+     - fauxware suite
+     - most of the corpus
+     - SystemV
      - Supported (gs_const at archinfo offset 1032; sseround at 216)
    * - x86 (32-bit)
-     - 4
-     - 2 (Cdecl ret reg, LE blob)
-     - 9 (8 rust + CADET_00001 python-only)
+     - Cdecl ret reg, LE blob
+     - CADET_00001 (python-only) and the Windows i386 binaries named in the single-CC note below
      - Cdecl
      - Supported (selectors: CS/DS/ES/FS/GS/SS; bases: LDT/GDT + FS_CONST/GS_CONST placeholders)
    * - ARM (32-bit)
-     - 3
-     - 3 (LE validate, LE native-proc, BE blob)
-     - 2 (arm_le_branch synthetic + android_arm_license_validation real ELF)
+     - LE validate, LE native-proc, BE blob
+     - ``arm_le_branch`` (synthetic), ``android_arm_license_validation`` (real ELF)
      - ARMEABI
      - Supported
    * - ARM64
-     - 2
-     - 4 (blob branch, NEON mla, real ELF, native-proc)
-     - 1 (aarch64_le_branch synthetic)
+     - blob branch, NEON mla, real ELF, native-proc
+     - ``aarch64_le_branch`` (synthetic)
      - AArch64
      - Supported
    * - MIPS32
-     - 5
-     - 3 (BE blob, LE real ELF, native-proc)
-     - 1 (mips32_le_branch synthetic)
+     - BE blob, LE real ELF, native-proc
+     - ``mips32_le_branch`` (synthetic)
      - MipsO32
      - Supported (full-ABI: GPRs, FPU F0-F31, HI/LO, FCR)
    * - MIPS64
-     - 1
-     - 3 (LE real ELF, BE real ELF, native-proc)
-     - 2 (mips64_le_branch + mips64_be_branch synthetics)
+     - LE real ELF, BE real ELF, native-proc
+     - ``mips64_le_branch``, ``mips64_be_branch`` (synthetics)
      - MipsN64
      - Supported (full-ABI: GPRs, FPU F0-F31, HI/LO, FCR)
 
-The per-arch *Benchmarks* counts above are a snapshot of
-``tests/benchmarks/baseline_timings.json`` at the time of writing (31
-entries total: 16 AMD64, 9 x86, 2 ARM, 1 ARM64, 1 MIPS32, 2 MIPS64).
-That corpus grows over time (see the ``angr-vx8p`` bench-expansion epic),
-so treat these as indicative — run
-``jq 'keys | length' tests/benchmarks/baseline_timings.json`` for the
-live total.
+``tests/benchmarks/baseline_timings.json`` is the live benchmark list;
+``jq 'keys' tests/benchmarks/baseline_timings.json`` prints it.
 
 Status meanings:
 
@@ -566,7 +563,7 @@ contract for them is *loud failure, then fall back to Python*:
   rather than guessing a layout.
 * The downstream ``VexArch``-keyed paths (``arch_from_vex`` and
   ``Clone for Box<dyn Arch>`` in ``arch/registry.rs``) **panic** with a
-  message naming the arch and the six supported ones, instead of
+  message naming the arch and the supported ones, instead of
   silently substituting AMD64 register offsets / word size. These paths
   are only reachable after the manager has already accepted the arch, so
   in practice the loud manager error fires first; the panics are a
@@ -580,7 +577,7 @@ Skeleton → Experimental → Supported promotion path above.
 
 Wired-up but not fully verified:
 
-* Register offsets for all six arches in ``native/angr/src/arch/*.rs``.
+* Register offsets for every arch in the table in ``native/angr/src/arch/*.rs``.
 * Endianness flag: every endianness flavour of every arch is driven
   end-to-end through both cle loaders by the
   ``test_explore_solves_for_42`` sweep in
@@ -608,14 +605,14 @@ x86 (32-bit) single-CC note
 
 The Rust engine registers only Cdecl in
 ``native/angr/src/arch/calling_conventions.rs::default_cc_for_arch``
-for x86. The Windows i386 benchmarks listed above
+for x86. The Windows i386 benchmarks
 (``flareon2015_2``, ``flareon2015_5``, ``flareon2015_10``,
 ``whitehatvn2015_re400``, ``ekopartyctf2016_sokohashv2``,
 ``mma_howtouse``) run successfully under that single CC because the
 relevant CC boundary is **Python-side**: ``entry_state()`` and
 ``Callable`` place arguments through angr's Python ``SimCC`` (which
-already handles ``SimCCStdcall`` / ``SimCCStdcall32`` for SimWindows
-binaries), and the Rust engine executes the resulting state. No
+already handles ``SimCCStdcall`` / ``SimCCMicrosoftFastcall`` /
+``SimCCMicrosoftThiscall`` for SimWindows binaries), and the Rust engine executes the resulting state. No
 current x86-32 bench triggers a Rust-native ``SimProcedure`` from a
 stdcall caller, so cleanup-side semantics (``ret N``) never matter.
 
@@ -624,8 +621,7 @@ Adding stdcall / fastcall in the future requires both a
 cleanup hook on the native ``SimProcedure`` dispatcher so the callee
 adjusts SP by ``num_args * 4`` after returning. The current
 dispatcher only handles caller-cleans (``ret`` pops just the return
-address). File a bd issue with the specific consumer when that
-need arises.
+address).
 
 Z3 solver API
 -------------
@@ -1078,8 +1074,8 @@ Experimental: ``ANGR_Z3_TACTIC`` solver-strategy override
 
 Z3's solver construction strategy is selectable via the
 ``ANGR_Z3_TACTIC`` environment variable, read once per process on the
-first ``SymContext`` materialization. **Default behavior (env unset) is
-unchanged from prior releases.** This knob exists for users hitting
+first ``SymContext`` materialization. With the variable unset the engine
+uses Z3's default solver. This knob exists for users hitting
 bimodal hash-cracker-style benchmarks where Z3's default portfolio
 falls into a slow branch.
 
@@ -1089,13 +1085,15 @@ Recognized values:
   (Z3's default ``smt`` portfolio). **Recommended for most workloads.**
 * ``qfbv`` — use Z3's quantifier-free bitvector preset
   (``Tactic::new("qfbv").solver()``). Wins big on bimodal Z3-heavy
-  benches and regresses small-problem benches; see table below.
+  benches and regresses small-problem benches.
 * ``qfbv_smart`` — probe-conditional tactic that dispatches on
   ``num-consts``: large goals (> ``ANGR_Z3_QFBV_THRESHOLD``, default
   20) use ``qfbv``, smaller goals use ``smt``. Logged here as an
   experimental hook — measured A/B against ``qfbv`` it picks up the
   per-check tactic-dispatch overhead, so plain ``qfbv`` wins more
-  cleanly on the bimodal trio. Kept for further experimentation.
+  cleanly on the bimodal benchmarks (``BIMODAL_BENCHMARKS`` in
+  ``tests/benchmarks/run_regression.py``). Kept for further
+  experimentation.
 * any other string — interpreted as a colon-separated tactic pipeline
   composed with ``Tactic::and_then``, e.g.
   ``simplify:propagate-values:solve-eqs:bit-blast:sat``. Unknown
@@ -1111,11 +1109,8 @@ constraints over a single state-set benefit; CTF-style binaries with
 many small constraint problems pay the qfbv pipeline's per-check
 overhead on every solve.
 
-Note: ``sat-preprocess:qfbv`` was tried and rejected — it produced
-incorrect results on ``csgames2018`` and ``securityfest_fairlight``
-(``IndexError: list index out of range`` from the post-solve goal
-unwrap). Avoid pipelines beginning with ``sat-preprocess`` until that
-is debugged.
+Avoid pipelines beginning with ``sat-preprocess``: they produce incorrect
+results (see :doc:`rust_engine_decisions`, *Solver*).
 
 Experimental: ``ANGR_Z3_PARAMS`` extra solver-param override
 ------------------------------------------------------------
@@ -1647,8 +1642,9 @@ in Rust mode.
    * - Option
      - Reason
    * - ``ABSTRACT_MEMORY``
-     - Rust uses ``RustSimMemory`` only — there is no SimAbstractMemory
-       backend.
+     - Rust uses its concrete-address paged memory (``SymbolicMemory``
+       in ``native/angr/src/memory/mod.rs``) only — there is no
+       SimAbstractMemory backend.
    * - ``ABSTRACT_SOLVER``
      - Rust does not have an abstract-domain solver.
    * - ``AST_DEPS``, ``ACTION_DEPS``, ``AUTO_REFS``, ``ADD_AUTO_REFS``
@@ -1690,7 +1686,7 @@ in Rust mode.
    * - ``COW_STATES``, ``COPY_STATES``
      - Rust always copies on fork via ``RustSimState::fork``.
        Functionally always-on.
-   * - ``UNICORN``, ``UNICORN_*`` (~10 options)
+   * - ``UNICORN``, ``UNICORN_*``
      - Rust does not integrate with the unicorn engine.
    * - ``JAVA_IDENTIFY_GETTER_SETTER``, ``JAVA_TRACK_ATTRIBUTES``
      - Java analysis only.
@@ -1778,6 +1774,14 @@ in this MVP because capturing the proc's raw return value would
 require wrapping ``proc.execute`` to observe the inner
 ``inst.run_func`` return.
 
+``address_concretization`` sets ``address_concretization_strategy``,
+``address_concretization_memory`` and
+``address_concretization_add_constraints`` to ``None`` on both BEFORE and
+AFTER: the Rust concretizer has no Python strategy, memory plugin or
+add-constraints flag to hand the BP (``_cb_inspect_address_concretization``
+in ``rust_manager.py``). Only the attributes in the table above carry
+values.
+
 BP attribute write-back
 ~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -1813,7 +1817,7 @@ the Rust dispatch site (``call_inspect_mem_read`` /
 ``dispatch_mem_read_inspect``, ``call_inspect_mem_write`` /
 ``dispatch_mem_write_inspect``), which applies it.
 
-**Read-only (mutations ignored — file a follow-up if you need these):**
+**Read-only (mutations ignored):**
 
 * ``reg_read_expr`` / ``reg_write_expr`` — register events fire
   ``when='after'`` and are read-only.
@@ -1824,15 +1828,14 @@ the Rust dispatch site (``call_inspect_mem_read`` /
 Unsupported events
 ~~~~~~~~~~~~~~~~~~
 
-``constraints`` and ``vex_lift`` are supported (see the table above);
-the residual unsupported set is ``engine_process``, ``memory_page_map``,
+The unsupported set is ``engine_process``, ``memory_page_map``,
 ``cfg_handle_job``, ``vfg_handle_successor``, and ``vfg_widen_state``.
 Registering a BP for one of those raises ``NotImplementedError`` with a
 message pointing at this document. ``_NoOpInspectProxy`` previously
 silently accepted every registration; raising loudly
 prevents users from depending on a feature the engine cannot fulfill.
 
-None of the five is an *engine* event: they fire from angr components
+None of these is an *engine* event: they fire from angr components
 that sit outside the Rust manager entirely — ``engine_process`` from
 ``SimEngine.process`` (the Python engine's own entry point, which the
 Rust manager replaces), ``memory_page_map`` from the Python paged-memory
@@ -1996,7 +1999,7 @@ The Rust manager accepts ``mgr.use_technique(...)`` with the standard
 classes are wired natively, which run as Python fallback through
 ``RustStateProxy``, and which are known not to work.
 
-**Dispatch coverage.** Of the five standard ``ExplorationTechnique``
+**Dispatch coverage.** Of the standard ``ExplorationTechnique``
 hooks (``setup``, ``filter``, ``step``, ``step_state``, ``successors``,
 ``complete``), the Rust manager dispatches:
 
@@ -2231,9 +2234,9 @@ registered returns ``False`` and disarms nothing.
        inspection.
    * - ``ManualMergepoint``
      - **Native (angr-op0dn.11.5)**
-     - ``register_technique`` forwards ``address`` /
-       ``wait_counter_limit`` to ``register_merge_point(...)``
-       (``rust_techniques.py``); the native MergePoint technique parks
+     - ``_arm_native_technique`` (``rust_techniques.py``) forwards
+       ``address`` / ``wait_counter_limit`` to
+       ``register_merge_point(...)``; the native MergePoint technique parks
        states reaching the address, groups waiters by callstack, and
        merges each ≥2 group entirely in Rust. Because the class is in
        ``_NATIVE_STEP_TECH_NAMES`` its Python ``step()`` is suppressed,
@@ -2465,8 +2468,8 @@ the verdict for running it against a project that has had a
           call inside ``veritesting.py``. ``RustStateProxy.copy()``
           refuses the operation rather than returning a shallow proxy
           that aliases ``_state_id`` with the source (the previous
-          behaviour silently corrupted the parent on any mutation). A
-          Rust-side CoW deep fork is tracked under ``angr-2zwy``.
+          behaviour silently corrupted the parent on any mutation). There
+          is no Rust-side CoW deep fork for a proxy.
        2. Veritesting needs ``EFFICIENT_STATE_MERGING`` for ancestor
           retention during plugin merging. The Veritesting
           *exploration technique*
@@ -2486,14 +2489,16 @@ the verdict for running it against a project that has had a
        "Exploration technique compatibility" section above for the
        parallel technique-side verdict.
 
-If you need Rust-engine execution semantics inside an analysis that
-constructs its own ``SimulationManager``, the only workaround today is
-to monkey-patch ``AngrObjectFactory.simulation_manager`` to return a
+An analysis that builds its manager through
+``proj.factory.simulation_manager()`` follows the project default, so
+``Project(engine="rust")`` / ``ANGR_DEFAULT_ENGINE=rust`` route it (see
+*Auto dispatch and the* ``engine="rust"`` *project default* above). One
+that constructs ``SimulationManager`` directly stays on the Python
+engine; to force Rust semantics there, monkey-patch
+``AngrObjectFactory.simulation_manager`` to return a
 ``RustExplorationManager`` — see ``tests/benchmarks/run_single.py`` for
 the precedent and ``tests/engines/test_callable_rust.py`` for a
-context-manager pattern that cleans up the swap. A first-class
-``use_rust_engine`` plumb-through is tracked under the v1.0 Analyses-
-compatibility epic.
+context-manager pattern that cleans up the swap.
 
 Memory pressure and OOM
 -----------------------
@@ -2503,8 +2508,12 @@ facing knobs that cap memory growth are:
 
 ``max_active_states``
   Constructor argument to ``RustExplorationManager``. When the active
-  stash reaches this size, new forks are silently pruned. ``None``
-  (default) disables the cap.
+  stash reaches this size, new forks are moved to the ``pruned`` stash
+  and a one-time warning is logged. Defaults to
+  ``DEFAULT_MAX_ACTIVE_STATES`` in ``angr/exploration/rust_manager.py``,
+  a runaway-explosion backstop set far above realistic workloads; pass
+  ``None`` to disable the cap or a smaller int to bound tighter. It is a
+  state-count cap, not a memory limit.
 
 ``max_history``
   Constructor argument (default ``1000``). Caps the per-state
@@ -2608,7 +2617,7 @@ stash. The harness and its live numbers are in
 ``tests/benchmarks/characterization/deep_loop_search/``.
 
 Most of the "real binary problem" here is *harnessing*, not engine
-capability. The end-to-end recipe stacks four knobs that each suppress a
+capability. The end-to-end recipe stacks knobs that each suppress a
 distinct source of state explosion. Full recipe::
 
     import claripy
@@ -2687,9 +2696,9 @@ User-facing error taxonomy
 --------------------------
 
 Failures that originate inside the Rust engine surface to Python as one
-of six typed exceptions exported from ``angr.exploration`` (re-exported
-from ``angr.rustylib.vex_engine``). All five concrete classes derive
-from ``RustExecutionError``, which itself derives from the built-in
+of the typed exceptions in the table below, exported from
+``angr.exploration`` (re-exported from ``angr.rustylib.vex_engine``).
+Every specialized class derives from ``RustExecutionError``, which itself derives from the built-in
 ``Exception``, so ``except RustExecutionError:`` is the single-clause
 way to catch everything the Rust core raises.
 
@@ -2716,9 +2725,8 @@ update.
    message survives, readable off the errored-stash record
    (``state.error``). A ``pytest.raises(RustUnsupportedVexOpError)``
    against a live run therefore will **not** match — drive
-   ``execute_irsb_for_test`` to exercise the typed classes. Promoting the
-   typed error into the live path is the deferred option (b) on
-   angr-ghwsd.3. The "Where Rust raises it" column below names where each
+   ``execute_irsb_for_test`` to exercise the typed classes. The typed
+   live path is not implemented. The "Where Rust raises it" column below names where each
    variant is *constructed*, which is the test path unless noted.
 
 .. list-table:: Typed exception hierarchy
@@ -2881,35 +2889,21 @@ Migration recipe: change the clause to
 or catch ``Exception`` if the surrounding code already does broad
 recovery.
 
-Native procedures for library hooks (opt-in)
---------------------------------------------
+Native procedures for library hooks
+-----------------------------------
 
-By default the native SimProcedure registry only serves hooks whose address
-lies **outside every loaded object** — the extern-object stubs angr synthesizes
-for a statically-known symbol. On a dynamically-linked binary loaded with
-``auto_load_libs=True, use_sim_procedures=True``, each libc hook instead lands
-inside the loaded libc's ``.text``, so every one of them bounces to the Python
-SimProcedure.
-
-``prefer_native_library_hooks`` (**on by default**; set it to ``False``, or
-export ``ANGR_RUST_PREFER_NATIVE_LIBRARY_HOOKS=0``, to turn it off) lets the
-native registry serve those library hooks. Hooks inside the **main object**
-still go to Python, so a user ``proj.hook()`` override always wins. The
-``explore(find=...)`` target is always forced to Python so the find
-fires. On a concrete ``strcmp``/``strlen``/``memcpy`` loop against a
-dynamically-linked libc the win is large, because every one of those calls
-stays in Rust instead of bouncing across the FFI boundary.
-
-The flag was off by default until the native string procedures matched Python's
-symbolic-scan bound: they used to scan up to 4096 bytes where Python stops at
-``buf_symbolic_bytes``, so on symbolic input they forked far more aggressively
-and could storm a libc-heavy dynamic binary. ``MAX_SYMBOLIC_SCAN_BYTES`` in
-``procedures::strings`` now caps the symbolic window at Python's. Two
-residual divergences remain, both in the *conservative* direction (Python swaps
-in a fresh BVS past a recursion depth of 3, and searches a narrower concrete
-window), so the native procs cannot wrongly kill a state that Python would keep.
-Set the env var to ``0`` if you need the old all-Python dispatch for a
-bug-for-bug comparison.
+On a dynamically-linked binary loaded with ``auto_load_libs=True,
+use_sim_procedures=True``, each libc hook lands inside the loaded libc's
+``.text`` rather than in angr's extern object. ``prefer_native_library_hooks``
+(**on by default**; pass ``False``, or export
+``ANGR_RUST_PREFER_NATIVE_LIBRARY_HOOKS=0``, to send those hooks to Python)
+lets the native registry serve them, so a concrete
+``strcmp``/``strlen``/``memcpy`` loop against a dynamically-linked libc
+stays in Rust instead of bouncing across the FFI boundary. Hooks inside
+the main object still go to Python, so a user ``proj.hook()`` override
+always wins. The full rule chain, including how the native string
+procedures bound their symbolic scan, is
+:ref:`Dispatch priority <extending-angr/simprocedures:Dispatch priority (native vs Python)>`.
 
 Benchmarks slower than Python
 -----------------------------
@@ -2924,9 +2918,10 @@ The benches that stay below 1.0x fall into two classes:
   ``eval_upto`` rather than by the engine, and several of them are
   *bimodal*: Z3's heuristic latitude picks a fast or a slow branch per
   run. Their membership is ``BIMODAL_BENCHMARKS`` in ``run_regression.py``
-  and their handling is in :doc:`rust_bimodal_variance`. No engine-side
-  lever exists for this class (:doc:`rust_engine_decisions`); the
-  ``ANGR_Z3_TACTIC`` knob above is the only one that moves them.
+  and their handling is in :doc:`rust_bimodal_variance`. Why this class
+  is a solver floor rather than engine work is recorded in
+  :doc:`rust_engine_decisions` (*Solver*); the ``ANGR_Z3_TACTIC``
+  knob above is the only one that moves them.
 * **Callback-heavy benches.** Every Python SimProcedure, hook or syscall
   fallback crosses the FFI boundary and re-enters Python's state
   machinery. The levers are the native registries
@@ -3060,18 +3055,30 @@ Claripy AST inputs (``add_constraint_ast``, ``eval``,
 raises ``BridgeError`` → ``PyRuntimeError``. No malformed-AST input
 reaches the Z3 layer un-converted.
 
-Raw Z3 pointer fast path (the **only** unsafe FFI surface)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Raw Z3 pointer fast path
+~~~~~~~~~~~~~~~~~~~~~~~~
 
 ``RustExplorationManager.import_z3_constraint_ptrs(state_id, ptrs:
 Vec<usize>)`` (``exploration/state_api.rs::_import_z3_constraint_ptrs``)
-is the one place a Python caller's input is treated as a raw pointer.
-It ends in ``unsafe { ctx.add_constraint_raw(*ptr) }``, whose SAFETY
-contract (``symbolic/constraint_ops.rs::add_constraint_raw``) requires
-each pointer to be a valid, live ``Z3_ast Bool`` in the active
-thread-local Z3 context: the function calls
-``NonNull::new_unchecked(ptr as *mut _)`` followed by
-``z3::ast::Ast::wrap``, both UB on anything else.
+is the one place a Python caller's input is treated as a raw *AST*
+pointer. ``SymContext::add_constraint_raw``
+(``symbolic/constraint_ops.rs``) is itself a safe fn: it takes a
+``Z3AstPtr`` (``symbolic/z3_ast_ptr.rs``), a handle that already holds a
+``Z3_inc_ref`` on a live AST in a known context. The unsafe step is
+building that handle: ``_import_z3_constraint_ptrs`` calls
+``unsafe { Z3AstPtr::from_borrowed_raw(&z3_ctx, *ptr) }``, whose
+``# Safety`` contract requires each non-zero pointer to be a valid, live
+``Z3_ast`` in the given context (``from_borrowed_raw`` itself returns
+``None`` for zero). The ``Z3_ast Bool`` sort is the documented caller
+contract of ``add_constraint_raw``, whose ``z3::ast::Ast::wrap`` is UB on
+anything else.
+
+The other raw pointer Python hands across is the Z3 *context*:
+``set_shared_z3_context`` (``engine.rs``, body in
+``install_shared_z3_context``) wraps Python's ``z3.main_ctx().ctx.value``
+under ``unsafe``, rejecting only null. Its sole production caller is
+``rust_manager.py::_setup_shared_z3_context``; see
+:doc:`rust_z3_sharing`.
 
 * **Intended caller.** ``rust_manager.py::_add_rust_state`` always pairs
   ``import_z3_constraint_ptrs`` with a prior
@@ -3277,8 +3284,7 @@ What is NOT captured:
   the round-trip.
 * **Binary identity** — the snapshot does not store a binary path
   / sha256. Loading against a mismatched ``angr.Project`` is the
-  caller's responsibility (a binary-hash field is a planned
-  ``angr-x04s.2`` follow-up).
+  caller's responsibility.
 
 Parallel exploration (``RUST_PARALLEL_WORKERS``) interacts with the
 capture in two ways:
@@ -3570,8 +3576,8 @@ are:
 Adding a variant or field to these is **not** a breaking change. The
 ``#[non_exhaustive]`` attribute makes the rule machine-enforced rather
 than aspirational. Other internal enums (``CbExecutionError``,
-``LiftError``, ``DeserializeError``, ``NativeLiftError``,
-``ConstraintSyncError``, ``ExtractionError``) are crate-local
+``LiftError``, ``DeserializeError``, ``NativeLiftMiss``,
+``ExtractionError``) are crate-local
 implementation detail and are intentionally left without
 ``#[non_exhaustive]`` because their match sites are tightly controlled
 within the same crate.

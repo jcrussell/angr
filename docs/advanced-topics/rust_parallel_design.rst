@@ -1,9 +1,9 @@
 Rust engine: parallel exploration threading model — design comparison
 =====================================================================
 
-This document started as the design-phase deliverable for parallel
-exploration in the Rust engine, tracked by bead ``angr-59jk`` (deferred)
-and its child ``angr-59jk.1``. The empirical translate-cost numbers
+This document compares threading models for parallel exploration in
+the Rust engine (``angr-59jk``, ``angr-59jk.1``). The empirical
+translate-cost numbers
 quoted below come from the companion spike ``angr-59jk.2``
 (``native/angr/tests/z3_translate_spike.rs``).
 
@@ -58,16 +58,15 @@ The constraints are sharp:
    hundreds to low-thousands of symbolic register values, plus per-page
    symbolic byte overlays, plus the solver's constraint set.
 
-Two viable threading models for spanning multiple cores exist, both
-listed in the parent bead description. This document compares them on
-the criteria the parent bead calls out (complexity, throughput,
-memory, sensitivity to bench shape, migration path), using the
+Two viable threading models for spanning multiple cores exist. This
+document compares them on complexity, throughput, memory, sensitivity
+to bench shape, and migration path, using the
 empirical translate-cost data from ``angr-59jk.2``.
 
 A third path — ``Z3 parallel.enable=true``, which fan-outs *inside* a
 single solver — is explicitly out of scope. It was tested in
 ``angr-gfay`` and proved correctness-breaking on
-4 of 6 sampled benchmarks (see bd memory ``avoid-z3-parallel-enable``).
+several sampled benchmarks (see bd memory ``avoid-z3-parallel-enable``).
 The two options below are about **parallel state stepping**, not
 parallel SAT.
 
@@ -438,7 +437,7 @@ Neither end of the ordering described under *Where it landed* above is
 hardcoded any more. Both the *which state do I step next* decision and the
 *which state do I ship away* decision go through the ``SelectionPolicy`` trait
 in ``exploration/selection_policy.rs`` (landed by ``angr-a32jl.1``, extended
-for the offload side by ``angr-03vl4.19``). The trait has four hooks:
+for the offload side by ``angr-03vl4.19``). The trait's methods:
 
 * ``select`` — pop the next active state (the run loop's only removal path);
 * ``on_fork`` — where a freshly-forked successor lands in the active deque
@@ -449,9 +448,10 @@ for the offload side by ``angr-03vl4.19``). The trait has four hooks:
   is the coldest end for every built-in but ``Lifo``;
 * ``on_state_removed`` — eviction notice for states that leave ``active``
   without going through ``select`` (cross-worker migration), so memoizing
-  policies do not leak per-``state_id`` side-table entries (``angr-ua7fd``).
+  policies do not leak per-``state_id`` side-table entries (``angr-ua7fd``);
+* ``name`` — a stable, human-readable policy name for logging and stats.
 
-Seven policies ship: ``Fifo``, ``Lifo``, ``RandomSelection``,
+The shipped policies are ``Fifo``, ``Lifo``, ``RandomSelection``,
 ``CoverageGuided``, ``LoopHeadRoundRobin``, ``DirectedCfgDistance`` and
 ``FindDirected``. The production default is
 ``selection_policy::default_policy()`` — **``Fifo`` (BFS), not ``Lifo``**;
@@ -516,8 +516,8 @@ Open questions
 References
 ----------
 
-* Parent bead: ``angr-59jk`` (deferred) — design of parallel
-  exploration with per-thread Z3 contexts.
+* Provenance: ``angr-59jk`` — design of parallel exploration with
+  per-thread Z3 contexts.
 * Companion spike: ``angr-59jk.2`` — Z3_translate cost per node,
   ``native/angr/tests/z3_translate_spike.rs``.
 * Excluded alternative: ``angr-gfay`` (closed) — ``Z3 parallel.enable=true``

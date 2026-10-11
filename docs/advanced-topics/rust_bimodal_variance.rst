@@ -65,9 +65,8 @@ What does not fix it
 Pinning Z3's seeds narrows the spread but does not collapse it
 (:doc:`rust_engine_decisions`), so ``--deterministic`` stays a
 diagnostic knob for reproducing one slow path, not a gating default.
-The engine-side levers were exhausted by the perf campaign that
-classified the whole corpus (``angr-9w6ad``); the residual is a solver
-floor.
+No engine-side lever moves these benches; the residual is a solver
+floor (:doc:`rust_engine_decisions`, *Solver*).
 
 Reproducing
 -----------
@@ -91,9 +90,9 @@ classification label is necessary but not sufficient: a bench whose
 slow tail is a continuum rather than a gap can read STABLE while its
 single-shot timings are still untrustworthy, so treat any bench with a
 coefficient of variation well above the noise floor as
-single-shot-unreliable regardless of its label. The corpus-wide sweep
-(``classify()`` over every bench in ``baseline_timings.json``) is recorded
-on ``angr-9w6ad.3``.
+single-shot-unreliable regardless of its label. To sweep the whole
+corpus, pass every key of ``baseline_timings.json`` as ``--benchmarks``
+(provenance: ``angr-9w6ad.3``).
 
 Related memories
 ----------------

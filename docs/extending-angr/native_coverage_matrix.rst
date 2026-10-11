@@ -231,10 +231,12 @@ Native syscall coverage
 
 Every entry below is registered in ``NativeSyscallRegistry::new``
 (``native/angr/src/syscalls/mod.rs``). Handlers themselves are
-arch-agnostic; the per-arch table maps Linux ABI numbers from
-``<asm/unistd_*.h>`` to the same handler set. The native syscall set covers the AMD64 baseline plus per-arch tables
-(``register_<arch>`` for X86, ARM, ARM64, MIPS32 and MIPS64 in
-``syscalls/mod.rs``); MIPS64 leaves the stat family unregistered because
+arch-agnostic; each Linux table maps the ABI numbers from
+``<asm/unistd_*.h>`` to the same handler set. ``NativeSyscallRegistry::new``
+holds one ``register_syscalls!(r, "<key>", [...])`` block per dispatch key:
+``"AMD64"``, ``"X86"``, ``"ARM"``, ``"ARM64"``, ``"MIPS32"`` and ``"MIPS64"``
+for the Linux ABIs, plus ``"CGC"`` for DECREE (see *CGC / DECREE* below).
+MIPS64 leaves the stat family unregistered because
 ``write_stat_for_arch`` has no MIPS64 ``struct stat`` writer. A symbolic
 syscall number, and any unregistered concrete number, falls through
 ``core_outcome_handlers.rs::handle_syscall_core`` to Python's
@@ -560,12 +562,60 @@ unregistered ``(arch, num)`` at all; on the CTF benchmark corpus it does
 not, so a new handler only pays off once a workload that needs it
 arrives.
 
+CGC / DECREE
+~~~~~~~~~~~~
+
+DECREE binaries run on x86 but use their own syscall numbers, which
+collide with Linux i386 (1 is ``exit`` there and ``_terminate`` here).
+``core_outcome_handlers.rs::handle_syscall_core`` therefore uses the
+``"CGC"`` registry key instead of the arch name when the manager's
+``os_name`` is ``"cgc"``, and the ``register_syscalls!(r, "CGC", ...)``
+block in ``NativeSyscallRegistry::new`` maps those numbers to the handlers
+in ``native/angr/src/syscalls/cgc.rs``. The module doc of ``cgc.rs`` is
+authoritative for each handler's divergences; the Python counterparts live
+under ``angr/procedures/cgc/``.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 8 22 70
+
+   * - Num
+     - Syscall
+     - Native coverage (falls back to Python otherwise)
+   * - 1
+     - ``_terminate``
+     - Full; deadends the state like ``exit``.
+   * - 2
+     - ``transmit``
+     - Concrete bytes to a stdout / stderr fd; symbolic args or bytes, or
+       any other fd, fall back.
+   * - 3
+     - ``receive``
+     - Fresh symbolic stdin bytes for ``fd == 0``; symbolic args, other
+       fds or oversized counts fall back.
+   * - 4
+     - ``fdwait``
+     - ⚠ Models only the ``CGC_NON_BLOCKING_FDS`` mode (every fd ready);
+       with that option unset it falls back, since Python makes each
+       ready bit unconstrained.
+   * - 5
+     - ``allocate``
+     - Bump allocator on ``cgc_allocation_base`` / ``cgc_sinkholes``;
+       symbolic args, or a bump that would collide with the loader /
+       flag-page region, fall back.
+   * - 6
+     - ``deallocate``
+     - Page-aligned unmap with sinkhole bookkeeping.
+   * - 7
+     - ``random``
+     - Fresh symbolic bytes (non-fastpath mode).
+
 Stubbed / incomplete
 ~~~~~~~~~~~~~~~~~~~~
 
 * **``mremap``** — number registered on every arch but the handler
   models only the simplest case (no full page-table coordination
-  beyond stub parity). Tracked as ``angr-uahs``.
+  beyond stub parity).
 * **``set_tid_address`` / ``set_robust_list``** — registered everywhere
   but deliberately threadless (``syscalls/startup.rs``):
   ``set_tid_address`` returns tid 1 and ignores ``tidptr`` (no

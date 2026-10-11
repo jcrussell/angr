@@ -3,7 +3,7 @@ Prebuilt wheel distribution for the Rust engine
 
 .. note::
 
-   This is a **design memo** (bd bead ``angr-ivwn``). It records the decision
+   This is a **design memo** (``angr-ivwn``). It records the decision
    for how a prebuilt manylinux wheel of the Rust engine *must* link against
    Z3, why the obvious ``auditwheel`` default is wrong here, and what remains to
    be verified in CI. The build-from-source path documented in the repo
@@ -13,16 +13,16 @@ Prebuilt wheel distribution for the Rust engine
 Problem
 -------
 
-Installing angr with the Rust engine today requires, at ``pip install`` time, a
+Installing angr with the Rust engine from source requires, at ``pip install`` time, a
 Rust toolchain, the Z3 development headers (``libz3-dev`` / ``z3-devel`` /
 ``brew install z3``), and ``pkg-config``. The build is a setuptools-rust source
 build (``pyproject.toml`` ``build-backend = "setuptools.build_meta"``). The PyPI
 ``z3-solver`` wheel ships ``libz3.so`` but **not** the C headers, which
 ``z3-sys`` needs to generate bindings. ``.github/workflows/wheels.yml``
-builds wheels for four platform legs but has never been verified green (see
-*Open blockers*), so the "drop-in Python API" goal effectively stops at
-developers who can compile a Rust + Z3 extension. A verified prebuilt wheel
-would close that gap.
+builds wheels for the platform legs listed under *Prototype CI job* but has
+never been verified green (see *Open blocker*), so the "drop-in Python API"
+goal effectively stops at developers who can compile a Rust + Z3 extension. A
+verified prebuilt wheel would close that gap.
 
 The shared-Z3-context constraint (the crux)
 --------------------------------------------
@@ -115,11 +115,11 @@ Two ways to cover supported interpreters (CPython 3.10+):
 Prototype CI job
 ----------------
 
-``.github/workflows/wheels.yml`` (added alongside this memo) is a **prototype**
-``cibuildwheel`` job encoding the decision above. It is ``workflow_dispatch``-only;
-the tag trigger stays commented out until at least one leg is verified green
-(blocker #1 below). Since angr-c4xcs.3 it is a **platform matrix**
-(``fail-fast: false`` — the legs are independent and none has run yet):
+``.github/workflows/wheels.yml`` is a **prototype** ``cibuildwheel`` job
+encoding the decision above. It is ``workflow_dispatch``-only; the tag
+trigger stays commented out until at least one leg is verified green (see
+*Open blocker*). It is a **platform matrix** (``fail-fast: false`` — the
+legs are independent and none has been executed):
 
 .. list-table::
    :header-rows: 1
@@ -132,15 +132,16 @@ the tag trigger stays commented out until at least one leg is verified green
    * - ``manylinux x86_64``
      - ubuntu-latest
      - ``auditwheel`` + ``patchelf``
-     - ``$ORIGIN/../z3/lib``
+     - ``$ORIGIN/../z3/lib:$ORIGIN/../pyvex/lib``
    * - ``manylinux aarch64``
      - ubuntu-latest + QEMU
      - ``auditwheel`` + ``patchelf``
-     - ``$ORIGIN/../z3/lib``
+     - ``$ORIGIN/../z3/lib:$ORIGIN/../pyvex/lib``
    * - ``macos arm64``
      - macos-14
      - ``delocate`` + ``install_name_tool``
-     - ``@loader_path/../z3/lib``
+     - ``@loader_path/../z3/lib``, plus ``@loader_path/../pyvex/lib`` when
+       the extension links ``libpyvex``
    * - ``windows x86_64``
      - windows-2022
      - *none (deliberate)*
@@ -148,12 +149,19 @@ the tag trigger stays commented out until at least one leg is verified green
 
 Common to every leg: the Rust toolchain and the Z3 **headers** are installed at
 build time only (never enter the wheel); ``z3-solver==4.13.0.0`` is installed in
-the build env so ``build.rs::find_z3_lib_dir`` resolves the library; libz3 is
-never vendored into the wheel; and ``CIBW_TEST_COMMAND`` runs the AST-passthrough
-smoke test against the finished wheel. The three ELF/Mach-O legs achieve
-"never vendored" through a repair step that excludes libz3 and relativizes the
-runpath; Windows, which has no runpath, achieves it by not repairing at all (see
-below).
+the build env so ``build.rs::find_z3_lib_dir`` resolves the library; neither
+libz3 nor libpyvex is ever vendored into the wheel; and ``CIBW_TEST_COMMAND``
+runs the AST-passthrough smoke test (``tests/smoke/wheel_ast_passthrough.py``)
+against the finished wheel. The smoke test mints a Z3 AST in ``claripy`` and
+reads it back through the Rust ``RustSolverContext`` (constraints +
+``min``/``max``/``eval`` + an UNSAT contradiction), proving both halves resolved
+the **same** ``libz3``; it also runs standalone and under pytest. The ELF and
+Mach-O legs achieve "never vendored" through a repair step that excludes
+``libz3`` and ``libpyvex`` (``auditwheel repair --exclude libz3.so --exclude
+libpyvex.so``; ``delocate-wheel --exclude libz3 --exclude libpyvex``) and
+relativizes the runpath to the ``z3-solver`` and ``pyvex`` lib dirs, matching
+hazard 1 in :doc:`rust_libvex_ffi`; Windows, which has no runpath, achieves it
+by not repairing at all (see below).
 
 Per-platform wrinkles worth knowing
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -165,11 +173,12 @@ Per-platform wrinkles worth knowing
   aarch64 angr wheel that excludes libz3 is useless to a user who cannot
   ``pip install z3-solver`` on aarch64 either.
 * **macOS** needs three changes from the ELF recipe, all encoded in
-  ``CIBW_REPAIR_WHEEL_COMMAND_MACOS``: ``delocate-wheel --exclude libz3`` in
-  place of ``auditwheel``; ``install_name_tool -change`` to rewrite the
-  build-machine absolute libz3 path ``build.rs`` recorded as the dependent
-  install name into ``@rpath/libz3.dylib``, plus ``-add_rpath
-  @loader_path/../z3/lib``; and a ``codesign --force --sign -`` re-sign, because
+  ``CIBW_REPAIR_WHEEL_COMMAND_MACOS``: ``delocate-wheel --exclude libz3
+  --exclude libpyvex`` in place of ``auditwheel``; ``install_name_tool
+  -change`` to rewrite the build-machine absolute libz3 (and, when present,
+  libpyvex) paths ``build.rs`` recorded as dependent install names into
+  ``@rpath/libz3.dylib`` / ``@rpath/libpyvex.dylib``, plus ``-add_rpath
+  @loader_path/../z3/lib`` (and ``@loader_path/../pyvex/lib``); and a ``codesign --force --sign -`` re-sign, because
   ``install_name_tool`` invalidates the ad-hoc arm64 signature and an unsigned
   ``.so`` will not load at all on Apple silicon. ``Z3_SYS_Z3_HEADER`` must be set
   via ``CIBW_ENVIRONMENT_MACOS``, not exported from the before-build hook —
@@ -214,8 +223,8 @@ Two supporting changes fall out of this:
   (i.e. ``z3.lib``) while the archive names it ``libz3.lib``, hence the copy —
   that rename is the most likely thing to break when the leg first runs.
 
-Every leg is committed **unverified** — this environment has no Docker/network to
-run ``cibuildwheel``. Verification is filed as a blocker bead (see below).
+Every leg is **unverified**: none has been executed in CI (see *Open
+blocker*).
 
 Build-from-source fallback
 --------------------------
@@ -225,28 +234,11 @@ documented in :doc:`rust_build` (prerequisites,
 bootstrap-from-clean, and the ``tools/rebuild-rust.sh`` recovery flow). No change
 needed there; this memo only adds the *binary-distribution* option on top.
 
-Open blockers (filed as beads)
--------------------------------
+Open blocker
+------------
 
-#. Verify the ``wheels.yml`` job actually builds, repairs (libz3 excluded +
-   relativized runpath), and that the installed wheel passes the smoke test in a
-   clean venv **in CI** (cannot run locally — no Docker/network). Filed as
-   angr-3gjm for the x86_64 leg; the aarch64 and macOS legs added by angr-c4xcs.3
-   inherit the same gate — none of the three has ever been executed, so a green
-   run of *any* leg is what unlocks the tag trigger.
-#. **Resolved (angr-6f0i):** abi3 vs per-version decided in favour
-   of abi3 — ``abi3-py310`` added to ``pyo3``, crate compiles clean against the
-   full PyO3 surface (``py-clone`` + all ``#[pymethods]``), limited-ABI ``.so``
-   imports and passes ``tests/engines/rust``. ``wheels.yml`` collapsed to a
-   single abi3 wheel.
-#. **Resolved (angr-9eit):** the AST-passthrough smoke test lives at
-   ``tests/smoke/wheel_ast_passthrough.py`` and is wired into ``wheels.yml``'s
-   ``CIBW_TEST_COMMAND`` (``python {project}/tests/smoke/wheel_ast_passthrough.py``).
-   It mints a Z3 AST in ``claripy`` and reads it back through the Rust
-   ``RustSolverContext`` (constraints + ``min``/``max``/``eval`` + an UNSAT
-   contradiction), proving both halves resolved the **same** ``libz3.so`` via
-   ``$ORIGIN/../z3/lib``. The script runs standalone (exits nonzero on failure)
-   and is also collected by pytest for local verification. Note the *execution*
-   of this test inside the cibuildwheel container is still gated by the Docker/CI
-   verification in blocker #1 (angr-3gjm) — the test is authored and locally
-   green, but has not yet run against an actually-repaired wheel.
+Verify that the ``wheels.yml`` job builds, repairs (libz3 and libpyvex
+excluded, runpath relativized), and that the installed wheel passes
+``tests/smoke/wheel_ast_passthrough.py`` in a clean venv **in CI**
+(``angr-3gjm``). No leg has been executed, so a green run of *any* leg is what
+unlocks the tag trigger.

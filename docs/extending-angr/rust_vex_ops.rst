@@ -17,7 +17,7 @@ keeping IR execution inside Rust. When pyvex hands the engine an
 Pipeline overview
 -----------------
 
-A single VEX op flows through four files. Keep this picture in your
+A single VEX op flows through the files below. Keep this picture in your
 head as you read the worked examples below:
 
 .. list-table::
@@ -495,100 +495,87 @@ model (e.g. ``URECPE`` / ``URSQRTE`` per-lane reciprocal estimates).
 A fourth, quieter status — *parse-succeeds / dispatch-fabricates
 (BYPASS)* — is documented in its own subsection at the end of this
 matrix. It covers opcodes that parse to a concrete ``IROp`` variant
-but have no dispatch arm. The symbolic-operand fabricate path is now
-counted (``vex_bypass_fabricate_count``, angr-s6miz), and the three
-known families (``Perm*`` / ``Pclmul*`` / ``Crc32C``) route to Python
-fallback instead of fabricating.
+but have no dispatch arm. By default a symbolic operand routes the block
+to Python and a concrete one surfaces ``RustUnsupportedVexOpError``;
+fabricating a fresh symbolic happens only under the opt-in
+``ANGR_RUST_FABRICATE_UNSUPPORTED_IROP`` escape hatch. The three known
+families (``Perm*`` / ``Pclmul*`` / ``Crc32C``) route to Python for
+concrete and symbolic operands alike.
 
 Source of truth: ``native/angr/src/vex/opcode_map_vector.rs``
 (``parse_neon_unimplemented`` is the remaining placeholder list) and
-``native/angr/src/vex/ops/mod.rs`` (the dispatch arms). Refresh this
-table whenever a campaign child closes — the bead column makes the
-provenance scannable.
+``native/angr/src/vex/ops/mod.rs`` (the dispatch arms). Update the
+matching row in the same change that adds or graduates an op; the
+provenance column cites the bead that implemented each family.
 
 NEON op families
 ^^^^^^^^^^^^^^^^
 
 .. list-table::
    :header-rows: 1
-   :widths: 30 15 20 35
+   :widths: 30 20 50
 
    * - Op family
-     - Count
      - Status
      - Provenance
    * - Saturating add / sub (``Iop_QAdd*`` / ``Iop_QSub*``)
-     - ~24
      - Implemented
      - ``IROp::VQAdd`` / ``IROp::VQSub`` (angr-tukg.1)
    * - Pairwise integer (``Iop_PwAdd*`` / ``Iop_PwAddL*`` /
        ``Iop_PwMin*`` / ``Iop_PwMax*``)
-     - ~24
      - Implemented
      - ``IROp::VPwAdd`` / ``VPwAddL`` / ``VPwMin`` / ``VPwMax``
        (angr-tukg.2)
    * - Pairwise FP (``Iop_PwAdd32Fx2``)
-     - 1
      - Implemented
      - ``IROp::VFPwAdd`` via ``parse_float`` (angr-cudgw.6) — the last
        family to graduate out of ``parse_neon_unimplemented``
    * - Rounding halving add (``Iop_Avg{N}{S/U}x{M}``)
-     - ~12
      - Implemented
      - ``IROp::VAvg`` (angr-tukg.3)
    * - Byte / halfword / word / bit reversal within lane
        (``Iop_Reverse{N}sIn{M}_x{K}``)
-     - ~12
      - Implemented
      - ``IROp::VReverse`` via ``parse_vreverse`` (angr-tukg.4)
    * - FP reciprocal estimates (``Iop_RecipEst{,S}*`` /
        ``Iop_RecipStep*`` / ``Iop_RSqrtEst{,S}*`` /
        ``Iop_RSqrtStep*``)
-     - ~14
      - Implemented
      - ``IROp::VFRecipEst{,S}`` / ``VFRecipStep`` /
        ``VFRSqrtEst{,S}`` / ``VFRSqrtStep`` (angr-iyon)
    * - Integer reciprocal estimates (``Iop_RecipEst32Ux{2,4}`` —
        URECPE; ``Iop_RSqrtEst32Ux{2,4}`` — URSQRTE)
-     - 4
      - Stubbed-symbolic
      - ``IROp::VIRecipEst`` / ``IROp::VIRSqrtEst`` — fresh-symbolic
        per lane (angr-tukg.5)
    * - Polynomial multiply (``Iop_PolynomialMul8x{8,16}`` /
        ``Iop_PolynomialMull8x8``)
-     - 3
      - Implemented
      - ``IROp::VPolynomialMul`` (angr-tukg.6)
    * - Per-lane bitcount (``Iop_Cnt8x{8,16}`` /
        ``Iop_Clz{N}x{M}`` / ``Iop_Cls{N}x{M}``)
-     - ~13
      - Implemented
      - ``IROp::VCnt`` / ``VClz`` / ``VCls`` (angr-tukg.6)
    * - High half of the widening multiply
        (``Iop_MulHi{8,16,32}{U,S}x{4,8,16}``)
-     - 10
      - Implemented
      - ``IROp::VMulHi`` (angr-0jh0j.61). The ARM doubling variants
        ``Iop_QDMulHi*`` / ``Iop_QRDMulHi*`` share the infix but are a
        different op and remain ``Unmapped``
    * - Vector shift by vector (``Iop_Shl/Shr/Sar/Sal{N}x{M}``)
-     - ~16
      - Implemented
      - ``IROp::VShl`` / ``VShr`` / ``VSar`` — ``Sal`` aliased to
        ``VShl`` (angr-tukg.7)
    * - NEON saturating shift-left by vector
        (``Iop_QShl{N}x{M}`` / ``Iop_QSal{N}x{M}``)
-     - ~8
      - Implemented
      - ``IROp::VQShlSat`` (angr-tukg.8)
    * - NEON saturating shift-by-immediate (``Iop_QShlN*``)
-     - ~4
      - Placeholder
-     - Noted in ``parse_neon_unimplemented`` rustdoc — no enum
-       variant or dispatch arm yet
+     - No enum variant or dispatch arm; parses to ``IROp::Unmapped``
+       (listed in ``KNOWN_UNMAPPED_GROUPS`` in ``opcode_map_tests.rs``)
    * - Integer lane compare (``Iop_CmpEQ{N}x{M}`` /
        ``Iop_CmpGT{N}{S,U}x{M}``)
-     - ~21
      - Implemented
      - ``IROp::VCmpEQ`` / ``IROp::VCmpGT { signed }`` via the
        ``ICmpEq`` / ``ICmpGt`` ``IntLaneOp`` impls. The unsigned
@@ -596,11 +583,10 @@ NEON op families
        angr-9ke6b.160. libVEX defines no ``Iop_CmpGT64Ux1``, so the
        D-reg 64-bit lane is absent by design.
 
-``Iop_QShlN*`` is the sole residual placeholder after the NEON
-campaign (``angr-tukg``) closed; ``parse_neon_unimplemented`` now
-claims nothing at all and is kept only as the scaffold point for the
-next NEON gap. Promote ``QShlN`` to a standalone bead when a benchmark
-drives a symbolic path through it.
+``Iop_QShlN*`` is the only NEON family in this table without a
+handler. ``parse_neon_unimplemented`` claims nothing at all and is kept
+only as the scaffold point for the next NEON gap. No tracked benchmark
+drives a symbolic path through ``QShlN``.
 
 x87 transcendental ops
 ^^^^^^^^^^^^^^^^^^^^^^
@@ -634,24 +620,20 @@ table emits).
 
 .. list-table::
    :header-rows: 1
-   :widths: 30 10 25 35
+   :widths: 30 25 45
 
    * - Op family
-     - Count
      - Status
      - Provenance
    * - Trig (``Iop_SinF64``, ``Iop_CosF64``, ``Iop_TanF64``,
        ``Iop_AtanF64``)
-     - 4
      - Concrete + concretize-and-pin via ``Raw``
      - ``transcendentals.rs`` libm path (angr-i5lj.2)
    * - Log / exp (``Iop_Yl2xF64``, ``Iop_Yl2xp1F64``,
        ``Iop_2xm1F64``, ``Iop_ScaleF64``)
-     - 4
      - Concrete + concretize-and-pin via ``Raw``
      - ``transcendentals.rs`` libm path (angr-i5lj.1)
    * - ARM AArch64 FRECPX (``Iop_RecpExpF64``, ``Iop_RecpExpF32``)
-     - 2
      - Concrete via ``Raw`` (closed form, no concretize fallback)
      - ``transcendentals.rs`` exponent-only closed form
 
@@ -672,36 +654,30 @@ All route to ``IROp::Unmapped(name)`` →
 
 .. list-table::
    :header-rows: 1
-   :widths: 30 10 25 35
+   :widths: 30 25 45
 
    * - Op family
-     - Count
      - Status
      - Provenance
    * - 128-bit FP / decimal (``Iop_F128toD32``,
        ``Iop_F128toI128S``)
-     - 2
      - Placeholder
      - No parse arm in ``parse_float`` / ``parse_conversion``
    * - SSE4.1 round-to-int (``Iop_RoundF32x4_RM`` /
        ``_RN`` / ``_RP`` / ``_RZ``)
-     - 4
      - Placeholder
      - No parse arm in ``parse_vector``
    * - PowerPC DFP significance round
        (``Iop_SignificanceRoundD64`` / ``D128``)
-     - 2
      - Placeholder
      - No parse arm in ``parse_float``
    * - FP↔fixed conversions (``Iop_F32ToFixed32S*`` /
        ``Iop_Fixed32SToF32x*``)
-     - ~8
      - Placeholder
      - No parse arm in ``parse_conversion``
 
 These are reachable from PowerPC, x86 SSE4.1, and ARM SIMD code.
-No tracked benchmark drives a symbolic path through them today;
-promote to a standalone bead when one does.
+No tracked benchmark drives a symbolic path through them.
 
 Crypto and polynomial multiply
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -712,25 +688,21 @@ route to ``IROp::Unmapped(name)``.
 
 .. list-table::
    :header-rows: 1
-   :widths: 30 10 25 35
+   :widths: 30 25 45
 
    * - Op family
-     - Count
      - Status
      - Provenance
    * - Polynomial multiply-accumulate
        (``Iop_PolynomialMulAdd{8x16,16x8,32x4,64x2}``)
-     - 4
      - Placeholder
      - No parse arm in ``parse_vector`` — distinct from
        ``Iop_PolynomialMul*`` which IS implemented as
        ``IROp::VPolynomialMul`` (angr-tukg.6)
    * - AES round (``Iop_CipherV128``, ``Iop_NCipherV128``)
-     - 2
      - Placeholder
      - No parse arm in ``parse_special``
    * - SHA-2 round (``Iop_SHA256``, ``Iop_SHA512``)
-     - 2
      - Placeholder
      - No parse arm in ``parse_special``
 
@@ -751,47 +723,60 @@ opcodes that **do** parse to a concrete ``IROp`` variant but have **no
 dispatch arm** in ``ops/mod.rs``. They fall through the per-family
 sub-router to its catch-all (``OpError::NotUnary`` /
 ``NotBinary`` / ``NotQuaternary`` — there is no ``NotTernary``,
-matching the absence of a ``triop`` entry point), and
-``interpreter/expressions_arith.rs`` (``eval_unop`` / ``eval_binop``) then
-splits on operand concreteness:
+matching the absence of a ``triop`` entry point), and the
+``eval_unop`` / ``eval_binop`` / ``eval_triop`` / ``eval_qop``
+dispatchers in ``interpreter/expressions_arith.rs`` hand the error to
+``VEXInterpreter::vex_op_fallback``, which splits on operand
+concreteness:
 
 - **Concrete args** → the typed ``OpError`` propagates and surfaces as
   ``RustUnsupportedVexOpError`` (no silently-wrong value — angr-sa3j).
-- **Symbolic args** → the catch-all ``Err(e)`` arm **fabricates** a
-  fresh ``RustBV::symbolic("unsup_unop_<pc>" / "unsup_binop_<pc>")`` of
-  the result width. This is the **BYPASS**: it loses the
-  input→output relationship entirely.
+- **Symbolic args** → by default the block is routed to Python's VEX
+  engine via ``CbExecutionError::NeedPythonFallback`` (angr-oyzvj).
+  Python is the reference implementation for the float / vector-float
+  conversions that land here, so the result keeps its input→output
+  relationship.
 
-As of angr-s6miz this path is **visible**: the symbolic-args fabricate
-arm of both ``eval_unop`` and ``eval_binop`` bumps the
-``vex_bypass_fabricate_count`` ``ExecutionStats`` counter (surfaces in
-``mgr.get_execution_stats()``), so a workload that reaches a *residual*
-undispatched op with symbolic operands no longer does so invisibly.
+Both arms bump ``python_vex_op_fallback_count`` and the per-arm
+``python_vex_{unop,binop,triop,qop}_fallback_count`` in
+``ExecutionStats`` (``mgr.get_execution_stats()``).
 
-The three specific families below were also **closed** (angr-s6miz):
-``eval_binop`` now matches them (``is_dispatch_fabricate_family``) and
+**The opt-in fabricate escape hatch.** Setting the environment variable
+``ANGR_RUST_FABRICATE_UNSUPPORTED_IROP`` to any non-empty value other
+than ``0`` (read once per process; see ``fabricate_unsupported_irop`` in
+``interpreter/expressions_arith.rs``) restores the older behaviour for
+the symbolic arm: a fresh ``RustBV::symbolic("unsup_unop_<pc>" /
+"unsup_binop_<pc>" / …)`` of the result width stands in for the real
+value. This is the **BYPASS**: it loses the input→output relationship
+entirely, so any downstream condition over the value explores both
+branches unconstrained. The same gate covers the condition-flag arm of
+``VEXInterpreter::eval_ccall`` and the no-handler-anywhere arm of
+``VEXInterpreter::handle_dirty_call``. Every fabrication bumps
+``vex_bypass_fabricate_count``, which therefore reads zero unless the
+variable is set. The name is deliberately ``FABRICATE_*`` rather than
+``BYPASS_*``: the ``BYPASS_UNSUPPORTED_IROP`` SimOption means the
+opposite (route to Python's resilience mixin).
+
+The three families below are matched before ``vex_op_fallback``:
+``eval_binop`` recognises them (``is_dispatch_fabricate_family``) and
 routes the block to Python's VEX engine via
 ``CbExecutionError::NeedPythonFallback`` (reason ``DISPATCH_FABRICATE_REASON``)
-for *both* concrete and symbolic args — strictly better than the old
-fabricate-on-sym / hard-error-on-concrete split. Because they route
-before the fabricate arm, they do **not** increment
-``vex_bypass_fabricate_count``; the counter now tracks only any *other*
-residual op that fabricates.
+for *both* concrete and symbolic args (angr-s6miz). Because they route
+before the fabricate gate, they never increment
+``vex_bypass_fabricate_count``, even with the escape hatch set.
 
-These opcodes parse (``opcode_map.rs``) but were unhandled in dispatch
-(``ops/mod.rs``); they are the families the Python-fallback route now covers:
+These opcodes parse (``opcode_map.rs``) but have no arm in dispatch
+(``ops/mod.rs``); they are the families the Python-fallback route covers:
 
 .. list-table::
    :header-rows: 1
-   :widths: 30 10 20 40
+   :widths: 30 20 50
 
    * - Op family
-     - Count
      - Classification
      - Provenance / fix path
    * - Lane permute / table-shuffle
        (``Iop_Perm8x{8,16}`` / ``Iop_Perm32x{4,8}``)
-     - 4
      - **must-fallback**
      - Parses to ``IROp::VPerm`` at two element widths — ``elem: I8`` for
        the ``Perm8x*`` pair (x86 ``PSHUFB``, NEON ``TBL``/``TBX``) and
@@ -806,7 +791,6 @@ These opcodes parse (``opcode_map.rs``) but were unhandled in dispatch
        to reach — is two-argument.
    * - x86 carry-less multiply
        (``Iop_PclmulLQLQ`` / ``HQHQ`` / ``LQHQ`` / ``HQLQ``)
-     - 4
      - **must-fallback**
      - Parse to ``IROp::Pclmul*`` (search ``"Iop_PclmulLQLQ"`` in
        ``opcode_map.rs``);
@@ -816,7 +800,6 @@ These opcodes parse (``opcode_map.rs``) but were unhandled in dispatch
        fall back, never fabricate.
    * - x86 SSE4.2 CRC32
        (``Iop_Crc32C``)
-     - 1
      - **must-fallback**
      - Parses to ``IROp::Crc32C`` (search ``"Iop_Crc32C"`` in
        ``opcode_map.rs``); same
@@ -828,19 +811,15 @@ inputs) — none qualify as *fabricate-ok*. The only legitimately
 *fabricate-ok* ops are the under-specified estimates already handled
 as **Stubbed-symbolic** by deliberate policy (``URECPE`` / ``URSQRTE``
 / FP ``RecipEst`` — fresh-symbolic per lane is the correct model, and
-angr Python does the same). The audit found **no other** concrete
-``IROp`` variant that lacks a dispatch arm: every remaining variant is
-either dispatched (``Raw`` included — it routes into
+angr Python does the same). Every other concrete ``IROp`` variant
+either has a dispatch arm (``Raw`` included — it routes into
 ``transcendentals.rs``) or is a sentinel (``NeonUnimplemented`` /
-``Unmapped``). So the BYPASS surface is exactly these three
-families (9 opcode strings).
+``Unmapped``), so these three families are the whole
+parse-succeeds / no-dispatch-arm surface.
 
-No tracked benchmark drives a *symbolic* path through them today (x86
+No tracked benchmark drives a *symbolic* path through them (x86
 crypto/shuffle code is rare in the CTF corpus and usually hooked at the
-Python layer), which is why the BYPASS stayed inert long enough to be
-closed pre-emptively rather than under a regression. The Python-fallback
-route and ``vex_bypass_fabricate_count`` counter both landed in
-angr-s6miz.
+Python layer).
 
 Special expressions: VECRET / GSPTR
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -880,5 +859,6 @@ on a new workload:
    (``parse_float`` in ``opcode_map_float.rs``, ``parse_vector`` in
    ``opcode_map_vector.rs``, the integer families in ``opcode_map.rs``)
    and add it there.
-3. Add a row to the matrix above with status ``Placeholder`` and a
-   pointer to whichever bead tracks the implementation work.
+3. Add a row to the matrix above with status ``Placeholder`` (or
+   ``Implemented`` plus the implementing bead id, if you add the
+   handler in the same change).
