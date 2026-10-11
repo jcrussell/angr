@@ -190,15 +190,10 @@ the details and tuning notes.
      - ``tools/check_line_citations.py``, ``tools/audit_*.py`` — see the gates table in the repo-root ``AGENTS.md``
 
 A gate that has never been seen to fail is indistinguishable from one
-that cannot, so the scripts that define a ``--self-test`` mode run it
-ahead of the real check in ``ci.yml::rust_check``:
-``audit_silent_fallback_test_pairing.py``,
-``audit_rounding_mode_threading.py``, ``audit_sp_default_zero.py``,
-``audit_overflow_wraparound.py`` and ``audit_page_shift.py``.
-``check_line_citations.py``, ``audit_silent_fallback.py`` and
-``audit_satresult.py`` have no ``--self-test`` mode and run the real
-check only. ``grep -- --self-test .github/workflows/ci.yml`` lists the
-live set.
+that cannot, so every static-audit script defines a ``--self-test`` mode
+(in-script positive and negative fixtures fed through the real matcher)
+and ``ci.yml::rust_check`` runs it ahead of the real check.
+``grep -- --self-test .github/workflows/ci.yml`` lists the live set.
 
 Profiling Rust benches
 ----------------------

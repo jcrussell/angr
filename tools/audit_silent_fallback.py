@@ -37,6 +37,7 @@ Usage::
     tools/audit_silent_fallback.py                 # report new untagged sites
     tools/audit_silent_fallback.py --list          # list ALL detected sites
     tools/audit_silent_fallback.py --update-baseline
+    tools/audit_silent_fallback.py --self-test     # prove it can fail
 
 Exit 0 when there are no new untagged sites (or on --list / --update-baseline),
 1 when new untagged sites are found. Pure stdlib; runs no symbolic execution.
@@ -78,12 +79,19 @@ SHAPES: list[tuple[str, re.Pattern[str]]] = [
 ]
 
 
+def _is_test_rel(rel: str) -> bool:
+    """Whether ``rel`` (relative to ``SRC_ROOT``) is a test module.
+
+    Test modules are skipped: their fallbacks are not production state paths.
+    """
+    return rel.endswith("_tests.rs") or "/tests/" in rel or rel.startswith("tests/")
+
+
 def _iter_rs_files() -> list[Path]:
     files = []
     for p in sorted(SRC_ROOT.rglob("*.rs")):
         rel = p.relative_to(SRC_ROOT).as_posix()
-        # Skip test modules: their fallbacks are not production state paths.
-        if rel.endswith("_tests.rs") or "/tests/" in rel or rel.startswith("tests/"):
+        if _is_test_rel(rel):
             continue
         files.append(p)
     return files
@@ -105,25 +113,120 @@ def _has_tag(lines: list[str], idx: int) -> bool:
     return any(TAG_RE.search(lines[j]) for j in range(lo, hi))
 
 
+def scan_text(rel: str, text: str) -> list[tuple[str, int, str, str, bool]]:
+    """Return (rel, lineno, shape, stripped, tagged) for every site in ``text``."""
+    hits: list[tuple[str, int, str, str, bool]] = []
+    lines = text.splitlines()
+    for idx, raw in enumerate(lines):
+        stripped = raw.strip()
+        # Ignore commented-out code so a `// return Ok(None)` note is inert.
+        if stripped.startswith("//"):
+            continue
+        for shape, matcher in SHAPES:
+            if matcher.search(stripped):
+                hits.append((rel, idx + 1, shape, stripped, _has_tag(lines, idx)))
+                break
+    return hits
+
+
 def scan() -> list[tuple[str, int, str, str, bool]]:
     """Return (rel, lineno, shape, stripped, tagged) for every detected site."""
     hits: list[tuple[str, int, str, str, bool]] = []
     for path in _iter_rs_files():
         rel = path.relative_to(SRC_ROOT).as_posix()
         try:
-            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+            text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        for idx, raw in enumerate(lines):
-            stripped = raw.strip()
-            # Ignore commented-out code so a `// return Ok(None)` note is inert.
-            if stripped.startswith("//"):
-                continue
-            for shape, matcher in SHAPES:
-                if matcher.search(stripped):
-                    hits.append((rel, idx + 1, shape, stripped, _has_tag(lines, idx)))
-                    break
+        hits.extend(scan_text(rel, text))
     return hits
+
+
+# Synthetic sources for --self-test. The untagged file carries each detected
+# shape (bare `return Ok(None)`, bare `.ok();`, the `let` tail) plus
+# must-NOT-fire controls; the tagged file is the same sites, each with a
+# `// SILENT(cat-b):` tag. They are separate texts, so a tag in one cannot
+# fall inside the other's LOOKBACK/LOOKAHEAD window.
+_SELF_TEST_UNTAGGED = """\
+fn early(&self) -> Result<Option<u64>> {
+    if self.empty() {
+        return Ok(None);
+    }
+    // return Ok(None) in a comment is inert
+    Ok(Some(1))
+}
+fn swallow(&self) {
+    self.flush().ok();
+    let page = self.load(addr).ok();
+    let kept = self.load(addr).ok().unwrap_or_default();
+}
+"""
+_SELF_TEST_TAGGED = """\
+fn early(&self) -> Result<Option<u64>> {
+    if self.empty() {
+        // SILENT(cat-b): why
+        return Ok(None);
+    }
+    Ok(Some(1))
+}
+fn swallow(&self) {
+    // SILENT(cat-b): why
+    self.flush().ok();
+    // SILENT(cat-b): why
+    let page = self.load(addr).ok();
+}
+"""
+_SELF_TEST_EXPECTED_UNTAGGED = [
+    ("return-ok-none", "return Ok(None);", False),
+    ("ok-swallow", "self.flush().ok();", False),
+    ("ok-swallow", "let page = self.load(addr).ok();", False),
+]
+_SELF_TEST_EXPECTED_TAGGED = [(shape, code, True) for shape, code, _ in _SELF_TEST_EXPECTED_UNTAGGED]
+
+
+def self_test() -> int:
+    """Prove the detector can fail, can be silenced by a tag, and skips tests.
+
+    A gate never seen to fail is indistinguishable from one that cannot. The
+    fixtures run through :func:`scan_text` (the real per-file matcher, with its
+    comment skip and tag window) and :func:`_is_test_rel` (the real test-file
+    skip), and the untagged hits through the real baseline filter.
+    """
+    failures: list[str] = []
+    for name, src, want in (
+        ("untagged", _SELF_TEST_UNTAGGED, _SELF_TEST_EXPECTED_UNTAGGED),
+        ("tagged", _SELF_TEST_TAGGED, _SELF_TEST_EXPECTED_TAGGED),
+    ):
+        got = [(shape, code, tagged) for _, _, shape, code, tagged in scan_text("fixture.rs", src)]
+        if got != want:
+            failures.append(f"{name}: expected {want}\n  got      {got}")
+
+    # A baselined untagged site is suppressed; the others still report.
+    untagged = [h for h in scan_text("fixture.rs", _SELF_TEST_UNTAGGED) if not h[4]]
+    baseline = {_key("fixture.rs", "return-ok-none", "return Ok(None);")}
+    fresh = [h[3] for h in new_untagged(untagged, baseline)]
+    if fresh != ["self.flush().ok();", "let page = self.load(addr).ok();"]:
+        failures.append(f"baseline: got {fresh}")
+
+    for rel, want_test in (
+        ("memory/page_tests.rs", True),
+        ("memory/tests/page.rs", True),
+        ("tests/page.rs", True),
+        ("memory/page.rs", False),
+    ):
+        if _is_test_rel(rel) != want_test:
+            failures.append(f"test-file skip: {rel!r} expected {want_test}")
+
+    if failures:
+        print("SELF-TEST FAILED")
+        for f in failures:
+            print(f"  {f}")
+        return 1
+    print(
+        "self-test OK: untagged return Ok(None) / .ok(); / let-tail flagged, "
+        "the same sites tagged SILENT(cat-b) pass, baseline and test-file skip honoured"
+    )
+    return 0
 
 
 def load_baseline() -> set[str]:
@@ -136,6 +239,13 @@ def load_baseline() -> set[str]:
             continue
         keys.add(line)
     return keys
+
+
+def new_untagged(
+    untagged: list[tuple[str, int, str, str, bool]], baseline: set[str]
+) -> list[tuple[str, int, str, str, bool]]:
+    """The untagged sites whose line-number-independent key is not baselined."""
+    return [h for h in untagged if _key(h[0], h[2], h[3]) not in baseline]
 
 
 def write_baseline(untagged: list[tuple[str, int, str, str, bool]]) -> int:
@@ -154,7 +264,11 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--list", action="store_true", help="list ALL detected sites (tagged + untagged)")
     ap.add_argument("--update-baseline", action="store_true", help="rewrite the baseline from current untagged sites")
+    ap.add_argument("--self-test", action="store_true", help="prove the detector fires on synthetic untagged sites")
     args = ap.parse_args()
+
+    if args.self_test:
+        return self_test()
 
     if not SRC_ROOT.is_dir():
         print(f"error: source root not found: {SRC_ROOT}", file=sys.stderr)
@@ -176,7 +290,7 @@ def main() -> int:
         return 0
 
     baseline = load_baseline()
-    new_sites = [h for h in untagged if _key(h[0], h[2], h[3]) not in baseline]
+    new_sites = new_untagged(untagged, baseline)
 
     if not new_sites:
         print(

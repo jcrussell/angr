@@ -28,6 +28,7 @@ Usage::
 
     tools/audit_satresult.py            # gate: exit 1 on any violation
     tools/audit_satresult.py --list     # list every SatResult::{Sat,Unsat} site
+    tools/audit_satresult.py --self-test  # prove it can fail
 
 Pure stdlib; runs no symbolic execution.
 """
@@ -60,20 +61,101 @@ def _tagged(lines: list[str], idx: int) -> bool:
     return any(EXEMPT_TAG in lines[j] for j in range(lo, idx + 1))
 
 
+def scan_text(path: Path, text: str, list_all: bool) -> list[tuple[Path, int, str]]:
+    """Return (path, lineno, stripped) for every unexempt site in ``text``.
+
+    ``path`` drives the test-file skip; :func:`scan` and :func:`self_test`
+    share this matcher.
+    """
+    hits: list[tuple[Path, int, str]] = []
+    if not list_all and _is_test_file(path):
+        return hits
+    lines = text.splitlines()
+    for idx, line in enumerate(lines):
+        if not BANNED.search(line):
+            continue
+        if not list_all and _tagged(lines, idx):
+            continue
+        hits.append((path, idx + 1, line.strip()))
+    return hits
+
+
 def scan(list_all: bool) -> list[tuple[Path, int, str]]:
     hits: list[tuple[Path, int, str]] = []
     for path in sorted(SRC_ROOT.rglob("*.rs")):
-        if not list_all and _is_test_file(path):
-            continue
-        lines = path.read_text().splitlines()
-        for idx, line in enumerate(lines):
-            if not BANNED.search(line):
-                continue
-            if not list_all and _tagged(lines, idx):
-                continue
-            rel = path.relative_to(REPO_ROOT)
-            hits.append((rel, idx + 1, line.strip()))
+        rel = path.relative_to(REPO_ROOT)
+        hits.extend(scan_text(rel, path.read_text(), list_all))
     return hits
+
+
+# Synthetic source for --self-test: raw Sat/Unsat matches (must fire), the
+# same line with a `satresult-exempt` tag on it or within EXEMPT_LOOKBACK
+# above (the shape of the `SatOutcome::decided` impl in solver_build.rs), and
+# a bare `SatResult::Unknown` (always allowed).
+_SELF_TEST_SRC = """\
+fn raw(solver: &z3::Solver) -> bool {
+    match solver.check() {
+        z3::SatResult::Sat => true,
+        _ => false,
+    }
+}
+fn raw_unsat(r: z3::SatResult) -> bool {
+    r == z3::SatResult::Unsat
+}
+fn tagged_inline(r: z3::SatResult) -> bool {
+    matches!(r, z3::SatResult::Sat) // satresult-exempt: why
+}
+impl SatOutcome for z3::SatResult {
+    fn decided(self) -> Option<bool> {
+        match self {
+            // satresult-exempt: this impl is the sanctioned mapping site.
+            z3::SatResult::Sat => Some(true),
+            z3::SatResult::Unsat => Some(false),
+            z3::SatResult::Unknown => None,
+        }
+    }
+}
+fn timeout_only(r: z3::SatResult) -> bool {
+    r == z3::SatResult::Unknown
+}
+"""
+_SELF_TEST_EXPECTED = [
+    (3, "z3::SatResult::Sat => true,"),
+    (8, "r == z3::SatResult::Unsat"),
+]
+_SELF_TEST_PROD = Path("native/angr/src/symbolic/fixture.rs")
+_SELF_TEST_TEST_PATHS = (
+    Path("native/angr/src/symbolic/fixture_tests.rs"),
+    Path("native/angr/src/symbolic/context_tests/fixture.rs"),
+)
+
+
+def self_test() -> int:
+    """Prove the detector can fail, and that the tag and test-file skip work.
+
+    A gate never seen to fail is indistinguishable from one that cannot. The
+    fixture runs through :func:`scan_text`, the real per-file matcher with its
+    test-file skip and exempt-tag lookback.
+    """
+    failures: list[str] = []
+    got = [(ln, code) for _, ln, code in scan_text(_SELF_TEST_PROD, _SELF_TEST_SRC, list_all=False)]
+    if got != _SELF_TEST_EXPECTED:
+        failures.append(f"production path: expected {_SELF_TEST_EXPECTED}\n  got      {got}")
+    for test_path in _SELF_TEST_TEST_PATHS:
+        got_test = scan_text(test_path, _SELF_TEST_SRC, list_all=False)
+        if got_test:
+            failures.append(f"test path {test_path}: expected no hits, got {got_test}")
+
+    if failures:
+        print("SELF-TEST FAILED")
+        for f in failures:
+            print(f"  {f}")
+        return 1
+    print(
+        "self-test OK: raw SatResult::Sat / ::Unsat flagged; satresult-exempt "
+        "(inline and lookback), SatResult::Unknown and *_tests paths pass"
+    )
+    return 0
 
 
 def main() -> int:
@@ -83,7 +165,11 @@ def main() -> int:
         action="store_true",
         help="list every SatResult::{Sat,Unsat} site (including exempt/test)",
     )
+    ap.add_argument("--self-test", action="store_true", help="prove the detector fires on a synthetic raw match")
     args = ap.parse_args()
+
+    if args.self_test:
+        return self_test()
 
     hits = scan(list_all=args.list)
 

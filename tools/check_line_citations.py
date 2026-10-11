@@ -33,6 +33,7 @@ Usage::
     tools/check_line_citations.py                 # report new un-baselined citations
     tools/check_line_citations.py --list           # list ALL detected citations
     tools/check_line_citations.py --update-baseline
+    tools/check_line_citations.py --self-test      # prove it can fail
 
 Exit 0 when there are no new citations (or on --list / --update-baseline),
 1 when new ones are found. Pure stdlib.
@@ -77,22 +78,95 @@ def _key(rel: str, stripped: str) -> str:
     return f"{rel}\t{stripped}"
 
 
+def scan_text(rel: str, text: str) -> list[tuple[str, int, str]]:
+    """Return (rel, lineno, stripped) for every citation-shaped line of ``text``.
+
+    ``rel``'s suffix picks the surface (``.rs`` comment lines vs whole
+    ``.rst``), so :func:`scan` and :func:`self_test` share one matcher.
+    """
+    path = Path(rel)
+    hits: list[tuple[str, int, str]] = []
+    for idx, raw in enumerate(text.splitlines()):
+        stripped = raw.strip()
+        if not _is_scannable(path, stripped):
+            continue
+        if FILE_LINE_RE.search(stripped) or LINE_WORD_RE.search(stripped):
+            hits.append((rel, idx + 1, stripped))
+    return hits
+
+
 def scan() -> list[tuple[str, int, str]]:
     """Return (rel, lineno, stripped) for every citation-shaped line."""
     hits: list[tuple[str, int, str]] = []
     for path in _iter_sources():
         rel = path.relative_to(REPO_ROOT).as_posix()
         try:
-            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+            text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        for idx, raw in enumerate(lines):
-            stripped = raw.strip()
-            if not _is_scannable(path, stripped):
-                continue
-            if FILE_LINE_RE.search(stripped) or LINE_WORD_RE.search(stripped):
-                hits.append((rel, idx + 1, stripped))
+        hits.extend(scan_text(rel, text))
     return hits
+
+
+def new_citations(hits: list[tuple[str, int, str]], baseline: set[str]) -> list[tuple[str, int, str]]:
+    """The hits whose line-number-independent key is not in ``baseline``."""
+    return [h for h in hits if _key(h[0], h[2]) not in baseline]
+
+
+# Synthetic sources for --self-test: a file:NNN and a "line NNN" citation on
+# each surface, plus must-NOT-fire controls (a plain comment, a non-comment
+# .rs line, plain prose).
+_SELF_TEST_RS = """\
+// see foo.rs:123 for the invariant
+/// Mirrors the guard at line 42 of the caller.
+// A plain comment naming foo.rs and a line of code, no number.
+let line_42 = bar.rs; // not a comment line, so not scanned
+"""
+_SELF_TEST_RST = """\
+The table lives in ``engine.rs:88``.
+See lines ~478-490 of the upstream file.
+A plain prose line with no citation.
+"""
+_SELF_TEST_EXPECTED = [
+    ("native/angr/src/fixture.rs", 1, "// see foo.rs:123 for the invariant"),
+    ("native/angr/src/fixture.rs", 2, "/// Mirrors the guard at line 42 of the caller."),
+    ("docs/fixture.rst", 1, "The table lives in ``engine.rs:88``."),
+    ("docs/fixture.rst", 2, "See lines ~478-490 of the upstream file."),
+]
+
+
+def self_test() -> int:
+    """Prove the detector and the baseline filter can both fail.
+
+    A gate never seen to fail is indistinguishable from one that cannot. This
+    checks the matcher (positive and negative fixtures through
+    :func:`scan_text`) and the baseline semantics (a baselined key is
+    suppressed even after its line moves; an un-baselined one is not).
+    """
+    failures: list[str] = []
+    got = scan_text("native/angr/src/fixture.rs", _SELF_TEST_RS) + scan_text("docs/fixture.rst", _SELF_TEST_RST)
+    if got != _SELF_TEST_EXPECTED:
+        failures.append(f"matcher: expected {_SELF_TEST_EXPECTED}\n  got      {got}")
+
+    # Baseline: grandfather the first .rs citation, then shift every line down.
+    baseline = {_key("native/angr/src/fixture.rs", "// see foo.rs:123 for the invariant")}
+    shifted = scan_text("native/angr/src/fixture.rs", "// padding\n" + _SELF_TEST_RS)
+    fresh = new_citations(shifted, baseline)
+    want = [("native/angr/src/fixture.rs", 3, "/// Mirrors the guard at line 42 of the caller.")]
+    if fresh != want:
+        failures.append(f"baseline: expected {want}\n  got      {fresh}")
+
+    if failures:
+        print("SELF-TEST FAILED")
+        for f in failures:
+            print(f"  {f}")
+        return 1
+    print(
+        f"self-test OK: {len(got)} citations flagged as expected "
+        "(.rs file:NNN, .rs line NNN, .rst file:NNN, .rst lines NNN; clean controls silent), "
+        "baseline suppresses a moved grandfathered key"
+    )
+    return 0
 
 
 def load_baseline() -> set[str]:
@@ -123,7 +197,11 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--list", action="store_true", help="list ALL detected citations")
     ap.add_argument("--update-baseline", action="store_true", help="rewrite the baseline from current citations")
+    ap.add_argument("--self-test", action="store_true", help="prove the detector fires on synthetic citations")
     args = ap.parse_args()
+
+    if args.self_test:
+        return self_test()
 
     for root in (SRC_ROOT, DOCS_ROOT):
         if not root.is_dir():
@@ -144,7 +222,7 @@ def main() -> int:
         return 0
 
     baseline = load_baseline()
-    new_hits = [h for h in hits if _key(h[0], h[2]) not in baseline]
+    new_hits = new_citations(hits, baseline)
 
     if not new_hits:
         print(f"OK: {len(hits)} line-number citations, {len(baseline)} baselined, 0 new.")

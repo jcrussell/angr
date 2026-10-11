@@ -78,16 +78,15 @@ Every gate runs in `ci.yml::rust_check` (the `steady_guard_checked` row is
 compile-time). Each script's docstring is the authority for what it
 matches and why; the right-hand column is the canonical API or doc to
 reach for. Exempt a genuine case with the marker, not `--update-baseline`;
-the baselines marked *empty* must stay empty. The newer scripts
+the baselines marked *empty* must stay empty. CI runs every script with
+`--self-test` ahead of the real check: a gate never seen to fail is
+indistinguishable from one that cannot. The newer scripts
 (`audit_silent_fallback_test_pairing.py`, `audit_rounding_mode_threading.py`,
 `audit_sp_default_zero.py`, `audit_overflow_wraparound.py`,
 `audit_page_shift.py`) import comment blanking, test-file filtering and
-`fn`-name resolution from `tools/rust_source_utils.py` — add helpers there
-— and CI runs each with `--self-test` ahead of the real check: a gate never
-seen to fail is indistinguishable from one that cannot.
+`fn`-name resolution from `tools/rust_source_utils.py` — add helpers there;
 `check_line_citations.py`, `audit_silent_fallback.py` and
-`audit_satresult.py` predate that shape: they have their own scanners and
-no `--self-test`.
+`audit_satresult.py` predate that module and keep their own scanners.
 
 | Gate | Catches | Exempt with | Canonical API / doc |
 |------|---------|-------------|---------------------|
