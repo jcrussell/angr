@@ -64,9 +64,8 @@ EXPECTED_INPUT = 42  # every target's unique satisfying input
 
 def _build_amd64(tmpdir):
     """x86-64 (AMD64), 32-bit LE blob: 2*eax + 16 == 100 -> eax == 42."""
-    import claripy
-
     import angr
+    from angr import claripy
 
     code = bytes.fromhex(
         "01C0"  # add eax, eax
@@ -94,9 +93,8 @@ def _build_amd64(tmpdir):
 
 def _build_x86(tmpdir):
     """x86 (32-bit) LE blob: 2*eax + 16 == 100 -> eax == 42."""
-    import claripy
-
     import angr
+    from angr import claripy
 
     code = bytes.fromhex("01C083C01083F8647406EB0C90909090909090909090909090")
     path = os.path.join(tmpdir, "x86_branch.bin")
@@ -115,9 +113,8 @@ def _build_x86(tmpdir):
 
 def _build_armeb(tmpdir):
     """ARM big-endian (ARMEB) blob: 2*r0 + 16 == 100 -> r0 == 42."""
-    import claripy
-
     import angr
+    from angr import claripy
 
     code = struct.pack(
         ">IIIIIIIII",
@@ -175,9 +172,8 @@ def _elf64(code, e_machine, e_flags, entry_off):
 
 def _build_aarch64(tmpdir):
     """AArch64 inline ELF: calls double_it (2*w0) then checks == 84 -> w0 == 42."""
-    import claripy
-
     import angr
+    from angr import claripy
 
     code = struct.pack(
         "<IIIIIIIIII",
@@ -218,9 +214,8 @@ _MIPS_CODE = struct.pack(
 
 def _build_mips64(tmpdir):
     """MIPS64 LE inline ELF: ADDIU/BEQ compare a0 == 42."""
-    import claripy
-
     import angr
+    from angr import claripy
 
     elf_bytes, entry = _elf64(_MIPS_CODE, 0x08, 0x60000000, entry_off=0)
     path = os.path.join(tmpdir, "mips64le_branch.elf")
@@ -235,9 +230,8 @@ def _build_mips64(tmpdir):
 
 def _build_mips32(tmpdir):
     """MIPS32 LE inline ELF32: ADDIU/BEQ compare a0 == 42."""
-    import claripy
-
     import angr
+    from angr import claripy
 
     BASE = 0x400000
     EHDR_SIZE = 52

@@ -29,9 +29,8 @@ from __future__ import annotations
 import os
 import struct
 
-import claripy
-
 import angr
+from angr import claripy
 
 # AArch64 little-endian instructions (verified against the ARMv8 ARM):
 #

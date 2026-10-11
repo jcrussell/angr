@@ -18,10 +18,10 @@ reference implementation and there is nothing to diff against.
 
 from __future__ import annotations
 
-import claripy
 import pytest
 
 import angr
+from angr import claripy
 from tests.engines.conftest import (
     RUST_EXPLORATION_AVAILABLE,
     RustExplorationManager,

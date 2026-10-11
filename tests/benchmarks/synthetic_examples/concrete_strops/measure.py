@@ -26,9 +26,8 @@ import sys
 import time
 from pathlib import Path
 
-import claripy
-
 import angr
+from angr import claripy
 
 HERE = Path(__file__).parent
 SRC = HERE / "concrete_strops.c"

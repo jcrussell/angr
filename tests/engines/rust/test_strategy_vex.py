@@ -429,9 +429,8 @@ class TestExplorationStrategy:
         disabled, and the recipe still reaches the find while honouring the
         depth bound and the avoid target.
         """
-        import claripy
-
         import angr.sim_options as o
+        from angr import claripy
 
         find_addr = 0x4006ED
         avoid_addr = 0x4006FD
@@ -496,7 +495,7 @@ class TestVexOperationCoverage:
 
     def test_add_concrete(self):
         """x + 7 == 49 => x == 42."""
-        import claripy
+        from angr import claripy
 
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
@@ -505,7 +504,7 @@ class TestVexOperationCoverage:
 
     def test_add_symbolic(self):
         """x + y == 100, y == 30 => x == 70."""
-        import claripy
+        from angr import claripy
 
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
@@ -516,7 +515,7 @@ class TestVexOperationCoverage:
 
     def test_add_overflow_wraps(self):
         """0xFFFFFFFF + 1 wraps to 0 in 32-bit."""
-        import claripy
+        from angr import claripy
 
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
@@ -525,7 +524,7 @@ class TestVexOperationCoverage:
 
     def test_sub_concrete(self):
         """x - 8 == 34 => x == 42."""
-        import claripy
+        from angr import claripy
 
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
@@ -534,7 +533,7 @@ class TestVexOperationCoverage:
 
     def test_sub_symbolic(self):
         """x - y == 20, y == 10 => x == 30."""
-        import claripy
+        from angr import claripy
 
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
@@ -545,7 +544,7 @@ class TestVexOperationCoverage:
 
     def test_sub_underflow_wraps(self):
         """0 - 1 wraps to 0xFFFFFFFF in 32-bit."""
-        import claripy
+        from angr import claripy
 
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
@@ -554,7 +553,7 @@ class TestVexOperationCoverage:
 
     def test_mul_concrete(self):
         """x * 6 == 42 => x == 7."""
-        import claripy
+        from angr import claripy
 
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
@@ -565,7 +564,7 @@ class TestVexOperationCoverage:
 
     def test_mul_symbolic(self):
         """x * y == 56, x == 7 => y == 8."""
-        import claripy
+        from angr import claripy
 
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
@@ -578,7 +577,7 @@ class TestVexOperationCoverage:
 
     def test_and_mask(self):
         """x & 0xFF == 0x42 constrains low byte."""
-        import claripy
+        from angr import claripy
 
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
@@ -587,7 +586,7 @@ class TestVexOperationCoverage:
 
     def test_and_symbolic(self):
         """x & y == 0x10, x == 0x1F, so y & 0x1F == 0x10."""
-        import claripy
+        from angr import claripy
 
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
@@ -599,7 +598,7 @@ class TestVexOperationCoverage:
 
     def test_or_bits(self):
         """x | 0xF0 == 0xFF => x & 0x0F must be 0x0F."""
-        import claripy
+        from angr import claripy
 
         ctx = self._make_ctx()
         x = claripy.BVS("x", 8)
@@ -609,7 +608,7 @@ class TestVexOperationCoverage:
 
     def test_or_symbolic(self):
         """x | y == 0xFF, x == 0x0F => y must set high nibble."""
-        import claripy
+        from angr import claripy
 
         ctx = self._make_ctx()
         x = claripy.BVS("x", 8)
@@ -621,7 +620,7 @@ class TestVexOperationCoverage:
 
     def test_xor_concrete(self):
         """x ^ 0xAA == 0x55 => x == 0xFF."""
-        import claripy
+        from angr import claripy
 
         ctx = self._make_ctx()
         x = claripy.BVS("x", 8)
@@ -637,7 +636,7 @@ class TestVexOperationCoverage:
         lowering. Constraining two distinct operands and reading back ``y``
         forces a real two-operand XOR.
         """
-        import claripy
+        from angr import claripy
 
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
@@ -648,7 +647,7 @@ class TestVexOperationCoverage:
 
     def test_xor_symbolic_inverse(self):
         """x ^ y == 0xFFFFFFFF => y == ~x."""
-        import claripy
+        from angr import claripy
 
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
@@ -659,7 +658,7 @@ class TestVexOperationCoverage:
 
     def test_not_bitwise(self):
         """~x == 0x00 => x == 0xFF (8-bit)."""
-        import claripy
+        from angr import claripy
 
         ctx = self._make_ctx()
         x = claripy.BVS("x", 8)
@@ -670,7 +669,7 @@ class TestVexOperationCoverage:
 
     def test_shl_concrete(self):
         """x << 4 == 0x120 => low nibble lost, x == 0x12."""
-        import claripy
+        from angr import claripy
 
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
@@ -680,7 +679,7 @@ class TestVexOperationCoverage:
 
     def test_shl_symbolic_amount(self):
         """x << n == 0x80, x == 1 => n == 7."""
-        import claripy
+        from angr import claripy
 
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
@@ -692,7 +691,7 @@ class TestVexOperationCoverage:
 
     def test_lshr_concrete(self):
         """LShR(x, 8) == 0x12 => x >> 8 == 0x12."""
-        import claripy
+        from angr import claripy
 
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
@@ -702,7 +701,7 @@ class TestVexOperationCoverage:
 
     def test_lshr_vs_arithmetic(self):
         """LShR is logical (zero-fill), not arithmetic."""
-        import claripy
+        from angr import claripy
 
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
@@ -712,7 +711,7 @@ class TestVexOperationCoverage:
 
     def test_arithmetic_shr(self):
         """Arithmetic shift right sign-extends."""
-        import claripy
+        from angr import claripy
 
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
@@ -725,7 +724,7 @@ class TestVexOperationCoverage:
 
     def test_extract_low_byte(self):
         """Extract(7, 0, x) gets the least significant byte."""
-        import claripy
+        from angr import claripy
 
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
@@ -735,7 +734,7 @@ class TestVexOperationCoverage:
 
     def test_extract_high_byte(self):
         """Extract(31, 24, x) gets the most significant byte."""
-        import claripy
+        from angr import claripy
 
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
@@ -745,7 +744,7 @@ class TestVexOperationCoverage:
 
     def test_extract_middle_word(self):
         """Extract(23, 8, x) gets the middle two bytes."""
-        import claripy
+        from angr import claripy
 
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
@@ -755,7 +754,7 @@ class TestVexOperationCoverage:
 
     def test_extract_single_bit(self):
         """Extract(0, 0, x) gets bit 0."""
-        import claripy
+        from angr import claripy
 
         ctx = self._make_ctx()
         x = claripy.BVS("x", 8)
@@ -765,7 +764,7 @@ class TestVexOperationCoverage:
 
     def test_concat_two_bytes(self):
         """Concat(a, b) forms a 16-bit value."""
-        import claripy
+        from angr import claripy
 
         ctx = self._make_ctx()
         a = claripy.BVS("a", 8)
@@ -776,7 +775,7 @@ class TestVexOperationCoverage:
 
     def test_concat_four_bytes(self):
         """Concat(a, b, c, d) forms a 32-bit value."""
-        import claripy
+        from angr import claripy
 
         ctx = self._make_ctx()
         a = claripy.BVS("a", 8)
@@ -791,7 +790,7 @@ class TestVexOperationCoverage:
 
     def test_concat_then_extract_roundtrip(self):
         """Extract undoes Concat for matching bit ranges."""
-        import claripy
+        from angr import claripy
 
         ctx = self._make_ctx()
         a = claripy.BVS("a", 8)
@@ -807,7 +806,7 @@ class TestVexOperationCoverage:
 
     def test_zeroext_8_to_32(self):
         """ZeroExt(24, x8) where x8 == 0xFF gives 0x000000FF."""
-        import claripy
+        from angr import claripy
 
         ctx = self._make_ctx()
         x = claripy.BVS("x", 8)
@@ -818,7 +817,7 @@ class TestVexOperationCoverage:
 
     def test_zeroext_preserves_value(self):
         """ZeroExt should not change the numeric value of a positive number."""
-        import claripy
+        from angr import claripy
 
         ctx = self._make_ctx()
         x = claripy.BVS("x", 16)
@@ -829,7 +828,7 @@ class TestVexOperationCoverage:
 
     def test_signext_positive(self):
         """SignExt of positive value (MSB=0) is same as ZeroExt."""
-        import claripy
+        from angr import claripy
 
         ctx = self._make_ctx()
         x = claripy.BVS("x", 8)
@@ -840,7 +839,7 @@ class TestVexOperationCoverage:
 
     def test_signext_negative(self):
         """SignExt of negative value (MSB=1) fills with 1s."""
-        import claripy
+        from angr import claripy
 
         ctx = self._make_ctx()
         x = claripy.BVS("x", 8)
@@ -851,7 +850,7 @@ class TestVexOperationCoverage:
 
     def test_signext_ff(self):
         """SignExt(24, 0xFF) == 0xFFFFFFFF."""
-        import claripy
+        from angr import claripy
 
         ctx = self._make_ctx()
         x = claripy.BVS("x", 8)
@@ -864,7 +863,7 @@ class TestVexOperationCoverage:
 
     def test_reverse_16bit(self):
         """Reverse(0x1234) == 0x3412."""
-        import claripy
+        from angr import claripy
 
         ctx = self._make_ctx()
         x = claripy.BVS("x", 16)
@@ -874,7 +873,7 @@ class TestVexOperationCoverage:
 
     def test_reverse_32bit(self):
         """Reverse(0xDEADBEEF) == 0xEFBEADDE."""
-        import claripy
+        from angr import claripy
 
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
@@ -891,7 +890,7 @@ class TestVexOperationCoverage:
         observable, so an identity/broken Reverse turns the second constraint
         UNSAT and the test fails.
         """
-        import claripy
+        from angr import claripy
 
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
@@ -902,7 +901,7 @@ class TestVexOperationCoverage:
 
     def test_reverse_64bit(self):
         """Reverse of a 64-bit value."""
-        import claripy
+        from angr import claripy
 
         ctx = self._make_ctx()
         x = claripy.BVS("x", 64)
@@ -914,7 +913,7 @@ class TestVexOperationCoverage:
 
     def test_uge(self):
         """Unsigned greater-or-equal."""
-        import claripy
+        from angr import claripy
 
         ctx = self._make_ctx()
         x = claripy.BVS("x", 8)
@@ -924,7 +923,7 @@ class TestVexOperationCoverage:
 
     def test_ule(self):
         """Unsigned less-or-equal."""
-        import claripy
+        from angr import claripy
 
         ctx = self._make_ctx()
         x = claripy.BVS("x", 8)
@@ -934,7 +933,7 @@ class TestVexOperationCoverage:
 
     def test_sgt(self):
         """Signed greater-than constrains to positive range."""
-        import claripy
+        from angr import claripy
 
         ctx = self._make_ctx()
         x = claripy.BVS("x", 8)
@@ -945,7 +944,7 @@ class TestVexOperationCoverage:
 
     def test_sle(self):
         """Signed less-or-equal with negative bound."""
-        import claripy
+        from angr import claripy
 
         ctx = self._make_ctx()
         x = claripy.BVS("x", 8)
@@ -959,7 +958,7 @@ class TestVexOperationCoverage:
 
     def test_ite_true_branch(self):
         """If(True, a, b) == a."""
-        import claripy
+        from angr import claripy
 
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
@@ -970,7 +969,7 @@ class TestVexOperationCoverage:
 
     def test_ite_false_branch(self):
         """If(False, a, b) == b."""
-        import claripy
+        from angr import claripy
 
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
@@ -981,7 +980,7 @@ class TestVexOperationCoverage:
 
     def test_ite_symbolic_condition(self):
         """ITE with symbolic condition and constrained result."""
-        import claripy
+        from angr import claripy
 
         ctx = self._make_ctx()
         cond = claripy.BVS("c", 8)
@@ -997,7 +996,7 @@ class TestVexOperationCoverage:
 
     def test_add_then_extract(self):
         """(x + y) constrained, then extract a byte of the sum."""
-        import claripy
+        from angr import claripy
 
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
@@ -1010,7 +1009,7 @@ class TestVexOperationCoverage:
 
     def test_xor_shl_combo(self):
         """(x ^ key) << 8 == target tests combined ops."""
-        import claripy
+        from angr import claripy
 
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
@@ -1022,7 +1021,7 @@ class TestVexOperationCoverage:
 
     def test_signext_then_add(self):
         """SignExt then add: common in sign-extended address calculations."""
-        import claripy
+        from angr import claripy
 
         ctx = self._make_ctx()
         x = claripy.BVS("x", 8)
@@ -1034,7 +1033,7 @@ class TestVexOperationCoverage:
 
     def test_concat_reverse_extract(self):
         """Concat, Reverse, Extract pipeline (common in memory operations)."""
-        import claripy
+        from angr import claripy
 
         ctx = self._make_ctx()
         a = claripy.BVS("a", 8)
@@ -1049,7 +1048,7 @@ class TestVexOperationCoverage:
 
     def test_mul_and_mask(self):
         """x * 3 & 0xFF == result, checking low byte of multiplication."""
-        import claripy
+        from angr import claripy
 
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
@@ -1062,7 +1061,7 @@ class TestVexOperationCoverage:
 
     def test_add_8bit(self):
         """8-bit addition with overflow."""
-        import claripy
+        from angr import claripy
 
         ctx = self._make_ctx()
         x = claripy.BVS("x", 8)
@@ -1071,7 +1070,7 @@ class TestVexOperationCoverage:
 
     def test_add_64bit(self):
         """64-bit addition."""
-        import claripy
+        from angr import claripy
 
         ctx = self._make_ctx()
         x = claripy.BVS("x", 64)
@@ -1080,7 +1079,7 @@ class TestVexOperationCoverage:
 
     def test_xor_64bit(self):
         """64-bit XOR."""
-        import claripy
+        from angr import claripy
 
         ctx = self._make_ctx()
         x = claripy.BVS("x", 64)
@@ -1101,10 +1100,9 @@ class TestVexGetMSBsInstruction:
     """
 
     def _run_pmovmskb(self, xmm0_value):
-        import claripy
-
         import angr
         import angr.sim_options as o
+        from angr import claripy
 
         #   66 0f d7 c0   pmovmskb eax, xmm0
         #   c3            ret
@@ -1223,7 +1221,7 @@ class TestVexBitCountInstructions:
 
     def test_lzcnt_tzcnt_concrete(self):
         """Concrete operand: lzcnt (edx) / tzcnt (ebx) match the bit oracle."""
-        import claripy
+        from angr import claripy
 
         value = 0x00F0_0F00  # clz=8, ctz=8
         s = self._run(claripy.BVV(value, 32))
@@ -1232,7 +1230,7 @@ class TestVexBitCountInstructions:
 
     def test_lzcnt_tzcnt_extremes(self):
         """Top-bit-set -> clz 0 / ctz 31; bit-0-set -> clz 31 / ctz 0."""
-        import claripy
+        from angr import claripy
 
         s_hi = self._run(claripy.BVV(0x8000_0000, 32))
         assert s_hi.solver.eval(s_hi.regs.edx) == 0
@@ -1266,7 +1264,7 @@ class TestVexBitCountInstructions:
         an interpreter-level concretization (angr-4ju9e) would let eval(ecx)
         return a Rust-infeasible value with the wrong clz.
         """
-        import claripy
+        from angr import claripy
 
         x = claripy.BVS("ecx", 32)
         s = self._run(x)
@@ -1281,7 +1279,7 @@ class TestVexBitCountInstructions:
         whose true ctz matches (sound Ctz export, commit e3f46fa9a; gated on
         the interpreter-concretization fix angr-4ju9e).
         """
-        import claripy
+        from angr import claripy
 
         x = claripy.BVS("ecx", 32)
         s = self._run(x)

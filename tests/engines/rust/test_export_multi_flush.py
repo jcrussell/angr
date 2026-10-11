@@ -14,9 +14,9 @@ happen on the Rust side of the boundary. These tests pin that it does.
 
 from __future__ import annotations
 
-import claripy
 import pytest
 
+from angr import claripy
 from tests.engines.conftest import (
     RUST_EXPLORATION_AVAILABLE,
     RustExplorationManager,

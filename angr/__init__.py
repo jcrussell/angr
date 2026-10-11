@@ -48,6 +48,19 @@ del add_z3_dll_directory
 _install_z3_compat()
 del _install_z3_compat
 
+# Upstream angr 10 absorbed claripy as `angr.claripy` (built into angr.rustylib)
+# and has no top-level `claripy` module; angr-examples and the fork's own code
+# spell the import `from angr import claripy`. Until the merge brings the real
+# thing, alias the standalone package and every submodule it has loaded under
+# `angr.claripy.*` so both spellings resolve to one module object.
+import sys as _sys
+
+import claripy  # noqa: F401  -- re-exported as angr.claripy (alias block below)
+
+for _name in [k for k in _sys.modules if k == "claripy" or k.startswith("claripy.")]:
+    _sys.modules["angr." + _name] = _sys.modules[_name]
+del _name, _sys
+
 # angr.state_plugins and angr.sim_state are mutually dependent: the plugin modules register themselves
 # on SimState at import time, while SimState needs the SimStatePlugin base class. Importing the
 # state_plugins package to completion here, before anything pulls in sim_state, is the one ordering

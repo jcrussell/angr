@@ -42,10 +42,10 @@ from __future__ import annotations
 
 import os
 
-import claripy
 import pytest
 
 import angr
+from angr import claripy
 
 # fauxware_project fixture lives in tests/engines/conftest.py (angr-7gdp).
 from tests.engines.conftest import RUST_EXPLORATION_AVAILABLE, RustExplorationManager

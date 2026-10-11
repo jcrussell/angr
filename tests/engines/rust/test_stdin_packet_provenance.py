@@ -17,8 +17,7 @@ from __future__ import annotations
 
 import types
 
-import claripy
-
+from angr import claripy
 from angr.exploration.rust_callback_dispatch import RustCallbackDispatchMixin, _RustInjectedStdin
 
 

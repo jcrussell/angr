@@ -6,11 +6,11 @@ from __future__ import annotations
 import ctypes
 import unittest
 
-import claripy
 import z3
 from z3 import z3core
 
 import angr  # noqa: F401  -- installs the shim at import
+from angr import claripy
 from angr.misc import z3_compat
 
 

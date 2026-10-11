@@ -19,9 +19,8 @@ import time
 # 3.5GB address-space cap so we MemoryError before the 4G nested scope OOMs.
 resource.setrlimit(resource.RLIMIT_AS, (3500 * 1024 * 1024, 3500 * 1024 * 1024))
 
-import claripy
-
 import angr
+from angr import claripy
 from angr import sim_options as so
 
 XMLLINT = os.path.expanduser("~/repos/angr-examples/examples/xmllint/xmllint_bin")

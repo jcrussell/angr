@@ -194,8 +194,7 @@ class TestErrorRecovery:
         Locks down current behaviour for angr-ho6i: if the engine ever silently
         keeps the state in `active`, this test fails and a real bug is filed.
         """
-        import claripy
-
+        from angr import claripy
         from angr import sim_options as o
 
         # mov rax, [rdi]   -> 48 8b 07
@@ -334,7 +333,7 @@ class TestErrorRecovery:
         Before the fix this test errored with "CAS: oldHi/expdHi/dataHi
         must be all-Some (DCAS) or all-None (single)".
         """
-        import claripy
+        from angr import claripy
 
         # lock cmpxchg qword ptr [rdi], rcx  -> f0 48 0f b1 0f
         # ret                                -> c3
@@ -373,7 +372,7 @@ class TestErrorRecovery:
         original value. The CPU also writes the loaded value back to RAX
         (so subsequent compares see the actual contents).
         """
-        import claripy
+        from angr import claripy
 
         shellcode = bytes.fromhex("f0480fb10fc3")
         proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
@@ -413,7 +412,7 @@ class TestErrorRecovery:
         the loaded value into the result temp (which the lifted IR
         then puts into the destination register).
         """
-        import claripy
+        from angr import claripy
 
         # ldrex r0, [r1]: 0xE1910F9F -> bytes LE: 9F 0F 91 E1
         # bx lr        : 0xE12FFF1E -> bytes LE: 1E FF 2F E1
@@ -445,7 +444,7 @@ class TestErrorRecovery:
         LLSC success bit into Rd (the status register), so a successful
         STREX leaves Rd = 0.
         """
-        import claripy
+        from angr import claripy
 
         # strex r0, r2, [r1]: 0xE1810F92 -> bytes LE: 92 0F 81 E1
         # bx lr             : 0xE12FFF1E -> bytes LE: 1E FF 2F E1
@@ -479,7 +478,7 @@ class TestErrorRecovery:
         UNSAT children, so an UNSAT parent is evicted via the prune path
         rather than silently advancing.
         """
-        import claripy
+        from angr import claripy
 
         # mov rax, 1     -> 48 c7 c0 01 00 00 00
         # cmp rax, 0     -> 48 83 f8 00
@@ -519,8 +518,9 @@ class TestErrorRecovery:
 
     def test_solver_eval_after_unsat(self):
         """Evaluating an expression on an UNSAT solver should return None, not crash."""
-        import claripy
         from angr.rustylib.vex_engine import RustSolverContext
+
+        from angr import claripy
 
         ctx = RustSolverContext()
         x = claripy.BVS("x", 32)
@@ -533,8 +533,9 @@ class TestErrorRecovery:
 
     def test_solver_min_on_unsat(self):
         """min() on UNSAT solver should return None, not crash."""
-        import claripy
         from angr.rustylib.vex_engine import RustSolverContext
+
+        from angr import claripy
 
         ctx = RustSolverContext()
         x = claripy.BVS("x", 32)
@@ -546,8 +547,9 @@ class TestErrorRecovery:
 
     def test_solver_eval_upto_on_unsat(self):
         """eval_upto() on UNSAT solver returns empty list, not crash."""
-        import claripy
         from angr.rustylib.vex_engine import RustSolverContext
+
+        from angr import claripy
 
         ctx = RustSolverContext()
         x = claripy.BVS("x", 32)
@@ -559,8 +561,9 @@ class TestErrorRecovery:
 
     def test_solver_many_constraints(self):
         """Solver handles many constraints without crashing."""
-        import claripy
         from angr.rustylib.vex_engine import RustSolverContext
+
+        from angr import claripy
 
         ctx = RustSolverContext()
         x = claripy.BVS("x", 32)
@@ -574,8 +577,9 @@ class TestErrorRecovery:
 
     def test_solver_fork_many_times(self):
         """Forking solver many times should not leak or crash."""
-        import claripy
         from angr.rustylib.vex_engine import RustSolverContext
+
+        from angr import claripy
 
         ctx = RustSolverContext()
         x = claripy.BVS("x", 32)
@@ -1064,7 +1068,7 @@ class TestErrorRecovery:
         side tables, so neither fetch-page callback may call `memory.load` —
         that call built a 32768-bit AST for the whole page just to discover the
         page was symbolic and decline it."""
-        import claripy
+        from angr import claripy
 
         mgr, state = self._build_load_store_manager()
 
@@ -1257,8 +1261,7 @@ class TestErrorRecovery:
 
     def test_cb_memory_store_symbolic_value_swallows_sim_memory_error(self):
         """SimMemoryError from state.memory.store() must keep being swallowed."""
-        import claripy
-
+        from angr import claripy
         from angr.errors import SimMemoryError
 
         mgr, state = self._build_load_store_manager()
@@ -1277,7 +1280,7 @@ class TestErrorRecovery:
     def test_cb_memory_store_symbolic_value_propagates_unrelated_exceptions(self):
         """Non-Sim/Claripy exceptions must propagate out of
         _cb_memory_store_symbolic_value."""
-        import claripy
+        from angr import claripy
 
         mgr, state = self._build_load_store_manager()
 
@@ -1314,7 +1317,7 @@ class TestErrorRecovery:
         """Storing a symbolic value at a (pinned) symbolic address via the
         full callback must land in Python state memory and be loadable back.
         Uses 0x4000 because 0x1000 is already mapped by load_shellcode."""
-        import claripy
+        from angr import claripy
 
         mgr, state = self._build_load_store_manager()
         mgr._set_callback_state(state)
@@ -1336,7 +1339,7 @@ class TestErrorRecovery:
         """Loading via the full callback must return a claripy AST that
         evaluates to the previously stored value at a symbolic-but-pinned
         address."""
-        import claripy
+        from angr import claripy
 
         mgr, state = self._build_load_store_manager()
         mgr._set_callback_state(state)
@@ -1363,8 +1366,7 @@ class TestErrorRecovery:
         the angr-8e81 / angr-2f7o convention used by the other symbolic
         callbacks). Otherwise Rust's flush_stores() path would propagate the
         error and tear down exploration."""
-        import claripy
-
+        from angr import claripy
         from angr.errors import SimMemoryError
 
         mgr, state = self._build_load_store_manager()
@@ -1384,7 +1386,7 @@ class TestErrorRecovery:
     def test_cb_memory_store_symbolic_full_propagates_unrelated_exceptions(self):
         """Non-Sim/Claripy exceptions must propagate so real bugs aren't
         masked as silent no-ops."""
-        import claripy
+        from angr import claripy
 
         mgr, state = self._build_load_store_manager()
 
@@ -1404,8 +1406,7 @@ class TestErrorRecovery:
         """SimMemoryError must be swallowed and a fresh symbolic AST returned
         so Rust can keep going (it'll wrap the result in a sym_pyref_*
         placeholder via expressions.rs)."""
-        import claripy
-
+        from angr import claripy
         from angr.errors import SimMemoryError
 
         mgr, state = self._build_load_store_manager()
@@ -1425,7 +1426,7 @@ class TestErrorRecovery:
 
     def test_cb_memory_load_symbolic_full_propagates_unrelated_exceptions(self):
         """Non-Sim/Claripy exceptions must propagate."""
-        import claripy
+        from angr import claripy
 
         mgr, state = self._build_load_store_manager()
 
@@ -1452,7 +1453,7 @@ class TestErrorRecovery:
         """No MultiwriteAnnotation on addr → fall through (return False).
         This is the common case: every other symbolic-store callback hits
         this path and the existing Python state.memory.store handles it."""
-        import claripy
+        from angr import claripy
 
         mgr, _ = self._build_load_store_manager()
         addr = claripy.BVS("plain_addr", 64)
@@ -1463,8 +1464,7 @@ class TestErrorRecovery:
         """MultiwriteAnnotation present but no stepping state id → fall
         through (return False).  Outside an active step there is no
         Rust state to apply the Multi-cell store to."""
-        import claripy
-
+        from angr import claripy
         from angr.storage.memory_mixins.address_concretization_mixin import (
             MultiwriteAnnotation,
         )
@@ -1481,8 +1481,7 @@ class TestErrorRecovery:
         available → call into Rust's state_memory_store_symbolic_multi
         with the original addr/data ASTs.  Asserts the routing only;
         the Rust side is unit-tested separately."""
-        import claripy
-
+        from angr import claripy
         from angr.storage.memory_mixins.address_concretization_mixin import (
             MultiwriteAnnotation,
         )
@@ -1512,8 +1511,7 @@ class TestErrorRecovery:
         """If state_memory_store_symbolic_multi returns False the caller
         must fall through to the Python state path so the write is not
         silently lost.  _try_multi_cell_store returns False in that case."""
-        import claripy
-
+        from angr import claripy
         from angr.storage.memory_mixins.address_concretization_mixin import (
             MultiwriteAnnotation,
         )
@@ -1529,8 +1527,7 @@ class TestErrorRecovery:
     def test_try_multi_cell_store_falls_through_on_pyo3_exception(self):
         """Errors from the Rust side must be swallowed so the Python
         fallback can still apply the store."""
-        import claripy
-
+        from angr import claripy
         from angr.storage.memory_mixins.address_concretization_mixin import (
             MultiwriteAnnotation,
         )
@@ -1552,8 +1549,7 @@ class TestErrorRecovery:
         annotated stores to _try_multi_cell_store; on success it must
         return without invoking state.memory.store.  Pinned via a stub
         state.memory.store that would otherwise record a call."""
-        import claripy
-
+        from angr import claripy
         from angr.storage.memory_mixins.address_concretization_mixin import (
             MultiwriteAnnotation,
         )
@@ -1578,8 +1574,7 @@ class TestErrorRecovery:
     def test_cb_memory_store_symbolic_full_falls_back_when_multi_fails(self):
         """If the Multi-cell PyO3 path returns False, the Python state
         path must still receive the store so the write is preserved."""
-        import claripy
-
+        from angr import claripy
         from angr.storage.memory_mixins.address_concretization_mixin import (
             MultiwriteAnnotation,
         )
@@ -1632,7 +1627,7 @@ class TestErrorRecovery:
         """
         import json
 
-        import claripy
+        from angr import claripy
 
         mgr = _RustExplorationManager("amd64")
         callbacks = PythonCallbacks()
@@ -1733,7 +1728,7 @@ class TestErrorRecovery:
         by `fallback_load_symbolic_full` (interpreter/mod.rs:947) by
         invoking the manager-level callback the way Rust would.
         """
-        import claripy
+        from angr import claripy
 
         mgr, state = self._build_load_store_manager()
         mgr._set_callback_state(state)
@@ -1773,8 +1768,9 @@ class TestErrorRecovery:
         """
         import time
 
-        import claripy
         from angr.rustylib.vex_engine import RustSolverContext
+
+        from angr import claripy
 
         ctx = RustSolverContext()
         ctx.set_timeout(50)  # 50ms — far smaller than the 5s assertion bound

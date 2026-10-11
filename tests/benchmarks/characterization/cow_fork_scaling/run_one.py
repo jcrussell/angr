@@ -51,9 +51,8 @@ def compile_binary(n: int, out_dir: str) -> str:
 
 def run_explore(bin_path: str, engine: str, max_states: int = 65536) -> tuple[int, str | None]:
     """Run exploration; return (deadended_count, error_str_or_none)."""
-    import claripy
-
     import angr
+    from angr import claripy
 
     proj = angr.Project(bin_path, auto_load_libs=False)
     main_sym = proj.loader.find_symbol("main")

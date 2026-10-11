@@ -40,9 +40,8 @@ from __future__ import annotations
 
 import os
 
-import claripy
-
 import angr
+from angr import claripy
 
 # Prefer the static system busybox; fall back to the initramfs copy (dynamic
 # PIE) only if the static one is absent.

@@ -166,8 +166,9 @@ class TestRustExplorationManagerUnit:
         nonzero hit count proves the cache is actually reused, not just
         populated.
         """
-        import claripy
         from angr.rustylib.vex_engine import RustSolverContext
+
+        from angr import claripy
 
         ctx = RustSolverContext()
         ctx.reset_solver_stats()
@@ -733,7 +734,7 @@ class TestRustExplorationManagerUnit:
         the Err, increments native_proc_stats.python_fallbacks, and emits
         a need_simprocedure event so Python can handle it.
         """
-        import claripy
+        from angr import claripy
 
         mgr = _RustExplorationManager("amd64")
         invocations = []
@@ -821,7 +822,7 @@ class TestRustExplorationManagerUnit:
         (``steady_config_guard`` + clear pending), so after load the pending
         callback set is empty.
         """
-        import claripy
+        from angr import claripy
 
         mgr = _RustExplorationManager("amd64")
         HOOK = 0x500000
@@ -1156,7 +1157,7 @@ class TestRustSimStateIntegration:
         leaf that legitimately owns id 0). The binding now mints a fresh global
         id per call, so distinct wrapped registers export to distinct symbols.
         """
-        import claripy
+        from angr import claripy
 
         mgr = _RustExplorationManager("amd64")
         state = RustSimState("amd64")
@@ -1253,7 +1254,7 @@ class TestRustExplorationPython:
         error at 0x0") while ``get_register('rip')`` read correctly. This
         asserts the two stay consistent after an IP write.
         """
-        import claripy
+        from angr import claripy
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -1385,9 +1386,8 @@ class TestRustExplorationPython:
         """With NO_IP_CONCRETIZATION, a `jmp rax` against a symbolic rax must
         skip enumeration and land the state in the `unconstrained` stash —
         matches engines/successors.py:292-296 (max_targets=0, no warning)."""
-        import claripy
-
         import angr
+        from angr import claripy
         from angr import sim_options as o
 
         # AMD64: `ff e0` = jmp rax. With rax unconstrained-symbolic, Python's
@@ -1437,9 +1437,8 @@ class TestRustExplorationPython:
         rax must skip enumeration and land the state in the `unconstrained`
         stash — matches engines/successors.py:234-239 (early elif route to
         unconstrained_successors before AddressConcretizer is invoked)."""
-        import claripy
-
         import angr
+        from angr import claripy
         from angr import sim_options as o
 
         # AMD64: `ff e0` = jmp rax. With rax unconstrained-symbolic, Python's
@@ -1476,9 +1475,8 @@ class TestRustExplorationPython:
         ``(syscall_num, None)`` and the unknown-syscall stub takes over, so
         no enumeration happens.
         """
-        import claripy
-
         import angr
+        from angr import claripy
         from angr import sim_options as o
 
         # AMD64: `0f 05` = syscall. Pad so PC+2 stays mapped.
@@ -1677,9 +1675,8 @@ class TestRustExplorationPython:
         Rust manager API's `get_state_register("rip")` returns Some(value)).
         With the option, the IP register is symbolic and the API returns None.
         """
-        import claripy
-
         import angr
+        from angr import claripy
         from angr import sim_options as o
 
         # AMD64: `ff e0` = jmp rax. Two concrete jump targets are mapped so
@@ -2444,8 +2441,9 @@ class TestRustEdgeCases:
 
     def test_many_symbolic_variables(self):
         """Solver with >50 symbolic variables and constraints."""
-        import claripy
         from angr.rustylib.vex_engine import RustSolverContext
+
+        from angr import claripy
 
         ctx = RustSolverContext()
         symbols = []
@@ -2466,8 +2464,9 @@ class TestRustEdgeCases:
 
     def test_solver_push_pop(self):
         """Push/pop preserves solver state correctly."""
-        import claripy
         from angr.rustylib.vex_engine import RustSolverContext
+
+        from angr import claripy
 
         ctx = RustSolverContext()
         x = claripy.BVS("x", 32)
@@ -2491,8 +2490,9 @@ class TestRustEdgeCases:
         so this round-trips the dunder ASTs through the slow path and checks
         the Rust solver matches claripy's unsigned semantics.
         """
-        import claripy
         from angr.rustylib.vex_engine import RustSolverContext
+
+        from angr import claripy
 
         x = claripy.BVS("x", 32)
 
@@ -2565,9 +2565,9 @@ class TestCallablePredicates:
 
     def test_solver_proxy_eval_returns_single_value(self):
         """RustSolverProxy.eval() returns a single value, not a tuple."""
-        import claripy
         from angr.rustylib.vex_engine import RustSolverContext
 
+        from angr import claripy
         from angr.exploration.rust_state_proxy import RustSolverProxy
 
         ctx = RustSolverContext()
@@ -2588,9 +2588,9 @@ class TestCallablePredicates:
 
     def test_solver_proxy_eval_upto_returns_tuple(self):
         """RustSolverProxy.eval_upto() returns a tuple."""
-        import claripy
         from angr.rustylib.vex_engine import RustSolverContext
 
+        from angr import claripy
         from angr.exploration.rust_state_proxy import RustSolverProxy
 
         ctx = RustSolverContext()
@@ -2610,9 +2610,9 @@ class TestCallablePredicates:
 
     def test_solver_proxy_eval_cast_to_bytes(self):
         """RustSolverProxy.eval() with cast_to=bytes works."""
-        import claripy
         from angr.rustylib.vex_engine import RustSolverContext
 
+        from angr import claripy
         from angr.exploration.rust_state_proxy import RustSolverProxy
 
         ctx = RustSolverContext()

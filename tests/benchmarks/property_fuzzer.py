@@ -455,9 +455,9 @@ def _solver_trial_child(trial_seeds, mem_limit_mb, n_eval):
     if _repo_root not in sys.path:
         sys.path.insert(0, _repo_root)
 
-    import claripy
     from angr.rustylib.vex_engine import RustSolverContext
 
+    from angr import claripy
     from angr.exploration.rust_manager import _setup_shared_z3_context
 
     # Rust and claripy must share one Z3 context for AST passthrough.

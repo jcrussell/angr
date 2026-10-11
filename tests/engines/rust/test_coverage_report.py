@@ -29,10 +29,10 @@ from __future__ import annotations
 
 import os
 
-import claripy
 import pytest
 
 import angr
+from angr import claripy
 from angr.exploration.rust_manager import RustExplorationManager
 
 _SYNTH_NAME = "fork_solve_pbounce_W3_S2_M8_B1"

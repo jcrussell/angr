@@ -83,8 +83,7 @@ import os
 import pickle
 from typing import TYPE_CHECKING
 
-import claripy
-
+from angr import claripy
 from angr.exploration._constants import (
     MAX_OVERLAY_SECTION_SIZE,
     PAGE_MASK,

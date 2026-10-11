@@ -40,8 +40,9 @@ class TestClaripyBridgeImport:
         """Reverse(x) over a symbolic leaf hits reverse_bytes' symbolic branch
         (extract-and-concat) and, pinned to a concrete value, evaluates to the
         byte-reversed word."""
-        import claripy
         from angr.rustylib.vex_engine import RustSolverContext
+
+        from angr import claripy
 
         ctx = RustSolverContext()
         x = claripy.BVS("rx", 32)
@@ -52,8 +53,9 @@ class TestClaripyBridgeImport:
 
     def test_reverse_symbolic_64bit(self):
         """Same symbolic branch at 64-bit width (num_bytes loop > 4)."""
-        import claripy
         from angr.rustylib.vex_engine import RustSolverContext
+
+        from angr import claripy
 
         ctx = RustSolverContext()
         x = claripy.BVS("rx64", 64)
@@ -63,7 +65,7 @@ class TestClaripyBridgeImport:
     def test_reverse_of_concrete_is_folded_by_claripy(self):
         """Documents why reverse_bytes' concrete branch is unreachable from the
         import path: claripy folds Reverse(BVV) to a BVV before dispatch."""
-        import claripy
+        from angr import claripy
 
         folded = claripy.Reverse(claripy.BVV(0x01020304, 32))
         assert folded.op == "BVV"
@@ -72,8 +74,9 @@ class TestClaripyBridgeImport:
     def test_bools_leaf_drives_ite(self):
         """If(BoolS(...), a, b) exercises import.rs' "BoolS" arm as the ite
         condition; both branch values must be reachable."""
-        import claripy
         from angr.rustylib.vex_engine import RustSolverContext
+
+        from angr import claripy
 
         ctx = RustSolverContext()
         b = claripy.BoolS("mybool")
@@ -85,8 +88,9 @@ class TestClaripyBridgeImport:
         """The same BoolS name used in two constraints stays one symbol: an
         equality between them is satisfiable both ways (hash-lookup / name+width
         identity path in the BoolS arm), never a contradiction."""
-        import claripy
         from angr.rustylib.vex_engine import RustSolverContext
+
+        from angr import claripy
 
         ctx = RustSolverContext()
         b = claripy.BoolS("shared")
@@ -106,8 +110,9 @@ class TestClaripyBridgeImport:
         with ``explicit_name`` on both: claripy otherwise renames to
         ``x_<counter>_1`` / ``x_<counter>_-1``, which never collide.
         """
-        import claripy
         from angr.rustylib.vex_engine import RustSolverContext
+
+        from angr import claripy
 
         ctx = RustSolverContext()
         bv = claripy.BVS("x", 1, explicit_name=True)
@@ -126,8 +131,9 @@ class TestClaripyBridgeImport:
         """The mangled Rust name must be stable: re-importing the same
         ``BoolS`` leaf has to resolve to the same Z3 variable, or a constraint
         added in one import silently stops binding in the next."""
-        import claripy
         from angr.rustylib.vex_engine import RustSolverContext
+
+        from angr import claripy
 
         ctx = RustSolverContext()
         flag = claripy.BoolS("y", explicit_name=True)
@@ -169,14 +175,14 @@ class TestClaripyBridgeWidthBounds:
         return RustSolverContext()
 
     def test_bvv_width_above_cap_is_refused(self):
-        import claripy
+        from angr import claripy
 
         over = self.MAX_BV_WIDTH + 1
         with pytest.raises(ValueError, match=str(over)):
             self._ctx().min(claripy.BVV(0, over))
 
     def test_bvs_width_above_cap_is_refused(self):
-        import claripy
+        from angr import claripy
 
         over = self.MAX_BV_WIDTH + 1
         with pytest.raises(ValueError, match=str(over)):
@@ -184,7 +190,7 @@ class TestClaripyBridgeWidthBounds:
 
     @pytest.mark.parametrize("op_name", ["ZeroExt", "SignExt"])
     def test_extension_past_cap_is_refused(self, op_name):
-        import claripy
+        from angr import claripy
 
         op = getattr(claripy, op_name)
         with pytest.raises(ValueError, match=op_name):
@@ -194,7 +200,7 @@ class TestClaripyBridgeWidthBounds:
     def test_extension_that_wraps_u32_is_refused(self, op_name):
         """8 + (2**32 - 4) wraps to 4 — a *narrowing* extension the release
         profile (no overflow checks) would otherwise accept silently."""
-        import claripy
+        from angr import claripy
 
         op = getattr(claripy, op_name)
         with pytest.raises(ValueError, match="overflows u32"):
@@ -205,7 +211,7 @@ class TestClaripyBridgeWidthBounds:
         keep converting. (That the cap itself is *inclusive* is pinned by
         ``import_tests.rs::test_extended_width_refuses_overflow_and_absurd_widths``
         — asserting it from here would make Z3 build a 1-Mibit sort.)"""
-        import claripy
+        from angr import claripy
 
         ctx = self._ctx()
         assert ctx.min(claripy.BVV(0x1234, 32)) == 0x1234

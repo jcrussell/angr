@@ -29,9 +29,8 @@ from __future__ import annotations
 
 import os
 
-import claripy
-
 import angr
+from angr import claripy
 
 # Baked into the checked-in fork_solve_trap_W5_S8_M12 binary.
 # To regenerate: python build_trap.py --w 5 --s 8 --m 12 --t 4

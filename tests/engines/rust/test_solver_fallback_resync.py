@@ -20,10 +20,10 @@ the next solve re-forks from the CURRENT Rust state.
 
 from __future__ import annotations
 
-import claripy
 import pytest
 
 import angr
+from angr import claripy
 from tests.engines.conftest import RUST_EXPLORATION_AVAILABLE, RustExplorationManager
 
 pytestmark = pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration engine not built")

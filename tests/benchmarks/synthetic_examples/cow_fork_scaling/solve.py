@@ -28,9 +28,8 @@ from __future__ import annotations
 
 import os
 
-import claripy
-
 import angr
+from angr import claripy
 
 N = 8  # branch count baked into the checked-in fork_tree_8 binary
 EXPECTED_LEAVES = 1 << N  # 256 fully-deadended leaf states

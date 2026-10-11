@@ -33,9 +33,8 @@ from __future__ import annotations
 
 import os
 
-import claripy
-
 import angr
+from angr import claripy
 
 # Baked into the checked-in fork_solve_W6_S8 binary (M=20 match-mask width).
 # To regenerate: python build.py --w 6 --s 8 --m 20

@@ -43,8 +43,9 @@ class TestSolverOperations:
 
     def test_solver_min_max(self):
         """min() and max() return correct bounds."""
-        import claripy
         from angr.rustylib.vex_engine import RustSolverContext
+
+        from angr import claripy
 
         ctx = RustSolverContext()
         x = claripy.BVS("x", 32)
@@ -89,8 +90,9 @@ class TestSolverOperations:
 
     def test_solver_unsatisfiable(self):
         """Contradictory constraints make solver UNSAT."""
-        import claripy
         from angr.rustylib.vex_engine import RustSolverContext
+
+        from angr import claripy
 
         ctx = RustSolverContext()
         x = claripy.BVS("x", 32)
@@ -105,8 +107,9 @@ class TestSolverOperations:
         Locks down behaviour for angr-eldx. False from satisfiable() must
         mean a definitive UNSAT, never a swallowed exception.
         """
-        import claripy
         from angr.rustylib.vex_engine import RustSolverContext
+
+        from angr import claripy
 
         ctx = RustSolverContext()
         x = claripy.BVS("x", 32)
@@ -133,8 +136,9 @@ class TestSolverOperations:
         Python surface, and a wall-clock timeout is not deterministic enough
         for a test.
         """
-        import claripy
         from angr.rustylib.vex_engine import RustSolverContext
+
+        from angr import claripy
 
         # Narrow (<=128-bit) path.
         ctx = RustSolverContext()
@@ -167,8 +171,9 @@ class TestSolverOperations:
         Guards the eval_upto_wide_checked() sibling added alongside it: the
         wide path previously had no checked variant at all.
         """
-        import claripy
         from angr.rustylib.vex_engine import RustSolverContext
+
+        from angr import claripy
 
         ctx = RustSolverContext()
         w = claripy.BVS("w", 256)
@@ -189,8 +194,9 @@ class TestSolverOperations:
         tracked constraints do. The returned indices are 0-based and
         match the order in which add_constraint_tracked_ast() was called.
         """
-        import claripy
         from angr.rustylib.vex_engine import RustSolverContext
+
+        from angr import claripy
 
         ctx = RustSolverContext()
         x = claripy.BVS("x", 32)
@@ -235,8 +241,9 @@ class TestSolverOperations:
         this constraint was dropped, so a subsequent `x == 0` constraint was
         wrongly satisfiable. Post-fix, `x != 0` AND `x == 0` is UNSAT.
         """
-        import claripy
         from angr.rustylib.vex_engine import RustSolverContext
+
+        from angr import claripy
 
         ctx = RustSolverContext()
         x = claripy.BVS("x", 8)
@@ -271,8 +278,9 @@ class TestSolverOperations:
         does not divert to the RustBV slow path, which would reject it with
         UnsupportedOp) and that the fix did not break enforcement.
         """
-        import claripy
         from angr.rustylib.vex_engine import RustSolverContext
+
+        from angr import claripy
 
         ctx = RustSolverContext()
         fp = claripy.FPS("tracked_fp_var", claripy.FSORT_DOUBLE)
@@ -303,8 +311,9 @@ class TestSolverOperations:
         every forked child (and to a lazily-rematerialized solver on the
         parent itself).
         """
-        import claripy
         from angr.rustylib.vex_engine import RustSolverContext
+
+        from angr import claripy
 
         ctx = RustSolverContext()
         x = claripy.BVS("x", 32)
@@ -329,8 +338,9 @@ class TestSolverOperations:
         extraction must opt in via add_constraint_tracked_ast(). Locks
         down that silent-empty behaviour.
         """
-        import claripy
         from angr.rustylib.vex_engine import RustSolverContext
+
+        from angr import claripy
 
         ctx = RustSolverContext()
         x = claripy.BVS("x", 32)
@@ -344,8 +354,9 @@ class TestSolverOperations:
         if constraints were tracked. Z3 does not produce a core for a
         SAT instance, so the matched indices list is empty.
         """
-        import claripy
         from angr.rustylib.vex_engine import RustSolverContext
+
+        from angr import claripy
 
         ctx = RustSolverContext()
         x = claripy.BVS("x", 32)
@@ -367,8 +378,9 @@ class TestSolverOperations:
         `!= 0` by the slow path) and entry 2 (Bool, after the failure) all
         have to reach the solver.
         """
-        import claripy
         from angr.rustylib.vex_engine import RustSolverContext
+
+        from angr import claripy
 
         x = claripy.BVS("x", 8)
         y = claripy.BVS("y", 8)
@@ -401,8 +413,9 @@ class TestSolverOperations:
         `add_constraints_raw_batch` must be a no-op and `resume_from` must
         be 0 (not 1).
         """
-        import claripy
         from angr.rustylib.vex_engine import RustSolverContext
+
+        from angr import claripy
 
         x = claripy.BVS("x", 8)
 
@@ -413,8 +426,9 @@ class TestSolverOperations:
 
     def test_solver_fork_independence(self):
         """Forked solver contexts are independent."""
-        import claripy
         from angr.rustylib.vex_engine import RustSolverContext
+
+        from angr import claripy
 
         ctx1 = RustSolverContext()
         x = claripy.BVS("x", 32)
@@ -504,8 +518,9 @@ class TestSolverOperations:
         (process abort), not a recoverable PyErr. The fix lowers a Bool to
         a 1-bit BV via ite(1, 0) before evaluating.
         """
-        import claripy
         from angr.rustylib.vex_engine import RustSolverContext
+
+        from angr import claripy
 
         a = claripy.FPS("a", claripy.FSORT_DOUBLE)
         b = claripy.FPS("b", claripy.FSORT_DOUBLE)
@@ -539,8 +554,9 @@ class TestSolverOperations:
         own fresh local vec and must remain isolated. Regression for
         angr-agvl.
         """
-        import claripy
         from angr.rustylib.vex_engine import RustSolverContext
+
+        from angr import claripy
 
         ctx_a = RustSolverContext()
         x = claripy.BVS("x_iso", 32)
@@ -588,8 +604,9 @@ class TestSolverOperations:
         Sibling state must still be isolated from the parent's post-fork
         constraints. Regression for angr-agvl.
         """
-        import claripy
         from angr.rustylib.vex_engine import RustSolverContext
+
+        from angr import claripy
 
         ctx_a = RustSolverContext()
         x = claripy.BVS("x_push_iso", 32)
@@ -636,8 +653,9 @@ class TestSolverOperations:
 
     def test_solver_multiple_variables(self):
         """Solver handles multiple independent symbolic variables."""
-        import claripy
         from angr.rustylib.vex_engine import RustSolverContext
+
+        from angr import claripy
 
         ctx = RustSolverContext()
         x = claripy.BVS("x", 32)
@@ -655,8 +673,9 @@ class TestSolverOperations:
 
     def test_solver_eval_upto_wide_bvs(self):
         """eval_upto should handle BVS wider than 128 bits without truncation."""
-        import claripy
         from angr.rustylib.vex_engine import RustSolverContext
+
+        from angr import claripy
 
         ctx = RustSolverContext()
         # 296-bit BVS (like whitehatvn's 37-byte arg)
@@ -675,8 +694,9 @@ class TestSolverOperations:
 
     def test_solver_eval_upto_excludes_duplicates(self):
         """eval_upto should return distinct values."""
-        import claripy
         from angr.rustylib.vex_engine import RustSolverContext
+
+        from angr import claripy
 
         ctx = RustSolverContext()
         x = claripy.BVS("x", 8)
@@ -699,8 +719,9 @@ class TestSolverOperations:
         solutions like x = 51 (and also x in [0, 5]). A regression that
         loses ITE structure could over-constrain and force x to one branch.
         """
-        import claripy
         from angr.rustylib.vex_engine import RustSolverContext
+
+        from angr import claripy
 
         ctx = RustSolverContext()
         x = claripy.BVS("x", 32)
@@ -749,8 +770,9 @@ class TestSolverOperations:
         details and follow-up paths (Z3_global_param_set before
         ``Solver::new``).
         """
-        import claripy
         from angr.rustylib.vex_engine import RustSolverContext
+
+        from angr import claripy
 
         x = claripy.BVS("x", 32)
         ctx = RustSolverContext()
@@ -784,8 +806,9 @@ class TestSolverOperations:
         order-independence witnesses — they catch a dropped/duplicated
         constraint while staying immune to Z3's model-choice latitude.
         """
-        import claripy
         from angr.rustylib.vex_engine import RustSolverContext
+
+        from angr import claripy
 
         x = claripy.BVS("x", 32)
         c1 = x >= 100
@@ -1286,7 +1309,7 @@ class TestExplorationIntegration:
         Z3 assertion count against an unhooked baseline run; the hooked run
         must produce strictly more assertions per state.
         """
-        import claripy
+        from angr import claripy
 
         proj = fauxware_project
 
@@ -1346,7 +1369,7 @@ class TestExplorationIntegration:
         constraints back via resume_after_simprocedure. If that round-trip drops
         the constraint, the Rust state's solver itself will be missing it.
         """
-        import claripy
+        from angr import claripy
 
         proj = fauxware_project
         main_sym = proj.loader.find_symbol("main")
@@ -1761,7 +1784,7 @@ class TestProxyUnsatCore:
         """Two mutually contradicting constraints among several: both are
         blamed, the innocent bystander is not — and the Rust core is the same
         set Python's tracking SimSolver reports."""
-        import claripy
+        from angr import claripy
 
         mgr = _RustExplorationManager("amd64")
         sid = mgr.create_state("active")
@@ -1790,7 +1813,7 @@ class TestProxyUnsatCore:
         :meth:`test_multi_constraint_core_matches_python`, whose constraints are
         already atomic.
         """
-        import claripy
+        from angr import claripy
 
         mgr = _RustExplorationManager("amd64")
         sid = mgr.create_state("active")
@@ -1806,7 +1829,7 @@ class TestProxyUnsatCore:
     def test_core_entries_are_state_constraints(self):
         """Every core entry is one of ``solver.constraints`` — the core is a
         subset of the exported constraint list, not a re-derived AST."""
-        import claripy
+        from angr import claripy
 
         mgr = _RustExplorationManager("amd64")
         sid = mgr.create_state("active")
@@ -1822,7 +1845,7 @@ class TestProxyUnsatCore:
 
     def test_core_empty_when_satisfiable(self):
         """A SAT state has no core — matches SimSolver (Z3 produces none)."""
-        import claripy
+        from angr import claripy
 
         mgr = _RustExplorationManager("amd64")
         sid = mgr.create_state("active")
@@ -1835,7 +1858,7 @@ class TestProxyUnsatCore:
     def test_extra_constraints_assumed_but_never_blamed(self):
         """``extra_constraints`` can *cause* the UNSAT but are never reported —
         claripy's tracking solver leaves them untracked too."""
-        import claripy
+        from angr import claripy
 
         mgr = _RustExplorationManager("amd64")
         sid = mgr.create_state("active")
@@ -1856,7 +1879,7 @@ class TestProxyUnsatCore:
         ``invariant-rust-solver-proxy-required-surface``."""
         import types
 
-        import claripy
+        from angr import claripy
 
         mgr = _RustExplorationManager("amd64")
         sid = mgr.create_state("active")

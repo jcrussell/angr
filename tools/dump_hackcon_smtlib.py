@@ -30,9 +30,8 @@ HACKCON_DIR = os.path.join(EXAMPLES_DIR, "hackcon2016_angry-reverser")
 
 def run_hackcon(engine):
     """Run hackcon, return (found_state, rust_mgr_or_None, elapsed)."""
-    import claripy
-
     import angr
+    from angr import claripy
 
     sys.path.insert(0, HACKCON_DIR)
     os.chdir(HACKCON_DIR)
@@ -120,7 +119,7 @@ def dump_rust(out_path):
 
 def dump_python(out_path):
     found, flag, _, explore_time = run_hackcon("python")
-    import claripy
+    from angr import claripy
 
     z3backend = claripy.backends.z3
     t0 = time.perf_counter()

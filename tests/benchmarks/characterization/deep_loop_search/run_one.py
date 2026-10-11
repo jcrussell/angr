@@ -84,9 +84,8 @@ def _max_depth_python(sm) -> int:
 
 def run_explore(bin_path: str, engine: str, strategy: str, max_steps: int, max_states: int):
     """Run exploration; return dict with depth/state metrics."""
-    import claripy
-
     import angr
+    from angr import claripy
 
     proj = angr.Project(bin_path, auto_load_libs=False)
     main_sym = proj.loader.find_symbol("main")

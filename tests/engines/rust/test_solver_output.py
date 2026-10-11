@@ -55,7 +55,7 @@ class TestZ3TacticEnvVar:
         script = textwrap.dedent(
             """
             import sys
-            import claripy
+            from angr import claripy
             from angr.exploration.rust_manager import _setup_shared_z3_context
             _setup_shared_z3_context()
             from angr.rustylib.vex_engine import RustSolverContext
@@ -181,7 +181,7 @@ class TestZ3SatPhaseEnvVar:
         script = textwrap.dedent(
             """
             import sys
-            import claripy
+            from angr import claripy
             from angr.exploration.rust_manager import _setup_shared_z3_context
             _setup_shared_z3_context()
             from angr.rustylib.vex_engine import RustSolverContext
@@ -277,7 +277,7 @@ class TestSolverOutputCorrectness:
 
     def test_single_equality(self):
         """x == 42 should eval to exactly 42."""
-        import claripy
+        from angr import claripy
 
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
@@ -286,7 +286,7 @@ class TestSolverOutputCorrectness:
 
     def test_arithmetic_chain(self):
         """x + 10 == 50 should give x == 40."""
-        import claripy
+        from angr import claripy
 
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
@@ -295,7 +295,7 @@ class TestSolverOutputCorrectness:
 
     def test_bitwise_and_mask(self):
         """x & 0xFF == 0x41 constrains the low byte to 'A'."""
-        import claripy
+        from angr import claripy
 
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
@@ -305,7 +305,7 @@ class TestSolverOutputCorrectness:
 
     def test_xor_constraint(self):
         """x ^ key == target should give x == key ^ target."""
-        import claripy
+        from angr import claripy
 
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
@@ -316,7 +316,7 @@ class TestSolverOutputCorrectness:
 
     def test_shift_left(self):
         """(x << 4) == 0x120 should give x == 0x12."""
-        import claripy
+        from angr import claripy
 
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
@@ -328,7 +328,7 @@ class TestSolverOutputCorrectness:
 
     def test_extract_byte(self):
         """Extract byte 1 (bits 15:8) == 0xBE constrains that byte."""
-        import claripy
+        from angr import claripy
 
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
@@ -338,7 +338,7 @@ class TestSolverOutputCorrectness:
 
     def test_concat_constraint(self):
         """Concat(a, b) == 0xAABB constrains both a and b."""
-        import claripy
+        from angr import claripy
 
         ctx = self._make_ctx()
         a = claripy.BVS("a", 8)
@@ -349,7 +349,7 @@ class TestSolverOutputCorrectness:
 
     def test_signed_comparison(self):
         """Signed comparison: x >s -5 and x <s 5 should give value in (-5, 5)."""
-        import claripy
+        from angr import claripy
 
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
@@ -362,7 +362,7 @@ class TestSolverOutputCorrectness:
 
     def test_multi_variable_system(self):
         """System of equations: x + y == 100, x - y == 20 => x=60, y=40."""
-        import claripy
+        from angr import claripy
 
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
@@ -374,7 +374,7 @@ class TestSolverOutputCorrectness:
 
     def test_eval_upto_exact_range(self):
         """eval_upto on tightly constrained variable returns all valid values."""
-        import claripy
+        from angr import claripy
 
         ctx = self._make_ctx()
         x = claripy.BVS("x", 8)
@@ -385,7 +385,7 @@ class TestSolverOutputCorrectness:
 
     def test_min_max_with_complex_constraints(self):
         """min/max with multiple overlapping constraints."""
-        import claripy
+        from angr import claripy
 
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)
@@ -397,7 +397,7 @@ class TestSolverOutputCorrectness:
 
     def test_fork_preserves_values(self):
         """Forked solver preserves parent constraints and returns correct values."""
-        import claripy
+        from angr import claripy
 
         ctx = self._make_ctx()
         x = claripy.BVS("x", 32)

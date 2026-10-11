@@ -38,8 +38,9 @@ class TestClaripyAnnotationRoundtrip:
     def test_uninitialized_annotation_on_bvs_in_memory(self, fauxware_project):
         """A UninitializedAnnotation on a BVS stored in symbolic memory
         must still be present after a full RustExplorationManager run."""
-        import claripy
-        from claripy.annotation import UninitializedAnnotation
+        from angr.claripy.annotation import UninitializedAnnotation
+
+        from angr import claripy
 
         # SYMBOL_FILL_UNCONSTRAINED_REGISTERS is raised under Rust
         # (angr-apre) — RegisterFile always returns zero so symbolic-fill
@@ -73,7 +74,7 @@ class TestClaripyAnnotationRoundtrip:
         rebuilt the Expression from BVOp+operands, dropping annotations
         attached at the Expression level. The Arc-keyed expression cache in
         claripy_bridge.rs preserves them."""
-        import claripy
+        from angr import claripy
 
         class _ExprTaint(claripy.Annotation):
             def __init__(self, tag):
@@ -163,7 +164,7 @@ class TestEdgeCases:
         """Storing an Expression (not a leaf BVS or BVV) into memory and
         loading it back must roundtrip correctly without forking, even when
         the executing block has no conditional branches."""
-        import claripy
+        from angr import claripy
 
         state = fauxware_project.factory.entry_state()
         x = claripy.BVS("nobranch_expr_x", 32)
@@ -190,7 +191,7 @@ class TestEdgeCases:
     def test_wide_symbolic_value_in_memory_256bit(self, fauxware_project):
         """A 256-bit symbolic value stored in memory survives the
         manager-init export/import roundtrip."""
-        import claripy
+        from angr import claripy
 
         state = fauxware_project.factory.entry_state()
         wide = claripy.BVS("wide_sym_256", 256)
@@ -213,7 +214,7 @@ class TestEdgeCases:
     def test_wide_symbolic_value_in_memory_512bit(self, fauxware_project):
         """A 512-bit symbolic value stored in memory survives the
         manager-init export/import roundtrip."""
-        import claripy
+        from angr import claripy
 
         state = fauxware_project.factory.entry_state()
         wide = claripy.BVS("wide_sym_512", 512)
@@ -307,7 +308,7 @@ class TestEdgeCases:
         """A symbolic value stored at an address and immediately loaded from
         the same address must roundtrip — solver eval under a unique
         assignment yields the assigned value."""
-        import claripy
+        from angr import claripy
 
         state = fauxware_project.factory.entry_state()
         addr = 0x500500

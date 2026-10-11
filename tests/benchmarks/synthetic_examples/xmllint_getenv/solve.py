@@ -40,9 +40,8 @@ from __future__ import annotations
 
 import os
 
-import claripy
-
 import angr
+from angr import claripy
 from angr import sim_options as so
 
 # Hard backstop on total steps. The probe reached getenv in ~185 steps on a

@@ -30,10 +30,10 @@ import os
 import subprocess
 import sys
 
-import claripy
 import pytest
 
 import angr
+from angr import claripy
 from angr.errors import SimUnsatError
 from angr.exploration.rust_manager import RustExplorationManager
 
@@ -173,7 +173,7 @@ import json, os, resource, sys
 
 resource.setrlimit(resource.RLIMIT_AS, (4 * 1024**3, 4 * 1024**3))
 
-import claripy
+from angr import claripy
 import angr
 from angr.exploration.rust_manager import RustExplorationManager
 

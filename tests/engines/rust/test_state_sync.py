@@ -5,10 +5,10 @@ This module tests the Rust-native exploration manager for symbolic execution.
 
 from __future__ import annotations
 
-import claripy
 import pytest
 
 import angr
+from angr import claripy
 
 # Rust availability guard, binary-path resolution, and the module-scoped
 # fauxware_project fixture all live in tests/engines/conftest.py (angr-7gdp).
@@ -327,7 +327,7 @@ class TestPosixBrkSync:
         symbolic grow), the sync must not replace it with a raw int — that
         would break downstream Python code that expects a BV.
         """
-        import claripy
+        from angr import claripy
 
         proj = fauxware_project
         state = proj.factory.entry_state()
@@ -844,7 +844,7 @@ class TestStateMetadataStorage:
     def test_addr_to_ast_round_trip(self):
         """set_state_addr_to_ast then get_state_addr_to_ast returns the same
         AST object and size."""
-        import claripy
+        from angr import claripy
 
         mgr = _RustExplorationManager("amd64")
         sid = mgr.create_state("active")
@@ -860,7 +860,7 @@ class TestStateMetadataStorage:
 
     def test_hook_symbolic_memory_round_trip(self):
         """Hook symbolic memory entries survive a round trip."""
-        import claripy
+        from angr import claripy
 
         mgr = _RustExplorationManager("amd64")
         sid = mgr.create_state("active")
@@ -878,7 +878,7 @@ class TestStateMetadataStorage:
         overwrites the previous contents — matches the old
         ``_state_md(sid).symbolic_pages = pages`` assignment semantics.
         """
-        import claripy
+        from angr import claripy
 
         mgr = _RustExplorationManager("amd64")
         sid = mgr.create_state("active")
@@ -906,7 +906,7 @@ class TestStateMetadataStorage:
     def test_setter_unknown_state_raises(self):
         """Unknown state IDs on the setter side surface ValueError — matches
         every other ``set_state_*`` method on the manager."""
-        import claripy
+        from angr import claripy
 
         mgr = _RustExplorationManager("amd64")
         ast = claripy.BVS("nope", 8)
@@ -916,7 +916,7 @@ class TestStateMetadataStorage:
     def test_clear_state_metadata_drops_all_three_maps(self):
         """clear_state_metadata removes every map for the state — replaces
         the previous ``_state_metadata.pop(sid, None)`` cleanup."""
-        import claripy
+        from angr import claripy
 
         mgr = _RustExplorationManager("amd64")
         sid = mgr.create_state("active")
@@ -955,7 +955,7 @@ class TestStateMetadataStorage:
         where a missing fork-time clone would leave both states pointing at
         the same backing HashMap.
         """
-        import claripy
+        from angr import claripy
 
         ast_parent = claripy.BVS("parent_only", 32)
         # We need to set the entry through the manager API. Wire the state
@@ -1176,7 +1176,7 @@ class TestStateMetadataStorage:
         — the no-aliasing claim is then proven by the per-state-isolation
         invariants pinned upstream.
         """
-        import claripy
+        from angr import claripy
 
         proj = fauxware_project
         state = proj.factory.entry_state()

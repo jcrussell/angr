@@ -51,9 +51,8 @@ from __future__ import annotations
 
 import os
 
-import claripy
-
 import angr
+from angr import claripy
 
 # The all-digits path forks at most five leaf states; this cap is a backstop
 # against any unexpected fork storm.

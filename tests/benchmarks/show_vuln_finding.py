@@ -68,9 +68,8 @@ def find_vuln():
     ``avoid_addr``, ``constraint_count`` (path constraints attached to the found
     state), ``steps`` is not tracked here, ``elapsed`` (wall-clock seconds).
     """
-    import claripy
-
     import angr
+    from angr import claripy
     from angr.exploration import RustExplorationManager
 
     project = angr.Project(BINARY, load_options={"auto_load_libs": False})

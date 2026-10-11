@@ -21,8 +21,7 @@ import contextlib
 import logging
 import threading
 
-import claripy
-
+from angr import claripy
 from angr.rustylib.vex_engine import register_size_for_arch
 
 l = logging.getLogger(__name__)

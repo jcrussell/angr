@@ -15,9 +15,8 @@ tracked at that witness address.
 
 from __future__ import annotations
 
-import claripy
-
 import angr
+from angr import claripy
 from angr.exploration.rust_identity import CallbackMemoryTracker
 
 

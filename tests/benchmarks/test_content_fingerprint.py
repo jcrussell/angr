@@ -9,7 +9,6 @@ Bead angr-vh834, Phase 3.
 
 from __future__ import annotations
 
-import claripy
 import pytest
 from content_fingerprint import (
     compare_fingerprint_sets,
@@ -17,6 +16,8 @@ from content_fingerprint import (
     fingerprint_state_shape,
     fingerprint_terminals,
 )
+
+from angr import claripy
 
 
 class Terminal:

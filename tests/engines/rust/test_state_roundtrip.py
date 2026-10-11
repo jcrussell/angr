@@ -26,9 +26,9 @@ Python<->Rust state boundary.
 
 from __future__ import annotations
 
-import claripy
 import pytest
 
+from angr import claripy
 from angr import sim_options as o
 
 # Rust availability guard + RustExplorationManager live in

@@ -33,9 +33,8 @@ from __future__ import annotations
 import os
 import struct
 
-import claripy
-
 import angr
+from angr import claripy
 
 
 # Register numbers (MIPS N64, same as O32 for these opcodes):

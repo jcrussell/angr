@@ -54,7 +54,7 @@ class TestSymbolicLibcProcedures:
     BUF_ADDR = 0x601100  # past .bss, lazy-mapped via filler mixin
 
     def _make_state(self, proj, sim_proc):
-        import claripy
+        from angr import claripy
 
         proj.hook(self.HOOK_ADDR, sim_proc, replace=True)
         state = proj.factory.blank_state(
@@ -79,7 +79,7 @@ class TestSymbolicLibcProcedures:
     def test_strlen_symbolic_constrained_min_max(self, fauxware_project):
         """strlen on a 5-byte symbolic buffer (each byte constrained non-null,
         terminator at offset 5) must produce min=max=5."""
-        import claripy
+        from angr import claripy
 
         proj = fauxware_project
         try:
@@ -99,7 +99,7 @@ class TestSymbolicLibcProcedures:
     def test_strcmp_symbolic_constrained_equal(self, fauxware_project):
         """strcmp(s1, s2) where s1[0] is symbolic and s2 is "X\\0", with
         s1[0] constrained to 'X', must return 0 (equal)."""
-        import claripy
+        from angr import claripy
 
         proj = fauxware_project
         try:
@@ -122,7 +122,7 @@ class TestSymbolicLibcProcedures:
         must return 0: only the first 2 (equal) bytes are compared, so the
         symbolic byte at offset 2 cannot affect the result. Distinguishes the
         bounded strncmp from strcmp, which would read past offset 1."""
-        import claripy
+        from angr import claripy
 
         proj = fauxware_project
         try:
@@ -145,7 +145,7 @@ class TestSymbolicLibcProcedures:
         """strcasecmp(s1, s2) where s1[0] is symbolic constrained to 'A'
         (uppercase) and s2 is "a\\0" (lowercase) must return 0: the case-fold
         on both operands makes the bytes equal. strcmp would return non-zero."""
-        import claripy
+        from angr import claripy
 
         proj = fauxware_project
         try:
@@ -170,7 +170,7 @@ class TestSymbolicLibcProcedures:
         affect the result. Distinguishes the bounded case-insensitive variant
         from strncmp (case-sensitive → nonzero) and strcasecmp (unbounded →
         would read the symbolic byte)."""
-        import claripy
+        from angr import claripy
 
         proj = fauxware_project
         try:
@@ -192,7 +192,7 @@ class TestSymbolicLibcProcedures:
     def test_strchr_symbolic_finds_target(self, fauxware_project):
         """strchr("a?bX\\0", 'X') with '?' symbolic constrained to non-X,
         non-null must return BUF_ADDR + 3 (the index of 'X')."""
-        import claripy
+        from angr import claripy
 
         proj = fauxware_project
         try:
@@ -214,7 +214,7 @@ class TestSymbolicLibcProcedures:
     def test_memchr_symbolic_finds_target(self, fauxware_project):
         """memchr(buf, 'X', 5) where buf[2] is symbolic constrained to 'X'
         must return BUF_ADDR + 2."""
-        import claripy
+        from angr import claripy
 
         proj = fauxware_project
         try:
@@ -236,7 +236,7 @@ class TestSymbolicLibcProcedures:
     def test_strchrnul_symbolic_finds_target(self, fauxware_project):
         """strchrnul("a?bX\\0", 'X') with '?' symbolic constrained to non-X,
         non-null must return BUF_ADDR + 3 (the index of 'X')."""
-        import claripy
+        from angr import claripy
 
         proj = fauxware_project
         try:
@@ -275,7 +275,7 @@ class TestSymbolicLibcProcedures:
         """rawmemchr(buf, 'X') where buf[2] is symbolic constrained to 'X'
         must return BUF_ADDR + 2 (rawmemchr has no length bound; the caller
         guarantees the byte is present)."""
-        import claripy
+        from angr import claripy
 
         proj = fauxware_project
         try:
@@ -297,7 +297,7 @@ class TestSymbolicLibcProcedures:
         """memrchr(buf, 'X', 4) with 'X' at index 1 (concrete) and index 3
         (symbolic, constrained to 'X') must return the LAST match,
         BUF_ADDR + 3 — the reverse-scan that distinguishes memrchr."""
-        import claripy
+        from angr import claripy
 
         proj = fauxware_project
         try:
@@ -522,7 +522,7 @@ class TestSymbolicLibcProcedures:
     def test_memcmp_symbolic_constrained_equal(self, fauxware_project):
         """memcmp(b1, b2, 4) where each buffer's middle byte is a distinct
         symbolic, constrained equal — must return 0."""
-        import claripy
+        from angr import claripy
 
         proj = fauxware_project
         try:
@@ -548,7 +548,7 @@ class TestSymbolicLibcProcedures:
     def test_atoi_symbolic_constrained_to_value(self, fauxware_project):
         """atoi("7\\0") with '7' as a symbolic byte constrained to ASCII '7'
         must produce min=max=7."""
-        import claripy
+        from angr import claripy
 
         proj = fauxware_project
         try:
@@ -567,7 +567,7 @@ class TestSymbolicLibcProcedures:
     def test_strtol_symbolic_hex_digit(self, fauxware_project):
         """strtol("a\\0", NULL, 16) with 'a' as a symbolic byte constrained
         to ASCII 'a' must produce min=max=10."""
-        import claripy
+        from angr import claripy
 
         proj = fauxware_project
         try:
@@ -588,7 +588,7 @@ class TestSymbolicLibcProcedures:
     def test_strtoul_symbolic_decimal_digit(self, fauxware_project):
         """strtoul("5\\0", NULL, 10) with '5' as a symbolic byte constrained
         to ASCII '5' must produce min=max=5."""
-        import claripy
+        from angr import claripy
 
         proj = fauxware_project
         try:
@@ -609,7 +609,7 @@ class TestSymbolicLibcProcedures:
     def test_isdigit_symbolic_returns_true_for_digit(self, fauxware_project):
         """isdigit on a 32-bit symbolic int constrained to ASCII '5' must
         return rax = 1."""
-        import claripy
+        from angr import claripy
 
         proj = fauxware_project
         try:
@@ -626,7 +626,7 @@ class TestSymbolicLibcProcedures:
     def test_isalpha_symbolic_returns_true_for_letter(self, fauxware_project):
         """isalpha on a 32-bit symbolic int constrained to ASCII 'a' must
         return rax = 1."""
-        import claripy
+        from angr import claripy
 
         proj = fauxware_project
         try:
@@ -644,7 +644,7 @@ class TestSymbolicLibcProcedures:
         """Shared helper: run a 1-arg ctype proc on a 32-bit symbolic int
         constrained to ``ord(char)`` and assert rax concretizes to ``expected``.
         """
-        import claripy
+        from angr import claripy
 
         try:
             state = self._make_state(proj, angr.SIM_PROCEDURES["libc"][name]())
@@ -758,7 +758,7 @@ class TestSymbolicLibcProcedures:
         """htonl on a concrete 0x01020304 returns rax = 0x04030201 (amd64 is
         little-endian, so the native proc byte-swaps the low 32 bits and
         zero-extends; mirrors angr/procedures/libc/htonl.py)."""
-        import claripy
+        from angr import claripy
 
         proj = fauxware_project
         try:
@@ -772,7 +772,7 @@ class TestSymbolicLibcProcedures:
     def test_htons_concrete_swaps_low_two_bytes(self, fauxware_project):
         """htons on a concrete 0x0102 returns rax = 0x0201; only the low 16
         bits are converted (mirrors angr/procedures/libc/htons.py)."""
-        import claripy
+        from angr import claripy
 
         proj = fauxware_project
         try:
@@ -827,7 +827,7 @@ class TestSymbolicLibcProcedures:
         symbolic (references ``sym``) — an empty ``.variables`` set would mean
         the value folded to a constant and never exercised the Reverse export.
         """
-        import claripy
+        from angr import claripy
 
         proj = fauxware_project
         try:
@@ -847,7 +847,7 @@ class TestSymbolicLibcProcedures:
         low 16 bits, so its native ``BVOp::Reverse`` node is width-16. Same
         export arm, different reverse width. ``sym``'s low 16 bits are
         ``0x7788``; byte-reversal gives ``0x8877``, zero-extended to rax."""
-        import claripy
+        from angr import claripy
 
         proj = fauxware_project
         try:
@@ -901,7 +901,7 @@ class TestCallbackSolverConcretizationFallback:
         strategy on ``mx - mn``. Asserts (a) the trigger is real (Rust returns
         ``None``) and (b) the shim recovers the true claripy bounds.
         """
-        import claripy
+        from angr import claripy
 
         proj = fauxware_project
         captured = {}
@@ -951,8 +951,7 @@ class TestCallbackSolverConcretizationFallback:
         wasted Python solve. The spy on the Python frontend's ``min`` asserts
         it is never consulted.
         """
-        import claripy
-
+        from angr import claripy
         from angr.errors import SimUnsatError
 
         proj = fauxware_project
@@ -1029,7 +1028,7 @@ class TestNativeScanfScansetFallback:
     BUF_ADDR = 0x601100  # past .bss, lazy-mapped
 
     def _run(self, proj, fmt):
-        import claripy
+        from angr import claripy
 
         proj.hook(self.HOOK_ADDR, angr.SIM_PROCEDURES["libc"]["scanf"](), replace=True)
         try:
@@ -1052,9 +1051,7 @@ class TestNativeScanfScansetFallback:
 
     def test_scanset_falls_back_to_python(self, fauxware_project):
         stats = self._run(fauxware_project, b"%[^\n]\x00")
-        assert stats["call_counts"].get("scanf", 0) == 0, (
-            f"%[...] must not be served natively, got stats={stats}"
-        )
+        assert stats["call_counts"].get("scanf", 0) == 0, f"%[...] must not be served natively, got stats={stats}"
         assert stats["other_fallbacks_by_name"].get("scanf", 0) == 1, (
             f"%[...] must fall back to Python, got stats={stats}"
         )
@@ -1062,9 +1059,7 @@ class TestNativeScanfScansetFallback:
     def test_plain_numeric_spec_still_native(self, fauxware_project):
         """The fallback is scoped to the scanset — %d stays on the fast path."""
         stats = self._run(fauxware_project, b"%d\x00")
-        assert stats["call_counts"].get("scanf", 0) == 1, (
-            f"%d must still dispatch natively, got stats={stats}"
-        )
+        assert stats["call_counts"].get("scanf", 0) == 1, f"%d must still dispatch natively, got stats={stats}"
 
 
 class TestNativeFileDescriptorProcedures:
@@ -1119,7 +1114,7 @@ class TestNativeFileDescriptorProcedures:
     def test_pipe_native_dispatch_creates_two_fds(self, fauxware_project):
         """pipe(buf) dispatched through the native registry must allocate two
         consecutive fds (read end at 3, write end at 4) with the correct flags."""
-        import claripy
+        from angr import claripy
 
         proj = fauxware_project
 
@@ -1159,7 +1154,7 @@ class TestNativeFileDescriptorProcedures:
     def test_dup2_native_dispatch_redirects_stdin(self, fauxware_project):
         """dup2(0, 7) dispatched natively must create fd 7 as a copy of fd 0
         (stdin), with the original /dev/stdin name preserved."""
-        import claripy
+        from angr import claripy
 
         proj = fauxware_project
 
@@ -1256,7 +1251,7 @@ class TestNativeFileDescriptorErrorReturns:
         reg_args,
         bad_fd,
     ):
-        import claripy
+        from angr import claripy
 
         proj = fauxware_project
 
@@ -1343,7 +1338,7 @@ class TestNativeIdentityGetters:
         ["getuid", "geteuid", "getgid", "getegid"],
     )
     def test_identity_getter_returns_1000(self, fauxware_project, proc_name):
-        import claripy
+        from angr import claripy
 
         proj = fauxware_project
 
@@ -1398,7 +1393,7 @@ class TestNativeSetbuf:
     DEAD_ADDR = 0x4008B0
 
     def test_setbuf_dispatches_native(self, fauxware_project):
-        import claripy
+        from angr import claripy
 
         proj = fauxware_project
 
@@ -1446,7 +1441,7 @@ class TestNativeSyslog:
     DEAD_ADDR = 0x4008B0
 
     def _dispatch(self, proj, name, num_args, run, setup_regs):
-        import claripy
+        from angr import claripy
 
         stub_cls = type(name, (angr.SimProcedure,), {"num_args": num_args, "run": run})
         proj.hook(self.HOOK_ADDR, stub_cls(), replace=True)
@@ -1509,7 +1504,7 @@ class TestNativeTime:
     DEAD_ADDR = 0x4008B0
 
     def test_time_dispatches_native(self, fauxware_project):
-        import claripy
+        from angr import claripy
 
         proj = fauxware_project
         stub_cls = type("time", (angr.SimProcedure,), {"num_args": 1, "run": lambda self, tloc: 0})
@@ -1559,7 +1554,7 @@ class TestNativeSleep:
 
     @pytest.mark.parametrize("proc_name", ["sleep", "usleep"])
     def test_timer_returns_zero(self, fauxware_project, proc_name):
-        import claripy
+        from angr import claripy
 
         proj = fauxware_project
 
@@ -1616,7 +1611,7 @@ class TestNativeSystem:
     DEAD_ADDR = 0x4008B0
 
     def test_system_dispatches_native(self, fauxware_project):
-        import claripy
+        from angr import claripy
 
         proj = fauxware_project
 
@@ -1664,7 +1659,7 @@ class TestNativeAccess:
     DEAD_ADDR = 0x4008B0
 
     def test_access_dispatches_native(self, fauxware_project):
-        import claripy
+        from angr import claripy
 
         proj = fauxware_project
 
@@ -1753,7 +1748,7 @@ class TestNativeFreadBoundary:
         )
 
     def _setup(self, proj, *, dst, size, nmemb, stream):
-        import claripy
+        from angr import claripy
 
         state = proj.factory.blank_state(
             addr=self.HOOK_ADDR,
@@ -1804,7 +1799,7 @@ class TestNativeFreadBoundary:
         struct, the fd < 0 branch fires, and the call returns 0 items. This
         is the only path that round-trips the FILE._fileno memory read across
         the FFI boundary without needing seeded FS content."""
-        import claripy
+        from angr import claripy
 
         proj = fauxware_project
         proj.hook(self.HOOK_ADDR, self._fread_stub()(), replace=True)
@@ -1861,7 +1856,7 @@ class TestNativeMemoryAlignedAllocators:
         """memalign(64, 100) must dispatch natively, return an aligned
         non-zero pointer in rax, and tick the call_counts['memalign']
         counter exactly once."""
-        import claripy
+        from angr import claripy
 
         proj = fauxware_project
 
@@ -1902,7 +1897,7 @@ class TestNativeMemoryAlignedAllocators:
     def test_posix_memalign_writes_pointer_and_returns_zero(self, fauxware_project):
         """posix_memalign(memptr, 32, 80) must dispatch natively, return 0
         in rax, and write an aligned pointer to *memptr in memory."""
-        import claripy
+        from angr import claripy
 
         proj = fauxware_project
 
@@ -1982,7 +1977,7 @@ class TestNativeStringToNumericProcedures:
         )
 
     def _setup_state(self, proj, string_bytes: bytes, *, set_endptr: bool = False):
-        import claripy
+        from angr import claripy
 
         state = proj.factory.blank_state(
             addr=self.HOOK_ADDR,
@@ -2140,7 +2135,7 @@ class TestNativeStdioStatusAndWrite:
         )
 
     def _setup_state(self, proj, *, fileno: int, source_bytes: bytes | None = None):
-        import claripy
+        from angr import claripy
 
         state = proj.factory.blank_state(
             addr=self.HOOK_ADDR,
@@ -2407,7 +2402,7 @@ class TestNativeReadCacheSync:
         that fallback, so after ``mgr.run`` returns the event, ``with_pending``
         succeeds and the wrapper reads ``pending.state``'s memory.
         """
-        import claripy
+        from angr import claripy
 
         mgr = _RustExplorationManager("amd64")
 
@@ -2495,7 +2490,7 @@ class TestNativeReadCacheSync:
         Driven inside a live SimProcedure pending callback (same mechanism as
         ``test_pending_memory_load_symbolic_page_returns_page_symbols``).
         """
-        import claripy
+        from angr import claripy
 
         mgr = _RustExplorationManager("amd64")
 
@@ -2574,7 +2569,7 @@ class TestNativeReadCacheSync:
         rests on sharing the production-tested ``_add_constraints_to_state``
         body.
         """
-        import claripy
+        from angr import claripy
 
         mgr = _RustExplorationManager("amd64")
 
@@ -2644,7 +2639,7 @@ class TestNativeExtendedStringProcedures:
         )
 
     def _setup_state(self, proj, s_bytes: bytes, set_bytes: bytes):
-        import claripy
+        from angr import claripy
 
         state = proj.factory.blank_state(
             addr=self.HOOK_ADDR,
@@ -2741,7 +2736,7 @@ class _SelfCallContinuationProc(angr.SimProcedure):
         self.call(_SELFCALL_CALLEE, [], "after_call", prototype="void x()")
 
     def after_call(self):
-        import claripy
+        from angr import claripy
 
         self.state.memory.store(_SELFCALL_MARK, claripy.BVV(_SELFCALL_SENTINEL, 64), endness="Iend_LE")
 
@@ -2760,7 +2755,7 @@ class TestSimProcedureSelfCallContinuation:
     """
 
     def test_self_call_continuation_reaches_after_call(self):
-        import claripy
+        from angr import claripy
 
         shellcode = bytearray(b"\x90" * 0x200)
         shellcode[_SELFCALL_CALLEE - _SELFCALL_LOAD] = 0xC3  # callee: ret
@@ -2831,7 +2826,7 @@ class TestNativeMemoryCopyAndSet:
                 angr.options.ZERO_FILL_UNCONSTRAINED_MEMORY,
             },
         )
-        import claripy
+        from angr import claripy
 
         state.memory.store(state.regs.rsp, claripy.BVV(self.DEAD_ADDR, 64), endness="Iend_LE")
         return state
@@ -2859,7 +2854,7 @@ class TestNativeMemoryCopyAndSet:
             proj.unhook(self.HOOK_ADDR)
 
     def test_memcpy_native_dispatch_copies_bytes(self, fauxware_project):
-        import claripy
+        from angr import claripy
 
         payload = b"angr-rust!"
         state = self._blank_state(fauxware_project)
@@ -2877,7 +2872,7 @@ class TestNativeMemoryCopyAndSet:
         assert got == payload, f"dst={got!r}"
 
     def test_memcpy_zero_size_leaves_dst_untouched(self, fauxware_project):
-        import claripy
+        from angr import claripy
 
         # Pre-seed dst with a sentinel; a zero-size memcpy must not change it.
         state = self._blank_state(fauxware_project)
@@ -2895,7 +2890,7 @@ class TestNativeMemoryCopyAndSet:
         assert got == b"\x55", f"dst={got!r}"
 
     def test_memmove_overlapping_forward(self, fauxware_project):
-        import claripy
+        from angr import claripy
 
         # Overlapping move: dst = src + 2, copy 4 bytes. memmove must read the
         # pre-store source bytes, so dst[0:4] == original src[0:4].
@@ -2943,7 +2938,7 @@ class TestNativeMemoryCopyAndSet:
     def test_bzero_native_dispatch_zeros_bytes(self, fauxware_project):
         # bzero(s, n) forwards to native memset(s, 0, n). Pre-seed dst with a
         # 0xFF sentinel; the first n bytes must be zeroed, byte n untouched.
-        import claripy
+        from angr import claripy
 
         state = self._blank_state(fauxware_project)
         for i in range(7):
@@ -2958,7 +2953,7 @@ class TestNativeMemoryCopyAndSet:
 
     def _store_cstr(self, state, addr, data: bytes):
         """Lay out a NUL-terminated C string at `addr`."""
-        import claripy
+        from angr import claripy
 
         for i, b in enumerate(data + b"\x00"):
             state.memory.store(addr + i, claripy.BVV(b, 8))
@@ -2985,7 +2980,7 @@ class TestNativeMemoryCopyAndSet:
         state = self._blank_state(fauxware_project)
         self._store_cstr(state, self.SRC_ADDR, payload)
         # Pre-seed dst with sentinel bytes the pad must overwrite.
-        import claripy
+        from angr import claripy
 
         for i in range(n):
             state.memory.store(self.DST_ADDR + i, claripy.BVV(0x55, 8))
@@ -3021,7 +3016,7 @@ class TestNativeMemoryCopyAndSet:
     def test_mempcpy_returns_dst_plus_n(self, fauxware_project):
         # mempcpy(dst, src, n) copies n bytes like memcpy but returns dst + n
         # (a pointer to the byte after the last copied), not dst.
-        import claripy
+        from angr import claripy
 
         payload = b"mempcpy!"
         state = self._blank_state(fauxware_project)
@@ -3079,7 +3074,7 @@ class TestNativeMemoryCopyAndSet:
         n = 6
         state = self._blank_state(fauxware_project)
         self._store_cstr(state, self.SRC_ADDR, payload)
-        import claripy
+        from angr import claripy
 
         for i in range(n):
             state.memory.store(self.DST_ADDR + i, claripy.BVV(0x55, 8))
@@ -3164,7 +3159,7 @@ class TestNativePthreadOnce:
         return func + main, self.LOAD + len(func)
 
     def test_pthread_once_runs_init_exactly_once(self):
-        import claripy
+        from angr import claripy
 
         blob, main_addr = self._blob()
 
@@ -3275,7 +3270,7 @@ class TestEvalStdinSymbolWidth:
     HOOK_ADDR = 0x4008C0  # fauxware .fini area; keeps state in the active stash
 
     def _mgr_with_constrained_symbol(self, proj, name, width, value):
-        import claripy
+        from angr import claripy
 
         sym = claripy.BVS(name, width, explicit_name=True)
         state = proj.factory.blank_state(

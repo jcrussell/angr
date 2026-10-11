@@ -189,7 +189,7 @@ class TestMultiArchSupport:
         end-to-end test per arch, register-offset and byte-order regressions
         stay silent for months.
         """
-        import claripy
+        from angr import claripy
 
         proj, entry = _load_explore_project(spec, variant, loader, tmp_path)
         assert proj.arch.name == spec.proj_arch_name
@@ -1086,7 +1086,7 @@ class TestMultiArchSupport:
         Uses the angr-examples Android license_validation binary
         (load address 0x401760, find=0x401840, avoid=0x401854).
         """
-        import claripy
+        from angr import claripy
 
         binary_path = os.path.expanduser("~/repos/angr-examples/examples/android_arm_license_validation/validate")
         if not os.path.exists(binary_path):
@@ -1167,7 +1167,7 @@ class TestMultiArchSupport:
         ``r + r * r ≡ 20 (mod 256)``; r=4 (4 + 16 = 20) is the canonical
         solution.
         """
-        import claripy
+        from angr import claripy
 
         # AArch64 little-endian — verified individually via pyvex:
         #   0x400000: FMOV S0, W0       1E270000  ; q0 = [0,0,0, w0_low32]
@@ -1235,7 +1235,7 @@ class TestMultiArchSupport:
         available locally, so the ELF is constructed inline via
         ``arch_specs.build_elf``. Pairs with angr-gxhf.1.
         """
-        import claripy
+        from angr import claripy
 
         # AArch64 little-endian instructions (verified against ARMv8 ARM):
         #   double_it:
@@ -1308,7 +1308,7 @@ class TestMultiArchSupport:
         by a comparator ``BEQ $t0, N*5``. Before the fix, FOUND was empty for
         N>=30 (deterministic).
         """
-        import claripy
+        from angr import claripy
 
         def addiu(rt, rs, imm):
             return 0x24000000 | (rs << 21) | (rt << 16) | (imm & 0xFFFF)

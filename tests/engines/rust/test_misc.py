@@ -1241,7 +1241,7 @@ class TestImportZ3ConstraintPtrsValidation:
         """A null partway through the list rejects the whole batch — validation
         runs before any constraint is added, so the state's solver is
         unmutated on failure."""
-        import claripy
+        from angr import claripy
 
         proj = fauxware_project
         state = proj.factory.entry_state()
@@ -1264,7 +1264,7 @@ class TestImportZ3ConstraintPtrsValidation:
     def test_bv_sort_pointer_rejected(self, fauxware_project):
         """A Z3 AST with non-Bool sort (e.g. a BV) is rejected as the wrong
         sort kind, not silently asserted (which would corrupt the solver)."""
-        import claripy
+        from angr import claripy
 
         proj = fauxware_project
         state = proj.factory.entry_state()
@@ -1285,7 +1285,7 @@ class TestImportZ3ConstraintPtrsValidation:
         """Sanity: a real Bool ptr is accepted and the constraint becomes
         visible to subsequent export. Guards against the validation
         accidentally rejecting valid input."""
-        import claripy
+        from angr import claripy
 
         proj = fauxware_project
         state = proj.factory.entry_state()
@@ -1326,7 +1326,7 @@ class TestConstraintImportCheckedVariants:
 
     def test_add_constraints_checked_matches_lenient_when_sat(self, fauxware_project):
         """A satisfiable import returns ``True`` from both forms."""
-        import claripy
+        from angr import claripy
 
         proj = fauxware_project
         state = proj.factory.entry_state()
@@ -1340,7 +1340,7 @@ class TestConstraintImportCheckedVariants:
     def test_add_constraints_checked_reports_proven_unsat_as_false(self, fauxware_project):
         """A *decided* contradiction is ``False``, not ``None`` — the checked
         form must not degrade into a blanket "keep"."""
-        import claripy
+        from angr import claripy
 
         proj = fauxware_project
         state = proj.factory.entry_state()
@@ -1352,7 +1352,7 @@ class TestConstraintImportCheckedVariants:
 
     def test_import_z3_ptrs_checked_matches_lenient_when_sat(self, fauxware_project):
         """The raw-Z3-pointer path carries the same contract."""
-        import claripy
+        from angr import claripy
 
         proj = fauxware_project
         state = proj.factory.entry_state()
@@ -1366,7 +1366,7 @@ class TestConstraintImportCheckedVariants:
 
     def test_import_z3_ptrs_checked_reports_proven_unsat_as_false(self, fauxware_project):
         """Two contradictory assertions decide Unsat, so ``False`` is right."""
-        import claripy
+        from angr import claripy
 
         proj = fauxware_project
         state = proj.factory.entry_state()
@@ -1416,7 +1416,7 @@ class TestDebugSolverInfo:
     def test_exported_ptrs_matches_export_api(self, fauxware_project):
         """``exported_ptrs`` agrees with ``export_z3_constraint_ptrs``, and
         both grow by one when a constraint is imported."""
-        import claripy
+        from angr import claripy
 
         proj = fauxware_project
         state = proj.factory.entry_state()
@@ -1975,7 +1975,7 @@ class TestAvoidMultivaluedOptions:
         Without the option, the same load enumerates and pins to backer
         data (or fails with SymbolicAddress).
         """
-        import claripy
+        from angr import claripy
 
         # Pre-place a known concrete pattern at a target address so a
         # successful concretization would clearly resolve to it.
@@ -2382,8 +2382,7 @@ class TestProxyWriteCounters:
         (Python ``True``) are filtered out by ``add`` itself so they
         must not count.
         """
-        import claripy
-
+        from angr import claripy
         from angr.exploration.rust_state_proxy import RustSolverProxyPlugin
 
         state = fauxware_project.factory.entry_state()

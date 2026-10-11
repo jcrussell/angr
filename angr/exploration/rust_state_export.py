@@ -12,8 +12,7 @@ import threading
 import warnings
 from typing import TYPE_CHECKING
 
-import claripy
-
+from angr import claripy
 from angr.errors import SimUnsatError
 from angr.state_plugins.history import SimStateHistory
 

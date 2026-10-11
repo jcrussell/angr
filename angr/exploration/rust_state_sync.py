@@ -6,9 +6,9 @@ import logging
 import time
 from typing import TYPE_CHECKING
 
-import claripy
 from sortedcontainers import SortedDict
 
+from angr import claripy
 from angr.rustylib.vex_engine import register_names_for_arch
 from angr.storage.memory_object import SimMemoryObject
 
@@ -201,7 +201,7 @@ class RustStateSyncMixin:
 
         # Build dict of all register values, then send in single FFI call.
         # Symbolic registers are imported via Z3 AST pointers (shared context).
-        import claripy as _claripy
+        from angr import claripy as _claripy
 
         z3_backend = _claripy.backends.z3
         bulk_regs = {}

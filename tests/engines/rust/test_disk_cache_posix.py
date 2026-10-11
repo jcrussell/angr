@@ -20,10 +20,10 @@ from __future__ import annotations
 import os
 from unittest import mock
 
-import claripy
 import pytest
 
 import angr
+from angr import claripy
 from angr.exploration.rust_disk_cache import (
     _POSIX_POINTER_FIELDS,
     _extract_posix_argc,

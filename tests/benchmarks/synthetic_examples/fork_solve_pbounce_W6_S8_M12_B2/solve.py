@@ -23,9 +23,8 @@ from __future__ import annotations
 
 import os
 
-import claripy
-
 import angr
+from angr import claripy
 
 # Baked into the checked-in binary. Regenerate: python build_pbounce.py --w 6 --s 8 --m 12 --t 4 --b 2
 W = 6  # branch count -> 2^W (64) leaf states

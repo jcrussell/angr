@@ -9,10 +9,10 @@ placement.
 
 from __future__ import annotations
 
-import claripy
 import pytest
 
 import angr
+from angr import claripy
 from tests.engines.conftest import (  # noqa: F401
     RUST_EXPLORATION_AVAILABLE,
     RustExplorationManager,

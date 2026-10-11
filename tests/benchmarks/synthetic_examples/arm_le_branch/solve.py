@@ -27,9 +27,8 @@ from __future__ import annotations
 import os
 import struct
 
-import claripy
-
 import angr
+from angr import claripy
 
 # ARM (AL condition = 0xE) little-endian instruction encodings.
 # Each is a 32-bit ARM word; the file stores them little-endian

@@ -15,8 +15,7 @@ import sys
 import time
 from typing import TYPE_CHECKING
 
-import claripy
-
+from angr import claripy
 from angr.errors import AngrUnsupportedSyscallError, SimUnsatError
 from angr.exploration.rust_identity import CallbackMemoryTracker
 from angr.exploration.rust_state_export import POSIX_SYNC_FDS, _concrete_stream_len, _posix_stream
@@ -2164,7 +2163,7 @@ class RustCallbackDispatchMixin:
             # This can happen if rustbv_to_claripy() returns the wrong type
             if isinstance(condition, (bool, int)):
                 l.warning(f"Branch condition is {type(condition).__name__}, wrapping to claripy")
-                import claripy
+                from angr import claripy
 
                 condition = claripy.BoolV(bool(condition))
 

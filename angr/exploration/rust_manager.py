@@ -107,10 +107,10 @@ from collections.abc import Callable
 from itertools import chain
 from typing import TYPE_CHECKING
 
-import claripy
-from claripy.errors import ClaripyError
 from pyvex.errors import PyVEXError
 
+from angr import claripy
+from angr.claripy.errors import ClaripyError
 from angr.errors import SimEngineError, SimError, SimSolverError
 from angr.exploration.rust_irsb_serializer import serialize_irsb
 from angr.exploration.rust_perf_tracker import PerformanceTracker

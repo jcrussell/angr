@@ -60,8 +60,7 @@ class TestSolverProxyTimeout:
         """
         import time
 
-        import claripy
-
+        from angr import claripy
         from angr.exploration.rust_state_proxy import RustStateProxy
 
         mgr = _RustExplorationManager("amd64")
@@ -153,7 +152,7 @@ class TestProxyLiskovGaps:
         Rust ``u128`` solver can't hold falls back to claripy's big-int solver
         over the exported constraints (shared ``_resolve_none_extremum`` helper,
         same disambiguation as the ``RustSolverFallback`` twin, angr-8iv6j)."""
-        import claripy
+        from angr import claripy
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -174,7 +173,7 @@ class TestProxyLiskovGaps:
         only) — silently omitted it. The fallback now unions the proxy's tracked
         adds, matching what the primary Rust min/max path on the forked context
         saw."""
-        import claripy
+        from angr import claripy
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -199,7 +198,7 @@ class TestProxyLiskovGaps:
     def test_solver_proxy_min_unsat_still_raises(self, fauxware_project):
         """angr-fjhk9: a genuinely unsat ``RustSolverProxy`` ctx still raises
         ``claripy.errors.UnsatError`` (proxy-wide exception-type convention)."""
-        import claripy
+        from angr import claripy
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -226,7 +225,7 @@ class TestProxyLiskovGaps:
     def test_memory_load_symbolic_addr(self, fauxware_project):
         """``memory.load(sym_addr)`` evaluates the address under the state's
         constraints and falls through to the concrete read path."""
-        import claripy
+        from angr import claripy
 
         state = fauxware_project.factory.entry_state()
         # Constrain a symbolic addr to a concrete location inside the loaded
@@ -247,7 +246,7 @@ class TestProxyLiskovGaps:
     def test_memory_load_unsat_symbolic_addr(self, fauxware_project):
         """An unsatisfiable symbolic addr raises UnsatError rather than
         silently reading zero bytes."""
-        import claripy
+        from angr import claripy
 
         state = fauxware_project.factory.entry_state()
         addr_sym = claripy.BVS("addr_unsat", 64)
@@ -266,7 +265,7 @@ class TestProxyLiskovGaps:
         path. The Multi-cell entry point short-circuits single solutions
         to the eager concrete store — verify the round-trip.
         """
-        import claripy
+        from angr import claripy
 
         state = fauxware_project.factory.entry_state()
         target = fauxware_project.entry
@@ -289,7 +288,7 @@ class TestProxyLiskovGaps:
         claripy BVV using the same endness logic as the concrete-addr path
         before handing them to the Multi-cell entry point.
         """
-        import claripy
+        from angr import claripy
 
         state = fauxware_project.factory.entry_state()
         target = fauxware_project.entry
@@ -314,7 +313,7 @@ class TestProxyLiskovGaps:
         path. We use ``Iend_LE`` on the read side so the round-trip
         produces the constrained value byte-for-byte.
         """
-        import claripy
+        from angr import claripy
 
         state = fauxware_project.factory.entry_state()
         target = fauxware_project.entry
@@ -347,7 +346,7 @@ class TestProxyLiskovGaps:
         back to angr's Max write-concretization (single concrete address,
         garbage high pages silently dropped) so the state survives.
         """
-        import claripy
+        from angr import claripy
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -421,7 +420,7 @@ class TestProxyMemoryFind:
     def test_find_symbolic_needle_raises(self, fauxware_project):
         """Symbolic needles are out of scope for this proxy step and must
         raise NotImplementedError with a route to the SimProcedure hook."""
-        import claripy
+        from angr import claripy
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -631,7 +630,7 @@ class TestCallbackMemoryProxyGate:
         ``set_state_memory_ast`` into the Rust state) to keep the test
         independent of the Python→Rust symbolic-page import path.
         """
-        import claripy
+        from angr import claripy
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state], use_callback_memory_proxy=True)
@@ -662,7 +661,7 @@ class TestCallbackMemoryProxyGate:
         to bypass the Python→Rust symbolic-page import path, keeping
         the test focused on the find() symbolic-haystack handling.
         """
-        import claripy
+        from angr import claripy
 
         state = fauxware_project.factory.entry_state(
             add_options={
@@ -849,7 +848,7 @@ class TestRustMemoryProxyPluginGapStubs:
         """``permissions(addr)`` (no second arg) returns a 3-bit BVV
         encoding RWX. Lets ``is_bad_ptr`` / ``mprotect`` proceed without
         crashing under the proxy."""
-        import claripy
+        from angr import claripy
 
         cb_state = self._install_proxy(fauxware_project)
         result = cb_state.memory.permissions(fauxware_project.entry)
@@ -925,7 +924,7 @@ class TestCallbackSolverProxyGate:
     def test_proxy_add_write_through_to_rust(self, fauxware_project):
         """``state.solver.add(c)`` routes the constraint into the underlying
         Rust state's solver. ``state.solver.constraints`` reads it back."""
-        import claripy
+        from angr import claripy
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state], use_callback_solver_proxy=True)
@@ -944,7 +943,7 @@ class TestCallbackSolverProxyGate:
 
     def test_proxy_satisfiable_and_eval(self, fauxware_project):
         """``state.solver.eval`` / ``satisfiable`` route through Rust."""
-        import claripy
+        from angr import claripy
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state], use_callback_solver_proxy=True)
@@ -971,7 +970,7 @@ class TestCallbackSolverProxyGate:
         exported constraints (same disambiguation as the ``RustSolverFallback``
         twin, angr-8iv6j; keeps the four solver-shim sites in sync).
         """
-        import claripy
+        from angr import claripy
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state], use_callback_solver_proxy=True)
@@ -989,7 +988,7 @@ class TestCallbackSolverProxyGate:
     def test_proxy_min_unsat_still_raises(self, fauxware_project):
         """angr-fjhk9: a genuinely unsat plugin ctx still raises
         ``claripy.errors.UnsatError`` (proxy-wide exception-type convention)."""
-        import claripy
+        from angr import claripy
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state], use_callback_solver_proxy=True)
@@ -1007,7 +1006,7 @@ class TestCallbackSolverProxyGate:
 
     def test_proxy_bvs_delegates_to_claripy(self, fauxware_project):
         """``BVS`` / ``BVV`` delegate to claripy and accept the tracking key."""
-        import claripy
+        from angr import claripy
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state], use_callback_solver_proxy=True)
@@ -1601,7 +1600,7 @@ class TestProxyWriteThrough:
 
     def test_register_write_concrete_bvv(self, fauxware_project):
         """proxy.regs.<name> = <BVV> writes through (BVV path, no int wrap)."""
-        import claripy
+        from angr import claripy
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -1617,7 +1616,7 @@ class TestProxyWriteThrough:
         """proxy.regs.<name> = <BVS> registers the symbol in the shared
         cache so the subsequent constraint-add path narrows the live
         symbol (angr-4pm1 invariant carried over for the write path)."""
-        import claripy
+        from angr import claripy
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -1701,7 +1700,7 @@ class TestCallbackMemoryProxySymbolicStore:
         """Execute ``mov [ecx], al`` with a symbolic (single-solution) address
         and a symbolic value, then read the byte back from the stepped state.
         """
-        import claripy
+        from angr import claripy
 
         # mov [ecx], al ; jmp $
         proj = angr.load_shellcode(b"\x88\x01\xeb\xfe", arch="X86", load_address=0x1000)

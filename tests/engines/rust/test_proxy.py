@@ -410,14 +410,14 @@ class TestRustInspectMarshalling:
         ev = events[0]
         assert ev["length"] == 4
         assert ev["endness"] == "Iend_LE"
-        import claripy
+        from angr import claripy
 
         assert isinstance(ev["addr"], claripy.ast.bv.BV)
         assert state.solver.eval(ev["addr"]) == 0x401234
 
     def test_dispatch_mem_write_after_carries_value_ast(self, fauxware_project):
         """mem_write AFTER passes the stored value through to mem_write_expr."""
-        import claripy
+        from angr import claripy
 
         mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
         seen = []
@@ -497,7 +497,7 @@ class TestRustInspectMarshalling:
     def test_mem_read_expr_override_returned(self, fauxware_project):
         """A BP that sets state.inspect.mem_read_expr surfaces the override
         as the callback's return value (value injection — angr-uy32)."""
-        import claripy
+        from angr import claripy
 
         mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
         original = claripy.BVV(0x1111, 32)
@@ -517,8 +517,7 @@ class TestRustInspectMarshalling:
         event BP_BEFORE (with added_constraints) then BP_AFTER, mirroring
         Python's SimSolver.add.
         """
-        import claripy
-
+        from angr import claripy
         from angr.exploration.rust_state_proxy import RustSolverProxyPlugin
 
         mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
@@ -538,8 +537,7 @@ class TestRustInspectMarshalling:
 
     def test_dispatch_constraints_before_override(self, fauxware_project):
         """A BP_BEFORE action may replace added_constraints (value injection)."""
-        import claripy
-
+        from angr import claripy
         from angr.exploration.rust_state_proxy import RustSolverProxyPlugin
 
         mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
@@ -617,7 +615,7 @@ class TestRustInspectMarshalling:
         way the native fork-guard add does: `is_true=False` must reach the BP
         as `Not(guard)` in a one-element added_constraints list.
         """
-        import claripy
+        from angr import claripy
 
         mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
         seen = []
@@ -662,7 +660,7 @@ class TestRustInspectMarshalling:
 
     def test_dispatch_vex_lift_fires_before_and_after(self, fauxware_project):
         """_cb_lift_block dispatches vex_lift BP_BEFORE then BP_AFTER (angr-4aach)."""
-        import claripy
+        from angr import claripy
 
         mgr, _sid, _ = self._make_mgr_with_state_id(fauxware_project)
         events = []
@@ -693,10 +691,9 @@ class TestRustInspectMarshalling:
         block — the Rust dispatch is the only thing keeping the event alive.
         Skipped on a build without ``--features libvex-ffi``.
         """
-        import claripy
-
         import angr
         import angr.sim_options as o
+        from angr import claripy
 
         try:
             from angr.rustylib.vex_engine import libvex_ffi_enabled
@@ -745,7 +742,7 @@ class TestRustInspectMarshalling:
     def test_mem_read_expr_unchanged_returns_none(self, fauxware_project):
         """A read BP that does not touch mem_read_expr leaves the value
         unchanged — the callback returns None so the original load stands."""
-        import claripy
+        from angr import claripy
 
         mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
         original = claripy.BVV(0x1111, 32)
@@ -760,7 +757,7 @@ class TestRustInspectMarshalling:
     def test_mem_read_override_via_rust_callback(self, fauxware_project):
         """The Rust-side call_inspect_mem_read returns the user's override
         so the interpreter can substitute it for the loaded value."""
-        import claripy
+        from angr import claripy
 
         mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
         original = claripy.BVV(0x1111, 32)
@@ -777,7 +774,7 @@ class TestRustInspectMarshalling:
         """A BP_BEFORE that sets state.inspect.mem_write_expr surfaces the
         override as the callback's return value (value injection — angr-inh0).
         """
-        import claripy
+        from angr import claripy
 
         mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
         original = claripy.BVV(0x1111, 32)
@@ -793,7 +790,7 @@ class TestRustInspectMarshalling:
     def test_mem_write_expr_unchanged_returns_none(self, fauxware_project):
         """A write BP that does not touch mem_write_expr leaves the value
         unchanged — the callback returns None so the original store stands."""
-        import claripy
+        from angr import claripy
 
         mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
         original = claripy.BVV(0x1111, 32)
@@ -808,7 +805,7 @@ class TestRustInspectMarshalling:
     def test_mem_write_override_via_rust_callback(self, fauxware_project):
         """The Rust-side call_inspect_mem_write returns the user's override
         so the interpreter can substitute it for the stored value."""
-        import claripy
+        from angr import claripy
 
         mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
         original = claripy.BVV(0x1111, 32)
@@ -903,7 +900,7 @@ class TestRustInspectMemReadDispatch:
         """A mem_read BP_AFTER that overrides mem_read_expr drives the value
         back through the Rust interpreter (claripy->RustBV round-trip) without
         crashing, and exploration completes (angr-uy32 value injection)."""
-        import claripy
+        from angr import claripy
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -1054,7 +1051,7 @@ class TestRustInspectMemWriteDispatch:
         """A mem_write BP_BEFORE that overrides mem_write_expr drives the value
         back through the Rust interpreter (claripy->RustBV round-trip) without
         crashing, and exploration completes (angr-inh0 value injection)."""
-        import claripy
+        from angr import claripy
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -1133,7 +1130,7 @@ class TestRustInspectExtendedEvents:
 
     def test_dispatch_reg_read_fires_bp(self, fauxware_project):
         """_cb_inspect_reg_read invokes the user's BP with reg_read_* attrs."""
-        import claripy
+        from angr import claripy
 
         mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
         events = []
@@ -1155,7 +1152,7 @@ class TestRustInspectExtendedEvents:
 
     def test_dispatch_reg_write_fires_bp(self, fauxware_project):
         """_cb_inspect_reg_write invokes the user's BP with reg_write_* attrs."""
-        import claripy
+        from angr import claripy
 
         mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
         seen = []
@@ -1201,7 +1198,7 @@ class TestRustInspectExtendedEvents:
 
     def test_dispatch_exit_fires_bp(self, fauxware_project):
         """_cb_inspect_exit invokes the user's BP with target/guard/jumpkind."""
-        import claripy
+        from angr import claripy
 
         mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
         seen = []
@@ -1333,7 +1330,7 @@ class TestRustInspectExtendedEvents:
 
     def test_dispatch_call_fires_bp(self, fauxware_project):
         """_cb_inspect_call invokes the user's BP with function_address."""
-        import claripy
+        from angr import claripy
 
         mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
         seen = []
@@ -1352,7 +1349,7 @@ class TestRustInspectExtendedEvents:
 
     def test_dispatch_return_fires_bp(self, fauxware_project):
         """_cb_inspect_return invokes the user's BP with function_address."""
-        import claripy
+        from angr import claripy
 
         mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
         seen = []
@@ -1458,7 +1455,7 @@ class TestRustInspectExtendedEvents:
 
     def test_dispatch_tmp_read_fires_bp(self, fauxware_project):
         """_cb_inspect_tmp_read invokes the user's BP with tmp_read_* attrs."""
-        import claripy
+        from angr import claripy
 
         mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
         seen = []
@@ -1478,7 +1475,7 @@ class TestRustInspectExtendedEvents:
 
     def test_dispatch_tmp_write_fires_bp(self, fauxware_project):
         """_cb_inspect_tmp_write invokes the user's BP with tmp_write_* attrs."""
-        import claripy
+        from angr import claripy
 
         mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
         seen = []
@@ -1599,7 +1596,7 @@ class TestRustInspectExtendedEvents:
 
     def test_dispatch_expr_fires_bp(self, fauxware_project):
         """_cb_inspect_expr invokes the user's BP with expr_result attr."""
-        import claripy
+        from angr import claripy
 
         mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
         seen = []
@@ -1655,7 +1652,7 @@ class TestRustInspectExtendedEvents:
 
     def test_dispatch_address_concretization_before_fires_bp(self, fauxware_project):
         """_cb_inspect_address_concretization invokes the BP for BP_BEFORE."""
-        import claripy
+        from angr import claripy
 
         mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
         seen = []
@@ -1687,7 +1684,7 @@ class TestRustInspectExtendedEvents:
 
     def test_dispatch_address_concretization_after_carries_result(self, fauxware_project):
         """_cb_inspect_address_concretization passes concretization result list on AFTER."""
-        import claripy
+        from angr import claripy
 
         mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
         seen = []
@@ -1735,7 +1732,7 @@ class TestRustInspectExtendedEvents:
 
     def test_dispatch_symbolic_variable_fires_bp(self, fauxware_project):
         """_cb_inspect_symbolic_variable invokes BP with name/size/expr attrs."""
-        import claripy
+        from angr import claripy
 
         mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
         seen = []
@@ -1780,9 +1777,8 @@ class TestRustInspectExtendedEvents:
         carrying ``result is None`` and an AFTER event carrying the concretized
         address list.
         """
-        import claripy
-
         import angr
+        from angr import claripy
 
         unmapped = 0xDEAD0000
         # mov rax, [rbx] ; ret
@@ -1866,9 +1862,8 @@ class TestRustInspectExtendedEvents:
         ``(bytes, True, None)`` for the unmapped target, forcing the
         no-AST fresh-symbol fallback.
         """
-        import claripy
-
         import angr
+        from angr import claripy
 
         unmapped = 0xDEAD0000
         # mov rax, [rbx] ; ret
@@ -2005,7 +2000,7 @@ class TestRustInspectExtendedEvents:
 
     def test_dispatch_dirty_fires_bp(self, fauxware_project):
         """_cb_inspect_dirty invokes the user's BP with all four attrs."""
-        import claripy
+        from angr import claripy
 
         mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
         seen = []
@@ -2035,7 +2030,7 @@ class TestRustInspectExtendedEvents:
     def test_dirty_result_override_returned(self, fauxware_project):
         """A BP that sets state.inspect.dirty_result surfaces the override
         as _cb_inspect_dirty's return value (short-circuit — angr-uy32)."""
-        import claripy
+        from angr import claripy
 
         mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
         original = claripy.BVV(0xDEADBEEF, 64)
@@ -2053,7 +2048,7 @@ class TestRustInspectExtendedEvents:
     def test_dirty_result_unchanged_returns_none(self, fauxware_project):
         """A dirty BP that does not touch dirty_result returns None so the
         handler's original return value stands."""
-        import claripy
+        from angr import claripy
 
         mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
         original = claripy.BVV(0xDEADBEEF, 64)
@@ -2543,7 +2538,7 @@ class TestRegisterProxySymbolicRecovery:
         registered through ``set_state_register_symbolic_ast`` so the symbol
         is properly cached for FFI round-trip. Returns ``(state_id, sym)``
         where ``sym`` is the originating claripy BVS."""
-        import claripy
+        from angr import claripy
 
         sym = claripy.BVS("sym_rax_proxy_4pm1", 64)
         sid = mgr.create_state("active")
@@ -2621,8 +2616,7 @@ class TestRegisterProxySymbolicRecovery:
         (angr-690nc), but canonicalization still has to collapse the two
         spellings onto one cached AST.
         """
-        import claripy
-
+        from angr import claripy
         from angr.exploration.rust_state_proxy import RustStateProxy
 
         mgr = _RustExplorationManager("amd64")
@@ -2664,7 +2658,7 @@ class TestStateProxyRepr:
     def test_repr_reflects_seeded_constraint(self, fauxware_project):
         """A state seeded into the manager with N constraints already attached
         should show constraints=N through repr."""
-        import claripy
+        from angr import claripy
 
         state = fauxware_project.factory.entry_state()
         x = claripy.BVS("repr_test_x", 32)
@@ -2730,7 +2724,7 @@ class TestStateProxyCopySemantics:
 
     def test_proxy_copy_register_write_does_not_affect_source(self, fauxware_project):
         """Writing a register on the copy leaves the source register intact."""
-        import claripy
+        from angr import claripy
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -2759,7 +2753,7 @@ class TestStateProxyCopySemantics:
         (which routes through a per-proxy forked solver context and never
         touches the state's solver).
         """
-        import claripy
+        from angr import claripy
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -2785,7 +2779,7 @@ class TestStateProxyCopySemantics:
         all sub-proxies share one forked context. It must remain view-local
         — the underlying Rust state's solver is untouched.
         """
-        import claripy
+        from angr import claripy
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -2812,8 +2806,7 @@ class TestStateProxyCopySemantics:
         for the same state does not see a constraint added through a prior
         proxy (it forks a clean context from the unchanged state solver).
         """
-        import claripy
-
+        from angr import claripy
         from angr.exploration.rust_state_proxy import RustStateProxy
 
         state = fauxware_project.factory.entry_state()

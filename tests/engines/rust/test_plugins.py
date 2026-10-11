@@ -538,8 +538,9 @@ class TestAdversarial:
         longer the observed behavior. This assertion pins the current contract
         so a regression back to "spuriously SAT" is caught.
         """
-        import claripy
         from angr.rustylib.vex_engine import RustSolverContext
+
+        from angr import claripy
 
         ctx = RustSolverContext()
         x = claripy.BVS("x", 32)
@@ -549,8 +550,9 @@ class TestAdversarial:
 
     def test_solver_wide_bitvector(self):
         """Wide bitvector (256-bit) should work."""
-        import claripy
         from angr.rustylib.vex_engine import RustSolverContext
+
+        from angr import claripy
 
         ctx = RustSolverContext()
         x = claripy.BVS("wide", 256)
@@ -595,8 +597,9 @@ class TestAdversarial:
         The empty bitvector has exactly one inhabitant, so the width-0
         symbolic leaf collapses to that value rather than erroring.
         """
-        import claripy
         from angr.rustylib.vex_engine import RustSolverContext
+
+        from angr import claripy
 
         # Entry point 1: the direct handle API (no claripy AST involved).
         ctx = RustSolverContext()
@@ -615,8 +618,9 @@ class TestAdversarial:
         Python int reconstructed from big-endian bytes. The low byte
         constraint must be reflected in the evaluated value.
         """
-        import claripy
         from angr.rustylib.vex_engine import RustSolverContext
+
+        from angr import claripy
 
         ctx = RustSolverContext()
         x = claripy.BVS("wide1k", 1024)
@@ -639,9 +643,10 @@ class TestAdversarial:
         ``add_constraint_ast`` take Z3-export fast paths that bypass the u128
         import).
         """
-        import claripy
         import pytest
         from angr.rustylib.vex_engine import RustSolverContext
+
+        from angr import claripy
 
         ctx = RustSolverContext()
         with pytest.raises(ValueError):
@@ -657,8 +662,9 @@ class TestAdversarial:
         128-bit BVs still return a real extremum (range is exactly
         [0, u128::MAX]); only widths strictly above 128 are unknown.
         """
-        import claripy
         from angr.rustylib.vex_engine import RustSolverContext
+
+        from angr import claripy
 
         ctx = RustSolverContext()
         x = claripy.BVS("xwide", 256)

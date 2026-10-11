@@ -34,9 +34,9 @@ original Python ASTs are the same symbols the Rust constraints mention.
 
 from __future__ import annotations
 
-import claripy
 import pytest
 
+from angr import claripy
 from angr.storage.file import SimFile
 
 # Availability guard + module-scoped fauxware_project fixture live in
