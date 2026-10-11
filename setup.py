@@ -3,12 +3,13 @@ from __future__ import annotations
 
 import glob
 import importlib
+import importlib.metadata
 import importlib.resources
+import importlib.util
 import os
 import shutil
 import subprocess
 import sys
-import sysconfig
 from distutils.command.build import build as st_build
 
 from setuptools import Command, setup
@@ -22,60 +23,35 @@ except ImportError as err:
     raise Exception("angr requires setuptools-rust to build") from err
 
 
-def _resolve_z3_header() -> None:
-    # z3-sys's build script reads Z3_SYS_Z3_HEADER first; if unset it falls back
-    # to pkg-config + its bundled wrapper.h. Fresh installs without pkg-config
-    # registration for z3 fail with "Unable to generate bindings: NotExist z3.h".
-    # Probe common locations preemptively so the typical setups (libz3-dev,
-    # z3-devel, brew z3, or headers copied into the venv) build without manual
-    # env-var setup, and emit an actionable hint when nothing is found.
-    if os.environ.get("Z3_SYS_Z3_HEADER"):
+def _configure_z3() -> None:
+    """Point z3-sys at the libz3 that ships in the ``z3-solver`` wheel.
+
+    z3-sys 0.13 ships pregenerated bindings, so no C header is needed. It
+    still has to know (a) where libz3 lives and (b) which Z3 version it is,
+    because it probes pkg-config first (which would pick a system Z3 of some
+    other version -- the bindings are tied to one release) and, failing that,
+    assumes its minimum-supported version and hides newer API. Python and
+    Rust must load one libz3 (docs/advanced-topics/rust_z3_sharing.rst), so
+    the wheel's copy is the only acceptable answer.
+    """
+    spec = importlib.util.find_spec("z3")
+    if spec is None or spec.origin is None:
+        sys.stderr.write(
+            "warning: z3-solver is not installed; z3-sys will fall back to pkg-config.\n"
+            "Install z3-solver (see pyproject.toml for the pinned version) before building.\n"
+        )
         return
-
-    candidates: list[str] = []
-
-    # 1. venv site-packages/z3/include — rare (PyPI z3-solver omits headers),
-    #    but covers the case where they were copied in to match libz3.so.
-    purelib = sysconfig.get_paths().get("purelib")
-    if purelib:
-        candidates.append(os.path.join(purelib, "z3", "include", "z3.h"))
-
-    # 2. pkg-config — z3-sys would do this too, but we probe so the path that
-    #    succeeds here is reused in the error message if no header exists.
-    if shutil.which("pkg-config"):
-        try:
-            result = subprocess.run(
-                ["pkg-config", "--variable=includedir", "z3"],
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=5,
-            )
-            inc = result.stdout.strip()
-            if inc:
-                candidates.append(os.path.join(inc, "z3.h"))
-        except (subprocess.SubprocessError, OSError):
-            pass
-
-    # 3. Standard system paths.
-    for inc in ("/usr/include", "/usr/local/include", "/opt/homebrew/include", "/opt/local/include"):
-        candidates.append(os.path.join(inc, "z3.h"))
-
-    for path in candidates:
-        if os.path.isfile(path):
-            os.environ["Z3_SYS_Z3_HEADER"] = path
-            return
-
-    sys.stderr.write(
-        "warning: could not locate z3.h for the Rust extension. Install Z3 dev headers:\n"
-        "  Debian/Ubuntu: apt install libz3-dev pkg-config\n"
-        "  Fedora/RHEL:   dnf install z3-devel pkgconf-pkg-config\n"
-        "  macOS:         brew install z3 pkg-config\n"
-        "Or set Z3_SYS_Z3_HEADER=/path/to/z3.h before building.\n"
-    )
+    lib_dir = os.path.join(os.path.dirname(spec.origin), "lib")
+    os.environ.setdefault("Z3_NO_PKG_CONFIG", "1")
+    if os.path.isdir(lib_dir):
+        os.environ.setdefault("Z3_LIBRARY_PATH_OVERRIDE", lib_dir)
+    if not os.environ.get("Z3_SYS_Z3_VERSION"):
+        version = importlib.metadata.version("z3-solver")
+        # The wheel version carries a trailing build component ("5.1.0.0").
+        os.environ["Z3_SYS_Z3_VERSION"] = ".".join(version.split(".")[:3])
 
 
-_resolve_z3_header()
+_configure_z3()
 
 
 def _resolve_pyvex_libdir() -> None:

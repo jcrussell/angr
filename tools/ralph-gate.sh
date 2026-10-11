@@ -93,6 +93,13 @@ set -e
 export PATH="$HOME/.cargo/bin:$PATH"
 # shellcheck disable=SC1091
 . /home/ubuntu/repos/angr/.venv/bin/activate
+# z3-sys must link and version-detect the venv's z3-solver wheel (the libz3
+# Python loads), not a system Z3 found via pkg-config -- see the *Build
+# layout* section of docs/advanced-topics/rust_build.rst. Same three exports
+# as tools/rebuild-rust.sh.
+export Z3_NO_PKG_CONFIG="${Z3_NO_PKG_CONFIG:-1}"
+export Z3_LIBRARY_PATH_OVERRIDE="${Z3_LIBRARY_PATH_OVERRIDE:-$(python -c 'import os, z3; print(os.path.join(os.path.dirname(z3.__file__), "lib"))')}"
+export Z3_SYS_Z3_VERSION="${Z3_SYS_Z3_VERSION:-$(python -c 'import z3; print(z3.get_version_string())')}"
 
 echo "== ralph gate [1/3]: make check-no-z3 (four --no-default-features combos) =="
 make check-no-z3

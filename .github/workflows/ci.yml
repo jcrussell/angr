@@ -147,12 +147,25 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    env:
+      # z3-sys's `gh-release` feature fetches the matching Z3 release from
+      # GitHub (static on Linux/macOS, import library on Windows) so this lane
+      # needs no system Z3 and no Python z3-solver; the token lifts the
+      # anonymous API rate limit. Same recipe as upstream angr's rust_test.
+      READ_ONLY_GITHUB_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v4
       - uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v5
         with:
           python-version: "3.12"
+      # Windows links gh-release's Z3 through an import library rather than
+      # statically, so the downloaded libz3.dll must be on PATH when tests run.
+      - name: Put the downloaded libz3.dll on PATH
+        if: startsWith(runner.os, 'windows')
+        run: |
+          cargo test --profile release-checked --features z3-sys/gh-release --no-run
+          (Get-ChildItem target/release-checked/build -Recurse -Filter libz3.dll | Select-Object -First 1).DirectoryName >> $env:GITHUB_PATH
       # `release-checked` (repo-root Cargo.toml) is `release` plus
       # overflow-checks and debug-assertions, with default features on. That
       # combination exists only here and in the ralph gate: every other
@@ -162,7 +175,7 @@ jobs:
       # So this is the ONLY job that runs the debug-only Z3 guards, e.g.
       # `SymContext::to_snapshot`'s residual/assumed accounting bound
       # (angr-03vl4.84). Keep it on `release-checked`, not `--release`.
-      - run: cargo test --profile release-checked
+      - run: cargo test --profile release-checked --features z3-sys/gh-release
 
   rust_feature_flags_check:
     # PR-time compile gate for the four feature-flag combos covered by the

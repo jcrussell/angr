@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=77.0.0", "setuptools-rust", "pyvex==9.2.209"]
+requires = ["setuptools>=77.0.0", "setuptools-rust", "pyvex==9.2.209", "z3-solver==5.1.0.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -15,15 +15,13 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
 ]
-# Pinned at >=3.10 (not upstream's 3.12) because we hold archinfo/claripy/cle/pyvex
-# at 9.2.209. Upstream master moved them to 9.2.222.dev0 (not published to PyPI;
-# requires source builds) and bumped pypcode 3.x→4.x. The latest released claripy
-# (9.2.221) still pins `z3-solver==4.13.0.0` — same SONAME as 9.2.209, so the
-# original shared-Z3-context concern is not the current blocker. The current
-# blocker is that our venv is hand-assembled (cargo-direct-copy), so a pin bump
-# requires a venv rebuild rather than `pip install -U`. Re-evaluate when (a)
-# upstream cuts a stable 9.2.222+ release on PyPI or (b) we move to a pip-
-# managed venv. See bd bead `angr-3mkf` for the full audit.
+# Pinned at >=3.10 (not upstream's 3.12) while we hold archinfo/claripy/cle/pyvex
+# at 9.2.209; the floor moves with the ecosystem bump (bd angr-3mkf has the
+# original audit). z3-solver is pinned here directly, ahead of claripy's own
+# `z3-solver==4.13.0.0` declaration, because the Rust engine links z3-sys 0.13,
+# whose minimum Z3 is newer than 4.13.0 and which matches upstream angr 10's
+# pin. claripy 9.2.209 needs one ctypes shim against the 5.x bindings
+# (angr/misc/z3_compat.py); everything else in it is version-agnostic.
 requires-python = ">=3.10"
 dependencies = [
     "cxxheaderparser",
@@ -50,6 +48,7 @@ dependencies = [
     "sortedcontainers",
     "sympy",
     "typing-extensions",
+    "z3-solver==5.1.0.0",
     "colorama;platform_system=='Windows'",
 ]
 dynamic = ["version"]
@@ -119,6 +118,11 @@ py_limited_api = "cp312"
 
 [tool.uv]
 default-groups = ["dev", "extras"]
+# claripy 9.2.209 declares z3-solver==4.13.0.0; the engine needs the 5.1.0.0
+# pinned above (see the requires-python comment). Let uv resolve past the
+# conflict instead of failing; angr/misc/z3_compat.py covers the one binding
+# incompatibility.
+override-dependencies = ["z3-solver==5.1.0.0"]
 
 [tool.uv.sources]
 archinfo = { git = "https://github.com/angr/archinfo.git", branch = "master" }

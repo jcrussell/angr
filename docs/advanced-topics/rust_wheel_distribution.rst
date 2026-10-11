@@ -14,11 +14,9 @@ Problem
 -------
 
 Installing angr with the Rust engine from source requires, at ``pip install`` time, a
-Rust toolchain, the Z3 development headers (``libz3-dev`` / ``z3-devel`` /
-``brew install z3``), and ``pkg-config``. The build is a setuptools-rust source
-build (``pyproject.toml`` ``build-backend = "setuptools.build_meta"``). The PyPI
-``z3-solver`` wheel ships ``libz3.so`` but **not** the C headers, which
-``z3-sys`` needs to generate bindings. ``.github/workflows/wheels.yml``
+Rust toolchain and the pinned ``z3-solver`` wheel (``z3-sys`` ships its
+bindings; no Z3 headers or system Z3 are needed). The build is a setuptools-rust source
+build (``pyproject.toml`` ``build-backend = "setuptools.build_meta"``). ``.github/workflows/wheels.yml``
 builds wheels for the platform legs listed under *Prototype CI job* but has
 never been verified green (see *Open blocker*), so the "drop-in Python API"
 goal effectively stops at developers who can compile a Rust + Z3 extension. A
@@ -44,7 +42,7 @@ the normal manylinux behaviour.
 Observed facts
 ~~~~~~~~~~~~~~
 
-* ``z3-solver`` (4.13.0.0, pinned transitively via ``claripy==9.2.209``)
+* ``z3-solver`` (pinned directly in ``pyproject.toml``)
   installs ``site-packages/z3/lib/libz3.so`` with ``SONAME = libz3.so``
   (unversioned — no ``.so.4.13`` suffix).
 * The built extension ``angr/rustylib.cpython-312-x86_64-linux-gnu.so`` carries
@@ -73,11 +71,11 @@ The only wheel layout compatible with the shared-context constraint:
    '$ORIGIN/../z3/lib' angr/rustylib*.so`` **after** ``auditwheel repair``
    (or as the repair step's effect, verified with ``readelf -d``).
 #. **Declare the runtime dependency** so ``site-packages/z3/lib/libz3.so``
-   always exists: the wheel already depends (transitively, via the pinned
-   ``archinfo/claripy/cle/pyvex==9.2.209`` ecosystem) on ``z3-solver==4.13.0.0``.
-   Keep that pin; do **not** widen it. See the ``avoid-pip-install-deps`` bd
-   memory — bumping past 9.2.209 risks a ``libz3.so`` SONAME/ABI change that the
-   unversioned ``NEEDED libz3.so`` cannot guard against.
+   always exists: ``pyproject.toml`` pins ``z3-solver`` directly (it also
+   satisfies the Rust side's ``z3-sys`` minimum). Keep that pin exact; do
+   **not** widen it. See the ``avoid-pip-install-deps`` bd memory — a
+   ``libz3.so`` ABI change is something the unversioned ``NEEDED libz3.so``
+   cannot guard against.
 #. **Apply the same rule to** ``libpyvex.so``. The default-on native libVEX
    lifter (:doc:`rust_libvex_ffi`) links pyvex's shared object for the same
    reason: the process must hold one libVEX. The repair step excludes it and
@@ -91,7 +89,7 @@ Why the unversioned SONAME is both convenient and dangerous
 ``NEEDED libz3.so`` (no version) means the dynamic linker accepts **any**
 ``z3-solver`` version that ships a ``libz3.so`` — there is no SONAME version
 check to catch an ABI break. ABI compatibility is only *actually* guaranteed for
-the pinned 4.13.0.0. The wheel's pinned ``z3-solver`` dependency is the only
+the pinned version. The wheel's pinned ``z3-solver`` dependency is the only
 guard; treat it as load-bearing, not cosmetic.
 
 abi3 vs per-CPython matrix
@@ -147,9 +145,10 @@ legs are independent and none has been executed):
      - *none (deliberate)*
      - n/a — ``os.add_dll_directory`` at import time
 
-Common to every leg: the Rust toolchain and the Z3 **headers** are installed at
-build time only (never enter the wheel); ``z3-solver==4.13.0.0`` is installed in
-the build env so ``build.rs::find_z3_lib_dir`` resolves the library; neither
+Common to every leg: the Rust toolchain is installed at build time only
+(never enters the wheel); the pinned ``z3-solver`` is installed in the build
+env so ``build.rs::find_z3_lib_dir`` and ``setup.py::_configure_z3`` resolve
+the library and its version; neither
 libz3 nor libpyvex is ever vendored into the wheel; and ``CIBW_TEST_COMMAND``
 runs the AST-passthrough smoke test (``tests/smoke/wheel_ast_passthrough.py``)
 against the finished wheel. The smoke test mints a Z3 AST in ``claripy`` and
@@ -168,7 +167,7 @@ Per-platform wrinkles worth knowing
 
 * **aarch64** reuses the x86_64 recipe verbatim under QEMU emulation (slow —
   budget roughly an hour). It rests on one unverified assumption: that
-  ``z3-solver==4.13.0.0`` publishes a manylinux **aarch64** wheel. If it does
+  the pinned ``z3-solver`` publishes a manylinux **aarch64** wheel. If it does
   not, ``CIBW_BEFORE_BUILD_LINUX`` fails loudly, which is the right outcome — an
   aarch64 angr wheel that excludes libz3 is useless to a user who cannot
   ``pip install z3-solver`` on aarch64 either.
@@ -180,9 +179,11 @@ Per-platform wrinkles worth knowing
   ``@rpath/libz3.dylib`` / ``@rpath/libpyvex.dylib``, plus ``-add_rpath
   @loader_path/../z3/lib`` (and ``@loader_path/../pyvex/lib``); and a ``codesign --force --sign -`` re-sign, because
   ``install_name_tool`` invalidates the ad-hoc arm64 signature and an unsigned
-  ``.so`` will not load at all on Apple silicon. ``Z3_SYS_Z3_HEADER`` must be set
-  via ``CIBW_ENVIRONMENT_MACOS``, not exported from the before-build hook —
-  cibuildwheel runs that hook in its own shell, so the export never reaches cargo.
+  ``.so`` will not load at all on Apple silicon. Anything cargo must see at
+  build time goes in ``CIBW_ENVIRONMENT_MACOS``, not in an ``export`` from the
+  before-build hook — cibuildwheel runs that hook in its own shell, so the
+  export never reaches cargo (``setup.py::_configure_z3`` sets the Z3
+  variables in-process, so none are needed for Z3 itself).
 
 Windows: same invariant, different mechanism
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

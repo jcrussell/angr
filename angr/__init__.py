@@ -40,9 +40,13 @@ del logging
 # angr.rustylib — the extension and claripy have to resolve the SAME libz3 or
 # Z3 AST passthrough hands pointers across two contexts. No-op elsewhere.
 from .misc.z3_dll import add_z3_dll_directory
+from .misc.z3_compat import install as _install_z3_compat
 
 add_z3_dll_directory()
 del add_z3_dll_directory
+# claripy 9.2.209 vs the z3-solver 5.x bindings; see the module docstring.
+_install_z3_compat()
+del _install_z3_compat
 
 # angr.state_plugins and angr.sim_state are mutually dependent: the plugin modules register themselves
 # on SimState at import time, while SimState needs the SimStatePlugin base class. Importing the

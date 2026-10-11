@@ -76,16 +76,15 @@ from inside the venv without any ``LD_LIBRARY_PATH`` setup. Outside
 the venv, point ``LD_LIBRARY_PATH`` at the venv's ``z3/lib`` or set
 ``Z3_LIBRARY_PATH_OVERRIDE`` to override discovery for the next build.
 
-Header discovery (``Z3_SYS_Z3_HEADER``) is a separate concern handled
-by ``setup.py::_resolve_z3_header`` and ``z3-sys``'s own pkg-config
-probe — see the "Common issues" section of :doc:`rust_build` for
-troubleshooting. The runtime sharing documented here is independent
-of header discovery and applies to any working build.
+Which Z3 version ``z3-sys`` believes it links is a separate, build-time
+concern handled by ``setup.py::_configure_z3`` and
+``tools/rebuild-rust.sh`` — see *Build layout* in :doc:`rust_build`.
+The runtime sharing documented here applies to any working build.
 
 Thread-local Z3 context
 ~~~~~~~~~~~~~~~~~~~~~~~
 
-``z3-rs 0.19`` made the Z3 context thread-local: every ``SymContext``
+``z3-rs`` (from 0.19) made the Z3 context thread-local: every ``SymContext``
 constructed on the same thread shares one ``Z3_context``. This is
 both an opportunity (raw-AST passthrough, ``Z3_inc_ref``-free reuse)
 and a constraint:

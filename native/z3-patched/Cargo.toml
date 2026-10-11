@@ -13,14 +13,14 @@
 edition = "2024"
 rust-version = "1.85.0"
 name = "z3"
-version = "0.19.7"
+version = "0.21.1"
 authors = [
     "Graydon Hoare <graydon@pobox.com>",
     "Bruce Mitchener <bruce.mitchener@gmail.com>",
     "Nick Fitzgerald <fitzgen@gmail.com>",
     "Mark DenHoed <mark.denhoed@cs.ox.ac.uk>",
 ]
-build = false
+build = "build.rs"
 autolib = false
 autobins = false
 autoexamples = false
@@ -40,22 +40,31 @@ categories = ["api-bindings"]
 license = "MIT"
 repository = "https://github.com/prove-rs/z3.rs.git"
 
+[package.metadata.docs.rs]
+features = ["num"]
+
 [features]
 bundled = ["z3-sys/bundled"]
-default = ["z3_4_8_15"]
 gh-release = ["z3-sys/gh-release"]
-static-link-z3 = [
-    "z3-sys/bundled",
-    "z3-sys/deprecated-static-link-z3",
-]
+num = ["dep:num"]
 vcpkg = ["z3-sys/vcpkg"]
-z3_4_8_13 = []
-z3_4_8_14 = ["z3_4_8_13"]
-z3_4_8_15 = ["z3_4_8_14"]
+vendored = ["z3-sys/vendored"]
 
 [lib]
 name = "z3"
 path = "src/lib.rs"
+
+[[test]]
+name = "algebraic_tests"
+path = "tests/algebraic_tests.rs"
+
+[[test]]
+name = "ast_vector_tests"
+path = "tests/ast_vector_tests.rs"
+
+[[test]]
+name = "datatype_builder_tests"
+path = "tests/datatype_builder_tests.rs"
 
 [[test]]
 name = "lib"
@@ -70,6 +79,22 @@ name = "ops"
 path = "tests/ops.rs"
 
 [[test]]
+name = "optimize_get_assertions"
+path = "tests/optimize_get_assertions.rs"
+
+[[test]]
+name = "optimize_model_handler"
+path = "tests/optimize_model_handler.rs"
+
+[[test]]
+name = "optimize_translate"
+path = "tests/optimize_translate.rs"
+
+[[test]]
+name = "quantifier_elimination_tests"
+path = "tests/quantifier_elimination_tests.rs"
+
+[[test]]
 name = "semver_tests"
 path = "tests/semver_tests.rs"
 
@@ -78,9 +103,10 @@ version = "0.4"
 
 [dependencies.num]
 version = "0.4"
+optional = true
 
 [dependencies.z3-sys]
-version = "0.10.4"
+version = "0.13.1"
 
 [dev-dependencies.env_logger]
 version = "0.11"

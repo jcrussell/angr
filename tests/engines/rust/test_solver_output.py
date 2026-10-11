@@ -149,14 +149,17 @@ class TestZ3TacticEnvVar:
 
 
 class TestZ3SatPhaseEnvVar:
-    """MANDATORY soundness gate for angr-sijyb.1: ``ANGR_Z3_PARAMS=sat.phase=sym:always_false``
-    is a new symbol-valued override (routed via ``Params::set_symbol`` ->
+    """MANDATORY soundness gate for angr-sijyb.1: a symbol-valued
+    ``ANGR_Z3_PARAMS`` override (routed via ``Params::set_symbol`` ->
     ``Z3_solver_set_params``, the same routing path that corrupted the solver
     for ``smt.random_seed``/``sat.random_seed`` per angr-iaol.1 — see
     ``iaol1-seed-pin-empirically-broken`` and
-    ``test_z3_seed_pin_not_attempted`` in test_solver_ops.py). ``sat.phase``
-    is also dotted/module-prefixed, so the same corruption mode must be ruled
-    out before any variance measurement is trusted.
+    ``test_z3_seed_pin_not_attempted`` in test_solver_ops.py) must not skew
+    results. The original probe was ``sat.phase``; Z3 5.x no longer accepts it
+    as a solver parameter, which turned out to be the corruption mode itself
+    (a rejected name left the solver answering SAT with a zero model), so the
+    gate now checks a legal symbol parameter for soundness and the rejected
+    name for failing loud.
 
     The ``sym:`` tag is required (rather than falling back to Symbol for any
     unparseable value) because an earlier version of this parser fell back
@@ -170,7 +173,7 @@ class TestZ3SatPhaseEnvVar:
     """
 
     @staticmethod
-    def _run_in_subprocess(params_env_value):
+    def _run_in_subprocess(params_env_value, expect_success=True):
         import subprocess
         import sys
         import textwrap
@@ -203,6 +206,8 @@ class TestZ3SatPhaseEnvVar:
             env=env,
             timeout=60,
         )
+        if not expect_success:
+            return proc
         assert proc.returncode == 0, (
             f"subprocess failed (env={params_env_value!r}):\nstdout: {proc.stdout!r}\nstderr: {proc.stderr[-2000:]!r}"
         )
@@ -213,26 +218,29 @@ class TestZ3SatPhaseEnvVar:
         v = self._run_in_subprocess(None)
         assert 100 <= v <= 200
 
-    def test_sat_phase_always_false_preserves_soundness(self):
-        """The actual soundness gate: with sat.phase=sym:always_false wired
-        through Params::set_symbol, eval(x) must still satisfy the asserted
-        constraints. If this fails (eg returns a value outside [100, 200]),
-        sat.phase is corrupting the solver the same way smt.random_seed did
-        — STOP, do not proceed to variance measurement, and record the
-        corruption finding on angr-sijyb.1 instead.
+    def test_symbol_param_preserves_soundness(self):
+        """The soundness gate for the Params::set_symbol route: with a legal
+        symbol parameter wired through ANGR_Z3_PARAMS, eval(x) must still
+        satisfy the asserted constraints. ``string_solver=seq`` is Z3's
+        default, so it exercises the route without changing solver behaviour.
+        (``sat.phase``, the original probe from angr-sijyb.1, stopped being a
+        solver parameter in Z3 5.x; see the rejected-parameter test below.)
         """
-        v = self._run_in_subprocess("sat.phase=sym:always_false")
-        assert 100 <= v <= 200, (
-            f"Soundness gate FAILED: eval(x) = {v} violates x in [100, 200] "
-            "under ANGR_Z3_PARAMS=sat.phase=sym:always_false. This mirrors the "
-            "smt.random_seed corruption mode from angr-iaol.1 — sat.phase "
-            "must not be shipped as a default; record on angr-sijyb.1."
-        )
+        v = self._run_in_subprocess("string_solver=sym:seq")
+        assert 100 <= v <= 200, f"Soundness gate FAILED for string_solver=sym:seq: eval(x) = {v}"
 
-    def test_sat_phase_always_true_preserves_soundness(self):
-        """Same gate for the sibling always_true value, for completeness."""
-        v = self._run_in_subprocess("sat.phase=sym:always_true")
-        assert 100 <= v <= 200, f"Soundness gate FAILED for sat.phase=sym:always_true: eval(x) = {v}"
+    def test_rejected_param_fails_loud_instead_of_corrupting(self):
+        """A parameter name the linked Z3 does not know must stop the process.
+
+        Before `check_params_accepted` (solver_build.rs) Z3's rejection was
+        invisible: the context error code was set, `satisfiable()` answered
+        True and `eval(x)` returned 0 for x in [100, 200] -- the exact
+        corruption mode angr-iaol.1 saw with smt.random_seed. `sat.phase` is
+        such a name on Z3 5.x.
+        """
+        proc = self._run_in_subprocess("sat.phase=sym:always_false", expect_success=False)
+        assert proc.returncode != 0, f"unknown Z3 parameter was accepted silently; stdout={proc.stdout!r}"
+        assert "rejected the solver parameters" in proc.stderr, proc.stderr[-2000:]
 
     def test_untagged_numeric_typo_is_a_noop_not_corruption(self):
         """Regression test (angr-sijyb.1 peer review): a mistyped value for

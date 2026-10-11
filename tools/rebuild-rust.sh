@@ -114,24 +114,18 @@ if (( CARGO_ONLY == 1 )); then
         CARGO_PROFILE_FLAG=(--release)
         CARGO_PROFILE_DIR=release
     fi
-    # z3-sys needs the C header. Honor an existing override; otherwise probe
-    # the same locations setup.py::_resolve_z3_header does (venv → pkg-config
-    # → system paths). If none match, leave Z3_SYS_Z3_HEADER unset and let
-    # z3-sys's own pkg-config probe report the error.
-    if [[ -z "${Z3_SYS_Z3_HEADER:-}" ]]; then
-        CANDIDATES=("$VENV/lib/python3.12/site-packages/z3/include/z3.h")
-        if command -v pkg-config >/dev/null 2>&1; then
-            PCINC="$(pkg-config --variable=includedir z3 2>/dev/null)"
-            [[ -n "$PCINC" ]] && CANDIDATES+=("$PCINC/z3.h")
+    # z3-sys ships its bindings (no C header), but probes pkg-config first and,
+    # failing that, assumes its minimum-supported Z3 and hides newer API. Pin it
+    # to the venv's z3-solver wheel instead -- the same libz3 Python loads
+    # (docs/advanced-topics/rust_z3_sharing.rst). setup.py::_configure_z3 does
+    # the same for the pip path.
+    export Z3_NO_PKG_CONFIG="${Z3_NO_PKG_CONFIG:-1}"
+    if [[ -z "${Z3_SYS_Z3_VERSION:-}" ]]; then
+        Z3_VER="$("$VENV/bin/python" -c 'import z3; print(z3.get_version_string())' 2>/dev/null || true)"
+        if [[ -n "$Z3_VER" ]]; then
+            export Z3_SYS_Z3_VERSION="$Z3_VER"
+            echo "using Z3_SYS_Z3_VERSION=$Z3_SYS_Z3_VERSION"
         fi
-        CANDIDATES+=(/usr/include/z3.h /usr/local/include/z3.h /opt/homebrew/include/z3.h /opt/local/include/z3.h)
-        for C in "${CANDIDATES[@]}"; do
-            if [[ -f "$C" ]]; then
-                export Z3_SYS_Z3_HEADER="$C"
-                echo "using Z3_SYS_Z3_HEADER=$Z3_SYS_Z3_HEADER"
-                break
-            fi
-        done
     fi
     # build.rs runpaths the .so to whatever libz3 `python3` (on PATH) resolves —
     # which in --cargo-only mode is the SYSTEM python3, not the venv. Linking the

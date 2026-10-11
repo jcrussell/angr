@@ -101,7 +101,7 @@ runtime dependency on ``libpyvex.so``'s rpath (which is why ``make
 test-libvex`` passes the feature explicitly), and **default-on in**
 ``setup.py``: ``_rust_features`` appends it to the extension unless
 ``ANGR_LIBVEX_FFI=0``, with ``_resolve_pyvex_libdir`` (mirroring
-``_resolve_z3_header``) feeding the search path. See *Shipping status*.
+``_configure_z3``) feeding the search path. See *Shipping status*.
 
 Running the parity gate
 -----------------------

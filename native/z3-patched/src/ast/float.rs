@@ -18,7 +18,7 @@ impl Float {
         let sort = Sort::float32();
         unsafe {
             Self::wrap(ctx, {
-                Z3_mk_fpa_numeral_float(ctx.z3_ctx.0, value, sort.z3_sort).unwrap()
+                Z3_mk_fpa_numeral_float(ctx.z3_ctx.as_ptr(), value, sort.z3_sort).unwrap()
             })
         }
     }
@@ -30,20 +30,25 @@ impl Float {
         let sort = Sort::double();
         unsafe {
             Self::wrap(ctx, {
-                Z3_mk_fpa_numeral_double(ctx.z3_ctx.0, value, sort.z3_sort).unwrap()
+                Z3_mk_fpa_numeral_double(ctx.z3_ctx.as_ptr(), value, sort.z3_sort).unwrap()
             })
         }
     }
 
     pub fn as_f64(&self) -> f64 {
-        unsafe { Z3_get_numeral_double(self.ctx.z3_ctx.0, self.z3_ast) }
+        unsafe { Z3_get_numeral_double(self.ctx.z3_ctx.as_ptr(), self.z3_ast) }
     }
 
     /// A NaN (Not a Number) value of the given ([`Float`]) [`Sort`].
     pub fn nan(sort: &Sort) -> Float {
         let ctx = &Context::thread_local();
         assert!(matches!(sort.kind(), SortKind::FloatingPoint));
-        unsafe { Self::wrap(ctx, Z3_mk_fpa_nan(ctx.z3_ctx.0, sort.z3_sort).unwrap()) }
+        unsafe {
+            Self::wrap(
+                ctx,
+                Z3_mk_fpa_nan(ctx.z3_ctx.as_ptr(), sort.z3_sort).unwrap(),
+            )
+        }
     }
 
     /// A single-precision [`Float`] NaN value.
@@ -98,7 +103,12 @@ impl Float {
         let sort = Sort::float(ebits, sbits);
         unsafe {
             Self::wrap(ctx, {
-                Z3_mk_const(ctx.z3_ctx.0, name.into().as_z3_symbol(), sort.z3_sort).unwrap()
+                Z3_mk_const(
+                    ctx.z3_ctx.as_ptr(),
+                    name.into().as_z3_symbol(),
+                    sort.z3_sort,
+                )
+                .unwrap()
             })
         }
     }
@@ -109,7 +119,12 @@ impl Float {
         let sort = Sort::float32();
         unsafe {
             Self::wrap(ctx, {
-                Z3_mk_const(ctx.z3_ctx.0, name.into().as_z3_symbol(), sort.z3_sort).unwrap()
+                Z3_mk_const(
+                    ctx.z3_ctx.as_ptr(),
+                    name.into().as_z3_symbol(),
+                    sort.z3_sort,
+                )
+                .unwrap()
             })
         }
     }
@@ -120,7 +135,12 @@ impl Float {
         let sort = Sort::double();
         unsafe {
             Self::wrap(ctx, {
-                Z3_mk_const(ctx.z3_ctx.0, name.into().as_z3_symbol(), sort.z3_sort).unwrap()
+                Z3_mk_const(
+                    ctx.z3_ctx.as_ptr(),
+                    name.into().as_z3_symbol(),
+                    sort.z3_sort,
+                )
+                .unwrap()
             })
         }
     }
@@ -133,7 +153,7 @@ impl Float {
             Self::wrap(ctx, {
                 let pp = CString::new(prefix).unwrap();
                 let p = pp.as_ptr();
-                Z3_mk_fresh_const(ctx.z3_ctx.0, p, sort.z3_sort).unwrap()
+                Z3_mk_fresh_const(ctx.z3_ctx.as_ptr(), p, sort.z3_sort).unwrap()
             })
         }
     }
@@ -145,7 +165,7 @@ impl Float {
             Self::wrap(ctx, {
                 let pp = CString::new(prefix).unwrap();
                 let p = pp.as_ptr();
-                Z3_mk_fresh_const(ctx.z3_ctx.0, p, sort.z3_sort).unwrap()
+                Z3_mk_fresh_const(ctx.z3_ctx.as_ptr(), p, sort.z3_sort).unwrap()
             })
         }
     }
@@ -157,7 +177,7 @@ impl Float {
             Self::wrap(ctx, {
                 let pp = CString::new(prefix).unwrap();
                 let p = pp.as_ptr();
-                Z3_mk_fresh_const(ctx.z3_ctx.0, p, sort.z3_sort).unwrap()
+                Z3_mk_fresh_const(ctx.z3_ctx.as_ptr(), p, sort.z3_sort).unwrap()
             })
         }
     }
@@ -211,7 +231,7 @@ impl Float {
         unsafe {
             BV::wrap(
                 &self.ctx,
-                Z3_mk_fpa_to_ieee_bv(self.ctx.z3_ctx.0, self.z3_ast).unwrap(),
+                Z3_mk_fpa_to_ieee_bv(self.ctx.z3_ctx.as_ptr(), self.z3_ast).unwrap(),
             )
         }
     }
@@ -224,12 +244,125 @@ impl Float {
         is_subnormal(Z3_mk_fpa_is_subnormal, Bool);
         is_zero(Z3_mk_fpa_is_zero, Bool);
         is_nan(Z3_mk_fpa_is_nan, Bool);
+        is_negative(Z3_mk_fpa_is_negative, Bool);
+        is_positive(Z3_mk_fpa_is_positive, Bool);
     }
     binop! {
         lt(Z3_mk_fpa_lt, Bool);
         le(Z3_mk_fpa_leq, Bool);
         gt(Z3_mk_fpa_gt, Bool);
         ge(Z3_mk_fpa_geq, Bool);
+        eq_fpa(Z3_mk_fpa_eq, Bool);
+        min(Z3_mk_fpa_min, Self);
+        max(Z3_mk_fpa_max, Self);
+        rem(Z3_mk_fpa_rem, Self);
+    }
+
+    /// Square root with default rounding mode (nearest ties to even).
+    pub fn sqrt(&self) -> Float {
+        self.sqrt_with_rounding_mode(&RoundingMode::round_nearest_ties_to_even())
+    }
+
+    /// Square root with specified rounding mode.
+    pub fn sqrt_with_rounding_mode(&self, rm: &RoundingMode) -> Float {
+        unsafe {
+            Float::wrap(
+                &self.ctx,
+                Z3_mk_fpa_sqrt(self.ctx.z3_ctx.as_ptr(), rm.z3_ast, self.z3_ast).unwrap(),
+            )
+        }
+    }
+
+    /// Round to integer with default rounding mode.
+    pub fn round_to_integral(&self) -> Float {
+        self.round_to_integral_with_rounding_mode(&RoundingMode::round_nearest_ties_to_even())
+    }
+
+    /// Round to integer with specified rounding mode.
+    pub fn round_to_integral_with_rounding_mode(&self, rm: &RoundingMode) -> Float {
+        unsafe {
+            Float::wrap(
+                &self.ctx,
+                Z3_mk_fpa_round_to_integral(self.ctx.z3_ctx.as_ptr(), rm.z3_ast, self.z3_ast)
+                    .unwrap(),
+            )
+        }
+    }
+
+    /// Fused multiply-add operation: (self * y) + z with specified rounding mode.
+    pub fn fma_with_rounding_mode<T: IntoAst<Self>, U: IntoAst<Self>>(
+        &self,
+        y: T,
+        z: U,
+        rm: &RoundingMode,
+    ) -> Float {
+        let y = y.into_ast(self);
+        let z = z.into_ast(self);
+        unsafe {
+            Float::wrap(
+                &self.ctx,
+                Z3_mk_fpa_fma(
+                    self.ctx.z3_ctx.as_ptr(),
+                    rm.z3_ast,
+                    self.z3_ast,
+                    y.z3_ast,
+                    z.z3_ast,
+                )
+                .unwrap(),
+            )
+        }
+    }
+
+    /// Fused multiply-add operation with default rounding mode.
+    pub fn fma<T: IntoAst<Self>, U: IntoAst<Self>>(&self, y: T, z: U) -> Float {
+        self.fma_with_rounding_mode(y, z, &RoundingMode::round_nearest_ties_to_even())
+    }
+
+    /// Convert float to signed bit-vector with specified rounding mode.
+    pub fn to_sbv_with_rounding_mode(&self, rm: &RoundingMode, size: u32) -> BV {
+        unsafe {
+            BV::wrap(
+                &self.ctx,
+                Z3_mk_fpa_to_sbv(self.ctx.z3_ctx.as_ptr(), rm.z3_ast, self.z3_ast, size).unwrap(),
+            )
+        }
+    }
+
+    /// Convert float to unsigned bit-vector with specified rounding mode.
+    pub fn to_ubv_with_rounding_mode(&self, rm: &RoundingMode, size: u32) -> BV {
+        unsafe {
+            BV::wrap(
+                &self.ctx,
+                Z3_mk_fpa_to_ubv(self.ctx.z3_ctx.as_ptr(), rm.z3_ast, self.z3_ast, size).unwrap(),
+            )
+        }
+    }
+
+    /// Convert float to real number.
+    pub fn to_real(&self) -> crate::ast::Real {
+        unsafe {
+            crate::ast::Real::wrap(
+                &self.ctx,
+                Z3_mk_fpa_to_real(self.ctx.z3_ctx.as_ptr(), self.z3_ast).unwrap(),
+            )
+        }
+    }
+
+    /// Convert float to another floating-point sort with specified rounding mode.
+    pub fn to_fp_with_rounding_mode(&self, rm: &RoundingMode, target_sort: &crate::Sort) -> Float {
+        assert!(matches!(target_sort.kind(), crate::SortKind::FloatingPoint));
+        unsafe {
+            Float::wrap(
+                &self.ctx,
+                Z3_mk_fpa_to_fp_float(
+                    self.ctx.z3_ctx.as_ptr(),
+                    rm.z3_ast,
+                    self.z3_ast,
+                    target_sort.z3_sort,
+                )
+                .unwrap(),
+            )
+        }
     }
 }
 
@@ -242,7 +375,7 @@ macro_rules! impl_into_ast {
                 let ctx = a.get_ctx();
                 unsafe {
                     Float::wrap(ctx, {
-                        Z3_mk_fpa_numeral_double(ctx.z3_ctx.0, value, sort.z3_sort).unwrap()
+                        Z3_mk_fpa_numeral_double(ctx.z3_ctx.as_ptr(), value, sort.z3_sort).unwrap()
                     })
                 }
             }

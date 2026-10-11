@@ -1,9 +1,10 @@
 [build]
-# Z3 header and library discovery is handled by native/angr/build.rs.
-# It checks (in order): the python z3 package (if shipped with headers/libs),
-# Z3_SYS_Z3_HEADER override, /usr/include/z3.h (system z3-dev), and
-# /usr/local/include/z3.h. To force a specific header, set
-# Z3_SYS_Z3_HEADER=/path/to/z3.h before invoking cargo / pip install.
+# libz3 discovery is handled by native/angr/build.rs (runpath) and by the
+# z3-sys build script (link search + version detection). z3-sys ships its
+# bindings, so no C header is needed, but it must link the venv's z3-solver
+# wheel and know its version: setup.py::_configure_z3 and
+# tools/rebuild-rust.sh export Z3_NO_PKG_CONFIG, Z3_LIBRARY_PATH_OVERRIDE
+# and Z3_SYS_Z3_VERSION. Export the same three before a bare `cargo` call.
 
 [target.x86_64-unknown-linux-gnu]
 rustflags = ["-C", "target-cpu=native"]

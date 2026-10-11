@@ -132,10 +132,10 @@ impl Z3AstPtr {
         // taken in `from_borrowed_raw`/`clone_ref`). `Z3_get_sort` on a live
         // AST yields a live `Z3_sort` in the same context, and
         // `Z3_get_bv_sort_size` is a pure metadata read that is only valid
-        // on a BV sort — which the `SortKind::BV` match guarantees.
+        // on a BV sort — which the `SortKind::Bv` match guarantees.
         unsafe {
             let sort = z3_sys::Z3_get_sort(raw_ctx, self.ptr)?;
-            if z3_sys::Z3_get_sort_kind(raw_ctx, sort) != z3_sys::SortKind::BV {
+            if z3_sys::Z3_get_sort_kind(raw_ctx, sort) != z3_sys::SortKind::Bv {
                 return None;
             }
             Some(z3_sys::Z3_get_bv_sort_size(raw_ctx, sort))

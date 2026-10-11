@@ -732,7 +732,7 @@ class TestSolverOperations:
 
         The audit (parent iaol) hypothesized pinning would deliver model
         stability across fresh ``RustSolverContext`` instances. Empirically
-        the three reachable param-name forms via the z3-0.19.7
+        the three reachable param-name forms via the z3-rs
         ``Params::set_u32`` route are all problematic:
 
         * ``smt.random_seed`` / ``sat.random_seed``: corrupt the solver.

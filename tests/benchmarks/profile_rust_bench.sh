@@ -26,8 +26,9 @@
 #   - callgrind is slow (10-50x) but works without kernel-event privileges.
 #   - Workspace [profile.release] sets strip="symbols", which the bench profile
 #     inherits. We override via --config so perf can resolve Rust symbols.
-#   - z3-sys build.rs needs Z3_SYS_Z3_HEADER. If the .venv z3 package is
-#     missing include/z3.h we fall back to /usr/include/z3.h automatically.
+#   - z3-sys links and version-detects the .venv z3-solver wheel; we export
+#     Z3_NO_PKG_CONFIG / Z3_LIBRARY_PATH_OVERRIDE / Z3_SYS_Z3_VERSION the same
+#     way tools/rebuild-rust.sh does so the bench binary loads one libz3.
 
 set -euo pipefail
 
@@ -49,14 +50,16 @@ CARGO_PROFILE_OVERRIDES=(
     --config 'profile.bench.debug=true'
 )
 
-# z3-sys build.rs reads Z3_SYS_Z3_HEADER for the header to bind. The .venv
-# z3 package may be missing include/z3.h — fall back to the system header so
-# `cargo bench --no-run` does not panic on bindgen.
-if [[ -z "${Z3_SYS_Z3_HEADER:-}" ]]; then
-    venv_header="$REPO_ROOT/.venv/lib/python3.12/site-packages/z3/include/z3.h"
-    if [[ ! -e "$venv_header" && -e /usr/include/z3.h ]]; then
-        export Z3_SYS_Z3_HEADER=/usr/include/z3.h
-    fi
+# z3-sys must link the venv's libz3 (the one claripy loads) and know its
+# version; it would otherwise probe the system pkg-config Z3 first.
+venv_z3_lib="$REPO_ROOT/.venv/lib/python3.12/site-packages/z3/lib"
+export Z3_NO_PKG_CONFIG="${Z3_NO_PKG_CONFIG:-1}"
+if [[ -z "${Z3_LIBRARY_PATH_OVERRIDE:-}" && -d "$venv_z3_lib" ]]; then
+    export Z3_LIBRARY_PATH_OVERRIDE="$venv_z3_lib"
+fi
+if [[ -z "${Z3_SYS_Z3_VERSION:-}" ]]; then
+    z3_ver="$("$REPO_ROOT/.venv/bin/python" -c 'import z3; print(z3.get_version_string())' 2>/dev/null || true)"
+    [[ -n "$z3_ver" ]] && export Z3_SYS_Z3_VERSION="$z3_ver"
 fi
 
 usage() {

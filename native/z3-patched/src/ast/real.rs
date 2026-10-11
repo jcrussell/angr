@@ -1,6 +1,7 @@
 use crate::ast::Ast;
 use crate::ast::{Bool, Int, binop, unop, varop};
 use crate::{Context, Sort, Symbol};
+#[cfg(feature = "num")]
 use num::BigRational;
 use std::ffi::{CStr, CString};
 use z3_sys::*;
@@ -11,6 +12,7 @@ pub struct Real {
     pub(crate) z3_ast: Z3_ast,
 }
 impl Real {
+    #[cfg(feature = "num")]
     pub fn from_big_rational(value: &BigRational) -> Real {
         let num = value.numer();
         let den = value.denom();
@@ -27,7 +29,7 @@ impl Real {
         let sort = Sort::real();
         let ast = unsafe {
             let fraction_cstring = CString::new(format!("{num:} / {den:}")).unwrap();
-            Z3_mk_numeral(ctx.z3_ctx.0, fraction_cstring.as_ptr(), sort.z3_sort)?
+            Z3_mk_numeral(ctx.z3_ctx.as_ptr(), fraction_cstring.as_ptr(), sort.z3_sort)?
         };
         Some(unsafe { Real::wrap(ctx, ast) })
     }
@@ -38,7 +40,12 @@ impl Real {
         let sort = Sort::real();
         unsafe {
             Self::wrap(ctx, {
-                Z3_mk_const(ctx.z3_ctx.0, name.into().as_z3_symbol(), sort.z3_sort).unwrap()
+                Z3_mk_const(
+                    ctx.z3_ctx.as_ptr(),
+                    name.into().as_z3_symbol(),
+                    sort.z3_sort,
+                )
+                .unwrap()
             })
         }
     }
@@ -50,7 +57,7 @@ impl Real {
             Self::wrap(ctx, {
                 let pp = CString::new(prefix).unwrap();
                 let p = pp.as_ptr();
-                Z3_mk_fresh_const(ctx.z3_ctx.0, p, sort.z3_sort).unwrap()
+                Z3_mk_fresh_const(ctx.z3_ctx.as_ptr(), p, sort.z3_sort).unwrap()
             })
         }
     }
@@ -64,12 +71,10 @@ impl Real {
         let ctx = &Context::thread_local();
         unsafe {
             Self::wrap(ctx, {
-                Z3_mk_real(
-                    ctx.z3_ctx.0,
-                    num as ::std::os::raw::c_int,
-                    den as ::std::os::raw::c_int,
-                )
-                .unwrap()
+                // Use the int64 fraction API, not Z3_mk_real (which takes C `int`):
+                // casting the i64 args to c_int silently truncates any value outside
+                // the i32 range (e.g. 634909090909091/100000000000 wrapped to garbage).
+                Z3_mk_real_int64(ctx.z3_ctx.as_ptr(), num, den).unwrap()
             })
         }
     }
@@ -83,7 +88,7 @@ impl Real {
         unsafe {
             let mut num: i64 = 0;
             let mut den: i64 = 0;
-            if Z3_get_numeral_small(self.ctx.z3_ctx.0, self.z3_ast, &mut num, &mut den) {
+            if Z3_get_numeral_small(self.ctx.z3_ctx.as_ptr(), self.z3_ast, &mut num, &mut den) {
                 Some((num, den))
             } else {
                 None
@@ -94,7 +99,7 @@ impl Real {
     pub fn approx(&self, precision: usize) -> ::std::string::String {
         let s = unsafe {
             CStr::from_ptr(Z3_get_numeral_decimal_string(
-                self.ctx.z3_ctx.0,
+                self.ctx.z3_ctx.as_ptr(),
                 self.z3_ast,
                 precision as _,
             ))
@@ -111,7 +116,7 @@ impl Real {
         unsafe {
             Self::wrap(
                 &ast.ctx,
-                Z3_mk_int2real(ast.ctx.z3_ctx.0, ast.z3_ast).unwrap(),
+                Z3_mk_int2real(ast.ctx.z3_ctx.as_ptr(), ast.z3_ast).unwrap(),
             )
         }
     }
@@ -145,6 +150,7 @@ impl Real {
     }
 }
 
+#[cfg(feature = "num")]
 impl From<BigRational> for Real {
     fn from(v: BigRational) -> Real {
         Real::from_big_rational(&v)

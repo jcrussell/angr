@@ -17,11 +17,10 @@ Prerequisites
 * Python 3.10+.
 * A Rust toolchain from rustup at ``~/.cargo/bin``; the version is pinned
   by the repo-root ``rust-toolchain.toml``.
-* Z3 development headers: ``apt install libz3-dev`` on Debian/Ubuntu,
-  ``dnf install z3-devel`` on Fedora, ``brew install z3`` on macOS. The
-  PyPI ``z3-solver`` wheel ships ``libz3.so`` but not the C headers, and
-  ``z3-sys`` needs the headers to generate bindings.
-* ``pkg-config``, which ``z3-sys`` uses to locate the system Z3.
+* The ``z3-solver`` wheel pinned in ``pyproject.toml``. ``z3-sys`` ships
+  pregenerated bindings, so no Z3 C headers or system Z3 are needed; the
+  build links the wheel's ``libz3`` and must be told its version (see
+  *Build layout* below). A system ``libz3-dev`` is harmless but unused.
 * ``libclang``: ``bindgen`` generates the ``z3-sys`` bindings and, with
   the default-on ``libvex-ffi`` feature, the libVEX bindings.
   ``apt install libclang-dev`` / ``dnf install clang-devel`` /
@@ -39,7 +38,7 @@ Bootstrap from a clean state
 
 .. code-block:: bash
 
-   sudo apt install libz3-dev pkg-config libclang-dev rustup   # or distro equivalent
+   sudo apt install libclang-dev rustup                        # or distro equivalent
    rustup show                                                 # picks up rust-toolchain.toml
    python3 -m venv .venv
    .venv/bin/pip install --upgrade pip setuptools setuptools-rust
@@ -80,10 +79,13 @@ only local check of those, which is why the ralph gate runs it first.
 ``native/angr/build.rs`` detects the Z3 shared library from the active
 venv's ``z3-solver`` install and sets the runpath so Python and Rust load
 the same ``libz3.so`` (required for AST passthrough; see
-:doc:`rust_z3_sharing`). For headers, ``setup.py::_resolve_z3_header``
-probes the venv ``z3/include``, then ``pkg-config --variable=includedir
-z3``, then the usual system include directories, and sets
-``Z3_SYS_Z3_HEADER`` before cargo runs.
+:doc:`rust_z3_sharing`). ``z3-sys`` would otherwise probe pkg-config
+first and, failing that, assume its minimum-supported Z3 and hide newer
+API, so ``setup.py::_configure_z3`` (pip path) and
+``tools/rebuild-rust.sh`` (cargo path) export ``Z3_NO_PKG_CONFIG=1``,
+``Z3_LIBRARY_PATH_OVERRIDE`` (the wheel's ``z3/lib``) and
+``Z3_SYS_Z3_VERSION`` (from the installed ``z3-solver``) before cargo
+runs. Export the same three before a bare ``cargo`` invocation.
 
 Common issues
 ~~~~~~~~~~~~~
@@ -95,11 +97,10 @@ Common issues
 ``angr/rustylib*.so`` and ``build/``, runs ``cargo clean``, and re-runs the
 editable install. ``--keep-cargo-cache`` skips ``cargo clean``.
 
-**"Unable to generate bindings: NotExist ...z3.h"** — no ``z3.h`` in any
-standard location. Install the Z3 dev package, or set
-``Z3_SYS_Z3_HEADER=/path/to/z3.h`` before ``pip install`` / ``cargo``.
-``tools/rebuild-rust.sh --cargo-only`` probes the venv path and
-``/usr/include/z3.h`` itself, since ``setup.py`` is bypassed there.
+**"z3-sys: could not detect linked Z3 version"** (cargo warning) — the
+build ran without ``Z3_SYS_Z3_VERSION`` and will assume the minimum
+supported Z3. Export the three variables above (or go through
+``make rebuild-cargo`` / ``pip install``, which set them).
 
 **Linker can't find libz3 at runtime** — ``build.rs`` sets the runpath to
 the venv's ``z3/lib``, so ``import angr`` works from inside the venv.

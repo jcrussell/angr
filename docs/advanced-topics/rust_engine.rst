@@ -1123,12 +1123,14 @@ once per process on first solver construction and cached in a
 
 .. code-block:: bash
 
-    ANGR_Z3_PARAMS="bv.size_reduce=true,relevancy=0,sat.phase=sym:always_false" \
+    ANGR_Z3_PARAMS="bv.size_reduce=true,relevancy=0,string_solver=sym:seq" \
         python tests/benchmarks/run_single.py fauxware --engine rust
 
 ``value`` of ``true`` / ``false`` (case-insensitive) sets a bool param; a
 value that parses as ``u32`` sets a uint param; a value prefixed ``sym:``
-sets a symbol param (e.g. ``sat.phase=sym:always_false``). Everything else
+sets a symbol param (e.g. ``string_solver=sym:seq``). A name the linked Z3
+does not know (``sat.phase`` on Z3 5.x) aborts solver construction with the
+Z3 message rather than skewing later queries. Everything else
 — including a plain non-numeric value with no ``sym:`` tag — is skipped
 silently rather than aborting the run. The tag is required, not inferred:
 an untagged unparseable value (e.g. a typo like ``timeout=5oo``) has no way

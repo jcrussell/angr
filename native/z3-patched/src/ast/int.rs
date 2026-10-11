@@ -1,6 +1,7 @@
 use crate::ast::{Ast, BV, Real, binop};
 use crate::ast::{Bool, unop, varop};
 use crate::{Context, Sort, Symbol};
+#[cfg(feature = "num")]
 use num::BigInt;
 use std::ffi::CString;
 use std::str::FromStr;
@@ -11,6 +12,7 @@ pub struct Int {
     pub(crate) ctx: Context,
     pub(crate) z3_ast: Z3_ast,
 }
+#[cfg(feature = "num")]
 impl Int {
     pub fn from_big_int(value: &BigInt) -> Int {
         Int::from_str(&value.to_str_radix(10)).unwrap()
@@ -23,11 +25,17 @@ impl Int {
         let sort = Sort::int();
         unsafe {
             Self::wrap(ctx, {
-                Z3_mk_const(ctx.z3_ctx.0, name.into().as_z3_symbol(), sort.z3_sort).unwrap()
+                Z3_mk_const(
+                    ctx.z3_ctx.as_ptr(),
+                    name.into().as_z3_symbol(),
+                    sort.z3_sort,
+                )
+                .unwrap()
             })
         }
     }
 
+    /// Declare and create a fresh Integer uninterpreted constant with name `prefix`.
     pub fn fresh_const(prefix: &str) -> Int {
         let ctx = &Context::thread_local();
         let sort = Sort::int();
@@ -35,24 +43,31 @@ impl Int {
             Self::wrap(ctx, {
                 let pp = CString::new(prefix).unwrap();
                 let p = pp.as_ptr();
-                Z3_mk_fresh_const(ctx.z3_ctx.0, p, sort.z3_sort).unwrap()
+                Z3_mk_fresh_const(ctx.z3_ctx.as_ptr(), p, sort.z3_sort).unwrap()
             })
         }
     }
 
+    /// Create an AST node representing the integer value `i`.
     pub fn from_i64(i: i64) -> Int {
         let ctx = &Context::thread_local();
         let sort = Sort::int();
-        unsafe { Self::wrap(ctx, Z3_mk_int64(ctx.z3_ctx.0, i, sort.z3_sort).unwrap()) }
+        unsafe {
+            Self::wrap(
+                ctx,
+                Z3_mk_int64(ctx.z3_ctx.as_ptr(), i, sort.z3_sort).unwrap(),
+            )
+        }
     }
 
+    /// Create an AST node representing the integer value `u`.
     pub fn from_u64(u: u64) -> Int {
         let ctx = &Context::thread_local();
         let sort = Sort::int();
         unsafe {
             Self::wrap(
                 ctx,
-                Z3_mk_unsigned_int64(ctx.z3_ctx.0, u, sort.z3_sort).unwrap(),
+                Z3_mk_unsigned_int64(ctx.z3_ctx.as_ptr(), u, sort.z3_sort).unwrap(),
             )
         }
     }
@@ -60,7 +75,7 @@ impl Int {
     pub fn as_i64(&self) -> Option<i64> {
         unsafe {
             let mut tmp: ::std::os::raw::c_longlong = 0;
-            if Z3_get_numeral_int64(self.ctx.z3_ctx.0, self.z3_ast, &mut tmp) {
+            if Z3_get_numeral_int64(self.ctx.z3_ctx.as_ptr(), self.z3_ast, &mut tmp) {
                 Some(tmp)
             } else {
                 None
@@ -71,7 +86,7 @@ impl Int {
     pub fn as_u64(&self) -> Option<u64> {
         unsafe {
             let mut tmp: ::std::os::raw::c_ulonglong = 0;
-            if Z3_get_numeral_uint64(self.ctx.z3_ctx.0, self.z3_ast, &mut tmp) {
+            if Z3_get_numeral_uint64(self.ctx.z3_ctx.as_ptr(), self.z3_ast, &mut tmp) {
                 Some(tmp)
             } else {
                 None
@@ -83,7 +98,7 @@ impl Int {
         unsafe {
             Self::wrap(
                 &ast.ctx,
-                Z3_mk_real2int(ast.ctx.z3_ctx.0, ast.z3_ast).unwrap(),
+                Z3_mk_real2int(ast.ctx.z3_ctx.as_ptr(), ast.z3_ast).unwrap(),
             )
         }
     }
@@ -117,7 +132,7 @@ impl Int {
     pub fn from_bv(ast: &BV, signed: bool) -> Int {
         unsafe {
             Self::wrap(&ast.ctx, {
-                Z3_mk_bv2int(ast.ctx.z3_ctx.0, ast.z3_ast, signed).unwrap()
+                Z3_mk_bv2int(ast.ctx.z3_ctx.as_ptr(), ast.z3_ast, signed).unwrap()
             })
         }
     }
@@ -192,6 +207,7 @@ into_int_signed!(i16);
 into_int_signed!(i32);
 into_int_signed!(i64);
 
+#[cfg(feature = "num")]
 impl From<BigInt> for Int {
     fn from(value: BigInt) -> Self {
         Int::from_big_int(&value)
@@ -206,7 +222,7 @@ impl FromStr for Int {
         let sort = Sort::int();
         let ast = unsafe {
             let int_cstring = CString::new(value).unwrap();
-            Z3_mk_numeral(ctx.z3_ctx.0, int_cstring.as_ptr(), sort.z3_sort)
+            Z3_mk_numeral(ctx.z3_ctx.as_ptr(), int_cstring.as_ptr(), sort.z3_sort)
         }
         .ok_or(())?;
         Ok(unsafe { Int::wrap(ctx, ast) })

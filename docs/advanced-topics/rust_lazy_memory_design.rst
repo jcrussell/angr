@@ -175,9 +175,9 @@ portion of memory as a Z3 array ``BV64 → BV8``. Stores: ``mem' =
 Store(mem, addr, val)``. Loads: ``Select(mem, addr)``. Let Z3 simplify
 ``Select(Store(...))``.
 
-z3-rs 0.19 (the version pinned in ``native/angr/Cargo.toml``) does
-expose ``Array::store``/``select`` — confirmed in
-``z3-0.19.7/src/ast/array.rs``. No version bump needed. There is no
+z3-rs (the version pinned in ``native/angr/Cargo.toml``) does
+expose ``Array::store``/``select`` — see ``native/z3-patched/src/ast/array.rs``.
+No version bump needed. There is no
 existing Z3 array usage anywhere under
 ``native/angr/src/symbolic/``.
 

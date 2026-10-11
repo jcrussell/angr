@@ -10,9 +10,10 @@
 # extension a private, second Z3 context. Instead it EXCLUDES libz3 and
 # relativizes the runpath to the z3-solver wheel's install dir, which sits
 # beside angr/ in site-packages: $ORIGIN/../z3/lib on Linux,
-# @loader_path/../z3/lib on macOS. z3-solver is a runtime dep (pinned 4.13.0.0
-# transitively via claripy==9.2.209 — do not widen; see the avoid-pip-install-deps
-# bd memory and the unversioned-SONAME warning in the memo).
+# @loader_path/../z3/lib on macOS. z3-solver is a runtime dep, pinned exactly in
+# pyproject.toml (the same release the Rust side's z3-sys targets — do not
+# widen; see the avoid-pip-install-deps bd memory and the unversioned-SONAME
+# warning in the memo). Every `pip install z3-solver==` below must match it.
 #
 # Windows reaches the same invariant by a different route (bd angr-c4xcs.8). PE
 # has no RPATH, and delvewheel's default behaviour — copy z3.dll into the wheel —
@@ -54,7 +55,7 @@ jobs:
             cibw-archs: "x86_64"
             qemu: false
           # aarch64 builds run the same manylinux recipe under QEMU emulation
-          # (slow: expect ~an hour). UNVERIFIED ASSUMPTION: z3-solver 4.13.0.0
+          # (slow: expect ~an hour). UNVERIFIED ASSUMPTION: the pinned z3-solver
           # publishes a manylinux aarch64 wheel. If it does not, CIBW_BEFORE_BUILD
           # fails loud here — which is the correct outcome, because an aarch64
           # angr wheel that excludes libz3 is useless to a user who cannot pip
@@ -98,26 +99,18 @@ jobs:
           CIBW_ARCHS: ${{ matrix.cibw-archs }}
 
           # ---- Linux (manylinux, both arches) --------------------------------
-          # build.rs needs the Rust toolchain + z3 headers + z3-solver's libz3.so.
-          # Headers are BUILD-TIME ONLY; they never enter the wheel.
+          # build.rs needs the Rust toolchain + z3-solver's libz3.so. z3-sys ships
+          # its bindings, so no Z3 headers or system Z3 package are involved;
+          # setup.py::_configure_z3 points z3-sys at the wheel's lib dir and
+          # version in-process, so no Z3 variables are needed in the environment.
           CIBW_BEFORE_ALL_LINUX: >
             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y &&
             (yum install -y zlib-devel || true)
-          # Z3_SYS_Z3_HEADER pins the header EPEL's z3-devel installs (/usr/include/z3.h)
-          # so z3-sys bindgen never has to guess; build.rs/setup.py probe the same path.
-          CIBW_ENVIRONMENT_LINUX: 'PATH="$HOME/.cargo/bin:$PATH" Z3_SYS_Z3_HEADER="/usr/include/z3.h"'
-          # z3-solver must be importable so build.rs::find_z3_pkg_from_python resolves
-          # libz3.so; z3-devel supplies z3.h for z3-sys bindgen. The manylinux images
-          # (AlmaLinux/CentOS) carry z3-devel ONLY in EPEL, which is not enabled by
-          # default — enable it first. Do NOT fall back to `pip download z3-solver`:
-          # that wheel ships libz3.so but NOT z3.h, so it masks a missing header as
-          # success and bindgen then dies with a cryptic NotExist (angr-3gjm).
-          # Fail loud here instead.
+          CIBW_ENVIRONMENT_LINUX: 'PATH="$HOME/.cargo/bin:$PATH"'
+          # z3-solver must be importable so build.rs::find_z3_pkg_from_python and
+          # setup.py::_configure_z3 resolve libz3.so and its version.
           CIBW_BEFORE_BUILD_LINUX: >
-            pip install z3-solver==4.13.0.0 patchelf &&
-            (yum install -y epel-release || true) &&
-            yum install -y z3-devel &&
-            (test -f "$Z3_SYS_Z3_HEADER" || { echo "ERROR: $Z3_SYS_Z3_HEADER missing after z3-devel install; enable EPEL or vendor z3.h and re-point Z3_SYS_Z3_HEADER" >&2; exit 1; })
+            pip install z3-solver==5.1.0.0 patchelf
           # DO NOT vendor libz3 or libpyvex: exclude both, then point RUNPATH at
           # the z3-solver and pyvex wheel lib dirs (both siblings of angr/ in
           # site-packages). libpyvex is excluded for the SAME reason as libz3 --
@@ -135,19 +128,16 @@ jobs:
             done
 
           # ---- macOS ---------------------------------------------------------
-          # Rust ships preinstalled on the GitHub macOS images; brew supplies z3.h
-          # for z3-sys bindgen (build-time only — the headers never enter the wheel).
-          CIBW_BEFORE_ALL_MACOS: brew install z3 pkg-config
+          # Rust ships preinstalled on the GitHub macOS images; the z3-solver wheel
+          # supplies libz3 (no brew z3 — a second Z3 on the machine is exactly what
+          # Z3_NO_PKG_CONFIG in setup.py::_configure_z3 exists to ignore).
           # MACOSX_DEPLOYMENT_TARGET must match the macos-14 image's arm64 floor,
-          # else delocate rejects the wheel tag. Z3_SYS_Z3_HEADER must be set HERE,
-          # not exported from CIBW_BEFORE_BUILD_MACOS — cibuildwheel runs before-build
-          # in its own shell, so an export there never reaches cargo. /opt/homebrew is
-          # the Apple-silicon brew prefix `brew install z3` symlinks headers into (the
-          # same path setup.py::_resolve_z3_header probes).
-          CIBW_ENVIRONMENT_MACOS: 'MACOSX_DEPLOYMENT_TARGET="11.0" Z3_SYS_Z3_HEADER="/opt/homebrew/include/z3.h"'
+          # else delocate rejects the wheel tag. Anything cargo must see goes HERE,
+          # not in an export from CIBW_BEFORE_BUILD_MACOS — cibuildwheel runs
+          # before-build in its own shell, so an export there never reaches cargo.
+          CIBW_ENVIRONMENT_MACOS: 'MACOSX_DEPLOYMENT_TARGET="11.0"'
           CIBW_BEFORE_BUILD_MACOS: >
-            pip install z3-solver==4.13.0.0 delocate &&
-            (test -f "$Z3_SYS_Z3_HEADER" || { echo "ERROR: $Z3_SYS_Z3_HEADER missing after brew install z3" >&2; exit 1; })
+            pip install z3-solver==5.1.0.0 delocate
           # Mach-O analogue of the Linux repair. Three differences:
           #  1. delocate (not auditwheel) is the vendoring tool; --exclude libz3
           #     and --exclude libpyvex keep it from copying libz3.dylib /
@@ -181,24 +171,24 @@ jobs:
             done
 
           # ---- Windows -------------------------------------------------------
-          # Rust and LLVM (libclang, which z3-sys' bindgen dlopens) both ship
-          # preinstalled on the GitHub windows image. What does NOT exist on
-          # Windows is a header/import-library source: the z3-solver wheel carries
+          # Rust and LLVM (libclang, which the libvex-ffi bindgen dlopens) both
+          # ship preinstalled on the GitHub windows image. What does NOT exist on
+          # Windows is an import-library source: the z3-solver wheel carries
           # z3.dll and nothing else. So fetch the MATCHING official z3 release
-          # (4.13.0 — same version claripy pins, so the exports line up) purely to
-          # compile and link against. It never enters the wheel; the DLL actually
-          # loaded at runtime is still the user's site-packages z3-solver copy,
-          # found via os.add_dll_directory (angr.misc.z3_dll).
+          # (the version pyproject.toml pins, so the exports line up) purely to
+          # link against. It never enters the wheel; the DLL actually loaded at
+          # runtime is still the user's site-packages z3-solver copy, found via
+          # os.add_dll_directory (angr.misc.z3_dll).
           #
           # z3-sys asks the linker for `z3`, i.e. z3.lib, but the official archive
           # names its import library libz3.lib — hence the copy. That rename is
           # the single most likely thing to break when this leg first runs.
-          CIBW_ENVIRONMENT_WINDOWS: 'Z3_SYS_Z3_HEADER="C:\\z3\\include\\z3.h" LIBCLANG_PATH="C:\\Program Files\\LLVM\\bin" LIB="C:\\z3\\bin;$LIB"'
+          CIBW_ENVIRONMENT_WINDOWS: 'LIBCLANG_PATH="C:\\Program Files\\LLVM\\bin" LIB="C:\\z3\\bin;$LIB"'
           CIBW_BEFORE_BUILD_WINDOWS: >
-            pip install z3-solver==4.13.0.0 &&
-            curl -sSL -o z3.zip https://github.com/Z3Prover/z3/releases/download/z3-4.13.0/z3-4.13.0-x64-win.zip &&
+            pip install z3-solver==5.1.0.0 &&
+            curl -sSL -o z3.zip https://github.com/Z3Prover/z3/releases/download/z3-5.1.0/z3-5.1.0-x64-win.zip &&
             tar -xf z3.zip &&
-            move z3-4.13.0-x64-win C:\z3 &&
+            move z3-5.1.0-x64-win C:\z3 &&
             copy C:\z3\bin\libz3.lib C:\z3\bin\z3.lib
           # Intentionally empty: repairing this wheel would mean delvewheel, and
           # delvewheel's whole job is to vendor z3.dll into angr/ — a private,

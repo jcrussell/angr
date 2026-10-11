@@ -10,13 +10,21 @@ use crate::{Config, ContextHandle};
 /// A wrapper around [`Z3_context`] that enforces proper dropping behavior.
 /// All high-level code should instead use [`Context`]
 #[derive(Clone, Debug, PartialEq, Eq)]
+// angr fork patch: the second field marks a *borrowed* context (`from_raw`),
+// which Rust must never `Z3_del_context` — the owner (Python's z3 bindings,
+// or clarirs-z3) deletes it. See docs/advanced-topics/rust_z3_sharing.rst.
 pub(crate) struct ContextInternal(pub(crate) Z3_context, pub(crate) bool);
+
+impl ContextInternal {
+    pub(crate) fn as_ptr(&self) -> Z3_context {
+        self.0
+    }
+}
 
 impl Drop for ContextInternal {
     fn drop(&mut self) {
         if self.1 {
-            // Borrowed context — do NOT call Z3_del_context.
-            // The owner (e.g., Python) is responsible for cleanup.
+            // Borrowed context — the owner is responsible for cleanup.
             return;
         }
         unsafe { Z3_del_context(self.0) };
@@ -77,6 +85,7 @@ impl Context {
     ///
     /// # See also:
     /// /// - [`Context::thread_local()`]
+    // angr fork patch: `pub` so the engine can install a shared context.
     pub fn set_thread_local(ctx: &Context) {
         DEFAULT_CONTEXT.with(|f| {
             *f.borrow_mut() = ctx.clone();
@@ -84,6 +93,7 @@ impl Context {
     }
 
     /// Creates a new Z3 Context using the given configuration.
+    // angr fork patch: `pub` (the engine builds per-thread contexts itself).
     pub fn new(cfg: &Config) -> Context {
         Context {
             z3_ctx: unsafe {
@@ -121,15 +131,14 @@ impl Context {
     /// ```
     pub unsafe fn from_raw(z3_ctx: Z3_context) -> Context {
         debug!("from_raw context {z3_ctx:p}");
-        // Mark as borrowed (true) — we don't own this context and must NOT
-        // call Z3_del_context on drop. The owner is responsible for cleanup.
         Context {
+            // angr fork patch: borrowed, never deleted from Rust.
             z3_ctx: Rc::new(ContextInternal(z3_ctx, true)),
         }
     }
 
     pub fn get_z3_context(&self) -> Z3_context {
-        self.z3_ctx.0
+        self.z3_ctx.as_ptr()
     }
 
     /// Interrupt a solver performing a satisfiability test, a tactic processing a goal, or simplify functions.
@@ -155,7 +164,7 @@ impl Context {
     pub fn update_param_value(&mut self, k: &str, v: &str) {
         let ks = CString::new(k).unwrap();
         let vs = CString::new(v).unwrap();
-        unsafe { Z3_update_param_value(self.z3_ctx.0, ks.as_ptr(), vs.as_ptr()) };
+        unsafe { Z3_update_param_value(self.z3_ctx.as_ptr(), ks.as_ptr(), vs.as_ptr()) };
     }
 
     /// Update a global parameter.
@@ -174,7 +183,7 @@ impl ContextHandle<'_> {
     /// Interrupt a solver performing a satisfiability test, a tactic processing a goal, or simplify functions.
     pub fn interrupt(&self) {
         unsafe {
-            Z3_interrupt(self.ctx.z3_ctx.0);
+            Z3_interrupt(self.ctx.z3_ctx.as_ptr());
         }
     }
 }

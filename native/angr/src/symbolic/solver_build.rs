@@ -258,15 +258,20 @@ pub(crate) fn build_solver_params(timeout_ms: u32) -> z3::Params {
 /// Purpose: A/B param surveys (angr-ovqja.2) on the Z3-heavy bench set via
 /// `--counters-json` without recompiling per candidate.
 ///
-/// Example: `ANGR_Z3_PARAMS="bv.size_reduce=true,relevancy=0,sat.phase=sym:always_false"`.
+/// Example: `ANGR_Z3_PARAMS="bv.size_reduce=true,relevancy=0,string_solver=sym:seq"`.
+/// A name Z3 does not know fails loud in `validate_extra_params`.
 #[cfg(feature = "vex-engine-z3")]
 fn extra_params_spec() -> &'static Vec<(String, ParamValue)> {
     static SPEC: std::sync::OnceLock<Vec<(String, ParamValue)>> = std::sync::OnceLock::new();
     SPEC.get_or_init(|| {
-        std::env::var("ANGR_Z3_PARAMS")
+        let spec = std::env::var("ANGR_Z3_PARAMS")
             .ok()
             .map(|s| parse_extra_params(&s))
-            .unwrap_or_default()
+            .unwrap_or_default();
+        if !spec.is_empty() {
+            validate_extra_params(&spec);
+        }
+        spec
     })
 }
 
@@ -312,11 +317,62 @@ enum ParamValue {
 #[cfg(feature = "vex-engine-z3")]
 fn apply_extra_params(params: &mut z3::Params) {
     for (key, val) in extra_params_spec() {
-        match val {
-            ParamValue::Bool(b) => params.set_bool(key.as_str(), *b),
-            ParamValue::U32(n) => params.set_u32(key.as_str(), *n),
-            ParamValue::Symbol(s) => params.set_symbol(key.as_str(), s.as_str()),
-        }
+        set_param(params, key, val);
+    }
+}
+
+#[cfg(feature = "vex-engine-z3")]
+fn set_param(params: &mut z3::Params, key: &str, val: &ParamValue) {
+    match val {
+        ParamValue::Bool(b) => params.set_bool(key, *b),
+        ParamValue::U32(n) => params.set_u32(key, *n),
+        ParamValue::Symbol(s) => params.set_symbol(key, s.as_str()),
+    }
+}
+
+/// Fail loud, once per process, when Z3 rejects an `ANGR_Z3_PARAMS` entry.
+///
+/// Z3 validates parameter names lazily -- `Z3_solver_set_params` accepts
+/// anything, and the "unknown parameter" error surfaces on the solver's
+/// first assert or check by setting the context error code and carrying
+/// on. The solver that results is not usable: `check` answers SAT and
+/// `eval` hands back 0 for a constrained variable. `ANGR_Z3_PARAMS` is
+/// operator input and Z3's vocabulary moves between releases (`sat.phase`,
+/// once the example in this module, is no longer a solver parameter in Z3
+/// 5.x), so the spec is probed here on a scratch solver and a rejection
+/// stops the process instead of skewing every later query (angr-sijyb.1).
+/// Runs inside the `extra_params_spec` initializer, so it must not call
+/// back into it.
+#[cfg(feature = "vex-engine-z3")]
+fn validate_extra_params(spec: &[(String, ParamValue)]) {
+    let mut params = z3::Params::new();
+    for (key, val) in spec {
+        set_param(&mut params, key, val);
+    }
+    let probe = z3::Solver::new();
+    probe.set_params(&params);
+    probe.assert(z3::ast::Bool::from_bool(true));
+    let raw = probe.get_context().get_z3_context();
+    // SAFETY: `raw` is the live context that owns `probe`; both calls are
+    // pure reads of its error state, and the message is copied out before
+    // any further Z3 call on the context.
+    let (code, msg) = unsafe {
+        let code = z3_sys::Z3_get_error_code(raw);
+        let msg = if code == z3_sys::ErrorCode::Ok {
+            String::new()
+        } else {
+            std::ffi::CStr::from_ptr(z3_sys::Z3_get_error_msg(raw, code))
+                .to_string_lossy()
+                .into_owned()
+        };
+        (code, msg)
+    };
+    if code != z3_sys::ErrorCode::Ok {
+        let keys: Vec<&str> = spec.iter().map(|(k, _)| k.as_str()).collect();
+        panic!(
+            "Z3 rejected the solver parameters from ANGR_Z3_PARAMS ({code:?}): {msg} -- \
+             entries {keys:?}; check them against `z3 -p` for the linked Z3 version"
+        );
     }
 }
 
