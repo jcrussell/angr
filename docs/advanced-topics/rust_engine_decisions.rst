@@ -77,8 +77,8 @@ cross threads anyway, and the constraint hot path would take a heavily
 contended lock. Workers instead exchange ``ExplorationStateSnapshot``
 values and rebuild thread-local solvers.
 
-**Distributed (cross-process) migration was killed**
-(:doc:`rust_parallel_design`, "Distributed migration"). Migration count
+**Distributed (cross-machine) migration was killed**
+(:doc:`rust_parallel_design`, "Distributed (cross-machine) migration"). Migration count
 is the lever that decides whether parallel exploration wins at all, and
 on the CTF corpus the in-process scheduler already drives it to the
 floor; shipping snapshots across processes adds serialization cost with

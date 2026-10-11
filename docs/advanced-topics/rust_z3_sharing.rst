@@ -372,5 +372,5 @@ guarantees an unread counter contributes only the
 Process-level Z3 telemetry beyond these counters (per-tactic time,
 formula simplification stats) is not exposed today. Use
 ``Z3_LOG_*`` environment variables or attach ``perf`` /
-``cargo flamegraph`` per :doc:`rust_engine` (the "Profiling Rust
-Benches" section of :doc:`rust_build`) if you need finer attribution.
+``cargo flamegraph`` per the "Profiling Rust benches" section of
+:doc:`rust_build` if you need finer attribution.

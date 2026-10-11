@@ -31,7 +31,7 @@
 #      caught by a Rust unit test, failed for a full iteration, and nothing
 #      noticed: the gate ran pytest + benches only, and CI's `rust_test` job
 #      never fires in the loop (the box has no network to GitHub). See bd
-#      memory `cargo-test-not-in-ralph-gate`.
+#      memory `ralph-gate-runs-cargo-test`.
 #
 #      Uses `release-checked` (Cargo.toml: inherits release, lto="off",
 #      codegen-units=16, overflow-checks=true, debug-assertions=true — the

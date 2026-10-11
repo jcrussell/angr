@@ -9,15 +9,15 @@
 //! parent's private items are in scope via the glob below — no visibility edits
 //! on those structs are needed. Only the two loop entry points and the shared
 //! `dispatch_next` are re-exported into the parent (`pub(super)`); see the parent
-//! module for the transport invariant and panic-policy rationale.
+//! module for the transport invariant and the crate doc's "Panic policy" for
+//! why lock poisoning is unreachable.
 //!
 //! **Panic policy / enforcement (angr-qwyti.11, angr-9ke6b.212, angr-c7xno.37):**
 //! every surviving `.expect` here is a `Mutex::lock()` poison guard on one of
 //! the wave transport's own mutexes (`job.results`, `job.summaries`), sitting
 //! under a reviewed `#[allow(clippy::expect_used, reason = "...")]` that names
-//! the guard. Each is covered verbatim by the "Mutex poisoning cannot happen"
-//! bullet of the parent [`scheduler`](super) Panic policy — `panic = "abort"`
-//! means no thread can unwind out of a live guard to flag the lock. No literal
+//! the guard. Each is covered by the "Mutex poisoning is unreachable" rule of
+//! the crate-level [Panic policy](crate#panic-policy). No literal
 //! count is stated on purpose: one of the sites is `#[cfg(test)]`-gated, so a
 //! naive grep disagrees with any number written here (see bd memory
 //! `avoid-enumerating-expect-sites-in-module-docs`). The parent's

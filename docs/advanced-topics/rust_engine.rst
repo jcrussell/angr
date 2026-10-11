@@ -1695,8 +1695,6 @@ in Rust mode.
    * - ``JAVA_IDENTIFY_GETTER_SETTER``, ``JAVA_TRACK_ATTRIBUTES``
      - Java analysis only.
 
-.. _Automatic engine selection:
-
 Provenance
 ~~~~~~~~~~
 
@@ -3168,7 +3166,7 @@ listing the typo and the standard set:
 
 .. code-block:: text
 
-   [rust:WARN] angr::stash: Rust exploration: creating new stash
+   [rust:WARN] rustylib::stash: Rust exploration: creating new stash
    'actve' (not one of the standard stashes [...]); if this is a
    typo, the state will be invisible to mgr.active / mgr.found /
    mgr.deadended etc.
@@ -3381,6 +3379,8 @@ max / satisfiable are routed into the Rust solver by
 constraints into claripy is expensive and identity-lossy. So an empty
 ``mirror.solver.constraints`` after a load is the design, not a lost
 constraint set (angr-wuyo9).
+
+.. _rust-engine-api-stability:
 
 API stability contract
 ----------------------
