@@ -51,7 +51,7 @@ Rust canonical state. Today's mechanism is a diff-and-push pass:
 #. **Before** the callback runs, the manager snapshots register
    values into a lightweight dict (or, for memory-writing procedures,
    takes a full ``state.copy()``) — see
-   ``rust_state_sync.py:_snapshot_registers``.
+   ``rust_state_sync.py::_snapshot_registers``.
 #. The Python SimProcedure mutates the snapshotted state directly
    through angr's plugin paths.
 #. **After** the callback returns, ``_extract_register_changes``
@@ -89,18 +89,13 @@ callback-heavy benches is state creation, not sync-back
 Current diff-and-push model
 ---------------------------
 
-At the SimProcedure callback boundary the Python ``SimState`` is
-mutated freely and Rust syncs back on return. For registers and
-constraints that is still the diff-and-push path:
-``rust_state_sync.py::_snapshot_registers`` records a cheap
-``reg_name → (is_symbolic, concrete, offset, size)`` snapshot before the
-callback, ``_extract_register_changes`` diffs it afterwards and emits
-``(offset, size, bytes)`` tuples, with symbolic return registers routed
-through ``_sync_symbolic_register_to_rust`` /
-``set_pending_register_symbolic_ast``. Memory no longer takes this path:
-it is proxy write-through by default (see the status note above), so
-``rust_callback_dispatch.py`` discards the ``CallbackMemoryTracker`` write
-lists instead of replaying them.
+Registers and constraints still take the diff-and-push path described
+under *Why this work*: ``rust_state_sync.py::_snapshot_registers`` before
+the callback, ``_extract_register_changes`` after it, with symbolic
+return registers routed through ``_sync_symbolic_register_to_rust``.
+Memory no longer does (see the status note above). The options below
+are written against the full diff-and-push model that existed at design
+time.
 
 
 Option A — Proxy-backed plugins for callback SimStates
@@ -136,18 +131,18 @@ New PyO3 shims:
 
 Plus a new Python class pair — ``ProxyRegisters`` /
 ``ProxyMemory`` — registered as plugins on the callback SimState.
-``RustRegisterProxy`` / ``RustMemoryProxy`` are read-only today
-(``rust_state_proxy.py:240-425``), with ``memory.store`` raising
-``NotImplementedError`` at ``rust_state_proxy.py:422``. The
-proxy variant for callbacks would extend them.
+At design time ``RustRegisterProxy`` / ``RustMemoryProxy``
+(``rust_state_proxy.py``) were read-only, with
+``RustMemoryProxy.store`` raising ``NotImplementedError``; the proxy
+variant for callbacks would have extended them.
 
 Pros
 ~~~~
 
 * **Eliminates the diff scan.** Removes
   ``_extract_register_changes`` / ``_extract_memory_changes`` from
-  the callback hot path entirely. Saves the per-callback 1–14 ms
-  measured above.
+  the callback hot path entirely, recovering the whole per-callback
+  sync-back cost measured above.
 * **Aligns with the already-proxy solver path.** Constraints
   already write through immediately via ``_rust_add``. Registers
   and memory becoming write-through closes the asymmetry.
@@ -166,9 +161,8 @@ Cons
   becomes one PyO3 boundary crossing. Today the boundary is
   crossed exactly once at ``resume_after_simprocedure``. A
   SimProcedure that writes N registers + M memory bytes becomes
-  N+M FFI calls instead of one. PyO3 calls are not free — a bare
-  no-op ``#[pymethod]`` call costs ~200–500 ns on this hardware,
-  and per-byte memory writes inflate to ~µs each before solver
+  N+M FFI calls instead of one. PyO3 calls are not free, and
+  per-byte memory writes multiply that cost before any solver
   work.
 * **Conditional writes (claripy.If).** SimProcedures that branch
   on a symbolic condition and write conditionally
@@ -181,7 +175,7 @@ Cons
 * **Memory write granularity.** angr's
   ``state.memory.store(addr, bvv)`` writes can be 1 to 64+ bytes
   at a time. The diff-and-push path groups contiguous bytes into
-  regions via ``_group_changed_bytes`` (``rust_state_sync.py:1402``).
+  regions via ``rust_state_sync.py::_group_changed_bytes``.
   A naive proxy that proxies each byte individually loses this
   batching; one that proxies each ``store()`` call preserves it.
 * **Plugin contract risk.** Replacing ``SimRegisters`` /
@@ -189,18 +183,16 @@ Cons
   every SimProcedure. angr's plugin system has many corners
   (page maps, history tracking, options-driven behavior toggles).
   Each unhandled corner is a silent behavior diff.
-* **Limited net savings.** Per the measurement table, sync-back is
-  at most 0.16 % of wall time on the heavy benches and 7 % on the
-  fastest. Recovering 100 % of that is bounded by ~0–7 % wall.
-  Realistic recovery (after paying for N+M extra FFI calls per
-  callback) is well below that bound.
+* **Limited net savings.** Sync-back is a small fraction of wall
+  time on every bench (see *Empirical input*), so even full recovery
+  is bounded by that fraction. Realistic recovery (after paying for
+  N+M extra FFI calls per callback) is well below that bound.
 
 Implementation cost
 ~~~~~~~~~~~~~~~~~~~
 
-Medium-high. Two new PyO3 shims (concrete state-id register +
-memory writes — ~50 LoC each). Two new proxy plugin classes
-(~300–500 LoC). Test surface includes every SimProcedure path
+Medium-high. New PyO3 shims (concrete state-id register and
+memory writes) and a pair of proxy plugin classes. Test surface includes every SimProcedure path
 that currently uses diff-and-push, plus the inspect-event corners,
 plus the plugin-restoration interaction with ``angr-2k64``.
 
@@ -227,8 +219,9 @@ How
 * Wrap ``state.regs.__setattr__`` and ``state.memory.store`` to
   push ``("reg", name, value)`` / ``("mem", addr, data)`` tuples
   into a per-callback list (already partially in place — see the
-  ``tracked_writes`` / ``tracked_symbolic_writes`` channels at
-  ``rust_callback_dispatch.py:989-997``).
+  ``tracked_writes`` / ``tracked_symbolic_writes`` channels that
+  ``rust_identity.py::CallbackMemoryTracker`` feeds to
+  ``rust_callback_dispatch.py::_handle_simprocedure_callback``).
 * At the boundary, walk the list once. No
   ``changed_bytes`` scan, no register loop.
 
@@ -253,14 +246,13 @@ Cons
 
 * **No reduction in PyO3 boundary crossings.** Boundary still
   crosses once at resume.
-* **Saves only the diff-scan cost.** Recovers most of the 1–14 ms
-  per callback (the changed_bytes walk and the register-by-register
-  comparison) but keeps the snapshot, the symbolic-AST re-export,
-  and the resume payload. Realistic recovery: ~50–70 % of the
-  sync_back time, or ~0.1–4 ms/callback.
+* **Saves only the diff-scan cost.** Recovers the changed_bytes walk
+  and the register-by-register comparison but keeps the snapshot,
+  the symbolic-AST re-export, and the resume payload — a fraction of
+  the sync-back time, not all of it.
 * **Wrapping overhead is paid on every write.** Most writes during
-  a SimProcedure do not exit the boundary, so even a ~100 ns
-  wrapper cost adds up if the procedure does thousands of writes.
+  a SimProcedure do not exit the boundary, so even a cheap wrapper
+  adds up if the procedure does many writes.
   Mitigated by only enabling the wrappers for the callback
   SimState (already what the diff-snapshot path does too).
 
@@ -269,7 +261,7 @@ Implementation cost
 
 Low. Extend the existing ``tracked_writes`` plumbing to cover
 registers; route the boundary path to consume the tracked log
-when available. ~100–200 LoC. Test surface: every diff-extraction
+when available. Test surface: every diff-extraction
 test plus the existing tracked-writes test set.
 
 Risk surface
@@ -285,25 +277,26 @@ tracked-writes channel catches most of these.
 Option C — Status quo (diff-and-push)
 -------------------------------------
 
-Do nothing. The cost is bounded (the table above), the plugin
-contract is intact, and the path has years of debug history.
+Do nothing. The cost is bounded (see *Empirical input*), the plugin
+contract is intact, and the path has a long debug history.
 
 Pros
 ~~~~
 
 * **Zero risk.** No code changes, no regression surface.
-* **Empirical cost is small.** ≤7 % wall on the worst-affected
-  bench, ≤1 % wall on most benches.
+* **Empirical cost is small.** A single-digit percentage of wall on
+  the worst-affected bench, under one percent on most.
 * **Symbolic correctness is paid in.** Edge cases like the
-  ``new_state.regs._ip`` symbolic-PC handling at
-  ``rust_callback_dispatch.py:1025-1035`` are battle-tested.
+  symbolic-PC handling of the successor's ``regs._ip`` in
+  ``rust_callback_dispatch.py::_handle_callback_with_successors`` are
+  battle-tested.
 
 Cons
 ~~~~
 
 * **Per-callback overhead does not scale away** under future
-  workloads with very high callback density (10K+ callbacks per
-  bench would put sync-back into seconds).
+  workloads with very high callback density, where sync-back would
+  grow into seconds.
 * **Plugin restoration (``angr-2k64``) still needed.** The proxy
   variant would obviate that work; Option C leaves it in scope.
 * **Inspect-event wiring (already MVPed) duplicates change
@@ -329,9 +322,9 @@ Comparison
      - Low. Extend tracked_writes, route boundary consumer.
      - None.
    * - Recovered wall time (upper bound)
-     - 100 % of sync_back (~0–7 % wall on the worst bench).
-     - 50–70 % of sync_back (~0–5 % wall).
-     - 0 %.
+     - All of sync_back (already a small fraction of wall).
+     - The diff-scan share of sync_back.
+     - None.
    * - Per-callback PyO3 boundary crossings
      - N+M (one per write).
      - 1 (one resume).
@@ -349,14 +342,6 @@ Comparison
      - Natural (event fires at proxy call).
      - Already wired via plugin.
      - Already wired via plugin.
-   * - mma_howtouse-shape (1 cb, sync 86 % of cb total)
-     - Recovers ~7 ms of an ~8 s wall = noise.
-     - Recovers ~5 ms of an ~8 s wall = noise.
-     - 7 ms ≈ 0.1 % of wall — already noise.
-   * - csaw_wyvern-shape (30 cb, sync 1.3 % of cb total)
-     - Recovers ~26 ms of a ~16 s wall = 0.16 %.
-     - Recovers ~13 ms of a ~16 s wall = 0.08 %.
-     - 26 ms ≈ 0.16 % of wall — already noise.
    * - Plugin-restoration alignment (angr-2k64)
      - Direct — proxy reads/writes don't need the cache.
      - No change — diff-push remains the boundary.
@@ -376,22 +361,21 @@ Recommendation at design time, and what shipped
 Rationale:
 
 #. **The measured savings are too small to justify either rewrite.**
-   Per-callback sync-back is 1–14 ms; the aggregate is at most ~7 %
-   of wall time on the fastest bench and well under 1 % on every
-   other bench. Even with Option A's 100 % recovery, the bench
+   Sync-back is a small fraction of wall time on every bench (see
+   *Empirical input*). Even with Option A's full recovery, the bench
    matrix would not change meaningfully.
 #. **The risk asymmetry is real.** Option A's plugin substitution
    is exactly the class of refactor that produces silent
    correctness regressions (see ``avoid-state-copy-optimization``
    memory — a prior similar attempt to skip ``state.copy()`` broke
-   register sync silently and took ais3 from 3 s to 11 s before it
-   was caught). The diff-and-push path's debug history is worth a
+   register sync silently and regressed ais3 badly before it was
+   caught). The diff-and-push path's debug history is worth a
    lot.
 #. **Option B is cheap but redundant.** The ``tracked_writes``
    channel that would form its basis already exists for memory
    writes. Extending it to registers is straightforward, but the
-   savings (~13 ms in csaw_wyvern, ~7 ms in mma) do not move any
-   bench across a meaningful threshold.
+   savings are noise on every bench, including the callback-heavy
+   ones.
 #. **The architectural cleanness argument is weak.** Option A
    would unify register/memory writes with the already-proxy
    solver writes. But the diff-and-push asymmetry is local
@@ -400,9 +384,9 @@ Rationale:
 
 **Reopen conditions.** Either option becomes attractive if:
 
-* A future workload pushes callback density to 10K+ per bench,
-  putting sync-back into seconds. None of the current 22-bench
-  matrix is anywhere near that — fauxware tops out at 1 callback.
+* A future workload pushes callback density high enough to put
+  sync-back into seconds. No bench in the regression matrix is
+  anywhere near that.
 * ``angr-2k64`` plugin-restoration work needs the
   proxy-write architecture as a prerequisite to retire the
   per-state-id plugin cache. In that case Option A becomes a
@@ -451,6 +435,6 @@ References
   recorded on ``angr-g7ug``.
 * Prior cautionary memory: ``avoid-state-copy-optimization`` — a
   similar attempt to skip state.copy() broke register sync silently
-  on ais3 (3 s → 11 s).
+  on ais3.
 * Sibling design docs: :doc:`rust_lazy_memory_design`,
   :doc:`rust_parallel_design`.

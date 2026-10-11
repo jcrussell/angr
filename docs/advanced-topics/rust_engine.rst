@@ -750,7 +750,7 @@ Z3 simplification touches the engine in three places:
    only records whether the simplification would have produced a
    distinct AST pointer. The simplified Bool is dropped — the
    un-simplified ``z3::ast::Bool`` is what reaches the solver. The
-   sample rate keeps measurement overhead at ~1.5%.
+   sampling keeps the measurement overhead small.
 2. **Solver-internal preprocessing.** ``build_solver_params``
    (``symbolic/solver_build.rs::build_solver_params``) sets ``bv_extract_prop=true`` and
    ``mul2concat=true``; the rest of preprocessing
@@ -1035,8 +1035,8 @@ zero-cost when not read. They reset alongside the Z3 counters via
     ``K`` across those hoists, and the largest ``K``. Hoisting is
     gated to ``2 <= K <= 8`` — beyond ``8`` the long-Or processing
     cost on every subsequent ``solver.check()`` swamps the
-    propagate-values payoff (measured: 22% regression on
-    flareon2015_5 with K up to 64 unbounded; neutral with the gate).
+    propagate-values payoff (an unbounded ``K`` regressed
+    flareon2015_5; the gate is neutral there).
     ``Strided`` results are not hoisted (the strided abstraction is
     concretizer policy, not a tight constraint — A/B pending).
 
@@ -1164,7 +1164,7 @@ opt-in**: the saving reaches wall time only where sibling
 reconvergence is dense enough to keep the switch cache hot, and the
 runtime sampler that dismantles the lineage when it is not cannot
 predict the steady-state ratio early enough to make a default safe.
-Expect roughly ±10 % in whichever direction
+Expect a modest wall-time change in whichever direction
 ``lineage_switch_fast_path_count / lineage_switch_count`` predicts.
 The investigation and the reasons the fuller variants were reverted
 are recorded in :doc:`rust_engine_decisions`; the push/pop interaction
@@ -2601,46 +2601,11 @@ selection. The BFS frontier expands wide at shallow depth and exhausts
 the step budget before reaching the target depth, OOM-ing the host
 under a typical 4 GB ``RLIMIT_AS``.
 
-The ``angr-xel4`` characterisation (see
-``tests/benchmarks/characterization/deep_loop_search/README.md``)
-measured this on a synthetic grub-proxy. BFS plateaus at depth 9–12
-regardless of step budget; DFS reaches the iteration cap with lower
-RSS and a smaller active stash:
-
-.. list-table:: Deep-loop proxy: BFS vs DFS depth/RSS at N=14
-   :header-rows: 1
-   :widths: 12 10 10 12 16 12
-
-   * - iter cap N
-     - steps
-     - strategy
-     - max depth
-     - active states
-     - peak RSS
-   * - 14
-     - 100
-     - BFS
-     - 9
-     - 65
-     - 429 MB
-   * - 14
-     - 100
-     - DFS
-     - 32
-     - 34
-     - 371 MB
-   * - 14
-     - 300
-     - BFS
-     - 11
-     - 191
-     - 976 MB
-   * - 14
-     - 300
-     - DFS
-     - 32
-     - 31
-     - 645 MB
+The ``angr-xel4`` characterisation on a synthetic grub-proxy showed
+BFS plateauing at a shallow depth regardless of step budget, while DFS
+reached the iteration cap with lower peak RSS and a smaller active
+stash. The harness and its live numbers are in
+``tests/benchmarks/characterization/deep_loop_search/``.
 
 Most of the "real binary problem" here is *harnessing*, not engine
 capability. The end-to-end recipe stacks four knobs that each suppress a
@@ -2982,21 +2947,20 @@ does **not** sandbox a hostile or buggy caller out of all undefined
 behavior. The narrow exception is the ``import_z3_constraint_ptrs``
 fast path documented below.
 
-Audit scope: every
-``#[pyclass]`` / ``#[pymethods]`` / ``#[pyfunction]`` in
-``native/angr/src/``, focused on the four classes most likely to be
-driven directly from user Python: ``RustExplorationManager``,
-``RustSimState``, ``RustSolverContext``, ``RustBVHandle``,
-``PythonCallbacks``. Not in scope: fuzzer/icicle/automaton FFI (only
-exercised by their own integration tests).
+The rules below cover every ``#[pyclass]`` / ``#[pymethods]`` /
+``#[pyfunction]`` a user script is likely to drive directly:
+``RustExplorationManager``, ``RustSimState``, ``RustSolverContext``,
+``RustBVHandle`` and ``PythonCallbacks``. The fuzzer, icicle and
+automaton FFI are exercised only by their own integration tests and are
+outside this contract.
 
 State ID handling
 ~~~~~~~~~~~~~~~~~
 
 Every public method that accepts a ``state_id: u64`` routes through
 ``RustExplorationManager::find_state`` /
-``find_state_mut`` (``exploration/helpers.rs``). Misses become one
-of two surfaces depending on the call site:
+``find_state_mut`` (``exploration/helpers.rs``). A miss surfaces in one
+of two ways depending on the call site:
 
 * **Optional reads** — ``get_state_pc_by_id``,
   ``get_state_bbl_history_tail``, ``state_constraint_count``,
@@ -3008,9 +2972,10 @@ of two surfaces depending on the call site:
   ``with_state`` / ``with_state_mut`` helpers raise
   ``PyValueError("<api>: state {id} not found")``.
 
-No public ``state_id`` path panics. Negative ``state_id`` values from
-Python collide with the ``u64`` extraction (PyO3 raises
-``OverflowError`` at the FFI boundary) and never reach Rust.
+A new ``state_id`` method must take one of these two shapes; no public
+``state_id`` path panics. Negative ``state_id`` values from Python fail
+the ``u64`` extraction (PyO3 raises ``OverflowError`` at the FFI
+boundary) and never reach Rust.
 
 ``move_state`` and ``move_states`` return ``Ok(false)`` on miss
 instead of raising — a silent no-op rather than an error. Callers
@@ -3020,14 +2985,14 @@ that need an assertion should check the return value
 Callback registration
 ~~~~~~~~~~~~~~~~~~~~~
 
-``PythonCallbacks`` (``callbacks/mod.rs``) holds 30 ``Option<Py<PyAny>>``
-slots, one per dispatch site — the ``with_callback_fields!`` macro is
-the single source of truth for the list: 12 non-inspect slots (memory
-load/store, batched load/store, lift_block, dirty_call, page fetch,
-symbolic load/store, resolve_function) plus 18 ``state.inspect``
-slots. ``Py<PyAny>`` is an owning Python refcount, so a callback
-cannot dangle even if Python "drops" it locally — the engine's clone
-keeps it alive.
+``PythonCallbacks`` (``callbacks/mod.rs``) holds one
+``Option<Py<PyAny>>`` slot per dispatch site: the non-inspect slots
+(memory load/store, batched load/store, lift_block, dirty_call, page
+fetch, symbolic load/store, resolve_function) and one slot per
+``state.inspect`` event. The ``with_callback_fields!`` macro is the
+single source of truth for the list. ``Py<PyAny>`` is an owning Python
+refcount, so a callback cannot dangle even if Python "drops" it
+locally — the engine's clone keeps it alive.
 
 * **Errors propagate**. Every dispatch site reads
   ``self.<slot>.as_ref().ok_or_else(|| PyRuntimeError::new_err("…
@@ -3035,7 +3000,7 @@ keeps it alive.
   ``raise`` becomes a ``PyErr`` that the engine returns up through
   the exploration loop (``run_loop.rs``).
 
-  **Exception** — the 18 ``call_inspect_*`` methods. They route through
+  **Exception** — the ``call_inspect_*`` methods. They route through
   the ``with_inspect_cb`` helper rather than ``require_callback!``, and
   return ``Ok(())`` / ``Ok(None)`` when their slot is unset — an
   unregistered ``state.inspect`` breakpoint is the normal case, not an
@@ -3045,15 +3010,15 @@ keeps it alive.
   which logs it (``SILENT(cat-b)``, visible at ``debug``) and lets
   execution continue, so a buggy breakpoint cannot derail a run.
 * **Type/arity mismatches propagate**. Result destructuring uses
-  ``.cast_bound::<PyTuple>(py)?.get_item(N)?.extract()?`` — a 1-tuple
-  returned for a 3-tuple slot raises ``IndexError``; a wrong-type
+  ``.cast_bound::<PyTuple>(py)?.get_item(N)?.extract()?`` — a tuple
+  too short for its slot raises ``IndexError``; a wrong-type
   field raises ``TypeError``. The engine surfaces these as
   ``PyErr`` rather than misinterpreting bytes.
 * **GC cycle break**. ``PythonCallbacks::__traverse__`` /
   ``__clear__`` (``callbacks/mod.rs``) walk every ``Py<PyAny>`` slot
   so Python GC can collect the ``mgr → _callbacks → bound-method →
-  mgr`` cycle. Without this, ``RustExplorationManager`` (and its
-  ``_state_cache`` of ~4030 angr pages on ``mma_howtouse``) would
+  mgr`` cycle. A new slot must be visited there; otherwise
+  ``RustExplorationManager`` and its ``_state_cache`` of angr pages
   leak permanently.
 
 Address arguments
@@ -3064,8 +3029,8 @@ Guest-VM addresses cross the FFI as ``u64``. They reach
 ``state.memory_mut().import_symbolic_value(addr, bv, …)`` etc., which
 delegate to ``SymbolicMemory`` — a page-table abstraction over the
 guest's address space, **not** host-process memory. Unmapped pages
-return ``Err`` which the FFI maps to ``Ok(None)``. There is no raw
-pointer deref reachable via an address argument.
+return ``Err`` which the FFI maps to ``Ok(None)``. No raw pointer
+deref is reachable via an address argument, and none may be added.
 
 Equally, ``addr`` values used as map keys (``set_state_symbolic_pages``,
 ``addr_to_ast``, ``hook_symbolic_memory``) are stored verbatim — a
@@ -3098,59 +3063,48 @@ reaches the Z3 layer un-converted.
 Raw Z3 pointer fast path (the **only** unsafe FFI surface)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The audit found one place where a Python caller's input is treated as
-a raw pointer with no validation:
+``RustExplorationManager.import_z3_constraint_ptrs(state_id, ptrs:
+Vec<usize>)`` (``exploration/state_api.rs::_import_z3_constraint_ptrs``)
+is the one place a Python caller's input is treated as a raw pointer.
+It ends in ``unsafe { ctx.add_constraint_raw(*ptr) }``, whose SAFETY
+contract (``symbolic/constraint_ops.rs::add_constraint_raw``) requires
+each pointer to be a valid, live ``Z3_ast Bool`` in the active
+thread-local Z3 context: the function calls
+``NonNull::new_unchecked(ptr as *mut _)`` followed by
+``z3::ast::Ast::wrap``, both UB on anything else.
 
-* ``RustExplorationManager.import_z3_constraint_ptrs(state_id, ptrs:
-  Vec<usize>)`` (``exploration/state_api.rs::_import_z3_constraint_ptrs``)
-  iterates ``ptrs``
-  and calls ``unsafe { ctx.add_constraint_raw(*ptr) }`` whenever
-  ``*ptr != 0``. The ``add_constraint_raw`` SAFETY contract
-  (``symbolic/constraint_ops.rs::add_constraint_raw``) requires each
-  pointer to be a valid,
-  live ``Z3_ast Bool`` in the active thread-local Z3 context. The
-  function calls ``NonNull::new_unchecked(ptr as *mut _)`` followed by
-  ``z3::ast::Ast::wrap`` — both UB if the pointer is anything other
-  than a valid Z3 AST.
-
-  The intended caller (``rust_manager.py::_add_rust_state`` at
-  ``:3576``, def at ``:3452``) always pairs
+* **Intended caller.** ``rust_manager.py::_add_rust_state`` always pairs
   ``import_z3_constraint_ptrs`` with a prior
   ``export_z3_constraint_ptrs(old_state_id)`` on the same process and
-  Z3 context, so the production trust model is sound. But the method
-  is ``pub fn`` on a ``#[pymethods]`` impl, meaning any Python caller
-  can pass arbitrary integers and trigger UB. ``add_constraint_raw``
-  on ``RustSolverContext`` is **not** Python-callable directly — it
-  is only reachable through ``add_constraint_ast`` /
+  Z3 context, so the production trust model is sound. The method is
+  nonetheless ``pub fn`` on a ``#[pymethods]`` impl, so any Python
+  caller can pass arbitrary integers.
+* **Not reachable otherwise.** ``add_constraint_raw`` on
+  ``RustSolverContext`` is **not** Python-callable directly — it is
+  only reachable through ``add_constraint_ast`` /
   ``add_constraint_tracked_ast``, which extract the pointer from
   claripy's z3 backend (``solver/z3_ast_extract.rs``) and so are safe by
   construction.
+* **Validation (angr-33t9).** ``_import_z3_constraint_ptrs`` validates
+  the whole list before any ``add_constraint_raw`` call, so a failure
+  leaves the state's solver unmutated
+  (``test_null_after_valid_ptr_rejected_atomically``):
 
-  **Hardening (angr-33t9).**
-  ``_import_z3_constraint_ptrs`` now runs a first-pass validation
-  loop before any ``add_constraint_raw`` call:
-
-  * Each pointer is converted via ``NonNull::new`` (rejecting null
-    with ``PyValueError("null pointer at index {i}")``).
-  * ``Z3_get_sort(raw_ctx, raw_ast)`` is called; the Option-wrapped
-    return is ``None`` for ASTs that do not belong to the active
-    thread-local context, surfacing as ``PyValueError("not a valid
-    Z3 AST in the active context")``.
-  * ``Z3_get_sort_kind`` must return ``SortKind::Bool``; anything
-    else (most commonly a BV ptr exported by mistake) raises
+  * each pointer goes through ``NonNull::new`` (null raises
+    ``PyValueError("null pointer at index {i}")``);
+  * ``Z3_get_sort(raw_ctx, raw_ast)`` returns ``None`` for ASTs that do
+    not belong to the active thread-local context, raising
+    ``PyValueError("not a valid Z3 AST in the active context")``;
+  * ``Z3_get_sort_kind`` must return ``SortKind::Bool``; anything else
+    (most commonly a BV ptr exported by mistake) raises
     ``PyValueError("sort kind {kind:?}, expected Bool")``.
 
-  Validation runs over the full list before any constraint is added,
-  so a failure leaves the state's solver unmutated (verified by
-  ``test_null_after_valid_ptr_rejected_atomically``).
-
-  **Residual UB.** Truly arbitrary integers (e.g. ``0xdeadbeef``)
+* **Residual UB.** Truly arbitrary integers (e.g. ``0xdeadbeef``)
   still dereference inside Z3 and can segfault before the API call
-  returns. Closing that gap would require either an opaque
+  returns. Closing that gap would need an opaque
   ``Py<RustZ3AstHandle>`` newtype (constructible only from
   ``export_z3_constraint_ptrs``) or a thread-local side-table of
-  blessed pointers. Both are tracked as longer-horizon options; the
-  current sanity check covers the realistic misuse cases.
+  blessed pointers. The validation covers the realistic misuse cases.
 
 Stash name validation (footgun, not unsafe)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -3159,10 +3113,10 @@ Stash name validation (footgun, not unsafe)
 the destination-stash insertion path used by ``_create_state``,
 ``_add_state``, ``_merge_states``, ``_move_state``, and
 ``_move_states``. When the destination stash does not yet exist *and*
-the name is not one of the seven standard stashes
-(``active`` / ``found`` / ``avoid`` / ``deadended`` / ``errored`` /
-``pruned`` / ``unconstrained``), a ``log::warn!`` line is emitted
-listing the typo and the standard set:
+the name is not in ``STANDARD_STASHES`` (``active`` / ``found`` /
+``avoid`` / ``deadended`` / ``errored`` / ``pruned`` /
+``unconstrained``), a ``log::warn!`` line is emitted listing the typo
+and the standard set:
 
 .. code-block:: text
 
@@ -3178,9 +3132,8 @@ custom stash names (e.g. ``"timeout"`` in ``rust_techniques.py``,
 per process. The default log level is ``off`` so the warn only
 surfaces when the user opts in with
 ``set_rust_log_level("warn")`` (or higher) or ``ANGR_RUST_LOG=warn``.
-The behavior is otherwise unchanged — typos are surfaced, not
-rejected. Tested by ``TestStashNameValidation`` in
-``tests/engines/rust/``.
+Typos are surfaced, not rejected (angr-630x). Tested by
+``TestStashNameValidation`` in ``tests/engines/rust/``.
 
 PyRustSimState lifetime
 ~~~~~~~~~~~~~~~~~~~~~~~
@@ -3197,13 +3150,13 @@ re-entry while Rust holds the borrow.
 Summary
 ~~~~~~~
 
-For real-world angr scripts, the trust model holds: state IDs,
-addresses, BV handles, callbacks, and claripy ASTs all surface
-type/lookup errors as ``PyErr`` rather than panicking or UB-ing.
-The ``import_z3_constraint_ptrs`` hardening landed under angr-33t9;
-the stash-name footgun landed under angr-630x. The trust-model audit
-itself was closed under angr-9l9j with no remaining production-blocking
-gaps.
+State IDs, addresses, BV handles, callbacks and claripy ASTs all
+surface type/lookup errors as ``PyErr`` rather than panicking or
+UB-ing; ``import_z3_constraint_ptrs`` is the single validated-but-unsafe
+exception (trust model: angr-9l9j). A new pymethod keeps to the same
+shapes: look states up through ``find_state`` / ``find_state_mut``,
+take guest addresses rather than host pointers, and return ``PyErr``
+on malformed input.
 
 .. _rust-engine-init-prefix:
 

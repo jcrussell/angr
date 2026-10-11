@@ -128,8 +128,8 @@ API
 ~~~
 
 The z3-patched crate already exposes the Translate trait at
-``native/z3-patched/src/translate/mod.rs:23-31`` —
-``unsafe impl<T: Ast> Translate for T`` wraps ``Z3_translate`` for
+``native/z3-patched/src/translate/mod.rs`` (``trait Translate``) —
+its blanket ``unsafe impl<T: Ast> Translate for T`` wraps ``Z3_translate`` for
 every AST type. The ``PrepareSynchronized`` submodule
 (``translate/synchronization/``) further wraps it for multi-threaded
 state migration. **No binding extension needed** to spike or land
@@ -339,26 +339,21 @@ Comparison
 Recommendation
 --------------
 
-.. important::
-
-   **Decided: GO on Option A.** This section is the recommendation as
-   written at decision time; it was accepted, and the coarse-boundary
-   migration constraint it makes contingent is enforced by the shipped
-   scheduler (``exploration/scheduler.rs`` — states move only at task
-   boundaries, never per-step). Read on for *why* Option A won; read
-   `Migration path`_ for what was then built.
-
 **Pursue Option A — shared-nothing with Z3_translate at task
 boundaries — when committing to parallel exploration**, contingent
 on the scheduler migrating states **only at coarse boundaries** (a
 completed task / exhausted budget / merge point), never per-step.
 
+Option A was accepted on this rationale, and the shipped scheduler
+enforces the coarse-boundary constraint (states move only at task
+boundaries); `Where it landed`_ records what was then built.
+
 Rationale:
 
-#. The translate-cost spike measured 390 ns/node steady-state, putting
-   a 10K-node state migration at 4–7 ms. For benches where individual
-   tasks take >100 ms (any of the slow Z3-bound benches; most CTF
-   benches with >1 path), migration overhead is <5 %.
+#. The translate-cost spike (``angr-59jk.2``) put a typical state
+   migration well below the duration of a single task on the slow
+   Z3-bound benches, so migration overhead at task boundaries is a
+   small fraction of wall time.
 #. Option B's lock-on-every-Z3-call shape pessimizes exactly the
    workloads where parallelism would help most — long ``solver.check()``
    calls become serialization points across all workers.
@@ -366,9 +361,8 @@ Rationale:
    The remaining work is on the angr side: per-worker ``SymContext``,
    scheduler, cache partitioning.
 #. The memory cost of Option A is real (worst case N× resident set)
-   but bounded by per-worker state count, and the engine's resident
-   sets today are 200–500 MB on the heaviest benches — N× still fits
-   on commodity hardware.
+   but bounded by per-worker state count, and N× the engine's resident
+   set on the heaviest benches still fits on commodity hardware.
 
 **If parallel exploration is not committed to**, defer both options.
 The current single-threaded engine is competitive with Python on most
@@ -492,35 +486,11 @@ found-set across worker counts
 Distributed (cross-machine) migration — measured KILL
 -----------------------------------------------------
 
-Probed under bead ``angr-op0dn.13.7`` (M5-B17b, cost probe, no code landed).
-The question was whether a state could profitably be migrated over a *network*
-rather than between threads in one process. It cannot, on the find-all
-workloads that motivated parallelism in the first place.
-
-The per-state envelope was measured with the shipped ``dump_snapshot`` /
-``load_snapshot`` codec (the same ``StashManager`` per-state encoding a
-``StateMigrationPayload`` carries) at the exhaustive frontier of the
-synthetic find-all benches, and read against the break-even steal
-fraction frame from *Where it landed*: a network hop costs enough that
-the fraction of states allowed to migrate shrinks to a few percent,
-while the steal fraction actually observed on those benches is most of
-the frontier. The literal gate ("network cost < work per state") passes
-only because the per-state work there is large; the binding constraint
-is the migration *count*, and it is already violated in-process.
-
-Two further costs are excluded from the table and both point the same way:
-
-* The ``Py<PyAny>`` overlays a ``StateMigrationPayload`` carries
-  (``symbolic_pages``, ``hook_symbolic_memory``, ``addr_to_ast``) are *not*
-  in the snapshot envelope, so bytes/state above is a **lower bound** for a
-  distributed transport, which would additionally have to pickle them.
-* Python SimProcedure bounces are driver-local. A remote worker would have to
-  round-trip to the driver on every hook — the trap benches bounce the whole
-  frontier ``T=4`` times per leaf by construction.
-
-**Verdict: KILL.** Distributed migration is strictly worse than the
-in-process case that already loses. Do not file a distributed follow-on
-without a human decision.
+Migrating states over a network rather than between threads in one
+process was probed and killed (``angr-op0dn.13.7``): it is strictly
+worse than the in-process case, which already loses on migration
+count. The reasoning is recorded in :doc:`rust_engine_decisions`. Do
+not file a distributed follow-on without a human decision.
 
 
 Open questions
@@ -531,32 +501,16 @@ Open questions
   routed to a dedicated "Python worker" thread that holds the GIL
   while other workers continue stepping pure-Rust states? Risk:
   callback latency adds to those states' wall times.
-* **Scheduler policy.** Work-stealing is the default candidate
-  (mature, well-understood). Topology-aware variants (steal from
-  the same NUMA node first, fall back to global) might matter
-  past 8 cores but are an optimization, not a correctness concern.
-* **Cancellation.** A worker that finds the target while others are
-  still stepping should be able to signal "stop". The shipped scheduler
-  (``exploration/scheduler.rs``) uses a shared ``CancelToken`` — an
-  ``Arc<AtomicU8>`` tri-state (``NOT_CANCELLED`` / ``BUDGET_CANCELLED`` /
-  ``FIND_CANCELLED``) — checked at task boundaries, the migration grain, so
-  a worker stops at its next boundary. The two cancel kinds differ in what
-  they do to a state a worker has *already* picked up:
-  ``CancelToken::cancel`` (find / finalize) sets ``FIND_CANCELLED`` with an
-  unconditional store and makes ``preempts_in_flight`` true, so peers drop
-  the state they just dispatched rather than burn speculative work past
-  ``num_find``; ``CancelToken::cancel_for_budget`` (a ``run(n)``
-  dispatch-budget stop) only CASes ``NOT_CANCELLED`` → ``BUDGET_CANCELLED``,
-  letting in-flight states finish their step — dropping one unstepped would
-  livelock a small ``run(n)``. It is one atomic rather than two independent
-  ``AtomicBool``s (``flag`` + ``budget``, angr-9ke6b.52 follow-up) because a
-  reader could otherwise observe the pair mid-update and let a racing budget
-  stop downgrade a genuine find cancel. Z3-level mid-solve
-  interruption (``Context::handle().interrupt()``; ``ContextHandle`` is
-  ``Send + Sync``) is available and is the right tool to abort a *long
-  in-flight solve*, but fanning it out safely requires keeping each worker's
-  context alive past every possible interrupter — coupling that belongs with
-  the run-loop integration, where solve durations matter. Deferred.
+* **NUMA-aware stealing.** Would topology-aware stealing (steal from
+  the same NUMA node first, fall back to the global ``Injector``) pay
+  off on high-core-count hosts? It is an optimization, not a
+  correctness concern.
+* **Mid-solve cancellation.** Cancellation is cooperative at task
+  boundaries (``CancelToken`` in ``exploration/scheduler.rs`` documents
+  the find-versus-budget semantics). Whether to also abort a *long
+  in-flight solve* via Z3's ``Context::handle().interrupt()`` is open:
+  doing it safely means keeping each worker's context alive past every
+  possible interrupter.
 
 
 References

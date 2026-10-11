@@ -3,22 +3,18 @@ Rust engine: lazy symbolic memory — design
 
 .. note::
 
-   **Status: implemented and shipped (angr-pogf, Phases 1–4).** This was
+   **Status: implemented and shipped (angr-pogf).** This was
    originally a design-phase deliverable; lazy symbolic memory now ships
    and is the default store path. Read it as historical design rationale,
    not as a description of code-to-be-written.
 
    *What shipped, and where it deviates from the proposal below:*
 
-   - **Lazy LOAD** — Phase 1, ``angr-czph``.
-   - **Lazy STORE** — Phase 2, ``angr-qh5u``,
-     originally landed behind a default-OFF
-     ``SymbolicMemory::use_multi_cell_stores`` gate, then **enabled by
-     default with the gate removed** in Phase 4.3, ``angr-mmdh.3``, once Phase 4.1 (wider-load cache) and Phase
-     4.2 (flush coalescing) closed the load-time/Z3 gap. Multi-cell
-     stores are now the *only* path for ``Multiple`` / ``Strided``
-     symbolic-address store results; the eager ``store_conditional_multiple``
-     helper is gone.
+   - **Lazy LOAD** (``angr-czph``) and **lazy STORE** (``angr-qh5u``)
+     both shipped. Multi-cell stores are the *only* path for
+     ``Multiple`` / ``Strided`` symbolic-address store results
+     (``angr-mmdh.3``); the eager ``store_conditional_multiple`` helper
+     is gone.
    - **Architecture deviation** — the shipped code is a *sidecar*, not
      the enum-per-byte ``Multi`` variant this document proposes. Symbolic
      data lives in a ``multi_objects: FxHashMap<addr, MultiPayload>``
@@ -272,23 +268,7 @@ Why not start with B: Option B is a much larger architecture change
 with no comparable in-codebase template. Option A reuses the
 existing balanced ITE builder, the existing concretization strategy
 chain, the existing fork/merge plumbing — only the cell
-representation changes. The implementation surface for Phase 1 is
-roughly:
-
-* ``memory/page.rs`` — extend ``MemoryPage`` byte representation.
-* ``memory/load.rs`` — collapse ``Multi`` cells at load time using
-  ``ite_builder.rs`` over the loaded byte range.
-* ``memory/mod.rs`` — fork/clone behavior for the new cell type;
-  dirty-page tracking unchanged.
-* ``memory/store.rs`` — leave alone in Phase 1, gate on a new
-  ``store_symbolic_multi`` API used only by the test rig and
-  one annotated SimProcedure.
-* ``memory/tests.rs`` (since split into the ``memory/tests/`` package) —
-  extend the existing ``test_pending_write*`` cases (now in
-  ``memory/tests/symbolic_fork.rs``) to cover the Multi-cell path.
-
-Phase 2 expands ``memory/store.rs::store_symbolic_unified`` to
-prefer the Multi path for ``Multiple`` / ``Strided`` results.
+representation changes.
 
 
 Open questions
@@ -296,9 +276,9 @@ Open questions
 
 .. note::
 
-   **Resolved post-shipping (angr-1yge9.10).** The first three
-   questions below were open at design time; the shipped sidecar
-   implementation (Phases 1–4) settled each. Resolutions are inlined per
+   **Resolved post-shipping (angr-1yge9.10).** The design questions
+   below were open at design time; the shipped sidecar implementation
+   settled each. Resolutions are inlined per
    bullet with the anchoring symbol. The ``LAZY_SOLVES`` interaction was a
    test plan, not a design gap, and is covered by the standing Rust suite.
 
@@ -335,7 +315,7 @@ Open questions
   ``claripy_bridge/import.rs``). Either preserve the annotation across
   the bridge or have ``rust_manager.py`` re-attach it Rust-side.
 
-  *Resolved:* the **second** option shipped (Phase 1.4, angr-5zw8). The
+  *Resolved:* the **second** option shipped (angr-5zw8). The
   annotation is never forwarded through the bridge; instead
   ``RustExplorationManager._try_multi_cell_store``
   (``angr/exploration/rust_manager.py``) reads ``MultiwriteAnnotation``
@@ -348,7 +328,7 @@ Open questions
   orthogonal but may interact when a deferred constraint check
   later trips a Multi-cell collapse. Test plan: re-run the
   full Rust test suite with ``LAZY_SOLVES`` both on and off
-  during Phase 1. *(This was a verification plan rather than a design
+  once the LOAD side lands. *(This was a verification plan rather than a design
   question; the Rust suite exercises both settings and no interaction
   regression surfaced.)*
 

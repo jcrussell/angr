@@ -441,8 +441,8 @@ directly.
    diverges: the symbolic pointer feeds downstream null-checks and is used
    as a store/load address, each of which forks or pays the symbolic-address
    concretization cost, exploding the state space. An end-to-end attempt at
-   such a fast path (angr-8mjd, reverted) regressed ``csaw_wyvern`` from
-   2.7s to 86s for exactly this reason. The correct contract: when
+   such a fast path (angr-8mjd, reverted) made ``csaw_wyvern`` many times
+   slower for exactly this reason. The correct contract: when
    ``SYMBOLIC_INITIAL_VALUES`` is absent, return
    ``Ok(Some(BVV(0, returnty_bits)))``; only mint a symbolic value when the
    option is set. ``void``-return stubs (``returnty == None`` →
@@ -593,12 +593,18 @@ table in ``syscalls/mod.rs``.
 
 Every angr SimProcedure that has a matching name in the registry is
 intercepted before its Python ``run()`` would be invoked. The dispatcher
-extracts the calling convention's argument bitvectors, hands them to
+(``exploration/native_proc_dispatch.rs::dispatch_native_proc``, shared by
+the serial and core step paths) extracts the calling convention's argument bitvectors, hands them to
 ``call_ex()`` — the fresh-entry point, whose default body delegates to
 ``call()`` — and acts on the returned ``Result``. The registry also
 supports per-procedure ``disable()`` and ``set_python_override()`` —
 both force the dispatcher to fall back to Python — and a global
-``disable_all()`` switch (used in differential testing).
+``disable_all()`` switch (used in differential testing). Native syscalls
+are dispatched separately, by
+``exploration/core_outcome_handlers.rs::handle_syscall_core``, which
+looks the syscall number up in the ``register_syscalls!`` registry and
+bounces to the Python syscall on a miss or an argument-extraction
+failure.
 
 Dispatch priority (native vs Python)
 """"""""""""""""""""""""""""""""""""

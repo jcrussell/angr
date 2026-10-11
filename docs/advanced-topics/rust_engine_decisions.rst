@@ -78,11 +78,32 @@ contended lock. Workers instead exchange ``ExplorationStateSnapshot``
 values and rebuild thread-local solvers.
 
 **Distributed (cross-machine) migration was killed**
-(:doc:`rust_parallel_design`, "Distributed (cross-machine) migration"). Migration count
-is the lever that decides whether parallel exploration wins at all, and
-on the CTF corpus the in-process scheduler already drives it to the
-floor; shipping snapshots across processes adds serialization cost with
-nothing left to recover.
+(``angr-op0dn.13.7``; :doc:`rust_parallel_design`, "Distributed
+(cross-machine) migration — measured KILL"). The probe was a cost
+estimate only; no code landed. Migration count, not transport cost, is
+the lever that decides whether parallel exploration wins at all
+(:doc:`rust_parallel_design`, "Where it landed"), and every term of a
+network transport moves it the wrong way:
+
+* **The envelope is a lower bound.** The per-state cost was read from
+  the shipped ``dump_snapshot`` / ``load_snapshot`` codec — the same
+  ``StashManager`` per-state encoding a ``StateMigrationPayload``
+  carries — at the exhaustive frontier of the synthetic find-all
+  benches. Against the break-even steal-fraction frame, a network hop
+  shrinks the fraction of states allowed to migrate to a sliver of the
+  frontier, while the steal fraction actually observed on those benches
+  is most of it.
+* **The ``Py<PyAny>`` overlays are not in that envelope.** A
+  ``StateMigrationPayload`` also carries ``symbolic_pages``,
+  ``hook_symbolic_memory`` and ``addr_to_ast``; a distributed transport
+  would additionally have to pickle them.
+* **Python SimProcedure bounces are driver-local.** A remote worker
+  would round-trip to the driver on every hook, and the trap benches
+  bounce the whole frontier several times per leaf by construction.
+* **The binding constraint already fails in-process.** The literal gate
+  ("network cost < work per state") passes only because per-state work
+  on those benches is large; the migration count is already over
+  break-even between threads, so a slower hop cannot win it back.
 
 **Z3-bound benchmarks are a solver floor, not engine work**
 (``angr-9w6ad``, ``angr-34w``). The benches that stay slower than Python

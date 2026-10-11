@@ -26,8 +26,8 @@ dominates, and for parallel warmup (it removes a GIL serialization point).
 The key correctness argument: bind the **same libVEX** pyvex already uses,
 rather than reimplementing lifting in Rust from scratch (enormous and
 correctness-risky — an earlier from-scratch ``NativeVEXLifter`` stub never got
-past returning ``LiftError::Unsupported``, and was deleted in Stage-1 close-out
-for exactly that reason). Same libVEX, same configuration ⇒ same ``IRSB``.
+past returning ``LiftError::Unsupported``, and was deleted for exactly that
+reason). Same libVEX, same configuration ⇒ same ``IRSB``.
 
 Why binding pyvex's libVEX is parity-safe
 -----------------------------------------
@@ -137,7 +137,7 @@ Open risks
   pyvex's cffi copies out immediately.
 * **Thread-safety:** libVEX global state (``vex_control``, the arena) is not
   re-entrant; a parallel backend needs a per-worker lift lock or one lifter
-  thread. Relevant to the parallel epic, not to single-threaded Stage-1.
+  thread. Relevant to parallel exploration, not to the single-threaded engine.
 
 Default-on on AMD64
 -------------------
@@ -146,13 +146,16 @@ Default-on on AMD64
 (``angr-op0dn.2.2``) and is double-guarded: it only reaches
 ``set_native_lift_enabled(True)`` when ``libvex_ffi_enabled()`` is true
 (the ``.so`` was built with the feature) *and* the project arch is one
-``ffi_vex_arch`` accepts. Measured on the benchmark corpus
-(``angr-op0dn.2.2``), the lift-warmup-heavy real binaries gain a
-noticeable fraction of wall time, everything else is flat, nothing
-regresses and ``found`` is unchanged everywhere; the durable result is
-the drop in GIL-held work, which removes a serialization point that
-matters for parallel warmup even where single-threaded wall time does
-not move.
+``ffi_vex_arch`` accepts.
+
+It is on by default because it is parity-safe and never a loss: it binds
+the same libVEX with the same configuration as pyvex (see *Why binding
+pyvex's libVEX is parity-safe*), so the lifted ``IRSB`` and the
+``found`` set do not change, and any block it cannot serve falls back
+to the pyvex callback. What it buys is less GIL-held work per cold
+block — lift-warmup-heavy binaries get faster, and parallel warmup loses
+a serialization point even where single-threaded wall time does not
+move. The per-bench evidence is on ``angr-op0dn.2.2``.
 
 Where native lift gets its bytes
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -172,20 +175,20 @@ Reading ``rust_native_lift_fallback_count`` as a hit-rate gap is a trap. It
 counts every miss, including lift attempts at addresses that lie outside every
 loaded binary region — a state returning into unmapped memory, say. No lifter can
 produce a block there: the callback returns the ``"{}"`` sentinel and the state
-deadends, so nothing was lost by falling back. ``cow_fork_scaling`` reads 21
-native lifts against 256 fallbacks, which looks like a 7% hit rate, but all 256
-are return-to-``0x0`` deadend probes — the native path is serving **21 of 21**
-real blocks. ``rust_native_lift_deadend_probe_count`` splits those out; the
-genuinely-lost misses are ``fallback_count - deadend_probe_count``, and that is
-0 across the fast-tier corpus.
+deadends, so nothing was lost by falling back. On a bench whose states
+routinely return to ``0x0``, those deadend probes can dwarf the native lift
+count and make the native path look like it rarely hits, while it is in fact
+serving every real block. ``rust_native_lift_deadend_probe_count`` splits the
+probes out; the genuinely-lost misses are
+``fallback_count - deadend_probe_count``, and that is the number to watch.
 
 Shipping status: on by default (opt-OUT via ``ANGR_LIBVEX_FFI=0``)
 ------------------------------------------------------------------
 
-As of bd ``angr-3trr7`` the ``libvex-ffi`` cargo feature is built **by
-default** by ``setup.py``: a stock ``pip install angr`` / ``pip install -e .`` on
+The ``libvex-ffi`` cargo feature is built **by default** by ``setup.py``
+(``angr-3trr7``): a stock ``pip install angr`` / ``pip install -e .`` on
 an ELF (Linux) or Mach-O (macOS) platform links the native libVEX lifter, so the
-wins measured above reach every stock AMD64 build. ``use_native_lift`` defaults
+default above reaches every stock AMD64 build. ``use_native_lift`` defaults
 to True and is double-guarded on ``libvex_ffi_enabled()`` — now satisfied on a
 stock ``.so`` — so cold blocks go out through the native lifter, falling back to
 the pyvex callback only on a lift error or a non-AMD64 arch.
