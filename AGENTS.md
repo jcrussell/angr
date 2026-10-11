@@ -91,7 +91,7 @@ no `--self-test`.
 
 | Gate | Catches | Exempt with | Canonical API / doc |
 |------|---------|-------------|---------------------|
-| `tools/check_line_citations.py` | `file:NNN` / "line NNN" citations in Rust comments and `docs/**/*.rst` (baseline) | `--update-baseline`, only for an external line number that cannot drift | rule 2 above |
+| `tools/check_line_citations.py` | `file:NNN` / "line NNN" citations in Rust comments and `docs/**/*.rst` (baseline) | `--update-baseline`, only for an external line number that cannot drift, or to prune dead rows after a repair sweep (deletions-only diff) | rule 2 above |
 | `tools/audit_silent_fallback.py` | `return Ok(None)` / `.ok();` discards (bare, or as a `let` tail) without a `// SILENT(cat-a\|b\|c): <why>` tag (baseline) | the tag | `silent_default!` doc in `native/angr/src/lib.rs`: `cat_b` logs debug, `cat_c` logs warn, there is no `cat_a` arm; `let _ = fallible` is denied by clippy (`let_underscore_must_use`), so spell expected discards `drop(expr)` + tag, or `#[expect(clippy::let_underscore_must_use, reason = "SILENT(cat-a): …")]` for `Copy` results. Wildcard `_ =>` arms are not auto-detected: at a trust boundary fail loud. |
 | `tools/audit_silent_fallback_test_pairing.py` | a new `cat_b`/`cat_c` site in the diff with no regression test in the same diff (diff-based) | — | same macro doc |
 | `tools/audit_satresult.py` | raw `z3::SatResult::{Sat,Unsat}` matches outside test code (`*_tests.rs`, `*_tests/`) | `// satresult-exempt: <why>` on the line or either of the two above | `SatOutcome::decided` in `symbolic/solver_build.rs` (`invariant-z3-unknown-not-unsat`): `Unknown` is never `Unsat` |
@@ -140,7 +140,7 @@ Mandatory-keep anchors that other memories and docs reference:
 
 - `core-goal-design-philosophy` — Rust symex engine goal + design rules
 - `rust-proxy-architecture-decision` — RustStateProxy vs SimState sync
-- `rust-engine-claude-md-pointer` — what stays in memory vs AGENTS.md vs docs
+- `rust-engine-agents-md-pointer` — what stays in memory vs AGENTS.md vs docs
 - `rust-python-boundary-audit` — what bridge code must stay Python
 - `constraint-export-no-pre-pin` — pre-pinning is dangerous; use Rust solver eval fallback
 - `characterization-vs-fix-pattern` — separate characterization tasks from regression bisects
