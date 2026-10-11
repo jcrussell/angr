@@ -19,8 +19,9 @@ classifiers = [
 # pinned here directly, ahead of claripy's own `z3-solver==4.13.0.0`
 # declaration, because the Rust engine links z3-sys 0.13, whose minimum Z3 is
 # newer than 4.13.0 and which matches upstream angr 10's pin. claripy 9.2.209
-# needs one ctypes shim against the 5.x bindings (angr/misc/z3_compat.py);
-# everything else in it is version-agnostic.
+# needs two shims on 5.x (angr/misc/z3_compat.py: an FP-sign ctypes argtype
+# and a clone_solver that avoids Z3_solver_translate); everything else in it
+# is version-agnostic.
 requires-python = ">=3.12"
 dependencies = [
     "cxxheaderparser",
