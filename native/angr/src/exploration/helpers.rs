@@ -832,7 +832,7 @@ pub(crate) fn extract_args_with_abi(
 
 /// Snapshot `state` for later deferred-fork materialization — but only when
 /// there are deferred forks to materialize, since `state.fork()` clones the Z3
-/// solver (~3-40ms) and most callbacks defer nothing.
+/// solver and most callbacks defer nothing.
 ///
 /// Every Python round-trip that can carry a non-empty `deferred_forks` MUST
 /// call this: `_resume_after_simprocedure` (`resume.rs`) computes its fork base
@@ -856,7 +856,7 @@ pub(crate) fn pre_callback_snapshot_for(
 ///
 /// Two things every "return to Python" exit needs: (1) a pre-callback
 /// snapshot of `state`, but *only* when deferred forks need it — `state.fork()`
-/// clones the Z3 solver (~3-40ms), so we skip it otherwise; and (2) a
+/// clones the Z3 solver, so we skip it otherwise; and (2) a
 /// `RustSolverContext` wrapping the state's shared solver (an O(1) `Rc` clone,
 /// not a fork) so the callback evaluates against the live constraints.
 ///

@@ -476,8 +476,7 @@ class RustDiskCacheManager:
         the shared libraries baked into the payload — see
         ``_loader_identity_digest``. Results are memoized per
         (binary_path, arch_name, loader_digest) to avoid re-hashing the same
-        file on every RustExplorationManager construction (~0.5ms for 100KB
-        binary).
+        file on every RustExplorationManager construction.
         """
         memo_key = (binary_path, arch_name, loader_digest)
         cached = cls._disk_key_cache.get(memo_key)

@@ -91,7 +91,7 @@ pub(crate) fn segfault_message(state: &RustSimState, err: &ProcedureError) -> Op
 
 /// Mutable views onto whichever counter home the caller owns — `CoreCounters`
 /// for the parallel path, `profiling.native_proc_stats` for the serial one.
-/// The two structs carry the same six fields under two different names
+/// The two structs carry the same fields under two different names
 /// (`native_python_fallbacks` vs `python_fallbacks`), so a bundle of `&mut`
 /// borrows is the cheapest way to let one dispatcher bump either.
 pub(crate) struct NativeProcCounters<'a> {

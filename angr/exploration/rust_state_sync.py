@@ -15,8 +15,8 @@ from angr.storage.memory_object import SimMemoryObject
 from ._constants import MAX_OVERLAY_SECTION_SIZE, PAGE_MASK, PAGE_SIZE, STACK_SIZE
 
 # Precomputed all-zero buffers for _sync_extra_python_pages fast-path
-# zero-page detection (memcmp-based instead of any() byte iteration; saves
-# ~14us / page in mma_howtouse-style workloads — see angr-b58a).
+# zero-page detection (memcmp-based instead of any() byte iteration, which
+# dominates per-page cost in mma_howtouse-style workloads — see angr-b58a).
 _ZERO_PAGE_BA = bytearray(PAGE_SIZE)
 _ZERO_PAGE_BYTES = bytes(PAGE_SIZE)
 
@@ -175,7 +175,7 @@ class RustStateSyncMixin:
         Args:
             precomputed_regs: Optional dict of {reg_name: concrete_value}.
                 When provided (e.g. from disk cache), skips reading registers
-                from the SimState, saving ~0.5ms of angr register plugin overhead.
+                from the SimState, skipping the angr register plugin overhead.
                 The disk cache extractor skips symbolic registers, so the
                 caller (RustExplorationManager._compute_disk_init_key /
                 _state_has_user_symbolic) must invalidate the cache key when
@@ -575,8 +575,8 @@ class RustStateSyncMixin:
                     if len(concrete) == page_size:
                         rust_state.map_memory_data(sp_page, concrete, 6)
                         used_fast_path = True
-                        # Targeted scan of symbolic_data ranges only (~1-5ms)
-                        # vs full _extract_symbolic_regions scan (~137ms).
+                        # Targeted scan of symbolic_data ranges only, far
+                        # cheaper than a full _extract_symbolic_regions scan.
                         sd = getattr(page_obj, "symbolic_data", None)
                         if sd:
                             self._extract_stack_symbolic_from_sd(angr_state, sp_page, page_size, sd, symbolic_regions)
@@ -687,7 +687,7 @@ class RustStateSyncMixin:
         # angr-9maq made zero pages lazy-only to avoid mma_howtouse blowing
         # up to 1.9GB (2000+ zero pages per state * 45 short-lived states).
         # But hackcon2016 has only ~35 zero pages per state, and keeping
-        # them lazy regressed final-solve Z3 time from ~10s to ~28s (root
+        # them lazy multiplied final-solve Z3 time (root
         # cause is structural — see angr-8t45 memory). Cap below: if a
         # state has more all-zero pages than this, keep them all lazy
         # (mma path); otherwise eager-map (hackcon path).
@@ -698,8 +698,8 @@ class RustStateSyncMixin:
                 return
             # angr-b58a: classify pages without materializing 4KB bytes objects.
             # For UltraPage (the default backend) we read concrete_data
-            # directly — a bytearray-vs-bytearray compare is ~0.1us / page
-            # (memcmp) versus ~15us / page for `any(bytes_iter)`. The bytes()
+            # directly — a bytearray-vs-bytearray compare is a memcmp, orders
+            # of magnitude cheaper than `any(bytes_iter)`. The bytes()
             # copy is deferred until we know the page actually needs to be
             # FFI-mapped (saves 8MB of bytes allocations per Callable on
             # mma_howtouse's ~2000 all-zero pages).
@@ -796,7 +796,7 @@ class RustStateSyncMixin:
 
         Uses get_symbolic_addrs() (or page.symbolic_data fallback) to skip the
         thousands of mem_*/unconstrained fill pages that show up after Python
-        init — scanning those is ~0.3ms/page.
+        init — scanning each of those pays a full per-byte page walk.
         """
         try:
             pages = getattr(angr_state.memory, "_pages", {})
@@ -853,8 +853,8 @@ class RustStateSyncMixin:
         imports them as a single wide object. This preserves symbolic identity
         across the Rust/Python boundary (avoids creating rust_sym_XXX aliases).
 
-        Uses page.symbolic_data dict to find symbolic ranges, avoiding full
-        4096-byte scan (~137ms → ~1ms).
+        Uses page.symbolic_data dict to find symbolic ranges, avoiding a full
+        per-byte page scan.
         """
         # Fast path: use symbolic_data dict to find which ranges to scan
         page_no = page_addr // page_size
@@ -985,8 +985,8 @@ class RustStateSyncMixin:
 
         Fast path: if the register's symbolic variables don't appear in any
         solver constraint, skip solver.eval and pick a sensible default —
-        same value Z3 would have picked, without paying the ~10 ms model-query
-        cost. Common on blank_state cold path where rbp is filled with a
+        same value Z3 would have picked, without paying for a model query.
+        Common on blank_state cold path where rbp is filled with a
         fresh unconstrained BVS by default_filler_mixin.
         """
         arch = state.arch
@@ -1041,7 +1041,7 @@ class RustStateSyncMixin:
         """Fast-path solver.eval for unconstrained symbolic registers.
 
         Z3 returns 0 (or arbitrary) for a BVS that no constraint references,
-        but the call still costs ~10 ms (ctx init + check + model). When we
+        but the call still pays ctx init + check + model. When we
         can prove no constraint mentions any of the value's variables, return
         `default` directly — Z3 would have picked something arbitrary anyway,
         and downstream code only requires *some* concrete value.
@@ -1246,8 +1246,8 @@ class RustStateSyncMixin:
     def _snapshot_registers(self, state) -> dict:
         """Snapshot register values as a lightweight dict for later comparison.
 
-        Much cheaper than state.copy() — only reads register values (~0.1ms
-        vs ~1ms for full state copy). Used for non-memory-writing extern
+        Much cheaper than state.copy() — only reads register values instead
+        of copying every plugin. Used for non-memory-writing extern
         SimProcedures where we only need to detect register changes.
 
         Returns:
@@ -2065,8 +2065,8 @@ class RustStateSyncMixin:
 
         angr-gorvf.19: ``_extract_register_changes`` called
         ``getattr(state.regs, name)`` for every register (old and new state),
-        each a memory-mixin load that builds a claripy AST — ~34 loads/crossing
-        that were 75% of the sync_back phase. When a register's byte range is
+        each a memory-mixin load that builds a claripy AST — dozens of loads per
+        crossing that dominated the sync_back phase. When a register's byte range is
         fully concrete this reads the int directly from ``concrete_data``.
 
         Returns ``("concrete", int)`` when the whole range is concrete,
@@ -2111,9 +2111,9 @@ class RustStateSyncMixin:
         angr-gorvf.10: routing a whole page through ``state.memory.store`` is
         quadratic. ``UltraPage.store`` walks the value byte-by-byte with
         ``self.concrete_data[subaddr] = ival & 0xFF; ival >>= 8`` — for a
-        4096-byte page that right-shifts a 32768-bit int 4096 times, measured
-        at ~6.5ms for ONE page (311ms of the 325ms ``sc_memreplay`` bill on
-        csaw_wyvern, against only 13ms of FFI to fetch the same pages). A
+        4096-byte page that right-shifts a 32768-bit int 4096 times, which was
+        nearly all of the ``sc_memreplay`` bill on csaw_wyvern (the FFI fetch
+        of the same pages was a small fraction). A
         page-aligned, page-sized concrete write is a memcpy; do it as one.
 
         Semantics match the concrete branch of ``UltraPage.store``: the
@@ -2127,9 +2127,9 @@ class RustStateSyncMixin:
     def _blit_symbolic_page(page, page_addr: int, sym_entries, endness) -> bool:
         """Rebuild an UltraPage's symbolic half from Rust's object list in one pass.
 
-        angr-gorvf.11: the page carries ~169 symbolic objects on csaw_wyvern
-        (8107 over 48 page-replays, 6399 of them a single byte wide), and even
-        the direct ``page.store`` of angr-gorvf.10 costs ~8us each: the
+        angr-gorvf.11: the page carries many symbolic objects on csaw_wyvern
+        (most of them a single byte wide), and even the direct ``page.store``
+        of angr-gorvf.10 pays per-entry overhead on each: the
         cooperation generator wraps every entry in a ``SimMemoryObject``, then
         the store re-derives the range it must clear with two ``SortedDict``
         ``irange`` walks.
@@ -2277,9 +2277,9 @@ class RustStateSyncMixin:
                         sym_entries = ()
                 for addr, ast in sym_entries:
                     try:
-                        # angr-gorvf.10: one page carries ~169 symbolic objects
-                        # (csaw_wyvern) and each generic store costs ~32us of
-                        # mixin stack — 260ms of the 325ms replay bill. Store
+                        # angr-gorvf.10: one page carries many symbolic objects
+                        # (csaw_wyvern) and each generic store pays the full
+                        # mixin stack — most of the replay bill. Store
                         # into the already-acquired page instead; UltraPage.store
                         # with cooperate=False runs the same decomposition the
                         # mixin would have handed it.

@@ -677,7 +677,7 @@ fn handle_x86_eflags_c(
                 // ways that are equally easy to get subtly wrong
                 // (angr-9ke6b.219). Listed exhaustively so a new
                 // `OpCategory` fails to compile instead of falling back to
-                // Python (30x wall-clock, measured on angr-9ke6b.88).
+                // Python (far slower wall-clock, measured on angr-9ke6b.88).
                 OpCategory::Adc
                 | OpCategory::Sbb
                 | OpCategory::Shl
@@ -759,7 +759,7 @@ fn handle_x86_eflags_all(
         // handful here — same reuse as the eflags_c branch above. Before
         // angr-0jh0j.71 this covered only Sub/Add/Logic, so a PUSHF/LAHF
         // after a symbolic ADC/SBB/shift/rotate/multiply fell back to the
-        // Python ccall (30x wall-clock, measured on angr-9ke6b.88) even
+        // Python ccall (far slower wall-clock, measured on angr-9ke6b.88) even
         // though `sym_flags_for_category` already handled the category.
         // Copy is unreachable here: the only cc_op mapping to it is 0,
         // returned above.

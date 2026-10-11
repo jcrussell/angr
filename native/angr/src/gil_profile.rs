@@ -112,7 +112,7 @@ macro_rules! profile_enum_meta {
 ///
 /// The split exists because callback counters alone cannot explain the residual
 /// GIL on the zero-bounce path (bd angr-gorvf.4): benches with two cheap `posix`
-/// callbacks and nothing else were still spending 74% of the run loop under the
+/// callbacks and nothing else were still spending most of the run loop under the
 /// GIL — all of it in the claripy AST bridge and the fork-metadata attach, which
 /// are Python touches that no `callback_*` counter tracks.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -140,7 +140,7 @@ pub(crate) enum GilClass {
     /// no Rust frame is live while it runs, so the run loop's
     /// [`RunLoopWallGuard`] has already dropped and neither the numerator nor
     /// the denominator would otherwise see the excursion (bd angr-gorvf.8 —
-    /// fauxware banked a 59.6ms Python `open` SimProcedure while reporting
+    /// fauxware banked a whole Python `open` SimProcedure while reporting
     /// `gil_work_time_ns == 0`). [`park_start`] / [`park_end`] bracket the
     /// excursion at the pymethod boundary and bank it into *both* accumulators,
     /// so `gil_work_time_ns == 0` really does mean "no Python ran during
@@ -169,9 +169,9 @@ profile_enum_meta!(
 ///
 /// It exists because the Python-side `callback_*_total_ns` counters do not
 /// explain the residual `Callback` GIL on the zero-bounce path (bd
-/// angr-gorvf.4.1): `google2016_unbreakable_1` banks 723ms of `Callback` (74% of
-/// the run-loop wall) while its only counted surface is two `posix` calls at
-/// 0ms. Those counters are process-wide and also tick outside the profiled run
+/// angr-gorvf.4.1): `google2016_unbreakable_1` banks most of its run-loop wall
+/// as `Callback` while its only counted surface is a couple of near-free
+/// `posix` calls. Those counters are process-wide and also tick outside the profiled run
 /// loop; these are thread-local, run-loop-gated, and complete by construction.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum CallbackSite {

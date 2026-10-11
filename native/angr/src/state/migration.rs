@@ -19,7 +19,7 @@
 //!   stealing worker rebuilds the ASTs in *its own* Z3 context via
 //!   [`RustSimState::from_serialized`] — the source context is never read off
 //!   the owning thread.
-//! * the three `Py<PyAny>` overlay maps — Python claripy ASTs are GIL-managed,
+//! * the `Py<PyAny>` overlay maps — Python claripy ASTs are GIL-managed,
 //!   not Z3-context-bound, so they cross threads as live handles
 //!   (`Py<T>: Send`). `to_serialized` drops these (Bucket D), so migration
 //!   carries them explicitly; otherwise a migrated state would silently lose

@@ -371,9 +371,9 @@ const _: fn() = || {
 
 /// Shared immutable context bundle threaded through every post-step arm.
 ///
-/// Bundling the four references the arms all read retires the
+/// Bundling the references the arms all read retires the
 /// `too_many_arguments` allows they used to carry (angr-0mqkc.6). Passed by
-/// shared reference, so this is zero-cost (four pointers behind one pointer).
+/// shared reference, so this is zero-cost (a few pointers behind one pointer).
 pub(crate) struct CoreCtx<'a> {
     pub(crate) ctx: &'a StepContext,
     pub(crate) prof: &'a ParallelProfiling,
@@ -386,7 +386,7 @@ pub(crate) struct CoreCtx<'a> {
 }
 
 /// The deferred-fork payload the post-step arms thread through and, on a Python
-/// bounce, hand to the coordinator. Owns all four pieces; the arm consumes it
+/// bounce, hand to the coordinator. Owns every piece; the arm consumes it
 /// exactly once (either materializing the forks or moving them into a bounce).
 struct ForkPayload {
     deferred_forks: Vec<DeferredFork>,

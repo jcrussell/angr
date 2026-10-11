@@ -2,8 +2,8 @@
 
 This package provides :class:`RustExplorationManager`, a drop-in replacement
 for angr's :class:`SimulationManager` that executes VEX IR in a native Rust
-interpreter with an integrated Z3 solver.  Typical speedups range from 1.5x
-to 15x on CTF-style reverse-engineering challenges.
+interpreter with an integrated Z3 solver.  Per-bench speedups on CTF-style
+reverse-engineering challenges live in ``tests/benchmarks/baseline_timings.json``.
 
 Quick start::
 

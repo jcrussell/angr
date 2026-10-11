@@ -95,7 +95,7 @@ impl RunSession {
     /// doc comment describes. There is nothing left to report to and nothing
     /// to recover, so the message is dropped by design. This is the single
     /// place workers discard that `Result`; open-coding `let _ = ... .send(..)`
-    /// at each of the five call sites is what
+    /// at each call site is what
     /// `clippy::let_underscore_must_use` now rejects.
     pub(super) fn notify_up(&self, msg: WorkerUp) {
         drop(self.up_tx.send(msg));

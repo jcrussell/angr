@@ -4,7 +4,7 @@
 //! One of several `#[pymethods]` blocks for the pyclass; see the
 //! `manager_methods` module doc for the split rationale (angr-9ke6b.50).
 //!
-//! Only three methods here are `export_*`-prefixed, so — following the
+//! Only some methods here are `export_*`-prefixed, so — following the
 //! `manager_methods_constraints` precedent — the contents are spelled out
 //! rather than left to the file name (angr-03vl4.11):
 //!

@@ -510,8 +510,8 @@ impl<'a> VEXInterpreter<'a> {
                     // *anyone* to lift: the Python callback will return the "{}"
                     // sentinel and the state deadends. Counting those as plain
                     // fallbacks makes the native path look like it is missing
-                    // liftable blocks — cow_fork_scaling reads 21 hits / 256
-                    // fallbacks, but all 256 are return-to-0x0 deadend probes
+                    // liftable blocks — cow_fork_scaling reads far more fallbacks
+                    // than hits, but every one is a return-to-0x0 deadend probe
                     // (angr-op0dn.2.3). Split them out so the ratio means what
                     // it looks like it means.
                     if miss == NativeLiftMiss::NoConcreteBytes && !self.is_in_binary(addr) {

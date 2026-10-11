@@ -35,7 +35,7 @@
 //! Z3 solver. With the bounded-symbolic-content export (angr-0xyq2 Phase 3),
 //! the file is registered natively and `effective_len` makes fstat/ftell
 //! CONCRETE, so the same fread arrives with a concrete size and is served
-//! from `content_sym` — the license bench now passes in ~0.9s.
+//! from `content_sym` — the license bench now passes.
 
 use super::strings::{write_bv_bytes, write_concrete_bytes};
 use super::{ProcedureError, arch_word};

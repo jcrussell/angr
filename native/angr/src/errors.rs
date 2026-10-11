@@ -59,7 +59,7 @@
 //!    loses the variant a caller needs to branch on; `anyhow` is
 //!    deliberately not a dependency. Errors collapse to a `String` (or a
 //!    `PyErr`) *only* at the boundary — the errored-stash record and the
-//!    `From<RustExecError> for PyErr` map below are the two sanctioned
+//!    `From<RustExecError> for PyErr` map below are the only sanctioned
 //!    collapse points.
 //!
 //! `interpreter/` and `exploration/` follow this end-to-end (the one

@@ -256,8 +256,8 @@ define_execution_stats! {
     /// produce a block. The Python callback returns the `"{}"` sentinel and the
     /// state deadends; nothing was lost by falling back. Subtract this from
     /// `native_lift_fallback_count` to get the misses that are genuinely lost
-    /// native-lift wins. Measured on `cow_fork_scaling` (angr-op0dn.2.3), all
-    /// 256 apparent fallbacks were return-to-0x0 deadend probes of exactly this
-    /// kind — the native path was in fact serving 21 of 21 real blocks.
+    /// native-lift wins. Measured on `cow_fork_scaling` (angr-op0dn.2.3), every
+    /// apparent fallback was a return-to-0x0 deadend probe of exactly this
+    /// kind — the native path was in fact serving every real block.
     native_lift_deadend_probe_count: sum,
 }

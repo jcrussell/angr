@@ -750,7 +750,7 @@ class RustCallbackDispatchMixin:
         self._perf_stats.add_simprocedure_phase("state_copy", time.perf_counter_ns() - _sp_copy_start)
 
         # Save original constraint COUNT before hook execution.
-        # Building set(constraints) is expensive (~6ms per call with many constraints).
+        # Building set(constraints) is expensive (hashes every constraint AST per call).
         # Save just the count; only build the full set if count changes after callback.
         # When using a register snapshot (no full state copy), eagerly capture
         # constraints since we can't access orig_state.solver.constraints later.
@@ -1985,7 +1985,7 @@ class RustCallbackDispatchMixin:
         """Handle callable find predicate evaluation callback from Rust.
 
         Uses a lightweight RustStateProxy to evaluate the predicate without
-        creating a full SimState. This avoids the ~30ms per-callback overhead
+        creating a full SimState. This avoids the per-callback overhead
         of _create_state_for_callback while providing live register/memory
         access from the Rust pending state.
 
@@ -2130,10 +2130,10 @@ class RustCallbackDispatchMixin:
 
         Entered from ``RunResult::SymbolicBranch`` (callbacks.rs). The
         per-state sync helpers invoked here (memory, registers,
-        callstack) MUST be mirrored across the four export paths in
+        callstack) MUST be mirrored across every export path in
         ``rust_state_export.py::_materialize_single_state`` per
         ``callbacks.rs`` module invariant 4 ("Per-state sync helpers must
-        reach all four export paths"). Any new per-state sync during forking
+        reach every export path"). Any new per-state sync during forking
         needs the matching export-path wiring.
         """
         _sb_total_start = time.perf_counter_ns()
@@ -2674,7 +2674,7 @@ class RustCallbackDispatchMixin:
         the Python proc would hand out an address Rust already gave away.
 
         The sync cannot be eager: the heap plugin is lazy and materializing it
-        costs ~65ms (``SimHeapBase.init_state`` maps the 8MB heap region), which
+        is expensive (``SimHeapBase.init_state`` maps the 8MB heap region), which
         every callback would pay whether or not it allocates. So hook the
         materialization instead — ``SimState.__getattr__`` routes an unregistered
         plugin through ``self.get_plugin``, so an instance-level override sees
@@ -2787,7 +2787,7 @@ class RustCallbackDispatchMixin:
         # Check if critical plugins are missing.
         # IMPORTANT: Use state.plugins dict directly instead of hasattr/getattr.
         # hasattr() triggers __getattr__ which may lazy-initialize plugins
-        # (e.g., 'heap' takes ~80ms to initialize on first access).
+        # (e.g., 'heap' maps its whole heap region on first access).
         missing_plugins = []
         for plugin_name in ["posix", "libc"]:
             if plugin_name not in state.plugins:

@@ -108,9 +108,9 @@ pub(crate) fn rustbv_to_claripy(
         crate::gil_profile::GilWorkGuard::enter_as(crate::gil_profile::GilClass::ClaripyExport);
 
     // Memoize by RustBV pointer identity to dedupe shared subtrees in DAGs.
-    // sym-write's symbolic-store ITE chains have ~25 unique Arc-shared
-    // subtrees expanded into a 142k-node tree without dedup; converting that
-    // takes ~2.7s vs ~tens of ms with memoization.
+    // sym-write's symbolic-store ITE chains are a handful of unique
+    // Arc-shared subtrees that expand into an exponentially larger tree
+    // without dedup; memoization converts each shared subtree once.
     let mut memo: HashMap<usize, Py<PyAny>> = HashMap::new();
     rustbv_to_claripy_memo(py, bv, claripy_mod, &mut memo, 0)
 }
@@ -395,7 +395,8 @@ fn rustbv_to_claripy_memo(
 
             // Build the claripy expression based on the operation.
             //
-            // Most arms below are pure plumbing over one of five shapes, so
+            // Most arms below are pure plumbing over one of the shared shapes
+            // (the `claripy_fn*` / method closures defined next), so
             // each names only the claripy callable and lets the shared closure
             // carry the bind/call/convert boilerplate (angr-12jjk.10) — the
             // mirror of `import.rs::import_binary_op` on the opposite

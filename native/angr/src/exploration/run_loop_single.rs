@@ -504,7 +504,7 @@ impl RustExplorationManager {
 
                 // No deferred forks in run-loop path, so pre_callback_snapshot
                 // is unnecessary (it's only used as fork base for deferred forks).
-                // Use shared solver (O(1) Rc clone) instead of fork (~3-40ms Z3 clone).
+                // Use shared solver (O(1) Rc clone) instead of fork (a full Z3 clone).
                 let solver_ref = state.solver();
                 let shared_ctx = RustSolverContext::from_shared_sym_context(solver_ref.clone());
 

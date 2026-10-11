@@ -683,8 +683,8 @@ fn test_getchar_consumes_seeded_stdin_in_order() {
 
 /// The unmapped-FILE carve-out itself: a `FILE *` that is not in Rust memory at
 /// all is a cle standard stream, so fgets serves it as stdin natively rather
-/// than bouncing to Python (the ~100ms/call regression the carve-out exists to
-/// avoid).
+/// than bouncing to Python (the per-call Python round-trip the carve-out exists
+/// to avoid).
 #[test]
 fn test_fgets_unmapped_file_struct_serves_stdin() {
     let mut state = RustSimState::new("amd64").unwrap();

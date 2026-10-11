@@ -1019,7 +1019,7 @@ DEFAULT_MAX_ACTIVE_STATES = 100_000
 # the actual attributes at class-creation time. A ``False`` means the class
 # already defines that accessor by hand (``found``'s property also merges
 # predicate hits) or deliberately has none (``pruned`` has no proxy accessor —
-# ``docs/advanced-topics/rust_engine.rst`` documents exactly five). Adding a
+# ``docs/advanced-topics/rust_engine.rst`` documents the proxy set). Adding a
 # stash here wires up both halves at once, which is the point: the accessors
 # used to be hand-written one-liners, so a new stash could reach one list and
 # be forgotten in the other.
@@ -1133,7 +1133,7 @@ class RustExplorationManager(
     # ``_disk_key_cache`` (MD5-of-binary memo) is provided by RustDiskCacheManager.
 
     # Class-level cache for blank_state objects keyed by (binary_path, addr).
-    # blank_state() is expensive (~1ms); caching + copy() is <0.1ms.
+    # blank_state() pays plugin initialization; caching + copy() is far cheaper.
     _blank_state_cache: dict[tuple, angr.SimState] = {}
     _blank_state_cache_max = 10
 
@@ -1141,7 +1141,7 @@ class RustExplorationManager(
     # cle.Loader instance. The output is a pure function of loader state,
     # so reusing it across Callable-spawned RustExplorationManagers on the
     # same project skips the per-init `loader.memory.load` + `map_memory_batch`
-    # cost (~36ms for mma_howtouse, see angr-i9f2). Value is a dict with
+    # cost (significant for mma_howtouse, see angr-i9f2). Value is a dict with
     # 'batch_pages' (list of (page_addr, bytes, perms)) and 'lazy_regions'
     # (list of (start, len)). WeakKeyDictionary auto-evicts entries when
     # the Project/Loader is garbage-collected, so we avoid stale hits if
@@ -1911,7 +1911,7 @@ class RustExplorationManager(
         # Multi-stage explore reuse: if the initial state came from a previous
         # RustExplorationManager for the same project, reuse the old Rust manager
         # instead of creating a new one. This avoids lossy constraint transfer
-        # that fails after ~50 stages (Z3 dedup causes UNSAT, claripy loses constraints).
+        # that fails after many stages (Z3 dedup causes UNSAT, claripy loses constraints).
         self._reused_from = None
         if active_states:
             _single = active_states[0] if isinstance(active_states, (list, tuple)) else active_states
@@ -2056,8 +2056,8 @@ class RustExplorationManager(
         """Tell Rust which pages ``_cb_fetch_page`` could actually serve.
 
         angr-gorvf.4.6: every page the run loop still fetches on the ZeroPy
-        FAIL benches is a lazy-stack page Python DECLINES (measured: 84/84
-        across the four benches whose whole residual GIL was this one site).
+        FAIL benches is a lazy-stack page Python DECLINES (measured: every one,
+        across the benches whose whole residual GIL was this one site).
         Rust paid a GIL attach per fetch just to be told no. Python's page
         universe is frozen after ``_sync_extra_python_pages`` hands Rust every
         page it can serve, so we can snapshot the servable set once here and
@@ -2105,7 +2105,7 @@ class RustExplorationManager(
         # backer, materializing the page on first touch. Such a page is absent
         # from ``_pages`` until something reads it, so a universe built from
         # ``_pages`` alone would let Rust synthesize a filler over real binary
-        # bytes. (Measured when it did: csgames2018 lost 27% — the fabricated
+        # bytes. (Measured when it did: csgames2018 regressed — the fabricated
         # symbols turned concrete loads symbolic and dragged in solver work and
         # SimProcedure bounces.)
         if hasattr(callbacks, "set_python_page_universe"):
@@ -2152,7 +2152,7 @@ class RustExplorationManager(
                 f"  Avg per call: {s['callback_lift_block_total_ns'] / s['callback_lift_block_count'] / 1e3:.1f}us"
             )
         # angr-xtse.1: per-category Python callback timing for upper-bound
-        # speedup analysis. All five paths are instrumented from the public
+        # speedup analysis. Every path below is instrumented from the public
         # _handle_* entry points in rust_callback_dispatch.py.
         for label, key in (
             ("Syscall", "syscall"),
@@ -2753,7 +2753,7 @@ class RustExplorationManager(
 
         angr-gorvf.4.5: the load-based path builds a 32768-bit AST for the whole
         page just to answer "is it symbolic?". Every page the ZeroPy FAIL benches
-        still fetch is a lazy-stack page that IS symbolic (measured: 7/7 on
+        still fetch is a lazy-stack page that IS symbolic (measured: every one on
         google2016_unbreakable_1) and therefore gets DECLINED right after — so
         the AST was pure GIL cost. Classify off ``symbolic_data`` /
         ``symbolic_bitmap`` / ``concrete_data`` instead, the same fast path
@@ -2813,7 +2813,7 @@ class RustExplorationManager(
                     # — Rust keeps serving it through the per-load memory_load
                     # callback, which preserves the AST. Concretizing it here was
                     # pure waste: a `solver.eval` of a 32768-bit symbolic AST (a
-                    # full Z3 solve; 745ms of the 788ms callback GIL on
+                    # full Z3 solve; nearly all of the callback GIL on
                     # google2016_unbreakable_1) whose result was then thrown away
                     # by `fetch_pages_batch`, which skips every !is_mapped entry.
                     # `_cb_fetch_page` already declined without evaluating.
@@ -3077,7 +3077,7 @@ class RustExplorationManager(
         """Shared body of every ``_cb_inspect_*`` callback (angr-12jjk.28).
 
         Forwards to :meth:`_dispatch_inspect_event` with `attrs` and
-        contains the error handling all 18 event callbacks used to
+        contains the error handling every event callback used to
         hand-roll. Each `_cb_inspect_*` is then just its docstring plus the
         per-event attr names, which is the only thing that actually differs
         between them.
@@ -3650,8 +3650,8 @@ class RustExplorationManager(
     def _get_cached_blank_state(self, addr: int) -> angr.SimState:
         """Get a blank state, using class-level cache when possible.
 
-        blank_state() is expensive (~1ms) due to plugin initialization.
-        Caching + copy() is <0.1ms.
+        blank_state() is expensive due to plugin initialization.
+        Caching + copy() is far cheaper.
         """
         binary_path = getattr(self._project.loader.main_object, "binary", None) or ""
         cache_key = (binary_path, addr)
@@ -3712,7 +3712,7 @@ class RustExplorationManager(
         # when caching is ineligible — no binary path, or user-symbolic data
         # that blank_state can't round-trip. The digest's full-page
         # ``solver.eval(cast_to=bytes)`` resolves default-fill symbolic bytes
-        # and cost ~0.10s + ~80 MB RSS on a state that never caches
+        # and costs a full-page solve plus its RSS on a state that never caches
         # (cmu_binary_bomb seeds symbolic stdin -> _state_has_user_symbolic
         # True -> caching off). Gate on the same cheap conditions the key
         # functions use so we only pay for the digest when it can matter
@@ -3867,7 +3867,7 @@ class RustExplorationManager(
         return f"{cache_key}:{input_digest}" if input_digest else cache_key
 
     def _try_in_memory_init_cache(self, state: angr.SimState, cache_key: str) -> angr.SimState | None:
-        """Try the per-process init cache (~180ms savings). Returns ready state or None."""
+        """Try the per-process init cache (skips the Python init). Returns ready state or None."""
         if not cache_key or cache_key not in RustExplorationManager._init_cache:
             return None
         cached = RustExplorationManager._init_cache[cache_key]

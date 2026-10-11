@@ -26,7 +26,7 @@
 //!    `require_callback!` — do NOT return `Ok(())` or default values when
 //!    the hook is unset.
 //!
-//!    **Exception: the `call_inspect_*` family** (18 methods in
+//!    **Exception: the `call_inspect_*` family** (every method in
 //!    `inspect.rs`, all routed through
 //!    `PythonCallbacks::with_inspect_cb`). `state.inspect` breakpoints are
 //!    *optional by design* — a state with no breakpoint registered for an
@@ -61,13 +61,13 @@
 //!    written-memory sense; it is unrelated to the VEX *dirty helper*
 //!    calls that [`PythonCallbacks::dirty_call`] dispatches.)
 //!
-//! 4. **Per-state sync helpers must reach all four export paths** — any
+//! 4. **Per-state sync helpers must reach every export path** — any
 //!    sync helper added to the Rust manager (memory, registers,
-//!    callstack, mmap_base, posix_brk) must be wired into all four
-//!    Python export paths in `_materialize_single_state`
+//!    callstack, mmap_base, posix_brk) must be wired into every
+//!    Python export path in `_materialize_single_state`
 //!    (cached / parent-root / stepping / snapshot fallback). The
 //!    callstack sync follows that pattern. If a new
-//!    FFI sync method is exposed here without updating all four paths,
+//!    FFI sync method is exposed here without updating every path,
 //!    some stash configurations will silently miss the sync.
 //!
 //! 5. **`invariant-rust-solver-fallback-class`** — Python's
@@ -82,9 +82,10 @@
 //!
 //! 6. **`avoid-hasattr-lazy-init`** — `hasattr(state, plugin_name)` on
 //!    angr `SimState` triggers `__getattr__` and lazy-initializes the
-//!    plugin (`heap` plugin = ~80 ms first-touch). The Python callback
-//!    paths use `plugin_name in state.plugins` for the O(1) dict check
-//!    instead. Anything Rust does that prompts Python plugin probing
+//!    plugin (the `heap` plugin's first touch maps its whole heap
+//!    region). The Python callback paths use `plugin_name in
+//!    state.plugins` for the O(1) dict check instead. Anything Rust
+//!    does that prompts Python plugin probing
 //!    (e.g., new SimProcedure dispatch helpers) should preserve that
 //!    discipline on the Python side.
 //!
@@ -134,7 +135,7 @@ use crate::symbolic::RustBV;
 ///
 /// Also the return shape of every single-value data callback that decodes
 /// through `dispatch::extract_data_tuple` (memory load, register get, dirty
-/// call), so the four decode sites cannot drift apart.
+/// call), so the decode sites cannot drift apart.
 pub(crate) type BatchLoadEntry = (Vec<u8>, bool, Option<Py<PyAny>>);
 
 mod config;
@@ -165,7 +166,7 @@ pub(crate) use inspect_bits::InspectBit;
 /// let cb = require_callback!(self.lift_block);
 /// ```
 ///
-/// It expands to the `as_ref().ok_or_else(...)?` idiom the nine hard-erroring
+/// It expands to the `as_ref().ok_or_else(...)?` idiom the hard-erroring
 /// slots used to hand-write, and **derives the message from the field ident**,
 /// so a slot renamed without its error string — or a copy-pasted guard left
 /// naming the slot it was copied from — is no longer expressible. That drift
@@ -665,8 +666,8 @@ impl PythonCallbacks {
     /// This is the run loop's entry gate (`run_loop_single`, `run_loop_wave`,
     /// `run_loop_steady` all reject a holder that is not ready), and it is
     /// deliberately narrower than "every callback `dispatch.rs` hard-errors
-    /// on" — nine slots have an unset arm that returns
-    /// `Err("<name> callback not set")`, not three. The other six
+    /// on" — more slots than these three have an unset arm that returns
+    /// `Err("<name> callback not set")`. The others
     /// (`fetch_page`, `dirty_call`, `resolve_function`,
     /// `memory_store_symbolic_value`, `memory_store_symbolic_full`,
     /// `memory_load_symbolic_full`) are reachable only through a call site

@@ -247,8 +247,8 @@ fn set_page_permissions_reports_failure_for_unmapped_page() {
 /// 65537 pages twice and reports success, with it the request is refused
 /// untouched.
 ///
-/// The setup eagerly allocates one `MemoryPage` buffer per page (~256 MiB,
-/// ~0.2s) — deliberate, and the reason there is exactly one test of this
+/// The setup eagerly allocates one `MemoryPage` buffer per page (~256 MiB)
+/// — deliberate, and the reason there is exactly one test of this
 /// shape rather than one per boundary. The at-cap/over-cap edge itself is
 /// pinned cheaply by `bounded_value_cap_is_inclusive` in `mod_tests`.
 #[test]

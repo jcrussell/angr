@@ -194,7 +194,7 @@ impl<'a> VEXInterpreter<'a> {
     /// Every variant goes through `hash_bv` rather than shortcutting leaves to
     /// their raw `id` / `value`. An untagged leaf key would let a
     /// `Concrete { value: 5 }` and a `Symbolic { id: 5 }` share a cache slot —
-    /// harmless today, since all three call sites early-return on
+    /// harmless today, since every call site early-returns on
     /// `addr.as_u64()` (`Some` for both `Concrete` and `Constrained`) and so
     /// only ever reach here with a `Symbolic` or `Expression`, but a foot-gun
     /// for any future caller that skips that filter. Note that the
@@ -243,7 +243,7 @@ impl<'a> VEXInterpreter<'a> {
                 2u8.hash(hasher);
                 id.hash(hasher);
                 // `value` participates even though a TOP-LEVEL Constrained can
-                // never reach here (all three call sites early-return on
+                // never reach here (every call site early-returns on
                 // `addr.as_u64()`, which is `Some` for this variant): the
                 // recursion below descends into nested operands, where no such
                 // filter applies. Dropping it made

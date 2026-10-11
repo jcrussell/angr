@@ -84,8 +84,8 @@ impl RustExplorationManager {
         //
         // CRITICAL: Deferred forks diverged BEFORE the callback, so they should
         // NOT inherit callback constraints. Use pre_callback_snapshot as fork base.
-        // Only create fork_base when there are deferred forks — state.fork() costs ~3ms
-        // due to Z3 solver clone, and most callbacks have zero deferred forks.
+        // Only create fork_base when there are deferred forks — state.fork() clones
+        // the Z3 solver, and most callbacks have zero deferred forks.
         //
         // ORDER MATTERS (angr-khpsh): the snapshot-less fallback `state.fork()`
         // must run BEFORE apply_deferred_fork_constraints below, otherwise the
@@ -383,7 +383,7 @@ impl RustExplorationManager {
         // snapshot-less deferred fork gets built on a guard-polluted solver
         // and a reachable path is falsely pruned as UNSAT (angr-ph300.9 for
         // the branch guard, angr-khpsh for the taken-path constraints). Only
-        // pay the ~3ms fork cost when there are deferred forks to materialize.
+        // pay the solver-clone fork cost when there are deferred forks to materialize.
         let fork_base = if pending.deferred_forks.is_empty() {
             drop(pending.pre_callback_snapshot); // explicitly drop unused snapshot
             None

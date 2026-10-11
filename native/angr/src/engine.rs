@@ -465,7 +465,7 @@ fn clear_ast_cache() {
 /// Raise a typed [`RustExecError`] for unit tests.
 ///
 /// Lets the pytest.raises tests cover exception variants whose real-path
-/// trigger is gated behind sibling beads (e.g. the 48 syscall panics in
+/// trigger is gated behind sibling beads (e.g. the syscall panics in
 /// angr-tkbr.1). When tkbr.1 lands, syscall handlers raise these directly
 /// and this helper becomes redundant — keep it as the API smoke test.
 ///

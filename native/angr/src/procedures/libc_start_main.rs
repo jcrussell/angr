@@ -9,8 +9,8 @@
 //! __libc_start_main reached during Rust exploration is `after_main`, and
 //! deadending matches the Python semantics exactly.
 //!
-//! Eliminates ~47 Python callbacks/run on ais3_crackme (each ~1.3ms) and
-//! any other bench that completes main multiple times.
+//! Eliminates a Python callback per `after_main` hit — dozens per run on
+//! ais3_crackme — and on any other bench that completes main multiple times.
 //!
 //! If the Python init was somehow bypassed and the entry-point case (`run`)
 //! were hit here, the state would be lost. The init cache path makes that

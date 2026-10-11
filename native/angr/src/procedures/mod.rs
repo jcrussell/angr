@@ -178,7 +178,7 @@ pub(crate) fn extract_concrete_arg(arg: &RustBV, name: &str) -> Result<u64, Proc
 /// Every native proc that walks or copies a caller-supplied number of bytes
 /// caps that work so a bogus (or merely huge) argument can't stall the engine;
 /// past the cap the honest answer is "Python's turn", not a silently truncated
-/// result. This helper owns the two conventions those ~15 sites used to
+/// result. This helper owns the two conventions those sites used to
 /// re-derive by hand:
 ///
 /// - the error variant is always [`ProcedureError::MaxIterations`] — never
@@ -201,7 +201,7 @@ pub(crate) fn check_max(n: u64, max: usize) -> Result<(), ProcedureError> {
 
 /// Build a native procedure's return value at the architecture word width.
 ///
-/// ~56 sites across `procedures/` hand-wrote
+/// Sites across `procedures/` hand-wrote
 /// `RustBV::concrete(v as u128, state.arch().bits())` — a heap pointer, an fd,
 /// a byte count, or an errno-style `-1` widened to the ABI return register.
 /// Funnelling them through one helper keeps the "sized to the **return

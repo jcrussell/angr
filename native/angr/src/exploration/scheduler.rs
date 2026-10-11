@@ -74,7 +74,7 @@
 //! * [`worker`] (`scheduler_worker.rs`) — the per-worker dispatch/steal/offload
 //!   loops the pool's threads run (predates this split, angr-nbim4.2).
 //!
-//! Because the four are siblings rather than one file, the struct internals they
+//! Because these are siblings rather than one file, the struct internals they
 //! share (`WorkTransport` / `WaveJob` / `RunSession` fields, the counter fields)
 //! are `pub(super)` — i.e. still scheduler-module-private, just spelled out.
 #![deny(clippy::unwrap_used, clippy::expect_used)]

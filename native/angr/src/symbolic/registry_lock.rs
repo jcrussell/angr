@@ -1,6 +1,6 @@
-//! Lock-ordering guard for [`super::SymbolicIdentityRegistry`]'s four maps.
+//! Lock-ordering guard for [`super::SymbolicIdentityRegistry`]'s maps.
 //!
-//! The registry keeps four independent `RwLock`s and its mutators
+//! The registry keeps one independent `RwLock` per [`RegistryMap`] and its mutators
 //! (`register`, `register_by_id`, `clear`, `remove`, `retain`) each touch
 //! several of them. Two rules kept them deadlock-free and cheap:
 //!
@@ -152,7 +152,7 @@ mod tests {
         let _second = write_ordered(&b, RegistryMap::IdToName);
     }
 
-    /// The angr-sqfj8.106 shape: `retain` holding all four maps at once.
+    /// The angr-sqfj8.106 shape: `retain` holding every map at once.
     #[test]
     #[should_panic(expected = "co-held write guards exceeded")]
     fn test_three_co_held_guards_panics() {

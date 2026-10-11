@@ -531,7 +531,7 @@ pub(super) enum SymFlagsError {
 ///
 /// The match is deliberately exhaustive (no `_` arm): a new `OpCategory` must
 /// be given a symbolic builder, not silently routed to the Python ccall path —
-/// angr-9ke6b.88 measured that fallback at 30x wall-clock on a real bench.
+/// angr-9ke6b.88 measured that fallback as far slower wall-clock on a real bench.
 pub(super) fn sym_flags_for_category(
     category: OpCategory,
     nbits: u32,

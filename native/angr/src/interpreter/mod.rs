@@ -554,9 +554,9 @@ impl<'a> VEXInterpreter<'a> {
     /// declined it. If Python *also* has no page there, the only answer it
     /// could give is an unconstrained filler (angr's `filler_mixin` default) —
     /// so Rust mints that filler itself and skips the crossing. Measured: this
-    /// is 100% of the `memory_load` crossings on the five ZeroPy benches whose
-    /// sole residual GIL was this site — all of them the `fs:[0x28]` stack
-    /// canary or another unmapped low address.
+    /// is every `memory_load` crossing on the ZeroPy benches whose sole
+    /// residual GIL was this site — all of them the `fs:[0x28]` stack canary
+    /// or another unmapped low address.
     ///
     /// The oracle is `python_has_page`, NOT the `python_can_serve_page` set
     /// from angr-gorvf.4.6 — those answer different questions, and using the

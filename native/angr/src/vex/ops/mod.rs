@@ -19,7 +19,7 @@
 //! dispatch table, not by guest data:
 //!
 //!   * `float_minmax_symbolic` — reached only through
-//!     `VEXOps::vec_float_lane_op`, whose nine call sites each pass a
+//!     `VEXOps::vec_float_lane_op`, whose call sites each pass a
 //!     fixed-size array literal matching the op's `arity()` (`&[left, right]`
 //!     for `FMin`/`FMax`).
 //!   * `VEXOps::concat_le_elements` — every caller fills its `elements` vec in

@@ -19,7 +19,7 @@
 //!   `solver` rather than a child of it (angr-8ucb3), so this module's
 //!   `forbid(unsafe_code)` below cannot reach it;
 //! - [`handle_api`]: the handle-based claripy-bypass API (symbol-table
-//!   lifecycle plus the 33 `op_*` arithmetic wrappers — 25 of which route
+//!   lifecycle plus the `op_*` arithmetic wrappers — most of which route
 //!   through its shared `binop` helper, the rest through `opt_op`).
 //!
 //! Both submodules add their items to *this* type, so the split is purely
@@ -86,7 +86,7 @@ impl From<BridgeError> for PyErr {
 /// miss (`symbol_table().get(id)` / `op_*` returning `None`). Standardized on
 /// `PyValueError` (a bad argument value, mirroring `From<BridgeError>`'s
 /// `InvalidArgs` mapping) so Python callers can reliably `except ValueError`
-/// across all sites, and always names the offending id(s) — previously the 34
+/// across all sites, and always names the offending id(s) — previously the
 /// `op_*` sites raised a bare `PyRuntimeError` with no id (angr-ghwsd.1).
 ///
 /// Pass every handle id the operation dereferenced; the message reports them
@@ -137,7 +137,7 @@ impl From<BinaryOpError> for PyErr {
 
 /// Storage for SymContext: either owned or shared via Rc.
 /// Shared mode allows Python callbacks to use the pending state's solver
-/// directly (O(1)) instead of forking it (~3ms Z3 clone per callback).
+/// directly (O(1)) instead of forking it (a full Z3 solver clone per callback).
 ///
 /// `Owned` holds `SymContext` inline (the common path); `Shared` is a
 /// thin `Rc<RefCell<…>>` pointer. Boxing `Owned` to equalize variants
@@ -994,7 +994,7 @@ impl RustSolverContext {
     /// Create a RustSolverContext that shares the solver from a state's `Rc<RefCell<SymContext>>`.
     ///
     /// This is O(1) — just an Rc clone (reference count increment) instead of
-    /// a full Z3 solver clone (~3ms). The shared solver writes constraints directly
+    /// a full Z3 solver clone. The shared solver writes constraints directly
     /// to the pending state, eliminating the need for post-callback constraint sync.
     ///
     /// Safety: Only use when Rust exploration is suspended (during Python callbacks).

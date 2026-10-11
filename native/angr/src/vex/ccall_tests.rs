@@ -801,7 +801,7 @@ fn rflags_c_inc_dec_symbolic_dep_preserves_carry() {
 
 /// angr-0jh0j.71: the symbolic `*_calculate_eflags_all` branch used to
 /// enumerate Sub/Add/Logic by hand and drop every other category to the Python
-/// ccall (30x wall-clock, angr-9ke6b.88), even though `sym_flags_for_category`
+/// ccall (far slower wall-clock, angr-9ke6b.88), even though `sym_flags_for_category`
 /// already built flags for all of them. Every non-Copy cc_op both arches decode
 /// must now resolve natively; iterating the decoder rather than a hand-written
 /// list means a newly mapped cc_op is covered the day it lands.

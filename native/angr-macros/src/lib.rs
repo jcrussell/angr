@@ -292,7 +292,7 @@ fn path_ends_with(path: &syn::Path, name: &str) -> bool {
 }
 
 /// Policy values [`derive_merge_policy`] accepts. Each names a treatment
-/// implemented in `state/fork.rs::RustSimState::merge`. The five policies in
+/// implemented in `state/fork.rs::RustSimState::merge`. The policies in
 /// [`MECHANICAL_MERGE_POLICIES`] are *generated* by this derive as
 /// `merge_field_<name>()` methods that `merge` must call, so the label and the
 /// merge line can no longer disagree; the rest (`delegate`, `computed`,
@@ -1257,8 +1257,8 @@ mod merge_policy_tests {
         expand(input).replace(' ', "")
     }
 
-    /// One field per mechanical policy, so a single expansion covers all five
-    /// generated bodies.
+    /// One field per mechanical policy, so a single expansion covers every
+    /// generated body.
     fn all_mechanical() -> proc_macro2::TokenStream {
         quote! {
             struct S {

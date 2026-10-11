@@ -45,14 +45,14 @@ mod registry_lock;
 ///
 /// The registry has no production GC caller (see [`SymbolicIdentityRegistry::retain`]
 /// for what one would still cost), so an exploration that
-/// mints fresh symbols without bound grows all four maps without bound, each
+/// mints fresh symbols without bound grows every map without bound, each
 /// entry pinning a claripy AST alive from the Rust side. That is invisible
 /// today; warning once per order of magnitude makes it loud instead of
 /// silently degrading, and gives a future GC a metric to gate on.
 ///
 /// **Measured cost per entry ≈ 1.7 KB** (angr-9ke6b.224): ~1.44 KB
 /// is the pinned claripy leaf (RSS delta over 100k `BVS(.., 32,
-/// explicit_name=True)` leaves), the remaining ~0.3 KB the four Rust maps. So
+/// explicit_name=True)` leaves), the remaining ~0.3 KB the Rust maps. So
 /// these thresholds are ~170 MB and ~1.7 GB of resident memory. A third
 /// order-of-magnitude step used to sit at 10 million entries — ~17 GB, past the
 /// point any host survives to log it — so it is gone; 1 million is the last
@@ -273,7 +273,7 @@ impl SymbolicIdentityRegistry {
         py_ast: Py<PyAny>,
     ) {
         // Store mappings. Each guard is scoped to its own statement so no two
-        // of the four maps are ever write-locked at once here — `remove` and
+        // of the maps are ever write-locked at once here — `remove` and
         // `retain` acquire them in a different order (angr-zi35f.12), and
         // `write_ordered` asserts that this method never co-holds two.
         write_ordered(&self.py_hash_to_rust_id, RegistryMap::HashToId).insert(py_hash, rust_id);
@@ -490,7 +490,7 @@ impl SymbolicIdentityRegistry {
         let mut id_to_py = write_ordered(&self.rust_id_to_py, RegistryMap::IdToPy);
 
         if id_to_py.remove(&rust_id).is_some() {
-            // Drop the id→Rust-name entry too, so all four maps stay symmetric
+            // Drop the id→Rust-name entry too, so every map stays symmetric
             // under removal (angr-4xaga.3). Ids are process-global and never
             // reused, so a leaked entry is not a correctness bug today — but a
             // symmetric mutator keeps the invariant honest for any future GC
@@ -599,7 +599,7 @@ impl SymbolicIdentityRegistry {
         }
         id_to_py.retain(|id, _| !to_remove.contains(id));
 
-        // Drop the id→Rust-name entries too (angr-4xaga.3): keep all four maps
+        // Drop the id→Rust-name entries too (angr-4xaga.3): keep every map
         // symmetric so a wired GC caller cannot leak this map.
         {
             let mut id_to_name = write_ordered(&self.rust_id_to_name, RegistryMap::IdToName);

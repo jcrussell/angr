@@ -198,8 +198,8 @@ class RustSolverFallback:
         self._original_max = state.solver.max
         self._original_satisfiable = state.solver.satisfiable
         # Cache the forked Rust solver: fork_state_solver() clones the Z3
-        # solver (~3ms), so caching saves significant time when the solve
-        # script calls eval() many times (ais3 ~100 byte evals).
+        # solver, so caching saves significant time when the solve
+        # script calls eval() many times (ais3 evals byte by byte).
         self._cached_rust_ctx = None
         # angr-pxq0i: owning thread id of ``_cached_rust_ctx``, captured on
         # the same thread that forks it. Required by ``_release_owned_ctx`` to
@@ -594,9 +594,9 @@ class RustStateExportMixin:
         restore, and a posix weakref fix.
 
         INVARIANT (mirrored in ``callbacks/mod.rs`` module invariant 4,
-        "Per-state sync helpers must reach all four export paths"): every
+        "Per-state sync helpers must reach every export path"): every
         per-state sync helper — memory, registers, callstack, mmap_base, posix_brk —
-        MUST be wired into ALL FOUR paths below. Path 1 routes through
+        MUST be wired into EVERY path below. Path 1 routes through
         ``_sync_cached_state``; paths 2 and 3 call the individual
         ``_sync_rust_*`` helpers explicitly; path 4 calls them after the
         snapshot. Adding a new per-state sync that only updates one path
@@ -902,7 +902,7 @@ class RustStateExportMixin:
 
         No-op when the heap plugin was never materialized on the callback state
         — a plain dict membership test, so a proc that never touches the heap
-        pays nothing. That matters: materializing the plugin costs ~65ms because
+        pays nothing. That matters: materializing the plugin is expensive because
         SimHeapBase.init_state maps the 8MB heap region.
 
         Take max(python, rust) for the same reason the inbound syncs do: never

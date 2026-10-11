@@ -147,7 +147,7 @@ fn test_min_max_use_cached_model_unsigned() {
     // There is deliberately NO companion `MISS delta == 0` assertion: MISS is
     // the same process-wide counter, so any *other* test in the binary that
     // calls min()/max() without a cached model bumps it concurrently and the
-    // exact-equality form fails at random (it did, ~25% of runs). Only >=
+    // exact-equality form fails at random (it did, intermittently). Only >=
     // bounds are sound against a global counter.
     assert!(
         hit_after - hit_before >= 2,
@@ -1095,7 +1095,7 @@ const HARD_FACTORING_RLIMIT: u32 = 100_000;
 /// --release` run that timer has been observed *not* to fire: a gdb backtrace
 /// on a wedged run showed the thread genuinely grinding inside
 /// `Z3_solver_check -> smt::context::search -> bounded_search -> propagate`
-/// for 20.5h under a 1ms budget. `rlimit` is a *deterministic* budget polled by
+/// for hours under a 1ms budget. `rlimit` is a *deterministic* budget polled by
 /// the search loop itself (`reslimit::inc`) with no thread involved, so it
 /// bounds the check regardless of timer behavior.
 ///

@@ -369,7 +369,7 @@ impl RustExplorationManager {
     /// SimProcedure entry. When a hook address IS also a find address the flush
     /// would land it in FOUND instead, so the per-stash attribution can be off
     /// by that state while the total stays exact. That asymmetry is deliberate:
-    /// `found_count` gates control flow (`>= num_find` in all three run loops
+    /// `found_count` gates control flow (`>= num_find` in every run loop
     /// and in `push_found_capped`), and a parked bounce is a live frontier state
     /// whose callback has not run yet — not a collected result — so inflating
     /// the found count could end an explore before the state is ever collected.

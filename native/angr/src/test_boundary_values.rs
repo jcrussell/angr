@@ -3,7 +3,7 @@
 //! in the "How many audit-found bugs could a more robust test suite have
 //! caught?" test-coverage plan).
 //!
-//! ~18 call sites scattered across the crate do guest-controlled
+//! Call sites scattered across the crate do guest-controlled
 //! address/offset/fd/width arithmetic that must saturate, wrap, or reject
 //! rather than silently overflow — the angr-03vl4
 //! integer-overflow/wraparound bug family (e.g. angr-03vl4.34/.35/.36/.37/
@@ -64,8 +64,8 @@
 /// 4- or 8-byte-aligned — no single field's own bytes straddle the wrap —
 /// and the doubling spread (7, 15, 31, 63, 127) means at least one entry
 /// leaves a struct's leading field(s) intact while wrapping a later one for
-/// any struct up to a couple hundred bytes, not just the three call sites
-/// that motivated adding them.
+/// any struct up to a couple hundred bytes, not just the call sites that
+/// motivated adding them.
 pub(crate) fn boundary_addresses() -> Vec<u64> {
     vec![
         0,

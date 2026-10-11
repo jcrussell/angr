@@ -40,14 +40,14 @@ const DEFAULT_PPID: u64 = 1336;
 /// (see `procedures/linux_kernel/getuid.py` etc.).
 ///
 /// `pub(crate)` because the same constant backs the PLT-libc-call side of
-/// these four getters: `procedures/getid.rs` imports it rather than keeping a
+/// the uid/gid getters: `procedures/getid.rs` imports it rather than keeping a
 /// second copy in sync (angr-5mnx3.35).
 pub(crate) const DEFAULT_UID_GID: u64 = 1000;
 
 /// Macro to declare a zero-arg constant-return syscall handler.
 ///
 /// Cuts the boilerplate for `name() / num_args() == 0 / call() -> Continue { ret }`
-/// for the seven identity getters. Each handler is a unit struct so the
+/// for the identity getters. Each handler is a unit struct so the
 /// registry can key on a unique type per name.
 macro_rules! constant_syscall {
     ($ty:ident, $label:expr, $ret:expr) => {

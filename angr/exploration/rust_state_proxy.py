@@ -234,7 +234,7 @@ def _resolve_none_extremum(kind, expr, constraints, extra_constraints, signed, s
     proxy ``min``/``max`` sites previously raised ``UnsatError`` on any
     ``None``, so a valid >128-bit bound was mislabeled unsat and the state was
     killed (angr-fjhk9). Disambiguate using the same logic as the
-    ``RustSolverFallback`` twin (angr-8iv6j), keeping the four solver-shim
+    ``RustSolverFallback`` twin (angr-8iv6j), keeping the solver-shim
     sites in sync (``invariant-rust-solver-fallback-class``):
 
     * genuinely unsat -> raise ``claripy.errors.UnsatError``. This preserves
@@ -2353,7 +2353,7 @@ class _RustCallStackFramesMixin:
     installed on SimProcedure callback states) present the same top-frame
     accessor surface over the same ``get_state_call_stack(state_id)`` FFI
     read. Implementors supply ``_mgr`` and ``_state_id``; the frame fetch,
-    ``len()``, and the seven top-frame properties live here.
+    ``len()``, and the top-frame properties live here.
 
     Frames are read live on every ``_frames`` access (top frame first,
     matching angr's CallStack iteration order — the Rust engine stores them

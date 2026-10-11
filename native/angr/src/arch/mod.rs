@@ -109,7 +109,7 @@ pub trait Arch: Send + Sync {
     /// R11/X29/R30 fails there, the same integrity-sweep role `register_name`
     /// plays. Deleting it would silently drop that arm.
     ///
-    /// The `Option` is future-proofing, not a live case: all six arches return
+    /// The `Option` is future-proofing, not a live case: every supported arch returns
     /// `Some`. It exists for a frame-pointer-less target (a pure-RISC ABI that
     /// spends the register as a GPR), and a caller must therefore treat `None`
     /// as "this arch has no frame pointer", never as "unknown".
@@ -257,7 +257,7 @@ pub(crate) fn lookup_register_name(offset: u32, canonical: &[RegEntry]) -> Optio
         .map(|(n, _, _)| *n)
 }
 
-/// Generate the five name/offset/size trait methods of `Arch` from a
+/// Generate the name/offset/size trait methods of `Arch` from a
 /// per-arch `(canonical, aliases, register_names)` triple. Place inside
 /// `impl Arch for $Arch { ... }` blocks alongside the other arch fields.
 macro_rules! impl_arch_registers {

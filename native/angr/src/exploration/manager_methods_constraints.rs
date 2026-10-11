@@ -173,7 +173,7 @@ impl RustExplorationManager {
     ///
     /// Returns a RustSolverContext that shares the same Z3 solver as the
     /// pending state via Rc reference counting. This is O(1) instead of
-    /// the ~3ms Z3 solver clone in fork_pending_solver().
+    /// the full Z3 solver clone in fork_pending_solver().
     ///
     /// Constraints added through this solver go directly to the pending state,
     /// so post-callback constraint sync via add_constraints_to_pending() should

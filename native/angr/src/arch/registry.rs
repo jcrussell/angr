@@ -12,7 +12,7 @@ impl Clone for Box<dyn Arch> {
     fn clone(&self) -> Self {
         // This is a bit of a hack - we rely on architectures being singletons.
         // The dispatch is exhaustive: every `dyn Arch` implementor is one of
-        // the six supported singletons, so PPC32/PPC64/S390X can never be the
+        // the supported singletons, so PPC32/PPC64/S390X can never be the
         // dynamic type here. We delegate to `arch_from_vex` so the singleton
         // lookup table lives in exactly one place; it panics loudly rather
         // than silently mis-cloning should a new VexArch implementor appear.

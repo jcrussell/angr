@@ -28,7 +28,7 @@
 //! `RustSolverContext.get_solver_stats()`, which is what
 //! `run_single.py --dump-counters` / `--counters-json` render.
 //!
-//! Zero-cost when not read: an atomic `fetch_add` is ~1ns on x86.
+//! Zero-cost when not read: each bump is a single relaxed atomic `fetch_add`.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -36,7 +36,7 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 // =============================================================================
 // Global Z3 Solver Profiling Counters
 // =============================================================================
-// Zero-cost when not read: atomic fetch_add is ~1ns on x86.
+// Zero-cost when not read: each bump is a single relaxed atomic fetch_add.
 
 /// Total number of Z3 solver.check() calls.
 pub(crate) static Z3_CHECK_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -449,7 +449,7 @@ fn insert_query_class_stats(stats: &mut HashMap<String, u64>, counts: &[u64], na
     }
 }
 
-/// The three audit-added measurement counter groups, each paired with the
+/// The audit-added measurement counter groups, each paired with the
 /// `get_solver_stats()` key it is emitted under.
 ///
 /// These counters are pure measurement — nothing in the engine branches on

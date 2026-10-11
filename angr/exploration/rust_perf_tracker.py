@@ -70,7 +70,7 @@ class PerformanceTracker:
         "callback_simprocedure_replay_store_ns",
         "callback_simprocedure_replay_sym_ns",
         "callback_simprocedure_replay_sym_entries",
-        # angr-gorvf.9: the same four phases, restricted to the process's FIRST
+        # angr-gorvf.9: the same phases, restricted to the process's FIRST
         # SimProcedure crossing (one-time warmup). Subtract these from the
         # totals above to get steady-state per-crossing cost.
         "callback_simprocedure_first_state_create_ns",
@@ -179,9 +179,9 @@ class PerformanceTracker:
 
         ``store_ns`` covers both halves of the page (concrete blit + symbolic
         objects); ``sym_ns`` / ``sym_entries`` isolate the symbolic half, which
-        is what the per-page cost is actually made of — a page carries ~169
+        is what the per-page cost is actually made of — a page carries many
         symbolic objects on csaw_wyvern and they, not the concrete bytes, were
-        the 260ms.
+        the bulk of the replay cost.
         """
         self._stats["callback_simprocedure_replay_pages"] += 1
         self._stats["callback_simprocedure_replay_ffi_ns"] += ffi_ns

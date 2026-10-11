@@ -456,7 +456,7 @@ fn round_alloc_size(size: u64) -> u64 {
 /// Refusing outright (`checked_add` + `Option`, the shape
 /// `invariant-overflow-fix-refuse-not-saturate-identities` prefers for
 /// identities) would mean threading a failure through `heap_alloc`'s `-> u64`
-/// contract and its ten-odd `procedures/` call sites for a case no caller can
+/// contract and its `procedures/` call sites for a case no caller can
 /// currently reach — `procedures/malloc.rs` caps a single request at
 /// `MAX_ALLOC_SIZE` (1 MiB), so exhausting 64 bits would take ~2^44 requests.
 /// The `log::warn!` is what makes the saturation non-silent; the local guard

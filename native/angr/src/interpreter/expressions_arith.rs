@@ -12,7 +12,7 @@
 use super::*;
 use crate::vex::ir::IRCallee;
 
-/// The three binop families that parse to a concrete `IROp` but have no native
+/// The binop families that parse to a concrete `IROp` but have no native
 /// dispatch arm (`VEXOps::binop` returns `OpError::NotBinary`):
 /// `Iop_Perm{8,32}x*` (=> `VPerm`), `Iop_Pclmul*`, and `Iop_Crc32C`. All deterministic — Python's
 /// VEX engine models them exactly — so `eval_binop` routes them to Python

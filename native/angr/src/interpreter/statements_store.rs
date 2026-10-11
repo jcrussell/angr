@@ -453,7 +453,7 @@ impl<'a> VEXInterpreter<'a> {
     /// `rust_memory`.
     ///
     /// Ungated, the Python shadow really does absorb the store, so this extra
-    /// write would be pure cost — four fast-tier benches regressed 15-25% when
+    /// write would be pure cost — fast-tier benches regressed measurably when
     /// it ran unconditionally. Hence the `memory_is_rust_proxy` guard.
     pub(super) fn buffer_store_for_rust_memory(
         &mut self,

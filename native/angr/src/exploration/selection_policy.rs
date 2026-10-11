@@ -1,7 +1,7 @@
 //! Pluggable state-selection / scheduling policy seam (angr-a32jl.1).
 //!
 //! The exploration loop makes its ordering decisions about the `active`
-//! stash through the `SelectionPolicy` trait's four hooks:
+//! stash through the `SelectionPolicy` trait's hooks:
 //!   1. *select* — which active state to step next (the pop side),
 //!   2. *on_fork* — where a freshly-forked successor lands in the active
 //!      deque (the push side),
@@ -75,7 +75,7 @@
 //!
 //! Nothing in this module is reachable with untrusted input — a policy sees
 //! only the run loop's own `VecDeque<RustSimState>` — and every surviving
-//! `.expect` is one of exactly two invariant shapes:
+//! `.expect` is one of these invariant shapes, and only these:
 //!
 //!   * **Mutex poison guards** on the per-policy `Mutex` fields (`rng`, `seen`,
 //!     `key_cache`, `dispatched`) — unreachable in the shipped build; see the

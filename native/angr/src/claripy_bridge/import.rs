@@ -138,7 +138,7 @@ fn extended_width(op: &str, source_width: u32, extend_bits: u32) -> Result<u32, 
 ///
 /// This is a thin public wrapper around [`claripy_to_rustbv_depth`], which
 /// carries the recursion-depth guard (angr-2a3i9). Keeping this outer
-/// signature stable (no depth parameter) means the 10+ external call sites
+/// signature stable (no depth parameter) means the external call sites
 /// across interpreter/solver/prefetch never need to know about the guard —
 /// they always start a fresh descent at depth 0.
 pub(crate) fn claripy_to_rustbv(
@@ -532,17 +532,17 @@ fn claripy_to_rustbv_depth(
 /// Every one of those arms — arithmetic, bitwise, shift/rotate, comparison —
 /// had grown its own verbatim copy of the same shape: extract `args` into a
 /// 2-element list, reject any other arity, recurse into both operands at
-/// `depth + 1`, then call the matching `RustBV` method. Duplicating it 24
-/// times gave an op-specific typo (recursing twice into `args_list[0]`,
-/// forgetting `depth + 1`, naming the wrong op in the error) 24 places to
-/// hide; there is now exactly one.
+/// `depth + 1`, then call the matching `RustBV` method. Duplicating it per
+/// binary op gave an op-specific typo (recursing twice into `args_list[0]`,
+/// forgetting `depth + 1`, naming the wrong op in the error) one place per op
+/// to hide; there is now exactly one.
 ///
 /// `op_name` is the label used in the arity error and is passed explicitly
 /// rather than reusing the dispatched `op` string, because several arms match
 /// two claripy op-names at once (`"__floordiv__" | "UDiv"`) and report the
 /// canonical one.
 ///
-/// `apply` is a plain `fn` pointer, not an `impl Fn`, so all 24 call sites
+/// `apply` is a plain `fn` pointer, not an `impl Fn`, so every call site
 /// share a single instantiation of this function instead of monomorphizing
 /// one copy each.
 fn import_binary_op(

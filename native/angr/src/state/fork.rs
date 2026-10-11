@@ -152,7 +152,7 @@ pub(crate) fn call_stack_diverges(this: &RustSimState, others: &[&RustSimState])
 }
 
 impl RustSimState {
-    /// Clone the three Python-AST metadata maps so the parent and the fork hold
+    /// Clone the Python-AST metadata maps so the parent and the fork hold
     /// independent maps over shared AST handles.
     ///
     /// **GIL-free by construction** (angr-gorvf.4.2). The values are
@@ -276,7 +276,7 @@ impl RustSimState {
     /// monotonic ID, parent's ID is preserved on the parent),
     /// `arc-make-mut-cow` (registers/memory/hooks/environment/fs share Arc
     /// or persistent backing with the parent), and `state-metadata-rust-owned`
-    /// (the three `Py<PyAny>` metadata maps are cloned under the GIL).
+    /// (the `Py<PyAny>` metadata maps are cloned under the GIL).
     ///
     /// # Returns
     /// A new state with the same register/memory/constraint state.
@@ -524,7 +524,7 @@ impl RustSimState {
             }
         }
 
-        // Union the three Python-AST overlay maps across self + others
+        // Union the Python-AST overlay maps across self + others
         // (angr-ph300.51). `clone_py_metadata` seeds from self; each other's
         // entries are folded in, but a key already present is kept from the
         // earlier state (self wins over others; an earlier `others` entry wins
@@ -559,7 +559,7 @@ impl RustSimState {
             &self.removed_hooks,
             others.iter().map(|o| (&o.hooks, &o.removed_hooks)),
         );
-        // `sim_options` and the four `#[merge_policy = "union"]` booleans in
+        // `sim_options` and the `#[merge_policy = "union"]` booleans in
         // the struct literal below are two views of the same Python option set,
         // so they merge the same way: union / logical-OR. An option a branch
         // switched on stays on in the merged state rather than being reverted
