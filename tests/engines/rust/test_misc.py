@@ -2443,12 +2443,11 @@ class TestCgcReceiveStdinSync:
 
 
 class TestCgcEndToEndNativeDispatch:
-    """Integration test for angr-isru: pin the
-    ``docs/advanced-topics/rust_engine.rst`` claim that the CADET_00001
-    buffer-overflow phase "runs end-to-end under Rust".
+    """Integration test for angr-isru: the CADET_00001 buffer-overflow phase
+    runs end-to-end under Rust, with every syscall dispatched natively.
 
     Complements ``TestCgcReceiveStdinSync`` (which only asserts the crashing
-    input is non-empty) by proving the seven native CGC syscall handlers
+    input is non-empty) by proving the native CGC syscall handlers
     (``native/angr/src/syscalls/cgc.rs``) actually fired through the
     ``os_name=="cgc"`` dispatch table: ``stats["syscall_native_count"] > 0``
     with zero Python syscall fallbacks. Until this test, the only coverage of

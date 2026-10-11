@@ -11,7 +11,7 @@
 # What it does (in order):
 #   1. Remove angr/rustylib*.so so a missed rebuild surfaces as ImportError
 #   2. Remove build/ (setuptools intermediate dir)
-#   3. cargo clean (workspace-wide; native/angr is the only member)
+#   3. cargo clean (workspace-wide: native/angr and native/angr-macros)
 #   4. pip install -e . --no-build-isolation --no-deps  (rebuild the .so)
 #
 # Modes:

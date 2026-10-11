@@ -9,29 +9,20 @@
 # Cap the per-iteration systemd scope BELOW the box's total RAM (7G, no swap).
 # Default is 7G == whole machine, so any >7G process (e.g. a divergent
 # exploration) gets OOM-killed only after exhausting RAM, which kills the whole
-# `claude` session (0-byte output -> dead_session -> runner_terminal). This is
-# what failed run 20260613 iters 28-30 (a CADET explore leaked states; see bd
-# angr-027h / memory deferred-forks-unconstrained-oom). 6G leaves ~1G headroom
+# `claude` session (0-byte output -> dead_session -> runner_terminal); a leaking
+# CADET explore did exactly that (angr-027h, memory
+# deferred-forks-unconstrained-oom). 6G leaves ~1G headroom
 # so a runaway is killed sooner. NOTE: pytest/repro run in the SAME scope as
 # claude, so an OOM still ends the session — this is a backstop, not isolation.
 # Heavy/unbounded explores must self-cap (see MEMORY SAFETY in _footer.md).
 memory_limit_bytes = "6G"
 
 [gate]
-# The gate (tools/ralph-gate.sh, shared by the clean/ and dirty/ state hooks) runs
-# `cargo test --profile release-checked` ahead of the fast-tier benchmark
-# regression. release-checked (lto="off", codegen-units=16) matches CI's
-# rust_test job and replaces the old plain `cargo test --release` (fat LTO,
-# codegen-units=1), which measured ~181s to relink 4 test binaries from scratch
-# on iteration 211 — a touched-native iteration, which is most of them in this
-# loop. Measured 2026-08-07 under release-checked: ~43s warm (mostly actual
-# test run time, ~2500 tests) + ~33s bench = ~76s wall on a typical iteration;
-# ~89s for a one-time from-scratch target/release-checked/ dependency build
-# (paid once, the first run after this profile switch, since it's a separate
-# target dir from target/release/). All well under the old ~181s+32s figure.
-# 1200s keeps a slow/loaded box from tripping a timeout even on that cold
-# build. All other [gate] knobs keep their built-in defaults: soft_fail=true,
-# run_when="commits-only".
+# The gate is tools/ralph-gate.sh (shared by the clean/ and dirty/ state hooks);
+# its header lists the checks it runs and what each costs. 1200s keeps a
+# slow/loaded box from tripping a timeout even on a cold from-scratch
+# target/release-checked/ build. All other [gate] knobs keep their built-in
+# defaults: soft_fail=true, run_when="commits-only".
 timeout_secs = 1200
 
 [runner]

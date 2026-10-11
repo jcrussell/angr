@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Shared source-scanning helpers for the ``tools/audit_*.py`` baseline lints.
 
-The audit scripts in this directory all do the same two boring things before
-they can look for their own pattern: strip comments/string literals so prose
-cannot be mistaken for code, and skip Rust test modules. Keeping one copy here
-means a fix to the (deliberately simple) blanker benefits every lint.
+Before the importing audit scripts can look for their own pattern they need
+the same groundwork: strip comments/string literals so prose cannot be
+mistaken for code (``blank_noise``), skip Rust test modules
+(``is_test_file``), and name the ``fn`` a match sits in (``enclosing_fn``).
+Keeping one copy here means a fix to the (deliberately simple) blanker
+benefits every lint that imports it.
 
 Pure stdlib, no repo imports — the audit scripts run standalone in CI.
 """

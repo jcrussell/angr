@@ -7,8 +7,9 @@
 #
 # Three checks, cheapest-and-most-fundamental first:
 #
-#   1. make check-no-z3 — `cargo check -D warnings --all-targets` over the four
-#      `--no-default-features` combos CI's `rust_feature_flags` job gates.
+#   1. make check-no-z3 — `cargo check -D warnings --all-targets` over the
+#      `--no-default-features` combos CI's PR-time `rust_feature_flags_check`
+#      job gates (the nightly `rust_feature_flags` matrix runs them in full).
 #      Added after angr-nk8p0. That surface had rotted and been repaired four
 #      times (angr-1yge9.14, angr-cagbn, angr-c7xno.99, angr-9hkr6) for a
 #      structural reason: nothing in the local loop ever compiled a
@@ -58,8 +59,9 @@
 #      (as opposed to CI's rust_test job, which never fires here — no GitHub
 #      network) runs the suite with overflow-checks on.
 #
-#      Runs first: a failing unit test invalidates the bench numbers anyway, and
-#      failing fast keeps the gate short in the case we most want to catch.
+#      Runs before the benchmarks: a failing unit test invalidates the bench
+#      numbers anyway, and failing fast keeps the gate short in the case we
+#      most want to catch.
 #
 #      Hard-capped at CARGO_TEST_TIMEOUT_SECS (default 600s): a hung test (observed 2026-07-21,
 #      context_tests_solver::test_check_branch_feasibility_keeps_branch_on_timeout

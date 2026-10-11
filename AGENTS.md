@@ -78,21 +78,26 @@ Every gate runs in `ci.yml::rust_check` (the `steady_guard_checked` row is
 compile-time). Each script's docstring is the authority for what it
 matches and why; the right-hand column is the canonical API or doc to
 reach for. Exempt a genuine case with the marker, not `--update-baseline`;
-the baselines marked *empty* must stay empty. The scripts share comment
-blanking, test-file filtering and `fn`-name resolution via
-`tools/rust_source_utils.py` — add helpers there. Each runs `--self-test`
-ahead of the real check: a gate never seen to fail is indistinguishable
-from one that cannot.
+the baselines marked *empty* must stay empty. The newer scripts
+(`audit_silent_fallback_test_pairing.py`, `audit_rounding_mode_threading.py`,
+`audit_sp_default_zero.py`, `audit_overflow_wraparound.py`,
+`audit_page_shift.py`) import comment blanking, test-file filtering and
+`fn`-name resolution from `tools/rust_source_utils.py` — add helpers there
+— and CI runs each with `--self-test` ahead of the real check: a gate never
+seen to fail is indistinguishable from one that cannot.
+`check_line_citations.py`, `audit_silent_fallback.py` and
+`audit_satresult.py` predate that shape: they have their own scanners and
+no `--self-test`.
 
 | Gate | Catches | Exempt with | Canonical API / doc |
 |------|---------|-------------|---------------------|
 | `tools/check_line_citations.py` | `file:NNN` / "line NNN" citations in Rust comments and `docs/**/*.rst` (baseline) | `--update-baseline`, only for an external line number that cannot drift | rule 2 above |
-| `tools/audit_silent_fallback.py` | `return Ok(None)` / `.ok();` discards without a `// SILENT(cat-a\|b\|c): <why>` tag (baseline) | the tag | `silent_default!` doc in `native/angr/src/lib.rs`: `cat_b` logs debug, `cat_c` logs warn, there is no `cat_a` arm; `let _ = fallible` is denied by clippy (`let_underscore_must_use`), so spell expected discards `drop(expr)` + tag, or `#[expect(clippy::let_underscore_must_use, reason = "SILENT(cat-a): …")]` for `Copy` results. Wildcard `_ =>` arms are not auto-detected: at a trust boundary fail loud. |
+| `tools/audit_silent_fallback.py` | `return Ok(None)` / `.ok();` discards (bare, or as a `let` tail) without a `// SILENT(cat-a\|b\|c): <why>` tag (baseline) | the tag | `silent_default!` doc in `native/angr/src/lib.rs`: `cat_b` logs debug, `cat_c` logs warn, there is no `cat_a` arm; `let _ = fallible` is denied by clippy (`let_underscore_must_use`), so spell expected discards `drop(expr)` + tag, or `#[expect(clippy::let_underscore_must_use, reason = "SILENT(cat-a): …")]` for `Copy` results. Wildcard `_ =>` arms are not auto-detected: at a trust boundary fail loud. |
 | `tools/audit_silent_fallback_test_pairing.py` | a new `cat_b`/`cat_c` site in the diff with no regression test in the same diff (diff-based) | — | same macro doc |
-| `tools/audit_satresult.py` | raw `z3::SatResult::{Sat,Unsat}` matches | — | `SatOutcome::decided` in `symbolic/solver_build.rs` (`invariant-z3-unknown-not-unsat`): `Unknown` is never `Unsat` |
-| `#[angr_macros::steady_guard_checked]` | a `pub fn … &mut self` on a `#[pymethods] impl RustExplorationManager` block (`exploration/manager_methods*.rs`) lacking `#[steady_guarded]` or `#[steady_guard_exempt(reason = "…")]` → `compile_error!` | the `exempt` attribute with a reason | macro doc in `native/angr-macros/src/lib.rs`; `angr-macros-call-site-invariants` |
-| `tools/audit_rounding_mode_threading.py` | a closure in a `fn *_rm` that ignores its rounding-mode parameter, or an rm operand bound to `_rm` and dropped (`vex/`, `interpreter/`; empty baseline) | `rm-ignored: <why>` on the line above | `VEXOps::binop_with_rm` / `qop_with_rm`, `ops::float_arith::apply_rounding` |
-| `tools/audit_sp_default_zero.py` | an SP / return-address accessor chained to `.unwrap_or(0)` / `.unwrap_or_default()` (empty baseline) | `sp-default-ok: <why>` on the line above | `AddrOrSymbolic::or_log` in `arch/mod.rs` — the typed accessors have no `Default`/`From<u64>`, `.concrete()` is the only escape hatch |
+| `tools/audit_satresult.py` | raw `z3::SatResult::{Sat,Unsat}` matches outside test code (`*_tests.rs`, `*_tests/`) | `// satresult-exempt: <why>` on the line or either of the two above | `SatOutcome::decided` in `symbolic/solver_build.rs` (`invariant-z3-unknown-not-unsat`): `Unknown` is never `Unsat` |
+| `#[angr_macros::steady_guard_checked]` | any `&mut self` method, whatever its visibility, on a `#[pymethods] impl RustExplorationManager` block (`exploration/manager_methods*.rs`) lacking `#[steady_guarded]` or `#[steady_guard_exempt(reason = "…")]` → `compile_error!` | the `exempt` attribute with a reason | macro doc in `native/angr-macros/src/lib.rs`; `angr-macros-call-site-invariants` |
+| `tools/audit_rounding_mode_threading.py` | a closure in a `fn *_rm` that ignores its rounding-mode parameter, or an rm operand bound to `_rm` and dropped (`vex/`, `interpreter/`; empty baseline) | `rm-ignored: <why>` on the line above, or as the site's trailing comment | `VEXOps::binop_with_rm` / `qop_with_rm`, `ops::float_arith::apply_rounding` |
+| `tools/audit_sp_default_zero.py` | an SP / return-address accessor chained to `.unwrap_or(0)` / `.unwrap_or_default()` (empty baseline) | `sp-default-ok: <why>` on the line above, or as the site's trailing comment | `AddrOrSymbolic::or_log` in `arch/mod.rs` — the typed accessors have no `Default`/`From<u64>`, `.concrete()` is the only escape hatch |
 | `tools/audit_overflow_wraparound.py` | a bare `+`/`-`/`+=`/`-=` on an address/size/offset/count-shaped operand in `native/angr/src/{arch,memory,interpreter,symbolic,state,syscalls,procedures,exploration}/` (empty baseline) | `overflow-ok: <why>` on the flagged line or either of the two above (for a multi-line expression the flagged line is the continuation carrying the operator) | address arithmetic wraps, sizes and identities refuse: `invariant-rust-concrete-arith-must-wrap`, `invariant-proc-address-arith-wrapping`, `invariant-overflow-fix-refuse-not-saturate-identities`; `cargo test --profile release-checked` has overflow-checks on but is a runtime net only |
 | `tools/audit_page_shift.py` | an open-coded page shift (`>> 12`, `PageIndex::SHIFT`) or a `0x1000`/`4096`/`0xFFF`/`4095` literal next to an address/page-shaped operand, all of `native/angr/src/` (empty baseline) | `page-shift-ok: <why>` on the flagged line or either of the two above | `Address::{page_num, page_base, page_offset}`, `PageIndex::{of, base_addr, range_covering}`, `PAGE_SIZE`/`PAGE_MASK` in `memory/page.rs` |
 
@@ -100,8 +105,8 @@ Preferred fix order for the "invariant upheld at some call sites but not
 others" bug family, strongest first: make the unchecked value
 unrepresentable (`BoundedArg`, `AddrOrSymbolic`), then a compile-time
 macro over the whole impl/struct (`steady_guard_checked`, `MergePolicy`),
-then a baseline-gated script. Details and history in
-`angr-macros-call-site-invariants`.
+then a baseline-gated script. Why, in the "Which enforcement shape to
+reach for" section of the `native/angr-macros/src/lib.rs` crate doc.
 
 ## Where context lives
 
@@ -139,12 +144,12 @@ Mandatory-keep anchors that other memories and docs reference:
 - `rust-python-boundary-audit` — what bridge code must stay Python
 - `constraint-export-no-pre-pin` — pre-pinning is dangerous; use Rust solver eval fallback
 - `characterization-vs-fix-pattern` — separate characterization tasks from regression bisects
-- `benchmark-bimodal-variance-rules` — the three sync points when a bench joins `BIMODAL_BENCHMARKS`
+- `benchmark-bimodal-variance-rules` — what moves together when a bench joins `BIMODAL_BENCHMARKS` (the set and its pinned timing, `COUNT_EXEMPT`, the rst)
 - `env-venv-corruption` / `venv-rebuild-cargo-direct-copy` — venv recovery and the cargo-direct rebuild
 - `bd-update-notes-overwrites` — `bd update --notes` overwrites; append with `bd note`
 - `avoid-bd-remember-without-key-flag` — `bd remember` without `--key` silently clobbers
 - `9maq-bisect-method` — bisect pattern for memory-leak regressions (codified by `run_leak_check.py`)
-- `avoid-pip-install-deps` — why the four ecosystem pins stay put
+- `avoid-pip-install-deps` — why the ecosystem pins (`archinfo`, `claripy`, `cle`, `pyvex`) stay put
 
 ## Building, testing, debugging
 
@@ -153,18 +158,18 @@ prerequisites, bootstrap, `make` targets, the test and benchmark commands,
 the CI gate table, profiling and Rust-side logging. `make help` lists every
 target. Two local facts worth knowing up front:
 
-- This checkout's `.venv/` is hand-assembled and its `pip` is unreliable;
-  rebuild the extension with `make rebuild-cargo` (`tools/rebuild-rust.sh
-  --cargo-only`) rather than the editable-install path.
-- `make check` is not the CI gate. CI runs `cargo clippy --all-targets
-  --all-features -- -D warnings` from the repo root, and `make check-no-z3`
-  is the only local check of the `#[cfg(not(feature = "vex-engine-z3"))]`
-  arms.
+- This checkout's `.venv/` `pip` is unreliable: rebuild with
+  `make rebuild-cargo`.
+- `make check` is not the CI gate, and `make check-no-z3` is the only local
+  check of the no-Z3 arms; the rst's "Incremental builds" section has the
+  exact commands.
 
 ## Key Files
 
 Directory-level map. Each Rust directory's `mod.rs` carries a `//!` doc
-that indexes its files; start there.
+that indexes its files; start there. `solver/` and `fuzzer/` use a sibling
+module root instead (`solver.rs`, `fuzzer.rs`), and `fuzzer.rs` has no
+`//!` index.
 
 - **Build**: `pyproject.toml`, `setup.py`, `native/angr/Cargo.toml`,
   `native/angr/build.rs`, `rust-toolchain.toml`, `Makefile`,
@@ -173,7 +178,10 @@ that indexes its files; start there.
   `RustExplorationManager` wrapper and the SimOption ledgers; its module
   docstring holds the cross-mixin invariants), `rust_state_proxy.py`,
   `rust_state_export.py`, `rust_state_sync.py`, `rust_callback_dispatch.py`,
-  `rust_disk_cache.py`, `rust_irsb_serializer.py`, `rust_techniques.py`.
+  `rust_disk_cache.py`, `rust_irsb_serializer.py`, `rust_techniques.py`,
+  `rust_identity.py`, `rust_perf_tracker.py`, `rust_state_cache.py`;
+  `_public_api.py` (the public-surface inventory), `_deprecation.py`,
+  `_constants.py`.
 - **Rust engine** (`native/angr/src/`): `exploration/` (manager
   `#[pymethods]` split across `manager_methods*.rs`, the run loops,
   stepping, the work-stealing scheduler), `interpreter/` (VEX execution),
@@ -206,10 +214,11 @@ Everything it needs is under `.ralph/`:
   agent prompts; `_footer.md` carries the workflow steps and the MEMORY
   SAFETY rules.
 - `hooks/states/{clean,dirty}/gate` — thin wrappers around
-  `tools/ralph-gate.sh`, whose header is the authority on the three
-  checks it runs, in order: `make check-no-z3`, `cargo test --profile
+  `tools/ralph-gate.sh`, whose header is the authority on the checks it
+  runs, in order: `make check-no-z3`, `cargo test --profile
   release-checked`, and the fast-tier benchmark regression with the
-  PR-gate flags. `revert/` and `review/` have no gate.
+  PR-gate flags. `revert/gate` and `review/gate` are no-op stubs that
+  exit 0.
 - `state/` — runtime state (FSM, logs, `session.md` handoff), gitignored.
 
 ```bash

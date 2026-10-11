@@ -21,15 +21,16 @@ have real false positives (plenty of legitimate self-only-by-design early
 returns exist), so precision is proven against a checked-in *baseline* of the
 currently-known-untagged sites. The script reports only sites that are neither
 tagged nor in the baseline -- i.e. *new* untagged silent fallbacks introduced
-since the baseline was taken. Wire it as a blocking gate only once the
-false-positive rate is understood (a later, separate bead).
+since the baseline was taken. A new untagged site fails the gate; tag it
+rather than growing the baseline.
 
 Detected shapes (deliberately narrow -- the noisy ``.unwrap_or*`` /
 ``let _ =`` families are out of scope until precision is proven):
 
   * ``return Ok(None)``  -- early-return-Ok that drops a computed result
-  * ``.ok();``           -- Result->Option swallow discarding the error
-  * ``.ok()`` as the tail of a ``let`` binding -- same swallow, bound form
+  * ``.ok();``           -- Result->Option swallow discarding the error; the
+    same line matcher also catches it as the tail of a ``let`` binding
+    (``let x = f().ok();``), the bound form
 
 Usage::
 

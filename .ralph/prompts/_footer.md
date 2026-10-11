@@ -11,30 +11,20 @@ Otherwise, for each task follow this loop:
  3. `bd memories` — check for relevant invariants/pitfalls before coding
  4. Implement the change (edit Rust and/or Python files as described)
  5. Build + lint: `cargo clippy --all-targets --all-features -- -D warnings`
-    (run from the repo root — no `--manifest-path`, so `--all-targets` reaches
-    `native/angr-macros`'s test targets too, matching CI (angr-h3tx0). clippy
-    compiles, so this IS the type-check; `--all-features` is what makes
-    it match CI's `rust_check` gate and the Stop hook byte-for-byte. Dropping
-    `--all-features` skips the `fuzzer`/`fuzzing`/`libvex-ffi` feature-gated
-    code, so a red introduced under `src/fuzzer/` is invisible locally —
-    exactly how angr-9ke6b.50 landed 17 `unreachable_pub` errors that sat red
-    for a day. Cost: the *first* run on a cold `target/` also compiles the
-    `icicle-emu` + `libafl` git dependency trees (several minutes); every run
-    after that is incremental and effectively free. Both CI clippy and CI fmt
-    are hard gates — committing warnings re-reddens them. If you touch Python,
-    the edit hook auto-runs ruff, but a manual
+    from the repo root, with no `--manifest-path`. That is CI's `rust_check`
+    gate exactly, and clippy compiles, so it is also the type-check. Do not
+    drop `--all-features`: the `fuzzer`/`fuzzing`/`libvex-ffi` code is
+    invisible without it. CI clippy and CI fmt are both hard gates. The Stop
+    hook also runs CI's rustdoc lane (`RUSTDOCFLAGS='-D warnings' cargo doc
+    --workspace --no-deps --all-features --document-private-items`); see bd
+    memory `invariant-rustdoc-intra-doc-links` for the link rules it
+    enforces. If you touch Python, the edit hook runs ruff; a manual
     `ruff check --fix <file> && ruff format <file>` before commit is the
-    belt-and-suspenders. Since angr-z3672 the Stop hook runs a second Rust
-    check after clippy — CI's rustdoc lane,
-    `RUSTDOCFLAGS='-D warnings' cargo doc --workspace
-    --no-deps --all-features --document-private-items` (~4s warm; `--workspace`
-    rather than `--manifest-path native/angr/Cargo.toml` since angr-pr0tj, so
-    `native/angr-macros` is covered too) — so an
-    iteration that edits doc comments no longer has to remember to run it by
-    hand. See bd memory `invariant-rustdoc-intra-doc-links` for the three
-    link-authoring rules it enforces.)
- 6. If Rust changed: `pip install -e . --no-build-isolation --no-deps`
- 7. Test: `python -m pytest tests/engines/rust/ -v --tb=short`
+    backstop. Why each flag matters, and the other local checks
+    (`make check-no-z3`): `docs/advanced-topics/rust_build.rst`.
+ 6. If Rust changed: `make rebuild-cargo` (the venv's `pip` is unreliable;
+    see AGENTS.md "Building, testing, debugging").
+ 7. Test: `python -m pytest tests/engines/rust/ -q --tb=short`
  8. If tests pass: `git add <changed files> && git commit -m "<description>"`
  9. `bd close <id> --reason="<what was done>"`
 10. **MANDATORY — decide whether to save what you learned.** `bd recall
@@ -86,7 +76,7 @@ See the **Key Files** section in `AGENTS.md` (already in your context).
   agent headless (`claude -p`): the process exits the moment your turn ends,
   so a background build/test "completion notification" will never arrive —
   the iteration just dies with the tree dirty, and the next iteration re-does
-  the work (iters 39–41 on 2026-07-20 were lost exactly this way). Run builds
+  the work. Run builds
   and tests in the foreground and wait for the output before committing. If a
   suite is too slow to wait for, run the relevant subset in the foreground,
   commit, and note the deferred full run in `session.md`.
@@ -148,7 +138,6 @@ See the **Key Files** section in `AGENTS.md` (already in your context).
   `for _ in range(N): mgr.step(n=1); print(mgr.stash_counts())`, and run it
   inside a nested capped scope:
   `systemd-run --user --scope -p MemoryMax=4G -p MemorySwapMax=0 -- env PYTHONPATH=$PWD .venv/bin/python <script>`.
-- **NEVER** run `tests/benchmarks/run_comparison_10.py`.
 - Safe quick benches: `fauxware`, `ais3_crackme`, `defcamp_r100`.
 - Avoid: `grub` (OOM), `hackcon2016_angry-reverser` (67s), `sym-write` (30s).
 - Engine comparison: `python tests/benchmarks/run_single.py <example> --both`.

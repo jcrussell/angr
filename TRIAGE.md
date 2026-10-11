@@ -93,7 +93,8 @@ Read with `bd show <id>`; each shows the band and the reasoning that put it ther
   **P2, silent with narrowed reach:** `angr-hrcds` (its note records the
   P3 to P2 reasoning).
 - **P3, latent:** `angr-fs8kb.65` (a "why P3 not P2" reachability trace),
-  `angr-03vl4.69` (fallback with no `SILENT` tag).
-- **P4, dormant:** `angr-myzjx.13` (divergence on a path nothing takes),
-  `angr-j60q0` (defense-in-depth epic).
+  `angr-03vl4.69` (fallback with no `SILENT` tag),
+  `angr-j60q0` (an epic at its children's band: panic sites held off only by
+  caller invariants).
+- **P4, dormant:** `angr-myzjx.13` (divergence on a path nothing takes).
 - **P0, blocker:** `angr-1c4z` (formatting drift that reddened CI).
