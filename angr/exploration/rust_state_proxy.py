@@ -1361,10 +1361,10 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
         # fallback (p1s02) concretizes ``ebp+off`` to a witness and records it
         # here; a later symbolic-addr LOAD of the *structurally identical* addr
         # reuses that witness instead of asking the Rust solver for a fresh
-        # (possibly different) model. Without this, an unconstrained ebp-relative
-        # store lands at witness A while the read concretizes to witness B, Rust
-        # has no data at B, and the copied bytes read back as zeros — the
-        # flareon2015_5 residual (bd rust-proxy-symbolic-addr-witness-cache). Bounded by
+        # (possibly different) model. Without this, a store through an
+        # unconstrained symbolic address can land at witness A while the read
+        # concretizes to witness B, where Rust has no data, so the bytes read
+        # back as zeros (bd rust-proxy-symbolic-addr-witness-cache). Bounded by
         # the number of distinct symbolic-addr stores a callback issues.
         self._addr_witness_cache = addr_witness_cache if addr_witness_cache is not None else {}
         # angr-5rjbq: the Python SimMemory that ``state.memory`` held BEFORE
@@ -1474,18 +1474,16 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
     def _pin_addr_witness(self, addr, conc):
         """Pin a symbolic address to its chosen concretization on the STATE solver.
 
-        angr-5rjbq: distinct unconstrained ebp-relative buffers
-        (``ebp-0x80004``, ``ebp-0x70004``, ``ebp-0x40000`` in flareon2015_5)
-        are separate claripy ASTs, so each concretizes INDEPENDENTLY via
-        ``_solver_ctx.eval`` and Z3 hands back witness ``0`` for every
-        unconstrained expression — every buffer ALIASES at address 0 and the
-        copies clobber each other (angr-5rjbq).
+        Distinct addresses built on one unconstrained base symbol (e.g.
+        ``ebp-0x80004`` and ``ebp-0x70004``) are separate claripy ASTs, so
+        each concretizes independently via ``_solver_ctx.eval``, and Z3 may
+        hand back the same witness for every unconstrained expression: the
+        buffers alias and their copies clobber each other (angr-5rjbq).
 
         Adding ``addr == conc`` to the state solver the *native* interpreter
-        also uses pins the shared base symbol (``ebp``) on the FIRST
-        concretization, so subsequent proxy AND native concretizations of the
-        other ebp-relative addresses resolve to distinct, non-aliasing
-        witnesses — mirroring angr ``DefaultMemory`` write-address
+        also uses pins the shared base symbol on the FIRST concretization, so
+        subsequent proxy AND native concretizations of the other base-relative
+        addresses resolve to distinct, non-aliasing witnesses — mirroring angr ``DefaultMemory`` write-address
         concretization. This is NOT export-time pre-pinning of a recovered
         model (bd constraint-export-no-pre-pin): we are committing to a write
         address we ourselves chose, on a scratch stack pointer that is not part
