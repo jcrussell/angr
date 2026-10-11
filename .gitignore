@@ -42,9 +42,8 @@ tests/benchmarks/debug_*.py
 *_angr_rtdb
 *_angr_rtdb_*
 
-# Autonomous-loop runtime artifacts (logs, pid, stdout/stderr captures).
-# .claude/loop-session.md IS intentionally tracked — it's the session
-# continuity handoff log read by the next loop iteration.
+# Pre-ralph autonomous-loop runtime artifacts (logs, pid, stdout/stderr
+# captures). The ralph loop keeps its state under .ralph/state/.
 .claude/loop-logs-v2/
 .claude/loop-stderr.log
 .claude/loop-stdout.log
