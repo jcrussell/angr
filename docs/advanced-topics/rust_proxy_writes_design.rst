@@ -364,10 +364,14 @@ Rationale:
    matrix would not change meaningfully.
 #. **The risk asymmetry is real.** Option A's plugin substitution
    is exactly the class of refactor that produces silent
-   correctness regressions (see ``avoid-state-copy-optimization``
-   memory — a prior similar attempt to skip ``state.copy()`` broke
-   register sync silently and regressed ais3 badly before it was
-   caught). The diff-and-push path's debug history is worth a
+   correctness regressions. A prior similar attempt to skip
+   ``state.copy()`` for extern SimProcedures left
+   ``_extract_register_changes`` diffing the state against itself
+   (the procedure mutates it in place), so register sync broke
+   silently and regressed ais3 badly before it was caught; skipping
+   the copy is only safe with a register snapshot taken before
+   execution, the dict form ``_extract_register_changes`` accepts.
+   The diff-and-push path's debug history is worth a
    lot.
 #. **Option B is cheap but redundant.** The ``tracked_writes``
    channel that would form its basis already exists for memory
@@ -429,8 +433,8 @@ References
 
 * Measurements: ``run_single.py --dump-counters`` per-bench output,
   recorded on ``angr-g7ug``.
-* Prior cautionary memory: ``avoid-state-copy-optimization`` — a
-  similar attempt to skip state.copy() broke register sync silently
-  on ais3.
+* Prior caution: a similar attempt to skip state.copy() broke
+  register sync silently on ais3 (see the risk-asymmetry item under
+  *Recommendation at design time, and what shipped*).
 * Sibling design docs: :doc:`rust_lazy_memory_design`,
   :doc:`rust_parallel_design`.

@@ -82,8 +82,8 @@ def _run_iters_in_child(example_name, iters, mem_limit_mb, examples_dir, engine)
     except ValueError:
         pass
 
-    # mp-spawn children inherit sys.path[0] = script dir, not the cwd
-    # (cf. ``venv-script-syspath`` bd memory). Prepend repo root explicitly.
+    # mp-spawn children inherit sys.path[0] = script dir, not the cwd, and
+    # angr is not pip-installed in the venv. Prepend repo root explicitly.
     repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     if repo_root not in sys.path:
         sys.path.insert(0, repo_root)

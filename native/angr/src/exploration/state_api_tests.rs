@@ -1,4 +1,4 @@
-// Tests for exploration/state_api.rs (see rust-mod-tests-sibling-extraction
+// Tests for exploration/state_api.rs (see rust-module-root-split-recipe
 // for why these live in a sibling file rather than an inline `mod tests`).
 use super::*;
 use crate::concretize::AddressConcretizer;

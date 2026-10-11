@@ -81,8 +81,8 @@ impl RustExplorationManager {
             // atomic load + branch on `LINEAGE_DISMANTLED`) and a no-op
             // until the kill switch is turned on. Sample every 10 ticks;
             // dismantle when ≥20 lineage_switch events show <35% hot
-            // ratio over a window — threshold calibrated on N=4 workloads
-            // (`bd recall v5ht-threshold-justification-2026-05-25`).
+            // ratio over a window — threshold calibrated in angr-1gfa; widen
+            // the measured workload set before retuning it.
             #[cfg(feature = "vex-engine-z3")]
             crate::symbolic::lineage::tick_and_sample_for_thrash(10, 20, 35);
 

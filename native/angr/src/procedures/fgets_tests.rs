@@ -1,5 +1,5 @@
 // Tests for fgets.rs (NativeFgets/Fgetc/Getchar/Getc procedures).
-// Split from the inline `#[cfg(test)] mod tests` block; see rust-mod-tests-sibling-extraction.
+// Split from the inline `#[cfg(test)] mod tests` block; see rust-module-root-split-recipe.
 
 use super::*;
 use crate::memory::Permission;

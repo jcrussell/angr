@@ -1558,7 +1558,7 @@ class RustExplorationManager(
         # ``ANGR_RUST_USE_CALLBACK_MEMORY_PROXY=0`` is the opt-OUT escape
         # hatch that forces the legacy CallbackMemoryTracker path back on
         # when the kwarg is left at its default ``None``. Multi-session epic
-        # (see bd memory boundary-4scu-simmem-spike).
+        # (angr-4scu).
         self._use_callback_memory_proxy = _resolve_env_flag(
             use_callback_memory_proxy, "ANGR_RUST_USE_CALLBACK_MEMORY_PROXY", default=True
         )
@@ -4524,7 +4524,7 @@ class RustExplorationManager(
             actual_state_id = new_ids.pop()
 
             # Install constraints into the new Rust state with a single call
-            # (angr-tvpk; rust-write-through-supersedes-diff-push). Two paths,
+            # (angr-tvpk). Two paths,
             # mutually exclusive:
             #   - Cross-manager transfer (state came from a previous
             #     RustExplorationManager and the early-reuse branch in __init__

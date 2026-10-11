@@ -1,7 +1,7 @@
 //! Unit tests for [`super`] — `StateSet` operations (insert/union/intersection/singleton).
 //!
 //! Extracted from the parent module body to keep `state.rs` focused on the
-//! implementation; see the `rust-mod-tests-sibling-extraction` bd memory.
+//! implementation; see the `rust-module-root-split-recipe` bd memory.
 
 use super::*;
 

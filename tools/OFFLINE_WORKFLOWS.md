@@ -113,9 +113,6 @@ access, not data, not a sibling — it is a judgement call.
 required-sections shape (status / context / options /
 recommendation / implementation sketch).
 
-**Reference**: bd memory
-`decision-brief-offline-prepare-pattern`.
-
 **Example**: `angr-75mc` (xmllint fuzzer-feature decision —
 brief surfaces path-(a) flip Cargo default vs. path-(b)
 non-fuzzer alternative solve.py with recommendation; bead
@@ -133,8 +130,7 @@ well-scoped commit when the blocker clears.
 
 Pattern lineage tracked in bd via memory keys
 `upstream-pr-offline-prepare-slice-pattern`,
-`internal-patches-offline-prepare-pattern`,
-`aggregation-doc-v1-partial-pattern`, and
-`decision-brief-offline-prepare-pattern`. Update those when
+`internal-patches-offline-prepare-pattern`, and
+`aggregation-doc-v1-partial-pattern`. Update those when
 the patterns evolve; keep this file as the contributor-facing
 entry point.

@@ -1,5 +1,5 @@
 // Tests for syscalls/identity.rs (getpid/getppid/getuid/geteuid/getgid/getegid/gettid).
-// Extracted from the inline `mod tests` block; see rust-mod-tests-sibling-extraction.
+// Extracted from the inline `mod tests` block; see rust-module-root-split-recipe.
 
 use super::*;
 

@@ -1,7 +1,7 @@
 //! Unit tests for [`super::concretize_cache`] — the per-block address
 //! concretization cache and its read/write fallback-on-cache-HIT branches.
 //!
-//! Split out per the rust-mod-tests-sibling-extraction convention. GIL-free:
+//! Split out per the rust-module-root-split-recipe convention. GIL-free:
 //! no PyO3. These exercise the cache-HIT `TooLarge` paths in
 //! `concretize_cached_read` / `concretize_cached_write` that are not reachable
 //! through `AddressConcretizer::concretize_read`/`concretize_write` (those

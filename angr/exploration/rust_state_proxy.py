@@ -302,8 +302,7 @@ class _ProxyStatePluginMixin:
     ``category``, ``copy()`` and (memory) ``SUPPORTS_CONCRETE_LOAD`` /
     ``permissions`` / ``compare``. A subclass that ever implements real
     cross-``state_id`` coordination overrides ``merge`` / ``widen``; none do
-    today. The surface is intentionally public API (see the
-    ``public-api-proxy-protocol-surface`` bd memory and
+    today. The surface is intentionally public API (angr-qj30; pinned in
     ``angr/exploration/_public_api.py``).
     """
 
@@ -1365,7 +1364,7 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
         # (possibly different) model. Without this, an unconstrained ebp-relative
         # store lands at witness A while the read concretizes to witness B, Rust
         # has no data at B, and the copied bytes read back as zeros — the
-        # flareon2015_5 residual (bd flareon-5rjbq-witness-mismatch). Bounded by
+        # flareon2015_5 residual (bd rust-proxy-symbolic-addr-witness-cache). Bounded by
         # the number of distinct symbolic-addr stores a callback issues.
         self._addr_witness_cache = addr_witness_cache if addr_witness_cache is not None else {}
         # angr-5rjbq: the Python SimMemory that ``state.memory`` held BEFORE
@@ -1480,7 +1479,7 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
         are separate claripy ASTs, so each concretizes INDEPENDENTLY via
         ``_solver_ctx.eval`` and Z3 hands back witness ``0`` for every
         unconstrained expression — every buffer ALIASES at address 0 and the
-        copies clobber each other (bd flareon-5rjbq-address-witness-collision-root-cause).
+        copies clobber each other (angr-5rjbq).
 
         Adding ``addr == conc`` to the state solver the *native* interpreter
         also uses pins the shared base symbol (``ebp``) on the FIRST
@@ -1606,7 +1605,7 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
         fallback ``SimMemory`` re-concretize against its OWN solver — but after
         the swap the pin constraint migrated to the Rust solver, so Python's
         solver picks an arbitrary, data-free witness and the read misses the
-        setup bytes (bd flareon-5rjbq-ebp-cross-solver-root-cause). Returns the
+        setup bytes (angr-5rjbq). Returns the
         loaded AST, or ``None`` if there is no fallback memory or the read
         raised (dead/unmapped path — the caller returns the zero default).
         """
@@ -1714,7 +1713,7 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
             # many or zero satisfying solutions. Rather than raise
             # NotImplementedError and let the SimProcedure callback die
             # (dropping a corpus find under the callback-memory-proxy gate —
-            # see bd memory callback-memory-proxy-medium-differential),
+            # angr-ijwp0),
             # concretize the address to a single satisfiable value and store
             # there, mirroring angr's ``DefaultMemory`` write concretization.
             if self._python_mgr is not None:

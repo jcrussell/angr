@@ -1,5 +1,5 @@
 // Tests for exploration/manager_methods_diagnostics.rs (see
-// rust-mod-tests-sibling-extraction for why these live in a sibling file
+// rust-module-root-split-recipe for the sibling-file recipe
 // rather than an inline `mod tests`).
 //
 // `ConstraintSharingWalk` itself is unit-tested at the symbolic level; what is

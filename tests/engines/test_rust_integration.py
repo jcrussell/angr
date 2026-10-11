@@ -110,10 +110,10 @@ class TestRustIntegration:
         # find_addr differs from Python's, producing a constraint set
         # that admits the wrong stdin satisfying assignment. Likely root
         # cause is symbolic-memory branch divergence at the loads from
-        # 0x1000-0x1018 the binary uses for anti-fingerprinting (see bd
-        # memory codegate-0x1000-loads). See bd memory
-        # angr-kcf-not-bfs-divergence for the full triage and
-        # invariant-codegate-xfail for the keep-xfail decision.
+        # 0x1000-0x1018 the binary uses for anti-fingerprinting; those
+        # loads all go through load_from_callback, so concrete-memory
+        # interception is ruled out. Triage and the keep-xfail decision:
+        # angr-kcf.1 / angr-kcf.2.
         "codegate_2017-angrybird",
     }
 

@@ -1,4 +1,4 @@
-// Tests for symbolic/sharing.rs (see rust-mod-tests-sibling-extraction for why
+// Tests for symbolic/sharing.rs (see rust-module-root-split-recipe for why
 // these live in a sibling file rather than an inline `mod tests`).
 //
 // The manager-level fold on top of this walk is pinned separately in

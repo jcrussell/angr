@@ -27,5 +27,5 @@
   "snapshot_steps": 14,
   "snapshot_survives_process_exit": true,
   "target": "fauxware",
-  "value_recovery_note": "fauxware's reaching input is empirically value-stable, but that rests on the search landing on the same path (the find address is reachable by multiple inputs), NOT on global constraint-uniqueness. Bit-identical result recovery is therefore an observed bonus here, not a guarantee across a restore \u2014 see angr-4n26m.4 / bd memory showcase-resume-target-classification."
+  "value_recovery_note": "fauxware's reaching input is empirically value-stable, but that rests on the search landing on the same path (the find address is reachable by multiple inputs), NOT on global constraint-uniqueness. Bit-identical result recovery is therefore an observed bonus here, not a guarantee across a restore \u2014 see angr-4n26m.4."
 }

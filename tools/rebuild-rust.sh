@@ -28,7 +28,7 @@
 #                        cargo-direct copy path. NOT for benchmark gates or
 #                        release artifacts — use the standard path for those.
 #                        Runtime impact on fast-tier benches was within 5-sample
-#                        noise; see bd memory `build-perf-spike-codegen-units`.
+#                        noise (angr-6w5l).
 #
 # Usage:
 #   ./tools/rebuild-rust.sh
@@ -137,7 +137,7 @@ if (( CARGO_ONLY == 1 )); then
     # which in --cargo-only mode is the SYSTEM python3, not the venv. Linking the
     # system libz3 while claripy loads the venv libz3 loads TWO libz3 instances
     # and double-frees at interpreter teardown (`free(): invalid pointer`,
-    # SIGABRT/SIGSEGV at process exit — see bd cargo-direct-so-teardown-segfault).
+    # SIGABRT/SIGSEGV at process exit — see bd libz3-soname-mismatch-root-cause).
     # Pin the runpath to the venv's libz3 so Python and Rust share one instance.
     if [[ -z "${Z3_LIBRARY_PATH_OVERRIDE:-}" ]]; then
         VENV_Z3_LIB="$VENV/lib/python3.12/site-packages/z3/lib"

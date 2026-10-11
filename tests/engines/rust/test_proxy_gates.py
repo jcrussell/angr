@@ -343,7 +343,7 @@ class TestProxyLiskovGaps:
         too many satisfying solutions for the lazy Multi-cell path. It used to
         raise ``NotImplementedError``, killing the SimProcedure callback state
         and dropping the corpus find under the callback-memory-proxy gate
-        (bd memory callback-memory-proxy-medium-differential). It must now fall
+        (angr-ijwp0). It must now fall
         back to angr's Max write-concretization (single concrete address,
         garbage high pages silently dropped) so the state survives.
         """

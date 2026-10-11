@@ -15,7 +15,7 @@ demonstrates that across a genuine process boundary:
         manager, then continue ``explore(find=...)`` to completion.
 
 The honesty crux (established by the determinism-boundary probe,
-angr-4n26m.4, bd memory ``showcase-resume-target-classification``): what is
+angr-4n26m.4): what is
 *guaranteed* across a restore is **search-state continuity** — the resumed
 manager picks up the same stash shape and the same active frontier the dump
 process had. Bit-identical *result* recovery is NOT guaranteed in general
@@ -190,8 +190,7 @@ def orchestrate(steps: int) -> dict:
             "rests on the search landing on the same path (the find address is "
             "reachable by multiple inputs), NOT on global constraint-uniqueness. "
             "Bit-identical result recovery is therefore an observed bonus here, "
-            "not a guarantee across a restore — see angr-4n26m.4 / bd memory "
-            "showcase-resume-target-classification."
+            "not a guarantee across a restore — see angr-4n26m.4."
         ),
     }
 

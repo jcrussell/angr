@@ -1,5 +1,5 @@
 // Unit tests for exploration/mod.rs (RustExplorationManager orchestrator).
-// Extracted from the inline `#[cfg(test)] mod tests` block; see rust-mod-tests-sibling-extraction.
+// Extracted from the inline `#[cfg(test)] mod tests` block; see rust-module-root-split-recipe.
 
 use super::*;
 

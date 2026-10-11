@@ -1,5 +1,5 @@
 // Tests for concrete_memory.rs (ConcreteMemoryRegion).
-// Sibling-file layout per rust-mod-tests-sibling-extraction.
+// Sibling-file layout per rust-module-root-split-recipe.
 use super::*;
 
 fn region(base: u64, len: usize) -> ConcreteMemoryRegion {

@@ -1,6 +1,6 @@
 //! Unit tests for the handle-based (claripy-bypass) solver API.
 //!
-//! Split from the parent module per `rust-mod-tests-sibling-extraction`.
+//! Split from the parent module per `rust-module-root-split-recipe`.
 //!
 //! angr-sqfj8.125: before this file the `op_*` wrappers, their error paths
 //! (`invalid_handle_id`, `reject_extend_narrowing`) and the handle-based

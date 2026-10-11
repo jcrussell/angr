@@ -1,5 +1,5 @@
 // Tests for procedures/strings.rs (string-scanning helpers).
-// Extracted from the inline `#[cfg(test)] mod tests` block; see rust-mod-tests-sibling-extraction.
+// Extracted from the inline `#[cfg(test)] mod tests` block; see rust-module-root-split-recipe.
 
 use super::*;
 use crate::memory::Permission;

@@ -268,7 +268,8 @@ the pragmatic sub-choice is `use_sim_procedures=True` (iter11's bounded
 path) vs. continuing to grind out real-glibc op blockers.
 
 Diagnostic harness: `tools/xmllint_probe.py` (bounded steps, RLIMIT_AS,
-stash-watching). bd memory: `xmllint-vanilla-symex-probe`.
+stash-watching). bd memory: `xmllint-path-b-glibc-init-wall` (supersedes this
+section's op-chain prediction; see the iter 31 addendum below).
 
 ## Iter 31 addendum — path-b dead end is uninitialized glibc, not an op chain
 

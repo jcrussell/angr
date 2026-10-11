@@ -10,8 +10,7 @@
 # Default is 7G == whole machine, so any >7G process (e.g. a divergent
 # exploration) gets OOM-killed only after exhausting RAM, which kills the whole
 # `claude` session (0-byte output -> dead_session -> runner_terminal); a leaking
-# CADET explore did exactly that (angr-027h, memory
-# deferred-forks-unconstrained-oom). 6G leaves ~1G headroom
+# CADET explore did exactly that (angr-027h). 6G leaves ~1G headroom
 # so a runaway is killed sooner. NOTE: pytest/repro run in the SAME scope as
 # claude, so an OOM still ends the session — this is a backstop, not isolation.
 # Heavy/unbounded explores must self-cap (see MEMORY SAFETY in _footer.md).

@@ -1,5 +1,5 @@
 // Unit tests for arch/arm64.rs, extracted to a sibling file.
-// See rust-mod-tests-sibling-extraction (bd memory) for the pattern.
+// See rust-module-root-split-recipe (bd memory) for the pattern.
 
 use super::*;
 

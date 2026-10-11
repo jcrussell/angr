@@ -99,7 +99,7 @@ CANDIDATE_BENCHES = [
     # it. It surfaces a SimProcedure->Python fallback on `read` (NOT a syscall
     # fallback) while still reaching the success path, witnessing that
     # pre-seeded reads are already cross-side visible through the Python read
-    # SimProcedure. See bd memory djq7-evidence-needs-file-io-harness.
+    # SimProcedure. See bd memory djq7-file-read-harness-evidence.
     "file_read_kernel",
 ]
 

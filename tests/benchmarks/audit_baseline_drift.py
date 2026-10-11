@@ -54,7 +54,7 @@ RUN_REGRESSION = BENCH_DIR / "run_regression.py"
 # under it.  The DFS twin's header is "--- <name> (DFS) ---" and maps to the
 # "<name>__dfs" baseline key -- a naive r'^--- (\S+) ---' parse silently drops
 # it and mis-attributes its timing to the previous bench (bd memory
-# ``bench-baseline-dfs-variant-key``).
+# ``bench-baseline-loose-rot-is-silent``).
 _HEADER_RE = re.compile(r"^--- (.+?) ---$")
 _RUST_RE = re.compile(r"^\s*Rust:\s+([0-9.]+)s")
 
@@ -132,7 +132,7 @@ def apply_updates(rows, dry_run=False):
         return [r["key"] for r in loose]
     # sort_keys=False: the file on disk is insertion-ordered, and re-sorting it
     # would bury a one-line change in a whole-file reorder diff (bd memory
-    # ``bench-add-baseline-files-insertion-order``).
+    # ``bench-baseline-loose-rot-is-silent``).
     baseline = json.loads(BASELINE_PATH.read_text())
     for row in loose:
         baseline[row["key"]]["rust_time"] = row["max"]

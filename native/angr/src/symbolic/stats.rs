@@ -236,7 +236,7 @@ pub(crate) static EXPORT_UNCONSTRAINED_FP_COUNT: AtomicU64 = AtomicU64::new(0);
 // angr-1joc: constraint-dedup measurement counters. Three signals to decide
 // whether canonicalization/dedup at add_constraint_raw is worth implementing
 // (threshold: any >=10% wins a follow-up bead). See bd memory
-// invariant-z3-construction-canonicalization for the underlying Z3 contract.
+// invariant-commutative-canonicalization-active for the underlying Z3 contract.
 //
 // (a) commutative-arg-order: how often the RustBV-level
 // `canonicalize_commutative` actually swaps operands. Swap rate ≈ how often

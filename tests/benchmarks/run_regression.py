@@ -277,8 +277,7 @@ FAST_SUITE = [
     # teaching binary. Marked rust_only=True because solve_flag_4 returns
     # a different valid model than Python (Z3 model nondeterminism on
     # multi-solution constraints — Python picks (7, 0), Rust picks (0, 0)).
-    # See bd memory ``bench-cmu-binary-bomb-broken`` and the wrapper
-    # docstring for the full per-flag rationale.
+    # See the wrapper docstring for the full per-flag rationale.
     ("cmu_binary_bomb_partial", 30, "bfs", True),
     # CoW fork-scaling synthetic benchmark (angr-vx8p.2, from angr-uf0g).
     # Lives in tests/benchmarks/synthetic_examples/ as a prebuilt x86_64
@@ -382,7 +381,7 @@ REGRESSION_SUITE = FAST_SUITE  # overridden in main() if --full
 # (slow-mode runs can be ~2x the fast-mode runs even on a stable HEAD). They
 # routinely exceed the 15% regression threshold without a real code change and
 # should be skipped on tight PR gates. See bd memory
-# `invariant-bimodal-variance-benchmarks` and
+# `benchmark-bimodal-variance-rules` and
 # ``docs/advanced-topics/rust_bimodal_variance.rst``.
 #
 # google2016_unbreakable_1 was removed on 2026-05-18 (angr-hyiz.4) after a

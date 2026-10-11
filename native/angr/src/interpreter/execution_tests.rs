@@ -1,5 +1,5 @@
 // Unit tests for interpreter/execution.rs (VEXInterpreter block exec / memory / cache).
-// Split out per rust-mod-tests-sibling-extraction; included via #[cfg(test)] #[path].
+// Split out per rust-module-root-split-recipe; included via #[cfg(test)] #[path].
 use super::*;
 use crate::callbacks::{ErrorRoute, RunErrorKind};
 

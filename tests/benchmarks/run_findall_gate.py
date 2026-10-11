@@ -72,8 +72,9 @@ OK_RE = re.compile(r"^OK rust \S+ ([0-9.]+)s", re.MULTILINE)
 # There is deliberately no real-binary leg yet: the only cheap real find-all
 # candidate (fauxware) cannot be driven through run_single.py under
 # RUST_PARALLEL_WORKERS>=2 — its solve.py indexes found[] assuming a serial
-# result shape and dies with IndexError (harness bug, NOT a scheduler bug; bd
-# memory avoid-run-single-parallel-fauxware-false-alarm). Add the real leg when
+# result shape and dies with IndexError (harness bug, NOT a scheduler bug: the
+# engine's parallel path passes test_parallel_wave.py on the same binary). Add
+# the real leg when
 # angr-75mc lands its bench.
 DEFAULT_BENCHES = ["fork_solve_pbounce_W6_S8_M12_B2", "fork_solve_trap_W5_S8_M12"]
 

@@ -12,7 +12,7 @@
  *   - write_stream_heavy exercises WRITE-side cle stdout/stderr stdio only;
  *   - xmllint_getenv reaches getenv before any file open();
  * both produced 0 syscall fd-sync fallbacks (bd memory
- * djq7-evidence-needs-file-io-harness). This kernel is the missing
+ * djq7-file-read-harness-evidence). This kernel is the missing
  * READ-side, pre-seeded-file harness.
  *
  * Deliberately uses the raw open()/read()/close() syscalls (not stdio

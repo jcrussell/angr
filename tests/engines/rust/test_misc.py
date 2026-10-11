@@ -818,9 +818,9 @@ class TestRustExecutionErrorHierarchy:
         Note: ``RustExplorationManager.run()`` does NOT raise typed errors
         end-to-end on malformed bytes — the Python lift callback in
         ``rust_manager.py::_cb_lift_block`` catches PyVEXError /
-        SimEngineError / ClaripyError and returns ``'{}'``, and the
-        ``stepping.rs`` heuristic deadends states whose error message
-        contains ``"lift"`` (see memory ``rust-engine-lift-failure-silent-deadend``).
+        SimEngineError / ClaripyError and returns ``'{}'``, which maps to
+        ``CbExecutionError::LiftError`` and so to ``RunErrorKind::Deadend``
+        (see memory ``rust-runresult-error-typed-routing``).
         ``execute_irsb_for_test`` is therefore the testbench that exercises
         the typed-error surface for VEX lift validation; the silent-deadend
         contract for the run-loop path is locked down separately via
@@ -2409,7 +2409,7 @@ class TestCgcReceiveStdinSync:
     Before the fix, ``cgc.rs::receive`` wrote fresh symbolic bytes into the
     buffer but never called ``record_stdin_symbol``, so ``posix.dumps(0)``
     over the exported state returned ``b''`` even though the binary read
-    user-controlled stdin (see bd memory benchmark-cadet-cgc-partial-unblock).
+    user-controlled stdin (see bd memory cgc-receive-stdin-sync-root-cause).
     Exercises only the buffer-overflow phase of CADET_00001 (reaches
     ``unconstrained`` in ~0.1s); the heavy easter-egg explore is deliberately
     avoided to keep the test fast and OOM-safe.
@@ -2732,7 +2732,7 @@ class TestForeignProcessSnapshot:
     receive a claripy copy of the Rust constraints — by design, since
     ``_attach_rust_solver_fallback`` routes eval/min/max/satisfiable into the
     Rust solver and a claripy re-import would be expensive and identity-lossy
-    (see ``pre-pinning-dangerous``). An earlier version of this test asserted
+    (see ``constraint-export-no-pre-pin``). An earlier version of this test asserted
     on ``mirror.solver.constraints``, read the empty list as a snapshot bug,
     and was pulled; assert on the Rust export instead.
     """

@@ -102,8 +102,7 @@ class TestSolverOperations:
         """Inequality contradictions (x>100 AND x<50) make solver UNSAT and
         leave eval/min/max returning None instead of bogus concrete values.
 
-        Locks down behaviour for angr-eldx — see also
-        memory `satisfiable-wrong-answer`: False from satisfiable() must
+        Locks down behaviour for angr-eldx. False from satisfiable() must
         mean a definitive UNSAT, never a swallowed exception.
         """
         import claripy
@@ -328,8 +327,7 @@ class TestSolverOperations:
 
         This is the documented limitation: callers who want core
         extraction must opt in via add_constraint_tracked_ast(). Locks
-        down the silent-empty behaviour memo'd in
-        `avoid-rust-tracking-actions-silent-ignore`.
+        down that silent-empty behaviour.
         """
         import claripy
         from angr.rustylib.vex_engine import RustSolverContext

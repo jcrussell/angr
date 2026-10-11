@@ -15,7 +15,7 @@ class vprintf(angr.SimProcedure):
         # unmodeled by angr, so — like the native printf core — we do NOT
         # perform %-substitution; we write the raw format string. This keeps
         # vprintf byte-for-byte identical to the native `vprintf = printf`
-        # alias (see bd memory `native-vprintf-family-aliases`).
+        # alias (`NativePrintf` in native/angr/src/procedures/printf.rs).
         stdout = self.state.posix.get_fd(1)
         if stdout is None:
             return -1

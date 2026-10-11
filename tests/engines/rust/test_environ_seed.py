@@ -68,7 +68,7 @@ class TestEntryStateEnvironSeed:
         assert mgr._rust_mgr.seed_environment(sid, [(b"NEVER_SET_BY_HARNESS", b"x")]) == 1
 
     def test_warm_disk_cache_hit_keeps_environ(self):
-        """A warm disk-init-cache hit must not drop the environment.
+        """A warm disk init-cache hit must not drop the environment.
 
         ``_deserialize_init_state`` rebuilds a *blank* state from the pickle, so
         every ``state.posix`` pointer --- including the ``envp`` array pointer

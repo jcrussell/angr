@@ -44,8 +44,9 @@ Residual-bounce attribution.  For every non-passing bench the gate prints the
 crossed.  The classes and what retires them:
 
 * ``lift_block``  — pyvex VEX lifting.  Only the ``libvex-ffi`` cargo feature
-  (native cold-block lifting, bd ``libvex-stage3-default-on``) removes these, and
-  only on AMD64.  A stock build cannot reach zero on any bench that lifts.
+  (native cold-block lifting, default-on in the ``setup.py`` build; see
+  ``docs/advanced-topics/rust_libvex_ffi.rst``) removes these, and only on
+  AMD64.  A build without it cannot reach zero on any bench that lifts.
 * ``posix``       — the Python SimPosix plugin.  Retired by RustPosixState
   ownership of fds/env/cwd (the scope-trimmed part of bd angr-6zxx).
 * ``simprocedure``— a Python SimProcedure declined by the native registry.

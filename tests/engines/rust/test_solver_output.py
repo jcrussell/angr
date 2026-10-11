@@ -416,7 +416,8 @@ class TestCallableStepFunc:
 
     This flow (used by flareon2015_10 and similar) calls run(step_func=...) where
     step_func invokes prune() after each step to remove unsatisfiable states.
-    It has historically had multiple bugs (see flareon10-three-bugs memory).
+    It once called step_func only once after explore() instead of after
+    every step, which broke per-step pruning.
     """
 
     def test_step_func_called_per_step(self, fauxware_project):

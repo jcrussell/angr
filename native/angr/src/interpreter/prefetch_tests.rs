@@ -1,6 +1,6 @@
 //! Unit tests for [`super::prefetch`] page-prefetch helpers.
 //!
-//! Split out of `prefetch.rs` per the rust-mod-tests-sibling-extraction
+//! Split out of `prefetch.rs` per the rust-module-root-split-recipe
 //! convention to keep the implementation file focused. GIL-free: no PyO3.
 
 use super::*;

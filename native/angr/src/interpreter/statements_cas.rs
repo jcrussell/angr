@@ -301,7 +301,10 @@ impl<'a> VEXInterpreter<'a> {
 
     /// Store a symbolic data value at an address. Used by CAS when the value
     /// to store is a computed RustBV (e.g. ITE) that cannot be wrapped back
-    /// into an IRExpr — see the `cas-llsc-recursion-limit` invariant.
+    /// into an IRExpr. CAS cannot reuse the Store handler by synthesizing an
+    /// `IRStmt::Store` here: that only works for a value that is already an
+    /// IRExpr, and wrapping a computed RustBV would mean adding a temp to the
+    /// per-IRSB tyenv mid-execution.
     /// Routes through `memory_store_symbolic_value` for concrete addresses
     /// and `memory_store_symbolic_full` for symbolic addresses.
     ///

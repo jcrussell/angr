@@ -1,7 +1,7 @@
 //! In-module unit tests for `claripy_bridge/cache.rs` (angr-c4xcs.7).
 //!
 //! Sibling-extracted from the former inline `#[cfg(test)] mod tests`
-//! (rust-mod-tests-sibling-extraction). The worker-local-clear test exercises
+//! (rust-module-root-split-recipe). The worker-local-clear test exercises
 //! the cross-thread global registry; the added expression-pointer-cache tests
 //! stay purely thread-local (no `global_registry()` mutation) so they cannot
 //! race the global-registry test when cargo runs the suite in parallel.

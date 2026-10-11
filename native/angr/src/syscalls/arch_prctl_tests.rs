@@ -1,5 +1,5 @@
 //! Unit tests for `arch_prctl.rs` — extracted as a `#[path]` sibling to keep
-//! the handler module lean (see `rust-mod-tests-sibling-extraction`).
+//! the handler module lean (see `rust-module-root-split-recipe`).
 
 use super::*;
 use crate::memory::Permission;

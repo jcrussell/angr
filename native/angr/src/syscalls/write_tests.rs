@@ -1,7 +1,7 @@
 //! Unit tests for [`super`] — the native `write`/`writev` syscall handlers.
 //!
 //! Split out of `write.rs` to keep the handler module focused; see the
-//! `rust-mod-tests-sibling-extraction` pattern.
+//! `rust-module-root-split-recipe` pattern.
 
 use super::*;
 use crate::memory::Permission;

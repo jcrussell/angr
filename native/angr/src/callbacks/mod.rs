@@ -532,8 +532,8 @@ pub struct PythonCallbacks {
     /// Declining is the conservative answer — Rust then serves the page from
     /// its own `SymbolicMemory`, which already holds the symbolic regions
     /// imported at setup. It must never be turned into a native zero-fill:
-    /// these pages carry symbolic stdin (see the `fetch-page-symbolic-not-concrete`
-    /// memory).
+    /// these pages carry symbolic stdin, and zero-filling one on a miss would
+    /// silently replace those symbolic bytes with concrete zeros.
     ///
     /// `Arc<RwLock<..>>` for the same reason as `inspect_enabled`: Python
     /// installs it after the manager has already cloned this struct.

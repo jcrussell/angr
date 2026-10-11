@@ -1,6 +1,6 @@
 //! Unit tests for the raw-`Z3_ast`-pointer helpers.
 //!
-//! Split from the parent module per `rust-mod-tests-sibling-extraction`.
+//! Split from the parent module per `rust-module-root-split-recipe`.
 //!
 //! angr-sqfj8.125: `z3_ast_to_eval_bv` is the single site that decides how a
 //! borrowed Z3 node is lowered for evaluation — the Bool→1-bit rule from

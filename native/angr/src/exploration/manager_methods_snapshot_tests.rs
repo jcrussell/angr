@@ -1,5 +1,5 @@
 // Tests for exploration/manager_methods_snapshot.rs (see
-// rust-mod-tests-sibling-extraction for why these live in a sibling file
+// rust-module-root-split-recipe for the sibling-file recipe
 // rather than an inline `mod tests`).
 //
 // `StashManager::dump_snapshot`/`load_snapshot` are covered at the stash level

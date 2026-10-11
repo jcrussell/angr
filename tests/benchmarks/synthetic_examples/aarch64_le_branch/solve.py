@@ -33,8 +33,7 @@ import claripy
 
 import angr
 
-# AArch64 little-endian instructions (verified against ARMv8 ARM, see
-# invariant-aarch64-inline-test-opcodes memory):
+# AArch64 little-endian instructions (verified against the ARMv8 ARM):
 #
 #   0x00: add  w0, w0, w0       0B000000   ; w0 = 2*w0
 #   0x04: add  w0, w0, #16      11004000   ; w0 = 2*w0 + 16

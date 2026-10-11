@@ -1,5 +1,5 @@
 // Unit tests for claripy_bridge.rs (claripy AST <-> RustBV/RustFloat bridge).
-// Split from the parent module per rust-mod-tests-sibling-extraction.
+// Split from the parent module per rust-module-root-split-recipe.
 
 use std::sync::Arc;
 

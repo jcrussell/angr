@@ -1,5 +1,5 @@
 // Tests for pending_store.rs (PendingStore).
-// Split out of the parent module's inline `mod tests` (see rust-mod-tests-sibling-extraction).
+// Split out of the parent module's inline `mod tests` (see rust-module-root-split-recipe).
 use super::*;
 
 #[test]

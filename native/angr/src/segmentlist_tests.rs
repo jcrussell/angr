@@ -1,5 +1,5 @@
 // Unit tests for segmentlist.rs (SegmentList / SegmentListIter).
-// Extracted from the inline `mod tests` block; see rust-mod-tests-sibling-extraction.
+// Extracted from the inline `mod tests` block; see rust-module-root-split-recipe.
 
 use std::collections::HashSet;
 

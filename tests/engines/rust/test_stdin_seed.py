@@ -87,7 +87,7 @@ class TestSeededStdinSolves:
 
         Only six of the 2^W leaves are feasible: s=0 and s=4 force b[0]==0 and
         b[1]==0, which makes the accumulator a constant whose low byte can never
-        be the gate's 0xee (bd memory ``pbounce-synthetic-only-6-feasible-leaves``).
+        be the gate's 0xee (bd memory ``pbounce-synthetic-six-feasible-leaves``).
         This used to assert all eight, which only held because a bounced value
         lost its constraints and made the infeasible leaves look satisfiable
         (angr-izov2).

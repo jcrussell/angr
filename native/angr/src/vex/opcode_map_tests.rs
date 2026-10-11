@@ -1,7 +1,7 @@
 //! Tests for [`super::super::opcode_map`] — VEX opcode string parsing (`parse_opcode`).
 //!
 //! Extracted from the `mod tests` block in `opcode_map.rs` (see
-//! `rust-mod-tests-sibling-extraction` bd memory).
+//! `rust-module-root-split-recipe` bd memory).
 
 use super::*;
 

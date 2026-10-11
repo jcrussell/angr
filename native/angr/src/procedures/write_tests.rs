@@ -1,5 +1,5 @@
 // Tests extracted from write.rs (see #[path] attr in parent module).
-// Split per rust-mod-tests-sibling-extraction recipe.
+// Split per rust-module-root-split-recipe recipe.
 use super::*;
 use crate::memory::Permission;
 use crate::procedures::NativeSimProcedure;

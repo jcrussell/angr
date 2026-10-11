@@ -1361,7 +1361,7 @@ class RustStateExportMixin:
         )
         # Eval/min/max/satisfiable defer to the Rust solver — required because
         # _apply_symbolic_constraints no longer pre-pins recovered symbols
-        # (pre-pinning was UNSAT-prone, see pre-pinning-dangerous memo).
+        # (pre-pinning was UNSAT-prone, see constraint-export-no-pre-pin memo).
         # Idempotent: re-attach is a no-op via the _ATTACH_FLAG guard.
         self._attach_rust_solver_fallback(state, snapshot.state_id)
         return state

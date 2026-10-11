@@ -10,10 +10,10 @@ Usage:
     python tests/benchmarks/bimodal_variance.py --benchmarks google2016_unbreakable_1
     python tests/benchmarks/bimodal_variance.py --runs 5 --json out.json
 
-By default it runs the three bimodal benchmarks tracked in
-``invariant-bimodal-variance-benchmarks``:
-``ekopartyctf2016_sokohashv2``, ``securityfest_fairlight``,
-``google2016_unbreakable_1``.
+By default it runs ``DEFAULT_BENCHMARKS`` (``ekopartyctf2016_sokohashv2``,
+``securityfest_fairlight``, ``google2016_unbreakable_1``). The live bimodal
+set is ``run_regression.BIMODAL_BENCHMARKS`` (bd memory
+``benchmark-bimodal-variance-rules``).
 
 run_single.py is invoked as a subprocess so each run inherits its
 4 GB RLIMIT_AS — safe on 8 GB / 0-swap hosts.

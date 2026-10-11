@@ -13,7 +13,7 @@ to the register tables.
 
 Tests that are *genuinely* arch-specific — x86 segment selectors, the amd64
 ``gs_const``/``sseround`` collision, the AArch64 NEON MLA blob, the AArch64
-concrete-flag ccall, the MIPS32 disk-init-cache regression — stay hand-written
+concrete-flag ccall, the MIPS32 disk init-cache regression — stay hand-written
 below the sweeps rather than being bent into table columns.
 """
 

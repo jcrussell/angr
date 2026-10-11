@@ -1,5 +1,5 @@
 // Unit tests for strcpy.rs (NativeStrcpy / NativeStrncpy / NativeStrdup).
-// Split out per rust-mod-tests-sibling-extraction; included via #[cfg(test)] #[path].
+// Split out per rust-module-root-split-recipe; included via #[cfg(test)] #[path].
 use super::*;
 use crate::memory::Permission;
 use crate::procedures::{NativeSimProcedure, ProcedureError};

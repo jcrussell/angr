@@ -9,8 +9,7 @@ reach for — :meth:`Project.hook` with a SimProcedure (``replace=True``),
 to revert.
 
 These surfaces are already exercised implicitly by 6+ benchmarks
-(``flareon2015_5``, ``flareon2015_10``, ``whitehatvn_re400`` and others
-recorded in the ``bench-simprocedure-fallback-distribution`` memory),
+(``flareon2015_5``, ``flareon2015_10``, ``whitehatvn_re400`` and others),
 but no explicit smoke test had pinned the contract end-to-end. Per
 ``angr-3bz1`` this file makes the surface explicit so a regression here
 fails loudly rather than as a benchmark slowdown.

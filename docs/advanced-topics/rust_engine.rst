@@ -751,8 +751,7 @@ Z3 simplification touches the engine in three places:
    (``symbolic/solver_build.rs::build_solver_params``) sets ``bv_extract_prop=true`` and
    ``mul2concat=true``; the rest of preprocessing
    (``simplify:propagate-values:solve-eqs:bit-blast:sat``) runs on the
-   first ``check()`` call after each assertion batch
-   (``z3-th-rewriter-invoked-during-solver-preprocessing-on``). The
+   first ``check()`` call after each assertion batch. The
    engine never invokes ``Z3_simplify_ex`` directly.
 3. **RustBV-level structural canonicalization.** Commutative ops are
    canonicalized at construction (``rustbv_commutative_canonicalize_count``

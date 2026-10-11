@@ -2367,7 +2367,7 @@ class TestNativeReadCacheSync:
     dirty page in `_create_state_for_callback`. Without the replay,
     symbolic bytes written by NativeRead are invisible to a later Python
     SimProc fallback (the original failure that kept NativeRead disabled —
-    see angr-mme3 / `avoid-enabling-native-read` memory)."""
+    see angr-mme3)."""
 
     def test_native_read_dispatches_during_fauxware_exploration(self, fauxware_project):
         """NativeRead is registered by default and dispatches when fauxware

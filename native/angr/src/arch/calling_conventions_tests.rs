@@ -1,6 +1,6 @@
 //! Tests for the per-ABI calling convention tables.
 //!
-//! Extracted from `calling_conventions.rs` (see bd `rust-mod-tests-sibling-extraction`).
+//! Extracted from `calling_conventions.rs` (see bd `rust-module-root-split-recipe`).
 
 use super::*;
 use crate::arch::registry::{ALL_ARCHES, ArchDesc};

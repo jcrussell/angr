@@ -1,5 +1,5 @@
 // Tests for strstr SimProcedure (extracted from strstr.rs mod tests).
-// See rust-mod-tests-sibling-extraction for the split recipe.
+// See rust-module-root-split-recipe for the split recipe.
 use super::*;
 use crate::memory::Permission;
 use crate::procedures::NativeSimProcedure;

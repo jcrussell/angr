@@ -11,7 +11,7 @@ handler.
 This is the harness that T2-MEASURE (angr-11djq.4) asked for and that the
 sibling angr-11djq.7 (RustPosixState fd/file sync) is evidence-gated on.
 The earlier candidates were the wrong layer (bd memory
-``djq7-evidence-needs-file-io-harness``):
+``djq7-file-read-harness-evidence``):
 
   * ``write_stream_heavy`` is WRITE-side cle stdout/stderr stdio only;
   * ``xmllint_getenv`` reaches getenv before any file open();

@@ -166,7 +166,7 @@ EXAMPLE_CATALOG = {
     "file_read_kernel": {
         "tier": "fast",
         "rust_ok": True,
-        "notes": "angr-w5llj: READ-side pre-seeded-file evidence harness for angr-11djq.7 (RustPosixState fd/file sync). Single concrete path: pre-seeds /data/secret.txt via state.fs.insert on the Python side, then raw open()/read()/close() + magic-prefix compare. Vendored gcc -O2 -no-pie binary; no stdio (raw syscalls) so the fallback measured is the fd path itself, not fopen/fread on top. RESULT (iter54): reaches the success path once (found=1, so the pre-seeded content IS cross-side visible — .7's 'pre-seeded files invisible' worry does NOT hold for the read path), but read falls back via SimProcedure->Python: 1 (read), NOT Syscall->Python (which reads 0). So pre-seeded read already works through the Python read SimProcedure fallback; .7 stays unfunded as a native optimization (1 fallback, not a hot loop). Supersedes the wrong-layer write_stream_heavy/xmllint_getenv attempts (bd memory djq7-evidence-needs-file-io-harness). Wrapper in synthetic_examples/.",
+        "notes": "angr-w5llj: READ-side pre-seeded-file evidence harness for angr-11djq.7 (RustPosixState fd/file sync). Single concrete path: pre-seeds /data/secret.txt via state.fs.insert on the Python side, then raw open()/read()/close() + magic-prefix compare. Vendored gcc -O2 -no-pie binary; no stdio (raw syscalls) so the fallback measured is the fd path itself, not fopen/fread on top. RESULT (iter54): reaches the success path once (found=1, so the pre-seeded content IS cross-side visible — .7's 'pre-seeded files invisible' worry does NOT hold for the read path), but read falls back via SimProcedure->Python: 1 (read), NOT Syscall->Python (which reads 0). So pre-seeded read already works through the Python read SimProcedure fallback; .7 stays unfunded as a native optimization (1 fallback, not a hot loop). Supersedes the wrong-layer write_stream_heavy/xmllint_getenv attempts (bd memory djq7-file-read-harness-evidence). Wrapper in synthetic_examples/.",
     },
     "write_stream_heavy": {
         "tier": "fast",
@@ -202,7 +202,7 @@ EXAMPLE_CATALOG = {
     "simple_heap_overflow": {
         "tier": "medium",
         "rust_ok": False,
-        "notes": "Two blockers: Python needs angr/binaries CI repo for libc 2.27 (system glibc 2.39 -> 'libc too new'); Rust raises NotImplementedError on SYMBOL_FILL_UNCONSTRAINED_REGISTERS (apre-root-cause)",
+        "notes": "Two blockers: Python needs angr/binaries CI repo for libc 2.27 (system glibc 2.39 -> 'libc too new'); Rust raises NotImplementedError on SYMBOL_FILL_UNCONSTRAINED_REGISTERS (angr-apre)",
     },
     # === Slow/problematic examples ===
     "hackcon2016_angry-reverser": {"tier": "slow", "rust_ok": True, "notes": "LAZY_SOLVES, Z3 structure mismatch"},

@@ -97,11 +97,11 @@ policy**: should the shared-lineage path auto-engage on rev250 / unbreakable_1?
 
 This is governed by existing, hard-won constraints — none of which this spike may
 override blind:
-- `avoid-dfs-coupling-for-shared-lineage` — do NOT default-on for `strategy=dfs`;
+- `angr-ua1i` (closed) — do NOT default-on for `strategy=dfs`;
   **workload shape**, not search strategy, predicts the win.
-- `v5ht-threshold-justification-2026-05-25` — the 35% hot threshold is calibrated
+- `angr-1gfa` — the 35% hot threshold is calibrated
   on N=4 workloads; widen the dataset before retuning.
-- `avoid-full-lineage-teardown` / `invariant-v5ht-dismantle-child-none` — the
+- `angr-0dgq` / `invariant-v5ht-dismantle-child-none` — the
   teardown variant is a net loss; child-None on dismantle is a correctness
   invariant (baby-re `chr()` repro).
 
@@ -246,8 +246,8 @@ or re-evaluating) — only a *pre-fork* predictor of mint cost could move this.
   `native/angr/src/symbolic/lineage.rs` (`SharedLineageSolver::switch_to`,
   `assert_base`), `native/angr/src/symbolic/snapshot_fork_ops.rs` (fork-time
   lineage minting), `native/angr/src/symbolic/solving_ops.rs` (`with_z3_solver`).
-- Memories: `per-fork-solver-share-infeasible`, `invariant-hk7k-design-options`,
-  `avoid-dfs-coupling-for-shared-lineage`, `v5ht-threshold-justification-2026-05-25`,
-  `avoid-full-lineage-teardown`, `invariant-v5ht-dismantle-child-none`,
+- Memories: `per-fork-solver-share-infeasible`, `invariant-v5ht-dismantle-child-none`,
   `invariant-bare-z3-push-depth`, `proxy-gate-audit-all-default-off`.
+- Beads: `angr-hk7k` / `angr-v5a5` (design options), `angr-ua1i` (DFS coupling),
+  `angr-1gfa` (threshold calibration), `angr-0dgq` (full teardown).
 - Sibling decision docs: `tools/decisions/native_subcall_dispatcher_design.md`.

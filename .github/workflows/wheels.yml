@@ -111,8 +111,8 @@ jobs:
           # (AlmaLinux/CentOS) carry z3-devel ONLY in EPEL, which is not enabled by
           # default — enable it first. Do NOT fall back to `pip download z3-solver`:
           # that wheel ships libz3.so but NOT z3.h, so it masks a missing header as
-          # success and bindgen then dies with a cryptic NotExist (bd memory
-          # wheels-manylinux-z3-header-gap). Fail loud here instead.
+          # success and bindgen then dies with a cryptic NotExist (angr-3gjm).
+          # Fail loud here instead.
           CIBW_BEFORE_BUILD_LINUX: >
             pip install z3-solver==4.13.0.0 patchelf &&
             (yum install -y epel-release || true) &&

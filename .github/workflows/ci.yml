@@ -293,7 +293,7 @@ jobs:
         # --rust-only: skip the Python comparison run (cuts runtime in half).
         # --skip-bimodal: exclude Z3-nondeterministic benches whose 2x bimodal
         #   timing routinely exceeds the 15% regression threshold even on a
-        #   stable HEAD (see bd memory `invariant-bimodal-variance-benchmarks`).
+        #   stable HEAD (see bd memory `benchmark-bimodal-variance-rules`).
         # --threshold 0.15: explicit (matches the default) — 15% slower than
         #   baseline_timings.json fails the gate.
         # --retry-failures 2: sub-second smoke benches are noise-dominated; the
@@ -323,7 +323,8 @@ jobs:
     # introducing a Rust↔Python output divergence would otherwise sit
     # broken until the next cron. 10 trials × ~5s ≈ 50-60s wall plus the
     # Rust build; --seed 1 keeps the failure surface reproducible.
-    # See bd memory `invariant-ci-gate-hygiene` rule (1).
+    # Nightly-only gates let a breaking PR merge before the next cron, so
+    # every nightly gate keeps a smaller PR-time variant like this one.
     name: Property Fuzzer (PR smoke)
     runs-on: ubuntu-latest
     timeout-minutes: 15  # Rust build dominates (~5-7m cold); fuzzer step capped at 5m below
@@ -373,8 +374,10 @@ jobs:
     # N=3 is ~15s of bench-execution. The threshold is tighter than nightly
     # (1.3x vs 1.5x) because warmup happens entirely in iter1; iters 2-3
     # should be flat on healthy main. Steady-state variance still belongs
-    # to the nightly N=10 run. See bd memory `invariant-ci-gate-hygiene`
-    # rule (1) and the run_leak_check.py docstring for threshold notes.
+    # to the nightly N=10 run. Like the fuzzer smoke above, this PR-time
+    # variant exists because a nightly-only gate lets a breaking PR merge
+    # before the next cron. See the run_leak_check.py docstring for
+    # threshold notes.
     name: RSS Leak Check (PR smoke)
     runs-on: ubuntu-latest
     timeout-minutes: 15  # Rust build dominates (~5-7m cold); leak step capped at 5m below

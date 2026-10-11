@@ -1,4 +1,4 @@
-// Tests for exploration/stats_api.rs (see rust-mod-tests-sibling-extraction
+// Tests for exploration/stats_api.rs (see rust-module-root-split-recipe
 // for why these live in a sibling file rather than an inline `mod tests`).
 //
 // `stats()` / `get_fallback_stats()` are two of the most Python-visible

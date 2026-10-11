@@ -1,5 +1,5 @@
 // Tests for exploration/helpers.rs — extracted from the former inline
-// `#[cfg(test)] mod tests` block (see rust-mod-tests-sibling-extraction).
+// `#[cfg(test)] mod tests` block (see rust-module-root-split-recipe).
 use super::*;
 use crate::exploration::{CallbackReason, PendingCallback};
 use crate::stash::{STASH_ACTIVE, STASH_ERRORED};

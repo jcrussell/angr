@@ -1,7 +1,7 @@
 //! Unit tests for [`super`] — process/startup syscalls.
 //!
 //! Split out of `startup.rs` to keep the implementation module lean
-//! (see bd memory `rust-mod-tests-sibling-extraction`).
+//! (see bd memory `rust-module-root-split-recipe`).
 
 use super::*;
 use crate::memory::Permission;

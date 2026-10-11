@@ -23,9 +23,8 @@ The crash in flag_2 aborts upstream's ``main()`` before any timing can
 be captured. We wrap the upstream module here and run only the FAST
 subset (flags 1, 4, secret) so ``run_single.py`` and
 ``run_regression.py`` can exercise the printf/scanf-heavy CMU teaching
-binary without depending on a fixed upstream. See bd memory
-``bench-cmu-binary-bomb-broken`` for the flag details and ``angr-w5op``
-for the bench-add task.
+binary without depending on a fixed upstream. See ``angr-w5op`` for the
+bench-add task.
 
 The binary itself lives upstream (``cmu_binary_bomb/bomb``), not in this
 synthetic-examples directory, so we ``chdir`` to the upstream example

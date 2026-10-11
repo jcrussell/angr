@@ -36,7 +36,7 @@
 //!   by `SymContext::fork`'s rustdoc in `snapshot_fork_ops.rs`, which names
 //!   the regression guard for each gate. Keys:
 //!   `invariant-bare-z3-push-depth`, `invariant-v5ht-dismantle-child-none`.
-//! - **Z3 construction canonicalization** (`invariant-z3-construction-canonicalization`):
+//! - **Z3 construction canonicalization** (`invariant-commutative-canonicalization-active`):
 //!   Z3 hash-cons applies at construction time, but commutative operands
 //!   are NOT normalized (`mk_bvadd(x, y)` and `mk_bvadd(y, x)` produce
 //!   distinct AST pointers). Concrete numerals and named symbol leaves ARE

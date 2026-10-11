@@ -1,5 +1,5 @@
 # pylint: disable=missing-class-docstring,no-self-use
-"""A warm disk-init-cache hit must restore ``posix.argv/argc/environ/auxv`` (angr-7tmoz).
+"""A warm disk init-cache hit must restore ``posix.argv/argc/environ/auxv`` (angr-7tmoz).
 
 ``rust_disk_cache.py::_deserialize_init_state`` rebuilds a *blank* state and
 restores registers + memory pages, so every pointer

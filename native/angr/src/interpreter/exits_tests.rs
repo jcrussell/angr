@@ -1,7 +1,7 @@
 //! Tests for [`super::super::exits`] — VEX exit/jump dispatch logic.
 //!
 //! Extracted from the `mod tests` block in `exits.rs` (see
-//! `rust-mod-tests-sibling-extraction` bd memory).
+//! `rust-module-root-split-recipe` bd memory).
 
 use super::*;
 use crate::state::CallStackEntry;
