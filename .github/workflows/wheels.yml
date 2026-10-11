@@ -44,14 +44,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # abi3-py310 (pinned in native/angr/Cargo.toml) collapses the CPython
-          # axis to ONE wheel per platform covering 3.10+ — build on 3.10, the
-          # limited-ABI tag (cp310-abi3) is forward-compatible. Compile-verified
+          # abi3-py312 (pinned in native/angr/Cargo.toml) collapses the CPython
+          # axis to ONE wheel per platform covering 3.12+ — build on 3.12, the
+          # limited-ABI tag (cp312-abi3) is forward-compatible. Compile-verified
           # clean against the full pyo3 surface (py-clone + all #[pymethods]);
           # see angr-6f0i. So the matrix is purely platform × arch.
           - name: manylinux x86_64
             runs-on: ubuntu-latest
-            cibw-build: "cp310-manylinux_x86_64"
+            cibw-build: "cp312-manylinux_x86_64"
             cibw-archs: "x86_64"
             qemu: false
           # aarch64 builds run the same manylinux recipe under QEMU emulation
@@ -62,14 +62,14 @@ jobs:
           # install z3-solver on aarch64 either.
           - name: manylinux aarch64
             runs-on: ubuntu-latest
-            cibw-build: "cp310-manylinux_aarch64"
+            cibw-build: "cp312-manylinux_aarch64"
             cibw-archs: "aarch64"
             qemu: true
           # macOS arm64 (Apple silicon). Different repair tool (delocate) and a
           # different runpath token (@loader_path), same "exclude libz3" rule.
           - name: macos arm64
             runs-on: macos-14
-            cibw-build: "cp310-macosx_arm64"
+            cibw-build: "cp312-macosx_arm64"
             cibw-archs: "arm64"
             qemu: false
           # Windows x86_64. The only leg with no repair step at all: PE has no
@@ -78,7 +78,7 @@ jobs:
           # (import library / bindgen), not the shim — see CIBW_*_WINDOWS below.
           - name: windows x86_64
             runs-on: windows-2022
-            cibw-build: "cp310-win_amd64"
+            cibw-build: "cp312-win_amd64"
             cibw-archs: "AMD64"
             qemu: false
 

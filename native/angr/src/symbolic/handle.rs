@@ -34,7 +34,7 @@ use pyo3::prelude::*;
 /// dict-keying handles that came from different sibling-forked states is
 /// unsound: unrelated values may compare equal and collide in a dict. Only mix
 /// handles that share a table lineage.
-#[pyclass]
+#[pyclass(from_py_object)]
 #[derive(Clone)]
 pub struct RustBVHandle {
     /// Unique identifier for this value in the symbol table.

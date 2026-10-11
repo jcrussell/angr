@@ -447,7 +447,14 @@ fn import_submodule(
     Ok(())
 }
 
-#[pymodule]
+// `gil_used = true`: pyo3 0.28 flipped the default to "safe on free-threaded
+// Python". This extension is not: every `SymContext` captures a thread-local
+// Z3 context, `RustSolverContext` is `#[pyclass(unsendable)]`, and the
+// scheduler serializes state across threads by design
+// (docs/advanced-topics/rust_parallel_design.rst). On a free-threaded
+// interpreter this makes CPython re-enable the GIL for the process instead of
+// letting two Python threads race into one Z3 context.
+#[pymodule(gil_used = true)]
 fn rustylib(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Fuzzer modules (optional)
     #[cfg(feature = "fuzzer")]

@@ -83,7 +83,7 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@150fca883cd4034361b621bd4e6a9d34e5143606 # v1
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v5
         with:
-          python-version: "3.10"
+          python-version: "3.12"
       # -D warnings (angr-sqfj8.139): mirrors the PR-time
       # `rust_feature_flags_check` lane and `make check-no-z3`. Since
       # angr-c7xno.99 `--all-targets` extends the zero-warning bar over the
@@ -165,7 +165,7 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@150fca883cd4034361b621bd4e6a9d34e5143606 # v1
       - uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57 # v6
       - name: Sync dependencies
-        run: uv sync -p 3.10
+        run: uv sync -p 3.12
       - name: Build Rust extension
         run: uv run pip install -e . --no-build-isolation --no-deps
       - name: Run Rust exploration tests
@@ -226,7 +226,7 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@150fca883cd4034361b621bd4e6a9d34e5143606 # v1
       - uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57 # v6
       - name: Sync dependencies
-        run: uv sync -p 3.10
+        run: uv sync -p 3.12
       - name: Build Rust extension
         run: uv run pip install -e . --no-build-isolation --no-deps
       # Rot-proofs the blog-post showcase (angr-4n26m): every show_*.py demo
@@ -252,7 +252,7 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@150fca883cd4034361b621bd4e6a9d34e5143606 # v1
       - uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57 # v6
       - name: Sync dependencies
-        run: uv sync -p 3.10
+        run: uv sync -p 3.12
       - name: Build Rust extension
         run: uv run pip install -e . --no-build-isolation --no-deps
       - name: Run Rust exploration tests with proxy gates on
@@ -301,7 +301,7 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@150fca883cd4034361b621bd4e6a9d34e5143606 # v1
       - uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57 # v6
       - name: Sync dependencies
-        run: uv sync -p 3.10
+        run: uv sync -p 3.12
       - name: Build Rust extension
         run: uv run pip install -e . --no-build-isolation --no-deps
       - name: Run leak check (10 main() iters under 4 GB RLIMIT_AS)
@@ -403,7 +403,7 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@150fca883cd4034361b621bd4e6a9d34e5143606 # v1
       - uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57 # v6
       - name: Sync dependencies
-        run: uv sync -p 3.10
+        run: uv sync -p 3.12
       - name: Build Rust extension
         run: uv run pip install -e . --no-build-isolation --no-deps
       - name: Run the M2 equality gate test (fast corpus, N=5)
@@ -442,7 +442,7 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@150fca883cd4034361b621bd4e6a9d34e5143606 # v1
       - uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57 # v6
       - name: Sync dependencies
-        run: uv sync -p 3.10
+        run: uv sync -p 3.12
       - name: Build Rust extension
         run: uv run pip install -e . --no-build-isolation --no-deps
       # parity_census.py carries its own drift guards: _docs_matrix() and
@@ -480,7 +480,7 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@150fca883cd4034361b621bd4e6a9d34e5143606 # v1
       - uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57 # v6
       - name: Sync dependencies
-        run: uv sync -p 3.10
+        run: uv sync -p 3.12
       - name: Build Rust extension
         run: uv run pip install -e . --no-build-isolation --no-deps
       # The other half of angr-op0dn.14.6's acceptance (angr-op0dn.14.10). The
@@ -531,7 +531,7 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@150fca883cd4034361b621bd4e6a9d34e5143606 # v1
       - uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57 # v6
       - name: Sync dependencies
-        run: uv sync -p 3.10
+        run: uv sync -p 3.12
       - name: Build Rust extension
         run: uv run pip install -e . --no-build-isolation --no-deps
       - name: Run property-based differential fuzzer
@@ -566,7 +566,7 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@150fca883cd4034361b621bd4e6a9d34e5143606 # v1
       - uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57 # v6
       - name: Sync dependencies
-        run: uv sync -p 3.10
+        run: uv sync -p 3.12
       - name: Build Rust extension
         run: uv run pip install -e . --no-build-isolation --no-deps
       - name: Run the find-all worker-count-invariance gate

@@ -249,7 +249,7 @@ jobs:
           path: binaries
       - uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57 # v6
       - name: Sync dependencies
-        run: uv --directory angr sync -p 3.10
+        run: uv --directory angr sync -p 3.12
       - name: Run Python-engine baseline tests
         run: uv --directory angr run make test-python-baseline
         timeout-minutes: 6
@@ -280,7 +280,7 @@ jobs:
         # separately as `Run validate_tier unit tests` (after uv sync).
         run: python3 tests/benchmarks/validate_tier.py
       - name: Sync dependencies
-        run: uv sync -p 3.10
+        run: uv sync -p 3.12
       - name: Run validate_tier unit tests
         # Edge-case unit tests for the helpers inside validate_tier.py
         # (classify bucket boundaries, within_boundary ±10% slack math
@@ -360,7 +360,7 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@150fca883cd4034361b621bd4e6a9d34e5143606 # v1
       - uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57 # v6
       - name: Sync dependencies
-        run: uv sync -p 3.10
+        run: uv sync -p 3.12
       - name: Build Rust extension
         run: uv run pip install -e . --no-build-isolation --no-deps
       - name: Run property-based differential fuzzer (10 trials)
@@ -413,7 +413,7 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@150fca883cd4034361b621bd4e6a9d34e5143606 # v1
       - uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57 # v6
       - name: Sync dependencies
-        run: uv sync -p 3.10
+        run: uv sync -p 3.12
       - name: Build Rust extension
         run: uv run pip install -e . --no-build-isolation --no-deps
       - name: Run leak check (3 main() iters under 4 GB RLIMIT_AS)

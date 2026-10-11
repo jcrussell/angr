@@ -270,7 +270,7 @@ macro_rules! with_callback_fields {
 ///   clone (e.g. [`Self::inspect_enabled`]) MUST be wrapped in
 ///   `Arc<Atomic*>` so updates from the Python side remain visible to
 ///   the Rust copy.
-#[pyclass]
+#[pyclass(from_py_object)]
 #[derive(Clone)]
 #[allow(
     unreachable_pub,

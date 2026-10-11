@@ -14,7 +14,7 @@ as ``angr/rustylib*.so``.
 Prerequisites
 ~~~~~~~~~~~~~
 
-* Python 3.10+.
+* Python 3.12+ (the extension is built ``abi3-py312``).
 * A Rust toolchain from rustup at ``~/.cargo/bin``; the version is pinned
   by the repo-root ``rust-toolchain.toml``.
 * The ``z3-solver`` wheel pinned in ``pyproject.toml``. ``z3-sys`` ships

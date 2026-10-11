@@ -51,8 +51,8 @@ Observed facts
   ``native/angr/build.rs::find_z3_lib_dir`` (prefers the active venv's ``z3``
   package). That absolute RUNPATH is correct for an editable dev install but
   **non-portable** in a distributed wheel.
-* ``pyo3`` carries the ``abi3-py310`` feature (angr-6f0i), so the distributed wheel is a single limited-ABI artifact covering
-  CPython 3.10+ rather than one per minor version. The editable dev ``.so`` is
+* ``pyo3`` carries the ``abi3-py312`` feature (angr-6f0i), so the distributed wheel is a single limited-ABI artifact covering
+  CPython 3.12+ rather than one per minor version. The editable dev ``.so`` is
   still copied to a versioned name by ``tools/rebuild-rust.sh``, so local
   development is unaffected.
 
@@ -95,10 +95,10 @@ guard; treat it as load-bearing, not cosmetic.
 abi3 vs per-CPython matrix
 --------------------------
 
-Two ways to cover supported interpreters (CPython 3.10+):
+Two ways to cover supported interpreters (CPython 3.12+):
 
-* **abi3 (chosen, angr-6f0i):** the ``abi3-py310`` feature on the
-  ``pyo3`` dependency. One ``rustylib.abi3.so`` then covers 3.10–3.13+, cutting
+* **abi3 (chosen, angr-6f0i):** the ``abi3-py312`` feature on the
+  ``pyo3`` dependency. One ``rustylib.abi3.so`` then covers 3.12+, cutting
   the build matrix to a single wheel per platform. The risk — that the engine's
   ``features = ["py-clone"]`` plus its broad ``#[pymethods]`` surface might touch
   an API unavailable under the limited ABI — was **compile-verified clean**:

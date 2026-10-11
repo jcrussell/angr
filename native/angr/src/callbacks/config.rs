@@ -72,7 +72,7 @@ pub(crate) struct DeferredFork {
 /// must go through `ExecutionConfig::py_new` (the PyO3 `__init__`)
 /// rather than struct-literal syntax.
 #[non_exhaustive]
-#[pyclass]
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone)]
 #[allow(
     unreachable_pub,

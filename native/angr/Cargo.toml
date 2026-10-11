@@ -48,10 +48,10 @@ postcard = { version = "1.1.3", default-features = false, features = ["use-std"]
 # split across several `#[pymethods]` blocks in sibling files (angr-9ke6b.50)
 # instead of one 2.5k-line module. It pulls in `inventory`, which registers the
 # blocks via linker sections at startup — supported on every platform we build
-# for (Linux/macOS/Windows), and compatible with `abi3-py310`.
-pyo3 = { version = "0.27.2", features = [
+# for (Linux/macOS/Windows), and compatible with `abi3-py312`.
+pyo3 = { version = "0.29.3", features = [
     "py-clone",
-    "abi3-py310",
+    "abi3-py312",
     "multiple-pymethods",
 ] }
 rangemap = "1.7.1"
