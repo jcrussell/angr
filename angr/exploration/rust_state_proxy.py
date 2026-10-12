@@ -2254,7 +2254,10 @@ class RustPosixProxy:
         self._mgr = rust_mgr
         self._state_id = state_id
         self._stdin_vars = stdin_vars or []  # list of (claripy BVS, offset) for stdin
-        self._stdout_data = stdout_data or b""  # accumulated stdout bytes
+        # Accumulated stdout bytes when the caller captured them; None means
+        # read the state's live Rust buffer on each dumps(1) (angr-hc1yj —
+        # every caller defaulted to b"", so stdout predicates never matched).
+        self._stdout_data = stdout_data
         # angr-yodz: shared-context getter from the parent RustStateProxy so
         # dumps(0) honors constraints added via the same proxy's
         # add_constraints. None for standalone construction.
@@ -2266,8 +2269,11 @@ class RustPosixProxy:
             # stdin — evaluate symbolic variables under constraints
             return self._eval_stdin()
         if fd == 1:
-            # stdout — return accumulated output (cached on proxy init)
-            return self._stdout_data
+            if self._stdout_data is not None:
+                return self._stdout_data
+            # cat-(b) FALLBACK WITH LOSS via _rust_state_get: empty bytes when
+            # the state has no stdout buffer (it never wrote).
+            return bytes(_rust_state_get(self._mgr, "get_state_stdout", self._state_id, default=b""))
         # Other fds (stderr, opened files) — query Rust engine.
         # cat-(b) FALLBACK WITH LOSS via _rust_state_get: empty bytes when the
         # requested fd has no Rust-side buffer. Tools that expect specific
@@ -2278,7 +2284,7 @@ class RustPosixProxy:
     def _eval_stdin(self):
         """Evaluate stdin symbolic variables to concrete bytes."""
         if not self._stdin_vars:
-            return b""
+            return self._eval_rust_stdin()
         owned_ctx = None
         try:
             if self._shared_ctx_getter is not None:
@@ -2307,6 +2313,28 @@ class RustPosixProxy:
             # ``owned_ctx`` was forked above in this same call, on this same
             # thread, so the owner id is simply the current thread.
             _release_owned_ctx(owned_ctx, threading.get_ident())
+
+    def _eval_rust_stdin(self):
+        """``dumps(0)`` from the stdin symbols native reads created in Rust.
+
+        Same evaluation ``_inject_rust_stdin_inner`` uses for a materialized
+        state: each symbol at its recorded width, little-endian (angr-hc1yj —
+        without ``stdin_vars`` the proxy returned ``b""``).
+        """
+        try:
+            if not self._mgr.has_state_stdin_symbols(self._state_id):
+                return b""
+            out = bytearray()
+            for name, bits in self._mgr.get_state_stdin_symbols(self._state_id):
+                nbytes = max(1, bits // 8)
+                val = self._mgr.eval_stdin_symbol(self._state_id, name, bits)
+                out += (0 if val is None else val & ((1 << (nbytes * 8)) - 1)).to_bytes(nbytes, "little")
+            return bytes(out)
+        except Exception as e:
+            # cat-(c) WRONG-ANSWER RISK: empty bytes read as "the input was
+            # empty"; logged at warn like the stdin_vars path above.
+            l.warning("RustPosixProxy: failed to evaluate Rust stdin: %s", e)
+            return b""
 
 
 class RustCallStackFrameProxy:
@@ -3210,7 +3238,7 @@ class RustStateProxy:
         self._state_id = state_id
         self._project = project
         self._stdin_vars = stdin_vars
-        self._stdout_data = stdout_data or b""
+        self._stdout_data = stdout_data
         # High-level RustExplorationManager — used for options/globals lookup.
         # None when constructed standalone (e.g., low-level unit tests); in
         # that case options/globals fall back to empty stand-ins.
@@ -3584,7 +3612,7 @@ class RustSimulationManagerProxy:
             state_id,
             project=self._project,
             stdin_vars=self._stdin_vars,
-            stdout_data=self._stdout_tracker.get(state_id, b""),
+            stdout_data=self._stdout_tracker.get(state_id),
             python_mgr=self._python_mgr,
         )
 

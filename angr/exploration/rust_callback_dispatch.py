@@ -18,7 +18,12 @@ from typing import TYPE_CHECKING
 from angr import claripy
 from angr.errors import AngrUnsupportedSyscallError, SimUnsatError
 from angr.exploration.rust_identity import CallbackMemoryTracker
-from angr.exploration.rust_state_export import POSIX_SYNC_FDS, _concrete_stream_len, _posix_stream
+from angr.exploration.rust_state_export import (
+    POSIX_SYNC_FDS,
+    _concrete_stream_bytes,
+    _concrete_stream_len,
+    _posix_stream,
+)
 from angr.storage.file import SimFile, SimFileDescriptor
 
 if TYPE_CHECKING:
@@ -475,9 +480,26 @@ class RustCallbackDispatchMixin:
         if stream is None:
             return
         py_len = _concrete_stream_len(stream)
-        if py_len is None or py_len >= len(rust_out):
-            # Symbolic-size stream (cannot tell what is missing), or the
-            # Python side is already caught up.
+        if py_len is None:
+            # Symbolic-size stream: cannot tell what is missing.
+            return
+        if py_len and isinstance(getattr(stream, "content", None), list):
+            # angr-hc1yj: appending only the suffix assumes the Python stream
+            # is a prefix of Rust's buffer (the POSIX_SYNC_FDS invariant).
+            # A frame copied from a root that already carries another
+            # branch's output breaks that, and appending then splices the two
+            # (or, when Python is longer, keeps the foreign bytes and the
+            # write-back pushes them into Rust). Rust's buffer is the source
+            # of truth: replace a stream that is not its prefix.
+            py_bytes = _concrete_stream_bytes(state, stream)
+            if py_bytes is not None and not rust_out.startswith(py_bytes):
+                stream.content.clear()
+                if hasattr(stream, "pos"):
+                    # SimPacketsStream writes at its own packet index.
+                    stream.pos = 0
+                py_len = 0
+        if py_len >= len(rust_out):
+            # The Python side is already caught up.
             return
         try:
             stream.write(None, claripy.BVV(rust_out[py_len:]), events=False)
@@ -2031,13 +2053,9 @@ class RustCallbackDispatchMixin:
                     l.debug(f"Find predicate at 0x{addr:x}: {e}")
                 matched = False
 
+            # A match moves the state into Rust's found stash, which ``found``
+            # reads; keeping the proxy too listed it twice (angr-hc1yj).
             self._rust_mgr.resume_find_predicate(state_id, matched)
-
-            # If matched, store the proxy as the found state
-            if matched:
-                if not hasattr(self, "_predicate_found"):
-                    self._predicate_found = []
-                self._predicate_found.append(proxy)
 
         except Exception as e:
             # cat-(c) WRONG-ANSWER RISK: outer find-predicate handler raised;

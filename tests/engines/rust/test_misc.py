@@ -464,10 +464,9 @@ class TestStashProxyAccessors:
             (mgr.unconstrained, mgr.unconstrained_proxies()),
         ]
         for full_states, proxy_states in pairs:
-            # ``mgr.found`` may include a Python-side predicate-found
-            # SimState that has no corresponding Rust stash entry, so the
-            # proxy count is a lower bound rather than an exact match.
-            assert len(proxy_states) <= len(full_states)
+            # Every stash, ``found`` included, is read from Rust, so the
+            # proxy and full views list the same states (angr-hc1yj).
+            assert len(proxy_states) == len(full_states)
             # Every proxy.addr must appear in the full-states addr set.
             full_addrs = sorted(s.addr for s in full_states)
             proxy_addrs = sorted(p.addr for p in proxy_states)
@@ -1797,7 +1796,6 @@ class TestSnapshotRoundTrip:
         )
         assert not mgr._predicate_matched_ids, "load_snapshot must drop the pre-restore skip tokens"
         assert not mgr._predicate_eval_cache, "load_snapshot must drop the pre-restore change-detection memo"
-        assert not mgr._predicate_found, "load_snapshot must drop the pre-restore predicate-found list"
 
         mgr._evaluate_predicates_on_active()
         assert matched <= set(mgr._rust_mgr.get_state_ids("found")), (

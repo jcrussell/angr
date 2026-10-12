@@ -6040,10 +6040,9 @@ class RustExplorationManager(
 
     def _found_count(self) -> int:
         """Fast count of found states without triggering full state export/sync."""
-        count = len(self._rust_mgr.get_state_ids("found"))
-        if hasattr(self, "_predicate_found") and self._predicate_found:
-            count += len(self._predicate_found)
-        return count
+        # Rust's found stash holds every find, predicate matches included
+        # (angr-hc1yj: adding _predicate_found double-counted them).
+        return len(self._rust_mgr.get_state_ids("found"))
 
     # ``active`` / ``avoid`` / ``deadended`` / ``unconstrained`` / ``pruned``
     # are generated from ``_STASH_ACCESSORS`` by ``_install_stash_accessors``;
@@ -6057,14 +6056,10 @@ class RustExplorationManager(
         that can be used with state.solver.eval(), state.posix.dumps(), etc.
         Includes states found via callable predicates.
         """
-        states = self._get_stash_states("found")
-        # Include states found via callable predicates that may not be in Rust stash
-        if hasattr(self, "_predicate_found") and self._predicate_found:
-            existing_ids = {id(s) for s in states}
-            for s in self._predicate_found:
-                if id(s) not in existing_ids:
-                    states.append(s)
-        return states
+        # Predicate matches are moved into Rust's found stash by both the
+        # callback and the sweep path, so the stash is complete; merging a
+        # second Python-side list listed every match twice (angr-hc1yj).
+        return self._get_stash_states("found")
 
     @property
     def errored(self) -> list:
@@ -6141,7 +6136,7 @@ class RustExplorationManager(
                 sid,
                 project=self._project,
                 stdin_vars=stdin_vars,
-                stdout_data=stdout_tracker.get(sid, b""),
+                stdout_data=stdout_tracker.get(sid),
                 python_mgr=self,
             )
             for sid in state_ids
@@ -7115,16 +7110,13 @@ class RustExplorationManager(
         state *contents*, and the wrong one for these).
 
         A restore is a whole-world replacement, not a rewind within one
-        exploration, so the recorded decision for all six is *clear*:
+        exploration, so the recorded decision for each of these is *clear*:
 
         * ``_predicate_matched_ids`` — :meth:`_evaluate_predicates_on_active`
           ``continue``\\ s outright on a member, so a restored state whose id
           matched pre-dump would never have its find/avoid predicate evaluated
           again: a silently lost ``found``. Direct mirror of .89's
           ``skip_find_predicate_states`` / ``skip_avoid_predicate_states``.
-        * ``_predicate_found`` — written in the same loop; it is *added* to the
-          reported found set (see :meth:`found_states`), so pre-load matches
-          would surface as finds of the resumed exploration.
         * ``_predicate_eval_cache`` — ``state_id -> (addr, stdout_len)``
           change-detection memo. A restored state sitting at the same pair as
           its pre-dump self would reuse a verdict computed under different
@@ -7142,7 +7134,6 @@ class RustExplorationManager(
         """
         self._predicate_matched_ids = set()
         self._predicate_eval_cache = {}
-        self._predicate_found = []
         self._state_roots = {}
         self._py_state_options = {}
         self._py_state_globals = {}
