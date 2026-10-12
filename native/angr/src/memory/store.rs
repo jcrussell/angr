@@ -211,6 +211,40 @@ impl SymbolicMemory {
                     self.clear_multi_at(addr + i as u64);
                 }
             }
+            // angr-c8mda: retire every *other* symbolic object covering a
+            // byte this store overwrites. Loads consult the exact key first,
+            // so a per-byte object left at an interior byte (an imported
+            // lane, or one `retire_symbolic_object_at` split off earlier)
+            // would shadow the new value; likewise a wider object based
+            // below `addr` would go on claiming these bytes. Retiring splits
+            // such an object into lanes, so bytes outside the store keep
+            // their old symbolic content. The same-base, not-wider object is
+            // left for the `insert` below to replace (the common spill
+            // overwrite stays allocation-free).
+            if !self.symbolic_objects.is_empty() {
+                for i in 0..size {
+                    // overflow-ok: `Address` arithmetic is wrapping (see above).
+                    let byte_addr = addr + i as u64;
+                    let needs_retire = if i == 0 {
+                        match self.symbolic_objects.get(&addr) {
+                            Some(old) => old.width() / 8 > size,
+                            None => self
+                                .symbolic_spans
+                                .get(&addr)
+                                .is_some_and(|&(base, _)| base != addr),
+                        }
+                    } else {
+                        self.symbolic_objects.contains_key(&byte_addr)
+                            || self
+                                .symbolic_spans
+                                .get(&byte_addr)
+                                .is_some_and(|&(base, _)| base != addr)
+                    };
+                    if needs_retire {
+                        self.retire_symbolic_object_at(byte_addr);
+                    }
+                }
+            }
             let old_sym_bytes = self
                 .symbolic_objects
                 .insert(addr, value.clone())
@@ -614,8 +648,9 @@ impl SymbolicMemory {
     /// candidate `c` and each byte offset `b`, appends
     /// `(addr_expr == c, byte_b)` to `multi_objects[c + b]`. Existing
     /// alternatives at the same byte address are preserved — new ones
-    /// are appended after. By the Multi-payload invariant (disjoint
-    /// conds), order does not affect the load result.
+    /// are appended after. Order is significant: conds from successive
+    /// stores can overlap, and `MultiPayload::collapse` makes the newest
+    /// alternative win (angr-acg99).
     ///
     /// Per memory `invariant-mem-ite-depth-counter`, each per-byte
     /// `set_multi_alternatives` call records the payload length.
@@ -695,8 +730,8 @@ impl SymbolicMemory {
                 let alt = MultiAlternative::new(cond.clone(), byte_value);
 
                 // Merge with any existing payload at this byte. New alt
-                // goes after existing ones; conds are disjoint so order
-                // is semantically irrelevant.
+                // goes after existing ones, and the order matters:
+                // collapse makes the newest alternative win (angr-acg99).
                 //
                 // angr-c7xno.54: take the payload *out* of the map and
                 // `MultiPayload::push` onto it rather than cloning its

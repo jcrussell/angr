@@ -1767,12 +1767,12 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
                 self._store_concrete(addr, payload)
                 return
             # Symbolic AST — route through the AST FFI so the symbol is
-            # registered in the shared cache. Endianness on a symbolic AST
-            # is the caller's responsibility (claripy ASTs don't carry an
-            # endianness flag); we forward verbatim.
+            # registered in the shared cache. Rust holds the little-endian
+            # value, so a BE store is byte-reversed first, same as
+            # ``_data_to_ast`` and the inverse of ``load`` (angr-c8mda).
             if self._python_mgr is not None:
                 self._python_mgr._stats_proxy_mem_ast_writes += 1
-            self._store_ast(addr, data)
+            self._store_ast(addr, self._data_to_ast(data, size, endness))
             return
 
         if isinstance(data, (bytes, bytearray)):
@@ -1863,10 +1863,16 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
         symbolic-addr path — using ``claripy.BVV(bytes)`` would
         big-endian-interpret the bytes and produce the reverse layout.
 
-        Symbolic ASTs are forwarded verbatim (endness is the caller's
-        responsibility — claripy ASTs do not carry an endness flag).
+        A claripy AST is a value stored with ``endness``, exactly as angr's
+        ``memory.store`` treats it: under ``Iend_BE`` (the default) its most
+        significant byte lands at ``addr``, so it is byte-reversed into the
+        little-endian layout above. This mirrors ``load``, which reverses a
+        BE read; forwarding verbatim made a default ``load``/``store`` copy
+        land byte-reversed (angr-c8mda).
         """
         if isinstance(data, claripy.ast.Base):
+            if endness != "Iend_LE" and data.size() > 8:
+                return data.reversed
             return data
         if isinstance(data, (bytes, bytearray)):
             payload = bytes(data)

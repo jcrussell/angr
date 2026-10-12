@@ -308,10 +308,9 @@ class TestProxyLiskovGaps:
         ``claripy_to_rustbv`` on the data AST), so a subsequent solver
         eval through the proxy returns the expected concrete bits.
 
-        Endness on symbolic-AST data is the caller's responsibility — the
-        proxy forwards verbatim, matching the concrete-addr symbolic-AST
-        path. We use ``Iend_LE`` on the read side so the round-trip
-        produces the constrained value byte-for-byte.
+        The store uses angr's default ``Iend_BE`` endness, so a default
+        (BE) load round-trips the value and an ``Iend_LE`` load sees it
+        byte-swapped — stock ``SimMemory`` semantics (angr-c8mda).
         """
         from angr import claripy
 
@@ -326,15 +325,54 @@ class TestProxyLiskovGaps:
 
         proxy.memory.store(sym_addr, sym_val)
 
-        # AST forwarded verbatim: RustBV value 0xCAFEBABE is laid out
-        # byte 0 of memory = LSB. Read with Iend_LE to recover the
-        # constrained value. After angr-8dop.1 the proxy returns the
-        # symbolic AST, so we eval through the proxy solver to observe
-        # the constrained value (matches stock SimMemory semantics — a
-        # constrained BVS is not the same object as a BVV with that
-        # value).
-        loaded = proxy.memory.load(target, 4, endness="Iend_LE")
-        assert proxy.solver.eval(loaded) == 0xCAFEBABE
+        # After angr-8dop.1 the proxy returns the symbolic AST, so we eval
+        # through the proxy solver to observe the constrained value (a
+        # constrained BVS is not the same object as a BVV with that value).
+        assert proxy.solver.eval(proxy.memory.load(target, 4)) == 0xCAFEBABE
+        assert proxy.solver.eval(proxy.memory.load(target, 4, endness="Iend_LE")) == 0xBEBAFECA
+
+    @pytest.mark.parametrize("endness", [None, "Iend_BE", "Iend_LE"])
+    def test_memory_store_symbolic_value_round_trips_with_endness(self, fauxware_project, endness):
+        """angr-c8mda: a symbolic AST stored at a concrete address must read
+        back unchanged with the same endness, and byte-reversed with the
+        opposite one. The proxy used to forward the AST verbatim (an LE
+        layout) while ``load`` reverses a BE read, so a default
+        ``load``/``store`` copy landed byte-reversed."""
+        from angr import claripy
+
+        state = fauxware_project.factory.entry_state()
+        target = fauxware_project.entry
+        val = claripy.BVS("rt_val", 32, explicit_name=True)
+        mgr = RustExplorationManager(fauxware_project, [state])
+        proxy = mgr.proxy.active[0]
+
+        kw = {} if endness is None else {"endness": endness}
+        proxy.memory.store(target, val, **kw)
+        same = proxy.memory.load(target, 4, **kw)
+        other = proxy.memory.load(target, 4, endness="Iend_BE" if endness == "Iend_LE" else "Iend_LE")
+        assert not claripy.Solver().satisfiable(extra_constraints=[same != val])
+        assert not claripy.Solver().satisfiable(extra_constraints=[other != claripy.Reverse(val)])
+
+    def test_memory_copy_default_endness_preserves_bytes(self, fauxware_project):
+        """angr-c8mda: ``store(dst, load(src, n))`` with default endness is a
+        byte copy (sokohashv2's ``do_repmovsd`` hook). The copied region must
+        hold the source bytes in order, not reversed."""
+        from angr import claripy
+
+        state = fauxware_project.factory.entry_state()
+        src = fauxware_project.entry
+        dst = src + 0x40
+        words = [claripy.BVS(f"copy_w{i}", 32, explicit_name=True) for i in range(4)]
+        mgr = RustExplorationManager(fauxware_project, [state])
+        proxy = mgr.proxy.active[0]
+        for i, w in enumerate(words):
+            proxy.memory.store(src + 4 * i, w, endness="Iend_LE")
+
+        proxy.memory.store(dst, proxy.memory.load(src, 16))
+
+        for i, w in enumerate(words):
+            got = proxy.memory.load(dst + 4 * i, 4, endness="Iend_LE")
+            assert not claripy.Solver().satisfiable(extra_constraints=[got != w]), f"word {i} not copied in order"
 
     def test_memory_store_unbounded_symbolic_addr_does_not_raise(self, fauxware_project):
         """angr-p1s02: a write through an unbounded/unconstrained symbolic

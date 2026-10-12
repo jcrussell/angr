@@ -475,3 +475,72 @@ fn test_narrower_sym_overwrite_at_base_truncates_wider_sym() {
         "head must read back the narrow value that overwrote the wide one"
     );
 }
+
+/// Load `width_bits` at `addr` and prove it equals `expected` (no model
+/// in which they differ).
+#[cfg(feature = "vex-engine-z3")]
+fn assert_load_is(mem: &mut SymbolicMemory, ctx: &SymContext, addr: u64, expected: &RustBV, what: &str) {
+    let loaded = mem
+        .load_concrete_lazy(addr, expected.width() / 8, ctx)
+        .expect("load must succeed");
+    let probe = ctx.fork();
+    probe.assume_true(&loaded.eq(expected, &probe).not(&probe));
+    assert!(!probe.is_sat(), "{what}: load at {addr:#x} can differ from the stored value");
+}
+
+/// angr-c8mda: a symbolic store that fully covers a Python-imported symbolic
+/// object must replace every byte of it. sokohashv2's frame slots were
+/// imported from the initial state and then overwritten by the program;
+/// Rust read the old object back for bytes 1..3 and computed a wrong hash.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_symbolic_store_over_imported_object_replaces_all_bytes() {
+    let ctx = SymContext::new_mock();
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    mem.map(0x1000, 0x1000, Permission::RWX);
+
+    let old = RustBV::symbolic(&ctx, "imported_old", 32);
+    mem.import_symbolic_value(0x1000u64, old, None).unwrap();
+    let new = RustBV::symbolic(&ctx, "stored_new", 32);
+    mem.store_concrete(0x1000u64, new.clone()).unwrap();
+    assert_load_is(&mut mem, &ctx, 0x1000, &new, "32-bit over imported 32-bit");
+}
+
+/// Same as above with the import split into per-byte lanes, the shape a
+/// byte-granular import (or `retire_symbolic_object_at`) leaves behind:
+/// exact-key objects at the interior bytes must not shadow the new store.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_symbolic_store_over_per_byte_objects_replaces_all_bytes() {
+    let ctx = SymContext::new_mock();
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    mem.map(0x1000, 0x1000, Permission::RWX);
+
+    for i in 0..4u64 {
+        let lane = RustBV::symbolic(&ctx, format!("lane{i}"), 8);
+        mem.import_symbolic_value(0x1000 + i, lane, None).unwrap();
+    }
+    let new = RustBV::symbolic(&ctx, "stored_over_lanes", 32);
+    mem.store_concrete(0x1000u64, new.clone()).unwrap();
+    assert_load_is(&mut mem, &ctx, 0x1000, &new, "32-bit over byte lanes");
+}
+
+/// A store landing inside a wider imported object (base below the store)
+/// must win for the bytes it covers, and the untouched head bytes must
+/// keep the old object's lanes.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_symbolic_store_inside_wider_imported_object() {
+    let ctx = SymContext::new_mock();
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    mem.map(0x1000, 0x1000, Permission::RWX);
+
+    let old = RustBV::symbolic(&ctx, "imported_wide", 64);
+    mem.import_symbolic_value(0x1000u64, old.clone(), None).unwrap();
+    let new = RustBV::symbolic(&ctx, "stored_mid", 16);
+    mem.store_concrete(0x1002u64, new.clone()).unwrap();
+    assert_load_is(&mut mem, &ctx, 0x1002, &new, "16-bit inside imported 64-bit");
+    // Little-endian: byte 0x1000..0x1002 are old[15:0].
+    assert_load_is(&mut mem, &ctx, 0x1000, &old.extract(15, 0, &ctx), "untouched head bytes");
+    assert_load_is(&mut mem, &ctx, 0x1004, &old.extract(63, 32, &ctx), "untouched tail bytes");
+}
