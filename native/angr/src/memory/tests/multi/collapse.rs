@@ -522,3 +522,82 @@ fn test_lift_read_stops_at_multi_byte() {
         "a leading Multi byte must be reported as no readable code"
     );
 }
+
+/// Two symbolic-address stores whose candidate sets overlap: the later
+/// store must win wherever both conditions hold (angr-acg99). The
+/// alternatives in one cell are *not* disjoint across successive stores,
+/// so collapse must put the newest alternative outermost. sym-write's
+/// `bits[(u >> i) & 1]++` loop read the oldest store back and returned
+/// 254 win values instead of 70.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_multi_cell_later_store_wins_overlapping_conds() {
+    let ctx = SymContext::new_mock();
+    let concretizer = multi_write_concretizer();
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    mem.map(0x1000, 0x2000, Permission::RWX);
+
+    let a1 = RustBV::symbolic(&ctx, "later_wins_a1", 64);
+    let a2 = RustBV::symbolic(&ctx, "later_wins_a2", 64);
+    for a in [&a1, &a2] {
+        ctx.assume_true(
+            &a.eq(&RustBV::concrete(0x1000, 64), &ctx)
+                .or(&a.eq(&RustBV::concrete(0x2000, 64), &ctx), &ctx),
+        );
+    }
+    mem.store_symbolic_unified(a1.clone(), RustBV::concrete(0x12, 8), &ctx, &concretizer)
+        .unwrap();
+    mem.store_symbolic_unified(a2.clone(), RustBV::concrete(0x34, 8), &ctx, &concretizer)
+        .unwrap();
+
+    let loaded = mem
+        .load_concrete_lazy(0x1000, 1, &ctx)
+        .expect("Multi-cell load must succeed");
+    let probe = |a1v: u128, a2v: u128| {
+        let p = ctx.fork();
+        p.assume_true(&a1.eq(&RustBV::concrete(a1v, 64), &p));
+        p.assume_true(&a2.eq(&RustBV::concrete(a2v, 64), &p));
+        assert!(p.is_sat());
+        p.eval(&loaded)
+    };
+    assert_eq!(probe(0x1000, 0x1000), Some(0x34), "both stores hit: newest wins");
+    assert_eq!(probe(0x1000, 0x2000), Some(0x12), "only the first store hit");
+    assert_eq!(probe(0x2000, 0x1000), Some(0x34), "only the second store hit");
+    assert_eq!(probe(0x2000, 0x2000), Some(0x00), "neither store hit");
+
+    // The flush/coalesce path must agree with the load-time collapse.
+    mem.flush_multi_cells(&ctx);
+    let sym = mem.get_symbolic_object(0x1000).unwrap().clone();
+    let p = ctx.fork();
+    p.assume_true(&a1.eq(&RustBV::concrete(0x1000, 64), &p));
+    p.assume_true(&a2.eq(&RustBV::concrete(0x1000, 64), &p));
+    assert_eq!(p.eval(&sym), Some(0x34), "flushed cell: newest wins");
+}
+
+/// Wider variant through the `flush_multi_cells` coalesce branch: a
+/// 4-byte value stored twice at the same symbolic address collapses into
+/// one wider ITE, which must also return the newest store (angr-acg99).
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_multi_cell_coalesced_flush_newest_wins() {
+    let ctx = SymContext::new_mock();
+    let concretizer = multi_write_concretizer();
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    mem.map(0x1000, 0x2000, Permission::RWX);
+
+    let a = RustBV::symbolic(&ctx, "coalesce_newest_a", 64);
+    ctx.assume_true(
+        &a.eq(&RustBV::concrete(0x1000, 64), &ctx)
+            .or(&a.eq(&RustBV::concrete(0x2000, 64), &ctx), &ctx),
+    );
+    mem.store_symbolic_unified(a.clone(), RustBV::concrete(0x1111_1111, 32), &ctx, &concretizer)
+        .unwrap();
+    mem.store_symbolic_unified(a.clone(), RustBV::concrete(0x2222_2222, 32), &ctx, &concretizer)
+        .unwrap();
+    mem.flush_multi_cells(&ctx);
+
+    let loaded = mem.load_concrete_lazy(0x1000, 4, &ctx).unwrap();
+    let p = ctx.fork();
+    p.assume_true(&a.eq(&RustBV::concrete(0x1000, 64), &p));
+    assert_eq!(p.eval(&loaded), Some(0x2222_2222));
+}

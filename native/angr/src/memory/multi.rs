@@ -179,8 +179,12 @@ impl MultiPayload {
         self.cached_collapse.get_mut().take();
     }
 
-    /// Right-fold the alternatives into an ITE BV with `default_byte` as the
-    /// final `else` leaf. Reuses the memoized BV when the cached default byte
+    /// Fold the alternatives into an ITE BV with `default_byte` as the
+    /// final `else` leaf. The newest alternative is the outermost ITE: the
+    /// conds of successive stores are not disjoint (two symbolic addresses
+    /// can both hit this byte), so the latest store whose cond holds must
+    /// win, exactly as an eager `ite(addr == c, new, old)` store would
+    /// (angr-acg99). Reuses the memoized BV when the cached default byte
     /// matches; otherwise recomputes and stores the result.
     ///
     /// Returns an 8-bit `RustBV`. The caller must ensure all alternative
@@ -193,7 +197,7 @@ impl MultiPayload {
         }
         let default = RustBV::concrete(default_byte as u128, 8);
         let mut acc = default;
-        for alt in self.alternatives.iter().rev() {
+        for alt in &self.alternatives {
             acc = alt.cond.ite(&alt.value, &acc, ctx);
         }
         *self.cached_collapse.borrow_mut() = Some(CachedCollapse {
@@ -462,10 +466,11 @@ impl SymbolicMemory {
                     .collect();
                 let wider_default = build_wider_value(&default_bvs, endness, ctx);
 
-                // Right-fold per-alt wider values into the final ITE BV.
+                // Fold per-alt wider values into the final ITE BV, newest
+                // alternative outermost (same order as `MultiPayload::collapse`).
                 let alt_count = entries[i].1.alternatives().len();
                 let mut acc = wider_default;
-                for c in (0..alt_count).rev() {
+                for c in 0..alt_count {
                     let cond = entries[i].1.alternatives()[c].cond.clone();
                     let mut byte_vals: Vec<RustBV> = Vec::with_capacity(run_len);
                     for entry in &entries[i..j] {
