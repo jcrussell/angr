@@ -918,15 +918,18 @@ class TestParallelTerminalAccounting:
     """
 
     @pytest.mark.parametrize("workers", [2, 4])
-    def test_deadended_count_survives_the_worker_boundary(self, pbounce_project, workers, monkeypatch):
-        serial = _drain_pbounce(pbounce_project, 1, monkeypatch).stats["deadended_count"]
-        assert serial > 0, "the serial drain must produce dead paths for this test to mean anything"
+    def test_terminal_count_survives_the_worker_boundary(self, pbounce_project, workers, monkeypatch):
+        # The synthetic's leaves return from main through the symbolic return
+        # address a blank state leaves, so they are unconstrained terminals, as
+        # under the Python engine (angr-x39ae: they used to be deadended).
+        serial = _terminal_count(_drain_pbounce(pbounce_project, 1, monkeypatch))
+        assert serial > 0, "the serial drain must produce terminal paths for this test to mean anything"
 
         mgr = _drain_pbounce(pbounce_project, workers, monkeypatch)
         assert mgr.stats["parallel_real_workers"] == workers
-        assert mgr.stats["deadended_count"] == serial, (
-            f"workers={workers}: parallel run counted {mgr.stats['deadended_count']} dead paths, "
-            f"serial counted {serial} — summarized terminals are not reaching the manager"
+        assert _terminal_count(mgr) == serial, (
+            f"workers={workers}: parallel run counted {_terminal_count(mgr)} terminal paths, "
+            f"serial counted {serial} — terminals are not reaching the manager"
         )
 
     @pytest.mark.parametrize("workers", [2, 4])
@@ -937,10 +940,16 @@ class TestParallelTerminalAccounting:
 
 
 # Ground truth for the 8-leaf synthetic drained to quiescence with no ``find``:
-# the vanilla Python `SimulationManager` ends with 14 terminal states, and so
-# does the FIRST Rust drain in a fresh process (at every worker count). See
-# `parallel-drain-depth-ground-truth`.
+# the vanilla Python `SimulationManager` ends with 14 terminal states, all in
+# ``unconstrained``, and so does the FIRST Rust drain in a fresh process (at
+# every worker count). See `parallel-drain-depth-ground-truth`.
 _SYNTH_TERMINALS = 14
+
+
+def _terminal_count(mgr):
+    """Terminal paths of a drain: dead (counted even when a worker dropped them)
+    plus unconstrained (stashed)."""
+    return mgr.stats["deadended_count"] + len(mgr._rust_mgr.get_state_ids("unconstrained"))
 
 
 class TestSecondExplorationInAProcessDiverges:
@@ -957,9 +966,9 @@ class TestSecondExplorationInAProcessDiverges:
 
     def test_a_warm_process_drains_the_same_leaf_count_as_a_cold_one(self, pbounce_project, monkeypatch):
         _drain_pbounce(pbounce_project, 1, monkeypatch)  # warm the process
-        warm = _drain_pbounce(pbounce_project, 1, monkeypatch).stats["deadended_count"]
+        warm = _terminal_count(_drain_pbounce(pbounce_project, 1, monkeypatch))
         assert warm == _SYNTH_TERMINALS, (
-            f"a warm-process serial drain collected {warm} dead paths, but the Python engine "
+            f"a warm-process serial drain collected {warm} terminal paths, but the Python engine "
             f"and a cold-process Rust drain both collect {_SYNTH_TERMINALS}"
         )
 

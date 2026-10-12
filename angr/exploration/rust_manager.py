@@ -1177,7 +1177,7 @@ class RustExplorationManager(
         self,
         project: angr.Project,
         active_states: list | None = None,
-        save_unconstrained: bool = False,
+        save_unconstrained: bool = True,
         solver_timeout_ms: int = 30000,
         max_active_states: int | None = DEFAULT_MAX_ACTIVE_STATES,
         max_history: int = 1000,
@@ -1203,8 +1203,10 @@ class RustExplorationManager(
         Args:
             project: angr Project for the binary.
             active_states: Optional list of initial angr SimStates.
-            save_unconstrained: If True, save states with unconstrained IP
-                to the 'unconstrained' stash instead of dropping them.
+            save_unconstrained: If True (the default, as in angr's
+                ``SimulationManager``), save states with unconstrained IP to
+                the 'unconstrained' stash instead of dropping them
+                (angr-x39ae: the old False default silently dropped them).
             solver_timeout_ms: Z3 solver timeout in milliseconds (default: 30000).
             max_active_states: Maximum number of states in the active stash.
                 When reached, new forked states are pruned to the ``pruned``
@@ -5944,21 +5946,15 @@ class RustExplorationManager(
     def set_materialize_unconstrained_forks(self, enabled: bool = True) -> bool:
         """Toggle materialization of loop-exit forks at unconstrained jumps (angr-ckdy).
 
-        In deferred-fork mode the Rust engine normally DROPS the loop-exit
-        forks accumulated when a state goes unconstrained (too many symbolic
-        jump targets). For a find-guided ``explore()`` that drop is desirable —
-        it lets the two-phase eager retry (angr-027h) detect ``active_empty``
-        and re-seed in eager mode. But a bare step-loop that bypasses
-        ``explore()`` (CADET solve.py phase 3: ``while True: sm.step(); break
-        if any active.addr == TARGET``) has no find target and no retry, so the
-        dropped forks collapse the active stash to empty and the loop spins
-        forever.
-
-        When enabled, those forks are instead materialized eagerly and routed
-        to the active stash, so the step-loop keeps progressing toward a target
-        behind the symbolic loop exit. Pair with ``set_block_granular(True)`` so
-        the target block is observable at a step boundary before the
-        materialized subtree explodes.
+        In deferred-fork mode the loop-exit forks accumulated when a state goes
+        unconstrained (too many symbolic jump targets) are materialized eagerly
+        and routed to the active stash by default (angr-x39ae), so no sibling
+        path is lost. Disabling drops them instead: faster, but those paths are
+        gone unless an address-based ``explore()``'s two-phase eager retry
+        (angr-027h) re-derives them, which it does not always do. A bare
+        step-loop (CADET solve.py phase 3) relies on them being kept; pair with
+        ``set_block_granular(True)`` so the target block is observable at a step
+        boundary before the materialized subtree explodes.
 
         Args:
             enabled: True to materialize (keep) the forks, False to drop them.

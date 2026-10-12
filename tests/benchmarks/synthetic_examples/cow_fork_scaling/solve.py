@@ -32,7 +32,10 @@ import angr
 from angr import claripy
 
 N = 8  # branch count baked into the checked-in fork_tree_8 binary
-EXPECTED_LEAVES = 1 << N  # 256 fully-deadended leaf states
+# Each leaf returns from main through the symbolic return address the blank
+# state leaves on the stack, so it lands in the unconstrained stash — as under
+# the Python engine (angr-x39ae; the Rust engine used to deadend them).
+EXPECTED_LEAVES = 1 << N
 
 
 def solve():
@@ -52,7 +55,7 @@ def solve():
     sm = proj.factory.simulation_manager(state)
     sm.run()
 
-    return len(sm.deadended)
+    return len(sm.unconstrained)
 
 
 def test():
@@ -61,4 +64,4 @@ def test():
 
 
 if __name__ == "__main__":
-    print(f"deadended leaf states = {solve()}")
+    print(f"unconstrained leaf states = {solve()}")

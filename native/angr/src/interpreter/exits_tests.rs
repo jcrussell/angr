@@ -154,17 +154,17 @@ fn handle_exit_internal_block_end_carries_jumpkind() {
 }
 
 #[test]
-fn handle_exit_ret_with_nonempty_call_stack_to_external_is_unmodeled() {
-    // When a Ret targets external memory but we DO have a call frame, the
-    // empty-stack guard should not fire — the fall-through path (external,
-    // non-hooked) emits UnmodeledCall with the __extern_addr__ tag.
+fn handle_exit_ret_to_external_expected_by_a_frame_is_unmodeled() {
+    // A Ret to external memory that a call frame expects is a genuine return
+    // into unmapped/extern code: the fall-through path (external, non-hooked)
+    // emits UnmodeledCall with the __extern_addr__ tag.
     let ctx = SymContext::new_mock();
     let mut interp = new_interp(&ctx);
     add_internal_region(&mut interp);
     interp.call_stack.push(CallStackEntry {
         call_site_addr: 0x1100,
         callee_addr: 0x1200,
-        return_addr: 0x1108,
+        return_addr: 0x9000,
         stack_ptr: 0x7ffe_0000,
     });
     match interp.handle_exit(0x9000, JumpKind::Ret) {
@@ -175,6 +175,26 @@ fn handle_exit_ret_with_nonempty_call_stack_to_external_is_unmodeled() {
             assert_eq!(symbol_name.as_deref(), Some("__extern_addr__"));
         }
         other => panic!("expected UnmodeledCall, got {other:?}"),
+    }
+}
+
+#[test]
+fn handle_exit_ret_to_external_no_frame_expects_is_unconstrained() {
+    // angr-x39ae: a frame left behind by a hooked procedure (whose return pops
+    // nothing) must not hide an unconstrained return. Only a frame expecting
+    // the target counts; this one expects 0x1108, not 0x9000.
+    let ctx = SymContext::new_mock();
+    let mut interp = new_interp(&ctx);
+    add_internal_region(&mut interp);
+    interp.call_stack.push(CallStackEntry {
+        call_site_addr: 0x1100,
+        callee_addr: 0x1200,
+        return_addr: 0x1108,
+        stack_ptr: 0x7ffe_0000,
+    });
+    match interp.handle_exit(0x9000, JumpKind::Ret) {
+        BlockResult::UnconstrainedJump { min_target, .. } => assert_eq!(min_target, 0x9000),
+        other => panic!("expected UnconstrainedJump, got {other:?}"),
     }
 }
 

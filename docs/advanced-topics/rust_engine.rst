@@ -144,6 +144,23 @@ form returns a wrapper that exposes the same interface as the standard
 ``SimulationManager`` (``explore``, ``step``, ``found``, ``avoid``,
 etc.) while running the Rust engine underneath.
 
+Unconstrained states
+~~~~~~~~~~~~~~~~~~~~
+
+As in angr's ``SimulationManager``, ``save_unconstrained`` defaults to
+``True``: a state whose instruction pointer is unconstrained (for example
+``main`` returning through the symbolic return address a ``blank_state``
+leaves on the stack) goes to the ``unconstrained`` stash. A ``ret`` is treated
+as unconstrained when its target is outside the loaded image, unhooked, and
+expected by no call frame; hooked SimProcedures return without popping their
+frame, so the engine pops frames the way ``CallStack.ret`` does, through the
+frame that expects the return address.
+
+Sibling paths still pending (deferred forks) when a state goes unconstrained
+are kept. ``set_materialize_unconstrained_forks(False)`` drops them instead,
+which is faster but loses those paths unless an address-based ``explore()``'s
+eager retry happens to re-derive them.
+
 Auto dispatch and the ``engine="rust"`` project default
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

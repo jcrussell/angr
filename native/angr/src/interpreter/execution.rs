@@ -270,7 +270,16 @@ impl<'a> VEXInterpreter<'a> {
                                 let popped_func_addr =
                                     self.call_stack.last().map(|f| f.callee_addr).unwrap_or(0);
                                 self.dispatch_return_inspect(callbacks, popped_func_addr, "before");
-                                self.call_stack.pop();
+                                // angr-x39ae: pop like Python's CallStack.ret:
+                                // through the frame expecting this return
+                                // address (unwinding frames a hooked procedure
+                                // left behind, since its return pops nothing),
+                                // or nothing when no frame expects it.
+                                if let Some(i) =
+                                    self.call_stack.iter().rposition(|f| f.return_addr == next_addr)
+                                {
+                                    self.call_stack.truncate(i);
+                                }
                                 self.dispatch_return_inspect(callbacks, popped_func_addr, "after");
                             }
 

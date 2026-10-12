@@ -474,6 +474,13 @@ impl RustExplorationManager {
                 self.push_found_capped(state);
             }
             Some(MatKind::Unconstrained) => {
+                // The coordinator handed this state to a worker without
+                // un-indexing it; `push_found_capped` re-indexes over the stale
+                // "active" entry, but the drop path of `push_or_drop_terminal`
+                // asserts I6 against it. Unconstrained terminals were rare here
+                // until angr-x39ae made returns through a symbolic address
+                // classify correctly.
+                self.sm.unindex(id);
                 self.sm.set_root(id, root);
                 self.push_or_drop_terminal(STASH_UNCONSTRAINED, state);
             }

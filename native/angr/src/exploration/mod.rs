@@ -203,11 +203,12 @@ pub struct RustExplorationManager {
     /// `exec_config.use_deferred_forks` is true. This keeps the active stash
     /// non-empty so a bare step-loop (CADET solve.py phase 3) can keep making
     /// progress toward a target behind a symbolic loop exit instead of
-    /// collapsing to `active_empty` and spinning forever. Default `false`:
-    /// the drop behavior is what `explore()`'s two-phase eager retry
-    /// (angr-027h) relies on to detect `active_empty` and re-seed in eager
-    /// mode, so this MUST stay opt-in. Combine with `block_granular` so the
-    /// egg block is observable before the materialized subtree explodes.
+    /// collapsing to `active_empty` and spinning forever. Default `true`
+    /// (angr-x39ae): a dropped fork is a silently lost path, and the
+    /// two-phase eager retry (angr-027h) that `false` leans on did not
+    /// recover every dropped leaf. `false` remains an explicit opt-in.
+    /// Combine with `block_granular` so the egg block is observable before
+    /// the materialized subtree explodes.
     /// Toggled via `set_materialize_unconstrained_forks` (angr-ckdy).
     pub(crate) materialize_unconstrained_forks: bool,
     /// Whether find condition has callable predicates.

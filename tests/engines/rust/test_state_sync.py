@@ -536,7 +536,9 @@ class TestCallbackHeapSync:
         expected = max(allocated) + 0x30
         brks = [
             mgr._rust_mgr.get_state_heap_brk(sid)
-            for stash in ("active", "deadended", "found", "avoid")
+            # unconstrained too: paths returning through a symbolic return
+            # address land there, as under the Python engine (angr-x39ae).
+            for stash in ("active", "deadended", "found", "avoid", "unconstrained")
             for sid in mgr._rust_mgr.get_state_ids(stash)
         ]
         assert brks, "no surviving Rust states to check"

@@ -66,7 +66,11 @@ impl RustExplorationManager {
             avoid_addrs: HashSet::new(),
             stop_addrs: HashSet::new(),
             block_granular: false,
-            materialize_unconstrained_forks: false,
+            // angr-x39ae: keep (materialize) the deferred forks pending at an
+            // UnconstrainedJump by default — dropping them silently lost every
+            // sibling path of a state that went unconstrained, and the
+            // angr-027h eager retry did not recover them all either.
+            materialize_unconstrained_forks: true,
             find_needs_python: false,
             avoid_needs_python: false,
             exec_config: ExecutionConfig::default(),

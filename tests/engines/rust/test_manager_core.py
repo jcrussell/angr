@@ -2396,7 +2396,7 @@ class TestRustEdgeCases:
     def test_materialize_unconstrained_forks_toggle(self):
         """The unconstrained-fork materialization flag round-trips (angr-ckdy).
 
-        ``set_materialize_unconstrained_forks(True)`` keeps the loop-exit
+        Materialization (the default since angr-x39ae) keeps the loop-exit
         deferred forks alive at an ``UnconstrainedJump`` (instead of dropping
         them in deferred mode) so a bare step-loop that bypasses ``explore()``
         (CADET solve.py phase 3) keeps progressing toward a target behind a
@@ -2408,14 +2408,14 @@ class TestRustEdgeCases:
         proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
         mgr = RustExplorationManager(proj, [proj.factory.blank_state(addr=0x1000)])
 
-        # Default off.
-        assert mgr._rust_mgr.materialize_unconstrained_forks() is False
-        # Setter returns the prior value and flips the flag.
-        assert mgr.set_materialize_unconstrained_forks(True) is False
+        # Default on (angr-x39ae: dropping the forks lost paths).
         assert mgr._rust_mgr.materialize_unconstrained_forks() is True
-        # Restoring returns the prior (enabled) value.
+        # Setter returns the prior value and flips the flag.
         assert mgr.set_materialize_unconstrained_forks(False) is True
         assert mgr._rust_mgr.materialize_unconstrained_forks() is False
+        # Restoring returns the prior (disabled) value.
+        assert mgr.set_materialize_unconstrained_forks(True) is False
+        assert mgr._rust_mgr.materialize_unconstrained_forks() is True
 
     def test_page_boundary_store_load(self):
         """Store 6 bytes at offset 4090, crossing a 4096-byte page boundary."""

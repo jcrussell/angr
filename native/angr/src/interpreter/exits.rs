@@ -177,6 +177,24 @@ impl<'a> VEXInterpreter<'a> {
     ) -> Result<BlockResult, CbExecutionError> {
         let concretized = self.eval_next_addr_concretized(irsb)?;
         match concretized {
+            ConcretizedJump::Single(addr)
+                if irsb.jumpkind == JumpKind::Boring
+                    && addr == irsb.addr.wrapping_add(u64::from(irsb.size()))
+                    && !self.is_in_binary(addr)
+                    && !self.is_hooked(addr) =>
+            {
+                // angr-et24a: the block simply runs off the end of the image.
+                // A fall-through is never a call, so leave the state at the
+                // target like Python does (the next lift there fails the same
+                // way); `handle_exit` would take it for an unmodeled external
+                // call and "skip" to a return address of 0, zeroing the
+                // return register.
+                self.set_pc(addr);
+                Ok(BlockResult::BlockEnd {
+                    next_addr: addr,
+                    jumpkind: irsb.jumpkind,
+                })
+            }
             ConcretizedJump::Single(addr) => Ok(self.handle_exit(addr, irsb.jumpkind)),
             ConcretizedJump::Multiple { targets, expr } => {
                 // Store the expression for constraint addition later
@@ -231,16 +249,25 @@ impl<'a> VEXInterpreter<'a> {
             };
         }
 
-        // Ijk_Ret with an empty call stack means we are returning from a
-        // function we never entered (typical for blank_state at a `ret`
-        // instruction). The popped IP was lazy-filled by Python's symbolic
-        // stack but materialized to a concrete value during Python->Rust
-        // sync (rust_state_sync.py:_sync_stack_page). Match Python's
-        // _eval_target_brutal behaviour (engines/successors.py:308-323):
-        // when the IP has no meaningful constraint pinning it, route to
-        // the unconstrained stash instead of treating it as a call to
-        // address 0. See angr-3uye.
-        if jumpkind.is_ret() && self.call_stack.is_empty() && !self.is_in_binary(target) {
+        // Ijk_Ret to a target no call frame expects means we are returning
+        // from a function we never entered (typical for blank_state at a
+        // `ret` instruction, or main returning past a lazily filled stack).
+        // The popped IP was lazy-filled by Python's symbolic stack but
+        // materialized to a concrete value during Python->Rust sync
+        // (rust_state_sync.py `_sync_stack_page`). Match Python's
+        // `_eval_target_brutal` (engines/successors.py): when the IP has no
+        // meaningful constraint pinning it, route to the unconstrained stash
+        // instead of treating it as a call to address 0. See angr-3uye.
+        //
+        // angr-x39ae: this used to require an *empty* call stack. A hooked
+        // procedure (e.g. `read` reached through its PLT stub) returns by
+        // resuming at the return address, which pops nothing, so its frame
+        // stayed behind and main's final `ret` missed the guard. Checking
+        // for a matching frame is the test the empty stack stood in for.
+        if jumpkind.is_ret()
+            && !self.is_in_binary(target)
+            && !self.call_stack.iter().any(|f| f.return_addr == target)
+        {
             return BlockResult::UnconstrainedJump {
                 min_target: target,
                 max_target: target,
