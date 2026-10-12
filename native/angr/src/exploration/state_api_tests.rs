@@ -746,3 +746,199 @@ fn eval_stdin_symbol_reconstructs_the_symbol_at_the_recorded_width() {
         "a missing state_id answers None rather than minting a bare context",
     );
 }
+
+/// Export the symbolic objects of a fresh found-stash state built by `build`,
+/// returning the exported base addresses (angr-ccp2w helpers).
+#[cfg(feature = "vex-engine-z3")]
+fn exported_addrs(build: impl FnOnce(&mut RustSimState)) -> Vec<u64> {
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    let mut state = RustSimState::new("amd64").expect("amd64 state");
+    state.map_memory(0x1000, 0x4000, Permission::RWX);
+    build(&mut state);
+    let state_id = state.state_id();
+    mgr.sm.push(STASH_FOUND, state);
+    mgr._get_state_symbolic_z3_asts(state_id)
+        .expect("state found")
+        .iter()
+        .map(|&(addr, _, _)| addr)
+        .collect()
+}
+
+#[cfg(feature = "vex-engine-z3")]
+fn sym(state: &RustSimState, name: &str, bits: u32) -> RustBV {
+    let ctx = state.solver().borrow();
+    RustBV::symbolic(&ctx, name, bits)
+}
+
+/// A program-computed value: an Expression (`sym + 1`), which is what guest
+/// stores produce and the only kind `_get_state_symbolic_z3_asts` exports.
+#[cfg(feature = "vex-engine-z3")]
+fn expr(state: &RustSimState, name: &str, bits: u32) -> RustBV {
+    let ctx = state.solver().borrow();
+    RustBV::symbolic(&ctx, name, bits).add(&RustBV::concrete(1, bits), &ctx)
+}
+
+/// angr-ccp2w: an imported value nobody overwrote stays out of the export —
+/// Python already holds it with its claripy identity (the flareon5 rule).
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn export_skips_untouched_import() {
+    let addrs = exported_addrs(|state| {
+        let v = expr(state, "ccp2w_untouched", 32);
+        state.memory_mut().import_symbolic_value(0x1000u64, v, None).unwrap();
+    });
+    assert!(!addrs.contains(&0x1000), "untouched import was exported: {addrs:?}");
+}
+
+/// angr-ccp2w: once the program overwrites an imported value, the new value
+/// must be exported; skipping the address left Python with the stale import.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn export_includes_overwritten_import_same_base() {
+    let addrs = exported_addrs(|state| {
+        let old = sym(state, "ccp2w_old", 32);
+        let new = expr(state, "ccp2w_new", 32);
+        state.memory_mut().import_symbolic_value(0x1000u64, old, None).unwrap();
+        state.memory_mut().store_concrete(0x1000u64, new).unwrap();
+    });
+    assert!(addrs.contains(&0x1000), "overwritten import not exported: {addrs:?}");
+}
+
+/// Same, over per-byte imported lanes.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn export_includes_value_stored_over_imported_lanes() {
+    let addrs = exported_addrs(|state| {
+        for i in 0..4u64 {
+            let lane = sym(state, &format!("ccp2w_lane{i}"), 8);
+            state.memory_mut().import_symbolic_value(0x1000 + i, lane, None).unwrap();
+        }
+        let new = expr(state, "ccp2w_over_lanes", 32);
+        state.memory_mut().store_concrete(0x1000u64, new).unwrap();
+    });
+    assert!(addrs.contains(&0x1000), "value stored over lanes not exported: {addrs:?}");
+    for i in 1..4u64 {
+        assert!(!addrs.contains(&(0x1000 + i)), "stale lane at {:#x} exported: {addrs:?}", 0x1000 + i);
+    }
+}
+
+/// A store into the middle of an imported object: the overwritten bytes are
+/// exported, the untouched head lane keeps the flareon5 suppression.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn export_partial_overwrite_of_import() {
+    let addrs = exported_addrs(|state| {
+        let old = sym(state, "ccp2w_wide", 32);
+        let new = expr(state, "ccp2w_mid", 16);
+        state.memory_mut().import_symbolic_value(0x1000u64, old, None).unwrap();
+        state.memory_mut().store_concrete(0x1002u64, new).unwrap();
+    });
+    assert!(addrs.contains(&0x1002), "overwritten middle not exported: {addrs:?}");
+    assert!(!addrs.contains(&0x1000), "untouched head lane exported: {addrs:?}");
+}
+
+/// A symbolic value the guest computed and the interpreter flushed into Rust
+/// memory is not a Python import, so it must be exported.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn export_includes_installed_guest_value() {
+    let addrs = exported_addrs(|state| {
+        let v = expr(state, "ccp2w_guest", 32);
+        state.memory_mut().install_symbolic_value(0x1000u64, v).unwrap();
+    });
+    assert!(addrs.contains(&0x1000), "guest-computed value not exported: {addrs:?}");
+}
+
+/// Export entries `(addr, width_bits)` for a state built by `build`.
+#[cfg(feature = "vex-engine-z3")]
+fn exported_objects(build: impl FnOnce(&mut RustSimState)) -> Vec<(u64, u32)> {
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    let mut state = RustSimState::new("amd64").expect("amd64 state");
+    state.map_memory(0x1000, 0x4000, Permission::RWX);
+    build(&mut state);
+    let state_id = state.state_id();
+    mgr.sm.push(STASH_FOUND, state);
+    mgr._get_state_symbolic_z3_asts(state_id)
+        .expect("state found")
+        .iter()
+        .map(|&(addr, _, width)| (addr, width))
+        .collect()
+}
+
+/// angr-ccp2w: a concrete store over program-written per-byte lanes must
+/// retire them; left behind they are exported over the new concrete bytes
+/// (Python stores the symbolic objects after the concrete page bytes).
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn concrete_store_over_lanes_retires_them() {
+    let objs = exported_objects(|state| {
+        for i in 0..4u64 {
+            let lane = expr(state, &format!("ccp2w_clane{i}"), 8);
+            state.memory_mut().install_symbolic_value(0x1000 + i, lane).unwrap();
+        }
+        state.memory_mut()
+            .store_concrete(0x1000u64, RustBV::concrete(0x1122_3344, 32))
+            .unwrap();
+    });
+    assert!(
+        objs.iter().all(|&(a, _)| !(0x1000..0x1004).contains(&a)),
+        "stale lanes exported over a concrete store: {objs:?}"
+    );
+}
+
+/// angr-ccp2w: a concrete store inside a wider program-written object must
+/// split it, so the export no longer carries the old value over the
+/// overwritten bytes; the untouched bytes keep their symbolic lanes.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn concrete_store_inside_wider_object_splits_it() {
+    let objs = exported_objects(|state| {
+        let wide = expr(state, "ccp2w_cwide", 32);
+        state.memory_mut().install_symbolic_value(0x1000u64, wide).unwrap();
+        state.memory_mut()
+            .store_concrete(0x1002u64, RustBV::concrete(0xBEEF, 16))
+            .unwrap();
+    });
+    assert!(
+        objs.iter().all(|&(a, w)| a + u64::from(w / 8) <= 0x1002 || a >= 0x1004),
+        "an exported object still covers the concrete bytes: {objs:?}"
+    );
+    assert!(objs.iter().any(|&(a, _)| a == 0x1000), "head lost its symbolic value: {objs:?}");
+}
+
+/// angr-ccp2w: installing (or importing) a value over per-byte lanes must not
+/// leave the interior lanes shadowing it on load (the angr-c8mda shape on the
+/// import path).
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn install_over_lanes_replaces_all_bytes() {
+    let mut state = RustSimState::new("amd64").expect("amd64 state");
+    state.map_memory(0x1000, 0x4000, Permission::RWX);
+    for i in 0..4u64 {
+        let lane = sym(&state, &format!("ccp2w_ilane{i}"), 8);
+        state.memory_mut().import_symbolic_value(0x1000 + i, lane, None).unwrap();
+    }
+    let new = sym(&state, "ccp2w_install_new", 32);
+    state.memory_mut().install_symbolic_value(0x1000u64, new.clone()).unwrap();
+    let ctx = state.solver().clone();
+    let ctx = ctx.borrow();
+    let loaded = state.memory_mut().load_concrete_lazy(0x1000, 4, &ctx).unwrap();
+    let probe = ctx.fork();
+    probe.assume_true(&loaded.eq(&new, &probe).not(&probe));
+    assert!(!probe.is_sat(), "interior lanes shadow the installed value");
+}
+
+/// angr-ccp2w: the program storing a bare symbol (a register's unconstrained
+/// value) over an import must export it too; only an *unmodified* import is
+/// Python's own copy.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn export_includes_bare_symbol_stored_over_import() {
+    let addrs = exported_addrs(|state| {
+        let old = sym(state, "ccp2w_bare_old", 32);
+        let reg = sym(state, "ccp2w_bare_reg", 32);
+        state.memory_mut().import_symbolic_value(0x1000u64, old, None).unwrap();
+        state.memory_mut().store_concrete(0x1000u64, reg).unwrap();
+    });
+    assert!(addrs.contains(&0x1000), "bare symbol stored over an import not exported: {addrs:?}");
+}

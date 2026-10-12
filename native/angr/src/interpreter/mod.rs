@@ -709,6 +709,9 @@ impl<'a> VEXInterpreter<'a> {
                 // Also flush symbolic stores to rust_memory so that subsequent
                 // loads via load_concrete_lazy_inner find the symbolic values
                 // instead of returning concrete zeros from the page fill.
+                // `install_*`, not `import_*`: these are guest-computed values
+                // Python does not hold, so they must stay exportable
+                // (angr-ccp2w).
                 //
                 // Drain in this loop and insert into all_flushed_symbolic_stores too,
                 // sharing one clone instead of doing iter+clone followed by drain.
@@ -720,7 +723,7 @@ impl<'a> VEXInterpreter<'a> {
                     // in all_flushed_symbolic_stores so the block-boundary
                     // path still sees it. Different failure mode from the
                     // concrete-store arm above, same cat-c handling.
-                    if let Err(e) = rust_mem.import_symbolic_value(addr, bv.clone(), None) {
+                    if let Err(e) = rust_mem.install_symbolic_value(addr, bv.clone()) {
                         log::error!("dropped symbolic store at {addr:#x}: {e:?}");
                     }
                     self.all_flushed_symbolic_stores.insert(addr, bv);
@@ -771,7 +774,7 @@ impl<'a> VEXInterpreter<'a> {
             // Flush symbolic pending stores. Same "shouldn't happen" arm as
             // `flush_stores`: SILENT(cat-c), a width VEX cannot produce.
             for (addr, bv) in self.pending_symbolic_stores.drain() {
-                if let Err(e) = rust_mem.import_symbolic_value(addr, bv, None) {
+                if let Err(e) = rust_mem.install_symbolic_value(addr, bv) {
                     log::error!("dropped symbolic store at {addr:#x}: {e:?}");
                 }
             }

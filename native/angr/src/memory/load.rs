@@ -440,6 +440,15 @@ impl SymbolicMemory {
                         all_found = false;
                         break;
                     }
+                } else if !self
+                    .pages
+                    .get(&byte_addr.page_num())
+                    .is_some_and(|p| p.is_symbolic(byte_addr.page_offset()))
+                {
+                    // angr-ccp2w: a concrete byte between symbolic lanes — the
+                    // shape a store inside a wider object leaves once
+                    // `retire_symbolic_overlapping` splits it.
+                    parts.push(RustBV::concrete(u128::from(bytes[i as usize]), 8));
                 } else {
                     all_found = false;
                     break;

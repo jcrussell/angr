@@ -594,17 +594,18 @@ impl RustExplorationManager {
             let mem = state.memory();
             let mut result = Vec::new();
             for (addr, bv) in mem.symbolic_objects_iter() {
-                // Only export Expression values (Rust-computed).
-                // Skip Symbolic values (imported from Python) — Python already
-                // has those with proper claripy identity.
-                // Also skip addresses that were originally imported from Python,
-                // even if the binary modified them (Symbolic→Expression).
-                // Python's memory has the correct original value; overwriting
-                // it would break post-exploration constraint solving (flareon5).
+                // Skip an address that still holds the exact value imported
+                // from Python there: Python's memory has it with its claripy
+                // identity, and round-tripping it would break post-exploration
+                // constraint solving (flareon5). Every other symbolic object
+                // was written by the program, so Python does not hold it at
+                // this address — including a bare symbol (a register's
+                // unconstrained value) stored over an import, which the old
+                // Expression-only filter dropped (angr-ccp2w).
                 if mem.is_imported_addr(addr) {
                     continue;
                 }
-                if matches!(bv, RustBV::Expression { .. }) {
+                if bv.is_symbolic() {
                     let z3_ast = bv.to_z3_ast();
                     let raw_ptr = z3_ast.get_z3_ast().as_ptr() as usize;
                     // Prevent z3::ast::BV destructor from decrementing the ref count.

@@ -211,71 +211,17 @@ impl SymbolicMemory {
                     self.clear_multi_at(addr + i as u64);
                 }
             }
-            // angr-c8mda: retire every *other* symbolic object covering a
-            // byte this store overwrites. Loads consult the exact key first,
-            // so a per-byte object left at an interior byte (an imported
-            // lane, or one `retire_symbolic_object_at` split off earlier)
-            // would shadow the new value; likewise a wider object based
-            // below `addr` would go on claiming these bytes. Retiring splits
-            // such an object into lanes, so bytes outside the store keep
-            // their old symbolic content. The same-base, not-wider object is
-            // left for the `insert` below to replace (the common spill
-            // overwrite stays allocation-free).
-            if !self.symbolic_objects.is_empty() {
-                for i in 0..size {
-                    // overflow-ok: `Address` arithmetic is wrapping (see above).
-                    let byte_addr = addr + i as u64;
-                    let needs_retire = if i == 0 {
-                        match self.symbolic_objects.get(&addr) {
-                            Some(old) => old.width() / 8 > size,
-                            None => self
-                                .symbolic_spans
-                                .get(&addr)
-                                .is_some_and(|&(base, _)| base != addr),
-                        }
-                    } else {
-                        self.symbolic_objects.contains_key(&byte_addr)
-                            || self
-                                .symbolic_spans
-                                .get(&byte_addr)
-                                .is_some_and(|&(base, _)| base != addr)
-                    };
-                    if needs_retire {
-                        self.retire_symbolic_object_at(byte_addr);
-                    }
-                }
-            }
-            let old_sym_bytes = self
-                .symbolic_objects
-                .insert(addr, value.clone())
-                .map_or(0, |old| old.width() / 8);
+            // angr-c8mda: retire every other object covering these bytes.
+            self.retire_symbolic_overlapping(addr, size);
+            // Any object still at `addr` is no wider than this store (wider
+            // ones were split above), so replacing it strands no tail bytes.
+            self.symbolic_objects.insert(addr, value.clone());
             // Update reverse span index: map each byte offset to (base_addr, width)
             let sym_bytes = width_bits / 8;
             for i in 1..sym_bytes {
                 // overflow-ok: `Address` arithmetic is wrapping (see above).
                 self.symbolic_spans
                     .insert(addr + i as u64, (addr, width_bits));
-            }
-            // angr-9ke6b.98: a narrower symbolic value overwriting a wider one
-            // at the same base abandons the tail `[addr+size, addr+old_bytes)`.
-            // The loop above only refreshed spans inside the new width, so the
-            // tail's `symbolic_spans` entries still name `(addr, old_width)` —
-            // a base whose live object no longer reaches them. `load_concrete`
-            // would follow such a span into an out-of-range extract and report
-            // `SymbolicAddress { "symbolic bytes not fully tracked" }`, turning
-            // a readable byte into a hard error. Retire the tail the same way
-            // the concrete branch's angr-7qon cleanup does: drop the spans and
-            // clear the bitmap so those bytes reclassify as concrete. Must run
-            // before the page-cloning loop below, which would otherwise flush a
-            // stale `symbolic_bitmap` back over the clear.
-            if old_sym_bytes > size {
-                for i in size..old_sym_bytes {
-                    // overflow-ok: `Address` arithmetic is wrapping (see above).
-                    self.symbolic_spans.remove(&(addr + i as u64));
-                }
-                // overflow-ok: `Address` arithmetic is wrapping (see above); the
-                // `old_sym_bytes > size` guard keeps the range non-empty.
-                self.clear_symbolic_bitmap_range(addr + size as u64, addr + old_sym_bytes as u64);
             }
             // Mark pages as having symbolic bytes — batch per-page
             let mut current_page_num = u64::MAX;
@@ -344,28 +290,19 @@ impl SymbolicMemory {
             current_addr = current_addr + bytes_in_page as u64;
         }
 
-        // Clear any symbolic object at this address and its span entries
+        // angr-ccp2w: retire every symbolic object covering the overwritten
+        // bytes. Interior lanes and a wider object based below `addr` used
+        // to survive (the page bitmap hid them from loads) and were exported
+        // over the new concrete bytes. Splitting keeps bytes outside the
+        // store symbolic, which also replaces the angr-7qon recovery that
+        // reclassified a truncated object's tail as concrete.
+        self.retire_symbolic_overlapping(addr, size);
+        // What is left at `addr` is no wider than the store.
         if let Some(old_sym) = self.symbolic_objects.remove(&addr) {
             let old_bytes = old_sym.width() / 8;
             for i in 1..old_bytes {
                 // overflow-ok: `Address` arithmetic is wrapping (see above).
                 self.symbolic_spans.remove(&(addr + i as u64));
-            }
-            // angr-7qon: if the concrete write doesn't cover the full
-            // wider sym, the trailing bytes [addr+size, addr+old_bytes)
-            // would be orphaned — their `symbolic_spans` entries were
-            // removed by the loop above, but the page bitmap still says
-            // symbolic (page.store_concrete only cleared bits within
-            // [0, size)). Per the bug description's option (b): clear
-            // the bitmap bits so those bytes reclassify as concrete.
-            // We've already lost the wider sym tracking, so this is the
-            // best recovery — the page data bytes for the survivors
-            // were never touched by `mark_symbolic` and remain whatever
-            // they were prior to the sym store.
-            if old_bytes > size {
-                // overflow-ok: `Address` arithmetic is wrapping (see above); the
-                // `old_bytes > size` guard keeps the range non-empty.
-                self.clear_symbolic_bitmap_range(addr + size as u64, addr + old_bytes as u64);
             }
         }
 
@@ -392,29 +329,44 @@ impl SymbolicMemory {
         Ok(())
     }
 
-    /// Clear the page `symbolic_bitmap` bits covering `[start, end)`.
+    /// Retire every symbolic object covering a byte of `[addr, addr + size)`
+    /// except a same-base object no wider than the store, which the caller
+    /// replaces or removes itself (keeping the common spill overwrite
+    /// allocation-free).
     ///
-    /// Shared by both `store_concrete` branches to retire the tail bytes a
-    /// narrower store abandons when it overwrites a wider symbolic object at
-    /// the same base (angr-7qon for the concrete branch, angr-9ke6b.98 for the
-    /// symbolic one). Caller is responsible for dropping the matching
-    /// `symbolic_spans` entries; this only touches the per-page bitmap and
-    /// walks page boundaries so a range spanning pages is fully cleared.
-    /// Unmapped pages in the range are skipped — there is no bitmap to clear.
-    fn clear_symbolic_bitmap_range(&mut self, start: Address, end: Address) {
-        let mut cur = start;
-        while cur < end {
-            let page_num = cur.page_num();
-            let page_offset = cur.page_offset();
-            // overflow-ok: `page_offset()` masks, so it is `< PAGE_SIZE`.
-            let to_page_end = (PAGE_SIZE - page_offset as u64) as usize;
-            // overflow-ok: the loop condition holds `cur < end`.
-            let bytes_in_page = to_page_end.min((end - cur) as usize);
-            if let Some(page) = self.pages.get_mut(&page_num) {
-                page.clear_symbolic(page_offset, bytes_in_page as u16);
-                self.dirty_pages.insert(page_num);
+    /// Loads consult the exact key first, so a per-byte object left at an
+    /// interior byte (an imported lane, or one an earlier split produced)
+    /// would shadow the new value (angr-c8mda); a wider object based below
+    /// `addr` would go on claiming these bytes and be exported over them
+    /// (angr-ccp2w). [`Self::retire_symbolic_object_at`] splits such an
+    /// object into lanes, so bytes outside the store keep their old symbolic
+    /// content; lanes it leaves inside the range are retired as the walk
+    /// reaches them.
+    pub(super) fn retire_symbolic_overlapping(&mut self, addr: Address, size: u32) {
+        if self.symbolic_objects.is_empty() {
+            return;
+        }
+        for i in 0..size {
+            // overflow-ok: `Address` arithmetic is wrapping, like the guest.
+            let byte_addr = addr + i as u64;
+            let needs_retire = if i == 0 {
+                match self.symbolic_objects.get(&addr) {
+                    Some(old) => old.width() / 8 > size,
+                    None => self
+                        .symbolic_spans
+                        .get(&addr)
+                        .is_some_and(|&(base, _)| base != addr),
+                }
+            } else {
+                self.symbolic_objects.contains_key(&byte_addr)
+                    || self
+                        .symbolic_spans
+                        .get(&byte_addr)
+                        .is_some_and(|&(base, _)| base != addr)
+            };
+            if needs_retire {
+                self.retire_symbolic_object_at(byte_addr);
             }
-            cur = cur + bytes_in_page as u64;
         }
     }
 

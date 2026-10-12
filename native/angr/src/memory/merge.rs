@@ -371,8 +371,10 @@ impl SymbolicMemory {
         //   region `self` lacks; dropping it turns a later store there into a
         //   spurious `Unmapped` instead of an auto-map.
         // * `imported_addrs`: `store_symbolic_from_python` likewise runs
-        //   mid-branch. The set only suppresses re-export of a value Python
-        //   already has, so a union is safe in both directions.
+        //   mid-branch. An entry only suppresses re-export while the live
+        //   object *is* the recorded value, so a union is safe in both
+        //   directions: a byte the merge rewrote (an ITE) no longer matches
+        //   and is exported (angr-ccp2w).
         //
         // They deliberately do not flip `merged`, which reports whether any
         // stored *value* differed between the arms.
@@ -382,8 +384,11 @@ impl SymbolicMemory {
                 self.lazy_regions.push(*region);
             }
         }
-        self.imported_addrs
-            .extend(other.imported_addrs.iter().copied());
+        for (addr, bv) in &other.imported_addrs {
+            self.imported_addrs
+                .entry(*addr)
+                .or_insert_with(|| bv.clone());
+        }
 
         merged
     }

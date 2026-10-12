@@ -402,15 +402,18 @@ pub struct SymbolicMemory {
     /// and identical across fork siblings.
     #[merge_policy = "in_place_self"]
     zero_fill_unconstrained: bool,
-    /// Addresses of symbolic values imported from Python.
-    /// Used to filter get_state_symbolic_z3_asts: even if the binary modifies
-    /// an imported value (turning Symbolic→Expression), the address should be
-    /// excluded from export since Python already has the correct original value.
+    /// Symbolic values imported from Python, keyed by address, as they were
+    /// at import. `get_state_symbolic_z3_asts` skips an address only while its
+    /// live object *is* the recorded value (`RustBV` identity), so Python
+    /// keeps the original claripy AST it already holds (the flareon5 rule)
+    /// but a value the program wrote over an import is exported
+    /// (angr-ccp2w; keying on the address alone hid every such overwrite).
+    /// See [`Self::is_imported_addr`].
     ///
-    /// Merged as a set union — see the accumulating-sidecar block at the end
-    /// of [`Self::merge`].
+    /// Merged as a union — see the accumulating-sidecar block at the end of
+    /// [`Self::merge`].
     #[merge_policy = "joint"]
-    imported_addrs: FxHashSet<Address>,
+    imported_addrs: FxHashMap<Address, RustBV>,
     /// If true, enforce per-page R/W permissions on load and store. Mirrors
     /// angr's STRICT_PAGE_ACCESS option. Default is false to keep existing
     /// callers (which often map all memory as RWX or rely on Python perms)
@@ -499,7 +502,7 @@ impl SymbolicMemory {
             multi_objects: FxHashMap::default(),
             pending_writes: Vec::new(),
             zero_fill_unconstrained: false,
-            imported_addrs: FxHashSet::default(),
+            imported_addrs: FxHashMap::default(),
             enforce_permissions: false,
             enforce_nx: false,
             multi_versions: FxHashMap::default(),
@@ -1336,7 +1339,15 @@ impl SymbolicMemory {
             .iter()
             .map(|(addr, bv)| (addr.raw(), bv.clone()))
             .collect();
-        let mut imported_addrs: Vec<u64> = self.imported_addrs.iter().map(|a| a.raw()).collect();
+        // Only the imports still unmodified: `from_snapshot` re-keys each
+        // listed address to its restored object, which is exactly the
+        // value-identity the export check needs (angr-ccp2w).
+        let mut imported_addrs: Vec<u64> = self
+            .imported_addrs
+            .keys()
+            .filter(|a| self.is_imported_addr(**a))
+            .map(|a| a.raw())
+            .collect();
         imported_addrs.sort_unstable();
         SymbolicMemorySnapshot {
             pages,
@@ -1379,8 +1390,12 @@ impl SymbolicMemory {
                 symbolic_spans.insert(Address::new(base.raw() + i as u64), (*base, width));
             }
         }
-        let imported_addrs: FxHashSet<Address> =
-            snap.imported_addrs.into_iter().map(Address::new).collect();
+        let imported_addrs: FxHashMap<Address, RustBV> = snap
+            .imported_addrs
+            .into_iter()
+            .map(Address::new)
+            .filter_map(|a| symbolic_objects.get(&a).map(|bv| (a, bv.clone())))
+            .collect();
         SymbolicMemory {
             pages,
             symbolic_objects,

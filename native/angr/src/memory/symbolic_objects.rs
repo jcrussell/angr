@@ -42,6 +42,25 @@ impl SymbolicMemory {
         _symbol_id: Option<u64>,
     ) -> Result<(), MemoryError> {
         let addr = addr.into();
+        self.install_symbolic_value(addr, value.clone())?;
+        // Record the value Python holds, so get_state_symbolic_z3_asts skips
+        // this address only while it is unmodified (angr-ccp2w).
+        self.imported_addrs.insert(addr, value);
+        Ok(())
+    }
+
+    /// Place a symbolic value at `addr` without recording it as imported.
+    ///
+    /// The body of [`Self::import_symbolic_value`] minus the provenance
+    /// record: for values Rust itself produced (the interpreter's flushed
+    /// guest stores), which Python does not hold and so must be exported
+    /// (angr-ccp2w). Same width contract and errors as the import.
+    pub fn install_symbolic_value(
+        &mut self,
+        addr: impl Into<Address>,
+        value: RustBV,
+    ) -> Result<(), MemoryError> {
+        let addr = addr.into();
         let width_bits = value.width();
         if width_bits == 0 || !width_bits.is_multiple_of(8) {
             return Err(MemoryError::UnalignedWidth {
@@ -70,8 +89,9 @@ impl SymbolicMemory {
                 self.clear_multi_at(addr + i as u64);
             }
         }
-        // Track as Python-imported so get_state_symbolic_z3_asts can filter it out
-        self.imported_addrs.insert(addr);
+        // angr-ccp2w: an import over existing objects must not leave interior
+        // lanes shadowing it (the angr-c8mda shape on this path).
+        self.retire_symbolic_overlapping(addr, sym_bytes);
         // Store in symbolic_objects for lookup
         self.symbolic_objects.insert(addr, value.clone());
         // Update reverse span index
@@ -124,12 +144,14 @@ impl SymbolicMemory {
     ///   `addr+1..addr+width/8`, which name a base with no live object.
     ///
     /// Splitting into per-byte lanes preserves the surviving bytes' symbolic
-    /// identity, unlike `store_concrete`'s angr-7qon recovery (which can only
-    /// reclassify the survivors as concrete, having already lost the value).
-    /// Lanes inherit `imported_addrs` membership from `base` so a split of a
+    /// identity; `retire_symbolic_overlapping` uses it for every store that
+    /// partially covers an object.
+    /// Lanes inherit `imported_addrs` provenance from `base` — when `base`
+    /// still held its imported value — so a split of an unmodified
     /// Python-imported object does not start exporting `Extract(sym)` stores
     /// back over bytes Python already holds verbatim (the flareon5 rule
-    /// documented on `_get_state_symbolic_z3_asts`).
+    /// documented on `_get_state_symbolic_z3_asts`). The superseded byte
+    /// loses its record.
     ///
     /// No-op when no symbolic object covers `addr`.
     pub(super) fn retire_symbolic_object_at(&mut self, addr: Address) {
@@ -146,14 +168,16 @@ impl SymbolicMemory {
             }
         };
         let Some(sym) = self.symbolic_objects.remove(&base) else {
-            // A reverse-span entry outliving its object (see
-            // `store_concrete`'s angr-7qon tail). Drop the dangling entry so
-            // the byte stops resolving to a base that no longer exists.
+            // A reverse-span entry outliving its object. Drop the dangling
+            // entry so the byte stops resolving to a base that no longer
+            // exists.
             self.symbolic_spans.remove(&addr);
             return;
         };
         let endness = self.endness;
-        let imported = self.imported_addrs.contains(&base);
+        // The lanes stay "unmodified imports" only if the retired object was
+        // one; the superseded byte's record goes with it (angr-ccp2w).
+        let imported = self.imported_addrs.remove(&base).is_some_and(|v| v == sym);
         // The object's own width is authoritative; a `symbolic_spans` entry
         // can name a stale wider one, and `extract_byte_lane` would refuse
         // those offsets anyway.
@@ -168,10 +192,10 @@ impl SymbolicMemory {
             }
             // `i` is bounded by `sym.width() / 8`, so the lane is in range.
             if let Some(lane) = Self::extract_byte_lane(&sym, i as u32, endness) {
-                self.symbolic_objects.insert(byte_addr, lane);
                 if imported {
-                    self.imported_addrs.insert(byte_addr);
+                    self.imported_addrs.insert(byte_addr, lane.clone());
                 }
+                self.symbolic_objects.insert(byte_addr, lane);
             }
         }
     }
@@ -186,9 +210,16 @@ impl SymbolicMemory {
         self.symbolic_objects.len()
     }
 
-    /// Check if an address was imported from Python.
+    /// True while `addr` still holds the exact value imported from Python
+    /// there (`RustBV` identity) — i.e. Python's copy is current and the
+    /// export can skip it. Any later write at `addr` makes this false
+    /// (angr-ccp2w).
     pub fn is_imported_addr(&self, addr: impl Into<Address>) -> bool {
-        self.imported_addrs.contains(&addr.into())
+        let addr = addr.into();
+        matches!(
+            (self.imported_addrs.get(&addr), self.symbolic_objects.get(&addr)),
+            (Some(imported), Some(live)) if imported == live
+        )
     }
 
     /// Iterate over all symbolic objects in memory.
