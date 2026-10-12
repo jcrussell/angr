@@ -311,8 +311,7 @@ class RustSolverFallback:
             self._synced_constraint_count = current
         return self._cached_rust_ctx
 
-    def _rust_eval(self, expr, cast_to):
-        rust_ctx = self._get_rust_ctx()
+    def _rust_eval(self, rust_ctx, expr, cast_to):
         result = rust_ctx.eval(expr)
         if result is not None:
             if cast_to == bytes:
@@ -346,19 +345,34 @@ class RustSolverFallback:
             return value
         return None
 
-    def eval(self, expr, cast_to=None, **kwargs):
+    # angr-mm5sw: every query below runs, together with its unsat check, inside
+    # one ``_with_extra_constraints`` scope on the Rust context, so the
+    # caller's ``extra_constraints`` reach the solver that holds the
+    # exploration constraints. ``_get_rust_ctx()`` is called first so its
+    # post-attach constraint replay lands outside that scope. ``exact`` only
+    # permits approximation, so an exact answer is always valid and it is
+    # ignored, as the proxies do.
+
+    def eval(self, expr, cast_to=None, extra_constraints=(), exact=None, **kwargs):
+        from angr.exploration.rust_state_proxy import _with_extra_constraints
+
         unsat = False
         try:
-            result = self._rust_eval(expr, cast_to)
+            rust_ctx = self._get_rust_ctx()
+
+            def query():
+                result = self._rust_eval(rust_ctx, expr, cast_to)
+                # angr-ue4ro: Rust gave no value. On an UNSAT context that is
+                # not "Rust can't handle this expr" — it means there is no
+                # model at all, and falling through to the Python solver
+                # silently returns zeros (the constraints live in Rust, so the
+                # Python solver's set is empty and every expr looks
+                # unconstrained). Raise instead, the way min()/max() already do.
+                return result, result is None and not rust_ctx.satisfiable()
+
+            result, unsat = _with_extra_constraints(rust_ctx, query, extra=extra_constraints)
             if result is not None:
                 return result
-            # angr-ue4ro: Rust gave no value. On an UNSAT context that is not
-            # "Rust can't handle this expr" — it means there is no model at
-            # all, and falling through to the Python solver silently returns
-            # zeros (the constraints live in Rust, so the Python solver's set
-            # is empty and every expr looks unconstrained). Raise instead, the
-            # way min()/max() already do.
-            unsat = not self._get_rust_ctx().satisfiable()
         except Exception as e:
             # cat-(b) FALLBACK WITH LOSS: Rust eval failed; Python solver
             # is the fallback and has the same constraints (constraint sync
@@ -366,12 +380,20 @@ class RustSolverFallback:
             l.debug("Rust eval failed, falling back to Python: %s", e)
         if unsat:
             raise SimUnsatError("Rust solver context is unsat (eval)")
-        return self._original_eval(expr, cast_to=cast_to, **kwargs)
+        return self._original_eval(expr, cast_to=cast_to, extra_constraints=extra_constraints, **kwargs)
 
-    def eval_upto(self, expr, n, cast_to=None, **kwargs):
+    def eval_upto(self, expr, n, cast_to=None, extra_constraints=(), exact=None, **kwargs):
+        from angr.exploration.rust_state_proxy import _with_extra_constraints
+
+        unsat = False
         try:
             rust_ctx = self._get_rust_ctx()
-            results = rust_ctx.eval_upto(expr, n)
+
+            def query():
+                found = rust_ctx.eval_upto(expr, n)
+                return found, not found and not rust_ctx.satisfiable()
+
+            results, unsat = _with_extra_constraints(rust_ctx, query, extra=extra_constraints)
             if results:
                 if cast_to == bytes:
                     nbytes = (expr.length + 7) // 8
@@ -382,58 +404,60 @@ class RustSolverFallback:
             # solver produces the result. Same constraint set, so no
             # wrong-answer risk.
             l.debug("Rust eval_upto failed, falling back to Python: %s", e)
-        return self._original_eval_upto(expr, n, cast_to=cast_to, **kwargs)
+        if unsat:
+            # Same reasoning as eval(): an empty answer from an unsat Rust
+            # context must not become the Python solver's unconstrained one.
+            raise SimUnsatError("Rust solver context is unsat (eval_upto)")
+        return self._original_eval_upto(expr, n, cast_to=cast_to, extra_constraints=extra_constraints, **kwargs)
 
-    def min(self, expr, **kwargs):
+    def _extremum(self, kind, expr, extra_constraints, signed, kwargs):
+        from angr.exploration.rust_state_proxy import _signed_extremum, _with_extra_constraints
+
+        unsat = False
         try:
             rust_ctx = self._get_rust_ctx()
-            result = rust_ctx.min(expr, signed=kwargs.get("signed", False))
+            bound = rust_ctx.min if kind == "min" else rust_ctx.max
+
+            def query():
+                result = bound(expr, signed=signed)
+                # Rust gave no bound: unsat vs width>128. On unsat, claripy
+                # would only re-derive the same unsat — raise now rather than
+                # waste a Python solve to reach the identical failure.
+                # width>128 falls through to claripy's big-int solver, which
+                # CAN bound it.
+                return result, result is None and not rust_ctx.satisfiable()
+
+            result, unsat = _with_extra_constraints(rust_ctx, query, extra=extra_constraints)
             if result is not None:
-                return result
-            # Rust gave no bound: unsat vs width>128. On unsat, claripy would
-            # only re-derive the same unsat — raise now rather than waste a
-            # Python solve to reach the identical failure (satisfiable() is
-            # cached from the min() above). width>128 falls through to claripy's
-            # big-int solver, which CAN bound it.
-            unsat = not rust_ctx.satisfiable()
+                return _signed_extremum(result, expr, signed)
         except Exception as e:
-            # cat-(b) FALLBACK WITH LOSS: Rust min failed; Python solver
+            # cat-(b) FALLBACK WITH LOSS: Rust min/max failed; Python solver
             # is the fallback. Same constraint set.
-            l.debug("Rust min failed, falling back to Python: %s", e)
+            l.debug("Rust %s failed, falling back to Python: %s", kind, e)
             unsat = False
         if unsat:
-            raise SimUnsatError("Rust solver context is unsat (min)")
-        return self._original_min(expr, **kwargs)
+            raise SimUnsatError(f"Rust solver context is unsat ({kind})")
+        original = self._original_min if kind == "min" else self._original_max
+        return original(expr, extra_constraints=extra_constraints, signed=signed, **kwargs)
 
-    def max(self, expr, **kwargs):
+    def min(self, expr, extra_constraints=(), signed=False, exact=None, **kwargs):
+        return self._extremum("min", expr, extra_constraints, signed, kwargs)
+
+    def max(self, expr, extra_constraints=(), signed=False, exact=None, **kwargs):
+        return self._extremum("max", expr, extra_constraints, signed, kwargs)
+
+    def satisfiable(self, extra_constraints=(), exact=None, **kwargs):
+        from angr.exploration.rust_state_proxy import _with_extra_constraints
+
         try:
             rust_ctx = self._get_rust_ctx()
-            result = rust_ctx.max(expr, signed=kwargs.get("signed", False))
-            if result is not None:
-                return result
-            # Same unsat-vs-width>128 disambiguation as min(): raise on a known
-            # unsat instead of round-tripping to claripy to re-derive it;
-            # width>128 falls through to the big-int Python solver.
-            unsat = not rust_ctx.satisfiable()
-        except Exception as e:
-            # cat-(b) FALLBACK WITH LOSS: Rust max failed; Python solver
-            # is the fallback. Same constraint set.
-            l.debug("Rust max failed, falling back to Python: %s", e)
-            unsat = False
-        if unsat:
-            raise SimUnsatError("Rust solver context is unsat (max)")
-        return self._original_max(expr, **kwargs)
-
-    def satisfiable(self, **kwargs):
-        try:
-            rust_ctx = self._get_rust_ctx()
-            return rust_ctx.satisfiable()
+            return _with_extra_constraints(rust_ctx, rust_ctx.satisfiable, extra=extra_constraints)
         except Exception as e_rust:
             # cat-(b) FALLBACK WITH LOSS: Rust solver failed; Python is
             # tried next.
             l.debug("Rust satisfiable() failed, trying Python: %s", e_rust)
         try:
-            return self._original_satisfiable(**kwargs)
+            return self._original_satisfiable(extra_constraints=extra_constraints, **kwargs)
         except Exception as e_py:
             # cat-(c) WRONG-ANSWER RISK: returning False here would mean
             # "UNSAT" — a wrong answer that masks the underlying solver

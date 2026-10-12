@@ -225,6 +225,19 @@ def _with_extra_constraints(ctx, fn, *args, extra=(), **kwargs):
     return fn(*args, **kwargs)
 
 
+def _signed_extremum(value, expr, signed):
+    """Convert a ``RustSolverContext.min``/``max`` result to angr's convention.
+
+    The Rust solver returns the bound's two's-complement bits as an unsigned
+    int; stock ``SimSolver.min``/``max`` with ``signed=True`` return a negative
+    Python int for a negative bound (angr-mm5sw).
+    """
+    if not signed or value is None:
+        return value
+    width = expr.size()
+    return value - (1 << width) if (value >> (width - 1)) & 1 else value
+
+
 def _resolve_none_extremum(kind, expr, constraints, extra_constraints, signed, satisfiable_fn):
     """Resolve a ``None`` result from ``RustSolverContext.min``/``max``.
 
@@ -409,7 +422,7 @@ class RustSolverProxyBase(_SolutionCountMixin):
         ctx = self._query_ctx()
         result = _with_extra_constraints(ctx, ctx.min, expr, extra=extra_constraints, signed=signed)
         if result is not None:
-            return result
+            return _signed_extremum(result, expr, signed)
         return _resolve_none_extremum(
             "min",
             expr,
@@ -424,7 +437,7 @@ class RustSolverProxyBase(_SolutionCountMixin):
         ctx = self._query_ctx()
         result = _with_extra_constraints(ctx, ctx.max, expr, extra=extra_constraints, signed=signed)
         if result is not None:
-            return result
+            return _signed_extremum(result, expr, signed)
         return _resolve_none_extremum(
             "max",
             expr,

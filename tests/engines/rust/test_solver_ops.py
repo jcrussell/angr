@@ -1554,9 +1554,8 @@ class TestExplorationIntegration:
         # rax low byte = byte 5 of the symbolic region. If only byte 0
         # made it across, byte 5 would be concrete zero, and the Rust
         # VEX load would store a concrete zero into rax's low byte.
-        # solver.satisfiable() ignores extra_constraints on this path,
-        # so check symbolicity directly: byte at SYM_ADDR+5 must still
-        # carry an AST after the Python↔Rust round trip.
+        # Check symbolicity directly: byte at SYM_ADDR+5 must still carry
+        # an AST after the Python↔Rust round trip.
         byte5 = final.memory.load(SYM_ADDR + 5, 1)
         assert byte5.symbolic, (
             f"byte 5 of filler-materialised symbol lost symbolicity "
@@ -1582,7 +1581,10 @@ class TestExplorationIntegration:
         """
 
         # 0x1000: ldrneh r0, [r1]   ; bytes b0 00 d1 11 (ARMEL, little-endian)
-        shellcode = bytes.fromhex("b000d111")
+        # 0x1004: b .               ; keeps the block's exit inside the image so
+        #         this test checks only the load width; an exit out of the
+        #         image is angr-et24a's regression test.
+        shellcode = bytes.fromhex("b000d111feffffea")
         proj = angr.load_shellcode(shellcode, arch="ARMEL", load_address=0x1000)
 
         LOAD_ADDR = 0x4000
