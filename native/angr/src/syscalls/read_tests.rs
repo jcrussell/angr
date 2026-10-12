@@ -482,3 +482,33 @@ fn read_content_sym_serves_natively_and_eof_returns_zero() {
         other => panic!("expected Continue, got {other:?}"),
     }
 }
+
+/// angr-23n3r: a stdin read binds the harness-seeded fd 0 bytes, like the libc
+/// `read` procedure does through `stdin_common::mint_stdin_bytes`. It used to
+/// mint unbound `sys_read_*` bytes, so the path condition never mentioned the
+/// harness's symbol.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn read_stdin_binds_seeded_bytes() {
+    let h = NativeReadSyscall;
+    let mut state = fresh_state_with_buf();
+    let seed: Vec<RustBV> = b"ab".iter().map(|b| RustBV::concrete(u128::from(*b), 8)).collect();
+    state.file_system().set_fd_content_sym(0, seed);
+    let outcome = h
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(2, 64),
+            ],
+        )
+        .expect("ok");
+    assert!(matches!(outcome, SyscallOutcome::Continue { ret: 2 }));
+    let loaded = state.memory_load(0x2000, 2).expect("loaded");
+    let ctx = state.solver().clone();
+    let ctx = ctx.borrow();
+    let probe = ctx.fork();
+    probe.assume_true(&loaded.eq(&RustBV::concrete(u128::from(u16::from_le_bytes(*b"ab")), 16), &probe).not(&probe));
+    assert!(!probe.is_sat(), "the read bytes are not bound to the seeded \"ab\"");
+}

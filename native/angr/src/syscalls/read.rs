@@ -75,7 +75,7 @@ impl NativeSyscall for NativeReadSyscall {
                     "read count {count} exceeds limit"
                 )));
             }
-            return read_symbolic(state, buf, count, "sys_read");
+            return read_stdin(state, buf, count);
         }
 
         let fd_u32 = fd as u32;
@@ -135,6 +135,21 @@ impl NativeSyscall for NativeReadSyscall {
 /// return `count` in rax. Shared by the stdin path (fd 0) and symbolic-stream
 /// fds. The `prefix` disambiguates per-fd names; `SYS_READ_COUNTER` keeps each
 /// call's bytes uniquely named even at the same callsite.
+/// Serve a stdin read: fresh `sys_read_N_i` bytes, bound to whatever the
+/// harness seeded onto fd 0 (`blank_state(stdin=BVS)`, a stdin packet).
+///
+/// angr-23n3r: this branch used to mint unbound bytes, ignoring the seed, so
+/// the path condition never mentioned the harness's own symbol and an
+/// exported found state solved it as unconstrained (ekopartyctf2016_rev250's
+/// team name came back rejected). The libc `read` procedure already went
+/// through `stdin_common::mint_stdin_bytes`; this is the same binding.
+fn read_stdin(state: &mut RustSimState, buf: u64, count: u64) -> Result<SyscallOutcome, SyscallError> {
+    let names = crate::syscalls::fresh_byte_names("sys_read", &SYS_READ_COUNTER, count);
+    let sym_bytes = crate::procedures::stdin_common::mint_stdin_bytes(state, &names);
+    write_bv_bytes(state, buf, sym_bytes)?;
+    Ok(SyscallOutcome::Continue { ret: count })
+}
+
 fn read_symbolic(
     state: &mut RustSimState,
     buf: u64,

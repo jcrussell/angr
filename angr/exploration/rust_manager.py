@@ -4092,13 +4092,28 @@ class RustExplorationManager(
         try:
             stdin = getattr(getattr(angr_state, "posix", None), "stdin", None)
             content = getattr(stdin, "content", None)
-            if not content:
-                return
             asts = []
-            for data, _size in content:
+            if isinstance(content, list) and content:
+                for data, _size in content:
+                    if not isinstance(data, claripy.ast.BV) or data.length % 8:
+                        return
+                    asts.extend(data.chop(8))  # chop(8)[0] is the byte at stream offset 0
+            elif content is None and hasattr(stdin, "load") and hasattr(stdin, "size"):
+                # angr-23n3r: ``blank_state(stdin=BVS)`` makes a file-backed
+                # SimFileStream with no packet list; read it whole while its
+                # size is concrete (the same bytes Python's read would serve).
+                size = getattr(stdin, "size", None)
+                if size is None or getattr(size, "symbolic", True):
+                    return
+                n = angr_state.solver.eval(size)
+                if n <= 0:
+                    return
+                data = stdin.load(0, n)
                 if not isinstance(data, claripy.ast.BV) or data.length % 8:
                     return
-                asts.extend(data.chop(8))  # chop(8)[0] is the byte at stream offset 0
+                asts.extend(data.chop(8))
+            else:
+                return
             if not asts or len(asts) > self._FS_EXPORT_MAX_FILE_SIZE:
                 return
             self._rust_mgr.seed_stdin_content(state_id, asts)
