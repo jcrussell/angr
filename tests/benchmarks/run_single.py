@@ -228,8 +228,16 @@ def _run_in_child(
     use_shared_lineage_solver=False,
     deterministic=False,
     native_lift=None,
+    mode="run",
 ):
-    """Run a single example in a subprocess. Called via multiprocessing spawn."""
+    """Run a single example in a subprocess. Called via multiprocessing spawn.
+
+    ``mode="run"`` executes ``solve.py`` as ``__main__`` (the timed run).
+    ``mode="test"`` is the correctness oracle (angr-imiwt): the script is
+    loaded under another module name, so its ``__main__`` block does not run,
+    and its ``test()`` is called; a failed assertion, or a script with no
+    ``test()``, comes back ``ok: False``. Same engine patch, argv and cwd.
+    """
     import importlib.util
     import resource
     import time
@@ -331,7 +339,8 @@ def _run_in_child(
         if example_dir not in sys.path:
             sys.path.insert(0, example_dir)
 
-        spec = importlib.util.spec_from_file_location("__main__", solve_script)
+        module_name = "__main__" if mode == "run" else "bench_solve_under_test"
+        spec = importlib.util.spec_from_file_location(module_name, solve_script)
         module = importlib.util.module_from_spec(spec)
 
         captured = BufferedStringIO()
@@ -430,6 +439,11 @@ def _run_in_child(
         start = time.perf_counter()
         try:
             spec.loader.exec_module(module)
+            if mode == "test":
+                test_fn = getattr(module, "test", None)
+                if test_fn is None:
+                    raise RuntimeError("solve.py defines no test() oracle")
+                test_fn()
         except MemoryError:
             sys.stdout = original_stdout
             elapsed = time.perf_counter() - start
@@ -714,6 +728,7 @@ def run_example(
     use_shared_lineage_solver=False,
     deterministic=False,
     native_lift=None,
+    mode="run",
 ):
     """Run an example in an isolated subprocess and print results."""
     examples_dir = _resolve_examples_dir(example_name, EXAMPLES_DIR)
@@ -739,6 +754,7 @@ def run_example(
                 use_shared_lineage_solver,
                 deterministic,
                 native_lift,
+                mode,
             ),
         )
         result = async_result.get(timeout=timeout)
@@ -930,6 +946,11 @@ def main():
     parser.add_argument("example", nargs="?", help="Example name (e.g. fauxware, ais3_crackme)")
     parser.add_argument("--engine", choices=["rust", "python"], default="rust")
     parser.add_argument("--both", action="store_true", help="Run both engines")
+    parser.add_argument(
+        "--test",
+        action="store_true",
+        help="Correctness oracle: call solve.py's test() instead of running it as __main__ (angr-imiwt)",
+    )
     parser.add_argument("--timeout", type=int, default=180)
     parser.add_argument(
         "--mem-limit",
@@ -1090,6 +1111,7 @@ def main():
             use_shared_lineage_solver=args.use_shared_lineage_solver,
             deterministic=args.deterministic,
             native_lift=args.native_lift,
+            mode="test" if args.test else "run",
         )
 
 

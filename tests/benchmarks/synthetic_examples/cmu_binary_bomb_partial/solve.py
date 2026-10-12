@@ -66,3 +66,14 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+def test():
+    """Oracle for the FAST subset (angr-imiwt). Upstream's own test() also
+    runs flags 2, 3, 5 and 6 (see the module docstring) and pins flag 4 to
+    "7 0"; any func4 input that returns 0 is a valid answer, so flag 4 is
+    checked against that set."""
+    assert _upstream.solve_flag_1() == "Border relations with Canada have never been better."
+    first, second = _upstream.solve_flag_4().split()
+    assert second == "0" and int(first) in {0, 1, 3, 7}
+    assert _upstream.solve_secret() == "22"

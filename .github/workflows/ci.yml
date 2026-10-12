@@ -303,7 +303,11 @@ jobs:
         # tests/benchmarks/test_counter_coverage.py.
         run: uv run python tests/benchmarks/run_regression.py --check-counter-coverage --full
       - name: Run counter-coverage unit tests
-        run: uv run pytest tests/benchmarks/test_counter_coverage.py -q --tb=short
+        # test_bench_oracles.py: every gated bench ships the test() oracle
+        # --correctness calls (angr-imiwt).
+        env:
+          ANGR_EXAMPLES_DIR: ${{ github.workspace }}/angr-examples/examples
+        run: uv run pytest tests/benchmarks/test_counter_coverage.py tests/benchmarks/test_bench_oracles.py -q --tb=short
       - name: Build Rust extension
         run: uv run pip install -e . --no-build-isolation --no-deps
       - name: Run fast-tier benchmark regression
@@ -333,8 +337,13 @@ jobs:
         #   deterministic (0% variance / 5 runs, angr-bq9v). Hard fail — there
         #   is no warn-only mode, but the counts are deterministic so warmup
         #   variance can't false-positive the way RSS can.
-        run: uv run python tests/benchmarks/run_regression.py --rust-only --skip-bimodal --threshold 0.15 --retry-failures 2 --check-counts
-        timeout-minutes: 5
+        # --correctness: before timing, run every FAST bench's own test()
+        #   oracle under the Rust engine — bimodal benches included, since
+        #   --skip-bimodal is about timing noise, not answers — and fail on a
+        #   wrong answer, never retried. --rust-only means nothing else checks
+        #   Rust's output (angr-imiwt). timeout-minutes 5 -> 8 for the pass.
+        run: uv run python tests/benchmarks/run_regression.py --rust-only --skip-bimodal --threshold 0.15 --retry-failures 2 --check-counts --correctness
+        timeout-minutes: 8
 
   property_fuzzer_quick:
     # PR-time smoke for tests/benchmarks/property_fuzzer.py — the nightly

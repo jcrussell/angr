@@ -135,7 +135,8 @@ an ``angr/angr-examples`` checkout, found via ``ANGR_EXAMPLES_DIR`` or
 .. code-block:: bash
 
    make bench-regression                                    # fast tier, both engines
-   python tests/benchmarks/run_regression.py --rust-only --skip-bimodal --threshold 0.15   # the PR-time gate
+   python tests/benchmarks/run_regression.py --rust-only --skip-bimodal --threshold 0.15 --correctness   # the PR-time gate
+   python tests/benchmarks/run_single.py sym-write --test    # one bench's own test() oracle under the Rust engine
    make bench-single EXAMPLE=fauxware ARGS="--both"         # one bench in a bounded subprocess
    python tests/benchmarks/run_single.py fauxware --dump-counters   # every mgr.stats counter, grouped
    python tests/benchmarks/run_single.py fauxware --counters-json > /tmp/base.json
@@ -144,8 +145,12 @@ an ``angr/angr-examples`` checkout, found via ``ANGR_EXAMPLES_DIR`` or
    python tests/benchmarks/bench_diff.py /tmp/base.json /tmp/curr.json   # counters by |delta|
    python tests/benchmarks/run_regression.py --full --rust-only --skip-bimodal --update-counters   # refresh baseline_counters.json
 
+``--correctness`` runs each bench's own ``test()`` oracle under the Rust
+engine before the timing pass and fails on a wrong answer; with
+``--rust-only`` it is the only check of Rust's output.
 ``--skip-bimodal`` drops the ``BIMODAL_BENCHMARKS`` set defined in
-``run_regression.py`` (see :doc:`rust_bimodal_variance`). ``--update``
+``run_regression.py`` (see :doc:`rust_bimodal_variance`) from the timing
+pass only; the correctness pass still runs them. ``--update``
 rewrites ``baseline_timings.json`` except for entries in
 ``PINNED_RUST_TIMES``, which are deliberately pessimistic pins that a
 single refresh must not demote; change a pin by editing that table so
@@ -168,6 +173,9 @@ the details and tuning notes.
    * - Gate
      - Where it runs
      - Script
+   * - Bench correctness (each bench's ``test()`` under the Rust engine, bimodal benches included; ``--correctness``)
+     - ``ci.yml::benchmark_regression`` (fast tier), ``nightly-ci.yml::benchmark_regression`` (``--full``)
+     - ``tests/benchmarks/run_regression.py`` (``run_correctness_pass``)
    * - Benchmark regression (fast tier, ``--skip-bimodal``, 15 %)
      - ``ci.yml::benchmark_regression``
      - ``tests/benchmarks/run_regression.py``

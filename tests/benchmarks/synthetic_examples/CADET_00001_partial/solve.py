@@ -81,5 +81,13 @@ def main():
     return (crashing_input, solution1, stdout1)
 
 
+def test():
+    """Upstream's oracle cut to phases 1 and 2 (angr-imiwt)."""
+    crashing_input, solution1, stdout1 = main()
+    assert len(crashing_input) >= 92
+    assert solution1.startswith(b"^")
+    assert b"EASTER EGG!" in stdout1
+
+
 if __name__ == "__main__":
     print(repr(main()))

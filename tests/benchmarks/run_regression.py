@@ -2,7 +2,11 @@
 """Benchmark regression test for the Rust symbolic execution engine.
 
 Runs fast-tier benchmarks with both engines and checks:
-1. Rust engine produces correct output (matches Python)
+1. Rust engine produces correct output: with ``--correctness``, each bench's
+   own ``test()`` oracle passes under the Rust engine (bimodal benches
+   included; see ``run_correctness_pass``); when Python also runs, Rust's
+   output matches it. ``rust_only`` entries only skip the Python run and its
+   timing/SLA comparison — the oracle is what checks their answers.
 2. Rust engine is not slower than baseline threshold — a timing failure must
    clear both a relative bar (--threshold) and an absolute one
    (--regression-floor), so host noise on the sub-second benches does not
@@ -204,7 +208,9 @@ COUNT_EXEMPT = frozenset(
 # rust_only: True when the Python engine is unreliable under the 4GB memory
 # limit (OOM/timeout) OR when Z3 model nondeterminism produces benign output
 # divergence (multiple valid solutions to the same find/avoid set). In either
-# case the regression check still tracks Rust timing and algorithmic metrics.
+# case the regression check still tracks Rust timing and algorithmic metrics,
+# and --correctness still checks the answer through the bench's own test()
+# (angr-imiwt: before that pass, a wrong rust_only answer went unnoticed).
 # Fast tier: < 10s, always run
 # rust_only=True/False audited via property_fuzzer (angr-qz16, 2026-05-14):
 # Promoted (rust_only=False, pass 10/10 trials, mixed bfs/dfs):
@@ -661,13 +667,21 @@ def _normalize_output(output):
     return re.sub(r"(\\x[0-9a-fA-F]{2}[^']*?)(')", r"\2", output)
 
 
-def run_one(name, engine, timeout, mem_limit_mb, strategy="bfs"):
-    """Run a single benchmark in a subprocess, return result dict."""
+def run_one(name, engine, timeout, mem_limit_mb, strategy="bfs", mode="run"):
+    """Run a single benchmark in a subprocess, return result dict.
+
+    ``mode="test"`` runs the bench's own ``test()`` oracle instead of timing
+    ``solve.py`` (see ``run_single._run_in_child``).
+    """
     ctx = multiprocessing.get_context("spawn")
     pool = ctx.Pool(1)
     examples_dir = _resolve_examples_dir(name, EXAMPLES_DIR)
     try:
-        async_result = pool.apply_async(_run_in_child, (name, engine, examples_dir, mem_limit_mb, strategy))
+        async_result = pool.apply_async(
+            _run_in_child,
+            (name, engine, examples_dir, mem_limit_mb, strategy),
+            {"mode": mode},
+        )
         return async_result.get(timeout=timeout)
     except multiprocessing.TimeoutError:
         pool.terminate()
@@ -678,6 +692,42 @@ def run_one(name, engine, timeout, mem_limit_mb, strategy="bfs"):
     finally:
         pool.terminate()
         pool.join()
+
+
+# Benches whose own test() cannot pass on ANY engine in this environment, so
+# the oracle carries no signal about the Rust engine. Every entry names its
+# bead; the pass reports it as EXEMPT on every run. A Rust-only wrong answer is
+# never a reason to add an entry here — fix it.
+ORACLE_EXEMPT = {
+    "csaw_wyvern": "angr-g2uau: no engine (pristine upstream included) solves the example here",
+}
+
+
+def run_correctness_pass(suite, mem_limit_mb):
+    """Run every bench's own ``test()`` under the Rust engine (angr-imiwt).
+
+    The timing pass only checks that Rust's output matches Python's, and
+    skips that whenever Python is skipped (``--rust-only`` in both CI jobs,
+    or a ``rust_only`` entry), so a wrong Rust answer passed as long as it
+    did not crash (sym-write returned 254 values instead of 70). The
+    examples ship ``test()`` oracles; this calls them. Failures are never
+    retried: a wrong answer is not noise. Returns the failure messages.
+    """
+    print("\n=== Correctness: each bench's test() under the Rust engine ===")
+    failures = []
+    for name, timeout, strategy, _ in suite:
+        label = f"{name} (DFS)" if strategy == "dfs" else name
+        if name in ORACLE_EXEMPT:
+            print(f"  EXEMPT {label}: {ORACLE_EXEMPT[name]}")
+            continue
+        # test() usually runs main() and then checks, sometimes more than once.
+        res = run_one(name, "rust", 2 * timeout, mem_limit_mb, strategy, mode="test")
+        if res.get("ok"):
+            print(f"  ok    {label}")
+        else:
+            print(f"  FAIL  {label}: {res.get('error', 'unknown error')}")
+            failures.append(f"{label}: correctness: {res.get('error', 'unknown error')}")
+    return failures
 
 
 def load_baseline():
@@ -834,6 +884,12 @@ def main():
     )
     parser.add_argument("--mem-limit", type=int, default=DEFAULT_MEM_LIMIT_MB)
     parser.add_argument("--rust-only", action="store_true", help="Only run Rust engine (skip Python comparison)")
+    parser.add_argument(
+        "--correctness",
+        action="store_true",
+        help="Also run each bench's own test() oracle under the Rust engine, bimodal benches "
+        "included, and fail on a wrong answer (angr-imiwt)",
+    )
     parser.add_argument("--full", action="store_true", help="Run full suite (fast + medium tier)")
     parser.add_argument(
         "--check-counter-coverage",
@@ -946,6 +1002,9 @@ def main():
         for e in REGRESSION_SUITE
     ]
 
+    # The correctness pass covers bimodal benches too: --skip-bimodal exists
+    # to keep their *timing* noise out of the gate, not their answers.
+    correctness_suite = list(REGRESSION_SUITE)
     if args.skip_bimodal:
         REGRESSION_SUITE = [e for e in REGRESSION_SUITE if e[0] not in BIMODAL_BENCHMARKS]
 
@@ -992,6 +1051,9 @@ def main():
     timing_ratios = []
     timing_failures = []
     total_start = time.perf_counter()
+
+    if args.correctness:
+        failures.extend(run_correctness_pass(correctness_suite, args.mem_limit))
 
     def _retry_record(name, timeout, strategy, baseline_key):
         rec = retry_info.get(name)
