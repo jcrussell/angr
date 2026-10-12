@@ -80,9 +80,14 @@ class TestAvoidMultivalued:
         assert rust_unsupported_options(_BASE | {getattr(angr.options, name)}) == []
 
     @pytest.mark.parametrize("name", ["AVOID_MULTIVALUED_READS", "AVOID_MULTIVALUED_WRITES"])
-    def test_exonerated_in_the_census(self, name):
+    def test_honored_not_a_divergence_in_the_census(self, name):
+        """Honored options sit in the docs' Honored table, outside the
+        divergence matrix the census ranks, so they are neither exonerated nor
+        silent (angr-s39uo: commit e3c8fb245 moved them there and the census
+        rejects an exoneration for an option the matrix no longer lists)."""
         census = _census()
-        assert name in census["exonerated_options"]
+        assert name not in {o["option"] for o in census["options"]}
+        assert name not in census["exonerated_options"]
         assert name not in census["silent_live_options"]
 
     def test_manager_runs_with_both_set(self, fauxware_project):
