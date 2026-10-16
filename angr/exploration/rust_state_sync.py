@@ -10,6 +10,7 @@ from sortedcontainers import SortedDict
 
 from angr import claripy
 from angr.rustylib.vex_engine import register_names_for_arch
+from angr.storage.memory_mixins.paged_memory.pages import UltraPage
 from angr.storage.memory_object import SimMemoryObject
 
 from ._constants import MAX_OVERLAY_SECTION_SIZE, PAGE_MASK, PAGE_SIZE, STACK_SIZE
@@ -19,6 +20,20 @@ from ._constants import MAX_OVERLAY_SECTION_SIZE, PAGE_MASK, PAGE_SIZE, STACK_SI
 # dominates per-page cost in mma_howtouse-style workloads — see angr-b58a).
 _ZERO_PAGE_BA = bytearray(PAGE_SIZE)
 _ZERO_PAGE_BYTES = bytes(PAGE_SIZE)
+
+
+def _ultrapage_bytes(page, *, writing: bool = False):
+    """An UltraPage's page-sized concrete backing store, or ``None`` for any other page type.
+
+    UltraPage allocates ``concrete_data`` on first use, and until then every byte reads as zero. A read-only caller
+    gets the shared immutable all-zero buffer for such a page; ``writing=True`` allocates the real store so the caller
+    can write into it.
+    """
+    if not isinstance(page, UltraPage) or page.symbolic_bitmap.size != PAGE_SIZE:
+        return None
+    if page.concrete_data is None:
+        return page._concrete() if writing else _ZERO_PAGE_BYTES  # pylint:disable=protected-access
+    return page.concrete_data if len(page.concrete_data) == PAGE_SIZE else None
 
 if TYPE_CHECKING:
     import angr
@@ -686,13 +701,16 @@ class RustStateSyncMixin:
                 if page_obj is None:
                     continue
                 perms = 6 if stack_start <= page_addr < stack_base else 7
-                cd = getattr(page_obj, "concrete_data", None)
-                if isinstance(cd, bytearray) and len(cd) == page_size:
+                cd = _ultrapage_bytes(page_obj) if page_size == PAGE_SIZE else None
+                if cd is not None:
                     # UltraPage fast path: classify via memcmp on the backing
                     # bytearray. No bytes() copy yet — deferred to the FFI
                     # phase (and skipped entirely for lazy-only zero pages).
+                    # A never-written page has no store yet and reads as the
+                    # shared zero buffer, which is already the bytes to send.
                     is_nonzero = cd != _ZERO_PAGE_BA
-                    raw_pages.append((page_addr, page_obj, is_nonzero, perms, None))
+                    cached = cd if cd is _ZERO_PAGE_BYTES else None
+                    raw_pages.append((page_addr, page_obj, is_nonzero, perms, cached))
                 else:
                     # Non-UltraPage backend: materialize bytes once and keep
                     # the buffer for the FFI phase to avoid a second
@@ -1962,14 +1980,8 @@ class RustStateSyncMixin:
         ):
             return None
         page = get_page(page_addr // PAGE_SIZE, True)
-        concrete_data = getattr(page, "concrete_data", None)
-        symbolic_bitmap = getattr(page, "symbolic_bitmap", None)
-        if (
-            not isinstance(concrete_data, bytearray)
-            or len(concrete_data) != PAGE_SIZE
-            or symbolic_bitmap is None
-            or symbolic_bitmap.size != PAGE_SIZE
-        ):
+        # Callers write straight into concrete_data, so allocate it.
+        if _ultrapage_bytes(page, writing=True) is None:
             return None
         return page
 
@@ -2053,9 +2065,7 @@ class RustStateSyncMixin:
             ):
                 try:
                     p = get_page(pageno, False)  # read-only, no copy-on-write
-                    cd = getattr(p, "concrete_data", None)
-                    bm = getattr(p, "symbolic_bitmap", None)
-                    if isinstance(cd, bytearray) and len(cd) == PAGE_SIZE and bm is not None and bm.size == PAGE_SIZE:
+                    if _ultrapage_bytes(p) is not None:
                         page = p
                 except Exception:
                     page = None
@@ -2065,7 +2075,7 @@ class RustStateSyncMixin:
         if page.symbolic_bitmap.any_set(sub, sub + size):
             return ("symbolic", None)
         byteorder = "little" if state.arch.register_endness == "Iend_LE" else "big"
-        return ("concrete", int.from_bytes(page.concrete_data[sub : sub + size], byteorder))
+        return ("concrete", int.from_bytes(_ultrapage_bytes(page)[sub : sub + size], byteorder))
 
     @staticmethod
     def _blit_concrete_page(page, page_bytes) -> None:

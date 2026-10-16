@@ -95,6 +95,7 @@ I10. RustExplorationManager exposes `stats` as a @property
 
 from __future__ import annotations
 
+import gc
 import logging
 import os
 import pickle
@@ -614,6 +615,23 @@ def _unsupported_inspect_events(state) -> list[str]:
     return sorted(event for event, bps in breakpoints.items() if bps and event not in _RUST_INSPECT_SUPPORTED_EVENTS)
 
 
+# Every manager constructed in this process that is still alive (see _collect_dead_managers).
+_live_managers: weakref.WeakSet = weakref.WeakSet()
+
+
+def _collect_dead_managers() -> None:
+    """Free finished managers before another one is built.
+
+    A manager sits in several reference cycles (its PythonCallbacks hold bound methods, its proxies point back at
+    it), so only the cyclic garbage collector frees it, and with it its Rust states and Z3 terms. claripy ASTs are
+    native objects the collector does not count, so a collection can be far off, and a process that builds manager
+    after manager would keep every finished one resident until then. When an earlier manager is still alive, collect
+    first; a process with one manager at a time never pays for it.
+    """
+    if _live_managers:
+        gc.collect()
+
+
 _z3_deterministic_applied = False
 
 
@@ -809,7 +827,7 @@ from angr.exploration.rust_callback_dispatch import (
 from angr.exploration.rust_disk_cache import RustDiskCacheManager
 from angr.exploration.rust_state_cache import RustStateCacheMixin
 from angr.exploration.rust_state_export import RustStateExportMixin
-from angr.exploration.rust_state_sync import RustStateSyncMixin
+from angr.exploration.rust_state_sync import RustStateSyncMixin, _ultrapage_bytes
 
 # Per-arch GPR snapshot lists for RustErrorRecord.registers. Conservative: PC,
 # SP, BP/FP, and standard GPRs. Vector/floating-point registers are excluded.
@@ -1412,8 +1430,9 @@ class RustExplorationManager(
         use_native_lift,
     ):
         """Phase 1 (boot): construct the Rust manager and apply basic config."""
-        # Ensure Z3 context is shared (one-time setup)
         _apply_rust_log_env()
+        _collect_dead_managers()
+        _live_managers.add(self)
 
         # angr-iaol.2: pin Z3 module-level random seeds BEFORE the first
         # Solver::new. The per-solver Z3_solver_set_params route is
@@ -2733,9 +2752,9 @@ class RustExplorationManager(
         page_obj = mem_pages.get(page_addr // 4096)
         if page_obj is None:
             return (bytes(4096), 7, True) if zero_fill else (bytes(4096), 0, False)
-        concrete_data = getattr(page_obj, "concrete_data", None)
+        concrete_data = _ultrapage_bytes(page_obj)
         symbolic_bitmap = getattr(page_obj, "symbolic_bitmap", None)
-        if not isinstance(concrete_data, bytearray) or len(concrete_data) != 4096:
+        if concrete_data is None:
             return None  # non-UltraPage backend — caller uses the slow path
         if getattr(page_obj, "symbolic_data", None):
             return (bytes(4096), 0, False)
