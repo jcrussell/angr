@@ -1391,15 +1391,7 @@ class TestExplorationIntegration:
             def constraint_mentions_hook_var(ast):
                 # claripy assigns BVS a uniqueness suffix (e.g. "_1_32"), so
                 # match by prefix rather than exact name.
-                try:
-                    leaves = list(ast.leaf_asts())
-                except Exception:
-                    return False
-                for leaf in leaves:
-                    args = getattr(leaf, "args", ())
-                    if args and isinstance(args[0], str) and args[0].startswith("hook_constraint_var"):
-                        return True
-                return False
+                return any(name.startswith("hook_constraint_var") for name in ast.variables)
 
             saw = False
             for stash in ("active", "found", "deadended"):
@@ -1768,12 +1760,20 @@ class TestProxyUnsatCore:
 
     @staticmethod
     def _python_core(constraints):
-        """Same constraints on a stock Python SimState with tracking on."""
-        proj = angr.load_shellcode(b"\x90", arch="amd64")
-        state = proj.factory.blank_state(add_options={angr.options.CONSTRAINT_TRACKING_IN_SOLVER})
-        state.solver.add(*constraints)
-        assert state.solver.satisfiable() is False
-        return {str(c) for c in state.solver.unsat_core()}
+        """claripy's own core for the same constraints, as a set of constraint strings.
+
+        A plain tracking ``claripy.Solver`` rather than a ``SimState``: claripy
+        reports a core as indices into its solver's ``constraints``, and the
+        ``SolverComposite`` a tracking ``SimSolver`` uses returns indices local to
+        the child solver holding the conflict, which do not index its own
+        ``constraints`` (angr-mx00p.8).
+        """
+        from angr import claripy
+
+        solver = claripy.Solver(track=True)
+        solver.add(constraints)
+        assert solver.satisfiable() is False
+        return {str(solver.constraints[i]) for i in solver.unsat_core()}
 
     def test_multi_constraint_core_matches_python(self):
         """Two mutually contradicting constraints among several: both are

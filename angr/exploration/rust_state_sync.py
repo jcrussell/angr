@@ -40,6 +40,7 @@ def _ultrapage_bytes(page, *, writing: bool = False):
         return None
     return data
 
+
 if TYPE_CHECKING:
     import angr
 
@@ -636,7 +637,7 @@ class RustStateSyncMixin:
         _extract_wide_symbolic_regions (wide-region grouping) so the
         _has_user_symbolic_var filter and the size = ast.size() // 8
         computation stay in one place. Note: _extract_from_ultrapage uses a
-        structurally different bitmap-walk (sb[] + MAX_EXTENT + next_key) and
+        structurally different bitmap walk (SymbolicBitmap scan + MAX_EXTENT + next_key) and
         deliberately does not go through this helper.
         """
         scan_ranges = []
@@ -1829,15 +1830,15 @@ class RustStateSyncMixin:
                 sd = getattr(page, "symbolic_data", None)
                 if sd is not None and 0 < len(sd) <= 64:
                     keys = list(sd.keys())
-                    sb_len = len(sb)
+                    sb_len = sb.size
                     for i, offset in enumerate(keys):
-                        if offset >= sb_len or not sb[offset]:
+                        if offset >= sb_len or not sb.get(offset):
                             continue
                         next_key = keys[i + 1] if i + 1 < len(keys) else sb_len
                         end = offset
                         limit = min(offset + MAX_EXTENT, next_key, sb_len)
-                        while end < limit and sb[end]:
-                            end += 1
+                        # First concrete byte of the run, capped at `limit`.
+                        end = sb.next_clear(offset, limit)
                         if end - offset >= MAX_EXTENT:
                             continue  # likely a page-fill — skip
                         for byte_off in range(offset, end):

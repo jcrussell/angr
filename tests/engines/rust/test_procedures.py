@@ -964,14 +964,19 @@ class TestCallbackSolverConcretizationFallback:
                 self.state.solver.add(x == 1)
                 self.state.solver.add(x == 2)
                 # Spy: flip a flag if the Python claripy frontend's min is hit.
+                # claripy solvers are native objects whose methods cannot be
+                # reassigned, so swap in a forwarding wrapper instead.
                 py_frontend = self.state.solver._solver
-                orig_py_min = py_frontend.min
 
-                def spy_min(*a, **k):
-                    captured["py_min_called"] = True
-                    return orig_py_min(*a, **k)
+                class _SpyFrontend:
+                    def __getattr__(self, name):
+                        return getattr(py_frontend, name)
 
-                py_frontend.min = spy_min
+                    def min(self, *a, **k):
+                        captured["py_min_called"] = True
+                        return py_frontend.min(*a, **k)
+
+                self.state.solver._stored_solver = _SpyFrontend()
                 try:
                     try:
                         self.state.solver.min(x)
@@ -981,7 +986,7 @@ class TestCallbackSolverConcretizationFallback:
                     except Exception as e:
                         captured["raised"] = type(e).__name__
                 finally:
-                    py_frontend.min = orig_py_min
+                    self.state.solver._stored_solver = py_frontend
                 self.state.regs.rax = claripy.BVV(0, 64)
 
         try:

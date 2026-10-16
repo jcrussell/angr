@@ -10,6 +10,7 @@ import warnings
 import pytest
 
 import angr
+from angr import claripy
 
 # Rust availability guard, binary-path resolution, and the module-scoped
 # fauxware_project fixture all live in tests/engines/conftest.py (angr-7gdp).
@@ -31,6 +32,27 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+class _ExprTaint(claripy.Annotation):
+    """Module-level so it pickles: claripy stores custom annotations pickled."""
+
+    def __init__(self, tag):
+        self.tag = tag
+
+    @property
+    def relocatable(self):
+        return True
+
+    @property
+    def eliminatable(self):
+        return False
+
+    def __hash__(self):
+        return hash(("_ExprTaint", self.tag))
+
+    def __eq__(self, other):
+        return isinstance(other, _ExprTaint) and self.tag == other.tag
+
+
 class TestClaripyAnnotationRoundtrip:
     """Annotations attached to claripy ASTs must survive a Rust→Python
     roundtrip (constraint export, memory load, eval). See angr-ykdq."""
@@ -38,9 +60,8 @@ class TestClaripyAnnotationRoundtrip:
     def test_uninitialized_annotation_on_bvs_in_memory(self, fauxware_project):
         """A UninitializedAnnotation on a BVS stored in symbolic memory
         must still be present after a full RustExplorationManager run."""
-        from angr.claripy.annotation import UninitializedAnnotation
-
         from angr import claripy
+        from angr.claripy.annotation import UninitializedAnnotation
 
         # SYMBOL_FILL_UNCONSTRAINED_REGISTERS is raised under Rust
         # (angr-apre) — RegisterFile always returns zero so symbolic-fill
@@ -75,24 +96,6 @@ class TestClaripyAnnotationRoundtrip:
         attached at the Expression level. The Arc-keyed expression cache in
         claripy_bridge.rs preserves them."""
         from angr import claripy
-
-        class _ExprTaint(claripy.Annotation):
-            def __init__(self, tag):
-                self.tag = tag
-
-            @property
-            def relocatable(self):
-                return True
-
-            @property
-            def eliminatable(self):
-                return False
-
-            def __hash__(self):
-                return hash(("_ExprTaint", self.tag))
-
-            def __eq__(self, other):
-                return isinstance(other, _ExprTaint) and self.tag == other.tag
 
         state = fauxware_project.factory.entry_state()
         # Use a unique BVS name so the assertion can filter to constraints
