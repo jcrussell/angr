@@ -753,10 +753,8 @@ class TestRustExplorationManagerUnit:
             callable_=proc,
         )
 
-        # Replace RDI with a fresh symbolic BV via the shared Z3 context.
-        sym = claripy.BVS("sym_arg0", 64)
-        ast_ptr = claripy.backends.z3.convert(sym).as_ast().value
-        state.set_register_symbolic("rdi", ast_ptr, 64)
+        # Replace RDI with a fresh symbolic BV.
+        state.set_register_symbolic_ast("rdi", claripy.BVS("sym_arg0", 64))
 
         mgr.add_state("active", state)
         event = mgr.run(5)
@@ -834,9 +832,7 @@ class TestRustExplorationManagerUnit:
             no_return=False,
             callable_=lambda args: 0,
         )
-        sym = claripy.BVS("sym_arg_snap", 64)
-        ast_ptr = claripy.backends.z3.convert(sym).as_ast().value
-        state.set_register_symbolic("rdi", ast_ptr, 64)
+        state.set_register_symbolic_ast("rdi", claripy.BVS("sym_arg_snap", 64))
         mgr.add_state("active", state)
         event = mgr.run(5)
         assert event.event_type == "need_callback", f"expected parked need_callback; got {event.event_type}"
@@ -1131,54 +1127,6 @@ class TestRustSimStateIntegration:
 
         assert state1.pc == 0x1000
         assert state1.get_register("rax") == 42
-
-    def test_set_register_symbolic_null_ptr_raises(self):
-        """A null Z3 AST pointer must raise, not segfault (angr-ph300.49).
-
-        ``set_register_symbolic`` is a ``#[pymethods]`` entry callable from
-        Python with an arbitrary integer. It previously fed the raw usize into
-        ``NonNull::new_unchecked`` — a 0 (the guarded absent-AST value from
-        rust_state_sync.py) produced UB and a Z3_inc_ref segfault. The binding
-        now rejects a null pointer with a ValueError before any unsafe deref.
-        """
-        state = RustSimState("amd64")
-        with pytest.raises(ValueError):
-            state.set_register_symbolic("rax", 0, 64)
-
-    def test_set_register_symbolic_distinct_ids_no_alias(self):
-        """Two independent set_register_symbolic writes must not alias each
-        other on export (angr-ph300.50).
-
-        The binding used to build ``RustBV::Symbolic { id: 0, .. }`` for every
-        wrapped register. ``NEXT_SYMBOL_ID`` starts at 0, so id 0 is a real
-        symbol id; the exporter resolves ``Symbolic`` by ``get_claripy_ast(id)``
-        with no width check, so two registers both wearing id 0 collapse to the
-        *same* claripy AST on the way back (and would even hijack an unrelated
-        leaf that legitimately owns id 0). The binding now mints a fresh global
-        id per call, so distinct wrapped registers export to distinct symbols.
-        """
-        from angr import claripy
-
-        mgr = _RustExplorationManager("amd64")
-        state = RustSimState("amd64")
-
-        sym_a = claripy.BVS("reg_a", 64)
-        sym_b = claripy.BVS("reg_b", 64)
-        ptr_a = claripy.backends.z3.convert(sym_a).as_ast().value
-        ptr_b = claripy.backends.z3.convert(sym_b).as_ast().value
-        state.set_register_symbolic("rax", ptr_a, 64)
-        state.set_register_symbolic("rbx", ptr_b, 64)
-
-        mgr.add_state("active", state)
-        sid = mgr.get_state_ids("active")[0]
-
-        ast_a = mgr.get_state_register_ast(sid, "rax")
-        ast_b = mgr.get_state_register_ast(sid, "rbx")
-        assert ast_a is not None and ast_b is not None
-        # Before the fix both wore id 0 and exported to the same AST.
-        assert hash(ast_a) != hash(ast_b), (
-            "two independent symbolic registers must export to distinct symbols, not alias via a shared hardcoded id"
-        )
 
     def test_state_memory(self):
         """Test memory operations."""
@@ -2277,13 +2225,6 @@ class TestExplorationEvent:
 
 class TestRustEdgeCases:
     """Edge-case tests for Rust state and solver."""
-
-    @classmethod
-    def setup_class(cls):
-        """Ensure the shared Z3 context is initialized for solver tests."""
-        from angr.exploration.rust_manager import _setup_shared_z3_context
-
-        _setup_shared_z3_context()
 
     def test_load_shellcode_blob_in_binary_control_flow(self):
         """In-blob jump targets in a load_shellcode/blob must resolve, not deadend.

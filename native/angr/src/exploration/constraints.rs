@@ -161,71 +161,16 @@ pub(crate) enum ConstraintImport {
     Failed(crate::claripy_bridge::BridgeError),
 }
 
-/// Resolve `claripy.backends.z3`, the entry point for the raw-Z3-pointer tier.
+/// Lower a claripy constraint to a raw Z3 term, the entry point for the
+/// raw-pointer tier (see `claripy_bridge::z3_lower`).
 ///
-/// Resolved once per constraint *list* by both callers and handed to
-/// [`import_one_constraint`], so a list of N constraints pays one attribute
-/// walk rather than N.
-///
-/// SILENT(cat-a): probing for claripy's optional z3 backend. A missing backend
-/// is expected control flow — `import_one_constraint` simply takes the RustBV
-/// tier instead — so collapsing the error to `None` loses no correctness.
+/// SILENT(cat-a): an AST with no Z3 lowering (strings, VSA, or an object that
+/// is not one of this extension's claripy ASTs) is expected control flow — the
+/// caller falls through to the RustBV tier, which is an equally complete
+/// alternative, not a degraded one.
 #[cfg(feature = "vex-engine-z3")]
-pub(crate) fn resolve_claripy_z3_backend(
-    py: pyo3::Python<'_>,
-) -> Option<pyo3::Bound<'_, pyo3::types::PyAny>> {
-    use pyo3::prelude::*;
-
-    match py
-        .import("claripy")
-        .and_then(|c| c.getattr("backends"))
-        .and_then(|b| b.getattr("z3"))
-    {
-        Ok(backend) => Some(backend),
-        Err(e) => {
-            log::debug!("claripy.backends.z3 unavailable for the raw-pointer tier: {e}");
-            None
-        }
-    }
-}
-
-/// Non-Z3 mirror: there is no raw-pointer tier at all, so every caller's
-/// backend is `None` and the cfg stays out of the call sites.
-#[cfg(not(feature = "vex-engine-z3"))]
-pub(crate) fn resolve_claripy_z3_backend(
-    _py: pyo3::Python<'_>,
-) -> Option<pyo3::Bound<'_, pyo3::types::PyAny>> {
-    None
-}
-
-/// Pull the raw `Z3_ast` behind a claripy AST via
-/// `claripy.backends.z3.convert(ast).as_ast().value`.
-///
-/// SILENT(cat-a): a claripy AST the backend declines to convert (or whose
-/// pointer comes back null) is expected control flow — the caller falls
-/// through to the RustBV tier, which is an equally complete alternative, not a
-/// degraded one.
-///
-/// The returned handle owns its own `Z3_inc_ref`, so dropping it does not
-/// disturb claripy's cached AST.
-#[cfg(feature = "vex-engine-z3")]
-fn claripy_z3_ptr(
-    z3_backend: &pyo3::Bound<'_, pyo3::types::PyAny>,
-    item: &pyo3::Bound<'_, pyo3::types::PyAny>,
-) -> Option<crate::symbolic::Z3AstPtr> {
-    use pyo3::prelude::*;
-
-    if let Ok(z3_obj) = z3_backend.call_method1("convert", (item,))
-        && let Ok(ast_ref) = z3_obj.call_method0("as_ast")
-        && let Ok(ptr) = ast_ref.getattr("value").and_then(|v| v.extract::<usize>())
-    {
-        let z3_ctx = z3::Context::thread_local();
-        // SAFETY: claripy's z3 backend returned this pointer for a live AST it
-        // caches; the AST lives in the process-global Z3 context, which is the
-        // thread-local one (`rust_manager._setup_shared_z3_context`).
-        return unsafe { crate::symbolic::Z3AstPtr::from_borrowed_raw(&z3_ctx, ptr) };
-    }
-    None
+fn claripy_z3_ptr(item: &pyo3::Bound<'_, pyo3::types::PyAny>) -> Option<crate::symbolic::Z3AstPtr> {
+    crate::claripy_bridge::lower_claripy_ast(item).ok()
 }
 
 /// Coerce a converted constraint to the width-1 form the solver's assumed log
@@ -253,8 +198,6 @@ fn as_bool(
 /// with *inverted* tier precedence and no cross-reference between them
 /// (angr-6cp06.26); `tier` is the only thing that still differs.
 ///
-/// `z3_backend` is what [`resolve_claripy_z3_backend`] returned; `None`
-/// disables the raw-pointer tier for this call.
 #[cfg_attr(
     not(feature = "vex-engine-z3"),
     allow(unused_variables, reason = "no raw-pointer tier without Z3")
@@ -263,18 +206,16 @@ pub(crate) fn import_one_constraint(
     py: pyo3::Python<'_>,
     ctx: &crate::symbolic::SymContext,
     item: &pyo3::Bound<'_, pyo3::types::PyAny>,
-    z3_backend: Option<&pyo3::Bound<'_, pyo3::types::PyAny>>,
     tier: ConstraintTier,
 ) -> ConstraintImport {
     use crate::claripy_bridge::claripy_to_rustbv;
 
-    // Tier: raw Z3 pointer. Only reachable when it is preferred *and* claripy
-    // hands one over; otherwise both orders fall through to the RustBV tier
-    // below, which is also the whole body on a non-Z3 build.
+    // Tier: raw Z3 pointer. Only reachable when it is preferred *and* the AST
+    // lowers; otherwise both orders fall through to the RustBV tier below,
+    // which is also the whole body on a non-Z3 build.
     #[cfg(feature = "vex-engine-z3")]
     if tier == ConstraintTier::Z3PtrFirst
-        && let Some(backend) = z3_backend
-        && let Some(z3_ast) = claripy_z3_ptr(backend, item)
+        && let Some(z3_ast) = claripy_z3_ptr(item)
     {
         return match claripy_to_rustbv(py, item, ctx) {
             // A constraint with a RustBV form is recorded in the assumed IR
@@ -301,11 +242,10 @@ pub(crate) fn import_one_constraint(
         }
         Err(e) => {
             // Rescue an op `claripy_to_rustbv` does not model (FP, etc) by
-            // asserting claripy's own AST, keeping the round-trip lossless.
+            // asserting the lowered clarirs AST, keeping the round-trip
+            // lossless.
             #[cfg(feature = "vex-engine-z3")]
-            if let Some(backend) = z3_backend
-                && let Some(z3_ast) = claripy_z3_ptr(backend, item)
-            {
+            if let Some(z3_ast) = claripy_z3_ptr(item) {
                 ctx.add_constraint_raw(z3_ast);
                 return ConstraintImport::RawOnly(e);
             }
@@ -366,17 +306,9 @@ pub(crate) fn import_python_constraints(
 ) -> ConstraintImportSummary {
     use pyo3::types::PyListMethods;
 
-    let z3_backend = resolve_claripy_z3_backend(py);
-
     let mut summary = ConstraintImportSummary::default();
     for item in constraints.iter() {
-        match import_one_constraint(
-            py,
-            ctx,
-            &item,
-            z3_backend.as_ref(),
-            ConstraintTier::Z3PtrFirst,
-        ) {
+        match import_one_constraint(py, ctx, &item, ConstraintTier::Z3PtrFirst) {
             ConstraintImport::Assumed | ConstraintImport::RawOnly(_) => summary.added += 1,
             ConstraintImport::Failed(e) => {
                 // SILENT(cat-c): neither tier converted this constraint, so it

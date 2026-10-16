@@ -22,7 +22,7 @@
 //! Only `call_inspect_constraints` touches claripy, and only on the *wired*
 //! path. The cargo-test interpreter has no claripy installed, so the two tests
 //! for invariant 5 hand `fire_constraints_bp` a stand-in module object
-//! (`CLARIPY_STUBS`) instead of going through the `py.import("claripy")` in
+//! (`CLARIPY_STUBS`) instead of going through the `py.import("angr.rustylib.claripy")` in
 //! `call_inspect_constraints`; nothing here needs the real package.
 
 use super::*;

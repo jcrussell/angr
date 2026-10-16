@@ -614,39 +614,6 @@ def _unsupported_inspect_events(state) -> list[str]:
     return sorted(event for event, bps in breakpoints.items() if bps and event not in _RUST_INSPECT_SUPPORTED_EVENTS)
 
 
-# Z3 context sharing: make Rust and Python use the same Z3 context
-# to avoid AST translation overhead between solvers.
-_z3_context_shared = False
-
-
-def _setup_shared_z3_context():
-    """Share Python's Z3 context with Rust, so both create ASTs in the same context."""
-    global _z3_context_shared
-    if _z3_context_shared:
-        return
-    try:
-        import atexit
-
-        import z3
-
-        from angr.rustylib.vex_engine import reset_shared_z3_context, set_shared_z3_context
-
-        py_ctx = z3.main_ctx()
-        set_shared_z3_context(py_ctx.ctx.value)
-        _z3_context_shared = True
-        l.debug("Shared Z3 context with Rust (ptr=%#x)", py_ctx.ctx.value)
-
-        # Register cleanup to run BEFORE Python's Z3 context is freed.
-        # Without this, Rust's Solver objects may reference a freed Z3 context
-        # at process exit, causing a segfault.
-        atexit.register(reset_shared_z3_context)
-    except (ImportError, AttributeError, Exception) as e:
-        # cat-(b) FALLBACK WITH LOSS: shared Z3 context unavailable; AST
-        # round-tripping pays a translation hop on each Rust<->Python move.
-        # Already debug-logs the cause.
-        l.debug("Z3 context sharing not available: %s", e)
-
-
 _z3_deterministic_applied = False
 
 
@@ -1446,7 +1413,6 @@ class RustExplorationManager(
     ):
         """Phase 1 (boot): construct the Rust manager and apply basic config."""
         # Ensure Z3 context is shared (one-time setup)
-        _setup_shared_z3_context()
         _apply_rust_log_env()
 
         # angr-iaol.2: pin Z3 module-level random seeds BEFORE the first
@@ -1798,17 +1764,6 @@ class RustExplorationManager(
         # 500 and the cache tracked O(active_states), making it the dominant
         # driver of Python-side memory growth.
         self._max_state_cache_size = 8
-
-        # Cache claripy AST -> Z3 AST pointer for register sync.
-        # Skips redundant z3_backend.convert(reg_val) + .as_ast().value lookups
-        # when the same symbolic register is re-imported across SimProcedure
-        # callbacks. Holds a strong ref to the z3 object so the AST pointer
-        # stays valid (Z3 ASTs are refcounted; the shared context outlives the
-        # manager). Bounded size with simple drop-and-rebuild eviction.
-        self._z3_ptr_cache: dict[tuple, tuple] = {}
-        self._z3_ptr_cache_max = 1024
-        self._z3_ptr_cache_hits = 0
-        self._z3_ptr_cache_misses = 0
 
         # Track current callback state for memory access during callbacks
         # This allows memory_load callback to access the correct symbolic state
@@ -2784,7 +2739,7 @@ class RustExplorationManager(
             return None  # non-UltraPage backend — caller uses the slow path
         if getattr(page_obj, "symbolic_data", None):
             return (bytes(4096), 0, False)
-        if not zero_fill and (symbolic_bitmap is None or any(symbolic_bitmap)):
+        if not zero_fill and (symbolic_bitmap is None or symbolic_bitmap.any_set(0, symbolic_bitmap.size)):
             # Uninitialized bytes on the page would default-fill symbolic.
             return (bytes(4096), 0, False)
         return (bytes(concrete_data), 7, True)
@@ -6212,8 +6167,6 @@ class RustExplorationManager(
         result["hook_sync_calls"] = self._stats_hook_sync_calls
         result["hook_sync_skips"] = self._stats_hook_sync_skips
         result["time_in_callbacks"] = self._stats_time_in_callbacks_ns / 1e9  # seconds
-        result["z3_ptr_cache_hits"] = self._z3_ptr_cache_hits
-        result["z3_ptr_cache_misses"] = self._z3_ptr_cache_misses
         # angr-xtse.1: surface PerformanceTracker callback counts/times so
         # run_single.py --counters-json picks them up alongside the Rust-side
         # counters. Keys are kept verbatim ("callback_<kind>_count",

@@ -129,30 +129,6 @@ class RustStateSyncMixin:
             if _DBG:
                 l.debug(f"Synced {len(procs)} dynamically created hooks")
 
-    def _cached_z3_ast_ptr(self, expr, z3_backend):
-        """Return the Z3 AST pointer for a symbolic claripy expression.
-
-        Caches `(hash(expr), expr.length) -> (z3_obj, ast_ptr)` so repeated
-        register sync of the same symbolic AST skips both `z3_backend.convert`
-        and the `.as_ast().value` attribute walk. Holds a strong ref to the
-        Z3 wrapper to keep the AST pointer valid (Z3 ASTs are refcounted in
-        the shared context; without our ref, claripy may be the only holder
-        and could drop it under memory pressure).
-        """
-        cache = self._z3_ptr_cache
-        key = (hash(expr), expr.length)
-        cached = cache.get(key)
-        if cached is not None:
-            self._z3_ptr_cache_hits += 1
-            return cached[1]
-        z3_obj = z3_backend.convert(expr)
-        ast_ptr = z3_obj.as_ast().value
-        if len(cache) >= self._z3_ptr_cache_max:
-            cache.clear()
-        cache[key] = (z3_obj, ast_ptr)
-        self._z3_ptr_cache_misses += 1
-        return ast_ptr
-
     @staticmethod
     def _supported_register_names(arch) -> list:
         """Registers that the Rust engine models for `arch`.
@@ -200,10 +176,6 @@ class RustStateSyncMixin:
         regs = angr_state.regs
 
         # Build dict of all register values, then send in single FFI call.
-        # Symbolic registers are imported via Z3 AST pointers (shared context).
-        from angr import claripy as _claripy
-
-        z3_backend = _claripy.backends.z3
         bulk_regs = {}
         for reg_name in reg_names:
             try:
@@ -213,8 +185,8 @@ class RustStateSyncMixin:
                 elif not reg_val.symbolic:
                     bulk_regs[reg_name] = angr_state.solver.eval(reg_val)
                 else:
-                    # Import symbolic register via shared Z3 context.
-                    # If conversion fails, the register is missing on the Rust
+                    # Import the symbolic register as a claripy AST. If
+                    # conversion fails, the register is missing on the Rust
                     # side and any read will see an uninitialized BVS — wrong
                     # value, not a crash. Log loudly.
                     try:
@@ -222,17 +194,8 @@ class RustStateSyncMixin:
                         # through claripy_to_rustbv so leaf symbols (e.g. the
                         # ecx in `state.regs.ecx = BVS('ecx')`) intern into the
                         # shared symbol cache and round-trip back to the user's
-                        # symbol on export. The raw-Z3-ptr path
-                        # (set_register_symbolic) wraps the whole register as an
-                        # opaque id:0 symbol and mints a fresh rcx_N on the way
-                        # out — see angr-4ju9e. Fall back to the ptr path if the
-                        # AST-based method is unavailable (older .so).
-                        if hasattr(rust_state, "set_register_symbolic_ast"):
-                            rust_state.set_register_symbolic_ast(reg_name, reg_val)
-                        else:
-                            ast_ptr = self._cached_z3_ast_ptr(reg_val, z3_backend)
-                            if ast_ptr:
-                                rust_state.set_register_symbolic(reg_name, ast_ptr, reg_val.length)
+                        # symbol on export.
+                        rust_state.set_register_symbolic_ast(reg_name, reg_val)
                     except Exception as e:
                         # cat-(c) WRONG-ANSWER RISK: symbolic register not
                         # synced; Rust will see stale/uninit BVS for this
@@ -1799,10 +1762,10 @@ class RustStateSyncMixin:
         if not (hasattr(page, "all_bytes_changed_in_history") and hasattr(page, "symbolic_bitmap")):
             return False
         sb = page.symbolic_bitmap
-        # symbolic_bitmap entries are 0 (concrete) or 1 (symbolic). A C-level
-        # `1 in sb` scan beats walking every changed byte when nothing is
-        # symbolic — common for entry_state pages with concrete loader writes.
-        if sb is None or 1 not in sb:
+        # A whole-page bitmap scan beats walking every changed byte when
+        # nothing is symbolic — common for entry_state pages with concrete
+        # loader writes.
+        if sb is None or not sb.any_set(0, sb.size):
             return True
         try:
             changed = page.all_bytes_changed_in_history()
@@ -1814,7 +1777,7 @@ class RustStateSyncMixin:
                 if start is None or end is None:
                     continue
                 for offset in range(start, end):
-                    if offset < len(sb) and sb[offset]:
+                    if offset < sb.size and sb.get(offset):
                         addr = page_addr + offset
                         val = self._load_symbolic_byte(state, addr)
                         if val is not None:
@@ -2005,7 +1968,7 @@ class RustStateSyncMixin:
             not isinstance(concrete_data, bytearray)
             or len(concrete_data) != PAGE_SIZE
             or symbolic_bitmap is None
-            or len(symbolic_bitmap) != PAGE_SIZE
+            or symbolic_bitmap.size != PAGE_SIZE
         ):
             return None
         return page
@@ -2056,7 +2019,7 @@ class RustStateSyncMixin:
                 pages[pageno] = page
             masked = val & ((1 << (size * 8)) - 1)
             page.concrete_data[sub : sub + size] = masked.to_bytes(size, byteorder)
-            page.symbolic_bitmap[sub : sub + size] = b"\0" * size
+            page.symbolic_bitmap.clear_range(sub, sub + size)
         return symbolic
 
     @staticmethod
@@ -2092,14 +2055,14 @@ class RustStateSyncMixin:
                     p = get_page(pageno, False)  # read-only, no copy-on-write
                     cd = getattr(p, "concrete_data", None)
                     bm = getattr(p, "symbolic_bitmap", None)
-                    if isinstance(cd, bytearray) and len(cd) == PAGE_SIZE and bm is not None and len(bm) == PAGE_SIZE:
+                    if isinstance(cd, bytearray) and len(cd) == PAGE_SIZE and bm is not None and bm.size == PAGE_SIZE:
                         page = p
                 except Exception:
                     page = None
             reg_pages[pageno] = page
         if page is None:
             return None
-        if any(page.symbolic_bitmap[sub : sub + size]):
+        if page.symbolic_bitmap.any_set(sub, sub + size):
             return ("symbolic", None)
         byteorder = "little" if state.arch.register_endness == "Iend_LE" else "big"
         return ("concrete", int.from_bytes(page.concrete_data[sub : sub + size], byteorder))
@@ -2121,7 +2084,7 @@ class RustStateSyncMixin:
         left alone (loads consult the bitmap).
         """
         page.concrete_data[0:PAGE_SIZE] = page_bytes
-        page.symbolic_bitmap[0:PAGE_SIZE] = b"\0" * PAGE_SIZE
+        page.symbolic_bitmap.clear_range(0, PAGE_SIZE)
 
     @staticmethod
     def _blit_symbolic_page(page, page_addr: int, sym_entries, endness) -> bool:
@@ -2158,7 +2121,7 @@ class RustStateSyncMixin:
         bitmap = page.symbolic_bitmap
         symbolic_data = {}
         for offset, size, mo in decomposed:
-            bitmap[offset : offset + size] = b"\1" * size
+            bitmap.set_range(offset, offset + size)
             symbolic_data[offset] = mo
         page.symbolic_data = SortedDict(symbolic_data)
         return True

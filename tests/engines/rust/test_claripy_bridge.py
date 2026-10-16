@@ -30,12 +30,6 @@ pytestmark = pytest.mark.skipif(
 class TestClaripyBridgeImport:
     """import.rs coverage: reverse_bytes (symbolic) and the BoolS arm."""
 
-    @classmethod
-    def setup_class(cls):
-        from angr.exploration.rust_manager import _setup_shared_z3_context
-
-        _setup_shared_z3_context()
-
     def test_reverse_symbolic_leaf_byte_reverses(self):
         """Reverse(x) over a symbolic leaf hits reverse_bytes' symbolic branch
         (extract-and-concat) and, pinned to a concrete value, evaluates to the
@@ -162,12 +156,6 @@ class TestClaripyBridgeWidthBounds:
 
     # Mirrors symbolic/width_guards.rs::MAX_BV_WIDTH.
     MAX_BV_WIDTH = 1 << 20
-
-    @classmethod
-    def setup_class(cls):
-        from angr.exploration.rust_manager import _setup_shared_z3_context
-
-        _setup_shared_z3_context()
 
     def _ctx(self):
         from angr.rustylib.vex_engine import RustSolverContext

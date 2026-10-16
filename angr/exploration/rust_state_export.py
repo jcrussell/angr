@@ -1247,43 +1247,19 @@ class RustStateExportMixin:
         self._sync_rust_symbolic_objects_to_state(state, state_id)
 
     def _sync_rust_symbolic_objects_to_state(self, state: angr.SimState, state_id: int):
-        """Export Rust-computed symbolic expressions as claripy ASTs into Python memory.
-
-        Uses the shared Z3 context: Rust builds Z3 ASTs in Python's Z3 context,
-        so we can directly wrap the raw Z3_ast pointers as z3.BitVecRef objects
-        and convert them to claripy ASTs via claripy.backends.z3._abstract().
-        """
+        """Export Rust-computed symbolic expressions as claripy ASTs into Python memory."""
         try:
-            sym_asts = self._rust_mgr.get_state_symbolic_z3_asts(state_id)
+            sym_asts = self._rust_mgr.get_state_symbolic_asts(state_id)
         except Exception as e:
             # cat-(c) WRONG-ANSWER RISK: Rust-computed symbolic objects
             # are not exported to Python memory. state.memory.load() of
             # those addresses will see concrete bytes (or template BVS),
             # not the symbolic expression Rust computed.
-            l.warning("get_state_symbolic_z3_asts(%d) failed: %s — Rust-side symbolic memory not synced", state_id, e)
+            l.warning("get_state_symbolic_asts(%d) failed: %s — Rust-side symbolic memory not synced", state_id, e)
             return
 
-        if not sym_asts:
-            return
-
-        import ctypes
-
-        import z3 as z3mod
-
-        z3_backend = claripy.backends.z3
-        z3_ctx = z3_backend._context  # The shared Z3 context
-
-        for addr, z3_ast_ptr, width_bits in sym_asts:
+        for addr, claripy_ast, _width_bits in sym_asts:
             try:
-                # Wrap raw Z3_ast pointer as z3.BitVecRef
-                ast_wrapper = ctypes.c_void_p(z3_ast_ptr)
-                ast_wrapper.__class__ = z3mod.z3types.Ast
-                ast_wrapper._as_parameter_ = z3_ast_ptr
-                z3_bv = z3mod.BitVecRef(ast_wrapper, z3_ctx)
-
-                # Convert to claripy AST
-                claripy_ast = z3_backend._abstract(z3_bv)
-
                 # Store using the architecture's endianness to match VEX IR
                 # store operations (STle for x86-64, etc.)
                 state.memory.store(
@@ -1294,8 +1270,7 @@ class RustStateExportMixin:
                     disable_actions=True,
                 )
             except Exception as e:
-                # cat-(b) FALLBACK WITH LOSS: per-AST sync failed (e.g.
-                # ctypes binding incompatible with this z3 version). The
+                # cat-(b) FALLBACK WITH LOSS: per-AST store failed. The
                 # other ASTs on this state still get synced, but this one
                 # is missing — Python sees concrete bytes for the address.
                 l.debug("Failed to sync symbolic object at 0x%x: %s", addr, e)

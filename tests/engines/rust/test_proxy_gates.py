@@ -1607,17 +1607,6 @@ class TestProxyWriteThrough:
     proxy and via the underlying RustSimState.
     """
 
-    @classmethod
-    def setup_class(cls):
-        """Initialize the shared Z3 context so symbolic-AST writes round-trip
-        through the shared cache. Required for the symbolic-write tests below;
-        a concrete-only test would not need this, but we want one setup site
-        for both halves of the class.
-        """
-        from angr.exploration.rust_manager import _setup_shared_z3_context
-
-        _setup_shared_z3_context()
-
     def test_register_write_concrete_int(self, fauxware_project):
         """proxy.regs.<name> = <int> writes through to Rust and re-reads
         return the BVV-wrapped value."""

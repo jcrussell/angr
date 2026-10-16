@@ -34,13 +34,6 @@ pytestmark = pytest.mark.skipif(
 class TestSolverOperations:
     """Tests for solver constraint operations."""
 
-    @classmethod
-    def setup_class(cls):
-        """Ensure the shared Z3 context is initialized for solver tests."""
-        from angr.exploration.rust_manager import _setup_shared_z3_context
-
-        _setup_shared_z3_context()
-
     def test_solver_min_max(self):
         """min() and max() return correct bounds."""
         from angr.rustylib.vex_engine import RustSolverContext

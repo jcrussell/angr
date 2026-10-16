@@ -2518,20 +2518,6 @@ class TestRegisterProxySymbolicRecovery:
     used for both constraint construction and evaluation.
     """
 
-    @classmethod
-    def setup_class(cls):
-        """Initialize the Python/Rust shared Z3 context so claripy's z3
-        backend and Rust's z3-rs binding hash-cons against the same Z3
-        instance. Without this, an AST pointer obtained on the Python side
-        will not match the ``z3::ast::BV::new_const`` that Rust creates on
-        ``claripy_to_rustbv``, and constraints added in the proxy.solver fork
-        end up over a phantom symbol — exactly the failure mode angr-4pm1 is
-        meant to fix.
-        """
-        from angr.exploration.rust_manager import _setup_shared_z3_context
-
-        _setup_shared_z3_context()
-
     @staticmethod
     def _setup_symbolic_rax(mgr):
         """Build a state with RAX bound to a fresh symbolic claripy AST,

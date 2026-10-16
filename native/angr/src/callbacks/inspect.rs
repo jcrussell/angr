@@ -439,7 +439,7 @@ inspect_dispatch! {
         is_true: bool,
     ) -> PyResult<()> {
         self.with_slot((), |py, cb| {
-            let claripy = py.import("claripy")?;
+            let claripy = crate::claripy_bridge::claripy_module(py)?;
             Self::fire_constraints_bp(py, cb, claripy.as_any(), state_id, when, guard, is_true)
         })
     }

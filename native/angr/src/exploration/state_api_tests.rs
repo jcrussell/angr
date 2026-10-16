@@ -94,24 +94,24 @@ fn export_found_states_flushes_multi_cells() {
     );
 }
 
-/// Regression (angr-sqfj8.52): `_get_state_symbolic_z3_asts` iterated
+/// Regression (angr-sqfj8.52): `_state_symbolic_objects` iterated
 /// `symbolic_objects_iter()` directly without flushing first, so a
-/// Multi-covered byte was silently absent from the exported Z3-AST list —
+/// Multi-covered byte was silently absent from the exported list —
 /// the same shape as the two Multi-flush regressions above.
 #[cfg(feature = "vex-engine-z3")]
 #[test]
-fn get_state_symbolic_z3_asts_flushes_multi_cells() {
+fn state_symbolic_objects_flushes_multi_cells() {
     let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
     let state = state_with_multi_cell_store(0xCAFE_BABE);
     let state_id = state.state_id();
     mgr.sm.push(STASH_FOUND, state);
 
-    let asts = mgr
-        ._get_state_symbolic_z3_asts(state_id)
+    let objects = mgr
+        ._state_symbolic_objects(state_id)
         .expect("state found");
     assert!(
-        asts.iter().any(|&(addr, _, _)| addr == 0x1000),
-        "unflushed export dropped the Multi-cell byte at 0x1000: {asts:?}"
+        objects.iter().any(|(addr, _)| *addr == 0x1000),
+        "unflushed export dropped the Multi-cell byte at 0x1000: {objects:?}"
     );
 }
 
@@ -405,6 +405,32 @@ fn add_constraints_to_state_checked_still_reports_a_proven_unsat() {
             !mgr.add_constraints_to_state(py, state_id, &empty)
                 .expect("state found"),
         );
+    });
+}
+
+/// A BV-sorted pointer is rejected as the wrong sort kind rather than asserted
+/// as a Bool, which would corrupt the solver (angr-33t9). Driven from Rust
+/// because Python has no way left to obtain a non-Bool Z3 pointer.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn import_z3_constraint_ptrs_rejects_bv_sorted_pointer() {
+    use z3::ast::Ast;
+
+    Python::initialize();
+    Python::attach(|py| {
+        let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+        let state = RustSimState::new("amd64").expect("amd64 state");
+        let state_id = state.state_id();
+        mgr.sm.push(STASH_FOUND, state);
+
+        // Held for the whole call so the pointer stays live.
+        let bv = z3::ast::BV::new_const("import_ptrs_bv_y", 64);
+        let ptr = bv.get_z3_ast().as_ptr() as usize;
+        let err = mgr
+            ._import_z3_constraint_ptrs(state_id, vec![ptr])
+            .expect_err("a BV-sorted pointer must be rejected");
+        assert!(err.is_instance_of::<pyo3::exceptions::PyValueError>(py), "{err}");
+        assert!(err.to_string().contains("expected Bool"), "{err}");
     });
 }
 
@@ -757,10 +783,10 @@ fn exported_addrs(build: impl FnOnce(&mut RustSimState)) -> Vec<u64> {
     build(&mut state);
     let state_id = state.state_id();
     mgr.sm.push(STASH_FOUND, state);
-    mgr._get_state_symbolic_z3_asts(state_id)
+    mgr._state_symbolic_objects(state_id)
         .expect("state found")
         .iter()
-        .map(|&(addr, _, _)| addr)
+        .map(|(addr, _)| *addr)
         .collect()
 }
 
@@ -771,7 +797,7 @@ fn sym(state: &RustSimState, name: &str, bits: u32) -> RustBV {
 }
 
 /// A program-computed value: an Expression (`sym + 1`), which is what guest
-/// stores produce and the only kind `_get_state_symbolic_z3_asts` exports.
+/// stores produce and the only kind `_state_symbolic_objects` exports.
 #[cfg(feature = "vex-engine-z3")]
 fn expr(state: &RustSimState, name: &str, bits: u32) -> RustBV {
     let ctx = state.solver().borrow();
@@ -858,10 +884,10 @@ fn exported_objects(build: impl FnOnce(&mut RustSimState)) -> Vec<(u64, u32)> {
     build(&mut state);
     let state_id = state.state_id();
     mgr.sm.push(STASH_FOUND, state);
-    mgr._get_state_symbolic_z3_asts(state_id)
+    mgr._state_symbolic_objects(state_id)
         .expect("state found")
         .iter()
-        .map(|&(addr, _, width)| (addr, width))
+        .map(|(addr, bv)| (*addr, bv.width()))
         .collect()
 }
 

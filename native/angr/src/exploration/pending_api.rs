@@ -123,7 +123,7 @@ impl RustExplorationManager {
                     ))
                 })?;
 
-            let claripy = py.import("claripy")?;
+            let claripy = crate::claripy_bridge::claripy_module(py)?;
             rustbv_to_claripy(py, condition, claripy.as_any())
                 .map_err(|e| ast_export_err(&format!("condition {condition_id}"), e))
         })
@@ -165,7 +165,7 @@ impl RustExplorationManager {
                 .state
                 .get_register(name)
                 .ok_or_else(|| PyValueError::new_err(format!("unknown register: {name}")))?;
-            let claripy = py.import("claripy")?;
+            let claripy = crate::claripy_bridge::claripy_module(py)?;
             rustbv_to_claripy(py, &bv, claripy.as_any())
                 .map_err(|e| PyRuntimeError::new_err(format!("register conversion: {e}")))
         })
@@ -427,7 +427,7 @@ impl RustExplorationManager {
         self.with_pending(state_id, |pending| {
             let mut result = Vec::new();
 
-            let claripy_mod = py.import("claripy")?;
+            let claripy_mod = crate::claripy_bridge::claripy_module(py)?;
 
             // Sorted by condition id, not `.values()`: hash-bucket order would
             // otherwise leak into an externally-observable Python sequence.
@@ -692,7 +692,7 @@ impl RustExplorationManager {
     ) -> PyResult<Vec<(u64, Py<PyAny>)>> {
         self.with_pending_mut(state_id, |pending| {
             pending.state.flush_memory();
-            let claripy_mod = py.import("claripy")?;
+            let claripy_mod = crate::claripy_bridge::claripy_module(py)?;
             let target_page = crate::memory::Address::new(page_addr).page_num();
             let mut out = Vec::new();
             for (addr, bv) in pending.state.memory().symbolic_objects_iter() {

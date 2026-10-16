@@ -201,29 +201,32 @@ fn test_new_context_is_not_shared_and_mints_unique_names() {
     assert!(b.starts_with("solver_uniq"), "{b}");
 }
 
-// =============================================================================
-// claripy-AST constraint API (angr-sqfj8.125) — deliberately NOT covered here
-//
-// `add_constraint_ast` / `add_constraints` / `add_constraint_tracked_ast` and
-// the `z3_ast_extract.rs` helpers that feed them stay covered by the Python suite
-// (`tests/engines/rust/test_solver_ops.py`, which already carries the
-// angr-sqfj8.121 double-listing regression) rather than by cargo tests. Two
-// environment facts block an in-crate version, both established while writing
-// this file:
-//
-//  1. Reaching those paths means adopting Python's `Z3_context` as this
-//     thread's Rust thread-local (`engine::install_python_z3_context`).
-//     A `Z3_context` is not thread-safe and libtest runs tests on parallel
-//     threads, so a second adopter touching it concurrently SIGSEGVs the whole
-//     test binary — not something a gate can carry.
-//  2. Even pinned to `--test-threads=1`, the resulting behaviour is
-//     order-dependent: a core read back via `unsat_core_assumed` came out
-//     non-empty or empty for the *same* fixed code depending on which tests
-//     had already run in the process. Under the real extension module (where
-//     `_setup_shared_z3_context` runs once at manager construction) that
-//     ambiguity does not exist, which is exactly why the Python suite is the
-//     right home for this coverage.
-//
-// Everything above this banner is deliberately Python-free, so it runs in the
-// `cargo test` gate.
-// =============================================================================
+// claripy-AST constraint API. The ASTs are built as this binary's own claripy
+// objects (`claripy_object`), so `add_constraint_ast` takes the lowered-Z3
+// fast path exactly as it does under the extension module.
+
+/// An FP constraint has no `RustBV` form, so `add_constraint_ast` can only
+/// honor it through the Z3 lowering; the second constraint proves it landed.
+#[cfg(feature = "vex-engine-z3")]
+#[test]
+fn test_add_constraint_ast_lowers_fp_constraint() {
+    use clarirs_core::prelude::*;
+
+    use crate::claripy::ast::GLOBAL_CONTEXT;
+    use crate::claripy_bridge::claripy_object;
+
+    Python::initialize();
+    Python::attach(|py| {
+        let ctx = RustSolverContext::new();
+        let f = GLOBAL_CONTEXT.fps("solver_fp_f", FSort::f64()).expect("FPS");
+        let one = GLOBAL_CONTEXT.fpv(1.0f64).expect("FPV 1");
+        let zero = GLOBAL_CONTEXT.fpv(0.0f64).expect("FPV 0");
+        let gt = claripy_object(py, GLOBAL_CONTEXT.fp_gt(f.clone(), one).expect("f > 1.0"));
+        let lt = claripy_object(py, GLOBAL_CONTEXT.fp_lt(f, zero).expect("f < 0.0"));
+
+        ctx.add_constraint_ast(py, &gt).expect("add f > 1.0");
+        assert!(ctx.satisfiable(), "f > 1.0 alone is satisfiable");
+        ctx.add_constraint_ast(py, &lt).expect("add f < 0.0");
+        assert!(!ctx.satisfiable(), "f > 1.0 && f < 0.0 is UNSAT");
+    });
+}

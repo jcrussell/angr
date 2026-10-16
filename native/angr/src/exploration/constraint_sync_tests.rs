@@ -41,7 +41,7 @@ fn constraint_list<'py>(
 fn sync_constraints_typed_convert_binds_constraint() {
     Python::initialize();
     Python::attach(|py| {
-        let Ok(claripy) = py.import("claripy") else {
+        let Ok(claripy) = py.import("angr.rustylib.claripy") else {
             return; // claripy not importable in this env — skip
         };
         let mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
@@ -77,7 +77,7 @@ fn sync_constraints_typed_convert_binds_constraint() {
 fn sync_constraints_unsat_returns_false_for_pruning() {
     Python::initialize();
     Python::attach(|py| {
-        let Ok(claripy) = py.import("claripy") else {
+        let Ok(claripy) = py.import("angr.rustylib.claripy") else {
             return;
         };
         let mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
@@ -100,52 +100,27 @@ fn sync_constraints_unsat_returns_false_for_pruning() {
 
 /// Tier 2 (Z3-pointer rescue): an FP comparison has no arm in
 /// `claripy_to_rustbv` (`import.rs` models no `fp*` op), so it takes the
-/// `claripy.backends.z3` pointer path. The rescue must be lossless, which the
-/// second sync proves: if the first constraint had merely been counted and
-/// dropped, `f < 0.0` would still be SAT.
-///
-/// `#[ignore]` — unlike its siblings this test must install claripy's
-/// `Z3_context` as the Rust thread-local (`install_python_z3_context`), which
-/// is the one piece of *process*-global state the shared-Z3 design has. libtest
-/// runs each test on its own thread, so under the default multi-threaded runner
-/// this test's context install races the Rust-owned contexts its sibling tests
-/// stand up, and the rescued assertion intermittently lands somewhere the
-/// state's own solver never sees (observed: ~1 run in 3 with
-/// `sync_constraints_typed_convert_binds_constraint` scheduled alongside it).
-/// That is a property of the test harness, not of the code under test —
-/// production installs the shared context once, before any `SymContext` exists
-/// (`rust_manager._setup_shared_z3_context`). Run it explicitly — the
-/// `Z3_LIBRARY_PATH_OVERRIDE` is not optional (angr-exwth; see the recipe on
-/// `constraints_tests.rs`'s
-/// `import_fast_path_asserts_and_records_convertible_constraint` for why):
-///
-/// ```text
-/// Z3_LIBRARY_PATH_OVERRIDE=$VIRTUAL_ENV/lib/python3.12/site-packages/z3/lib \
-///   cargo test --release sync_constraints_fp -- --ignored --test-threads=1
-/// ```
+/// lowered-Z3 path (`claripy_bridge::z3_lower`). The rescue must be lossless,
+/// which the second sync proves: if the first constraint had merely been
+/// counted and dropped, `f < 0.0` would still be SAT.
 #[cfg(feature = "vex-engine-z3")]
 #[test]
-#[ignore = "installs claripy's Z3 context process-wide; needs --test-threads=1"]
 fn sync_constraints_fp_rescued_via_z3_pointer() {
+    use clarirs_core::prelude::*;
+
+    use crate::claripy::ast::GLOBAL_CONTEXT;
+    use crate::claripy_bridge::claripy_object;
+
     Python::initialize();
     Python::attach(|py| {
-        if !crate::engine::install_python_z3_context(py) {
-            return;
-        }
-        let Ok(claripy) = py.import("claripy") else {
-            return;
-        };
         let mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
         let state = RustSimState::new("amd64").expect("state");
 
-        let sort = claripy.getattr("FSORT_DOUBLE").expect("FSORT_DOUBLE");
-        let f = claripy
-            .call_method1("FPS", ("sync_fp_f", &sort))
-            .expect("FPS");
-        let one = claripy.call_method1("FPV", (1.0f64, &sort)).expect("FPV 1");
-        let zero = claripy.call_method1("FPV", (0.0f64, &sort)).expect("FPV 0");
+        let f = GLOBAL_CONTEXT.fps("sync_fp_f", FSort::f64()).expect("FPS");
+        let one = GLOBAL_CONTEXT.fpv(1.0f64).expect("FPV 1");
+        let zero = GLOBAL_CONTEXT.fpv(0.0f64).expect("FPV 0");
 
-        let gt = f.call_method1("__gt__", (&one,)).expect("f > 1.0");
+        let gt = claripy_object(py, GLOBAL_CONTEXT.fp_gt(f.clone(), one).expect("f > 1.0"));
         // Precondition for the test to mean anything: the typed tier must
         // genuinely decline this op, otherwise tier 2 is never reached.
         {
@@ -164,7 +139,7 @@ fn sync_constraints_fp_rescued_via_z3_pointer() {
             "f > 1.0 alone is satisfiable"
         );
 
-        let lt = f.call_method1("__lt__", (&zero,)).expect("f < 0.0");
+        let lt = claripy_object(py, GLOBAL_CONTEXT.fp_lt(f, zero).expect("f < 0.0"));
         let list2 = constraint_list(py, &[lt]);
         assert!(
             !mgr.sync_constraints_from_python(py, &state, &list2)
@@ -182,14 +157,14 @@ fn sync_constraints_fp_rescued_via_z3_pointer() {
 fn sync_constraints_unconvertible_item_does_not_abort_siblings() {
     Python::initialize();
     Python::attach(|py| {
-        let Ok(claripy) = py.import("claripy") else {
+        let Ok(claripy) = py.import("angr.rustylib.claripy") else {
             return;
         };
         let mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
         let state = RustSimState::new("amd64").expect("state");
 
         // A bare `object()` is not a claripy AST, so the typed tier errors and
-        // `claripy.backends.z3.convert` raises — both tiers decline.
+        // the Z3 lowering refuses it — both tiers decline.
         let junk = py
             .import("builtins")
             .expect("builtins")
@@ -234,7 +209,7 @@ fn sync_constraints_unconvertible_item_does_not_abort_siblings() {
 fn sync_constraints_partial_failure_unsat_is_pruned() {
     Python::initialize();
     Python::attach(|py| {
-        let Ok(claripy) = py.import("claripy") else {
+        let Ok(claripy) = py.import("angr.rustylib.claripy") else {
             return;
         };
         let mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");

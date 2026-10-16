@@ -125,7 +125,7 @@ fn compare_dunder_rejects_not_implemented_and_none() {
 
     pyo3::Python::initialize();
     Python::attach(|py| {
-        let Ok(claripy) = py.import("claripy") else {
+        let Ok(claripy) = py.import("angr.rustylib.claripy") else {
             return; // claripy not importable in this env -- skip
         };
         // Two stand-ins, one per non-AST return value the guard must catch.

@@ -48,7 +48,7 @@ fn concrete_multi_addr_store_prefers_full_callback() {
     Python::initialize();
     Python::attach(|py| {
         // rustbv_to_claripy imports claripy; skip when it is not importable.
-        if py.import("claripy").is_err() {
+        if py.import("angr.rustylib.claripy").is_err() {
             return;
         }
 

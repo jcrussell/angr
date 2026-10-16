@@ -54,9 +54,7 @@ impl RustExplorationManager {
     ) -> PyResult<bool> {
         use pyo3::types::PyListMethods;
 
-        use super::constraints::{
-            ConstraintImport, ConstraintTier, import_one_constraint, resolve_claripy_z3_backend,
-        };
+        use super::constraints::{ConstraintImport, ConstraintTier, import_one_constraint};
 
         let solver_ref = state.solver();
         let sym_ctx = solver_ref.borrow();
@@ -65,9 +63,6 @@ impl RustExplorationManager {
         let mut success_count = 0usize;
         let mut z3_ptr_fallback_count = 0usize;
         let mut failed_count = 0usize;
-
-        // Resolved once for the whole list, not per constraint.
-        let z3_backend = resolve_claripy_z3_backend(py);
 
         // Extract list items - we need to convert each to RustBV
         let len = constraints.len();
@@ -89,13 +84,7 @@ impl RustExplorationManager {
                 }
             };
 
-            match import_one_constraint(
-                py,
-                ctx_ref,
-                &constraint,
-                z3_backend.as_ref(),
-                ConstraintTier::RustBvFirst,
-            ) {
+            match import_one_constraint(py, ctx_ref, &constraint, ConstraintTier::RustBvFirst) {
                 ConstraintImport::Assumed => success_count += 1,
                 ConstraintImport::RawOnly(e) => {
                     z3_ptr_fallback_count += 1;

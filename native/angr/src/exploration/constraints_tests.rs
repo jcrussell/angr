@@ -319,43 +319,21 @@ fn import_constraints_and_recheck_reports_sat_for_a_clean_import() {
 /// `claripy_to_rustbv` also succeeds for it (angr-op0dn.14.2 — otherwise the
 /// constraint would be exported as an opaque residual).
 ///
-/// `#[ignore]` for the same reason as `constraint_sync_tests.rs`'s
-/// `sync_constraints_fp_rescued_via_z3_pointer`: reaching the raw-pointer path
-/// means claripy's `Z3_context` has to be the Rust thread-local one, and
-/// `install_python_z3_context` is process-global while libtest runs each test
-/// on its own thread. Production installs it once before any `SymContext`
-/// exists (`rust_manager._setup_shared_z3_context`). Run explicitly — and note
-/// the `Z3_LIBRARY_PATH_OVERRIDE`, which is not optional (angr-exwth):
-///
-/// ```text
-/// Z3_LIBRARY_PATH_OVERRIDE=$VIRTUAL_ENV/lib/python3.12/site-packages/z3/lib \
-///   cargo test --release import_fast_path -- --ignored --test-threads=1
-/// ```
-///
-/// Without it, `build.rs`'s `find_z3_lib_dir` falls back to the *system* libz3
-/// whenever the venv is not on the `PATH` cargo inherited (and its result is
-/// cached until `Z3_LIBRARY_PATH_OVERRIDE`/`PYVEX_FFI_LIB_DIR` change, so a
-/// later `cargo test` from an activated venv reuses it). The embedded
-/// interpreter still imports the venv's libz3, and handing claripy's
-/// `Z3_context` to a second, differently-versioned library segfaults;
-/// `install_python_z3_context` now asserts against that up front.
 #[cfg(feature = "vex-engine-z3")]
 #[test]
-#[ignore = "installs claripy's Z3 context process-wide; needs --test-threads=1"]
 fn import_fast_path_asserts_and_records_convertible_constraint() {
+    use clarirs_core::prelude::*;
+
+    use crate::claripy::ast::GLOBAL_CONTEXT;
+    use crate::claripy_bridge::claripy_object;
+
     Python::initialize();
     Python::attach(|py| {
-        if !crate::engine::install_python_z3_context(py) {
-            return;
-        }
-        let Ok(claripy) = py.import("claripy") else {
-            return;
-        };
         let ctx = crate::symbolic::SymContext::new();
-        let x = claripy
-            .call_method1("BVS", ("import_fast_x", 64u32))
-            .expect("BVS");
-        let c = x.call_method1("__eq__", (0x41u64,)).expect("eq");
+        let x_ast = GLOBAL_CONTEXT.bvs("import_fast_x", 64).expect("BVS");
+        let value = GLOBAL_CONTEXT.bvv(BitVec::from((0x41u64, 64))).expect("BVV");
+        let x = claripy_object(py, x_ast.clone());
+        let c = claripy_object(py, GLOBAL_CONTEXT.eq_(x_ast, value).expect("eq"));
 
         let before = ctx.assumed_local_len();
         let list = constraint_list(py, &[c]);
@@ -371,38 +349,30 @@ fn import_fast_path_asserts_and_records_convertible_constraint() {
         assert_eq!(
             ctx.eval(&rust_x),
             Some(0x41),
-            "the raw Z3 pointer must really be asserted on this context's solver"
+            "the lowered Z3 term must really be asserted on this context's solver"
         );
     });
 }
 
 /// Fast path, *unconvertible* arm: an FP comparison has no `claripy_to_rustbv`
-/// arm, so the importer asserts the raw pointer with `add_constraint_raw` and
+/// arm, so the importer asserts the lowered term with `add_constraint_raw` and
 /// adds nothing to the assumed IR. Proven by a second import: if the first
 /// constraint had merely been counted, `f < 0.0` alone would still be SAT.
-///
-/// `#[ignore]` for the same process-global-context reason as its sibling above,
-/// and it needs the same `Z3_LIBRARY_PATH_OVERRIDE` recipe.
 #[cfg(feature = "vex-engine-z3")]
 #[test]
-#[ignore = "installs claripy's Z3 context process-wide; needs --test-threads=1"]
 fn import_fast_path_raw_only_for_unconvertible_constraint() {
+    use clarirs_core::prelude::*;
+
+    use crate::claripy::ast::GLOBAL_CONTEXT;
+    use crate::claripy_bridge::claripy_object;
+
     Python::initialize();
     Python::attach(|py| {
-        if !crate::engine::install_python_z3_context(py) {
-            return;
-        }
-        let Ok(claripy) = py.import("claripy") else {
-            return;
-        };
         let ctx = crate::symbolic::SymContext::new();
-        let sort = claripy.getattr("FSORT_DOUBLE").expect("FSORT_DOUBLE");
-        let f = claripy
-            .call_method1("FPS", ("import_fast_f", &sort))
-            .expect("FPS");
-        let one = claripy.call_method1("FPV", (1.0f64, &sort)).expect("FPV 1");
-        let zero = claripy.call_method1("FPV", (0.0f64, &sort)).expect("FPV 0");
-        let gt = f.call_method1("__gt__", (&one,)).expect("f > 1.0");
+        let f = GLOBAL_CONTEXT.fps("import_fast_f", FSort::f64()).expect("FPS");
+        let one = GLOBAL_CONTEXT.fpv(1.0f64).expect("FPV 1");
+        let zero = GLOBAL_CONTEXT.fpv(0.0f64).expect("FPV 0");
+        let gt = claripy_object(py, GLOBAL_CONTEXT.fp_gt(f.clone(), one).expect("f > 1.0"));
 
         // Precondition: the typed converter must genuinely decline this op,
         // otherwise the test covers the sibling arm instead.
@@ -423,7 +393,7 @@ fn import_fast_path_raw_only_for_unconvertible_constraint() {
         );
         assert!(ctx.is_sat(), "f > 1.0 alone is satisfiable");
 
-        let lt = f.call_method1("__lt__", (&zero,)).expect("f < 0.0");
+        let lt = claripy_object(py, GLOBAL_CONTEXT.fp_lt(f, zero).expect("f < 0.0"));
         assert_eq!(
             import_python_constraints(py, &ctx, &constraint_list(py, &[lt]), "pending").added,
             1

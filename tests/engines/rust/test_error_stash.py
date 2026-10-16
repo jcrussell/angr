@@ -148,12 +148,6 @@ class TestErroredStash:
 class TestErrorRecovery:
     """Tests that the engine degrades gracefully instead of panicking."""
 
-    @classmethod
-    def setup_class(cls):
-        from angr.exploration.rust_manager import _setup_shared_z3_context
-
-        _setup_shared_z3_context()
-
     def test_unmapped_memory_load_returns_error(self):
         """Loading from unmapped memory should raise, not crash."""
         state = RustSimState("amd64")

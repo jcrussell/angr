@@ -1216,6 +1216,23 @@ class TestRustUnsupportedErrorParametrized:
         assert total >= 50, f"only {total} parametrized cases; need >=50"
 
 
+def _donor_bool_ptrs(proj, *constraints):
+    """Raw Bool Z3 pointers for ``constraints``, minted by a donor state's solver.
+
+    These live in the engine's thread-local Z3 context — exactly what
+    ``export_z3_constraint_ptrs`` hands a sibling manager in production. The
+    donor manager is returned alongside them: its state's solver holds the
+    references that keep the pointers valid, so callers keep it alive.
+    """
+    donor = RustExplorationManager(proj, [proj.factory.entry_state()])
+    sid = next(iter(donor._rust_mgr.get_state_ids("active")))
+    before = set(donor._rust_mgr.export_z3_constraint_ptrs(sid))
+    assert donor._rust_mgr.add_constraints_to_state(sid, list(constraints)) in (True, False)
+    new = [p for p in donor._rust_mgr.export_z3_constraint_ptrs(sid) if p not in before]
+    assert len(new) == len(constraints), f"expected {len(constraints)} new pointers, got {new}"
+    return donor, new
+
+
 class TestImportZ3ConstraintPtrsValidation:
     """angr-33t9: validate import_z3_constraint_ptrs rejects malformed input.
 
@@ -1248,10 +1265,7 @@ class TestImportZ3ConstraintPtrsValidation:
         sid = next(iter(mgr._rust_mgr.get_state_ids("active")))
 
         # Obtain a real Bool Z3 ptr to pair with the null.
-        z3_backend = claripy.backends.z3
-        bv = claripy.BVS("x_33t9", 32)
-        bool_ast = z3_backend.convert(bv == 0)
-        bool_ptr = bool_ast.as_ast().value
+        _donor, (bool_ptr,) = _donor_bool_ptrs(proj, claripy.BVS("x_33t9", 32) == 0)
         assert bool_ptr != 0
 
         before = len(mgr._rust_mgr.export_z3_constraint_ptrs(sid))
@@ -1259,26 +1273,6 @@ class TestImportZ3ConstraintPtrsValidation:
             mgr._rust_mgr.import_z3_constraint_ptrs(sid, [bool_ptr, 0])
         after = len(mgr._rust_mgr.export_z3_constraint_ptrs(sid))
         assert before == after, f"validation failure leaked partial constraints: before={before} after={after}"
-
-    def test_bv_sort_pointer_rejected(self, fauxware_project):
-        """A Z3 AST with non-Bool sort (e.g. a BV) is rejected as the wrong
-        sort kind, not silently asserted (which would corrupt the solver)."""
-        from angr import claripy
-
-        proj = fauxware_project
-        state = proj.factory.entry_state()
-        mgr = RustExplorationManager(proj, [state])
-        sid = next(iter(mgr._rust_mgr.get_state_ids("active")))
-
-        # Convert a BV (not a Bool predicate) to get a non-Bool Z3 ptr.
-        z3_backend = claripy.backends.z3
-        bv = claripy.BVS("y_33t9", 64)
-        bv_ast = z3_backend.convert(bv)
-        bv_ptr = bv_ast.as_ast().value
-        assert bv_ptr != 0
-
-        with pytest.raises(ValueError, match="expected Bool"):
-            mgr._rust_mgr.import_z3_constraint_ptrs(sid, [bv_ptr])
 
     def test_valid_bool_ptr_round_trip(self, fauxware_project):
         """Sanity: a real Bool ptr is accepted and the constraint becomes
@@ -1291,13 +1285,7 @@ class TestImportZ3ConstraintPtrsValidation:
         mgr = RustExplorationManager(proj, [state])
         sid = next(iter(mgr._rust_mgr.get_state_ids("active")))
 
-        z3_backend = claripy.backends.z3
-        bv = claripy.BVS("z_33t9", 32)
-        # Hold a strong ref to the z3 wrapper so the AST stays alive
-        # through the import call (z3-side refcount discipline — same as
-        # _cached_z3_ast_ptr in rust_state_sync.py).
-        bool_ast = z3_backend.convert(bv == 0x4242)
-        bool_ptr = bool_ast.as_ast().value
+        _donor, (bool_ptr,) = _donor_bool_ptrs(proj, claripy.BVS("z_33t9", 32) == 0x4242)
         assert bool_ptr != 0
 
         before = len(mgr._rust_mgr.export_z3_constraint_ptrs(sid))
@@ -1358,10 +1346,8 @@ class TestConstraintImportCheckedVariants:
         mgr = RustExplorationManager(proj, [state])
         sid = next(iter(mgr._rust_mgr.get_state_ids("active")))
 
-        # Hold a strong ref to the z3 wrapper so the AST outlives the call
-        # (same refcount discipline as TestImportZ3ConstraintPtrsValidation).
-        bool_ast = claripy.backends.z3.convert(claripy.BVS("zoav9_ptr_x", 32) == 0x1234)
-        assert mgr._rust_mgr.import_z3_constraint_ptrs_checked(sid, [bool_ast.as_ast().value]) is True
+        _donor, ptrs = _donor_bool_ptrs(proj, claripy.BVS("zoav9_ptr_x", 32) == 0x1234)
+        assert mgr._rust_mgr.import_z3_constraint_ptrs_checked(sid, ptrs) is True
 
     def test_import_z3_ptrs_checked_reports_proven_unsat_as_false(self, fauxware_project):
         """Two contradictory assertions decide Unsat, so ``False`` is right."""
@@ -1373,10 +1359,10 @@ class TestConstraintImportCheckedVariants:
         sid = next(iter(mgr._rust_mgr.get_state_ids("active")))
 
         y = claripy.BVS("zoav9_ptr_unsat_y", 32)
-        eq7 = claripy.backends.z3.convert(y == 7)
-        ne7 = claripy.backends.z3.convert(y != 7)
-        ptrs = [eq7.as_ast().value, ne7.as_ast().value]
-        assert mgr._rust_mgr.import_z3_constraint_ptrs_checked(sid, ptrs) is False
+        # Two donors: one solver holding both would already be contradictory.
+        _donor_eq, eq7 = _donor_bool_ptrs(proj, y == 7)
+        _donor_ne, ne7 = _donor_bool_ptrs(proj, y != 7)
+        assert mgr._rust_mgr.import_z3_constraint_ptrs_checked(sid, eq7 + ne7) is False
 
 
 class TestDebugSolverInfo:
@@ -1425,10 +1411,8 @@ class TestDebugSolverInfo:
         before = self._parse(mgr._rust_mgr.debug_solver_info(sid))
         assert before["exported_ptrs"] == len(mgr._rust_mgr.export_z3_constraint_ptrs(sid))
 
-        # Hold a strong ref to the z3 wrapper so the AST outlives the call
-        # (same refcount discipline as TestImportZ3ConstraintPtrsValidation).
-        bool_ast = claripy.backends.z3.convert(claripy.BVS("dbg_sqfj8_59", 32) == 7)
-        assert mgr._rust_mgr.import_z3_constraint_ptrs(sid, [bool_ast.as_ast().value]) is True
+        _donor, ptrs = _donor_bool_ptrs(proj, claripy.BVS("dbg_sqfj8_59", 32) == 7)
+        assert mgr._rust_mgr.import_z3_constraint_ptrs(sid, ptrs) is True
 
         after = self._parse(mgr._rust_mgr.debug_solver_info(sid))
         assert after["exported_ptrs"] == len(mgr._rust_mgr.export_z3_constraint_ptrs(sid))

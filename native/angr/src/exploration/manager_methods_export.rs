@@ -12,7 +12,7 @@
 //!   `export_found_states`, plus `step_state`, which returns per-stash
 //!   snapshots of one state's successors.
 //! - **Symbolic introspection**: `state_symbolic_info`,
-//!   `get_state_symbolic_z3_asts`, `state_satisfiable`.
+//!   `get_state_symbolic_asts`, `state_satisfiable`.
 //! - **SimOption queries**: `state_has_option` and the named shorthands
 //!   `state_enforce_{permissions,nx}`, `state_no_ip_concretization`,
 //!   `state_no_symbolic_jump_resolution`, `state_keep_ip_symbolic`.
@@ -126,24 +126,23 @@ impl RustExplorationManager {
         self._state_symbolic_info(state_id, addr)
     }
 
-    /// Get Z3 AST pointers for all symbolic objects in a state's memory.
+    /// Export every program-written symbolic object in a state's memory as a
+    /// claripy AST.
     ///
-    /// Returns Vec<(addr, z3_ast_ptr_as_usize, width_bits)> for each symbolic
-    /// object. The Z3 ASTs are built in the shared Z3 context, so Python can
-    /// directly wrap them as z3.BitVecRef and convert to claripy ASTs.
-    ///
-    /// This is used to export Rust-computed symbolic expressions (e.g., flag
-    /// computations in asisctf) to Python state memory during state export.
+    /// Returns `(addr, ast, width_bits)` per symbolic object. Used to carry
+    /// Rust-computed symbolic expressions (e.g. flag computations in asisctf)
+    /// into Python state memory during state export.
     #[cfg(feature = "vex-engine-z3")]
     #[angr_macros::steady_guard_exempt(
-        reason = "read-only export of one state_id-scoped state's Z3 AST pointers; does not \
+        reason = "read-only export of one state_id-scoped state's symbolic memory; does not \
                   mutate exploration config or the active stash."
     )]
-    pub fn get_state_symbolic_z3_asts(
+    pub fn get_state_symbolic_asts(
         &mut self,
+        py: Python<'_>,
         state_id: u64,
-    ) -> PyResult<Vec<(u64, usize, u32)>> {
-        self._get_state_symbolic_z3_asts(state_id)
+    ) -> PyResult<Vec<(u64, Py<PyAny>, u32)>> {
+        self._get_state_symbolic_asts(py, state_id)
     }
 
     /// Check if constraints are satisfiable for a state.

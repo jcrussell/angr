@@ -15,10 +15,6 @@ use crate::symbolic::{
 };
 use pyo3::exceptions::PyValueError;
 use pyo3::types::{PyAny, PyDict};
-// Only the `vex-engine-z3`-gated `set_register_z3_ast` mints an `Arc`-named
-// symbol (angr-sqfj8.139).
-#[cfg(feature = "vex-engine-z3")]
-use std::sync::Arc;
 
 #[pymethods]
 impl PyRustSimState {
@@ -316,81 +312,10 @@ impl PyRustSimState {
         self.inner.set_registers_raw(bytes);
     }
 
-    /// Set a register to a symbolic value from a raw Z3 AST pointer.
-    ///
-    /// The Z3 AST must be a BitVec in the shared Z3 context.
-    /// Used to import symbolic register values (e.g., BVS in rax) from Python.
-    #[cfg(feature = "vex-engine-z3")]
-    pub fn set_register_symbolic(
-        &mut self,
-        name: &str,
-        z3_ast_ptr: usize,
-        width: u32,
-    ) -> PyResult<()> {
-        use z3::ast::Ast;
-        let size = self
-            .inner
-            .arch()
-            .register_size(name)
-            .ok_or_else(|| PyValueError::new_err(format!("unknown register: {name}")))?;
-        if width != size * 8 {
-            return Err(PyValueError::new_err(format!(
-                "width mismatch: register {} is {} bits, got {} bits",
-                name,
-                size * 8,
-                width
-            )));
-        }
-        // Reconstruct z3::ast::BV from raw pointer.
-        // Reject a null pointer explicitly — this is a `#[pymethods]` entry
-        // callable from Python with an arbitrary integer, so a 0 (or otherwise
-        // absent) AST must surface as a `ValueError`, not `NonNull::new_unchecked`
-        // UB / a Z3_inc_ref segfault on a bogus pointer.
-        let raw = std::ptr::NonNull::new(z3_ast_ptr as *mut _).ok_or_else(|| {
-            PyValueError::new_err(format!(
-                "set_register_symbolic: null Z3 AST pointer for register {name}"
-            ))
-        })?;
-        // SAFETY: `raw` is non-null (checked above); caller guarantees it is a
-        // BV-sorted `Z3_ast` in the active thread-local context (z3-rs 0.19+
-        // shares the process-global context with claripy's z3 backend).
-        // `BV::wrap` takes its own ref. `width` was validated above to match the
-        // register's bit width — i.e. the AST's BV sort width. A non-null but
-        // otherwise garbage pointer remains the caller's responsibility.
-        let z3_bv = unsafe {
-            let ctx = z3::Context::thread_local();
-            z3::ast::BV::wrap(&ctx, raw)
-        };
-        // Allocate a fresh, globally-unique symbol id rather than the constant
-        // `0`. `NEXT_SYMBOL_ID` starts at 0, so the first symbol minted anywhere
-        // in the process legitimately owns id 0; hardcoding `0` here made this
-        // wrapped register alias whatever AST is registered under id 0 (a
-        // cross-symbol identity collision, not merely the documented loss of
-        // leaf-symbol identity — angr-ph300.50). A fresh id from the same global
-        // allocator every other minted symbol uses keeps this register's export
-        // independent of any unrelated leaf.
-        let id = self.inner.solver().borrow().next_id();
-        let bv = RustBV::Symbolic {
-            id,
-            ast: z3_bv,
-            width,
-            name: Arc::from(name),
-        };
-        if self.inner.set_register(name, bv) {
-            Ok(())
-        } else {
-            Err(PyValueError::new_err(format!(
-                "failed to set register: {name}"
-            )))
-        }
-    }
-
     /// Set a register to a symbolic value from a full claripy AST.
     ///
-    /// Unlike [`set_register_symbolic`](Self::set_register_symbolic) (which wraps a raw Z3 pointer as an
-    /// opaque `RustBV::Symbolic` with a freshly-minted id and so loses
-    /// leaf-symbol identity on export), this routes the claripy AST through
-    /// `claripy_to_rustbv`. That interns every leaf BVS into the shared
+    /// This routes the claripy AST through `claripy_to_rustbv`, which interns
+    /// every leaf BVS into the shared
     /// claripy<->Rust symbol cache, so a subregister set like
     /// `state.regs.ecx = BVS('ecx', 32)` round-trips back to the user's
     /// original symbol on export instead of minting a fresh `rcx_N`. This is

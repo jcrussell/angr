@@ -403,7 +403,7 @@ pub struct SymbolicMemory {
     #[merge_policy = "in_place_self"]
     zero_fill_unconstrained: bool,
     /// Symbolic values imported from Python, keyed by address, as they were
-    /// at import. `get_state_symbolic_z3_asts` skips an address only while its
+    /// at import. `get_state_symbolic_asts` skips an address only while its
     /// live object *is* the recorded value (`RustBV` identity), so Python
     /// keeps the original claripy AST it already holds (the flareon5 rule)
     /// but a value the program wrote over an import is exported

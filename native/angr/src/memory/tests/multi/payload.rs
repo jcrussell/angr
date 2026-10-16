@@ -227,7 +227,7 @@ fn test_multi_payload_records_ite_depth() {
 /// entry. Before the fix `symbolic_objects[0x1000]` survived at width 32,
 /// still claiming the byte the Multi now owns — and `flush_multi_cells` then
 /// added a second, disjoint entry for the collapsed byte, leaving the export
-/// walk in `_get_state_symbolic_z3_asts` to race two overlapping stores.
+/// walk in `_state_symbolic_objects` to race two overlapping stores.
 #[test]
 fn test_multi_inside_wider_symbolic_object_retires_the_container() {
     let ctx = SymContext::new_mock();
@@ -293,7 +293,7 @@ fn test_multi_inside_wider_symbolic_object_retires_the_container() {
 /// The split lanes inherit `imported_addrs` membership from the container, so
 /// a Python-imported object does not start exporting `Extract(sym)` stores
 /// back over bytes Python already holds verbatim (the flareon5 rule on
-/// `_get_state_symbolic_z3_asts`). The superseded byte itself was never
+/// `_state_symbolic_objects`). The superseded byte itself was never
 /// imported, so it stays exportable.
 #[test]
 fn test_split_lanes_inherit_imported_addrs() {

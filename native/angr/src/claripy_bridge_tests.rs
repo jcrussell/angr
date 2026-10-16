@@ -43,7 +43,7 @@ fn test_extract_int_value_above_128_bits_errors() {
 fn test_export_and_of_two_bools_keeps_both_operands() {
     pyo3::Python::initialize();
     Python::attach(|py| {
-        let claripy = match py.import("claripy") {
+        let claripy = match py.import("angr.rustylib.claripy") {
             Ok(m) => m,
             Err(_) => return, // claripy not importable in this env — skip
         };
@@ -78,7 +78,7 @@ fn test_export_and_of_two_bools_keeps_both_operands() {
 fn test_export_eq_with_bool_operand_not_rebuilt_as_add() {
     pyo3::Python::initialize();
     Python::attach(|py| {
-        let claripy = match py.import("claripy") {
+        let claripy = match py.import("angr.rustylib.claripy") {
             Ok(m) => m,
             Err(_) => return,
         };
@@ -111,7 +111,7 @@ fn test_export_symbolic_bitcount_is_sound() {
     use crate::symbolic::BVOp;
     pyo3::Python::initialize();
     Python::attach(|py| {
-        let claripy = match py.import("claripy") {
+        let claripy = match py.import("angr.rustylib.claripy") {
             Ok(m) => m,
             Err(_) => return,
         };
@@ -181,7 +181,7 @@ fn test_export_symbolic_clz_and_fp_identity_stable() {
     use crate::symbolic::{BVOp, FloatOpKind, FloatPrec};
     pyo3::Python::initialize();
     Python::attach(|py| {
-        let claripy = match py.import("claripy") {
+        let claripy = match py.import("angr.rustylib.claripy") {
             Ok(m) => m,
             Err(_) => return,
         };
@@ -228,7 +228,7 @@ fn test_export_symbolic_clz_and_fp_identity_stable() {
 fn test_roundtrip_import_export_preserves_semantics() {
     pyo3::Python::initialize();
     Python::attach(|py| {
-        let claripy = match py.import("claripy") {
+        let claripy = match py.import("angr.rustylib.claripy") {
             Ok(m) => m,
             Err(_) => return, // claripy not importable in this env — skip
         };
@@ -338,7 +338,7 @@ fn test_roundtrip_import_export_preserves_semantics() {
 fn test_roundtrip_concrete_value_exact() {
     pyo3::Python::initialize();
     Python::attach(|py| {
-        let claripy = match py.import("claripy") {
+        let claripy = match py.import("angr.rustylib.claripy") {
             Ok(m) => m,
             Err(_) => return,
         };
@@ -376,7 +376,7 @@ fn test_roundtrip_concrete_value_exact() {
 fn test_import_floordiv_mod_are_unsigned() {
     pyo3::Python::initialize();
     Python::attach(|py| {
-        let claripy = match py.import("claripy") {
+        let claripy = match py.import("angr.rustylib.claripy") {
             Ok(m) => m,
             Err(_) => return, // claripy not importable in this env — skip
         };
@@ -445,7 +445,7 @@ fn test_claripy_to_rustbv_long_chain_hits_depth_guard() {
         .stack_size(256 * 1024 * 1024)
         .spawn(|| {
             Python::attach(|py| {
-                let claripy = match py.import("claripy") {
+                let claripy = match py.import("angr.rustylib.claripy") {
                     Ok(m) => m,
                     Err(_) => return, // claripy not importable in this env — skip
                 };
@@ -473,7 +473,7 @@ fn test_claripy_to_rustbv_long_chain_hits_depth_guard() {
                 // invisible to CPython's recursion-limit counter either way). The
                 // raw constructor skips simplification and produces the exact
                 // same `(op, args, length)`-shaped AST our bridge introspects.
-                let bv_cls = py.import("claripy.ast.bv").unwrap().getattr("BV").unwrap();
+                let bv_cls = py.import("angr.rustylib.claripy.ast.bv").unwrap().getattr("BV").unwrap();
                 let mut ast = claripy.call_method1("BVS", ("chain", 8u32)).unwrap();
                 for _ in 0..4300i64 {
                     let length: u32 = ast.getattr("length").unwrap().extract().unwrap();
@@ -524,7 +524,7 @@ fn test_rustbv_to_claripy_long_chain_hits_depth_guard() {
         .stack_size(256 * 1024 * 1024)
         .spawn(|| {
             Python::attach(|py| {
-                let claripy = match py.import("claripy") {
+                let claripy = match py.import("angr.rustylib.claripy") {
                     Ok(m) => m,
                     Err(_) => return, // claripy not importable in this env — skip
                 };
@@ -568,7 +568,7 @@ fn test_rustbv_to_claripy_long_chain_hits_depth_guard() {
 fn test_bvs_width1_and_bools_same_name_do_not_alias() {
     pyo3::Python::initialize();
     Python::attach(|py| {
-        let claripy = match py.import("claripy") {
+        let claripy = match py.import("angr.rustylib.claripy") {
             Ok(m) => m,
             Err(_) => return, // claripy not importable in this env — skip
         };
@@ -627,7 +627,7 @@ fn test_bvs_width1_and_bools_same_name_do_not_alias() {
 fn test_rust_minted_leaf_exports_under_its_rust_name() {
     pyo3::Python::initialize();
     Python::attach(|py| {
-        let claripy = match py.import("claripy") {
+        let claripy = match py.import("angr.rustylib.claripy") {
             Ok(m) => m,
             Err(_) => return, // claripy not importable in this env — skip
         };
@@ -687,7 +687,7 @@ fn test_rust_minted_leaf_exports_under_its_rust_name() {
 fn test_assumed_guard_to_claripy_all_four_branches() {
     pyo3::Python::initialize();
     Python::attach(|py| {
-        let claripy = match py.import("claripy") {
+        let claripy = match py.import("angr.rustylib.claripy") {
             Ok(m) => m,
             Err(_) => return, // claripy not importable in this env — skip
         };

@@ -605,7 +605,7 @@ impl PythonCallbacks {
             // If the symbolic value callback is set, use it
             if let Some(cb) = &self.memory_store_symbolic_value {
                 // Import claripy module
-                let claripy_mod = py.import("claripy")?;
+                let claripy_mod = crate::claripy_bridge::claripy_module(py)?;
 
                 // Convert RustBV expression tree to claripy AST
                 let ast = rustbv_to_claripy(py, value, &claripy_mod)?;
@@ -682,7 +682,7 @@ impl PythonCallbacks {
             // loudly.
             let cb = require_callback!(self.memory_store_symbolic_full);
 
-            let claripy_mod = py.import("claripy")?;
+            let claripy_mod = crate::claripy_bridge::claripy_module(py)?;
             let addr_ast = rustbv_to_claripy(py, addr_val, &claripy_mod)?;
             let data_ast = rustbv_to_claripy(py, data_val, &claripy_mod)?;
             cb.call1(py, (addr_ast, data_ast))?;
@@ -721,7 +721,7 @@ impl PythonCallbacks {
 
             let cb = require_callback!(self.memory_load_symbolic_full);
 
-            let claripy_mod = py.import("claripy")?;
+            let claripy_mod = crate::claripy_bridge::claripy_module(py)?;
             let addr_ast = rustbv_to_claripy(py, addr_val, &claripy_mod)?;
             cb.call1(py, (addr_ast, size))
         })

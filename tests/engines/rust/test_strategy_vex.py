@@ -480,12 +480,6 @@ class TestVexOperationCoverage:
     This ensures the Rust Z3 bridge correctly handles each VEX/claripy op.
     """
 
-    @classmethod
-    def setup_class(cls):
-        from angr.exploration.rust_manager import _setup_shared_z3_context
-
-        _setup_shared_z3_context()
-
     def _make_ctx(self):
         from angr.rustylib.vex_engine import RustSolverContext
 

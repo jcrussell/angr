@@ -133,10 +133,51 @@ use pyo3::prelude::*;
 mod cache;
 mod export;
 mod import;
+mod z3_lower;
 
 pub(crate) use cache::*;
 pub(crate) use export::*;
 pub(crate) use import::*;
+#[cfg(feature = "vex-engine-z3")]
+pub(crate) use z3_lower::lower_claripy_ast;
+
+/// The claripy Python module (clarirs, built into this extension).
+///
+/// angr has no top-level `claripy` package: claripy is the `claripy` submodule
+/// of `angr.rustylib` that `lib.rs::rustylib` registers in `sys.modules` while
+/// the extension initializes, and `angr/__init__.py` re-exports it as
+/// `angr.claripy`. When it is not registered — a `cargo test` binary never runs
+/// that init, and its embedded interpreter cannot import `angr` — build it in
+/// place with the same `claripy::claripy` initializer, so every AST this
+/// binary exports is one of its own claripy types.
+pub(crate) fn claripy_module(py: Python<'_>) -> PyResult<Bound<'_, PyModule>> {
+    const NAME: &str = "angr.rustylib.claripy";
+    let modules = py.import("sys")?.getattr("modules")?;
+    if let Ok(module) = modules.get_item(NAME) {
+        return Ok(module.cast_into::<PyModule>()?);
+    }
+    let module = PyModule::new(py, NAME)?;
+    crate::claripy::claripy(py, &module)?;
+    modules.set_item(NAME, &module)?;
+    Ok(module)
+}
+
+/// Wrap a clarirs AST as a claripy Python object of *this* binary's type.
+///
+/// Under `cargo test` the embedded interpreter's `angr.rustylib` is the
+/// installed extension, whose claripy classes are different type objects from
+/// this test binary's — so a test that needs `lower_claripy_ast` to accept its
+/// input builds the AST here instead of through `import("angr.rustylib.claripy")`.
+#[cfg(test)]
+#[allow(clippy::expect_used, reason = "test fixture")]
+pub(crate) fn claripy_object<'py>(
+    py: Python<'py>,
+    ast: clarirs_core::prelude::AstRef<'static>,
+) -> Bound<'py, PyAny> {
+    crate::claripy::ast::base::Base::from_ast(py, ast)
+        .expect("wrap clarirs AST")
+        .into_any()
+}
 
 /// Error type for claripy bridge operations.
 ///

@@ -43,7 +43,7 @@ impl SymbolicMemory {
     ) -> Result<(), MemoryError> {
         let addr = addr.into();
         self.install_symbolic_value(addr, value.clone())?;
-        // Record the value Python holds, so get_state_symbolic_z3_asts skips
+        // Record the value Python holds, so get_state_symbolic_asts skips
         // this address only while it is unmodified (angr-ccp2w).
         self.imported_addrs.insert(addr, value);
         Ok(())
@@ -136,7 +136,7 @@ impl SymbolicMemory {
     ///   loads stay correct (they consult the exact key first), but
     ///   `flush_multi_cells` later inserts the collapsed byte as a *second*,
     ///   disjoint `symbolic_objects[addr]` entry, and
-    ///   `_get_state_symbolic_z3_asts` exports both with no containment
+    ///   `_get_state_symbolic_asts` exports both with no containment
     ///   ordering — so whichever `state.memory.store()` lands last wins, and
     ///   the stale wide one silently clobbers the fresh byte in Python.
     /// * `addr` *is* the base of a wider object. The exact-key removal drops
@@ -150,7 +150,7 @@ impl SymbolicMemory {
     /// still held its imported value — so a split of an unmodified
     /// Python-imported object does not start exporting `Extract(sym)` stores
     /// back over bytes Python already holds verbatim (the flareon5 rule
-    /// documented on `_get_state_symbolic_z3_asts`). The superseded byte
+    /// documented on `_get_state_symbolic_asts`). The superseded byte
     /// loses its record.
     ///
     /// No-op when no symbolic object covers `addr`.

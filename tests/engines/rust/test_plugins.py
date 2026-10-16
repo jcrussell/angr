@@ -367,13 +367,6 @@ class TestPluginTemplateSelection:
 class TestAdversarial:
     """Adversarial tests: edge cases, API misuse, resource bounds."""
 
-    @classmethod
-    def setup_class(cls):
-        """Ensure the shared Z3 context is initialized for solver tests."""
-        from angr.exploration.rust_manager import _setup_shared_z3_context
-
-        _setup_shared_z3_context()
-
     # --- API misuse ---
 
     def test_create_state_invalid_stash(self, amd64_mgr):

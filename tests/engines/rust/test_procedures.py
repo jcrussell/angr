@@ -2437,7 +2437,7 @@ class TestNativeReadCacheSync:
         # dispatcher hands the SimProcedure to Python, which sets a live
         # pending_callback (see docstring).
         sym_arg = claripy.BVS("sym_arg0", 64)
-        state.set_register_symbolic("rdi", claripy.backends.z3.convert(sym_arg).as_ast().value, 64)
+        state.set_register_symbolic_ast("rdi", sym_arg)
 
         mgr.add_state("active", state)
         # add_state forks the supplied state and mints a fresh monotonic id
@@ -2522,7 +2522,7 @@ class TestNativeReadCacheSync:
 
         # Symbolic RDI forces the Python SimProcedure fallback → live pending.
         sym_arg = claripy.BVS("sym_arg0", 64)
-        state.set_register_symbolic("rdi", claripy.backends.z3.convert(sym_arg).as_ast().value, 64)
+        state.set_register_symbolic_ast("rdi", sym_arg)
 
         mgr.add_state("active", state)
         sid = mgr.get_state_ids("active")[0]
@@ -2595,7 +2595,7 @@ class TestNativeReadCacheSync:
         state.pc = HOOK
 
         sym_arg = claripy.BVS("sym_arg0", 64)
-        state.set_register_symbolic("rdi", claripy.backends.z3.convert(sym_arg).as_ast().value, 64)
+        state.set_register_symbolic_ast("rdi", sym_arg)
 
         mgr.add_state("active", state)
         assert mgr.get_state_ids("active")[0] is not None

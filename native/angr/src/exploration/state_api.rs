@@ -279,7 +279,7 @@ impl RustExplorationManager {
         py: Python<'_>,
         state_id: u64,
     ) -> PyResult<Vec<Py<PyAny>>> {
-        let claripy = py.import("claripy")?;
+        let claripy = crate::claripy_bridge::claripy_module(py)?;
         self.with_state(state_id, |state| {
             let solver_ref = state.solver();
             let ctx = solver_ref.borrow();
@@ -321,7 +321,7 @@ impl RustExplorationManager {
         state_id: u64,
         extra_constraints: &Bound<'_, pyo3::types::PyList>,
     ) -> PyResult<Vec<Py<PyAny>>> {
-        let claripy = py.import("claripy")?;
+        let claripy = crate::claripy_bridge::claripy_module(py)?;
         self.with_state(state_id, |state| {
             let solver_ref = state.solver();
             let ctx = solver_ref.borrow();
@@ -579,16 +579,18 @@ impl RustExplorationManager {
         })
     }
 
-    /// angr-sqfj8.52: flushes memory before reading `symbolic_objects_iter()`
-    /// (angr-sqfj8.71-family fix) — otherwise a byte still living in a Multi
+    /// Every program-written symbolic object in a state's memory, as
+    /// `(addr, value)` pairs.
+    ///
+    /// Flushes memory before reading `symbolic_objects_iter()` (angr-sqfj8.52,
+    /// an angr-sqfj8.71-family fix) — otherwise a byte still living in a Multi
     /// cell (the lazy symbolic-address store default) is silently absent from
-    /// the exported Z3 AST list.
+    /// the export.
     #[cfg(feature = "vex-engine-z3")]
-    pub(crate) fn _get_state_symbolic_z3_asts(
+    pub(crate) fn _state_symbolic_objects(
         &mut self,
         state_id: u64,
-    ) -> PyResult<Vec<(u64, usize, u32)>> {
-        use z3::ast::Ast;
+    ) -> PyResult<Vec<(u64, RustBV)>> {
         self.with_state_mut(state_id, |state| {
             state.flush_memory();
             let mem = state.memory();
@@ -606,16 +608,30 @@ impl RustExplorationManager {
                     continue;
                 }
                 if bv.is_symbolic() {
-                    let z3_ast = bv.to_z3_ast();
-                    let raw_ptr = z3_ast.get_z3_ast().as_ptr() as usize;
-                    // Prevent z3::ast::BV destructor from decrementing the ref count.
-                    // Python takes ownership of this pointer.
-                    std::mem::forget(z3_ast);
-                    result.push((addr.raw(), raw_ptr, bv.width()));
+                    result.push((addr.raw(), bv.clone()));
                 }
             }
             Ok(result)
         })
+    }
+
+    /// [`Self::_state_symbolic_objects`], exported as claripy ASTs.
+    #[cfg(feature = "vex-engine-z3")]
+    pub(crate) fn _get_state_symbolic_asts(
+        &mut self,
+        py: Python<'_>,
+        state_id: u64,
+    ) -> PyResult<Vec<(u64, Py<PyAny>, u32)>> {
+        let claripy = crate::claripy_bridge::claripy_module(py)?;
+        self._state_symbolic_objects(state_id)?
+            .into_iter()
+            .map(|(addr, bv)| {
+                let ast = rustbv_to_claripy(py, &bv, claripy.as_any()).map_err(|e| {
+                    crate::claripy_bridge::ast_export_err(&format!("memory {addr:#x}"), e)
+                })?;
+                Ok((addr, ast, bv.width()))
+            })
+            .collect()
     }
 
     state_accessors! {
@@ -710,7 +726,7 @@ impl RustExplorationManager {
                 Some(bv) => bv,
                 None => return Ok(None),
             };
-            let claripy = py.import("claripy")?;
+            let claripy = crate::claripy_bridge::claripy_module(py)?;
             let ast = rustbv_to_claripy(py, &bv, claripy.as_any())
                 .map_err(|e| ast_export_err(&format!("register {name}"), e))?;
             Ok(Some(ast))
@@ -823,7 +839,7 @@ impl RustExplorationManager {
             .map_err(PyValueError::new_err)?;
         self.with_state(state_id, |state| match state.memory_load(addr, size) {
             Ok(bv) => {
-                let claripy = py.import("claripy")?;
+                let claripy = crate::claripy_bridge::claripy_module(py)?;
                 let ast = rustbv_to_claripy(py, &bv, claripy.as_any())
                     .map_err(|e| ast_export_err(&format!("memory 0x{addr:x} size {size}"), e))?;
                 Ok(Some(ast))

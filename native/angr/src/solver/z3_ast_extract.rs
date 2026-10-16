@@ -1,15 +1,15 @@
 //! Raw Z3-pointer plumbing for [`RustSolverContext`].
 //!
-//! Everything in this module deals in `Z3_ast` pointers borrowed out of
-//! claripy's z3 backend rather than in claripy ASTs: extracting one, wrapping
+//! Everything in this module deals in `Z3_ast` pointers lowered from claripy
+//! ASTs rather than in the ASTs themselves: producing one, wrapping
 //! it as an evaluable [`RustBV`], and evaluating it. It is split out of the
 //! parent `solver` module because it is the only part of the solver surface
 //! that carries `unsafe` and its attendant safety obligations (angr-9ke6b.205).
 //!
 //! This is the *consumer* side: [`Z3AstPtr`] itself — the refcounted wrapper
 //! with the `Drop`/`Z3_inc_ref` obligations — is defined in
-//! `symbolic/z3_ast_ptr.rs`. This module only borrows one out of claripy and
-//! hands it to the solver (angr-03vl4.75).
+//! `symbolic/z3_ast_ptr.rs`. This module only obtains one from
+//! `claripy_bridge`'s lowering and hands it to the solver (angr-03vl4.75).
 //!
 //! None of it is a `#[pymethods]` item — [`Z3AstPtr`] is not PyO3-bridgeable
 //! (it owns a Z3 refcount and cannot be reconstructed from a Python value), so
@@ -42,55 +42,19 @@ use crate::symbolic::{RustBV, SymContext};
 
 use crate::solver::RustSolverContext;
 
-/// Extract a typed [`Z3AstPtr`] from a claripy AST's z3 backend.
+/// Lower a claripy AST to a typed [`Z3AstPtr`] in the thread-local Z3 context.
 ///
-/// Returns `Err` if the claripy → z3 backend conversion fails or yields a
-/// null pointer. The returned handle carries its own refcount (taken via
-/// `Z3_inc_ref` at construction); claripy's original AST remains alive
-/// independently in claripy's cache.
-///
-/// # Safety
-///
-/// This function is itself safe — the unsafety is encapsulated inside
-/// [`Z3AstPtr::from_borrowed_raw`]. The precondition (pointer denotes a
-/// live `Z3_ast` in the active thread-local Z3 context) is met by
-/// construction: `claripy.backends.z3.convert(...)` always returns a
-/// live Z3 AST in the process-global Z3 context (which is also our
-/// thread-local context because z3-rs 0.19+ shares it).
+/// claripy is clarirs, so this reads the [`AstRef`](clarirs_core::prelude::AstRef)
+/// behind the Python object and lowers it with
+/// [`claripy_bridge::lower_claripy_ast`](crate::claripy_bridge::lower_claripy_ast)
+/// — losslessly, for every Bool / bitvector / float op, and into the context
+/// the `SymContext`s on this thread share. Returns `Err` for an object that is
+/// not one of this extension's claripy ASTs or holds an op with no Z3 lowering
+/// (strings, VSA); callers fall back to `claripy_to_rustbv`.
 #[cfg(feature = "vex-engine-z3")]
-pub(crate) fn extract_z3_ast_ptr(py: Python<'_>, ast: &Bound<'_, PyAny>) -> PyResult<Z3AstPtr> {
-    let claripy = py.import("claripy")?;
-    let z3_backend = claripy.getattr("backends")?.getattr("z3")?;
-    let z3_obj = z3_backend.call_method1("convert", (ast,))?;
-    let ast_ref = z3_obj.call_method0("as_ast")?;
-    let ptr: usize = ast_ref.getattr("value")?.extract()?;
-    let ctx = z3::Context::thread_local();
-    // SAFETY: claripy's z3 backend returned this pointer for a live AST
-    // it holds in its own cache; the AST is in the process-global Z3
-    // context, which matches our thread-local context (z3-rs 0.19+).
-    //
-    // INVARIANT (claripy-AST-alive): `from_borrowed_raw` takes a fresh
-    // `Z3_inc_ref`, so the borrowed `Z3_ast` must have refcount >= 1 at
-    // this point. That holds *only* because `z3_obj` / `ast_ref` (the
-    // claripy backend result) are still in scope, keeping the AST retained
-    // in claripy's cache for the duration of `convert`. A future caller
-    // that sources `ptr` from a holder already dropped would violate this
-    // silently and inc_ref a dangling node — do not reorder the extraction
-    // below the point where the claripy result goes out of scope.
-    let handle = unsafe { Z3AstPtr::from_borrowed_raw(&ctx, ptr) }.ok_or_else(|| {
-        PyRuntimeError::new_err("claripy z3 backend returned null Z3_ast pointer")
-    })?;
-    // Defensive liveness probe: a live, well-formed AST always resolves to
-    // a concrete sort; `Unknown` signals a dangling/garbage pointer, i.e. a
-    // violated claripy-AST-alive precondition. Debug-only — compiles out in
-    // release, so this is hardening with zero runtime cost on the hot path.
-    debug_assert!(
-        handle.sort_kind() != z3_sys::SortKind::Unknown,
-        "extract_z3_ast_ptr: borrowed Z3_ast resolved to no sort -- the \
-         claripy-AST-alive invariant was likely violated (pointer not \
-         retained by a live claripy AST at borrow time)"
-    );
-    Ok(handle)
+pub(crate) fn extract_z3_ast_ptr(_py: Python<'_>, ast: &Bound<'_, PyAny>) -> PyResult<Z3AstPtr> {
+    crate::claripy_bridge::lower_claripy_ast(ast)
+        .map_err(|e| PyRuntimeError::new_err(format!("claripy AST has no Z3 lowering: {e}")))
 }
 
 /// Wrap a live Z3 AST as an anonymous [`RustBV::Symbolic`] for evaluation.

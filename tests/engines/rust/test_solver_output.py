@@ -56,8 +56,6 @@ class TestZ3TacticEnvVar:
             """
             import sys
             from angr import claripy
-            from angr.exploration.rust_manager import _setup_shared_z3_context
-            _setup_shared_z3_context()
             from angr.rustylib.vex_engine import RustSolverContext
 
             ctx = RustSolverContext()
@@ -122,8 +120,6 @@ class TestZ3TacticEnvVar:
 
         script = textwrap.dedent(
             """
-            from angr.exploration.rust_manager import _setup_shared_z3_context
-            _setup_shared_z3_context()
             from angr.rustylib.vex_engine import RustSolverContext
             try:
                 RustSolverContext()
@@ -182,8 +178,6 @@ class TestZ3SatPhaseEnvVar:
             """
             import sys
             from angr import claripy
-            from angr.exploration.rust_manager import _setup_shared_z3_context
-            _setup_shared_z3_context()
             from angr.rustylib.vex_engine import RustSolverContext
 
             ctx = RustSolverContext()
@@ -262,13 +256,6 @@ class TestSolverOutputCorrectness:
     These complement existing tests (which check satisfiable/count) by checking
     that the actual solved values are correct.
     """
-
-    @classmethod
-    def setup_class(cls):
-        """Ensure the shared Z3 context is initialized for solver tests."""
-        from angr.exploration.rust_manager import _setup_shared_z3_context
-
-        _setup_shared_z3_context()
 
     def _make_ctx(self):
         from angr.rustylib.vex_engine import RustSolverContext

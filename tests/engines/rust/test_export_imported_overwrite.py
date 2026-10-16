@@ -1,7 +1,7 @@
 # pylint: disable=missing-class-docstring,no-self-use
 """Regression tests for angr-ccp2w: overwritten imports must reach the found state.
 
-``_get_state_symbolic_z3_asts`` skipped every address imported from the
+``_state_symbolic_objects`` skipped every address imported from the
 initial Python state "even if the binary modified them" (the flareon5 rule),
 so ``found.memory.load`` over user-seeded symbolic memory the program later
 overwrote returned the stale seed. The rule now skips an address only while it

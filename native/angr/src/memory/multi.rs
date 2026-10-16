@@ -362,7 +362,7 @@ impl SymbolicMemory {
     ///
     /// Per the `phase41-bottleneck` memory, emitting one
     /// `symbolic_objects` entry per Multi byte forces `state_api`
-    /// `_get_state_symbolic_z3_asts` to build N independent Z3 ASTs
+    /// `_state_symbolic_objects` to export N independent values
     /// (one per byte) and the Python exporter to call
     /// `state.memory.store()` N times. A symbolic-address store of an
     /// N-byte value resolved to K candidates writes N×K alternatives

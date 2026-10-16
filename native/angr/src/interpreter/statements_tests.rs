@@ -291,7 +291,7 @@ fn build_ite_store_invokes_per_addr_ite_callbacks() {
     Python::initialize();
     Python::attach(|py| {
         // rustbv_to_claripy imports claripy; skip when it is not importable.
-        if py.import("claripy").is_err() {
+        if py.import("angr.rustylib.claripy").is_err() {
             return;
         }
 
@@ -1027,7 +1027,7 @@ fn with_proxy_callbacks<F: FnOnce(&PythonCallbacks)>(f: F) {
 
     Python::initialize();
     Python::attach(|py| {
-        if py.import("claripy").is_err() {
+        if py.import("angr.rustylib.claripy").is_err() {
             return;
         }
         let globals = PyDict::new(py);

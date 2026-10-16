@@ -28,7 +28,7 @@ impl<'a> VEXInterpreter<'a> {
             return None;
         }
         Python::attach(|py| {
-            let claripy_mod = py.import("claripy").ok()?;
+            let claripy_mod = crate::claripy_bridge::claripy_module(py).ok()?;
             crate::claripy_bridge::rustbv_to_claripy(py, value, &claripy_mod).ok()
         })
     }
