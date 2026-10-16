@@ -43,57 +43,65 @@ pub(crate) mod offsets {
     pub(crate) const IDFLAG: u32 = 200;
 
     // Segment registers. FS_CONST is the FS base address (archinfo offset 208);
-    // GS_CONST is the GS base, which archinfo places at offset 1032 — well past
-    // the XMM/FPU bank. The 216 slot belongs to SSEROUND, not GS_CONST — an
+    // GS_CONST is the GS base, which archinfo places well past the vector/FPU
+    // bank (see below). The 216 slot belongs to SSEROUND, not GS_CONST — an
     // earlier layout wrongly defined GS_CONST there, aliasing the two.
     pub(crate) const FS_CONST: u32 = 208;
 
     // SSE control (per archinfo: 4B uint32_t padded to 8B in archinfo's table)
     pub(crate) const SSEROUND: u32 = 216;
 
-    // XMM registers (128-bit each, 16 bytes) - offsets per archinfo
+    // XMM registers (128-bit each). VEX lays the vector bank out as 32
+    // 512-bit ZMM slots (AVX-512 guest state, pyvex 10): XMMn is the low 16
+    // bytes of ZMMn, so the stride is 64. Only XMM0-XMM15 are named here; the
+    // AVX-512 names (zmm*, ymm16-31, xmm16-31, k0-k7) stay reachable by
+    // offset through the guest-state image but are not in this table.
     pub(crate) const XMM0: u32 = 224;
-    pub(crate) const XMM1: u32 = 256;
-    pub(crate) const XMM2: u32 = 288;
-    pub(crate) const XMM3: u32 = 320;
-    pub(crate) const XMM4: u32 = 352;
-    pub(crate) const XMM5: u32 = 384;
-    pub(crate) const XMM6: u32 = 416;
-    pub(crate) const XMM7: u32 = 448;
-    pub(crate) const XMM8: u32 = 480;
-    pub(crate) const XMM9: u32 = 512;
-    pub(crate) const XMM10: u32 = 544;
-    pub(crate) const XMM11: u32 = 576;
-    pub(crate) const XMM12: u32 = 608;
-    pub(crate) const XMM13: u32 = 640;
-    pub(crate) const XMM14: u32 = 672;
-    pub(crate) const XMM15: u32 = 704;
+    pub(crate) const XMM1: u32 = 288;
+    pub(crate) const XMM2: u32 = 352;
+    pub(crate) const XMM3: u32 = 416;
+    pub(crate) const XMM4: u32 = 480;
+    pub(crate) const XMM5: u32 = 544;
+    pub(crate) const XMM6: u32 = 608;
+    pub(crate) const XMM7: u32 = 672;
+    pub(crate) const XMM8: u32 = 736;
+    pub(crate) const XMM9: u32 = 800;
+    pub(crate) const XMM10: u32 = 864;
+    pub(crate) const XMM11: u32 = 928;
+    pub(crate) const XMM12: u32 = 992;
+    pub(crate) const XMM13: u32 = 1056;
+    pub(crate) const XMM14: u32 = 1120;
+    pub(crate) const XMM15: u32 = 1184;
 
-    // FPU state (per archinfo)
-    pub(crate) const FTOP: u32 = 896;
+    // FPU state (per archinfo), after the 32 ZMM slots and the K0-K7 opmask
+    // registers (2336..2400).
+    pub(crate) const FTOP: u32 = 2400;
     // VEX stores the x87 stack as `guest_FPREG[8]` of `ULong`, i.e. 8 x 8-byte
     // slots (64 bytes total, ending where FPTAG starts) -- MMX-style 64-bit
     // storage, not true 80-bit x87 extended precision. Per-index offset is
     // therefore `FPREG + n * 8`.
-    pub(crate) const FPREG: u32 = 904;
-    pub(crate) const FPTAG: u32 = 968;
-    pub(crate) const FPROUND: u32 = 976;
-    pub(crate) const FC3210: u32 = 984;
+    pub(crate) const FPREG: u32 = 2408;
+    pub(crate) const FPTAG: u32 = 2472;
+    pub(crate) const FPROUND: u32 = 2480;
+    pub(crate) const FC3210: u32 = 2488;
 
     // Late VEX state (per archinfo): the emulation-note word and the
     // self-modifying-code / redirect bookkeeping fields precede the real
-    // GS_CONST slot at offset 1032. `guest_EMNOTE` is a UInt (4 bytes) with
-    // 4 bytes of padding after it; the rest are ULongs. Named for parity with
+    // GS_CONST slot. `guest_EMNOTE` is a UInt (4 bytes) with 4 bytes of
+    // padding after it; the rest are ULongs. Named for parity with
     // X86/ARM/ARM64 (angr-9ke6b.10).
-    pub(crate) const EMNOTE: u32 = 992;
-    pub(crate) const CMSTART: u32 = 1000;
-    pub(crate) const CMLEN: u32 = 1008;
-    pub(crate) const NRADDR: u32 = 1016;
-    pub(crate) const GS_CONST: u32 = 1032;
-    pub(crate) const IP_AT_SYSCALL: u32 = 1040;
+    pub(crate) const EMNOTE: u32 = 2496;
+    pub(crate) const CMSTART: u32 = 2504;
+    pub(crate) const CMLEN: u32 = 2512;
+    pub(crate) const NRADDR: u32 = 2520;
+    pub(crate) const GS_CONST: u32 = 2536;
+    pub(crate) const IP_AT_SYSCALL: u32 = 2544;
 
-    // Total guest state size: archinfo's last register (ss_seg) ends at 1060.
-    pub(crate) const GUEST_STATE_SIZE: usize = 1060;
+    // Total guest state size: sizeof(VexGuestAMD64State) in the AVX-512 build
+    // pyvex ships. archinfo's last register (cr8) ends at 2648; the control
+    // register tail runs to the end, and IR-level PUTs into it must not be
+    // dropped by RegisterFile::put.
+    pub(crate) const GUEST_STATE_SIZE: usize = 2704;
 }
 
 // Canonical registers: each entry is `(name, offset, size_bytes)`. These

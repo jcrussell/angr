@@ -40,6 +40,7 @@ fn test_neon_q_registers() {
     assert_eq!(arch.register_offset("qcflag"), Some(832));
     assert_eq!(arch.register_size("qcflag"), Some(16));
     assert_eq!(arch.register_offset("fpcr"), Some(888));
-    assert_eq!(arch.register_size("fpcr"), Some(4));
+    // A UInt plus its pad word, spanned as one 8-byte register like archinfo.
+    assert_eq!(arch.register_size("fpcr"), Some(8));
     assert_eq!(arch.register_offset("ip_at_syscall"), Some(880));
 }

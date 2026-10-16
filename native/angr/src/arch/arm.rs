@@ -102,11 +102,12 @@ pub(crate) mod offsets {
     // TPIDRURO (thread pointer)
     pub(crate) const TPIDRURO: u32 = 388;
 
-    // IT state for conditional execution
-    pub(crate) const ITSTATE: u32 = 392;
+    // IT state for conditional execution. guest_TPIDRURW (a UInt at 392,
+    // not named here) sits between TPIDRURO and it.
+    pub(crate) const ITSTATE: u32 = 396;
 
-    // Total guest state size. ITSTATE ends at 396; VexGuestARMState carries
-    // 8-byte-aligned ULong D-registers, so sizeof rounds up to 400.
+    // Total guest state size. ITSTATE ends at 400, which is also
+    // sizeof(VexGuestARMState).
     pub(crate) const GUEST_STATE_SIZE: usize = 400;
 }
 

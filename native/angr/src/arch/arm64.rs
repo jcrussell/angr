@@ -107,11 +107,12 @@ pub(crate) mod offsets {
     pub(crate) const IP_AT_SYSCALL: u32 = 880;
     pub(crate) const FPCR: u32 = 888;
 
-    // Total guest state size. After guest_FPCR come 4 bytes of padding and
-    // the LL/SC fallback block (guest_LLSC_{SIZE,ADDR,DATA_LO64,DATA_HI64},
-    // 896..928). We do not name those, but the buffer must cover them or
-    // IR-level PUTs to them are silently dropped by RegisterFile::put.
-    pub(crate) const GUEST_STATE_SIZE: usize = 928;
+    // Total guest state size. After guest_FPCR come 4 bytes of padding, the
+    // LL/SC fallback block (guest_LLSC_{SIZE,ADDR,DATA_LO64,DATA_HI64},
+    // 896..928) and guest_SC_CLASS plus a pad word (928..944). We do not name
+    // those, but the buffer must cover them or IR-level PUTs to them are
+    // silently dropped by RegisterFile::put.
+    pub(crate) const GUEST_STATE_SIZE: usize = 944;
 }
 
 // Canonical registers: drive `register_name(offset)` reverse lookups.
@@ -202,7 +203,9 @@ const CANONICAL: &[RegEntry] = &[
     ("q31", offsets::Q31, 16),
     // Saturation flags and the FP control word.
     ("qcflag", offsets::QCFLAG, 16),
-    ("fpcr", offsets::FPCR, 4),
+    // guest_FPCR is a UInt followed by a pad word; archinfo spans both, so
+    // the register sync moves the same 8 bytes on each side.
+    ("fpcr", offsets::FPCR, 8),
 ];
 
 const ALIASES: &[RegEntry] = &[

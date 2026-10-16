@@ -130,8 +130,9 @@ fn apply_changes_chunks_memory_writes_wider_than_16_bytes() {
 #[test]
 fn apply_changes_chunks_register_writes_wider_than_16_bytes() {
     let mut state = RustSimState::new("amd64").unwrap();
-    // VEX lays amd64 out with 256-bit YMM slots; XMM0 is the low half of YMM0,
-    // so its offset is the base of a 32-byte register.
+    // VEX lays amd64 out with 512-bit ZMM slots; XMM0 is the low quarter of
+    // ZMM0 (and YMM0 its low half), so its offset is the base of a 32-byte
+    // YMM register.
     let ymm0 = crate::arch::amd64::offsets::XMM0;
 
     let data: Vec<u8> = (1..=32u8).collect();

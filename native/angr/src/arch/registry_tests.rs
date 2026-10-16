@@ -608,11 +608,11 @@ const VEX_BOOKKEEPING: &[BookkeepingRow] = &[
     (
         "AMD64",
         [
-            ("emnote", 992, 4),
-            ("cmstart", 1000, 8),
-            ("cmlen", 1008, 8),
-            ("nraddr", 1016, 8),
-            ("ip_at_syscall", 1040, 8),
+            ("emnote", 2496, 4),
+            ("cmstart", 2504, 8),
+            ("cmlen", 2512, 8),
+            ("nraddr", 2520, 8),
+            ("ip_at_syscall", 2544, 8),
         ],
     ),
     (
@@ -642,7 +642,7 @@ const VEX_BOOKKEEPING: &[BookkeepingRow] = &[
             ("cmstart", 436, 4),
             ("cmlen", 440, 4),
             ("nraddr", 444, 4),
-            ("ip_at_syscall", 492, 4),
+            ("ip_at_syscall", 1020, 4),
         ],
     ),
     (
@@ -652,7 +652,7 @@ const VEX_BOOKKEEPING: &[BookkeepingRow] = &[
             ("cmstart", 592, 8),
             ("cmlen", 600, 8),
             ("nraddr", 608, 8),
-            ("ip_at_syscall", 616, 8),
+            ("ip_at_syscall", 1152, 8),
         ],
     ),
 ];

@@ -600,9 +600,9 @@ fn fp_arg_register_offsets_are_distinct_and_evenly_strided() {
     // CANONICAL. That is the same position MIPS' `$f12`/`$f14` are in, so
     // naming is not what separates the populated tables from the empty ones.)
     let cases: [(&dyn CallingConvention, &str, u32); 3] = [
-        // 32, not 16: VEX lays amd64 out as 256-bit YMM slots and XMMn is
-        // the low half of YMMn.
-        (&SystemVAMD64, "amd64", 32),
+        // 64, not 16: VEX lays amd64 out as 512-bit ZMM slots and XMMn is
+        // the low quarter of ZMMn.
+        (&SystemVAMD64, "amd64", 64),
         (&ARMEABI, "arm", 8),
         (&AArch64, "arm64", 16),
     ];

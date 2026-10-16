@@ -641,21 +641,72 @@ fn merge_concrete_chunk_unaligned_overlay_selects_each_path_under_solver() {
     }
 }
 
-/// amd64's guest state is 1060 bytes — not a multiple of the 8-byte chunk
-/// `RegisterFile::merge`'s concrete-diff scan walks in — so the trailing 4
-/// bytes used to fall off the end of the scan entirely and a concrete
-/// divergence there was silently resolved in `self`'s favour (angr-91vj9.13).
+/// AMD64 with a guest state that is not a multiple of the 8-byte chunk
+/// `RegisterFile::merge`'s concrete-diff scan walks in. Every shipped layout is
+/// now chunk-aligned (amd64 was 1060 bytes before pyvex 10's AVX-512 guest
+/// state), so the short-tail case needs a synthetic arch to stay covered.
+struct ShortTailArch;
+
+/// 1060 bytes: the pre-AVX-512 amd64 size, 4 bytes past an 8-byte boundary.
+const SHORT_TAIL_STATE_SIZE: usize = 1060;
+
+impl Arch for ShortTailArch {
+    fn vex_arch(&self) -> crate::vex::VexArch {
+        AMD64.vex_arch()
+    }
+    fn name(&self) -> &'static str {
+        "ShortTailAMD64"
+    }
+    fn bits(&self) -> u32 {
+        AMD64.bits()
+    }
+    fn state_size(&self) -> usize {
+        SHORT_TAIL_STATE_SIZE
+    }
+    fn ip_offset(&self) -> u32 {
+        AMD64.ip_offset()
+    }
+    fn sp_offset(&self) -> u32 {
+        AMD64.sp_offset()
+    }
+    fn bp_offset(&self) -> Option<u32> {
+        AMD64.bp_offset()
+    }
+    fn register_offset(&self, name: &str) -> Option<u32> {
+        AMD64.register_offset(name)
+    }
+    fn register_size(&self, name: &str) -> Option<u32> {
+        AMD64.register_size(name)
+    }
+    fn register_name(&self, offset: u32) -> Option<&'static str> {
+        AMD64.register_name(offset)
+    }
+    fn register_names(&self) -> &[&'static str] {
+        AMD64.register_names()
+    }
+    fn canonical_registers(&self) -> &[RegEntry] {
+        AMD64.canonical_registers()
+    }
+    fn is_little_endian(&self) -> bool {
+        true
+    }
+}
+
+/// A guest state that is not a multiple of the 8-byte chunk
+/// `RegisterFile::merge`'s concrete-diff scan walks in used to lose its
+/// trailing bytes off the end of the scan entirely, so a concrete divergence
+/// there was silently resolved in `self`'s favour (angr-91vj9.13).
 #[test]
 fn merge_covers_short_tail_chunk_of_guest_state() {
     let ctx = SymContext::new_mock();
-    let reg_bytes = AMD64.bits() as usize / 8;
-    let tail = AMD64.state_size() % reg_bytes;
-    assert_eq!(tail, 4, "amd64's guest state is expected to have a short tail");
-    let tail_off = (AMD64.state_size() - tail) as u32;
+    let reg_bytes = ShortTailArch.bits() as usize / 8;
+    let tail = ShortTailArch.state_size() % reg_bytes;
+    assert_eq!(tail, 4, "the fixture's guest state is expected to have a short tail");
+    let tail_off = (ShortTailArch.state_size() - tail) as u32;
 
-    let mut a = RegisterFile::new(Box::new(AMD64));
+    let mut a = RegisterFile::new(Box::new(ShortTailArch));
     a.put(tail_off, RustBV::concrete(0x1111_1111, 32));
-    let mut b = RegisterFile::new(Box::new(AMD64));
+    let mut b = RegisterFile::new(Box::new(ShortTailArch));
     b.put(tail_off, RustBV::concrete(0x2222_2222, 32));
     // Concrete puts mirror into the backing bytes, leaving no overlay — the
     // divergence is visible only to the concrete-diff scan.
@@ -681,12 +732,13 @@ fn merge_covers_short_tail_chunk_of_guest_state() {
 #[test]
 fn merge_short_tail_chunk_selects_each_path_under_solver() {
     let ctx = SymContext::new();
-    let reg_bytes = AMD64.bits() as usize / 8;
-    let tail_off = (AMD64.state_size() - AMD64.state_size() % reg_bytes) as u32;
+    let reg_bytes = ShortTailArch.bits() as usize / 8;
+    let tail_off =
+        (ShortTailArch.state_size() - ShortTailArch.state_size() % reg_bytes) as u32;
 
-    let mut a = RegisterFile::new(Box::new(AMD64));
+    let mut a = RegisterFile::new(Box::new(ShortTailArch));
     a.put(tail_off, RustBV::concrete(0x1111_1111, 32));
-    let mut b = RegisterFile::new(Box::new(AMD64));
+    let mut b = RegisterFile::new(Box::new(ShortTailArch));
     b.put(tail_off, RustBV::concrete(0x2222_2222, 32));
 
     let cond = RustBV::symbolic(&ctx, "merge_cond", 1);

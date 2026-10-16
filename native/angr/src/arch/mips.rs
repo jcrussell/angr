@@ -96,16 +96,19 @@ pub(crate) mod offsets32 {
     // Late VEX bookkeeping state (per archinfo): the emulation-note word and
     // the self-modifying-code / redirect fields. All UInts on MIPS32.
     // `guest_IP_AT_SYSCALL` sits past the DSP accumulators (cond, dspcontrol,
-    // ac0-ac3, cp0_status occupy 448..492), which have no consts here because
-    // nothing in the engine touches them. Named for parity with X86/ARM/ARM64
-    // (angr-9ke6b.10).
+    // ac0-ac3, cp0_status occupy 448..492) and the MSA vector file
+    // (guest_w0-w31 and guest_MSACSR, 504..1020), which have no consts here
+    // because nothing in the engine touches them. Named for parity with
+    // X86/ARM/ARM64 (angr-9ke6b.10).
     pub(crate) const EMNOTE: u32 = 432;
     pub(crate) const CMSTART: u32 = 436;
     pub(crate) const CMLEN: u32 = 440;
     pub(crate) const NRADDR: u32 = 444;
-    pub(crate) const IP_AT_SYSCALL: u32 = 492;
+    pub(crate) const IP_AT_SYSCALL: u32 = 1020;
 
-    pub(crate) const GUEST_STATE_SIZE: usize = 496;
+    // sizeof(VexGuestMIPS32State): guest_LLdata64 and a pad word follow
+    // IP_AT_SYSCALL, and IR-level PUTs to them must not be dropped.
+    pub(crate) const GUEST_STATE_SIZE: usize = 1040;
 }
 
 // MIPS64 VEX guest state offsets (from VEX/pub/libvex_guest_mips64.h)
@@ -189,15 +192,17 @@ pub(crate) mod offsets64 {
 
     // Late VEX bookkeeping state (per archinfo): `guest_EMNOTE` is a UInt at
     // 584 followed by the UInt `guest_COND` at 588 (no const -- nothing in the
-    // engine touches it); the rest are ULongs. Named for parity with
-    // X86/ARM/ARM64 (angr-9ke6b.10).
+    // engine touches it); the rest are ULongs. `guest_IP_AT_SYSCALL` follows
+    // the MSA vector file (guest_w0-w31 and guest_MSACSR). Named for parity
+    // with X86/ARM/ARM64 (angr-9ke6b.10).
     pub(crate) const EMNOTE: u32 = 584;
     pub(crate) const CMSTART: u32 = 592;
     pub(crate) const CMLEN: u32 = 600;
     pub(crate) const NRADDR: u32 = 608;
-    pub(crate) const IP_AT_SYSCALL: u32 = 616;
+    pub(crate) const IP_AT_SYSCALL: u32 = 1152;
 
-    pub(crate) const GUEST_STATE_SIZE: usize = 624;
+    // sizeof(VexGuestMIPS64State): a pad word follows IP_AT_SYSCALL.
+    pub(crate) const GUEST_STATE_SIZE: usize = 1168;
 }
 
 // MIPS32 canonical: ABI mnemonics drive register_name reverse lookup.
