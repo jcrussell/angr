@@ -1,18 +1,16 @@
 /*
  * pyvex_ffi.h — VENDORED cffi cdef from pyvex.vex_ffi.ffi_str
  *
- * Provenance: pyvex 9.2.209 (pinned ==9.2.209).  This is the
+ * Provenance: pyvex 10.0.4.  This is the
  * authoritative C interface that pyvex's own cffi uses to marshal libVEX
  * output: the vex_lift/vex_init signatures plus VEXLiftResult / IRSB /
  * IRStmt / IRExpr / VexArchInfo / ExitInfo struct layouts.  Binding Rust
  * against this exact cdef is parity-safe (see docs/advanced-topics/
  * rust_libvex_ffi.rst).
  *
- * DO NOT hand-edit.  Regenerate on any pyvex bump with:
- *   python -c 'import pyvex.vex_ffi as v; \
- *     open("native/angr/vendor/pyvex_ffi.h","w").write(HEADER)'
- * (see tools/regen-pyvex-ffi-header.py) and re-run the parity harness
- * (angr-3s5js.4).  ABI drift risk is dormant while the pin is frozen.
+ * DO NOT hand-edit.  Regenerate on any pyvex bump with
+ * tools/regen-pyvex-ffi-header.py and re-run the parity harness
+ * (bd angr-3s5js.4).
  *
  * Consumed by build.rs::generate_pyvex_ffi_bindings (bindgen) under the
  * `libvex-ffi` cargo feature (default-ON).
@@ -54,6 +52,15 @@ typedef UInt Addr32;
 typedef ULong Addr64;
 typedef Addr64 Addr;
 typedef unsigned long HWord;
+    typedef HWord RegWord;
+typedef UInt U512[16];
+typedef union {
+   UChar w8[64];
+   UShort w16[32];
+   UInt w32[16];
+   ULong w64[8];
+}
+V512;
 typedef
    enum {
       Ity_INVALID=0x1100,
@@ -71,7 +78,8 @@ typedef
       Ity_D128,
       Ity_F128,
       Ity_V128,
-      Ity_V256
+      Ity_V256,
+      Ity_V512,
    }
    IRType;
 extern void ppIRType ( IRType );
@@ -90,12 +98,14 @@ typedef
       Ico_U16,
       Ico_U32,
       Ico_U64,
+      Ico_U128,
       Ico_F32,
       Ico_F32i,
       Ico_F64,
       Ico_F64i,
       Ico_V128,
-      Ico_V256
+      Ico_V256,
+      Ico_V512,
    }
    IRConstTag;
 typedef
@@ -107,12 +117,14 @@ typedef
          UShort U16;
          UInt U32;
          ULong U64;
+         UShort U128;
          Float F32;
          UInt F32i;
          Double F64;
          ULong F64i;
          UShort V128;
          UInt V256;
+         ULong V512;
       } Ico;
    }
    IRConst;
@@ -121,12 +133,14 @@ extern IRConst* IRConst_U8 ( UChar );
 extern IRConst* IRConst_U16 ( UShort );
 extern IRConst* IRConst_U32 ( UInt );
 extern IRConst* IRConst_U64 ( ULong );
+extern IRConst* IRConst_U128 ( UShort );
 extern IRConst* IRConst_F32 ( Float );
 extern IRConst* IRConst_F32i ( UInt );
 extern IRConst* IRConst_F64 ( Double );
 extern IRConst* IRConst_F64i ( ULong );
 extern IRConst* IRConst_V128 ( UShort );
 extern IRConst* IRConst_V256 ( UInt );
+extern IRConst* IRConst_V512 ( ULong );
 extern IRConst* deepCopyIRConst ( const IRConst* );
 extern void ppIRConst ( const IRConst* );
 extern Bool eqIRConst ( const IRConst*, const IRConst* );
@@ -174,8 +188,9 @@ typedef
       Iop_ExpCmpNE8, Iop_ExpCmpNE16, Iop_ExpCmpNE32, Iop_ExpCmpNE64,
       Iop_MullS8, Iop_MullS16, Iop_MullS32, Iop_MullS64,
       Iop_MullU8, Iop_MullU16, Iop_MullU32, Iop_MullU64,
-      Iop_Clz64, Iop_Clz32,
-      Iop_Ctz64, Iop_Ctz32,
+      Iop_ClzNat64, Iop_ClzNat32,
+      Iop_CtzNat64, Iop_CtzNat32,
+      Iop_PopCount64, Iop_PopCount32,
       Iop_CmpLT32S, Iop_CmpLT64S,
       Iop_CmpLE32S, Iop_CmpLE64S,
       Iop_CmpLT32U, Iop_CmpLT64U,
@@ -190,15 +205,24 @@ typedef
       Iop_DivS32,
       Iop_DivU64,
       Iop_DivS64,
-      Iop_DivU64E,
-      Iop_DivS64E,
+      Iop_DivU128,
+      Iop_DivS128,
       Iop_DivU32E,
       Iop_DivS32E,
+      Iop_DivU64E,
+      Iop_DivS64E,
+      Iop_DivU128E,
+      Iop_DivS128E,
       Iop_DivModU64to32,
       Iop_DivModS64to32,
       Iop_DivModU128to64,
       Iop_DivModS128to64,
       Iop_DivModS64to64,
+      Iop_DivModU64to64,
+      Iop_DivModS32to32,
+      Iop_DivModU32to32,
+      Iop_ModU128,
+      Iop_ModS128,
       Iop_8Uto16, Iop_8Uto32, Iop_8Uto64,
                   Iop_16Uto32, Iop_16Uto64,
                                Iop_32Uto64,
@@ -219,6 +243,8 @@ typedef
       Iop_128HIto64,
       Iop_64HLto128,
       Iop_Not1,
+      Iop_And1,
+      Iop_Or1,
       Iop_32to1,
       Iop_64to1,
       Iop_1Uto8,
@@ -233,10 +259,14 @@ typedef
       Iop_AddF64r32, Iop_SubF64r32, Iop_MulF64r32, Iop_DivF64r32,
       Iop_NegF64, Iop_AbsF64,
       Iop_NegF32, Iop_AbsF32,
+      Iop_NegF16, Iop_AbsF16,
       Iop_SqrtF64,
       Iop_SqrtF32,
+      Iop_SqrtF16,
+      Iop_SubF16, Iop_AddF16,
       Iop_CmpF64,
       Iop_CmpF32,
+      Iop_CmpF16,
       Iop_CmpF128,
       Iop_F64toI16S,
       Iop_F64toI32S,
@@ -257,6 +287,8 @@ typedef
       Iop_I64StoF32,
       Iop_F32toF64,
       Iop_F64toF32,
+      Iop_ReinterpV128asI128, Iop_ReinterpI128asV128,
+      Iop_ReinterpF128asI128, Iop_ReinterpI128asF128,
       Iop_ReinterpF64asI64, Iop_ReinterpI64asF64,
       Iop_ReinterpF32asI32, Iop_ReinterpI32asF32,
       Iop_F64HLtoF128,
@@ -275,6 +307,8 @@ typedef
       Iop_I64UtoF128,
       Iop_F32toF128,
       Iop_F64toF128,
+      Iop_I128UtoF128,
+      Iop_I128StoF128,
       Iop_F128toI32S,
       Iop_F128toI64S,
       Iop_F128toI32U,
@@ -287,6 +321,8 @@ typedef
       Iop_TruncF128toI32U,
       Iop_TruncF128toI64U,
       Iop_TruncF128toI64S,
+      Iop_TruncF128toI128U,
+      Iop_TruncF128toI128S,
       Iop_AtanF64,
       Iop_Yl2xF64,
       Iop_Yl2xp1F64,
@@ -301,7 +337,11 @@ typedef
       Iop_2xm1F64,
       Iop_RoundF128toInt,
       Iop_RoundF64toInt,
+      Iop_RoundF64toIntA0,
+      Iop_RoundF64toIntE,
       Iop_RoundF32toInt,
+      Iop_RoundF32toIntA0,
+      Iop_RoundF32toIntE,
       Iop_MAddF32, Iop_MSubF32,
       Iop_MAddF64, Iop_MSubF64,
       Iop_MAddF64r32, Iop_MSubF64r32,
@@ -336,8 +376,9 @@ typedef
       Iop_HSub8Ux4, Iop_HSub8Sx4,
       Iop_Sad8Ux4,
       Iop_CmpNEZ16x2, Iop_CmpNEZ8x4,
-      Iop_I32UtoFx2, Iop_I32StoFx2,
-      Iop_FtoI32Ux2_RZ, Iop_FtoI32Sx2_RZ,
+      Iop_Reverse8sIn32_x1,
+      Iop_I32UtoF32x2_DEP, Iop_I32StoF32x2_DEP,
+      Iop_F32toI32Ux2_RZ, Iop_F32toI32Sx2_RZ,
       Iop_F32ToFixed32Ux2_RZ, Iop_F32ToFixed32Sx2_RZ,
       Iop_Fixed32UToF32x2_RN, Iop_Fixed32SToF32x2_RN,
       Iop_Max32Fx2, Iop_Min32Fx2,
@@ -416,6 +457,7 @@ typedef
       Iop_Reverse8sIn32_x2, Iop_Reverse16sIn32_x2,
       Iop_Reverse8sIn64_x1, Iop_Reverse16sIn64_x1, Iop_Reverse32sIn64_x1,
       Iop_Perm8x8,
+      Iop_PermOrZero8x8,
       Iop_GetMSBs8x8,
       Iop_RecipEst32Ux2, Iop_RSqrtEst32Ux2,
       Iop_AddD64, Iop_SubD64, Iop_MulD64, Iop_DivD64,
@@ -428,6 +470,7 @@ typedef
       Iop_I32UtoD128,
       Iop_I64StoD128,
       Iop_I64UtoD128,
+      Iop_I128StoD128,
       Iop_D64toD32,
       Iop_D128toD64,
       Iop_I32StoD64,
@@ -442,6 +485,7 @@ typedef
       Iop_D128toI32U,
       Iop_D128toI64S,
       Iop_D128toI64U,
+      Iop_D128toI128S,
       Iop_F32toD32,
       Iop_F32toD64,
       Iop_F32toD128,
@@ -484,6 +528,11 @@ typedef
       Iop_BCD128toI128S,
       Iop_ReinterpI64asD64,
       Iop_ReinterpD64asI64,
+      Iop_Sqrt16Fx8,
+      Iop_Add16Fx8, Iop_Sub16Fx8,
+      Iop_CmpLT16Fx8, Iop_CmpLE16Fx8, Iop_CmpEQ16Fx8,
+      Iop_Abs16Fx8,
+      Iop_Neg16Fx8,
       Iop_Add32Fx4, Iop_Sub32Fx4, Iop_Mul32Fx4, Iop_Div32Fx4,
       Iop_Max32Fx4, Iop_Min32Fx4,
       Iop_Add32Fx2, Iop_Sub32Fx2,
@@ -496,16 +545,25 @@ typedef
       Iop_RecipEst32Fx4,
       Iop_RecipStep32Fx4,
       Iop_RSqrtEst32Fx4,
+      Iop_Scale2_32Fx4,
+      Iop_Log2_32Fx4,
+      Iop_Exp2_32Fx4,
       Iop_RSqrtStep32Fx4,
-      Iop_I32UtoFx4, Iop_I32StoFx4,
-      Iop_FtoI32Ux4_RZ, Iop_FtoI32Sx4_RZ,
-      Iop_QFtoI32Ux4_RZ, Iop_QFtoI32Sx4_RZ,
+      Iop_I32UtoF32x4_DEP, Iop_I32StoF32x4_DEP,
+      Iop_I32StoF32x4,
+      Iop_F32toI32Sx4,
+      Iop_F32toI32Ux4_RZ, Iop_F32toI32Sx4_RZ,
+      Iop_QF32toI32Ux4_RZ, Iop_QF32toI32Sx4_RZ,
       Iop_RoundF32x4_RM, Iop_RoundF32x4_RP,
       Iop_RoundF32x4_RN, Iop_RoundF32x4_RZ,
       Iop_F32ToFixed32Ux4_RZ, Iop_F32ToFixed32Sx4_RZ,
       Iop_Fixed32UToF32x4_RN, Iop_Fixed32SToF32x4_RN,
-      Iop_F32toF16x4, Iop_F16toF32x4,
-      Iop_F64toF16x2, Iop_F16toF64x2,
+      Iop_F32toF16x4_DEP,
+      Iop_F32toF16x4,
+      Iop_F16toF32x4,
+      Iop_F64toF16x2_DEP,
+      Iop_F16toF64x2,
+      Iop_F32x4_2toQ16x8,
       Iop_Add32F0x4, Iop_Sub32F0x4, Iop_Mul32F0x4, Iop_Div32F0x4,
       Iop_Max32F0x4, Iop_Min32F0x4,
       Iop_CmpEQ32F0x4, Iop_CmpLT32F0x4, Iop_CmpLE32F0x4, Iop_CmpUN32F0x4,
@@ -516,10 +574,13 @@ typedef
       Iop_Abs64Fx2,
       Iop_Neg64Fx2,
       Iop_Sqrt64Fx2,
+      Iop_Scale2_64Fx2,
+      Iop_Log2_64Fx2,
       Iop_RecipEst64Fx2,
       Iop_RecipStep64Fx2,
       Iop_RSqrtEst64Fx2,
       Iop_RSqrtStep64Fx2,
+      Iop_F64x2_2toQ32x4,
       Iop_Add64F0x2, Iop_Sub64F0x2, Iop_Mul64F0x2, Iop_Div64F0x2,
       Iop_Max64F0x2, Iop_Min64F0x2,
       Iop_CmpEQ64F0x2, Iop_CmpLT64F0x2, Iop_CmpLE64F0x2, Iop_CmpUN64F0x2,
@@ -570,6 +631,7 @@ typedef
       Iop_PwAdd32Fx2,
       Iop_PwAddL8Ux16, Iop_PwAddL16Ux8, Iop_PwAddL32Ux4, Iop_PwAddL64Ux2,
       Iop_PwAddL8Sx16, Iop_PwAddL16Sx8, Iop_PwAddL32Sx4,
+      Iop_PwExtUSMulQAdd8x16,
       Iop_PwBitMtxXpose64x2,
       Iop_Abs8x16, Iop_Abs16x8, Iop_Abs32x4, Iop_Abs64x2,
       Iop_Avg8Ux16, Iop_Avg16Ux8, Iop_Avg32Ux4, Iop_Avg64Ux2,
@@ -643,6 +705,9 @@ typedef
       Iop_InterleaveOddLanes8x16, Iop_InterleaveEvenLanes8x16,
       Iop_InterleaveOddLanes16x8, Iop_InterleaveEvenLanes16x8,
       Iop_InterleaveOddLanes32x4, Iop_InterleaveEvenLanes32x4,
+      Iop_PackOddLanes8x16, Iop_PackEvenLanes8x16,
+      Iop_PackOddLanes16x8, Iop_PackEvenLanes16x8,
+      Iop_PackOddLanes32x4, Iop_PackEvenLanes32x4,
       Iop_CatOddLanes8x16, Iop_CatOddLanes16x8, Iop_CatOddLanes32x4,
       Iop_CatEvenLanes8x16, Iop_CatEvenLanes16x8, Iop_CatEvenLanes32x4,
       Iop_GetElem8x16, Iop_GetElem16x8, Iop_GetElem32x4, Iop_GetElem64x2,
@@ -655,6 +720,7 @@ typedef
       Iop_Reverse1sIn8_x16,
       Iop_Perm8x16,
       Iop_Perm32x4,
+      Iop_PermOrZero8x16,
       Iop_Perm8x16x2,
       Iop_GetMSBs8x16,
       Iop_RecipEst32Ux4, Iop_RSqrtEst32Ux4,
@@ -662,6 +728,7 @@ typedef
       Iop_MulI128by10Carry,
       Iop_MulI128by10E,
       Iop_MulI128by10ECarry,
+      Iop_2xMultU64Add128CarryOut,
       Iop_V256to64_0,
       Iop_V256to64_1,
       Iop_V256to64_2,
@@ -699,19 +766,234 @@ typedef
       Iop_SHA512, Iop_SHA256,
       Iop_Add64Fx4, Iop_Sub64Fx4, Iop_Mul64Fx4, Iop_Div64Fx4,
       Iop_Add32Fx8, Iop_Sub32Fx8, Iop_Mul32Fx8, Iop_Div32Fx8,
+      Iop_I32StoF32x8,
+      Iop_F32toI32Sx8,
+      Iop_F32toF16x8,
+      Iop_F16toF32x8,
       Iop_Sqrt32Fx8,
       Iop_Sqrt64Fx4,
       Iop_RSqrtEst32Fx8,
       Iop_RecipEst32Fx8,
       Iop_Max32Fx8, Iop_Min32Fx8,
       Iop_Max64Fx4, Iop_Min64Fx4,
-      Iop_LAST
+      Iop_Rotx32, Iop_Rotx64,
+      Iop_LAST_NOT_EVEX,
    }
    IROp;
+typedef enum {
+   Iop_FIRST_EVEX=Iop_LAST_NOT_EVEX,
+ Iop_16Sto8x8,
+ Iop_AndV512,
+ Iop_CfD32x16,
+ Iop_CfD32x4,
+ Iop_CfD32x8,
+ Iop_CfD64x2,
+ Iop_CfD64x4,
+ Iop_CfD64x8,
+ Iop_Classify32F0x4,
+ Iop_Classify32x16,
+ Iop_Classify32x4,
+ Iop_Classify32x8,
+ Iop_Classify64F0x2,
+ Iop_Classify64x2,
+ Iop_Classify64x4,
+ Iop_Classify64x8,
+ Iop_Cmp16Sx16,
+ Iop_Cmp16Sx32,
+ Iop_Cmp16Sx8,
+ Iop_Cmp16Ux16,
+ Iop_Cmp16Ux32,
+ Iop_Cmp16Ux8,
+ Iop_Cmp32Fx16,
+ Iop_Cmp32Fx4,
+ Iop_Cmp32Fx8,
+ Iop_Cmp32Sx16,
+ Iop_Cmp32Sx4,
+ Iop_Cmp32Sx8,
+ Iop_Cmp32Ux16,
+ Iop_Cmp32Ux4,
+ Iop_Cmp32Ux8,
+ Iop_Cmp64Fx2,
+ Iop_Cmp64Fx4,
+ Iop_Cmp64Fx8,
+ Iop_Cmp64Sx2,
+ Iop_Cmp64Sx4,
+ Iop_Cmp64Sx8,
+ Iop_Cmp64Ux2,
+ Iop_Cmp64Ux4,
+ Iop_Cmp64Ux8,
+ Iop_Cmp8Sx16,
+ Iop_Cmp8Sx32,
+ Iop_Cmp8Sx64,
+ Iop_Cmp8Ux16,
+ Iop_Cmp8Ux32,
+ Iop_Cmp8Ux64,
+ Iop_CmpNEZ32x16,
+ Iop_CmpNEZ64x8,
+ Iop_Compress16x8,
+ Iop_Compress32x16,
+ Iop_Compress32x4,
+ Iop_Compress32x8,
+ Iop_Compress64x2,
+ Iop_Compress64x4,
+ Iop_Compress64x8,
+ Iop_Compress8x16,
+ Iop_DPBUSD,
+ Iop_DPBUSDS,
+ Iop_DPWSSD,
+ Iop_DPWSSDS,
+ Iop_Exp32x16,
+ Iop_Exp64x8,
+ Iop_Expand32x16,
+ Iop_Expand32x4,
+ Iop_Expand32x8,
+ Iop_Expand64x2,
+ Iop_Expand64x4,
+ Iop_Expand64x8,
+ Iop_ExpandBitsToInt,
+ Iop_ExpandBitsToV128,
+ Iop_ExpandBitsToV256,
+ Iop_ExpandBitsToV512,
+ Iop_ExtractExp32F0x4,
+ Iop_ExtractExp32x16,
+ Iop_ExtractExp64F0x2,
+ Iop_ExtractExp64x8,
+ Iop_F32toI32U_SKX,
+ Iop_F64toI32U_SKX,
+ Iop_F64toI64U_SKX,
+ Iop_FixupImm32F0x4,
+ Iop_FixupImm32x16,
+ Iop_FixupImm64F0x2,
+ Iop_FixupImm64x8,
+ Iop_GetMant32F0x4,
+ Iop_GetMant32x16,
+ Iop_GetMant64F0x2,
+ Iop_GetMant64x8,
+ Iop_Gfni,
+ Iop_GfniInv,
+ Iop_GfniMult,
+ Iop_I32UtoF32_SKX,
+ Iop_I64UtoF64_SKX,
+ Iop_Max64Sx8,
+ Iop_Max64Ux8,
+ Iop_Min64Sx8,
+ Iop_Min64Ux8,
+ Iop_MULTISHIFTQB,
+ Iop_NotV512,
+ Iop_OrV512,
+ Iop_Perm16x16,
+ Iop_Perm16x32,
+ Iop_Perm16x8,
+ Iop_Perm32x16,
+ Iop_Perm64x4,
+ Iop_Perm64x8,
+ Iop_Perm8x32,
+ Iop_Perm8x64,
+ Iop_PermI16x16,
+ Iop_PermI16x32,
+ Iop_PermI16x8,
+ Iop_PermI32x16,
+ Iop_PermI32x4,
+ Iop_PermI32x8,
+ Iop_PermI64x2,
+ Iop_PermI64x4,
+ Iop_PermI64x8,
+ Iop_PermI8x16,
+ Iop_PermI8x32,
+ Iop_PermI8x64,
+ Iop_PMADD52HUQ ,
+ Iop_PMADD52LUQ ,
+ Iop_PopCount8x16,
+ Iop_PrintI64,
+ Iop_Range32F0x4,
+ Iop_Range32x4,
+ Iop_Range64F0x2,
+ Iop_Range64x2,
+ Iop_Recip14_32F0x4,
+ Iop_Recip14_32x16,
+ Iop_Recip14_64F0x2,
+ Iop_Recip14_64x8,
+ Iop_Recip28_32F0x4,
+ Iop_Recip28_32x16,
+ Iop_Recip28_64F0x2,
+ Iop_Recip28_64x8,
+ Iop_Reduce32F0x4,
+ Iop_Reduce32x4,
+ Iop_Reduce64F0x2,
+ Iop_Reduce64x2,
+ Iop_RoundScale32F0x4,
+ Iop_RoundScale32x16,
+ Iop_RoundScale64F0x2,
+ Iop_RoundScale64x8,
+ Iop_RSqrt14_32F0x4,
+ Iop_RSqrt14_32x16,
+ Iop_RSqrt14_64F0x2,
+ Iop_RSqrt14_64x8,
+ Iop_RSqrt28_32F0x4,
+ Iop_RSqrt28_32x16,
+ Iop_RSqrt28_64F0x2,
+ Iop_RSqrt28_64x8,
+ Iop_Scale32F0x4,
+ Iop_Scale32x16,
+ Iop_Scale64F0x2,
+ Iop_Scale64x8,
+ Iop_Ternlog32x16,
+ Iop_Ternlog64x8,
+ Iop_Test16x16,
+ Iop_Test16x32,
+ Iop_Test16x8,
+ Iop_Test32x16,
+ Iop_Test32x4,
+ Iop_Test32x8,
+ Iop_Test64x2,
+ Iop_Test64x4,
+ Iop_Test64x8,
+ Iop_Test8x16,
+ Iop_Test8x32,
+ Iop_Test8x64,
+ Iop_TestN16x16,
+ Iop_TestN16x32,
+ Iop_TestN16x8,
+ Iop_TestN32x16,
+ Iop_TestN32x4,
+ Iop_TestN32x8,
+ Iop_TestN64x2,
+ Iop_TestN64x4,
+ Iop_TestN64x8,
+ Iop_TestN8x16,
+ Iop_TestN8x32,
+ Iop_TestN8x64,
+ Iop_V256HLtoV512,
+ Iop_V512to64_0,
+ Iop_V512to64_1,
+ Iop_V512to64_2,
+ Iop_V512to64_3,
+ Iop_V512to64_4,
+ Iop_V512to64_5,
+ Iop_V512to64_6,
+ Iop_V512to64_7,
+ Iop_V512toV256_0,
+ Iop_V512toV256_1,
+ Iop_VDBPSADBW,
+ Iop_VPSHLDVD_128,
+ Iop_VPSHLDVQ_128,
+ Iop_VPSHLDW_128,
+ Iop_VPSHRDD_128,
+ Iop_VPSHRDQ_128,
+ Iop_VPSHRDVD_128,
+ Iop_VPSHRDVQ_128,
+ Iop_VPSHRDVW_128,
+ Iop_VPSHRDW_128,
+ Iop_VPSHUFBITQMB_128,
+ Iop_VPSHUFBITQMB_256,
+ Iop_VPSHUFBITQMB_512,
+ Iop_LAST,
+} IROp_EVEX;
 extern void ppIROp ( IROp );
 extern void typeOfPrimop ( IROp op,
                                     IRType* t_dst, IRType* t_arg1,
                            IRType* t_arg2, IRType* t_arg3, IRType* t_arg4 );
+extern Bool primopMightTrap ( IROp op );
 typedef
    enum {
       Irrm_NEAREST = 0,
@@ -846,6 +1128,7 @@ extern IRExpr* IRExpr_VECRET ( void );
 extern IRExpr* IRExpr_GSPTR ( void );
 extern IRExpr* deepCopyIRExpr ( const IRExpr* );
 extern void ppIRExpr ( const IRExpr* );
+extern IRExpr* foldIRExpr ( IRExpr**, IRExpr* );
 extern IRExpr** mkIRExprVec_0 ( void );
 extern IRExpr** mkIRExprVec_1 ( IRExpr* );
 extern IRExpr** mkIRExprVec_2 ( IRExpr*, IRExpr* );
@@ -903,7 +1186,8 @@ typedef
       Ijk_Sys_int130,
       Ijk_Sys_int145,
       Ijk_Sys_int210,
-      Ijk_Sys_sysenter
+      Ijk_Sys_sysenter,
+      Ijk_Extension,
    }
    IRJumpKind;
 extern void ppIRJumpKind ( IRJumpKind );
@@ -995,6 +1279,8 @@ typedef
       ILGop_IdentV128,
       ILGop_Ident64,
       ILGop_Ident32,
+      ILGop_Ident16,
+      ILGop_Ident8,
       ILGop_16Uto32,
       ILGop_16Sto32,
       ILGop_8Uto32,
@@ -1043,7 +1329,7 @@ typedef
       IRStmtTag tag;
       union {
          struct {
-    UInt dummy;
+            UInt dummy;
   } NoOp;
          struct {
             Addr addr;
@@ -1159,6 +1445,7 @@ extern void sanityCheckIRSB ( const IRSB* bb,
                               Bool require_flatness,
                               IRType guest_word_size );
 extern Bool isFlatIRStmt ( const IRStmt* );
+extern Bool isFlatIRSB ( const IRSB* );
 extern Bool isPlausibleIRType ( IRType ty );
 void vex_inject_ir(IRSB *, IREndness);
 typedef
@@ -1173,8 +1460,8 @@ typedef
       VexArchS390X,
       VexArchMIPS32,
       VexArchMIPS64,
-      VexArchTILEGX,
-      VexArchRISCV64
+      VexArchNANOMIPS,
+      VexArchRISCV64,
    }
    VexArch;
 typedef
@@ -1213,9 +1500,12 @@ typedef
       VexCacheInfo hwcache_info;
       Int ppc_icache_line_szB;
       UInt ppc_dcbz_szB;
+      Bool ppc_scv_supported;
       UInt ppc_dcbzl_szB;
       UInt arm64_dMinLine_lg2_szB;
       UInt arm64_iMinLine_lg2_szB;
+      UChar arm64_cache_block_size;
+      Bool arm64_requires_fallback_LLSC;
       UInt x86_cr0;
    }
    VexArchInfo;
@@ -1226,11 +1516,12 @@ typedef
       Int guest_stack_redzone_size;
       Bool guest_amd64_assume_fs_is_const;
       Bool guest_amd64_assume_gs_is_const;
+      Bool guest_amd64_sigbus_on_misalign;
       Bool guest_ppc_zap_RZ_at_blr;
       Bool (*guest_ppc_zap_RZ_at_bl)(Addr);
-      Bool host_ppc_calls_use_fndescrs;
-      Bool guest_mips_fp_mode64;
       Bool guest__use_fallback_LLSC;
+      Bool host_ppc_calls_use_fndescrs;
+      UInt guest_mips_fp_mode;
    }
    VexAbiInfo;
 extern
@@ -1252,20 +1543,22 @@ typedef
       VexRegisterUpdates iropt_register_updates_default;
       Int iropt_unroll_thresh;
       Int guest_max_insns;
-      Int guest_max_bytes;
-      Int guest_chase_thresh;
-      Bool guest_chase_cond;
+      Bool guest_chase;
       UInt regalloc_version;
+      Bool iropt_fold_expr;
+      Int guest_max_bytes;
       Bool arm_allow_optimizing_lookback;
-      Bool strict_block_end;
       Bool arm64_allow_reordered_writeback;
       Bool x86_optimize_callpop_idiom;
+      Bool strict_block_end;
       Bool special_instruction_support;
       UInt lookback_amount;
    }
    VexControl;
 extern
 void LibVEX_default_VexControl ( VexControl* vcon );
+extern
+void LibVEX_set_VexControl ( VexControl );
 extern void* LibVEX_Alloc ( SizeT nbytes );
 extern void LibVEX_ShowAllocStats ( void );
 typedef
@@ -1281,7 +1574,7 @@ typedef
       struct {
          Int offset;
          Int size;
-      } alwaysDefd[24];
+      } alwaysDefd[];
    }
    VexGuestLayout;
 extern void LibVEX_Init (
@@ -1291,7 +1584,6 @@ extern void LibVEX_Init (
    Int debuglevel,
    const VexControl* vcon
 );
-extern void LibVEX_Update_Control (const VexControl * );
 typedef
    struct {
       enum { VexTransOK=0x800,
@@ -1299,6 +1591,8 @@ typedef
       UInt n_sc_extents;
       Int offs_profInc;
       UInt n_guest_instrs;
+      UShort n_uncond_in_trace;
+      UShort n_cond_in_trace;
    }
    VexTranslateResult;
 typedef
@@ -1352,14 +1646,9 @@ typedef
 extern
 VexTranslateResult LibVEX_Translate ( VexTranslateArgs* );
 extern
-IRSB *LibVEX_Lift ( VexTranslateArgs*,
-                    VexTranslateResult*,
-                    VexRegisterUpdates* );
-extern
-void LibVEX_Codegen ( VexTranslateArgs*,
-                      VexTranslateResult*,
-                      IRSB*,
-                      VexRegisterUpdates );
+IRSB* LibVEX_FrontEnd ( VexTranslateArgs*,
+                                VexTranslateResult* res,
+                                VexRegisterUpdates* pxControl );
 typedef
    struct {
       HWord start;
@@ -1387,6 +1676,12 @@ VexInvalRange LibVEX_PatchProfInc ( VexArch arch_host,
                                     const ULong* location_of_counter );
 extern void LibVEX_ShowStats ( void );
 typedef
+   enum {
+      IRICB_vbit,
+      IRICB_iropt,
+   }
+   IRICB_t;
+typedef
    struct {
       IROp op;
       HWord result;
@@ -1403,6 +1698,28 @@ typedef
       UInt num_operands;
       UInt immediate_type;
       UInt immediate_index;
+   }
+   IRICB_vbit_payload;
+typedef
+   struct {
+      IROp op;
+      HWord result_fold;
+      HWord result_nofold;
+      HWord opnd1;
+      HWord opnd2;
+      IRType t_result;
+      IRType t_opnd1;
+      IRType t_opnd2;
+      UInt num_operands;
+   }
+   IRICB_iropt_payload;
+typedef
+   struct {
+      IRICB_t kind;
+      union {
+         IRICB_vbit_payload vbit;
+         IRICB_iropt_payload iropt;
+      };
    }
    IRICB;
 extern void LibVEX_InitIRI ( const IRICB * );

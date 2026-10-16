@@ -173,6 +173,31 @@ def collect_blocks(binary: str, max_blocks: int) -> list[dict]:
     return sorted(seen.values(), key=lambda e: e["addr"])
 
 
+def relift_entry(entry: dict) -> dict:
+    """Re-lift one existing corpus entry from its own bytes with the installed pyvex.
+
+    Hand-assembled blocks go through ``pyvex.lift`` exactly as
+    :func:`synthetic_blocks` / :func:`multiarch_synthetic_blocks` lift them; walked
+    blocks go through ``project.factory.block`` on a shellcode project, which is
+    the production lift path minus the binary's read-only data — data the native
+    lifter in the cargo harness does not see either.
+    """
+    raw = bytes.fromhex(entry["bytes"])
+    addr = entry["addr"]
+    multiarch = {tag: arch for tag, arch, _addr, _hex, _label in MULTIARCH_BLOCKS}
+    synthetic_addrs = {a for a, _hex, _label in SYNTHETIC_BLOCKS}
+    if entry["arch"] != "AMD64":
+        irsb = pyvex.lift(raw, addr, multiarch[entry["arch"]])
+    elif addr in synthetic_addrs:
+        irsb = pyvex.lift(raw, addr, archinfo.ArchAMD64())
+    else:
+        proj = angr.load_shellcode(raw, arch="AMD64", load_address=addr)
+        irsb = proj.factory.block(addr, size=len(raw)).vex
+    if irsb.size != len(raw):
+        raise ValueError(f"{entry['arch']} block @ 0x{addr:x} re-lifted to {irsb.size} bytes, not {len(raw)}")
+    return {**entry, "pyvex_json": serialize_irsb(irsb)}
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--binary", action="append", dest="binaries", default=[])
@@ -182,6 +207,11 @@ def main() -> int:
         "--multiarch",
         action="store_true",
         help="also emit the hand-assembled ARM/ARM64/MIPS blocks (angr-qwyti.20)",
+    )
+    ap.add_argument(
+        "--relift",
+        action="store_true",
+        help="re-lift every block already in --out from its own bytes (for a pyvex bump), keeping the block set",
     )
     ap.add_argument(
         "--merge-existing",
@@ -197,6 +227,15 @@ def main() -> int:
     # MIPS32/MIPS64 blocks encode identically (angr-qwyti.20).
     def key(entry: dict) -> tuple[str, int, str]:
         return (entry["arch"], entry["addr"], entry["bytes"])
+
+    if args.relift:
+        with open(args.out) as f:
+            blocks = [relift_entry(entry) for entry in json.load(f)]
+        with open(args.out, "w") as f:
+            json.dump(blocks, f, indent=1)
+            f.write("\n")
+        print(f"OK re-lifted {len(blocks)} blocks -> {args.out}")
+        return 0
 
     merged: dict[tuple[str, int, str], dict] = {}
     if args.merge_existing:

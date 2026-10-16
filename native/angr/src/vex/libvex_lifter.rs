@@ -86,8 +86,11 @@ impl NativeLibVEXLifter {
 /// `archinfo.Arch<X>().vex_archinfo`. Across every arch angr's archinfo emits
 /// baseline hwcaps (0), empty cache info, and `x86_cr0 = 0xFFFFFFFF`; the sole
 /// per-arch difference is endianness (ARM/ARM64/AMD64/X86 little, MIPS big).
-/// Keep this parity with `gen_libvex_corpus.py`, which lifts the reference
-/// blocks through those same `archinfo.Arch<X>()` objects.
+/// Fields archinfo does not set (`ppc_scv_supported`,
+/// `arm64_cache_block_size`, `arm64_requires_fallback_LLSC`) are zero, as
+/// pyvex's cffi zero-initializes them. Keep this parity with
+/// `gen_libvex_corpus.py`, which lifts the reference blocks through those same
+/// `archinfo.Arch<X>()` objects.
 fn archinfo_for(arch: VexArch) -> ffi::VexArchInfo {
     let endness = match arch.endness() {
         Endness::Little => ffi::VexEndness::VexEndnessLE,
@@ -104,9 +107,12 @@ fn archinfo_for(arch: VexArch) -> ffi::VexArchInfo {
         },
         ppc_icache_line_szB: 0,
         ppc_dcbz_szB: 0,
+        ppc_scv_supported: 0,
         ppc_dcbzl_szB: 0,
         arm64_dMinLine_lg2_szB: 0,
         arm64_iMinLine_lg2_szB: 0,
+        arm64_cache_block_size: 0,
+        arm64_requires_fallback_LLSC: 0,
         x86_cr0: 0xFFFF_FFFF,
     }
 }
@@ -328,6 +334,10 @@ unsafe fn marshal_const(c: *const ffi::IRConst) -> IRConst {
         IRConst::U32(ico.U32)
     } else if tag == ffi::IRConstTag::Ico_U64.0 {
         IRConst::U64(ico.U64)
+    } else if tag == ffi::IRConstTag::Ico_U128.0 {
+        // A restricted constant in the same one-bit-per-byte encoding as
+        // Ico_V128 (libvex_ir.h).
+        IRConst::U128(expand_v128(ico.U128))
     } else if tag == ffi::IRConstTag::Ico_F32.0 {
         IRConst::F32(ico.F32)
     } else if tag == ffi::IRConstTag::Ico_F32i.0 {
@@ -340,6 +350,12 @@ unsafe fn marshal_const(c: *const ffi::IRConst) -> IRConst {
         IRConst::V128(expand_v128(ico.V128))
     } else if tag == ffi::IRConstTag::Ico_V256.0 {
         IRConst::V256(expand_v256(ico.V256))
+    } else if tag == ffi::IRConstTag::Ico_V512.0 {
+        // SILENT(cat-c): the engine has no 512-bit vector type, so an AVX-512
+        // constant cannot be represented; the zero stand-in is wrong for any
+        // nonzero pattern. Only EVEX-encoded code reaches this (angr-mx00p.5).
+        log::warn!("libVEX Ico_V512 constant is unsupported; assuming Ico_U64(0)");
+        IRConst::U64(0)
     } else {
         // SILENT(cat-c): defaulting to U64(0) on an unrecognized libVEX
         // Ico_* tag silently corrupts every constant of that kind — warn so
@@ -530,6 +546,8 @@ fn loadg_op(cvt: ffi::IRLoadGOp) -> IRLoadGOp {
     if v == ffi::IRLoadGOp::ILGop_IdentV128.0
         || v == ffi::IRLoadGOp::ILGop_Ident64.0
         || v == ffi::IRLoadGOp::ILGop_Ident32.0
+        || v == ffi::IRLoadGOp::ILGop_Ident16.0
+        || v == ffi::IRLoadGOp::ILGop_Ident8.0
     {
         IRLoadGOp::Identity
     } else if v == ffi::IRLoadGOp::ILGop_8Uto32.0 {

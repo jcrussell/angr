@@ -141,6 +141,8 @@ const VENDORED_ILGOP_TAGS: &[&str] = &[
     "ILGop_IdentV128",
     "ILGop_Ident64",
     "ILGop_Ident32",
+    "ILGop_Ident16",
+    "ILGop_Ident8",
     "ILGop_16Uto32",
     "ILGop_16Sto32",
     "ILGop_8Uto32",
@@ -174,7 +176,7 @@ fn scan_vendored_header_tags<'h>(header: &'h str, prefix: &str) -> Vec<&'h str> 
 /// (JSON path) also accepts the `ILGop_{16,32}{U,S}to64` widening forms
 /// defensively, but `loadg_op` (native FFI path) cannot — it matches bindgen
 /// constants, and bindgen only emits what the vendored header declares, which
-/// today is the eight tags above and no `*to64` form. So the native path has no
+/// today is the tags listed above and no `*to64` form. So the native path has no
 /// way to pre-handle a variant that does not exist yet; the next best thing is
 /// to fail loudly the moment one appears. If this test breaks after
 /// `tools/regen-pyvex-ffi-header.py`, add the new tag to `loadg_op`, to
@@ -267,12 +269,14 @@ const VENDORED_ICO_CONST_TAGS: &[&str] = &[
     "Ico_U16",
     "Ico_U32",
     "Ico_U64",
+    "Ico_U128",
     "Ico_F32",
     "Ico_F32i",
     "Ico_F64",
     "Ico_F64i",
     "Ico_V128",
     "Ico_V256",
+    "Ico_V512",
 ];
 
 /// Tripwire for a VEX pin bump that grows `IRConstTag` — mirrors
@@ -334,6 +338,12 @@ fn test_marshal_const_handles_every_vendored_variant() {
             IRConst::U64(0xdead_beef_0000_0001),
         ),
         (
+            ffi::IRConstTag::Ico_U128,
+            // Same one-bit-per-byte encoding as Ico_V128.
+            ffi::_IRConst__bindgen_ty_1 { U128: 0x8001 },
+            IRConst::U128(expand_v128(0x8001)),
+        ),
+        (
             ffi::IRConstTag::Ico_F32,
             ffi::_IRConst__bindgen_ty_1 { F32: 1.5 },
             IRConst::F32(1.5),
@@ -366,6 +376,12 @@ fn test_marshal_const_handles_every_vendored_variant() {
             ffi::IRConstTag::Ico_V256,
             ffi::_IRConst__bindgen_ty_1 { V256: 0x0000_0001 },
             IRConst::V256(expand_v256(0x0000_0001)),
+        ),
+        (
+            // No 512-bit vector type: the documented zero stand-in.
+            ffi::IRConstTag::Ico_V512,
+            ffi::_IRConst__bindgen_ty_1 { V512: 1 },
+            IRConst::U64(0),
         ),
     ];
 

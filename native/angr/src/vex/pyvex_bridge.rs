@@ -445,7 +445,8 @@ fn convert_callee(c: &PyVexCallee) -> IRCallee {
 /// Convert LoadG cvt string to IRLoadGOp.
 fn parse_loadg_op(cvt: &str) -> IRLoadGOp {
     match cvt {
-        "ILGop_IdentV128" | "ILGop_Ident64" | "ILGop_Ident32" => IRLoadGOp::Identity,
+        "ILGop_IdentV128" | "ILGop_Ident64" | "ILGop_Ident32" | "ILGop_Ident16"
+        | "ILGop_Ident8" => IRLoadGOp::Identity,
         // VEX defines only the *to32 widening ops; the *to64 forms are accepted
         // defensively in case a future lifter emits them.
         "ILGop_8Uto32" => IRLoadGOp::WidenZ { src_bits: 8 },

@@ -296,14 +296,8 @@ fn parse_arithmetic(op_str: &str) -> Option<IROp> {
 
 /// Parse bitwise operations: And, Or, Xor, Not
 ///
-/// The `"1" => I1` arms on And/Or/Xor are unreachable on the VEX version this
-/// crate is pinned to: the `IROp` enum in `vendor/pyvex_ffi.h` defines `Iop_Not1`
-/// but no `Iop_And1` / `Iop_Or1` / `Iop_Xor1`, and `libpyvex.so` carries no such
-/// name strings either, so no lift can emit them. They are kept as
-/// forward-compatible placeholders: `tuple_arms!` matches the suffix exactly, so
-/// an arm for an opcode that does not exist costs one failed compare and cannot
-/// misfire onto a real opcode. Drop or confirm them when the pyvex/VEX pin is
-/// next bumped.
+/// The `"1" => I1` arms cover `Iop_And1` / `Iop_Or1` / `Iop_Xor1`, which
+/// pyvex 10's libVEX emits alongside `Iop_Not1` (see `vendor/pyvex_ffi.h`).
 fn parse_bitwise(op_str: &str) -> Option<IROp> {
     tuple_arms!(op_str; "Iop_And" => And  { "1" => I1, "8" => I8, "16" => I16, "32" => I32, "64" => I64 });
     tuple_arms!(op_str; "Iop_And" => VAnd { "V128" => V128, "V256" => V256 });
@@ -442,28 +436,16 @@ fn parse_conversion(op_str: &str) -> Option<IROp> {
         _ => {
             // Bit manipulation.
             //
-            // Only the plain `Iop_Clz{32,64}` / `Iop_Ctz{32,64}` (undefined
-            // result on a zero input) are mapped. libVEX now prefers the
-            // zero-input-safe `Iop_ClzNat{32,64}` / `Iop_CtzNat{32,64}`
-            // variants, but those are not defined in the VEX version this
-            // crate is pinned to — `vendor/pyvex_ffi.h` has zero `ClzNat` /
-            // `CtzNat` hits, so no lift can currently emit them and the gap is
-            // unreachable. Map them when the pyvex/VEX pin is next bumped; the
-            // `tuple_arms!` suffix match is exact, so `Iop_ClzNat32` falls
-            // through to `None` (deferred to Python) rather than being
-            // silently mistaken for `Iop_Clz32`. Same "unmapped for now"
-            // situation as the `Iop_CmpORD*` gap in `parse_comparison`.
-            //
-            // The `Iop_PopCount*` arms are the mirror image: *no* scalar
-            // popcount opcode exists at any width on this pin — `IROp` in
-            // `vendor/pyvex_ffi.h` has zero `PopCount` entries and `libpyvex.so`
-            // no `PopCount` name string (x86 POPCNT lifts to the `gen_POPCOUNT`
-            // dirty helper, not an IROp). They are kept as forward-compatible
-            // placeholders because `IROp::PopCount`'s evaluator (`popcount_into`,
-            // dispatched in `VEXOps::unop`) and its unit tests are already
-            // written and correct; deleting only the parse arms would strand a
-            // working implementation with no route in. Same exact-suffix
-            // reasoning as the And1/Or1/Xor1 placeholders in `parse_bitwise`.
+            // pyvex 10's libVEX emits only the zero-input-safe
+            // `Iop_ClzNat{32,64}` / `Iop_CtzNat{32,64}` (a zero input yields
+            // the bit width), which is exactly what `IROp::Clz` / `IROp::Ctz`
+            // compute, concretely (`concrete_clz` / `concrete_ctz`) and in the
+            // Z3 lowering. The plain `Iop_Clz` / `Iop_Ctz` names, whose
+            // zero-input result was undefined, are kept for IR from older
+            // lifts; the `tuple_arms!` suffix match is exact, so neither
+            // spelling is mistaken for the other.
+            tuple_arms!(op_str; "Iop_ClzNat"   => Clz      { "32" => I32, "64" => I64 });
+            tuple_arms!(op_str; "Iop_CtzNat"   => Ctz      { "32" => I32, "64" => I64 });
             tuple_arms!(op_str; "Iop_Clz"      => Clz      { "32" => I32, "64" => I64 });
             tuple_arms!(op_str; "Iop_Ctz"      => Ctz      { "32" => I32, "64" => I64 });
             tuple_arms!(op_str; "Iop_PopCount" => PopCount { "8" => I8, "16" => I16, "32" => I32, "64" => I64 });
@@ -548,8 +530,7 @@ pub fn parse_type(ty_str: &str) -> Option<IRType> {
         // S390X — the only architectures that emit these types, and both listed
         // as unsupported in docs/advanced-topics/rust_engine.rst. Until then no
         // lifted architecture can reach this arm. Same "pin the placeholder,
-        // don't pretend it's right" treatment as the Clz/Ctz and `Iop_And1`
-        // notes above.
+        // don't pretend it's right" treatment as an unmapped opcode.
         "Ity_D32" => Some(IRType::I32),
         "Ity_D64" => Some(IRType::I64),
         "Ity_F128" | "Ity_D128" => Some(IRType::V128),

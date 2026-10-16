@@ -9,9 +9,8 @@ parity-safe (see docs/advanced-topics/rust_libvex_ffi.rst).
 
 Run this on any pyvex version bump, then re-run the corpus IRSB parity
 harness (bd angr-3s5js.4). The struct ABI (VEXLiftResult array sizes,
-IRStmt/IRExpr layout) is tied to the pinned pyvex ==9.2.209; a bump can
-change it. The pin is frozen (see bd ``avoid-pip-install-deps``), so the
-drift risk is dormant.
+IRStmt/IRExpr layout) and the IROp numbering are tied to the pyvex version
+pyproject.toml pins; a bump can change any of them.
 """
 
 from __future__ import annotations
@@ -29,7 +28,7 @@ def build_header() -> str:
 /*
  * pyvex_ffi.h — VENDORED cffi cdef from pyvex.vex_ffi.ffi_str
  *
- * Provenance: pyvex {pyvex.__version__} (pinned ==9.2.209).  This is the
+ * Provenance: pyvex {pyvex.__version__}.  This is the
  * authoritative C interface that pyvex's own cffi uses to marshal libVEX
  * output: the vex_lift/vex_init signatures plus VEXLiftResult / IRSB /
  * IRStmt / IRExpr / VexArchInfo / ExitInfo struct layouts.  Binding Rust
@@ -38,7 +37,7 @@ def build_header() -> str:
  *
  * DO NOT hand-edit.  Regenerate on any pyvex bump with
  * tools/regen-pyvex-ffi-header.py and re-run the parity harness
- * (bd angr-3s5js.4).  ABI drift risk is dormant while the pin is frozen.
+ * (bd angr-3s5js.4).
  *
  * Consumed by build.rs::generate_pyvex_ffi_bindings (bindgen) under the
  * `libvex-ffi` cargo feature (default-ON).
